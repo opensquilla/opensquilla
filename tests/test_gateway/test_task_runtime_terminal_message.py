@@ -456,11 +456,16 @@ async def test_task_runtime_rolls_back_persisted_user_on_provider_budget_error()
     class RecordingSessionManager:
         def __init__(self) -> None:
             self.removed: list[tuple[str, str]] = []
+            self.rollback_lock: asyncio.Lock | None = None
+            self.rollback_lock_states: list[bool] = []
 
         async def get_session(self, session_key: str) -> Any:  # noqa: ARG002
             return None
 
         async def remove_message(self, session_key: str, message_id: str) -> bool:
+            self.rollback_lock_states.append(
+                self.rollback_lock is not None and self.rollback_lock.locked()
+            )
             self.removed.append((session_key, message_id))
             return True
 
@@ -481,6 +486,8 @@ async def test_task_runtime_rolls_back_persisted_user_on_provider_budget_error()
         emitted.append((session_key, event_name, payload))
 
     manager = RecordingSessionManager()
+    runner = ProviderBudgetErrorRunner()
+    manager.rollback_lock = runner.lock
     run = SimpleNamespace(
         agent_id="main",
         task_id="task-1",
@@ -494,6 +501,7 @@ async def test_task_runtime_rolls_back_persisted_user_on_provider_budget_error()
         ingress_pipeline_steps=[],
         semantic_message=None,
         persisted_user_message_id="msg-1",
+        persisted_user_message_ids=("msg-1", "msg-2", "msg-3"),
         stream_event_sink=None,
     )
 
@@ -505,12 +513,17 @@ async def test_task_runtime_rolls_back_persisted_user_on_provider_budget_error()
                 agent_stream_idle_timeout_seconds=1.0,
             ),
             session_manager=manager,
-            turn_runner=ProviderBudgetErrorRunner(),
+            turn_runner=runner,
             event_emitter=_emitter,
         )
 
     assert exc_info.value.code == "provider_request_too_large"
-    assert manager.removed == [("agent:main:test", "msg-1")]
+    assert manager.removed == [
+        ("agent:main:test", "msg-1"),
+        ("agent:main:test", "msg-2"),
+        ("agent:main:test", "msg-3"),
+    ]
+    assert manager.rollback_lock_states == [True, True, True]
     payload = emitted[0][2]
     assert payload["code"] == "provider_request_too_large"
     assert "too large" in payload["terminal_message"]

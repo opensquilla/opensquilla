@@ -745,6 +745,47 @@ describe('useChatHistory optimistic local rows', () => {
     expect(messages.value[1]?.stopNotice).toBe(true)
   })
 
+  it('keeps a terminal replay error until server history contains a durable error row', async () => {
+    const { api, messages } = makeHistory(true, {
+      messages: [
+        { role: 'user', text: 'retry this turn', ts: 'local-user' },
+        {
+          role: 'error',
+          text: 'Activation failed; retry this message.',
+          ts: 'local-error',
+          errorCode: 'failed',
+          terminalNotice: true,
+        },
+      ],
+      response: {
+        messages: [
+          {
+            id: 'server-user',
+            message_id: 'server-user',
+            role: 'user',
+            text: 'retry this turn',
+            timestamp: 'server-user',
+          },
+        ],
+        has_more: false,
+        oldest_cursor: null,
+        newest_cursor: null,
+        history_scope: 'session',
+      },
+    })
+
+    await api.loadHistory()
+
+    expect(messages.value.map(message => [message.role, message.text])).toEqual([
+      ['user', 'retry this turn'],
+      ['error', 'Activation failed; retry this message.'],
+    ])
+    expect(messages.value[1]).toMatchObject({
+      errorCode: 'failed',
+      terminalNotice: true,
+    })
+  })
+
   it('keeps multiple local stopped-output notices when repeated user prompts reload with server ids', async () => {
     const prompt = '调研一下上下文相关的sota论文'
     const { api, messages } = makeHistory(true, {

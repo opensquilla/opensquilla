@@ -1204,7 +1204,11 @@ async def test_chat_send_accepts_turn_without_synchronous_context_overflow_gate(
     async def _unexpected_gate(*args: Any, **kwargs: Any) -> dict[str, Any]:
         raise AssertionError("chat.send must not synchronously refuse overflow")
 
-    async def _fake_sessions_send(params: dict[str, Any], _ctx: Any) -> dict[str, Any]:
+    async def _fake_sessions_send(
+        params: dict[str, Any],
+        _ctx: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
         accepted.update(params)
         return {"status": "accepted", "key": params["key"], "task_id": "task-long-context"}
 
@@ -1248,7 +1252,11 @@ def test_chat_send_creates_webchat_session_with_agent_from_key(
         principal=SimpleNamespace(role="owner"),
     )
 
-    async def _fake_sessions_send(params: dict[str, Any], _ctx: Any) -> dict[str, Any]:
+    async def _fake_sessions_send(
+        params: dict[str, Any],
+        _ctx: Any,
+        **_kwargs: Any,
+    ) -> dict[str, Any]:
         return {"status": "accepted", "key": params["key"], "task_id": "task-1"}
 
     monkeypatch.setattr(

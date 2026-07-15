@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sqlite3
 import time
 import uuid
 from dataclasses import asdict, replace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
 from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.engine.cache_break_monitor import notify_compaction
-from opensquilla.engine.start_turn import start_turn_via_runtime
+from opensquilla.engine.start_turn import reserve_turn_via_runtime, start_turn_via_runtime
 from opensquilla.gateway import attachment_ingest as _attachment_ingest
 from opensquilla.gateway.agent_tasks import get_agent_task_registry
 from opensquilla.gateway.config import effective_agent_stream_idle_timeout_seconds
@@ -32,6 +33,11 @@ from opensquilla.gateway.session_services import (
 )
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.session_view import build_session_view_item, derive_transcript_title
+from opensquilla.gateway.turn_ingress import (
+    accepted_turn_payload,
+    complete_durable_ingress,
+    request_identity,
+)
 from opensquilla.paths import media_root_from_config
 from opensquilla.sandbox.run_context import (
     get_run_context,
@@ -64,11 +70,19 @@ from opensquilla.session.compaction_lifecycle import (
     pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
-from opensquilla.session.models import SessionStatus
+from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus, SessionStatus
 from opensquilla.session.naming import (
     generate_session_title,
     is_naming_eligible,
     title_slot_is_empty,
+)
+from opensquilla.session.storage import (
+    SessionStorage,
+    StaleEpochError,
+    StorageBusyError,
+    TaskCollectionUnavailableError,
+    TurnAcceptanceResult,
+    TurnIngressConflictError,
 )
 from opensquilla.session.terminal_reply import (
     append_error_ref,
@@ -80,6 +94,9 @@ _d = get_dispatcher()
 log = structlog.get_logger(__name__)
 _ELEVATED_MODES = frozenset({"full"})
 _TRUSTED_ELEVATED_ALIASES = frozenset({"on", "bypass"})
+
+if TYPE_CHECKING:
+    from opensquilla.gateway.task_runtime import TaskRuntime
 
 _ALLOWED_MEDIA_TYPES = _attachment_ingest.ALLOWED_MEDIA_TYPES
 _MAX_ATTACHMENT_BYTES = _attachment_ingest.MAX_ATTACHMENT_BYTES
@@ -1352,8 +1369,52 @@ def _schedule_auto_title(
     )
 
 
+def _turn_source_scope(source_hint: dict[str, Any], ctx: RpcContext) -> str:
+    caller_kind = str(source_hint.get("caller_kind") or "rpc").strip().lower()
+    channel_kind = str(source_hint.get("channel_kind") or caller_kind).strip().lower()
+    principal_role = str(getattr(ctx.principal, "role", "operator") or "operator")
+    return f"{caller_kind}:{channel_kind}:{principal_role}"[:256]
+
+
+async def _accepted_turn_response(
+    result: TurnAcceptanceResult,
+    *,
+    client_request_id: str,
+    storage: SessionStorage,
+) -> dict[str, Any]:
+    payload = accepted_turn_payload(result, client_request_id=client_request_id)
+    if result.task_status is None or result.receipt.task_id is None:
+        return payload
+    if result.task_status not in {
+        AgentTaskStatus.SUCCEEDED,
+        AgentTaskStatus.FAILED,
+        AgentTaskStatus.CANCELLED,
+        AgentTaskStatus.TIMEOUT,
+        AgentTaskStatus.ABANDONED,
+    }:
+        return payload
+    try:
+        task_record = await storage.get_agent_task(result.receipt.task_id)
+    except Exception:  # noqa: BLE001 - accepted responses must remain deliverable.
+        log.exception(
+            "sessions.send.terminal_status_read_failed",
+            task_id=result.receipt.task_id,
+        )
+        return payload
+    if task_record is None:
+        return payload
+    payload["terminal_reason"] = task_record.terminal_reason
+    payload["terminal_message"] = build_terminal_reply(task_record)
+    return payload
+
+
 @_d.method("sessions.send", scope="operator.write")
-async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
+async def _handle_sessions_send(
+    params: dict | None,
+    ctx: RpcContext,
+    *,
+    fingerprint_params: dict[str, Any] | None = None,
+) -> dict:
     key = _require_key(params)
     if not isinstance(params, dict) or "message" not in params:
         raise ValueError("params.message is required")
@@ -1392,58 +1453,141 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
     if ctx.session_manager is None:
         raise KeyError("No session manager available")
 
-    storage = get_session_storage(ctx.session_manager)
-    if storage is None:
+    storage_candidate = get_session_storage(ctx.session_manager)
+    if storage_candidate is None:
         raise KeyError("No session storage available")
+    storage = cast(SessionStorage, storage_candidate)
 
-    intent_lock = get_session_lock(ctx.turn_runner, key)
-
-    async def _load_and_apply_intent() -> tuple[Any, bool]:
-        current_session = await storage.get_session(key)
-        if current_session is None and session_intent is SessionIntent.CONTINUE:
-            raise KeyError(f"Session not found: {key}")
-        if "apply_intent" in dir(ctx.session_manager):
-            return cast(
-                tuple[Any, bool],
-                await ctx.session_manager.apply_intent(
-                    key,
-                    session_intent,
-                    agent_id=_effective_agent_id_for_session(current_session, key),
-                ),
+    ingress_identity = request_identity(
+        params,
+        request_session_key=key,
+        source_scope=_turn_source_scope(source_hint, ctx),
+        fingerprint_params=fingerprint_params,
+    )
+    get_ingress_receipt = getattr(storage, "get_turn_ingress_receipt", None)
+    if callable(get_ingress_receipt):
+        previous_acceptance = await get_ingress_receipt(
+            source_scope=ingress_identity.source_scope,
+            request_session_key=ingress_identity.request_session_key,
+            client_request_id=ingress_identity.client_request_id,
+        )
+        if previous_acceptance is not None:
+            if (
+                previous_acceptance.receipt.request_fingerprint
+                != ingress_identity.request_fingerprint
+            ):
+                raise RpcHandlerError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "clientRequestId was already used for a different turn",
+                    retryable=False,
+                    accepted=False,
+                )
+            return await _accepted_turn_response(
+                previous_acceptance,
+                client_request_id=ingress_identity.client_request_id,
+                storage=storage,
             )
+
+    task_runtime_candidate = cast("TaskRuntime | None", getattr(ctx, "task_runtime", None))
+    prepare_intent = getattr(ctx.session_manager, "prepare_intent", None)
+    create_kwargs: dict[str, Any] = {}
+    if source_hint.get("caller_kind") == "web":
+        create_kwargs["display_name"] = "WebChat"
+    supports_atomic_intent = (
+        fork_before_message_id is None
+        and task_runtime_candidate is not None
+        and callable(prepare_intent)
+        and callable(getattr(storage, "accept_turn", None))
+        and callable(getattr(task_runtime_candidate, "reserve", None))
+        and callable(getattr(task_runtime_candidate, "activate", None))
+        and callable(getattr(task_runtime_candidate, "abort_reservation", None))
+    )
+
+    async def _prepare_or_apply_intent() -> tuple[Any, Any | None]:
+        existing_session = await storage.get_session(key)
+        if existing_session is None and session_intent is SessionIntent.CONTINUE:
+            raise KeyError(f"Session not found: {key}")
+        if supports_atomic_intent:
+            assert callable(prepare_intent)
+            plan = await prepare_intent(
+                key,
+                session_intent,
+                agent_id=_effective_agent_id_for_session(existing_session, key),
+                **create_kwargs,
+            )
+            return plan.node, plan
+        if "apply_intent" in dir(ctx.session_manager):
+            applied_session, _intent_applied = await ctx.session_manager.apply_intent(
+                key,
+                session_intent,
+                agent_id=_effective_agent_id_for_session(existing_session, key),
+                **create_kwargs,
+            )
+            return applied_session, None
         if session_intent is not SessionIntent.CONTINUE:
             raise RuntimeError("Session intent handling requires SessionManager.apply_intent")
-        return current_session, False
+        return existing_session, None
 
+    intent_lock = get_session_lock(ctx.turn_runner, key)
     if intent_lock is None:
-        session, _intent_applied = await _load_and_apply_intent()
+        session, atomic_intent_plan = await _prepare_or_apply_intent()
     else:
         async with intent_lock:
-            session, _intent_applied = await _load_and_apply_intent()
+            session, atomic_intent_plan = await _prepare_or_apply_intent()
 
     if fork_before_message_id is not None:
         parent_key = key
         parent_display_name = getattr(session, "display_name", None)
         agent_id = _effective_agent_id_for_session(session, parent_key)
         child_key = _create_session_key(agent_id, "webchat")
-        session = await _branch_with_session_mutation_lock(
-            ctx.session_manager,
-            ctx.turn_runner,
-            parent_key,
-            child_key,
-            fork_transcript=True,
-            status=SessionStatus.DONE,
-            fork_before_message_id=fork_before_message_id,
+        prepare_prefix_branch = getattr(
+            ctx.session_manager, "prepare_prefix_branch", None
         )
-        key = child_key
-        if parent_display_name:
-            session = await ctx.session_manager.update(key, display_name=parent_display_name)
-        await _emit_to_subscribers(
-            ctx,
-            key,
-            "sessions.changed",
-            build_sessions_changed_payload(key, "forked", run_status="idle"),
-        )
+        if (
+            callable(prepare_prefix_branch)
+            and task_runtime_candidate is not None
+            and callable(getattr(storage, "accept_turn", None))
+            and callable(getattr(task_runtime_candidate, "reserve", None))
+            and callable(getattr(task_runtime_candidate, "activate", None))
+            and callable(getattr(task_runtime_candidate, "abort_reservation", None))
+        ):
+            async def _prepare_prefix_intent() -> Any:
+                return await prepare_prefix_branch(
+                    parent_key,
+                    child_key,
+                    fork_before_message_id=fork_before_message_id,
+                    status=SessionStatus.DONE,
+                )
+
+            parent_lock = get_session_lock(ctx.turn_runner, parent_key)
+            if parent_lock is None:
+                atomic_intent_plan = await _prepare_prefix_intent()
+            else:
+                async with parent_lock:
+                    atomic_intent_plan = await _prepare_prefix_intent()
+            session = atomic_intent_plan.node
+            key = child_key
+        else:
+            session = await _branch_with_session_mutation_lock(
+                ctx.session_manager,
+                ctx.turn_runner,
+                parent_key,
+                child_key,
+                fork_transcript=True,
+                status=SessionStatus.DONE,
+                fork_before_message_id=fork_before_message_id,
+            )
+            key = child_key
+            if parent_display_name:
+                session = await ctx.session_manager.update(
+                    key, display_name=parent_display_name
+                )
+            await _emit_to_subscribers(
+                ctx,
+                key,
+                "sessions.changed",
+                build_sessions_changed_payload(key, "forked", run_status="idle"),
+            )
 
     canonical_session_id = getattr(session, "session_id", None)
     session_id = (
@@ -1611,15 +1755,386 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
         )
     run_kind = capture_controls["run_kind"] or "session_turn"
 
+    task_runtime = task_runtime_candidate
+    requested_mode = (
+        params.get("queueMode")
+        or params.get("queue_mode")
+        or getattr(session, "queue_mode", None)
+        or "followup"
+    )
+    runtime_mode = "interrupt" if requested_mode == "steer" else requested_mode
+    if atomic_intent_plan is not None and atomic_intent_plan.action == "reset":
+        # A reset rotates the session identity. Any old-key task must be stopped
+        # only after that rotation commits so it cannot append into the new epoch.
+        runtime_mode = "interrupt"
+    atomic_runtime_acceptance = (
+        task_runtime is not None
+        and atomic_intent_plan is not None
+        and callable(getattr(task_runtime, "reserve", None))
+        and callable(getattr(task_runtime, "activate", None))
+        and callable(getattr(task_runtime, "abort_reservation", None))
+        and callable(getattr(task_runtime, "collect_admission", None))
+        and callable(getattr(storage, "accept_turn", None))
+        and callable(getattr(ctx.session_manager, "prepare_message", None))
+        and (
+            runtime_mode != "collect"
+            or callable(getattr(task_runtime, "try_collect_atomically", None))
+        )
+    )
+
+    if atomic_runtime_acceptance:
+        assert task_runtime is not None
+        assert atomic_intent_plan is not None
+        atomic_task_runtime = task_runtime
+        persist_content = message_text
+        if raw_attachments or display_text is not None:
+            from opensquilla.gateway.transcripts import (
+                build_transcript_attachment_envelope,
+            )
+
+            if raw_attachments and hasattr(ctx.session_manager, "stamp_user_text"):
+                stamped = ctx.session_manager.stamp_user_text(message_text)
+                if isinstance(stamped, str):
+                    message_text = stamped
+            persist_content, _writes = build_transcript_attachment_envelope(
+                text=message_text,
+                display_text=display_text,
+                attachments=raw_attachments,
+                session_id=session_id,
+                media_root=media_root,
+                persist_enabled=persist_enabled,
+                disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
+            )
+
+        persisted_entry, expected_epoch = await ctx.session_manager.prepare_message(
+            key,
+            role="user",
+            content=persist_content,
+            session_node=session,
+        )
+        if not raw_attachments and display_text is None and isinstance(
+            persisted_entry.content, str
+        ):
+            message_text = persisted_entry.content
+
+        from opensquilla.gateway.task_runtime import TaskQueueFullError
+
+        async def _accept_task_record(
+            task_record: AgentTaskRecord,
+            *,
+            merge_into_task: bool = False,
+        ) -> TurnAcceptanceResult:
+            return await storage.accept_turn(
+                persisted_entry,
+                expected_epoch=expected_epoch,
+                updated_at=int(time.time() * 1000),
+                task_record=task_record,
+                source_scope=ingress_identity.source_scope,
+                request_session_key=ingress_identity.request_session_key,
+                client_request_id=ingress_identity.client_request_id,
+                request_fingerprint=ingress_identity.request_fingerprint,
+                session_node=(
+                    atomic_intent_plan.node
+                    if atomic_intent_plan.action in {"create", "reset", "fork"}
+                    else None
+                ),
+                reset_from_session_id=(
+                    atomic_intent_plan.previous_session_id
+                    if atomic_intent_plan.action == "reset"
+                    else None
+                ),
+                initial_transcript_entries=(
+                    atomic_intent_plan.initial_transcript_entries
+                    if atomic_intent_plan.action == "fork"
+                    else ()
+                ),
+                merge_into_task=merge_into_task,
+            )
+
+        async def _commit_and_activate() -> TurnAcceptanceResult:
+            if runtime_mode == "collect" and atomic_intent_plan.action == "continue":
+
+                async def _persist_collection(
+                    handle: Any,
+                    details: dict[str, Any],
+                ) -> TurnAcceptanceResult:
+                    task_record = AgentTaskRecord(
+                        task_id=handle.task_id,
+                        session_key=handle.session_key,
+                        agent_id=route_envelope.agent_id,
+                        source_kind=route_envelope.source_kind.value,
+                        queue_mode="collect",
+                        run_kind=run_kind,
+                        status=AgentTaskStatus.QUEUED,
+                        details=details,
+                    )
+                    return await _accept_task_record(
+                        task_record,
+                        merge_into_task=True,
+                    )
+
+                collected = await atomic_task_runtime.try_collect_atomically(
+                    envelope=route_envelope,
+                    message=provider_message_text,
+                    attachments=raw_attachments,
+                    run_kind=run_kind,
+                    no_memory_capture=bool(capture_controls["no_memory_capture"]),
+                    semantic_message=semantic_message_text,
+                    persisted_user_message_id=persisted_entry.message_id,
+                    message_count=1,
+                    persist=_persist_collection,
+                )
+                if collected is not None:
+                    _handle, collected_acceptance = collected
+                    return cast(TurnAcceptanceResult, collected_acceptance)
+
+            reservation = await reserve_turn_via_runtime(
+                atomic_task_runtime,
+                route_envelope,
+                provider_message_text,
+                attachments=raw_attachments,
+                mode=runtime_mode,
+                run_kind=run_kind,
+                no_memory_capture=bool(capture_controls["no_memory_capture"]),
+                semantic_message=semantic_message_text,
+            )
+            try:
+                acceptance = await _accept_task_record(reservation.task_record)
+            except BaseException:
+                await atomic_task_runtime.abort_reservation(reservation)
+                raise
+
+            if acceptance.replayed:
+                await atomic_task_runtime.abort_reservation(reservation)
+                return acceptance
+
+            if atomic_intent_plan.action == "reset":
+                set_cached_epoch = getattr(ctx.session_manager, "set_cached_epoch", None)
+                if callable(set_cached_epoch):
+                    set_cached_epoch(key, expected_epoch)
+            try:
+                await atomic_task_runtime.activate(
+                    reservation,
+                    persisted_user_message_id=acceptance.receipt.message_id,
+                    fresh_user_session=acceptance.fresh_user_session,
+                )
+            except Exception as exc:  # noqa: BLE001 - acceptance already committed.
+                log.error(
+                    "sessions.send.activation_failed",
+                    session_key=key,
+                    task_id=acceptance.receipt.task_id,
+                    error=str(exc),
+                    exc_info=True,
+                )
+                if acceptance.receipt.task_id:
+                    try:
+                        await storage.update_agent_task(
+                            acceptance.receipt.task_id,
+                            status="failed",
+                            finished_at=int(time.time() * 1000),
+                            terminal_reason="activation_failed",
+                            error_class=type(exc).__name__,
+                            error_message=str(exc),
+                        )
+                    except Exception:  # noqa: BLE001 - preserve accepted response.
+                        log.exception(
+                            "sessions.send.activation_failure_record_failed",
+                            task_id=acceptance.receipt.task_id,
+                        )
+                if not reservation.activated:
+                    try:
+                        await atomic_task_runtime.abort_reservation(reservation)
+                    except Exception:  # noqa: BLE001 - preserve accepted response.
+                        log.exception(
+                            "sessions.send.activation_abort_failed",
+                            task_id=acceptance.receipt.task_id,
+                        )
+                acceptance = replace(
+                    acceptance,
+                    task_status=AgentTaskStatus.FAILED,
+                )
+            return acceptance
+
+        async def _commit_with_session_admission() -> TurnAcceptanceResult:
+            # Serialize the full durable commit -> runtime activation boundary
+            # for every queue mode. In particular, a reset/interrupt must not
+            # overtake a committed-but-inert continue reservation: interrupt
+            # activation can only cancel tasks that have crossed activation.
+            async with atomic_task_runtime.collect_admission(
+                route_envelope.session_key
+            ):
+                return await _commit_and_activate()
+
+        try:
+            acceptance = await complete_durable_ingress(
+                _commit_with_session_admission()
+            )
+        except TaskQueueFullError as exc:
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "QUEUE_FULL",
+                "The session task queue is full. Try again after queued work completes.",
+                details={
+                    "session_key": exc.session_key,
+                    "max_pending": exc.max_pending,
+                },
+                retryable=True,
+                accepted=False,
+            ) from exc
+        except StorageBusyError as exc:
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "STORAGE_BUSY",
+                "Session storage is temporarily busy. Retry this send.",
+                details={
+                    "operation": exc.operation,
+                    "waited_ms": exc.waited_ms,
+                },
+                retryable=True,
+                retry_after_ms=exc.retry_after_ms,
+                accepted=False,
+            ) from exc
+        except StaleEpochError as exc:
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "SESSION_CHANGED",
+                "The session changed while this turn was being accepted. Retry the send.",
+                retryable=True,
+                accepted=False,
+            ) from exc
+        except TurnIngressConflictError as exc:
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "IDEMPOTENCY_CONFLICT",
+                str(exc),
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except TaskCollectionUnavailableError as exc:
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "COLLECT_RACE",
+                "The queued task started before this message could be collected. Retry it.",
+                retryable=True,
+                accepted=False,
+            ) from exc
+        except sqlite3.IntegrityError as exc:
+            if (
+                atomic_intent_plan.action != "create"
+                or "sessions.session_key" not in str(exc)
+            ):
+                raise
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "SESSION_CONFLICT",
+                "Another request created this session first. Start a new chat and retry.",
+                retryable=False,
+                accepted=False,
+            ) from exc
+
+        if not acceptance.replayed:
+            notify_message_appended = getattr(
+                ctx.session_manager, "notify_message_appended", None
+            )
+            if callable(notify_message_appended):
+                try:
+                    notify_message_appended(persisted_entry)
+                except Exception:  # noqa: BLE001 - turn is already accepted.
+                    log.exception(
+                        "sessions.send.post_accept_notify_failed",
+                        session_key=key,
+                        task_id=acceptance.receipt.task_id,
+                    )
+            reset_archive = acceptance.reset_archive_snapshot
+            if reset_archive is not None:
+                write_session_archive = getattr(
+                    ctx.session_manager, "write_session_archive", None
+                )
+                if callable(write_session_archive):
+                    try:
+                        await write_session_archive(
+                            reset_archive.node,
+                            list(reset_archive.entries),
+                            list(reset_archive.summaries),
+                        )
+                    except Exception:  # noqa: BLE001 - turn is already accepted.
+                        log.exception(
+                            "sessions.send.post_accept_archive_failed",
+                            session_key=key,
+                            task_id=acceptance.receipt.task_id,
+                        )
+            if (
+                atomic_intent_plan.action == "fork"
+                and atomic_intent_plan.previous_session_id is not None
+            ):
+                copy_fork_materials = getattr(
+                    ctx.session_manager, "_copy_fork_materials", None
+                )
+                if callable(copy_fork_materials):
+                    try:
+                        await copy_fork_materials(
+                            atomic_intent_plan.previous_session_id,
+                            session_id,
+                            key,
+                        )
+                    except Exception:  # noqa: BLE001 - turn is already accepted.
+                        log.exception(
+                            "sessions.send.post_accept_fork_copy_failed",
+                            session_key=key,
+                            task_id=acceptance.receipt.task_id,
+                        )
+                try:
+                    await _emit_to_subscribers(
+                        ctx,
+                        key,
+                        "sessions.changed",
+                        build_sessions_changed_payload(key, "forked", run_status="idle"),
+                    )
+                except Exception:  # noqa: BLE001 - turn is already accepted.
+                    log.exception(
+                        "sessions.send.post_accept_fork_event_failed",
+                        session_key=key,
+                        task_id=acceptance.receipt.task_id,
+                    )
+
+        if _consumed_file_uuids:
+            from opensquilla.gateway.uploads import get_upload_store
+
+            upload_store = get_upload_store()
+            for file_uuid in _consumed_file_uuids:
+                try:
+                    await upload_store.evict(file_uuid)
+                except Exception:  # noqa: BLE001 - eviction is best-effort
+                    log.warning("uploads.evict_failed_post_turn uuid=%s", file_uuid[:8])
+        if not acceptance.replayed:
+            try:
+                _schedule_auto_title(
+                    ctx,
+                    key,
+                    semantic_message_text or message_text,
+                    enabled=generate_title,
+                )
+            except Exception:  # noqa: BLE001 - turn is already accepted.
+                log.exception(
+                    "sessions.send.post_accept_title_failed",
+                    session_key=key,
+                    task_id=acceptance.receipt.task_id,
+                )
+        return await _accepted_turn_response(
+            acceptance,
+            client_request_id=ingress_identity.client_request_id,
+            storage=storage,
+        )
+
     # 1. Persist user message to transcript (include attachment metadata).
     # Hold the per-session lock used by /reset so a concurrent reset cannot
     # tear the append and leak an orphan user turn into the cleared transcript.
     _persist_lock = get_session_lock(ctx.turn_runner, key)
-    persisted_entry: Any = None
+    legacy_persisted_entry: Any = None
     fresh_user_session = False
 
     async def _persist_user_message() -> None:
-        nonlocal message_text, persisted_entry, fresh_user_session
+        nonlocal message_text, legacy_persisted_entry, fresh_user_session
         get_transcript = getattr(ctx.session_manager, "get_transcript", None)
         if callable(get_transcript):
             fresh_user_session = not bool(await get_transcript(key))
@@ -1643,15 +2158,17 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 persist_enabled=persist_enabled,
                 disk_budget_bytes=disk_budget if isinstance(disk_budget, int) else None,
             )
-            persisted_entry = await ctx.session_manager.append_message(
+            legacy_persisted_entry = await ctx.session_manager.append_message(
                 key, role="user", content=persist_content
             )
         else:
-            persisted_entry = await ctx.session_manager.append_message(
+            legacy_persisted_entry = await ctx.session_manager.append_message(
                 key, role="user", content=message_text
             )
-            if persisted_entry is not None and isinstance(persisted_entry.content, str):
-                message_text = persisted_entry.content
+            if legacy_persisted_entry is not None and isinstance(
+                legacy_persisted_entry.content, str
+            ):
+                message_text = legacy_persisted_entry.content
 
     if _persist_lock is None:
         await _persist_user_message()
@@ -1660,7 +2177,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
             await _persist_user_message()
 
     async def _rollback_persisted_user_message(reason: str) -> tuple[str | None, bool]:
-        message_id = getattr(persisted_entry, "message_id", None)
+        message_id = getattr(legacy_persisted_entry, "message_id", None)
         if not message_id or not hasattr(ctx.session_manager, "remove_message"):
             return message_id, False
         try:
@@ -1706,7 +2223,9 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 run_kind=run_kind,
                 no_memory_capture=bool(capture_controls["no_memory_capture"]),
                 semantic_message=semantic_message_text,
-                persisted_user_message_id=getattr(persisted_entry, "message_id", None),
+                persisted_user_message_id=getattr(
+                    legacy_persisted_entry, "message_id", None
+                ),
                 fresh_user_session=fresh_user_session,
             )
         except Exception as exc:
@@ -1737,6 +2256,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                         "rollback_message_id": orphan_id,
                     },
                     retryable=True,
+                    accepted=False,
                 ) from exc
             raise RpcHandlerError(
                 "QUEUE_FULL_DIRTY",
@@ -1753,6 +2273,7 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                     "remediation": "client must dedup by message_id before retry",
                 },
                 retryable=False,
+                accepted=True,
             ) from exc
         # Eviction hook: turn was accepted into the runtime,
         # post-resolution + post-engine-acceptance. Evict consumed uuids

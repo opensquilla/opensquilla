@@ -763,6 +763,7 @@ const activeTaskGroups = ref<Set<string>>(new Set())
 // current turn so a prior task can't leak into it (issue 344).
 const activeStreamTaskId = ref<string>('')
 const activeStreamSessionKey = ref<string>('')
+let bindActiveStreamTask = (taskId: string) => { activeStreamTaskId.value = taskId }
 
 // Pending session intent
 const pendingSessionIntent = ref<string | null>(null)
@@ -1334,6 +1335,8 @@ const chatSend = useChatSend({
   stream: chatStream,
   normalizeElevatedMode,
   persistSession,
+  scheduleHistorySync,
+  bindActiveStreamTask: taskId => bindActiveStreamTask(taskId),
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
   prepareAttachmentsForSend,
@@ -1419,6 +1422,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   loadHistory,
   loadCurrentSessionUsage,
 })
+bindActiveStreamTask = rpcEventHandlers.bindActiveStreamTask
 const {
   streamThinkingText,
   streamThinkingElapsedText,

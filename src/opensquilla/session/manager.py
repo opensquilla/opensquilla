@@ -105,6 +105,18 @@ def _now_iso() -> str:
     return datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+@dataclass(frozen=True)
+class PreparedSessionIntent:
+    """Pure session mutation plan consumed by the turn-acceptance transaction."""
+
+    node: SessionNode
+    action: str
+    expected_epoch: int
+    previous_session_id: str | None = None
+    previous_node: SessionNode | None = None
+    initial_transcript_entries: tuple[TranscriptEntry, ...] = ()
+
+
 @contextlib.asynccontextmanager
 async def _null_async_context() -> AsyncIterator[None]:
     yield
@@ -253,6 +265,94 @@ class SessionManager:
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _build_session_node(
+        session_key: str,
+        *,
+        agent_id: str,
+        **kwargs: Any,
+    ) -> SessionNode:
+        now = _now_ms()
+        return SessionNode(
+            session_key=session_key,
+            session_id=str(uuid.uuid4()),
+            agent_id=agent_id,
+            created_at=now,
+            updated_at=now,
+            started_at=now,
+            status=SessionStatus.RUNNING,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _build_reset_node(node: SessionNode) -> SessionNode:
+        reset = node.model_copy(deep=True)
+        reset.session_id = str(uuid.uuid4())
+        reset.epoch = int(node.epoch or 0) + 1
+        reset.updated_at = _now_ms()
+        reset.input_tokens = 0
+        reset.output_tokens = 0
+        reset.total_tokens = 0
+        reset.total_tokens_fresh = False
+        reset.estimated_cost_usd = 0.0
+        reset.total_cost_usd = 0.0
+        reset.billed_cost_usd = 0.0
+        reset.estimated_cost_component_usd = 0.0
+        reset.cost_source = "none"
+        reset.missing_cost_entries = 0
+        reset.cache_read = 0
+        reset.cache_write = 0
+        reset.context_tokens = None
+        reset.compaction_count = 0
+        if reset.forked_from_parent:
+            reset.schema_version = max(
+                reset.schema_version,
+                CANONICAL_FORK_PROOF_SCHEMA_VERSION,
+            )
+        return reset
+
+    async def prepare_intent(
+        self,
+        session_key: str,
+        intent: SessionIntent | str,
+        *,
+        agent_id: str = "main",
+        **create_kwargs: Any,
+    ) -> PreparedSessionIntent:
+        """Prepare create/reset/continue state without writing durable state."""
+
+        session_key = canonicalize_session_key(session_key)
+        agent_id = normalize_agent_id(agent_id)
+        resolved = SessionIntent(intent)
+        existing = await self._storage.get_session(session_key)
+        if resolved is SessionIntent.NEW_CHAT and existing is not None:
+            raise ValueError("session_key conflict")
+        if existing is None:
+            node = self._build_session_node(
+                session_key,
+                agent_id=agent_id,
+                **create_kwargs,
+            )
+            return PreparedSessionIntent(
+                node=node,
+                action="create",
+                expected_epoch=int(node.epoch or 0),
+            )
+        if resolved is SessionIntent.RESET_SAME_KEY:
+            reset = self._build_reset_node(existing)
+            return PreparedSessionIntent(
+                node=reset,
+                action="reset",
+                expected_epoch=int(reset.epoch or 0),
+                previous_session_id=existing.session_id,
+                previous_node=existing,
+            )
+        return PreparedSessionIntent(
+            node=existing,
+            action="continue",
+            expected_epoch=int(existing.epoch or 0),
+        )
+
     async def create(
         self,
         session_key: str,
@@ -266,17 +366,7 @@ class SessionManager:
         if existing is not None:
             raise ValueError(f"Session already exists: {session_key}")
 
-        now = _now_ms()
-        node = SessionNode(
-            session_key=session_key,
-            session_id=str(uuid.uuid4()),
-            agent_id=agent_id,
-            created_at=now,
-            updated_at=now,
-            started_at=now,
-            status=SessionStatus.RUNNING,
-            **kwargs,
-        )
+        node = self._build_session_node(session_key, agent_id=agent_id, **kwargs)
         await self._storage.upsert_session(node)
         return node
 
@@ -502,8 +592,6 @@ class SessionManager:
         if resolved is SessionIntent.RESET_SAME_KEY:
             node = await self._rotate_session_id(existing)
             return node, True
-        existing.updated_at = _now_ms()
-        await self._storage.upsert_session(existing)
         return existing, False
 
     async def _rotate_session_id(self, node: SessionNode) -> SessionNode:
@@ -555,11 +643,33 @@ class SessionManager:
     async def _archive_session_identity(self, node: SessionNode) -> None:
         """Best-effort raw archive before a same-key transcript reset."""
 
+        entries, summaries = await self.capture_session_archive(node)
+        await self.write_session_archive(node, entries, summaries)
+
+    async def capture_session_archive(
+        self,
+        node: SessionNode,
+    ) -> tuple[list[TranscriptEntry], list[SessionSummary]]:
+        """Read reset archive material without creating filesystem side effects."""
+
         try:
             entries = await self._storage.get_canonical_transcript(node.session_id)
             summaries = await self._storage.get_all_summaries(node.session_id)
-            if not entries and not summaries:
-                return
+            return entries, summaries
+        except Exception:
+            return [], []
+
+    async def write_session_archive(
+        self,
+        node: SessionNode,
+        entries: list[TranscriptEntry],
+        summaries: list[SessionSummary],
+    ) -> None:
+        """Write a previously captured reset archive after acceptance commits."""
+
+        if not entries and not summaries:
+            return
+        try:
             archive_dir = _archive_dir()
             new_dir = not archive_dir.exists()
             archive_dir.mkdir(parents=True, exist_ok=True)
@@ -867,6 +977,96 @@ class SessionManager:
         await self._storage.upsert_session(child)
         return child
 
+    async def prepare_prefix_branch(
+        self,
+        parent_session_key: str,
+        new_session_key: str,
+        *,
+        fork_before_message_id: str,
+        status: SessionStatus | str = SessionStatus.DONE,
+    ) -> PreparedSessionIntent:
+        """Prepare a WebChat prefix fork without writing the child session."""
+
+        parent_session_key = canonicalize_session_key(parent_session_key)
+        new_session_key = canonicalize_session_key(new_session_key)
+        parent = await self._storage.get_session(parent_session_key)
+        if parent is None:
+            raise KeyError(f"Parent session not found: {parent_session_key}")
+        parent_coverage = await self._storage.get_canonical_transcript_coverage(
+            parent.session_id
+        )
+        canonical_entries = await self._storage.get_canonical_transcript(parent.session_id)
+        fork_index = next(
+            (
+                index
+                for index, entry in enumerate(canonical_entries)
+                if entry.message_id == fork_before_message_id
+            ),
+            None,
+        )
+        if fork_index is None:
+            raise KeyError(
+                f"Transcript message not found in {parent_session_key}: "
+                f"{fork_before_message_id}"
+            )
+
+        now = _now_ms()
+        child = SessionNode(
+            session_key=new_session_key,
+            session_id=str(uuid.uuid4()),
+            agent_id=parent.agent_id,
+            parent_session_key=parent_session_key,
+            spawned_by=parent_session_key,
+            spawn_depth=(parent.spawn_depth or 0) + 1,
+            created_at=now,
+            updated_at=now,
+            started_at=now,
+            status=status,
+            model=parent.model,
+            model_provider=parent.model_provider,
+            channel=parent.channel,
+            chat_type=parent.chat_type,
+            display_name=parent.display_name,
+            forked_from_parent=True,
+        )
+        child.compaction_count = (
+            0
+            if parent_coverage.canonical_complete
+            else max(1, parent_coverage.compaction_count)
+        )
+        child.schema_version = max(
+            child.schema_version,
+            CANONICAL_FORK_PROOF_SCHEMA_VERSION,
+        )
+        copied_entries = tuple(
+            TranscriptEntry(
+                session_id=child.session_id,
+                session_key=new_session_key,
+                role=entry.role,
+                content=entry.content,
+                tool_calls=entry.tool_calls,
+                tool_call_id=entry.tool_call_id,
+                reasoning_content=entry.reasoning_content,
+                turn_usage=entry.turn_usage,
+                created_at=entry.created_at,
+                token_count=entry.token_count,
+                provenance_kind=entry.provenance_kind,
+                provenance_origin_session_id=entry.provenance_origin_session_id,
+                provenance_source_session_key=entry.provenance_source_session_key,
+                provenance_source_channel=entry.provenance_source_channel,
+                provenance_source_tool=entry.provenance_source_tool,
+            )
+            for entry in canonical_entries[:fork_index]
+        )
+        return PreparedSessionIntent(
+            node=child,
+            action="fork",
+            expected_epoch=int(child.epoch or 0),
+            previous_session_id=parent.session_id,
+            previous_node=parent,
+            initial_transcript_entries=copied_entries,
+        )
+
     async def _copy_fork_materials(
         self,
         source_session_id: str,
@@ -915,7 +1115,7 @@ class SessionManager:
 
     # ── Transcript ───────────────────────────────────────────────────────────
 
-    async def append_message(
+    async def prepare_message(
         self,
         session_key: str,
         role: str,
@@ -927,10 +1127,16 @@ class SessionManager:
         turn_usage: dict[str, Any] | None = None,
         token_count: int | None = None,
         provenance: dict[str, Any] | None = None,
-    ) -> TranscriptEntry:
-        """Append a message to the session transcript and touch updated_at."""
+        session_node: SessionNode | None = None,
+    ) -> tuple[TranscriptEntry, int]:
+        """Build an epoch-fenced transcript entry without persisting it."""
+
         session_key = canonicalize_session_key(session_key)
-        node = await self._storage.get_session(session_key)
+        node = session_node
+        if node is not None and canonicalize_session_key(node.session_key) != session_key:
+            raise ValueError("session_node does not match session_key")
+        if node is None:
+            node = await self._storage.get_session(session_key)
         if node is None:
             raise KeyError(f"Session not found: {session_key}")
 
@@ -959,17 +1165,52 @@ class SessionManager:
         # Pass the epoch we read from the node so storage can perform an
         # atomic INSERT WHERE epoch=? guard against concurrent resets.
         expected_epoch = node.epoch if node.epoch is not None else 0
-        await self._storage.append_transcript_entry(entry, expected_epoch=expected_epoch)
+        return entry, expected_epoch
 
-        node.updated_at = _now_ms()
-        if token_count and turn_usage is None:
-            node.total_tokens += token_count
-            node.total_tokens_fresh = False
-        await self._storage.upsert_session(node)
-        # Notify memory sync of new message delta
-        if self._memory_sync_notify is not None:
-            byte_count = len(content.encode("utf-8")) if content else 0
-            self._memory_sync_notify(byte_count)
+    def notify_message_appended(self, entry: TranscriptEntry) -> None:
+        """Notify memory capture after an entry's transaction has committed."""
+
+        if self._memory_sync_notify is None:
+            return
+        content = entry.content or ""
+        byte_count = len(content.encode("utf-8")) if isinstance(content, str) else 0
+        self._memory_sync_notify(byte_count)
+
+    async def append_message(
+        self,
+        session_key: str,
+        role: str,
+        content: str,
+        *,
+        tool_calls: list[dict[str, Any]] | None = None,
+        tool_call_id: str | None = None,
+        reasoning_content: str | None = None,
+        turn_usage: dict[str, Any] | None = None,
+        token_count: int | None = None,
+        provenance: dict[str, Any] | None = None,
+    ) -> TranscriptEntry:
+        """Append a message and narrowly touch its session in one transaction."""
+
+        entry, expected_epoch = await self.prepare_message(
+            session_key,
+            role,
+            content,
+            tool_calls=tool_calls,
+            tool_call_id=tool_call_id,
+            reasoning_content=reasoning_content,
+            turn_usage=turn_usage,
+            token_count=token_count,
+            provenance=provenance,
+        )
+        token_delta = token_count if token_count and turn_usage is None else 0
+        await self._storage.append_transcript_entry_and_touch(
+            entry,
+            expected_epoch=expected_epoch,
+            updated_at=_now_ms(),
+            token_delta=token_delta,
+            mark_total_tokens_stale=bool(token_delta),
+        )
+        self.notify_message_appended(entry)
         return entry
 
     async def remove_message(self, session_key: str, message_id: str) -> bool:

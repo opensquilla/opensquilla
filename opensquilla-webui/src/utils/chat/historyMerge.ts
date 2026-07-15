@@ -148,7 +148,7 @@ function findUserByOrdinal(messages: ChatMessage[], ordinal: number): number {
   return -1
 }
 
-function findIncomingUserForPreviousStopNotice(
+function findIncomingUserForPreviousNotice(
   previousMessages: ChatMessage[],
   incomingMessages: ChatMessage[],
   previousUserIndex: number,
@@ -213,11 +213,48 @@ export function reconcileClientStopNotices(prev: ChatMessage[], incoming: ChatMe
       return -1
     })()
     if (priorUserIndex < 0) continue
-    const userIndex = findIncomingUserForPreviousStopNotice(prev, merged, priorUserIndex)
+    const userIndex = findIncomingUserForPreviousNotice(prev, merged, priorUserIndex)
     if (userIndex < 0) continue
     if (turnHasServerOutputAfterUser(merged, userIndex)) continue
 
     merged.splice(stopNoticeInsertionIndex(merged, userIndex), 0, notice)
+  }
+
+  return merged
+}
+
+// A terminal replay has no future stream event to re-materialize its failure.
+// Keep the client error beside its user turn until server history contains an
+// error row for that turn; otherwise the required post-replay history sync
+// would erase the only actionable explanation after ~50ms.
+export function reconcileClientTerminalNotices(
+  prev: ChatMessage[],
+  incoming: ChatMessage[],
+): ChatMessage[] {
+  if (!prev.some(msg => msg.terminalNotice)) return incoming
+  const merged = incoming.slice()
+
+  for (let i = 0; i < prev.length; i++) {
+    const notice = prev[i]
+    if (!notice?.terminalNotice || notice.role !== 'error') continue
+
+    const priorUserIndex = (() => {
+      for (let j = i - 1; j >= 0; j--) {
+        if (prev[j]?.role === 'user') return j
+      }
+      return -1
+    })()
+    if (priorUserIndex < 0) continue
+    const userIndex = findIncomingUserForPreviousNotice(prev, merged, priorUserIndex)
+    if (userIndex < 0) continue
+
+    let turnEnd = userIndex + 1
+    while (turnEnd < merged.length && merged[turnEnd]?.role !== 'user') turnEnd++
+    const durableErrorExists = merged
+      .slice(userIndex + 1, turnEnd)
+      .some(message => message.role === 'error')
+    if (durableErrorExists) continue
+    merged.splice(turnEnd, 0, notice)
   }
 
   return merged

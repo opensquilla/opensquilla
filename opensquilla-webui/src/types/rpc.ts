@@ -169,6 +169,7 @@ export interface SessionEventPayload {
   run_status?: string
   runStatus?: string
   terminal_message?: string
+  terminal_reason?: string
   message?: string
   code?: string
   group_id?: string
@@ -243,6 +244,8 @@ export interface ChatSendAttachmentPayload {
 export interface ChatSendParams {
   message: string
   sessionKey: string
+  /** Stable idempotency key for one logical send attempt. */
+  clientRequestId?: string
   _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
   forkBeforeMessageId?: string
@@ -255,6 +258,14 @@ export interface ChatSendResponse {
   sessionKey?: string
   task_id?: string
   taskId?: string
+  replayed?: boolean
+  task_status?: string
+  taskStatus?: string
+  terminal_reason?: string
+  terminalReason?: string
+  terminal_message?: string
+  terminalMessage?: string
+  reason?: string
 }
 
 export interface ChatHistoryAttachmentPayload {

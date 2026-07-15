@@ -82,7 +82,16 @@ def create_gateway_app(
             return 403
         if code in {"NOT_FOUND", "METHOD_NOT_FOUND"}:
             return 404
-        if code == "UNAVAILABLE":
+        if code in {
+            "COLLECT_RACE",
+            "IDEMPOTENCY_CONFLICT",
+            "SESSION_CHANGED",
+            "SESSION_CONFLICT",
+        }:
+            return 409
+        if code == "QUEUE_FULL":
+            return 429
+        if code in {"UNAVAILABLE", "STORAGE_BUSY"}:
             return 503
         return default
 
@@ -158,8 +167,13 @@ def create_gateway_app(
         result = await dispatcher.dispatch("_http", "chat.send", body, ctx)
         if result.ok:
             return JSONResponse({"ok": True, **(result.payload or {})})
+        error = result.error
+        error_payload = error.model_dump(exclude_none=True) if error is not None else {}
         return JSONResponse(
-            {"error": result.error.message if result.error else "error"},
+            {
+                "error": error.message if error is not None else "error",
+                **error_payload,
+            },
             status_code=_rpc_status_code(result, default=400),
         )
 

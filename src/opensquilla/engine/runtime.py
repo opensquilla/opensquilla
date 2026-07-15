@@ -2725,6 +2725,7 @@ class TurnRunner:
         *,
         pending_input_provider: PendingInputProvider | None = None,
         bound_user_message_id: str | None = None,
+        assistant_message_sink: Callable[[str | None, str], None] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Run one agent turn with full orchestration.
 
@@ -2790,6 +2791,7 @@ class TurnRunner:
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     router_control_replay_depth=router_control_replay_depth,
                     bound_user_message_id=bound_user_message_id,
+                    assistant_message_sink=assistant_message_sink,
                 ):
                     yield event
             finally:
@@ -2832,6 +2834,7 @@ class TurnRunner:
                         ingress_pipeline_steps=ingress_pipeline_steps,
                         router_control_replay_depth=router_control_replay_depth,
                         bound_user_message_id=bound_user_message_id,
+                        assistant_message_sink=assistant_message_sink,
                     ):
                         yield event
                 finally:
@@ -2869,6 +2872,7 @@ class TurnRunner:
         *,
         pending_input_provider: PendingInputProvider | None = None,
         bound_user_message_id: str | None = None,
+        assistant_message_sink: Callable[[str | None, str], None] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         # Observability: bracket turn setup + stream loop with monotonic clock
         # so latency_ms reflects the full turn.
@@ -3260,6 +3264,7 @@ class TurnRunner:
                     no_memory_capture=no_memory_capture,
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     router_control_replay_depth=router_control_replay_depth + 1,
+                    assistant_message_sink=assistant_message_sink,
                 ):
                     yield replayed_event
                 return
@@ -3307,6 +3312,22 @@ class TurnRunner:
             fin_out = fin_outcome.require_output()
             final_text = fin_out.final_text
             turn_segments = fin_out.turn_segments
+            if (
+                fin_out.transcript_appended
+                and fin_out.assistant_message_content is not None
+                and assistant_message_sink is not None
+            ):
+                try:
+                    assistant_message_sink(
+                        fin_out.assistant_message_id,
+                        fin_out.assistant_message_content,
+                    )
+                except Exception:  # noqa: BLE001 - observer must not fail the turn
+                    log.warning(
+                        "turn_runner.assistant_message_sink_failed",
+                        session_key=session_key,
+                        exc_info=True,
+                    )
 
             if turn_call_logger is not None:
                 turn_call_logger.write(
@@ -3497,7 +3518,7 @@ class TurnRunner:
                     )
                 except (TypeError, ValueError):
                     fallback_hops = 0
-            error_id = self._record_turn_error(
+            error_id = await self._record_turn_error(
                 session_key=session_key,
                 turn_id=turn_id,
                 session_id=session_id_for_log,
@@ -3701,7 +3722,7 @@ class TurnRunner:
     def _handle_runtime_warning(self, event: WarningEvent) -> WarningEvent:
         return event
 
-    def _record_turn_error(
+    async def _record_turn_error(
         self,
         *,
         session_key: str,
@@ -3733,20 +3754,25 @@ class TurnRunner:
                 traceback_text = "".join(
                     _traceback.format_exception(type(exc), exc, exc.__traceback__)
                 )
-            recorded = self._turn_error_writer.record_error(
-                {
-                    "error_id": error_id,
-                    "turn_id": turn_id,
-                    "session_key": session_key,
-                    "session_id": session_id,
-                    "surface": surface,
-                    "error_class": error_class,
-                    "message": message,
-                    "traceback": traceback_text,
-                    "provider": provider,
-                    "model": model,
-                    "fallback_hops": fallback_hops,
-                }
+            record = {
+                "error_id": error_id,
+                "turn_id": turn_id,
+                "session_key": session_key,
+                "session_id": session_id,
+                "surface": surface,
+                "error_class": error_class,
+                "message": message,
+                "traceback": traceback_text,
+                "provider": provider,
+                "model": model,
+                "fallback_hops": fallback_hops,
+            }
+            # TurnErrorWriter is deliberately synchronous and may wait for its
+            # SQLite busy timeout. Keep that wait off the shared turn loop while
+            # preserving its existing best-effort return contract.
+            recorded = await asyncio.to_thread(
+                self._turn_error_writer.record_error,
+                record,
             )
             return error_id if recorded else None
         except Exception as record_exc:  # noqa: BLE001 - must not mask the turn error
@@ -3782,18 +3808,20 @@ class TurnRunner:
         )
         # When the event already carries an error_id from the catch-all, no
         # second turn_errors row is written — getattr short-circuits.
-        error_id = getattr(event, "error_id", "") or self._record_turn_error(
-            session_key=session_key,
-            turn_id=None,
-            session_id=None,
-            surface="unknown",
-            error_class=event_code,
-            message=message,
-            exc=None,
-            provider=None,
-            model=None,
-            fallback_hops=0,
-        )
+        error_id = getattr(event, "error_id", "")
+        if not error_id:
+            error_id = await self._record_turn_error(
+                session_key=session_key,
+                turn_id=None,
+                session_id=None,
+                surface="unknown",
+                error_class=event_code,
+                message=message,
+                exc=None,
+                provider=None,
+                model=None,
+                fallback_hops=0,
+            )
         outcome_details = turn_outcome_details(
             outcome_from_error(
                 code=event_code,

@@ -10,6 +10,7 @@ import { normalizeDisplayAttachments } from '@/utils/chat/attachments'
 import {
   historyWindowsOverlap,
   reconcileClientStopNotices,
+  reconcileClientTerminalNotices,
   reconcileHistoryWindow,
   reconcileRunningHistoryMessages,
 } from '@/utils/chat/historyMerge'
@@ -448,7 +449,10 @@ export function useChatHistory(options: UseChatHistoryOptions) {
         } else {
           nextMessages = refreshedWindow
         }
-        options.messages.value = reconcileClientStopNotices(previousMessages, nextMessages)
+        options.messages.value = reconcileClientTerminalNotices(
+          previousMessages,
+          reconcileClientStopNotices(previousMessages, nextMessages),
+        )
       }
 
       options.lastHeaderRole.value = ''

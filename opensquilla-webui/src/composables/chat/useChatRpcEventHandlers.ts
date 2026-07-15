@@ -125,6 +125,22 @@ type ChatDoneUsagePayload = SessionEventPayload & ChatDoneUsageFields & {
   usage?: ChatDoneUsageFields
 }
 
+type BufferedTerminalEvent =
+  | { kind: 'event'; event: string; payload: SessionEventPayload; priority: number }
+  | { kind: 'session-change'; payload: SessionEventPayload; priority: number }
+
+type BufferedTerminalEventInput =
+  | { kind: 'event'; event: string; payload: SessionEventPayload; priority?: number }
+  | { kind: 'session-change'; payload: SessionEventPayload; priority?: number }
+
+type BufferedPendingStreamEvent = {
+  event: string
+  payload: SessionEventPayload
+}
+
+const MAX_PENDING_TASK_BUCKETS = 8
+const MAX_PENDING_STREAM_EVENTS_PER_TASK = 64
+
 // A completed turn's measured thinking duration must survive the
 // chat.history sync that replaces the messages array ~50ms after done.
 // History rows carry the reasoning text but not the duration, so records
@@ -158,6 +174,122 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   // Live thinking deltas for the current turn (session.event.thinking).
   const streamThinking = ref<{ text: string; startedAt: number } | null>(null)
   const turnReasoningLog: TurnReasoningRecord[] = []
+  const pendingTerminalEvents = new Map<string, BufferedTerminalEvent>()
+  const pendingStreamEvents = new Map<string, BufferedPendingStreamEvent[]>()
+  const settledTaskIds = new Set<string>()
+
+  function terminalEventPriority(event: string): number {
+    if (event === 'session.event.done' || event === 'chat.done' || event.endsWith('.error')) return 3
+    if (eventTaskTerminalStatus(event)) return 2
+    return 0
+  }
+
+  function isTerminalEvent(event: string): boolean {
+    if (eventTaskTerminalStatus(event)) return true
+    if (event === 'session.event.done' || event === 'chat.done') return true
+    return event.endsWith('.error') && !event.includes('.task_group.')
+  }
+
+  function bufferPendingTerminalEvent(
+    entry: BufferedTerminalEventInput,
+  ): boolean {
+    if (activeStreamTaskId.value !== PENDING_STREAM_TASK_ID) return false
+    if (!isCurrentSessionPayload(entry.payload)) return false
+    if (isStaleEpoch(entry.payload)) return false
+    const taskId = payloadTaskId(entry.payload)
+    if (!taskId) return false
+    const priority = entry.priority ?? (entry.kind === 'event' ? terminalEventPriority(entry.event) : 1)
+    const existing = pendingTerminalEvents.get(taskId)
+    if (!existing || priority >= existing.priority) {
+      if (!existing && pendingTerminalEvents.size >= MAX_PENDING_TASK_BUCKETS) {
+        const oldestTaskId = pendingTerminalEvents.keys().next().value
+        if (typeof oldestTaskId === 'string') pendingTerminalEvents.delete(oldestTaskId)
+      }
+      pendingTerminalEvents.set(taskId, { ...entry, priority } as BufferedTerminalEvent)
+    }
+    return true
+  }
+
+  function markTaskSettled(payload: SessionEventPayload) {
+    const taskId = payloadTaskId(payload)
+    if (taskId) settledTaskIds.add(taskId)
+    pendingTerminalEvents.clear()
+    pendingStreamEvents.clear()
+  }
+
+  function bufferPendingStreamEvent(
+    event: string,
+    payload: SessionEventPayload,
+  ): boolean {
+    if (activeStreamTaskId.value !== PENDING_STREAM_TASK_ID) return false
+    if (!isCurrentSessionPayload(payload)) return false
+    if (isStaleEpoch(payload)) return false
+    const taskId = payloadTaskId(payload)
+    if (!taskId) return false
+
+    let buffered = pendingStreamEvents.get(taskId)
+    if (!buffered) {
+      if (pendingStreamEvents.size >= MAX_PENDING_TASK_BUCKETS) {
+        const oldestTaskId = pendingStreamEvents.keys().next().value
+        if (typeof oldestTaskId === 'string') pendingStreamEvents.delete(oldestTaskId)
+      }
+      buffered = []
+      pendingStreamEvents.set(taskId, buffered)
+    }
+    if (buffered.length >= MAX_PENDING_STREAM_EVENTS_PER_TASK) buffered.shift()
+    buffered.push({ event, payload })
+    return true
+  }
+
+  function replayPendingStreamEvent(entry: BufferedPendingStreamEvent) {
+    const { event, payload } = entry
+    if (event === 'session.event.text_delta') {
+      handleRpcTextDelta(payload as TextDeltaPayload)
+    } else if (event === 'session.event.tool_use_start') {
+      handleRpcToolUseStart(payload as ToolUsePayload)
+    } else if (event === 'session.event.tool_use_delta') {
+      handleRpcToolUseDelta(payload as ToolDeltaPayload)
+    } else if (event === 'session.event.tool_result') {
+      handleRpcToolResult(payload as ToolResultPayload)
+    } else if (event === 'session.event.artifact') {
+      handleRpcArtifact(payload as ArtifactPayload)
+    } else if (event === 'session.event.state_change') {
+      handleRpcStateChange(payload)
+    } else if (event === 'session.event.run_heartbeat') {
+      handleRpcRunHeartbeat(payload)
+    } else if (event === 'session.event.router_decision') {
+      handleRpcRouterDecision(payload as RouterDecisionPayload)
+    } else if (event === 'session.event.ensemble_progress') {
+      handleRpcEnsembleProgress(payload as EnsembleProgressPayload)
+    } else if (event === 'session.event.router_control_replay') {
+      handleRpcRouterControlReplay(payload)
+    } else if (event === 'session.event.thinking') {
+      handleRpcAny(event, payload)
+    }
+  }
+
+  function bindActiveStreamTask(taskId: string) {
+    if (!taskId) return
+    const bufferedTerminal = pendingTerminalEvents.get(taskId)
+    const bufferedStream = pendingStreamEvents.get(taskId) || []
+    // One chat.send response resolves one PENDING window. Drop every other
+    // task's early frames so a late prior task can never be consumed by a
+    // future send that happens to reuse this session.
+    pendingTerminalEvents.clear()
+    pendingStreamEvents.clear()
+    if (settledTaskIds.has(taskId)) {
+      activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
+      return
+    }
+    activeStreamTaskId.value = taskId
+    for (const entry of bufferedStream) replayPendingStreamEvent(entry)
+    if (!bufferedTerminal) return
+    if (bufferedTerminal.kind === 'session-change') {
+      handleRpcSessionsChanged(bufferedTerminal.payload)
+    } else {
+      handleRpcAny(bufferedTerminal.event, bufferedTerminal.payload)
+    }
+  }
 
   // 1s ticker so the live "Thinking · Ns" label advances on a clock while
   // reasoning is open, not only when a new reasoning delta happens to arrive.
@@ -268,10 +400,23 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   watch(sessionKey, () => {
     streamThinking.value = null
     turnReasoningLog.length = 0
+    pendingTerminalEvents.clear()
+    pendingStreamEvents.clear()
+    settledTaskIds.clear()
     // The newly shown session has its own (possibly running) task; forget the
     // previous session's active task so we stay lenient until it re-asserts.
     activeStreamTaskId.value = ''
   })
+  watch(activeStreamTaskId, (taskId) => {
+    if (taskId === PENDING_STREAM_TASK_ID) {
+      pendingTerminalEvents.clear()
+      pendingStreamEvents.clear()
+      settledTaskIds.clear()
+    } else if (!taskId || taskId === FINISHED_STREAM_TASK_ID || taskId === STOPPED_STREAM_TASK_ID) {
+      pendingTerminalEvents.clear()
+      pendingStreamEvents.clear()
+    }
+  }, { flush: 'sync' })
 
   function isStaleEpoch(payload: SessionEventPayload): boolean {
     return payloadIsStaleEpoch(payload, currentEpoch.value)
@@ -357,6 +502,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcTextDelta(payload: TextDeltaPayload) {
     if (isStaleEpoch(payload)) return
+    if (bufferPendingStreamEvent('session.event.text_delta', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
@@ -367,6 +513,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcToolUseStart(payload: ToolUsePayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (bufferPendingStreamEvent('session.event.tool_use_start', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
@@ -377,6 +524,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcToolUseDelta(payload: ToolDeltaPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (bufferPendingStreamEvent('session.event.tool_use_delta', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
@@ -387,6 +535,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcToolResult(payload: ToolResultPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (bufferPendingStreamEvent('session.event.tool_result', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
@@ -396,6 +545,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcArtifact(payload: ArtifactPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (bufferPendingStreamEvent('session.event.artifact', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
@@ -405,6 +555,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcStateChange(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (!payload || aborted.value) return
+    if (bufferPendingStreamEvent('session.event.state_change', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     stream.resetStreamIdleTimer()
@@ -431,6 +582,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcRunHeartbeat(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (bufferPendingStreamEvent('session.event.run_heartbeat', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     if (!stream.isStreaming.value) stream.startStreaming()
@@ -476,8 +628,13 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       syncTerminalSessionChange(payload)
       return
     }
+    if (
+      sessionChangeIsTerminal(payload) &&
+      bufferPendingTerminalEvent({ kind: 'session-change', payload })
+    ) return
     if (!isCurrentTaskPayload(payload)) return
     if (sessionChangeIsTerminal(payload)) {
+      markTaskSettled(payload)
       syncTerminalSessionChange(payload)
       return
     }
@@ -486,19 +643,21 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcTaskQueued(payload: SessionEventPayload) {
     if (!isCurrentSessionPayload(payload)) return
-    const taskId = payloadTaskId(payload)
-    if (stream.isStreaming.value && taskId && activeStreamTaskId.value === PENDING_STREAM_TASK_ID) {
-      activeStreamTaskId.value = taskId
-    }
+    // queued can describe another same-session task. Keep the fresh send on
+    // PENDING until its chat.send response supplies the accepted task id.
     options.applySessionRunState({ run_status: 'queued', active_task: { ...(payload || {}), status: 'queued' } })
   }
 
   function handleRpcTaskRunning(payload: SessionEventPayload) {
     if (!isCurrentSessionPayload(payload)) return
     // task.running is the authoritative "this task now owns the live stream"
-    // signal; bind subsequent stream events to it.
+    // signal once no chat.send response is pending. While PENDING, another
+    // same-session task may start first; only the response can identify which
+    // task belongs to this optimistic stream.
     const taskId = payloadTaskId(payload)
-    if (taskId) activeStreamTaskId.value = taskId
+    if (taskId && activeStreamTaskId.value !== PENDING_STREAM_TASK_ID) {
+      activeStreamTaskId.value = taskId
+    }
     options.applySessionRunState({ run_status: 'running', active_task: { ...(payload || {}), status: 'running' } })
   }
 
@@ -528,6 +687,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcRouterDecision(payload: RouterDecisionPayload) {
     if (isStaleEpoch(payload)) return
+    if (bufferPendingStreamEvent('session.event.router_decision', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     options.queueRouterDecision(payload)
@@ -535,6 +695,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   function handleRpcEnsembleProgress(payload: EnsembleProgressPayload) {
     if (isStaleEpoch(payload)) return
+    if (bufferPendingStreamEvent('session.event.ensemble_progress', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     if (!stream.isStreaming.value) stream.startStreaming()
@@ -547,6 +708,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
   function handleRpcRouterControlReplay(payload: SessionEventPayload) {
     if (isStaleEpoch(payload)) return
     if (aborted.value) return
+    if (bufferPendingStreamEvent('session.event.router_control_replay', payload)) return
     if (!isCurrentTaskPayload(payload)) return
     if (!acceptStreamSeq(payload)) return
     options.handleRouterControlReplay()
@@ -569,6 +731,14 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       })
       return
     }
+    if (
+      isTerminalEvent(rawEvent) &&
+      bufferPendingTerminalEvent({ kind: 'event', event: rawEvent, payload: payloadObj })
+    ) return
+    if (
+      rawEvent === 'session.event.thinking' &&
+      bufferPendingStreamEvent(rawEvent, payloadObj)
+    ) return
     // A stale task's terminal/done/error must not end the current turn's stream
     // or push its "Turn failed" into the live transcript (issue #344). Approvals
     // above stay ungated; everything below mutates the current turn.
@@ -590,6 +760,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     const normalized = normalizeTaskTerminalEvent(rawEvent, payloadObj)
     if (normalized && isStaleEpoch(payloadObj)) return
     if (normalized && !stream.isStreaming.value) {
+      markTaskSettled(payloadObj)
       activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
       return
     }
@@ -613,6 +784,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     }
 
     if (event.endsWith('.done') || event === 'chat.done') {
+      markTaskSettled(payload)
       const donePayload = payload as ChatDoneUsagePayload
       const u = donePayload.usage || donePayload || {}
       if (u.input_tokens || u.output_tokens) {
@@ -685,12 +857,19 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       }
       activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
     } else if (event.endsWith('.error')) {
+      markTaskSettled(payload)
       options.clearPendingRouterDecision()
       clearLiveThinking()
       stream.endStreaming()
       const rawErrorCode = (payload as { code?: unknown })?.code
       const errorCode = typeof rawErrorCode === 'string' ? rawErrorCode : undefined
-      messages.value.push({ role: 'error', text: eventSessionErrorMessage(payload), errorCode, ts: new Date().toISOString() })
+      messages.value.push({
+        role: 'error',
+        text: eventSessionErrorMessage(payload),
+        errorCode,
+        terminalNotice: true,
+        ts: new Date().toISOString(),
+      })
       options.scheduleHistorySync()
       if (activeTaskGroups.value.size > 0) {
         options.applySessionRunState(activeTaskGroupRunState(payload))
@@ -755,6 +934,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
 
   return {
     handlers,
+    bindActiveStreamTask,
     streamThinkingText,
     streamThinkingElapsedText,
     attachTurnReasoning,

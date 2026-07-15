@@ -697,7 +697,7 @@ class ServiceContainer:
                 pass
         if self.meta_run_writer is not None:
             try:
-                self.meta_run_writer.close()
+                await asyncio.to_thread(self.meta_run_writer.close)
             except Exception:
                 pass
         if self.router_decision_writer is not None:
@@ -718,12 +718,12 @@ class ServiceContainer:
             except Exception:
                 pass
             try:
-                self.router_decision_writer.close()
+                await asyncio.to_thread(self.router_decision_writer.close)
             except Exception:
                 pass
         if self.turn_error_writer is not None:
             try:
-                self.turn_error_writer.close()
+                await asyncio.to_thread(self.turn_error_writer.close)
             except Exception:
                 pass
         try:
@@ -1055,38 +1055,56 @@ async def dispatch_task_runtime_turn(
             "provider_request_too_large",
             "current_turn_context_exhausted",
         }:
-            message_id = getattr(run, "persisted_user_message_id", None)
+            rollback_reason = exc.code
             remove_message = getattr(session_manager, "remove_message", None)
-            if isinstance(message_id, str) and message_id and callable(remove_message):
-                try:
-                    rollback_lock = get_session_lock(turn_runner, run.session_key)
+            raw_message_ids = getattr(run, "persisted_user_message_ids", ())
+            message_ids: list[str] = []
+            for message_id in (
+                getattr(run, "persisted_user_message_id", None),
+                *(raw_message_ids if isinstance(raw_message_ids, list | tuple) else ()),
+            ):
+                if (
+                    isinstance(message_id, str)
+                    and message_id
+                    and message_id not in message_ids
+                ):
+                    message_ids.append(message_id)
 
-                    async def _remove_persisted_message() -> Any:
-                        removed_result = remove_message(run.session_key, message_id)
-                        if inspect.isawaitable(removed_result):
-                            removed_result = await removed_result
-                        return removed_result
-
-                    if rollback_lock is None:
-                        removed = await _remove_persisted_message()
-                    else:
-                        async with rollback_lock:
-                            removed = await _remove_persisted_message()
-                    if removed:
-                        log.info(
-                            "task_runtime.user_message_rolled_back",
-                            session_key=run.session_key,
-                            message_id=message_id,
-                            reason=exc.code,
+            async def _remove_persisted_messages() -> None:
+                assert callable(remove_message)
+                for persisted_message_id in message_ids:
+                    try:
+                        removed = remove_message(
+                            run.session_key,
+                            persisted_message_id,
                         )
-                except Exception as rb_exc:  # noqa: BLE001 - preserve terminal error
-                    log.warning(
-                        "task_runtime.user_message_rollback_failed",
-                        session_key=run.session_key,
-                        message_id=message_id,
-                        reason=exc.code,
-                        error=str(rb_exc),
-                    )
+                        if inspect.isawaitable(removed):
+                            removed = await removed
+                        if removed:
+                            log.info(
+                                "task_runtime.user_message_rolled_back",
+                                session_key=run.session_key,
+                                message_id=persisted_message_id,
+                                reason=rollback_reason,
+                            )
+                    except Exception as rb_exc:  # noqa: BLE001 - preserve terminal error
+                        # Try every collected id even if one best-effort cleanup
+                        # fails; the provider error remains the terminal cause.
+                        log.warning(
+                            "task_runtime.user_message_rollback_failed",
+                            session_key=run.session_key,
+                            message_id=persisted_message_id,
+                            reason=rollback_reason,
+                            error=str(rb_exc),
+                        )
+
+            if callable(remove_message) and message_ids:
+                rollback_lock = get_session_lock(turn_runner, run.session_key)
+                if rollback_lock is None:
+                    await _remove_persisted_messages()
+                else:
+                    async with rollback_lock:
+                        await _remove_persisted_messages()
         raise
 
 
@@ -1166,6 +1184,11 @@ def build_task_runtime_run_kwargs(
         # unanswered future prompts into context. Forwarded only when present so
         # legacy callers/mocks without the field keep the positional trim.
         kwargs["bound_user_message_id"] = bound_user_message_id
+    assistant_message_sink = getattr(run, "assistant_message_sink", None)
+    if assistant_message_sink is not None:
+        # Internal-only callback: the finalizer supplies the exact assistant
+        # row/content to TaskRuntime for durable channel delivery.
+        kwargs["assistant_message_sink"] = assistant_message_sink
     return kwargs
 
 

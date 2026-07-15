@@ -8,6 +8,7 @@ import sqlite3
 import stat
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
@@ -82,12 +83,22 @@ async def test_get_or_create_returns_existing(manager):
 async def test_apply_intent_continue_preserves_existing_identity_and_transcript(manager):
     node = await manager.create("agent:main:main")
     await manager.append_message("agent:main:main", "user", "hello")
+    before = await manager.get_session("agent:main:main")
+    assert before is not None
+    before.updated_at = 123
+    await manager._storage.upsert_session(before)
+    upsert_spy = AsyncMock(wraps=manager._storage.upsert_session)
+    manager._storage.upsert_session = upsert_spy
 
     applied, rotated = await manager.apply_intent("agent:main:main", SessionIntent.CONTINUE)
 
     assert rotated is False
     assert applied.session_id == node.session_id
     assert len(await manager.get_transcript("agent:main:main")) == 1
+    upsert_spy.assert_not_awaited()
+    persisted = await manager.get_session("agent:main:main")
+    assert persisted is not None
+    assert persisted.updated_at == 123
 
 
 @pytest.mark.asyncio
@@ -583,6 +594,57 @@ async def test_reset_legacy_fork_starts_a_proven_empty_canonical_identity(manage
     assert reset.schema_version >= CANONICAL_FORK_PROOF_SCHEMA_VERSION
     assert after.entries == []
     assert after.canonical_complete is True
+
+
+@pytest.mark.asyncio
+async def test_prepared_reset_legacy_fork_starts_a_proven_canonical_identity(manager):
+    child = await manager.create("agent:main:prepared-legacy-reset-child")
+    child.parent_session_key = "agent:main:missing-parent"
+    child.spawned_by = child.parent_session_key
+    child.forked_from_parent = True
+    child.schema_version = CANONICAL_FORK_PROOF_SCHEMA_VERSION - 1
+    child.compaction_count = 2
+    await manager._storage.upsert_session(child)
+
+    plan = await manager.prepare_intent(
+        child.session_key,
+        SessionIntent.RESET_SAME_KEY,
+    )
+
+    assert plan.action == "reset"
+    assert plan.node.session_id != child.session_id
+    assert plan.node.compaction_count == 0
+    assert plan.node.schema_version >= CANONICAL_FORK_PROOF_SCHEMA_VERSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("parent_complete", [True, False])
+async def test_prepared_prefix_branch_preserves_parent_canonical_coverage(
+    manager,
+    parent_complete: bool,
+):
+    parent = await manager.create("agent:main:prepared-prefix-parent")
+    await manager.append_message(parent.session_key, "user", "message 0")
+    await manager.append_message(parent.session_key, "assistant", "message 1")
+    fork_before = await manager.append_message(parent.session_key, "user", "message 2")
+    if not parent_complete:
+        parent.compaction_count = 1
+        await manager._storage.upsert_session(parent)
+
+    plan = await manager.prepare_prefix_branch(
+        parent.session_key,
+        "agent:main:prepared-prefix-child",
+        fork_before_message_id=fork_before.message_id,
+    )
+    await manager._storage.upsert_session(plan.node)
+    for entry in plan.initial_transcript_entries:
+        await manager._storage.append_transcript_entry(entry)
+    page = await manager.get_canonical_transcript_page(plan.node.session_key, limit=10)
+
+    assert [entry.content for entry in page.entries] == ["message 0", "message 1"]
+    assert plan.node.compaction_count == (0 if parent_complete else 1)
+    assert plan.node.schema_version >= CANONICAL_FORK_PROOF_SCHEMA_VERSION
+    assert page.canonical_complete is parent_complete
 
 
 @pytest.mark.asyncio
@@ -1760,7 +1822,7 @@ async def test_cross_session_append_cannot_commit_a_failed_compaction(
     release_rewrite = asyncio.Event()
     append_attempted = asyncio.Event()
     original_archive = manager._storage._archive_transcript_entries
-    original_append = manager._storage.append_transcript_entry
+    original_prepare = manager.prepare_message
 
     async def archive_then_fail(**kwargs: Any) -> None:
         await original_archive(**kwargs)
@@ -1768,17 +1830,21 @@ async def test_cross_session_append_cannot_commit_a_failed_compaction(
         await release_rewrite.wait()
         raise RuntimeError("synthetic rewrite failure")
 
-    async def append_with_signal(entry: TranscriptEntry, **kwargs: Any) -> None:
-        if entry.session_id == writer.session_id:
+    async def prepare_with_signal(session_key: str, *args: Any, **kwargs: Any):
+        if session_key == writer.session_key:
             append_attempted.set()
-        await original_append(entry, **kwargs)
+        return await original_prepare(session_key, *args, **kwargs)
 
     monkeypatch.setattr(
         manager._storage,
         "_archive_transcript_entries",
         archive_then_fail,
     )
-    monkeypatch.setattr(manager._storage, "append_transcript_entry", append_with_signal)
+    monkeypatch.setattr(
+        manager,
+        "prepare_message",
+        prepare_with_signal,
+    )
 
     rewrite_task = asyncio.create_task(
         manager.persist_compaction_result(
@@ -1823,20 +1889,19 @@ async def test_cross_session_append_cannot_commit_a_failed_compaction(
 
 
 @pytest.mark.asyncio
-async def test_connection_write_unit_rejects_an_uncommitted_success(manager):
-    node = await manager.create("agent:main:uncommitted-writer")
+async def test_write_transaction_commits_one_successful_unit(manager):
+    node = await manager.create("agent:main:explicit-writer")
 
-    with pytest.raises(RuntimeError, match="exited without commit"):
-        async with manager._storage._connection_write():
-            await manager._storage.conn.execute(
-                "UPDATE sessions SET label = ? WHERE session_key = ?",
-                ("must roll back", node.session_key),
-            )
+    async with manager._storage._write_transaction("test_successful_write") as conn:
+        await conn.execute(
+            "UPDATE sessions SET label = ? WHERE session_key = ?",
+            ("committed", node.session_key),
+        )
 
     assert manager._storage.conn.in_transaction is False
     current = await manager.get_session(node.session_key)
     assert current is not None
-    assert current.label is None
+    assert current.label == "committed"
 
 
 @pytest.mark.asyncio

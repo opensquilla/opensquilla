@@ -418,6 +418,8 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
 
     mgr = _require_chat_session_manager(ctx)
     intent = params.get("intent")
+    intent_was_provided = intent is not None
+    requested_intent = intent
 
     # WebChat must accept the turn even when existing history is oversized.
     # Context shaping happens inside TurnRunner so it can produce a request-scoped
@@ -425,17 +427,32 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
 
     try:
         if intent != "new_chat":
-            # Ensure session exists — auto-create if needed
-            try:
-                await mgr.get_or_create(
-                    session_key=session_key,
-                    agent_id=agent_id,
-                    display_name="WebChat",
-                )
-            except Exception as exc:
-                raise RpcUnavailableError(
-                    f"Failed to initialize chat session: {exc}"
-                ) from exc
+            # Detect a draft without creating it yet. sessions.send folds the
+            # session row into the same durable acceptance transaction as the
+            # first message/task/receipt.
+            storage = getattr(mgr, "storage", None) or getattr(mgr, "_storage", None)
+            get_session = getattr(storage, "get_session", None)
+            if callable(get_session):
+                try:
+                    if await get_session(session_key) is None:
+                        intent = "new_chat"
+                except Exception as exc:
+                    raise RpcUnavailableError(
+                        f"Failed to inspect chat session: {exc}"
+                    ) from exc
+            else:
+                # Compatibility for minimal test/simulator managers that do
+                # not expose storage: retain the historical initializer.
+                try:
+                    await mgr.get_or_create(
+                        session_key=session_key,
+                        agent_id=agent_id,
+                        display_name="WebChat",
+                    )
+                except Exception as exc:
+                    raise RpcUnavailableError(
+                        f"Failed to initialize chat session: {exc}"
+                    ) from exc
 
         from opensquilla.gateway.rpc_sessions import _handle_sessions_send
 
@@ -457,8 +474,12 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ("provenance_kind", "provenance_kind"),
             ("runKind", "runKind"),
             ("run_kind", "run_kind"),
+            ("queueMode", "queueMode"),
+            ("queue_mode", "queue_mode"),
             ("forkBeforeMessageId", "forkBeforeMessageId"),
             ("fork_before_message_id", "fork_before_message_id"),
+            ("clientRequestId", "clientRequestId"),
+            ("client_request_id", "client_request_id"),
         ):
             if source_key in params:
                 extra[target_key] = params[source_key]
@@ -482,7 +503,20 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
                 run_mode=run_mode_hint if isinstance(run_mode_hint, str) else None,
             ),
         )
-        result = await _handle_sessions_send(send_params, ctx)
+        # Keep the public handler params free of fingerprint-control fields.
+        # The logical request fingerprint uses the caller's original intent,
+        # while the actual send may use the internal ``continue`` ->
+        # ``new_chat`` strategy to create a first session atomically.
+        fingerprint_params = dict(send_params)
+        if intent_was_provided:
+            fingerprint_params["intent"] = requested_intent
+        else:
+            fingerprint_params.pop("intent", None)
+        result = await _handle_sessions_send(
+            send_params,
+            ctx,
+            fingerprint_params=fingerprint_params,
+        )
         result_session_key = result.get("sessionKey") or result.get("key") or session_key
         return {"ok": True, "sessionKey": result_session_key, **result}
     except Exception:

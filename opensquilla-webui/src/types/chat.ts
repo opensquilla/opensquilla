@@ -314,6 +314,8 @@ export interface ChatMessage {
   restoredFromHistory?: boolean
   statusHistory?: import('./parts').StatusPart[]
   stopNotice?: boolean
+  /** Client terminal error retained until history contains a durable error row. */
+  terminalNotice?: boolean
   /** Typed terminal error code (e.g. 'sandbox_threshold_exceeded') carried on
    *  role:'error' messages so the renderer can offer a recovery action. */
   errorCode?: string

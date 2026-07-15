@@ -43,11 +43,21 @@ OFFLINE_MARKER_EXCLUSIONS = {
     "tests/test_skills/test_meta_skill_creator_smoke_live.py",
 }
 RECENTLY_ADDED_ACTIVE_TESTS = {
+    "tests/test_ci/test_session_storage_connection_contract.py",
+    "tests/test_gateway/test_api_chat.py",
+    "tests/test_gateway/test_channel_turn_ingress.py",
     "tests/test_gateway/test_config_profile_paths.py",
+    "tests/test_gateway/test_memory_repair_storage_gate.py",
+    "tests/test_gateway/test_rpc_storage_busy.py",
+    "tests/test_gateway/test_task_runtime_reservations.py",
+    "tests/test_gateway/test_turn_ingress_fork.py",
+    "tests/test_gateway/test_turn_ingress_intents.py",
+    "tests/test_gateway/test_turn_ingress_rpc.py",
     "tests/test_memory/test_store_vec_extension_cleanup.py",
     "tests/test_migration/test_import_receipt_verification_cli.py",
     "tests/test_migration/test_source_snapshot_windows.py",
     "tests/test_migrations/test_migrator_diagnostics.py",
+    "tests/test_migrations/test_v020_turn_ingress_receipts.py",
     "tests/test_recovery/test_atomic_and_locking.py",
     "tests/test_recovery/test_cleanup.py",
     "tests/test_recovery/test_engine.py",
@@ -58,6 +68,8 @@ RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_recovery/test_settings_transaction.py",
     "tests/test_recovery/test_transaction.py",
     "tests/test_scripts/test_release_channel_manifest.py",
+    "tests/test_session/test_storage_transactions.py",
+    "tests/test_session/test_turn_acceptance_storage.py",
     "tests/test_skills/test_hub_deps_subprocess.py",
 }
 

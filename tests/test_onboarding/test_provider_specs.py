@@ -65,8 +65,8 @@ EXPECTED_VERIFIED = {
 }
 # Experimental: registry-runnable, offered with a visible caveat.
 EXPECTED_EXPERIMENTAL = {
-    "azure", "bailian_coding", "kimi_coding_openai", "kimi_coding_anthropic",
-    "minimax", "minimax_openai", "minimax_coding_openai",
+    "azure", "bailian_coding", "bailian_coding_cn", "kimi_coding_openai",
+    "kimi_coding_anthropic", "minimax", "minimax_openai", "minimax_coding_openai",
     "minimax_coding_anthropic", "minimax_cn", "minimax_global", "mimo_openai",
     "mimo_anthropic", "mistral", "groq", "aihubmix", "vllm", "custom",
     "lm_studio", "siliconflow", "ovms", "litellm_proxy", "openai_codex",
@@ -124,6 +124,27 @@ def test_supported_providers_have_label_and_backend(provider_id: str):
 def test_openrouter_has_correct_default_base_url():
     spec = get_provider_setup_spec("openrouter")
     assert spec.default_base_url == "https://openrouter.ai/api/v1"
+
+
+def test_bailian_coding_regions_are_explicit_provider_choices():
+    international = get_provider_setup_spec("bailian_coding")
+    mainland = get_provider_setup_spec("bailian_coding_cn")
+
+    assert international.label.startswith("Bailian Coding (International)")
+    assert international.default_base_url == "https://coding-intl.dashscope.aliyuncs.com/v1"
+    assert mainland.label.startswith("Bailian Coding (Mainland China)")
+    assert mainland.default_base_url == "https://coding.dashscope.aliyuncs.com/v1"
+    assert international.provider_kind == mainland.provider_kind == "bailian_coding"
+    assert international.env_key == mainland.env_key == "BAILIAN_API_KEY"
+
+    for spec in (international, mainland):
+        assert spec.default_direct_model == "qwen3.7-plus"
+        assert any("sk-sp-" in need for need in spec.what_you_need)
+        model_field = next(field for field in spec.fields if field.name == "model")
+        assert model_field.default == "qwen3.7-plus"
+        api_field = next(field for field in spec.fields if field.name == "api_key")
+        assert "sk-sp-" in api_field.description
+        assert "not interchangeable" in api_field.description
 
 
 def test_ollama_does_not_require_api_key_in_setup_spec():

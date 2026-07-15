@@ -2417,9 +2417,17 @@ class TurnRunner:
         )
 
     def _turn_config(self) -> Any:
-        """Return this turn's acceptance snapshot, or the live config elsewhere."""
+        """Return live config with this turn's accepted routing values overlaid."""
 
-        return _ACCEPTED_TURN_CONFIG.get() or self._config
+        accepted = _ACCEPTED_TURN_CONFIG.get()
+        if accepted is None:
+            return self._config
+        overlay_live_config = getattr(accepted, "overlay_live_config", None)
+        if callable(overlay_live_config):
+            return overlay_live_config(self._config)
+        # Compatibility for direct callers that still install a complete
+        # config object in accepted_turn_config_scope().
+        return accepted
 
     @property
     def router_control_hold_store(self) -> RouterControlHoldStore:

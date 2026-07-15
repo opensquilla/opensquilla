@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import pytest
 
-from opensquilla.cli.gateway_client import GatewayClient, GatewayRPCError
+from opensquilla.cli.gateway_client import GatewayClient
 from tui_real_terminal.driver import (
     TerminalFrame,
     TerminalSize,
@@ -405,18 +405,16 @@ async def test_packaged_tui_real_gateway_shared_session_release_gate(
             checkpoint="approval-resolved-by-web",
         )
         evidence.record_frame(dismissed)
-        with pytest.raises(GatewayRPCError, match="Approval already resolved") as conflict:
-            await client.resolve_approval(approval_id, False)
+        opposite_second_resolution = await client.resolve_approval(approval_id, False)
         assert resolved.get("approved") is True
-        assert conflict.value.code == "INVALID_REQUEST"
+        assert resolved.get("resolved") is True
+        assert opposite_second_resolution.get("approved") is True
+        assert opposite_second_resolution.get("resolved") is True
+        assert opposite_second_resolution.get("resolution") == "approved"
         rpc_evidence["approval"] = {
             "requested": requested,
             "resolved": resolved,
-            "opposite_second_resolution": {
-                "rejected": True,
-                "code": conflict.value.code,
-                "message": conflict.value.message,
-            },
+            "opposite_second_resolution": opposite_second_resolution,
         }
 
         hold_accepted, _ = await _send_web_turn(

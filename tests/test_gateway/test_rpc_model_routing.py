@@ -12,7 +12,9 @@ from opensquilla.gateway import websocket as gateway_websocket
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.model_routing import (
+    apply_model_routing_mode,
     capture_model_routing_config,
+    model_routing_mode_for_write,
     model_routing_patches,
     model_routing_snapshot,
 )
@@ -35,6 +37,8 @@ from opensquilla.gateway.rpc_onboarding import (
 from opensquilla.gateway.scopes import ADMIN_SCOPE, METHOD_SCOPES, READ_SCOPE, WRITE_SCOPE
 from opensquilla.gateway.task_runtime import TaskRuntime
 from opensquilla.session.models import AgentTaskRecord
+from opensquilla.tools.policy import apply_tool_policy_from_config
+from opensquilla.tools.types import ToolContext
 
 
 def _ctx(config: GatewayConfig) -> RpcContext:
@@ -216,11 +220,16 @@ async def test_onboarding_router_configure_broadcasts_one_canonical_change(
     config = GatewayConfig(
         config_path=str(tmp_path / "router.toml"),
         llm={"provider": "deepseek", "model": "deepseek-chat"},
-        squilla_router={"enabled": False},
+        llm_ensemble={"enabled": True, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
     )
     ctx, events = _routing_event_ctx(config, monkeypatch)
 
     await _router_configure({"mode": "recommended"}, ctx)
+
+    assert config.llm_ensemble.enabled is False
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "full"
 
     assert events == [
         (
@@ -240,10 +249,19 @@ async def test_onboarding_ensemble_configure_broadcasts_one_canonical_change(
     config = GatewayConfig(
         config_path=str(tmp_path / "ensemble.toml"),
         llm_ensemble={"enabled": False, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
     )
     ctx, events = _routing_event_ctx(config, monkeypatch)
 
     await _ensemble_configure({"enabled": True}, ctx)
+
+    assert config.llm_ensemble.enabled is True
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "full"
+    reloaded = GatewayConfig.load(str(tmp_path / "ensemble.toml"))
+    assert model_routing_snapshot(reloaded)["mode"] == "ensemble"
+    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.rollout_phase == "full"
 
     assert events == [
         (
@@ -354,6 +372,191 @@ async def test_safe_patch_noop_does_not_broadcast_model_routing_change(
     assert "model_routing" not in response
 
 
+async def test_unrelated_router_patch_preserves_existing_rollout_fields(tmp_path) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "router-detail.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={
+            "enabled": True,
+            "rollout_phase": "observe",
+            "default_tier": "c1",
+        },
+    )
+
+    await _handle_config_patch(
+        {"patch": {"squilla_router": {"default_tier": "c2"}}},
+        _ctx(config),
+    )
+
+    assert config.squilla_router.default_tier == "c2"
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "observe"
+
+
+async def test_legacy_safe_patch_ensemble_enable_repairs_router_dependency_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "legacy-safe.toml"),
+        llm_ensemble={"enabled": False, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    response = await _handle_config_patch_safe(
+        {"patches": {"llm_ensemble.enabled": True}},
+        ctx,
+    )
+
+    assert response["patched"] == ["llm_ensemble.enabled"]
+    assert config.llm_ensemble.enabled is True
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "full"
+    expected = {
+        **model_routing_snapshot(config),
+        "source": "config.patch.safe",
+    }
+    assert events == [("models.routing.changed", expected)]
+    assert response["model_routing"] == expected
+
+    reloaded = GatewayConfig.load(str(tmp_path / "legacy-safe.toml"))
+    assert model_routing_snapshot(reloaded)["mode"] == "ensemble"
+    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.rollout_phase == "full"
+
+
+def test_legacy_single_boolean_writes_select_one_canonical_mode() -> None:
+    config = GatewayConfig(
+        llm_ensemble={"enabled": False, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+    )
+    config.llm_ensemble.enabled = True
+
+    mode = model_routing_mode_for_write(config, {"llm_ensemble.enabled"})
+
+    assert mode == "ensemble"
+    assert apply_model_routing_mode(config, mode) == {
+        "squilla_router.enabled": True,
+        "squilla_router.rollout_phase": "full",
+    }
+    assert model_routing_snapshot(config)["mode"] == "ensemble"
+
+
+@pytest.mark.parametrize(
+    ("ensemble_enabled", "router_enabled", "selection_mode", "expected_mode", "expected_router"),
+    [
+        (True, True, "static_openrouter_b5", "ensemble", False),
+        (True, False, "router_dynamic", "ensemble", True),
+        (False, True, "router_dynamic", "router", True),
+        (False, False, "router_dynamic", "direct", False),
+    ],
+)
+def test_complete_legacy_boolean_matrix_has_explicit_mode_precedence(
+    ensemble_enabled: bool,
+    router_enabled: bool,
+    selection_mode: str,
+    expected_mode: str,
+    expected_router: bool,
+) -> None:
+    config = GatewayConfig(
+        llm_ensemble={
+            "enabled": ensemble_enabled,
+            "selection_mode": selection_mode,
+        },
+        squilla_router={
+            "enabled": router_enabled,
+            # The explicit booleans, not an old advanced phase, choose mode.
+            "rollout_phase": "observe",
+        },
+    )
+
+    mode = model_routing_mode_for_write(
+        config,
+        {"llm_ensemble.enabled", "squilla_router.enabled"},
+    )
+    assert mode == expected_mode
+    apply_model_routing_mode(config, mode)
+
+    assert model_routing_snapshot(config)["mode"] == expected_mode
+    assert config.squilla_router.enabled is expected_router
+    assert config.squilla_router.rollout_phase == (
+        "observe" if expected_mode == "direct" else "full"
+    )
+
+
+def test_non_control_router_settings_do_not_select_a_model_routing_mode() -> None:
+    config = GatewayConfig(
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+    )
+
+    assert (
+        model_routing_mode_for_write(
+            config,
+            {
+                "squilla_router",
+                "squilla_router.default_tier",
+                "squilla_router.rollout_phase",
+            },
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("phase", ["prompt_only", "observe"])
+@pytest.mark.parametrize("writer", ["config.set", "config.patch.safe"])
+async def test_advanced_rollout_phase_writes_round_trip_without_normalization(
+    phase: str,
+    writer: str,
+    tmp_path,
+) -> None:
+    path = tmp_path / f"{writer}-{phase}.toml"
+    config = GatewayConfig(
+        config_path=str(path),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "full"},
+    )
+    if writer == "config.set":
+        await _handle_config_set(
+            {"path": "squilla_router.rollout_phase", "value": phase},
+            _ctx(config),
+        )
+    else:
+        await _handle_config_patch_safe(
+            {"patches": {"squilla_router.rollout_phase": phase}},
+            _ctx(config),
+        )
+
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == phase
+    reloaded = GatewayConfig.load(str(path))
+    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.rollout_phase == phase
+
+
+async def test_live_ensemble_selection_change_preserves_prompt_only_phase(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "selection-mode.toml"),
+        llm_ensemble={"enabled": True, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": True, "rollout_phase": "prompt_only"},
+    )
+
+    await _handle_config_set(
+        {
+            "path": "llm_ensemble.selection_mode",
+            "value": "static_openrouter_b5",
+        },
+        _ctx(config),
+    )
+
+    assert config.llm_ensemble.enabled is True
+    assert config.squilla_router.enabled is False
+    assert config.squilla_router.rollout_phase == "prompt_only"
+
+
 def test_capture_model_routing_config_isolated_from_live_control_writes() -> None:
     config = GatewayConfig(squilla_router={"enabled": False, "rollout_phase": "observe"})
 
@@ -364,9 +567,10 @@ def test_capture_model_routing_config_isolated_from_live_control_writes() -> Non
 
     assert model_routing_snapshot(accepted)["mode"] == "direct"
     assert model_routing_snapshot(config)["mode"] == "ensemble"
+    assert not hasattr(accepted, "tools")
 
 
-async def test_task_runtime_captures_strategy_per_accepted_turn() -> None:
+async def test_task_runtime_freezes_strategy_but_uses_live_tool_policy() -> None:
     records: dict[str, AgentTaskRecord] = {}
     storage = MagicMock()
 
@@ -390,19 +594,43 @@ async def test_task_runtime_captures_strategy_per_accepted_turn() -> None:
     storage.get_agent_task = get
     storage.list_agent_tasks = list_tasks
 
-    config = GatewayConfig(squilla_router={"enabled": False, "rollout_phase": "observe"})
-    observed: list[str] = []
+    config = GatewayConfig(
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+        tools={"deny": []},
+    )
+    observed: list[tuple[str, bool]] = []
+    blocker_started = asyncio.Event()
+    release_blocker = asyncio.Event()
+
+    from opensquilla.engine.runtime import TurnRunner, accepted_turn_config_scope
+
+    runner = TurnRunner.__new__(TurnRunner)
+    runner._config = config
 
     async def handler(run: Any) -> None:
-        # Let the control write below win the scheduler race. The accepted turn
-        # must still retain the strategy captured by enqueue().
-        await asyncio.sleep(0)
-        observed.append(model_routing_snapshot(run.accepted_config)["mode"])
+        if run.message == "blocker":
+            blocker_started.set()
+            await release_blocker.wait()
+            return
+        with accepted_turn_config_scope(run.accepted_config):
+            turn_config = runner._turn_config()
+            tool_context = apply_tool_policy_from_config(
+                ToolContext(),
+                available_tools=["exec_command"],
+                config=turn_config,
+            )
+            observed.append(
+                (
+                    model_routing_snapshot(turn_config)["mode"],
+                    "exec_command" in tool_context.denied_tools,
+                )
+            )
 
     runtime = TaskRuntime(
         storage=storage,
         turn_handler=handler,
         accepted_config_provider=lambda: capture_model_routing_config(config),
+        max_concurrency=1,
     )
     envelope = RouteEnvelope(
         source_kind=SourceKind.CLI,
@@ -412,13 +640,21 @@ async def test_task_runtime_captures_strategy_per_accepted_turn() -> None:
         input_provenance={"kind": "test"},
     )
 
+    blocker = await runtime.enqueue(envelope, "blocker")
+    await asyncio.wait_for(blocker_started.wait(), timeout=2.0)
     first = await runtime.enqueue(envelope, "first")
+    # Hot apply replaces top-level policy submodels in place.  The already
+    # accepted routing mode stays direct, but the queued turn must see this
+    # newly revoked tool when it begins execution.
+    config.tools = config.tools.model_copy(update={"deny": ["exec_command"]})
     config.llm_ensemble.enabled = True
     config.squilla_router.enabled = True
     config.squilla_router.rollout_phase = "full"
+    release_blocker.set()
+    await runtime.wait(blocker.task_id, timeout=2.0)
     await runtime.wait(first.task_id, timeout=2.0)
 
     second = await runtime.enqueue(envelope, "second")
     await runtime.wait(second.task_id, timeout=2.0)
 
-    assert observed == ["direct", "ensemble"]
+    assert observed == [("direct", True), ("ensemble", True)]

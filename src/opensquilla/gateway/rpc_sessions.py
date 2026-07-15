@@ -1818,6 +1818,18 @@ async def _handle_sessions_send(params: dict | None, ctx: RpcContext) -> dict:
                 },
                 retryable=False,
             ) from exc
+        if handle.task_id != turn_id:
+            # ``collect`` coalesces this durable prompt into an already queued
+            # runtime turn. TaskRuntime has rebound the stored row; project and
+            # return that same canonical identity instead of the unused
+            # preallocation so live consumers and a later hydrate agree.
+            turn_id = handle.task_id
+            ingress_turn_context = {
+                **ingress_turn_context,
+                "turn_id": turn_id,
+                "target_turn_id": turn_id,
+                "revision": max(2, int(ingress_turn_context.get("revision", 1)) + 1),
+            }
         # Eviction hook: turn was accepted into the runtime,
         # post-resolution + post-engine-acceptance. Evict consumed uuids
         # so memory does not linger for the full TTL window. Locked

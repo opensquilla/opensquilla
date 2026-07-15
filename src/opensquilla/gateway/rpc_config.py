@@ -28,6 +28,7 @@ from opensquilla.gateway.config_secrets import (
 from opensquilla.gateway.model_routing import (
     broadcast_model_routing_changed_if_needed,
     model_routing_snapshot,
+    reconcile_model_routing_write,
 )
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.paths import default_opensquilla_home
@@ -676,6 +677,11 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
+    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    if routing_changes:
+        routing_paths = set(routing_changes)
+        explicit_paths.update(routing_paths)
+        force_persist_paths.update(tuple(item.split(".")) for item in routing_paths)
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
@@ -795,6 +801,11 @@ async def _handle_config_patch(
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
+    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    if routing_changes:
+        routing_paths = set(routing_changes)
+        explicit_paths.update(routing_paths)
+        force_persist_paths.update(tuple(item.split(".")) for item in routing_paths)
     if _memory_restart_required_for_paths(explicit_paths):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)

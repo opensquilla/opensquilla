@@ -189,6 +189,17 @@ class SubagentCompletionEvent:
         return payload
 
 
+@dataclass(frozen=True)
+class _CollectedPrimaryInput:
+    """One durable prompt coalesced into an already queued collect turn."""
+
+    persisted_user_message_id: str | None
+    client_message_id: str | None
+    surface_id: str | None
+    intent: str = "send"
+    revision: int = 2
+
+
 @dataclass
 class _RuntimeTask:
     task_id: str
@@ -216,6 +227,15 @@ class _RuntimeTask:
     overflow_dropped: bool = False
     cancel_source: str | None = None
     cancel_reason: str | None = None
+    # True only while an identity-aware primary input is still represented as
+    # ``queued`` in transcript/live state.  The flag is cleared when execution
+    # publishes ``applied`` or when a terminal path claims the input for a
+    # canonical ``cancelled``/``rejected`` transition.
+    primary_input_pending: bool = False
+    # Public ``queueMode=collect`` may bind several durable prompt rows to one
+    # runtime turn. Keep every additional identity until it reaches an applied
+    # or terminal disposition so hydrate and live projection stay equivalent.
+    collected_primary_inputs: list[_CollectedPrimaryInput] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -468,8 +488,11 @@ class TaskRuntime:
             collected = await self._try_collect(
                 envelope=envelope,
                 message=message,
+                attachments=attachments,
                 run_kind=run_kind,
                 no_memory_capture=no_memory_capture,
+                semantic_message=semantic_message,
+                persisted_user_message_id=persisted_user_message_id,
             )
             if collected is not None:
                 return collected
@@ -544,6 +567,10 @@ class TaskRuntime:
             fresh_user_session=fresh_user_session,
             stream_event_sink=stream_event_sink,
             accepted_config=accepted_config,
+            primary_input_pending=bool(
+                (persisted_user_message_id or envelope.metadata.get("client_message_id"))
+                and envelope.metadata.get("turn_context_disposition", "queued") == "queued"
+            ),
         )
         async with self._state_lock:
             self._tasks[record.task_id] = runtime_task
@@ -695,20 +722,52 @@ class TaskRuntime:
             raise ValueError("task_id or session_key is required")
         if session_key is not None:
             session_key = canonicalize_session_key(session_key)
+        candidates = [
+            task
+            for task in list(self._tasks.values())
+            if (task_id is None or task.task_id == task_id)
+            and (session_key is None or task.envelope.session_key == session_key)
+        ]
+        return await self._cancel_runtime_tasks(
+            candidates,
+            source=source,
+            reason=reason,
+        )
+
+    async def _cancel_runtime_tasks(
+        self,
+        candidates: Sequence[_RuntimeTask],
+        *,
+        source: str | None,
+        reason: str | None,
+    ) -> int:
+        """Atomically close cancellation acceptance for a task batch."""
+
+        queued_tasks: list[_RuntimeTask] = []
         async with self._state_lock:
             tasks = [
                 task
-                for task in self._tasks.values()
-                if (task_id is None or task.task_id == task_id)
-                and (session_key is None or task.envelope.session_key == session_key)
-                and task.status not in TERMINAL_STATUSES
+                for task in candidates
+                if self._tasks.get(task.task_id) is task and task.status not in TERMINAL_STATUSES
             ]
             for task in tasks:
+                if task.status == AgentTaskStatus.QUEUED:
+                    queued_tasks.append(task)
                 task.cancel_requested = True
                 task.cancel_source = _clean_cancel_detail(source, "unknown")
                 task.cancel_reason = _clean_cancel_detail(reason, "cancelled")
                 if task.asyncio_task is not None and not task.asyncio_task.done():
                     task.asyncio_task.cancel()
+        # A coroutine cancelled before its first event-loop step never enters
+        # ``_execute`` and therefore cannot run its CancelledError cleanup.
+        # Finalise queued tasks here; _mark_terminal is idempotent if the
+        # coroutine won the race and already handled its own cancellation.
+        for task in queued_tasks:
+            await self._mark_terminal(
+                task,
+                AgentTaskStatus.CANCELLED,
+                terminal_reason="cancelled_before_start",
+            )
         return len(tasks)
 
     async def send(
@@ -817,8 +876,16 @@ class TaskRuntime:
             tasks = [t for t in tasks if not t.done()]
 
         if cancel:
-            for task in tasks:
-                task.cancel()
+            runtime_tasks = [
+                runtime_task
+                for runtime_task in list(self._tasks.values())
+                if runtime_task.asyncio_task in tasks
+            ]
+            await self._cancel_runtime_tasks(
+                runtime_tasks,
+                source="gateway_shutdown",
+                reason=("graceful_timeout" if graceful else "shutdown"),
+            )
         if tasks:
             done, pending = await asyncio.wait(tasks, timeout=timeout)
             for task in pending:
@@ -931,8 +998,11 @@ class TaskRuntime:
         *,
         envelope: RouteEnvelope,
         message: str,
+        attachments: Sequence[dict[str, Any]] | None,
         run_kind: str,
         no_memory_capture: bool,
+        semantic_message: str | None,
+        persisted_user_message_id: str | None,
     ) -> TaskHandle | None:
         async with self._state_lock:
             pending = self._pending_by_session.get(envelope.session_key, [])
@@ -952,7 +1022,65 @@ class TaskRuntime:
                 or candidate.envelope.input_provenance != envelope.input_provenance
             ):
                 candidate.no_memory_capture = True
+
+            metadata = envelope.metadata
+            collected_identity: _CollectedPrimaryInput | None = None
+            if persisted_user_message_id or metadata.get("client_message_id"):
+                try:
+                    revision = max(
+                        2,
+                        int(metadata.get("turn_context_revision", 1) or 1) + 1,
+                    )
+                except (TypeError, ValueError):
+                    revision = 2
+                collected_identity = _CollectedPrimaryInput(
+                    persisted_user_message_id=persisted_user_message_id,
+                    client_message_id=metadata.get("client_message_id"),
+                    surface_id=metadata.get("surface_id"),
+                    intent=metadata.get("turn_context_intent", "send"),
+                    revision=revision,
+                )
+                # Rebind the already-persisted prompt before changing the
+                # candidate. If storage cannot establish the canonical turn,
+                # fall back to a distinct task rather than accepting a ghost
+                # prompt whose preallocated id can never execute.
+                if persisted_user_message_id:
+                    try:
+                        rebound = await self._update_transcript_turn_context(
+                            envelope.session_key,
+                            persisted_user_message_id,
+                            {
+                                "turn_id": candidate.task_id,
+                                "client_message_id": collected_identity.client_message_id,
+                                "surface_id": collected_identity.surface_id,
+                                "intent": collected_identity.intent,
+                                "disposition": "queued",
+                                "target_turn_id": candidate.task_id,
+                                "revision": collected_identity.revision,
+                            },
+                        )
+                    except Exception:  # noqa: BLE001 - preserve the input as its own turn
+                        log.warning(
+                            "task_runtime.collect_identity_rebind_failed",
+                            session_key=envelope.session_key,
+                            candidate_task_id=candidate.task_id,
+                            message_id=persisted_user_message_id,
+                            exc_info=True,
+                        )
+                        return None
+                    if not rebound:
+                        return None
+
             candidate.message = f"{candidate.message}\n{message}"
+            candidate.attachments.extend(list(attachments or []))
+            if semantic_message:
+                candidate.semantic_message = (
+                    f"{candidate.semantic_message}\n\n{semantic_message}"
+                    if candidate.semantic_message
+                    else semantic_message
+                )
+            if collected_identity is not None:
+                candidate.collected_primary_inputs.append(collected_identity)
             details = {
                 "source_name": candidate.envelope.source_name,
                 "input_provenance": candidate.envelope.input_provenance,
@@ -966,7 +1094,19 @@ class TaskRuntime:
                     user_message_id=candidate.persisted_user_message_id,
                 ),
             }
-        await self._storage.update_agent_task(candidate.task_id, details=details)
+        try:
+            await self._storage.update_agent_task(candidate.task_id, details=details)
+        except Exception:  # noqa: BLE001 - the input is already durably rebound
+            # The transcript rebind is the acceptance boundary. Task details
+            # are diagnostic only; surfacing an RPC failure after mutation
+            # would invite a retry that executes the same collected input
+            # twice.
+            log.warning(
+                "task_runtime.collect_details_update_failed",
+                session_key=envelope.session_key,
+                task_id=candidate.task_id,
+                exc_info=True,
+            )
         return TaskHandle(
             task_id=candidate.task_id,
             session_key=envelope.session_key,
@@ -1043,6 +1183,8 @@ class TaskRuntime:
                                 **turn_context,
                             },
                         )
+                        task.primary_input_pending = False
+                    await self._record_collected_primary_inputs_applied(task)
                     run = TaskRun(
                         task_id=task.task_id,
                         envelope=task.envelope,
@@ -1608,10 +1750,18 @@ class TaskRuntime:
         error_class: str | None = None,
         error_message: str | None = None,
     ) -> None:
+        record_primary_terminal_disposition = False
+        collected_terminal_inputs: list[_CollectedPrimaryInput] = []
         async with self._state_lock:
             if task.terminal_emitted:
                 return
             task.terminal_emitted = True
+            if task.primary_input_pending:
+                task.primary_input_pending = False
+                record_primary_terminal_disposition = True
+            if task.collected_primary_inputs:
+                collected_terminal_inputs = list(task.collected_primary_inputs)
+                task.collected_primary_inputs.clear()
             task.status = status
             self._remove_pending(task)
             if self._running_by_session.get(task.envelope.session_key) is task:
@@ -1642,6 +1792,21 @@ class TaskRuntime:
                     if not active:
                         self._agent_active_sessions.pop(agent_id, None)
                         self._agent_session_rr.pop(agent_id, None)
+        if record_primary_terminal_disposition:
+            await self._record_primary_terminal_disposition(
+                task,
+                status=status,
+                terminal_reason=terminal_reason,
+            )
+        for collected_input in collected_terminal_inputs:
+            await self._record_collected_primary_input_disposition(
+                task,
+                collected_input,
+                disposition=(
+                    "cancelled" if status == AgentTaskStatus.CANCELLED else "rejected"
+                ),
+                terminal_reason=terminal_reason,
+            )
         terminal_payload = {
             "status": status,
             "terminal_reason": terminal_reason,
@@ -1709,6 +1874,161 @@ class TaskRuntime:
             error_class=error_class,
             error_message=error_message,
         )
+
+    async def _record_primary_terminal_disposition(
+        self,
+        task: _RuntimeTask,
+        *,
+        status: AgentTaskStatus,
+        terminal_reason: str,
+    ) -> None:
+        """Close an identity-aware input that never reached ``applied``.
+
+        Explicit cancellation (including overflow eviction) is ``cancelled``;
+        other pre-application terminal outcomes are ``rejected``.  Persistence
+        and live projection are attempted independently so one observer failure
+        cannot strand the task ledger or suppress the other canonical signal.
+        """
+
+        metadata = task.envelope.metadata
+        disposition = "cancelled" if status == AgentTaskStatus.CANCELLED else "rejected"
+        try:
+            base_revision = int(metadata.get("turn_context_revision", 1) or 1)
+        except (TypeError, ValueError):
+            base_revision = 1
+        context: dict[str, Any] = {
+            "turn_id": task.task_id,
+            "client_message_id": metadata.get("client_message_id"),
+            "surface_id": metadata.get("surface_id"),
+            "intent": metadata.get("turn_context_intent", "send"),
+            "disposition": disposition,
+            "revision": max(2, base_revision + 1),
+        }
+        for context_field in ("target_turn_id", "promoted_from_turn_id"):
+            value = metadata.get(context_field)
+            if isinstance(value, str) and value:
+                context[context_field] = value
+
+        try:
+            updated = await self._update_transcript_turn_context(
+                task.envelope.session_key,
+                task.persisted_user_message_id,
+                context,
+            )
+            if task.persisted_user_message_id and not updated:
+                log.warning(
+                    "task_runtime.primary_input_terminal_persist_missed",
+                    session_key=task.envelope.session_key,
+                    task_id=task.task_id,
+                    message_id=task.persisted_user_message_id,
+                    disposition=disposition,
+                )
+        except Exception:  # noqa: BLE001 - live evidence must still be emitted
+            log.warning(
+                "task_runtime.primary_input_terminal_persist_failed",
+                session_key=task.envelope.session_key,
+                task_id=task.task_id,
+                message_id=task.persisted_user_message_id,
+                disposition=disposition,
+                exc_info=True,
+            )
+        try:
+            await self._emit(
+                task.envelope.session_key,
+                "session.event.input_disposition",
+                {
+                    "session_key": task.envelope.session_key,
+                    "user_message_id": task.persisted_user_message_id,
+                    **context,
+                    "terminal_reason": terminal_reason,
+                },
+            )
+        except Exception:  # noqa: BLE001 - task terminal cleanup must continue
+            log.warning(
+                "task_runtime.primary_input_terminal_emit_failed",
+                session_key=task.envelope.session_key,
+                task_id=task.task_id,
+                message_id=task.persisted_user_message_id,
+                disposition=disposition,
+                exc_info=True,
+            )
+
+    async def _record_collected_primary_inputs_applied(self, task: _RuntimeTask) -> None:
+        """Advance every durable prompt coalesced into this turn to applied."""
+
+        while task.collected_primary_inputs:
+            item = task.collected_primary_inputs[0]
+            await self._record_collected_primary_input_disposition(
+                task,
+                item,
+                disposition="applied",
+            )
+            # There is deliberately no await between the successful observer
+            # writes and removal. Cancellation therefore either leaves the
+            # identity pending for terminal cleanup or sees it fully applied.
+            task.collected_primary_inputs.pop(0)
+
+    async def _record_collected_primary_input_disposition(
+        self,
+        task: _RuntimeTask,
+        item: _CollectedPrimaryInput,
+        *,
+        disposition: str,
+        terminal_reason: str | None = None,
+    ) -> None:
+        context: dict[str, Any] = {
+            "turn_id": task.task_id,
+            "client_message_id": item.client_message_id,
+            "surface_id": item.surface_id,
+            "intent": item.intent,
+            "disposition": disposition,
+            "target_turn_id": task.task_id,
+            "revision": item.revision,
+        }
+        try:
+            updated = await self._update_transcript_turn_context(
+                task.envelope.session_key,
+                item.persisted_user_message_id,
+                context,
+            )
+            if item.persisted_user_message_id and not updated:
+                log.warning(
+                    "task_runtime.collected_input_disposition_persist_missed",
+                    session_key=task.envelope.session_key,
+                    task_id=task.task_id,
+                    message_id=item.persisted_user_message_id,
+                    disposition=disposition,
+                )
+        except Exception:  # noqa: BLE001 - live evidence must still be emitted
+            log.warning(
+                "task_runtime.collected_input_disposition_persist_failed",
+                session_key=task.envelope.session_key,
+                task_id=task.task_id,
+                message_id=item.persisted_user_message_id,
+                disposition=disposition,
+                exc_info=True,
+            )
+        event_details = {"terminal_reason": terminal_reason} if terminal_reason else {}
+        try:
+            await self._emit(
+                task.envelope.session_key,
+                "session.event.input_disposition",
+                {
+                    "session_key": task.envelope.session_key,
+                    "user_message_id": item.persisted_user_message_id,
+                    **context,
+                    **event_details,
+                },
+            )
+        except Exception:  # noqa: BLE001 - task cleanup must continue
+            log.warning(
+                "task_runtime.collected_input_disposition_emit_failed",
+                session_key=task.envelope.session_key,
+                task_id=task.task_id,
+                message_id=item.persisted_user_message_id,
+                disposition=disposition,
+                exc_info=True,
+            )
 
     async def _mark_unfinished_abandoned(self) -> None:
         async with self._state_lock:

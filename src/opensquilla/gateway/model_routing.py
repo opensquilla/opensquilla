@@ -8,6 +8,7 @@ surface observes and mutates the same state machine.
 from __future__ import annotations
 
 import copy
+from dataclasses import dataclass
 from typing import Any, Literal
 
 ModelRoutingMode = Literal["direct", "router", "ensemble"]
@@ -15,6 +16,38 @@ ModelRoutingMode = Literal["direct", "router", "ensemble"]
 _INDEPENDENT_ENSEMBLE_MODES = frozenset(
     {"static_openrouter_b5", "static_tokenrhythm_b5", "custom_b5"}
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _ModelRoutingConfigSnapshot:
+    """Acceptance-time values for the two routing-owned config subtrees.
+
+    No other Gateway config belongs in this snapshot.  In particular, tool,
+    agent, channel, approval, and safety policy must remain live so a queued
+    turn cannot bypass a policy hot-apply that landed before it began running.
+    ``TurnRunner._turn_config`` calls :meth:`overlay_live_config` at execution
+    time to combine these two frozen values with the latest live config.
+    """
+
+    squilla_router: Any
+    llm_ensemble: Any
+
+    def overlay_live_config(self, live_config: Any) -> Any:
+        """Overlay only routing fields onto the latest live Gateway config."""
+
+        if live_config is None:
+            return self
+        update = {
+            "squilla_router": self.squilla_router,
+            "llm_ensemble": self.llm_ensemble,
+        }
+        model_copy = getattr(live_config, "model_copy", None)
+        if callable(model_copy):
+            return model_copy(update=update, deep=False)
+        overlay = copy.copy(live_config)
+        for field_name, value in update.items():
+            setattr(overlay, field_name, value)
+        return overlay
 
 
 def _clean(value: object) -> str:
@@ -80,34 +113,134 @@ def model_routing_patches(config: Any, mode: str) -> dict[str, Any]:
     }
 
 
+def _path_was_written(explicit_paths: set[str], target: str) -> bool:
+    """Return whether the concrete control leaf was submitted.
+
+    Nested-payload path collectors also report parent objects.  Matching those
+    parents would make an unrelated edit such as ``squilla_router.default_tier``
+    select a model-routing mode, so only the actual owned leaf counts.
+    """
+
+    return target in explicit_paths
+
+
+def model_routing_mode_for_write(
+    config: Any,
+    explicit_paths: set[str],
+) -> ModelRoutingMode | None:
+    """Translate legacy routing-field writes into the canonical three-state mode.
+
+    Older surfaces write the Router and Ensemble booleans directly.  Treat a
+    single explicit boolean as the corresponding three-state control, while a
+    complete multi-field write (such as ``models.routing.set``) is interpreted
+    from its final candidate values.  Non-control settings such as router tiers
+    or ensemble candidates do not select a mode.
+    """
+
+    ensemble_enabled_written = _path_was_written(
+        explicit_paths, "llm_ensemble.enabled"
+    )
+    router_enabled_written = _path_was_written(
+        explicit_paths, "squilla_router.enabled"
+    )
+    if ensemble_enabled_written and router_enabled_written:
+        ensemble_enabled = bool(
+            getattr(getattr(config, "llm_ensemble", None), "enabled", False)
+        )
+        router_enabled = bool(
+            getattr(getattr(config, "squilla_router", None), "enabled", False)
+        )
+        if ensemble_enabled:
+            return "ensemble"
+        if router_enabled:
+            return "router"
+        return "direct"
+    if ensemble_enabled_written:
+        enabled = bool(
+            getattr(getattr(config, "llm_ensemble", None), "enabled", False)
+        )
+        return "ensemble" if enabled else "direct"
+    if router_enabled_written:
+        enabled = bool(
+            getattr(getattr(config, "squilla_router", None), "enabled", False)
+        )
+        return "router" if enabled else "direct"
+    return None
+
+
+def apply_model_routing_mode(config: Any, mode: str) -> dict[str, Any]:
+    """Apply one canonical mode to a config-like object in place.
+
+    The returned mapping contains only fields whose values changed.  All three
+    owned paths are force-persisted when the config supports sparse persistence,
+    so a derived ``false``/``observe`` value cannot disappear on restart.
+    """
+
+    changed: dict[str, Any] = {}
+    for path, value in model_routing_patches(config, mode).items():
+        section_name, field_name = path.split(".", 1)
+        section = getattr(config, section_name, None)
+        if section is None:
+            continue
+        if getattr(section, field_name, None) != value:
+            setattr(section, field_name, value)
+            changed[path] = value
+        marker = getattr(config, "mark_force_persist", None)
+        if callable(marker):
+            marker(path)
+    return changed
+
+
+def reconcile_model_routing_write(
+    config: Any,
+    explicit_paths: set[str],
+) -> dict[str, Any]:
+    """Reconcile only strategy fields owned by a legacy config write.
+
+    Boolean Router/Ensemble toggles select a canonical mode.  A live Ensemble
+    ``selection_mode`` edit only updates whether that implementation requires
+    Router; it deliberately preserves advanced ``rollout_phase`` values such
+    as ``prompt_only``.  Other Router/Ensemble settings are left untouched.
+    """
+
+    mode = model_routing_mode_for_write(config, explicit_paths)
+    if mode is not None:
+        return apply_model_routing_mode(config, mode)
+
+    if (
+        "llm_ensemble.selection_mode" not in explicit_paths
+        or not bool(getattr(getattr(config, "llm_ensemble", None), "enabled", False))
+    ):
+        return {}
+
+    required = model_routing_patches(config, "ensemble")["squilla_router.enabled"]
+    router = getattr(config, "squilla_router", None)
+    if router is None or getattr(router, "enabled", None) == required:
+        return {}
+    router.enabled = required
+    marker = getattr(config, "mark_force_persist", None)
+    if callable(marker):
+        marker("squilla_router.enabled")
+    return {"squilla_router.enabled": required}
+
+
 def capture_model_routing_config(config: Any) -> Any:
     """Freeze model-routing inputs at the turn acceptance boundary.
 
     Gateway config writes update the long-lived config object in place.  A
     queued/running turn must not observe a half-new strategy merely because a
     surface switches ``direct | router | ensemble`` while that turn is being
-    prepared.  Keep a shallow config clone (so unrelated runtime services retain
-    their established references) and deep-copy only the two routing subtrees
-    whose values the control plane can mutate live.
+    prepared.  Capture only the two routing subtrees.  The TurnRunner overlays
+    them onto the latest live config at execution time, so unrelated policy
+    hot-applies are never frozen at acceptance.
     """
 
     if config is None:
         return None
-    router = copy.deepcopy(getattr(config, "squilla_router", None))
-    ensemble = copy.deepcopy(getattr(config, "llm_ensemble", None))
-    model_copy = getattr(config, "model_copy", None)
-    if callable(model_copy):
-        return model_copy(
-            update={
-                "squilla_router": router,
-                "llm_ensemble": ensemble,
-            },
-            deep=False,
-        )
-    snapshot = copy.copy(config)
-    setattr(snapshot, "squilla_router", router)
-    setattr(snapshot, "llm_ensemble", ensemble)
-    return snapshot
+    return _ModelRoutingConfigSnapshot(
+        squilla_router=copy.deepcopy(getattr(config, "squilla_router", None)),
+        llm_ensemble=copy.deepcopy(getattr(config, "llm_ensemble", None)),
+    )
 
 
 async def broadcast_model_routing_changed(
@@ -167,9 +300,12 @@ async def broadcast_model_routing_changed_if_needed(
 
 __all__ = [
     "ModelRoutingMode",
+    "apply_model_routing_mode",
     "broadcast_model_routing_changed",
     "broadcast_model_routing_changed_if_needed",
     "capture_model_routing_config",
+    "model_routing_mode_for_write",
     "model_routing_patches",
     "model_routing_snapshot",
+    "reconcile_model_routing_write",
 ]

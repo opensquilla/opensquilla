@@ -206,6 +206,375 @@ async def test_identity_aware_turn_emits_applied_input_disposition() -> None:
 
 
 @pytest.mark.asyncio
+async def test_identity_aware_collect_rebinds_each_prompt_to_the_running_turn() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    runs: list[tuple[str, str, list[dict[str, Any]], str | None]] = []
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _handler(run: Any) -> None:
+        runs.append((run.task_id, run.message, run.attachments, run.semantic_message))
+        if run.message == "blocker":
+            started.set()
+            await release.wait()
+
+    async def _emit(session_key: str, name: str, payload: dict[str, Any]) -> None:
+        events.append((session_key, name, payload))
+
+    storage = _make_storage()
+    rt = TaskRuntime(
+        storage=storage,
+        turn_handler=_handler,
+        event_emitter=_emit,
+        max_concurrency=1,
+    )
+    env = _make_envelope("agent-1::identity-collect")
+    blocker = await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    first_env = replace(
+        env,
+        metadata={"client_message_id": "client-1", "surface_id": "tui:test"},
+    )
+    second_env = replace(
+        env,
+        metadata={"client_message_id": "client-2", "surface_id": "tui:test"},
+    )
+    first = await rt.enqueue(
+        first_env,
+        "first collected input",
+        attachments=[{"name": "first.txt"}],
+        mode="collect",
+        semantic_message="first semantic",
+        task_id="turn-collect-1",
+        persisted_user_message_id="message-1",
+    )
+    second = await rt.enqueue(
+        second_env,
+        "second collected input",
+        attachments=[{"name": "second.txt"}],
+        mode="collect",
+        semantic_message="second semantic",
+        task_id="turn-collect-2",
+        persisted_user_message_id="message-2",
+    )
+
+    assert first.task_id == "turn-collect-1"
+    assert second.task_id == first.task_id
+    assert storage.turn_context_updates[-1] == (
+        env.session_key,
+        "message-2",
+        {
+            "turn_id": first.task_id,
+            "client_message_id": "client-2",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "queued",
+            "target_turn_id": first.task_id,
+            "revision": 2,
+        },
+    )
+
+    release.set()
+    await rt.wait(blocker.task_id, timeout=2.0)
+    await rt.wait(first.task_id, timeout=2.0)
+    assert runs == [
+        (blocker.task_id, "blocker", [], None),
+        (
+            first.task_id,
+            "first collected input\nsecond collected input",
+            [{"name": "first.txt"}, {"name": "second.txt"}],
+            "first semantic\n\nsecond semantic",
+        ),
+    ]
+    applied = [
+        context
+        for _session, message_id, context in storage.turn_context_updates
+        if message_id == "message-2" and context.get("disposition") == "applied"
+    ]
+    assert applied == [
+        {
+            "turn_id": first.task_id,
+            "client_message_id": "client-2",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "applied",
+            "target_turn_id": first.task_id,
+            "revision": 2,
+        }
+    ]
+    assert any(
+        name == "session.event.input_disposition"
+        and payload.get("user_message_id") == "message-2"
+        and payload.get("disposition") == "applied"
+        for _session, name, payload in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_prestart_cancel_closes_every_collected_prompt_identity() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _handler(run: Any) -> None:
+        if run.message == "blocker":
+            started.set()
+            await release.wait()
+
+    storage = _make_storage()
+    rt = TaskRuntime(storage=storage, turn_handler=_handler, max_concurrency=1)
+    env = _make_envelope("agent-1::identity-collect-cancel")
+    blocker = await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    first = await rt.enqueue(
+        replace(env, metadata={"client_message_id": "client-1", "surface_id": "tui:test"}),
+        "first",
+        mode="collect",
+        task_id="turn-collect-cancel-1",
+        persisted_user_message_id="message-1",
+    )
+    second = await rt.enqueue(
+        replace(env, metadata={"client_message_id": "client-2", "surface_id": "tui:test"}),
+        "second",
+        mode="collect",
+        task_id="turn-collect-cancel-2",
+        persisted_user_message_id="message-2",
+    )
+    assert second.task_id == first.task_id
+
+    assert await rt.cancel(task_id=first.task_id) == 1
+    record = await rt.wait(first.task_id, timeout=2.0)
+    assert record.status.value == "cancelled"
+    terminal = {
+        message_id: context
+        for _session, message_id, context in storage.turn_context_updates
+        if context.get("disposition") == "cancelled"
+    }
+    assert set(terminal) == {"message-1", "message-2"}
+    assert terminal["message-1"]["turn_id"] == first.task_id
+    assert terminal["message-2"] == {
+        "turn_id": first.task_id,
+        "client_message_id": "client-2",
+        "surface_id": "tui:test",
+        "intent": "send",
+        "disposition": "cancelled",
+        "target_turn_id": first.task_id,
+        "revision": 2,
+    }
+
+    release.set()
+    await rt.wait(blocker.task_id, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_collect_details_failure_does_not_reject_an_accepted_input() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    runs: list[str] = []
+
+    async def _handler(run: Any) -> None:
+        runs.append(run.message)
+        if run.message == "blocker":
+            started.set()
+            await release.wait()
+
+    storage = _make_storage()
+    update_agent_task = storage.update_agent_task
+
+    async def _fail_collected_details(task_id: str, **kwargs: Any) -> None:
+        if (kwargs.get("details") or {}).get("collected"):
+            raise RuntimeError("diagnostic write unavailable")
+        await update_agent_task(task_id, **kwargs)
+
+    storage.update_agent_task = _fail_collected_details
+    rt = TaskRuntime(storage=storage, turn_handler=_handler, max_concurrency=1)
+    env = _make_envelope("agent-1::collect-details-failure")
+    blocker = await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    first = await rt.enqueue(env, "one", mode="collect")
+
+    second = await rt.enqueue(env, "two", mode="collect")
+    assert second.task_id == first.task_id
+
+    release.set()
+    await rt.wait(blocker.task_id, timeout=2.0)
+    await rt.wait(first.task_id, timeout=2.0)
+    assert runs == ["blocker", "one\ntwo"]
+
+
+@pytest.mark.asyncio
+async def test_identity_free_collect_preserves_legacy_coalescing() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    runs: list[str] = []
+
+    async def _handler(run: Any) -> None:
+        runs.append(run.message)
+        if run.message == "blocker":
+            started.set()
+            await release.wait()
+
+    rt = _make_runtime(turn_handler=_handler, max_concurrency=1)
+    env = _make_envelope("agent-1::legacy-collect")
+    blocker = await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    first = await rt.enqueue(env, "one", mode="collect")
+    second = await rt.enqueue(env, "two", mode="collect")
+    assert second.task_id == first.task_id
+
+    release.set()
+    await rt.wait(blocker.task_id, timeout=2.0)
+    await rt.wait(first.task_id, timeout=2.0)
+    assert runs == ["blocker", "one\ntwo"]
+
+
+@pytest.mark.asyncio
+async def test_prestart_cancel_closes_primary_input_disposition() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    async def _handler(run: Any) -> None:
+        if run.message == "blocker":
+            started.set()
+            await release.wait()
+
+    async def _emit(session_key: str, name: str, payload: dict[str, Any]) -> None:
+        events.append((session_key, name, payload))
+
+    storage = _make_storage()
+    rt = TaskRuntime(
+        storage=storage,
+        turn_handler=_handler,
+        event_emitter=_emit,
+        max_concurrency=1,
+    )
+    env = _make_envelope("agent-1::prestart-cancel")
+    blocker = await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    queued_env = replace(
+        env,
+        metadata={"client_message_id": "client-cancel", "surface_id": "tui:test"},
+    )
+    queued = await rt.enqueue(
+        queued_env,
+        "queued",
+        task_id="turn-cancelled-before-start",
+        persisted_user_message_id="message-cancelled-before-start",
+    )
+
+    assert await rt.cancel(task_id=queued.task_id) == 1
+    record = await rt.wait(queued.task_id, timeout=2.0)
+    assert record.status.value == "cancelled"
+    assert storage.turn_context_updates[-1] == (
+        env.session_key,
+        "message-cancelled-before-start",
+        {
+            "turn_id": queued.task_id,
+            "client_message_id": "client-cancel",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "cancelled",
+            "revision": 2,
+        },
+    )
+    disposition = next(
+        payload
+        for _session, name, payload in events
+        if name == "session.event.input_disposition" and payload.get("turn_id") == queued.task_id
+    )
+    assert disposition["disposition"] == "cancelled"
+    assert disposition["terminal_reason"] == "cancelled_before_start"
+
+    release.set()
+    await rt.wait(blocker.task_id, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_queued_primary_input_disposition() -> None:
+    started = asyncio.Event()
+
+    async def _handler(run: Any) -> None:
+        if run.message == "blocker":
+            started.set()
+            await asyncio.Event().wait()
+
+    storage = _make_storage()
+    rt = TaskRuntime(storage=storage, turn_handler=_handler, max_concurrency=1)
+    env = _make_envelope("agent-1::shutdown-queued")
+    await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    queued_env = replace(
+        env,
+        metadata={"client_message_id": "client-shutdown", "surface_id": "tui:test"},
+    )
+    queued = await rt.enqueue(
+        queued_env,
+        "queued",
+        task_id="turn-shutdown-before-start",
+        persisted_user_message_id="message-shutdown-before-start",
+    )
+
+    await rt.shutdown(cancel=True, timeout=2.0)
+    record = await rt.status(queued.task_id)
+    assert record.status.value == "cancelled"
+    assert storage.turn_context_updates[-1][1:] == (
+        "message-shutdown-before-start",
+        {
+            "turn_id": queued.task_id,
+            "client_message_id": "client-shutdown",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "cancelled",
+            "revision": 2,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_shutdown_timeout_rejects_unstarted_primary_input() -> None:
+    started = asyncio.Event()
+
+    async def _handler(run: Any) -> None:
+        if run.message == "blocker":
+            started.set()
+            await asyncio.Event().wait()
+
+    storage = _make_storage()
+    rt = TaskRuntime(storage=storage, turn_handler=_handler, max_concurrency=1)
+    env = _make_envelope("agent-1::shutdown-abandoned")
+    await rt.enqueue(env, "blocker")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    queued_env = replace(
+        env,
+        metadata={"client_message_id": "client-abandoned", "surface_id": "tui:test"},
+    )
+    queued = await rt.enqueue(
+        queued_env,
+        "queued",
+        task_id="turn-abandoned-before-start",
+        persisted_user_message_id="message-abandoned-before-start",
+    )
+
+    await rt.shutdown(cancel=False, timeout=0.01)
+    record = await rt.status(queued.task_id)
+    assert record.status.value == "abandoned"
+    assert storage.turn_context_updates[-1][1:] == (
+        "message-abandoned-before-start",
+        {
+            "turn_id": queued.task_id,
+            "client_message_id": "client-abandoned",
+            "surface_id": "tui:test",
+            "intent": "send",
+            "disposition": "rejected",
+            "revision": 2,
+        },
+    )
+
+
+@pytest.mark.asyncio
 async def test_steer_is_drained_by_running_turn_provider() -> None:
     started = asyncio.Event()
     release = asyncio.Event()

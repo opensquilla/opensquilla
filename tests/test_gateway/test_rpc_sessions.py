@@ -1371,6 +1371,117 @@ class TestSessionsSend:
         assert isinstance(runtime.turn_id, str) and runtime.turn_id
 
     @pytest.mark.asyncio
+    async def test_send_collect_keeps_preallocated_turn_identity(self, dispatcher, session):
+        from opensquilla.gateway.routing import RouteEnvelope, SourceKind
+        from opensquilla.gateway.task_runtime import TaskRuntime
+        from opensquilla.session.models import AgentTaskRecord
+
+        class RuntimeStorage:
+            def __init__(self) -> None:
+                self.records: dict[str, AgentTaskRecord] = {}
+                self.turn_context_updates: list[tuple[str, str, dict[str, Any]]] = []
+
+            async def create_agent_task(self, record: AgentTaskRecord) -> None:
+                self.records[record.task_id] = record
+
+            async def update_agent_task(self, task_id: str, **kwargs: Any) -> None:
+                record = self.records[task_id]
+                for key, value in kwargs.items():
+                    if hasattr(record, key):
+                        object.__setattr__(record, key, value)
+
+            async def get_agent_task(self, task_id: str) -> AgentTaskRecord | None:
+                return self.records.get(task_id)
+
+            async def list_agent_tasks(self, **_kwargs: Any) -> list[AgentTaskRecord]:
+                return list(self.records.values())
+
+            async def update_transcript_turn_context(
+                self,
+                session_key: str,
+                message_id: str,
+                context: dict[str, Any],
+            ) -> bool:
+                self.turn_context_updates.append(
+                    (session_key, message_id, dict(context))
+                )
+                return True
+
+        blocker_started = asyncio.Event()
+        release_blocker = asyncio.Event()
+        runs: list[tuple[str, str]] = []
+
+        async def handler(run: Any) -> None:
+            runs.append((run.task_id, run.message))
+            if run.message == "blocker":
+                blocker_started.set()
+                await release_blocker.wait()
+
+        runtime_storage = RuntimeStorage()
+        runtime = TaskRuntime(
+            storage=runtime_storage,
+            turn_handler=handler,
+            max_concurrency=1,
+        )
+        blocker_envelope = RouteEnvelope(
+            source_kind=SourceKind.WEB,
+            source_name="test",
+            agent_id="main",
+            session_key=session.session_key,
+            input_provenance={"kind": "test"},
+        )
+        blocker = await runtime.enqueue(blocker_envelope, "blocker")
+        await asyncio.wait_for(blocker_started.wait(), timeout=2.0)
+
+        manager = FakeSessionManager([session])
+        ctx = make_ctx(session_manager=manager, task_runtime=runtime)
+        first = await dispatcher.dispatch(
+            "r-collect-1",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "first",
+                "queueMode": "collect",
+                "clientMessageId": "client-collect-1",
+            },
+            ctx,
+        )
+        second = await dispatcher.dispatch(
+            "r-collect-2",
+            "sessions.send",
+            {
+                "key": session.session_key,
+                "message": "second",
+                "queueMode": "collect",
+                "clientMessageId": "client-collect-2",
+            },
+            ctx,
+        )
+
+        assert first.ok is True
+        assert second.ok is True
+        assert first.payload["task_id"] == first.payload["turn_id"]
+        assert second.payload["task_id"] == second.payload["turn_id"]
+        assert second.payload["turn_id"] == first.payload["turn_id"]
+        assert runtime_storage.turn_context_updates[-1][2] == {
+            "turn_id": first.payload["turn_id"],
+            "client_message_id": "client-collect-2",
+            "surface_id": "web:test-conn",
+            "intent": "send",
+            "disposition": "queued",
+            "target_turn_id": first.payload["turn_id"],
+            "revision": 2,
+        }
+
+        release_blocker.set()
+        await runtime.wait(blocker.task_id, timeout=2.0)
+        await runtime.wait(first.payload["task_id"], timeout=2.0)
+        assert runs == [
+            (blocker.task_id, "blocker"),
+            (first.payload["task_id"], "first\nsecond"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_send_marks_empty_transcript_as_fresh_user_session(self, dispatcher, session):
         class RecordingTaskRuntime:
             def __init__(self) -> None:

@@ -257,10 +257,23 @@ class GatewayClient:
                 frame_type = frame.get("type")
                 if frame_type == "res":
                     frame_id = frame.get("id")
-                    if isinstance(frame_id, str):
-                        fut = self._pending.pop(frame_id, None)
-                        if fut and not fut.done():
-                            fut.set_result(frame)
+                    if not isinstance(frame_id, str):
+                        # A response frame whose id is missing or not a
+                        # string can never be matched to its pending
+                        # request. Treat it as a protocol error and fail
+                        # in-flight RPCs so callers get a clean
+                        # connection error instead of hanging forever on
+                        # a future that nothing will ever resolve.
+                        self._mark_connection_failed(
+                            ConnectionError(
+                                "Gateway sent a response frame with a "
+                                "missing or invalid id; closing connection"
+                            )
+                        )
+                        return
+                    fut = self._pending.pop(frame_id, None)
+                    if fut and not fut.done():
+                        fut.set_result(frame)
                 elif frame_type == "event":
                     await self._recv_queue.put(frame)
                 elif frame_type == "pong":

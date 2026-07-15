@@ -122,9 +122,9 @@ async def _persist_profile_override(
     profile: str | None,
     ctx: RpcContext,
 ) -> dict[str, Any]:
-    from opensquilla.gateway.rpc_config import _handle_config_patch_safe
+    from opensquilla.gateway.rpc_config import _handle_config_patch
 
-    return await _handle_config_patch_safe(
+    return await _handle_config_patch(
         {
             "patches": {
                 "knowledge.retrieval_profile_override": profile,

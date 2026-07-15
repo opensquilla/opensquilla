@@ -5,7 +5,10 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.gateway.config import GatewayConfig
-from opensquilla.gateway.rag_provider_runtime import RagProviderState
+from opensquilla.gateway.rag_provider_runtime import (
+    RagProviderRuntime,
+    RagProviderState,
+)
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.gateway.rpc_knowledge import (
     _handle_knowledge_get,
@@ -14,6 +17,7 @@ from opensquilla.gateway.rpc_knowledge import (
     _handle_knowledge_status,
 )
 from opensquilla.rag_provider.protocol import ValidatedSearchResponse
+from opensquilla.tools.registry import ToolRegistry
 
 
 class Snapshot:
@@ -21,6 +25,13 @@ class Snapshot:
     capabilities = SimpleNamespace(
         retrieval_profiles=(("vector", "Vector"), ("hybrid", "Hybrid")),
         default_retrieval_profile="hybrid",
+        supports_collection_scope=True,
+        limits=SimpleNamespace(
+            max_search_results=20,
+            max_snippet_chars=800,
+            max_search_response_chars=12000,
+            max_get_content_chars=8000,
+        ),
     )
 
     def to_wire(self) -> dict[str, object]:
@@ -80,7 +91,27 @@ class Runtime:
         self.applied_profiles.append(profile)
 
 
-def _ctx(runtime: Runtime | None, config: GatewayConfig | None = None) -> RpcContext:
+class RecordingProviderClient:
+    def __init__(self) -> None:
+        self.search_calls: list[dict[str, object]] = []
+
+    async def search(self, **kwargs) -> ValidatedSearchResponse:
+        self.search_calls.append(dict(kwargs))
+        return ValidatedSearchResponse(
+            {
+                "returnedCount": 0,
+                "totalMatched": 0,
+                "resultsTruncated": False,
+                "results": [],
+            },
+            provider_budget_violation=False,
+        )
+
+
+def _ctx(
+    runtime: Runtime | RagProviderRuntime | None,
+    config: GatewayConfig | None = None,
+) -> RpcContext:
     return RpcContext(
         conn_id="test",
         config=config or GatewayConfig(),
@@ -178,6 +209,44 @@ async def test_profile_set_persists_and_hot_applies(tmp_path) -> None:
     )
     assert runtime.applied_profiles[-1] is None
     assert cleared["effectiveRetrievalProfile"] == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_profile_set_keeps_real_runtime_in_sync_after_config_object_swap(
+    tmp_path,
+) -> None:
+    config = GatewayConfig.model_validate(
+        {
+            "config_path": str(tmp_path / "config.toml"),
+            "knowledge": {"enabled": True},
+        }
+    )
+    client = RecordingProviderClient()
+    runtime = RagProviderRuntime(config.knowledge, client, ToolRegistry())
+    runtime._snapshot = Snapshot()
+    runtime_settings = runtime.config
+    ctx = _ctx(runtime, config)
+
+    await _handle_knowledge_profile_set(
+        {"retrievalProfileOverride": "vector"},
+        ctx,
+    )
+
+    assert ctx.config.knowledge is not runtime_settings
+    assert ctx.config.knowledge.retrieval_profile_override == "vector"
+    assert runtime.config.retrieval_profile_override == "vector"
+    await runtime.search(query="NAND", limit=8)
+    assert client.search_calls[-1]["retrieval_profile"] == "vector"
+
+    await _handle_knowledge_profile_set(
+        {"retrievalProfileOverride": None},
+        ctx,
+    )
+
+    assert ctx.config.knowledge.retrieval_profile_override is None
+    assert runtime.config.retrieval_profile_override is None
+    await runtime.search(query="DRAM", limit=8)
+    assert client.search_calls[-1]["retrieval_profile"] is None
 
 
 @pytest.mark.asyncio

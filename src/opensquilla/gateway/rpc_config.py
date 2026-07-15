@@ -526,7 +526,6 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "skills.disabled",
         "skills.coding_mode",
         "llm_ensemble.enabled",
-        "knowledge.retrieval_profile_override",
         "naming.enabled",
         "privacy.disable_network_observability",
         "prompt_cache.mode",

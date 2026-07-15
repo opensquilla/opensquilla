@@ -172,43 +172,24 @@ async def test_routing_mode_toggle_persists_only_its_paths(cfg_path) -> None:
     assert "auth" not in data
 
 
-async def test_safe_patch_persists_and_clears_knowledge_profile_override(
-    cfg_path,
-) -> None:
+async def test_safe_patch_rejects_knowledge_profile_override(cfg_path) -> None:
     _write_small_config(cfg_path)
     cfg = GatewayConfig.load(str(cfg_path))
-    ctx = _ctx(cfg)
+    original = cfg_path.read_text()
 
-    saved = await _handle_config_patch_safe(
-        {
-            "patches": {
-                "knowledge.retrieval_profile_override": "hybrid",
-            }
-        },
-        ctx,
-    )
+    with pytest.raises(ValueError, match="not safe for operator.write"):
+        await _handle_config_patch_safe(
+            {
+                "patches": {
+                    "knowledge.retrieval_profile_override": "hybrid",
+                }
+            },
+            _ctx(cfg),
+        )
 
-    assert saved["restartRequired"] is False
-    assert cfg.knowledge.retrieval_profile_override == "hybrid"
-    assert (
-        GatewayConfig.load(str(cfg_path)).knowledge.retrieval_profile_override
-        == "hybrid"
-    )
-
-    cleared = await _handle_config_patch_safe(
-        {
-            "patches": {
-                "knowledge.retrieval_profile_override": None,
-            }
-        },
-        ctx,
-    )
-
-    assert cleared["restartRequired"] is False
     assert cfg.knowledge.retrieval_profile_override is None
+    assert cfg_path.read_text() == original
     assert GatewayConfig.load(str(cfg_path)).knowledge.retrieval_profile_override is None
-    persisted = tomllib.loads(cfg_path.read_text())
-    assert "retrieval_profile_override" not in persisted.get("knowledge", {})
 
 
 # --- set-heartbeats (third _persist_config caller) -----------------------------

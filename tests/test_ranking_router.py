@@ -837,6 +837,9 @@ async def test_task_analyzer_uses_provider_interface_and_validates_json() -> Non
     assert len(provider.calls) == 1
     assert provider.calls[0][1] is not None
     assert provider.calls[0][1].temperature == 0.0
+    assert '"modality":["<allowed modality>"]' in provider.calls[0][1].system
+    assert '"session_intent":{"type":"<allowed intent>"' in provider.calls[0][1].system
+    assert "research is a domain, not a capability" in provider.calls[0][1].system
     assert result.usage["input_tokens"] == 11
     assert result.usage["billed_cost"] == pytest.approx(0.012)
     assert result.provider_id == TASK_ANALYZER_PROVIDER_ID

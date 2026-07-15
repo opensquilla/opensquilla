@@ -32,7 +32,7 @@ RANKING_VERSION = "step2-ranking-v2"
 RANKING_CONFIG_SCHEMA_VERSION = "step2-ranking-config-v3"
 TASK_ANALYZER_PROVIDER_ID = "openrouter"
 TASK_ANALYZER_MODEL_ID = "anthropic/claude-opus-4.8"
-TASK_ANALYZER_VERSION = "opus-4.8-json-v1"
+TASK_ANALYZER_VERSION = "opus-4.8-json-v2"
 TASK_PROFILE_SCHEMA_VERSION = "step2-task-profile-v1"
 
 CAPABILITIES = (
@@ -2009,13 +2009,28 @@ async def analyze_task_with_provider(
         )
 
     system_prompt = (
-        "You are a task-profile classifier. Return one JSON object only. "
-        "Required keys: capability_dist, domain_dist, tier_dist, constraints, "
-        "session_intent. Distributions must use only the supplied enum values, "
-        "contain non-negative numbers, and each sum to 1. constraints requires "
-        "cost, latency, context, modality, and risk. You may add an "
-        "optional_constraints object containing format and an "
-        "analysis_confidence number from 0 to 1. Do not answer the user's task."
+        "You are a task-profile classifier. Return one JSON object only and do "
+        "not answer the user's task. Use exactly this object shape: "
+        '{"capability_dist":{"<allowed capability>":<number>},'
+        '"domain_dist":{"<allowed domain>":<number>},'
+        '"tier_dist":{"<allowed tier>":<number>},'
+        '"constraints":{"cost":"<allowed value>",'
+        '"latency":"<allowed value>","context":"<allowed value>",'
+        '"modality":["<allowed modality>"],"risk":"<allowed value>"},'
+        '"optional_constraints":{"format":"<allowed format>"},'
+        '"session_intent":{"type":"<allowed intent>","confidence":<0..1>},'
+        '"analysis_confidence":<0..1>}. '
+        "Every displayed top-level key is required except optional_constraints "
+        "and analysis_confidence. modality must always be a JSON array, even for "
+        "one item. session_intent is required; use new_task with confidence 0 "
+        "when there is no prior route. Distributions must use only supplied enum "
+        "values, contain non-negative numbers, and each sum to 1. "
+        f"capability_dist keys are exactly {json.dumps(list(CAPABILITIES))}; "
+        f"domain_dist keys are exactly {json.dumps(list(DOMAINS))}. Copy these "
+        "names literally and never move a domain name into capability_dist. In "
+        "particular, research is a domain, not a capability; represent research "
+        "work with capabilities such as retrieval, reasoning, summarization, or "
+        "data_analysis as appropriate."
     )
     analysis_message = message
     if len(analysis_message) > analyzer_input_max_chars:
@@ -2065,6 +2080,7 @@ async def analyze_task_with_provider(
         user_profile_enabled=user_profile is not None,
     )
     usage: dict[str, Any] = {}
+    normalization_issues: list[str] = []
     try:
         stream = provider.chat(
             [Message(role="user", content=json.dumps(analyzer_input, ensure_ascii=True))],
@@ -2147,6 +2163,7 @@ async def analyze_task_with_provider(
             reason=reason,
             provider=provider_id or "unknown",
             model=model_id,
+            details=str(exc),
             routed_tier=_router_tier(routed_tier, effective_config),
             user_profile_enabled=user_profile is not None,
         )
@@ -2159,6 +2176,7 @@ async def analyze_task_with_provider(
             usage=usage,
             provider_id=provider_id,
             model_id=model_id,
+            normalization_warnings=tuple(normalization_issues),
         )
 
     payload_map = payload if isinstance(payload, Mapping) else {}

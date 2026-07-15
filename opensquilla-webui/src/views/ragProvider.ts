@@ -39,6 +39,13 @@ export interface RagGetResponse {
   legacyLimitedGet: boolean
 }
 
+export interface RagProfileSetResponse {
+  retrievalProfileOverride: string | null
+  providerDefaultRetrievalProfile: string | null
+  effectiveRetrievalProfile: string | null
+  restartRequired: false
+}
+
 export interface RagProviderStatus {
   connectionState: RagProviderState
   enabled: boolean
@@ -102,6 +109,16 @@ function safeManagementLink(value: string): boolean {
     return url.protocol === 'http:' || url.protocol === 'https:'
   } catch {
     return false
+  }
+}
+
+export function browserManagementLink(value: string | undefined): string | null {
+  if (!value) return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? value : null
+  } catch {
+    return null
   }
 }
 
@@ -207,6 +224,27 @@ export function normalizeRagProviderStatus(value: unknown): RagProviderStatus | 
     legacyAdapterEnabled: raw.legacyAdapterEnabled,
     warning: raw.warning,
   }
+}
+
+export function normalizeRagProfileSetResponse(value: unknown): RagProfileSetResponse | null {
+  const raw = record(value)
+  if (!raw) return null
+  if (!nullableString(raw.retrievalProfileOverride)) return null
+  if (!nullableString(raw.providerDefaultRetrievalProfile)) return null
+  if (!nullableString(raw.effectiveRetrievalProfile)) return null
+  if (raw.restartRequired !== false) return null
+  return {
+    retrievalProfileOverride: raw.retrievalProfileOverride,
+    providerDefaultRetrievalProfile: raw.providerDefaultRetrievalProfile,
+    effectiveRetrievalProfile: raw.effectiveRetrievalProfile,
+    restartRequired: false,
+  }
+}
+
+export function effectiveRetrievalProfile(status: RagProviderStatus | null): string | null {
+  return status?.retrievalProfileOverride
+    || status?.searchOptions?.defaultRetrievalProfile
+    || null
 }
 
 export function normalizeRagSearchResponse(value: unknown): RagSearchResponse | null {

@@ -13,7 +13,10 @@ vi.mock('@/stores/rpc', () => ({
 
 import KnowledgeView from './KnowledgeView.vue'
 import {
+  browserManagementLink,
+  effectiveRetrievalProfile,
   normalizeRagGetResponse,
+  normalizeRagProfileSetResponse,
   normalizeRagProviderStatus,
   normalizeRagSearchResponse,
 } from './ragProvider'
@@ -112,6 +115,37 @@ describe('RAG Provider response normalization', () => {
     expect(normalizeRagGetResponse(GET_RESPONSE)?.nextCursor).toBe('next-page')
     expect(normalizeRagGetResponse({ ...GET_RESPONSE, nextCursor: 1 })).toBeNull()
     expect(normalizeRagGetResponse({ ...GET_RESPONSE, content: null })).toBeNull()
+  })
+
+  it('derives the effective profile from override before provider default', () => {
+    expect(effectiveRetrievalProfile(READY_STATUS)).toBe('hybrid')
+    expect(effectiveRetrievalProfile({
+      ...READY_STATUS,
+      retrievalProfileOverride: 'vector',
+    })).toBe('vector')
+  })
+
+  it('normalizes profile set responses strictly', () => {
+    expect(normalizeRagProfileSetResponse({
+      retrievalProfileOverride: 'vector',
+      providerDefaultRetrievalProfile: 'hybrid',
+      effectiveRetrievalProfile: 'vector',
+      restartRequired: false,
+    })?.effectiveRetrievalProfile).toBe('vector')
+    expect(normalizeRagProfileSetResponse({
+      retrievalProfileOverride: 'vector',
+      providerDefaultRetrievalProfile: 'hybrid',
+      effectiveRetrievalProfile: 'vector',
+      restartRequired: 'false',
+    })).toBeNull()
+  })
+
+  it('never treats a provider-relative management path as a browser link', () => {
+    expect(browserManagementLink('/knowledge/files')).toBeNull()
+    expect(browserManagementLink('https://knowledge.example.com/manage')).toBe(
+      'https://knowledge.example.com/manage',
+    )
+    expect(browserManagementLink('javascript:alert(1)')).toBeNull()
   })
 })
 

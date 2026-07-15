@@ -114,25 +114,29 @@ async def test_listener_skips_malformed_frame_and_fails_pending(
 
 
 @pytest.mark.asyncio
-async def test_listener_skips_non_dict_frame(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A valid-JSON but non-dict frame (e.g. a stray list) must be ignored.
+async def test_listener_fails_pending_on_non_dict_frame() -> None:
+    """A valid-JSON non-object frame is still a protocol error.
 
-    The connection error set after the listener drains the queue is
-    the normal "WebSocket connection closed" marker — it must NOT
-    reference the malformed-frame path.
+    It cannot carry a response id, so ignoring it while the WebSocket
+    remains open could leave an in-flight RPC waiting forever.
     """
 
-    ws = _FakeWebSocket(["[1, 2, 3]", '{"type": "pong"}'])
+    ws = _FakeWebSocket(["[1, 2, 3]"])
     client = GatewayClient()
     client._ws = ws  # noqa: SLF001
 
+    loop = asyncio.get_running_loop()
+    fut: asyncio.Future[dict] = loop.create_future()
+    client._pending["req-1"] = fut  # noqa: SLF001
+
     await client._listen()  # noqa: SLF001
 
-    # The "closed" marker is expected after the WebSocket drains, but
-    # the malformed-frame path would set a different message that
-    # mentions "malformed".
     assert client._connection_error is not None  # noqa: SLF001
-    assert "malformed" not in str(client._connection_error).lower()  # noqa: SLF001
+    assert "non-object" in str(client._connection_error).lower()  # noqa: SLF001
+    assert fut.done(), "pending RPC future must not be left hanging"
+    with pytest.raises(ConnectionError):
+        fut.result()
+    assert not client._pending  # noqa: SLF001
 
 
 @pytest.mark.asyncio

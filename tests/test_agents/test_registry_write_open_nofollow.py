@@ -1,15 +1,4 @@
-"""Regression test: workspace-agent-file write path must use O_NOFOLLOW.
-
-A regression in ``AgentRegistry._open_workspace_agent_file_for_write``
-forgot ``O_NOFOLLOW`` on the WRONLY branch, leaving a TOCTOU window
-between the read-side ``lstat()`` and the open call: an attacker who
-placed a symlink at the registry path could race the lstat and have
-the write redirected to a different inode — defeating the
-per-file-permissions check.
-
-The read-side branch is already hardened; this test pins the
-write-side to the same behavior.
-"""
+"""Pin workspace-agent-file writes to the existing ``O_NOFOLLOW`` contract."""
 
 from __future__ import annotations
 
@@ -57,7 +46,8 @@ def test_open_workspace_agent_file_for_write_uses_o_nofollow(
     # Create the file first so lstat() returns a regular file (not ENOENT).
     target_path.write_text("hello", encoding="utf-8")
 
-    registry._open_workspace_agent_file_for_write(target_path)  # noqa: SLF001
+    fd = registry._open_workspace_agent_file_for_write(target_path)  # noqa: SLF001
+    os.close(fd)
     # Cleanup the file we created via the spy.
     try:
         target_path.unlink()

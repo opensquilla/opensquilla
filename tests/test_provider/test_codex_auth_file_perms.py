@@ -1,19 +1,10 @@
-"""Regression tests for codex auth token persistence.
+"""Regression tests for private, atomic Codex auth token persistence.
 
-The original ``_persist_refreshed_tokens`` wrote the token via
-``tempfile.mkstemp`` and then called ``os.chmod(tmp_name, 0o600)``
-*after* writing the JSON. That leaves two problems:
-
-1. On Windows, ``os.chmod`` is a no-op so the inherited ACL stayed
-   broad (group/world-readable) until ``os.replace``.
-2. Between ``mkstemp`` and ``chmod`` a parallel reader could observe
-   the file at the umask-derived (typically 0o644) perms.
-
-The fix keeps writing through the fd ``mkstemp`` returned (created
-atomically with 0o600 on POSIX) and tightens it via ``os.fchmod`` on
-that same fd before any secret bytes are written — no close-and-reopen
-window, and the permission change is bound to the fd rather than to a
-path lookup (no path-based TOCTOU).
+The implementation keeps writing through the descriptor returned by
+``mkstemp`` instead of closing it and reopening the temporary path. On
+POSIX it also reasserts mode 0o600 through that descriptor before any
+secret bytes are written. Failure paths must close the descriptor and
+remove the partial file.
 """
 
 from __future__ import annotations

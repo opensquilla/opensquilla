@@ -135,26 +135,14 @@ def _persist_refreshed_tokens(auth_path: Path, refreshed: dict[str, Any]) -> Non
     payload["last_refresh"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
     auth_path.parent.mkdir(parents=True, exist_ok=True)
-    # Create the tmp file with strict 0o600 perms atomically and write
-    # through the fd that ``mkstemp`` returned. ``tempfile.mkstemp``
-    # already gives 0o600 on POSIX, but the original code then called
-    # ``os.chmod(tmp_name, 0o600)`` which:
-    #   * is a no-op on Windows so the inherited ACL stays broad until
-    #     the rename, and
-    #   * opens a TOCTOU window: the tightening is bound to a path
-    #     lookup rather than to the open fd.
-    # Closing the fd and re-opening the path is no better: the ``mode``
-    # argument of ``os.open(..., O_CREAT, 0o600)`` is ignored when the
-    # file already exists (which it always does after ``mkstemp``), and
-    # the reopen races against the path being swapped out underneath
-    # us. So we keep writing through the original fd and tighten with
-    # ``os.fchmod``, which binds the permission change to the fd. It is
-    # available on POSIX and on the Windows builds CPython ships today;
-    # on older Windows builds without it, ``mkstemp``'s private handle
-    # is the best available and the ``hasattr`` guard degrades cleanly.
-    fd, initial_tmp_name = tempfile.mkstemp(dir=str(auth_path.parent), prefix=".auth-")
-    tmp_name: str | None = initial_tmp_name
+    # ``mkstemp`` creates the temporary file securely and returns an open
+    # descriptor. Keep writing through that descriptor so no path-based
+    # close-and-reopen race is introduced. On POSIX, ``fchmod`` reasserts
+    # the intended mode on the open file before any token bytes are written;
+    # platforms without ``fchmod`` retain ``mkstemp``'s native protection.
+    fd, tmp_name = tempfile.mkstemp(dir=str(auth_path.parent), prefix=".auth-")
     fd_owned = False
+    should_unlink = True
     try:
         if hasattr(os, "fchmod"):
             os.fchmod(fd, 0o600)
@@ -164,7 +152,7 @@ def _persist_refreshed_tokens(auth_path: Path, refreshed: dict[str, Any]) -> Non
         os.replace(tmp_name, auth_path)
         # Ownership transferred to ``auth_path``; don't unlink on
         # subsequent error.
-        tmp_name = None
+        should_unlink = False
     except Exception:
         # If ``fdopen`` never took ownership of the descriptor, close
         # it ourselves so a pre-write failure doesn't leak the fd.
@@ -173,7 +161,7 @@ def _persist_refreshed_tokens(auth_path: Path, refreshed: dict[str, Any]) -> Non
                 os.close(fd)
             except OSError:
                 pass
-        if tmp_name is not None:
+        if should_unlink:
             try:
                 os.unlink(tmp_name)
             except OSError:

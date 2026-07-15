@@ -239,10 +239,9 @@ class GatewayClient:
         """Read frames and route to pending futures or the event queue."""
         try:
             async for raw in self._ws:
-                # A single malformed frame from the server or a proxy
-                # must not abort the listener — that would tear down the
-                # whole connection. Skip the bad frame, fail any
-                # in-flight RPCs that were waiting on it, and keep going.
+                # Malformed protocol frames cannot be matched safely to
+                # pending requests. Fail the connection explicitly so no
+                # caller remains blocked on a future that cannot resolve.
                 try:
                     frame = json.loads(raw)
                 except json.JSONDecodeError:
@@ -253,7 +252,12 @@ class GatewayClient:
                     )
                     return
                 if not isinstance(frame, dict):
-                    continue
+                    self._mark_connection_failed(
+                        ConnectionError(
+                            "Gateway sent a non-object frame; closing connection"
+                        )
+                    )
+                    return
                 frame_type = frame.get("type")
                 if frame_type == "res":
                     frame_id = frame.get("id")

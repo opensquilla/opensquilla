@@ -2,12 +2,10 @@
 
 The channel contract previously enforced ``CAPABILITY_TIER`` /
 ``DM_SAFETY_TIERS`` / error-class taxonomy membership with bare
-``assert`` statements. Those are stripped under ``python -O``, so a
-crafted plugin could claim an arbitrary tier (or relabel auth
-failures as retryable) once the interpreter was hardened. These tests
-pin the invariants to explicit ``raise`` semantics: even when running
-with ``-O`` the contract check must fail loudly rather than silently
-accept the bad value.
+``assert`` statements. Those are stripped under ``python -O``. These
+tests pin the helpers to explicit ``raise`` semantics so contract
+validation still rejects invalid adapter declarations when the
+interpreter runs with optimization enabled.
 
 The tests use a synthetic module so they don't depend on a particular
 shipped adapter diverging from the canonical taxonomy — they exercise

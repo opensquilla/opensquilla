@@ -515,9 +515,8 @@ def normalize_channel_send_result(
 def assert_capability_tier(module: ModuleType) -> None:
     """``CAPABILITY_TIER`` must be one of the allowed values.
 
-    Uses an explicit ``raise`` (not ``assert``) so the invariant survives
-    ``python -O``: a crafted plugin must not be able to claim an arbitrary
-    capability tier once assertions are stripped.
+    Uses an explicit ``raise`` (not ``assert``) so shared contract
+    validation remains active when Python runs with optimization enabled.
     """
     tier = getattr(module, "CAPABILITY_TIER", None)
     if tier not in ALLOWED_CAPABILITY_TIERS:
@@ -553,8 +552,7 @@ def assert_error_class_taxonomy(module: ModuleType) -> None:
     """Retryable + fatal error class tuples must match the canonical taxonomy.
 
     Uses explicit ``raise`` checks (not ``assert``) so a misconfigured
-    adapter cannot silently reclassify auth failures as retryable when
-    Python is run with ``-O``.
+    adapter is still rejected when Python runs with optimization enabled.
     """
     retryable = getattr(module, "RETRYABLE_ERROR_CLASSES", None)
     fatal = getattr(module, "FATAL_ERROR_CLASSES", None)

@@ -1,5 +1,5 @@
 <template>
-  <template v-for="(message, index) in messages" :key="message.id || `${message.role}-${index}`">
+  <template v-for="(message, index) in messages" :key="chatMessageKey(message, index)">
     <slot
       v-if="message.isRouterStrip"
       name="router-strip"
@@ -8,6 +8,9 @@
     />
     <UserMessage
       v-else-if="message.displayRole === 'user'"
+      :id="`chat-turn-${index}`"
+      :data-chat-turn-key="chatMessageKey(message, index)"
+      tabindex="-1"
       :message="message"
       :share-mode="shareMode"
       :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"
@@ -44,7 +47,7 @@
       @download-artifact="$emit('downloadArtifact', $event)"
       @toggle-tool-group="$emit('toggleToolGroup', $event)"
       @toggle-tool-item="$emit('toggleToolItem', $event)"
-      @show-tool-result="(content, title) => $emit('showToolResult', content, title)"
+      @show-tool-result="(content, title, context) => $emit('showToolResult', content, title, context)"
       @resolve-interrupt="(id, decision, note) => $emit('resolveInterrupt', id, decision, note)"
       @extend-interrupt="id => $emit('extendInterrupt', id)"
       @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
@@ -70,6 +73,7 @@ import type {
   ChatToolCall,
   ChatToolCallGroup,
   ChatToolCallRenderItem,
+  ToolResultContext,
 } from '@/types/chat'
 import type { ArtifactPayload } from '@/types/rpc'
 import { chatMessageKey } from '@/utils/chat/messageIdentity'
@@ -103,7 +107,7 @@ defineEmits<{
   downloadArtifact: [artifact: ArtifactPayload]
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]
-  showToolResult: [content: string, title: string]
+  showToolResult: [content: string, title: string, context?: ToolResultContext]
   forkConversation: []
   resolveInterrupt: [id: string, decision: 'allow-once' | 'allow-always' | 'deny', note?: string]
   extendInterrupt: [id: string]

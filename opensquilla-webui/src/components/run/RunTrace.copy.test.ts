@@ -10,7 +10,13 @@ vi.mock('@/utils/browser', () => ({
   copyTextWithFallback: vi.fn().mockResolvedValue(undefined),
 }))
 
-async function mountRunTrace(initialItems: ChatStreamTimelineItem[]) {
+async function mountRunTrace(
+  initialItems: ChatStreamTimelineItem[],
+  options: {
+    isToolItemOpen?: (renderKey: string) => boolean
+    onShowResult?: (content: string, title: string, context?: unknown) => void
+  } = {},
+) {
   const el = document.createElement('div')
   document.body.appendChild(el)
   const items = ref(initialItems)
@@ -19,7 +25,8 @@ async function mountRunTrace(initialItems: ChatStreamTimelineItem[]) {
       return () => h(RunTrace, {
         items: items.value,
         isToolGroupOpen: () => false,
-        isToolItemOpen: () => false,
+        isToolItemOpen: options.isToolItemOpen ?? (() => false),
+        onShowResult: options.onShowResult,
       })
     },
   })
@@ -191,6 +198,58 @@ describe('RunTrace code block copy control', () => {
     expect(sections[1]?.textContent).toContain('artifact: { path: /tmp/octopus-3d-clay.png, mime: image/png }')
     expect(sections[1]?.textContent).not.toContain('[object Object]')
 
+    app.unmount()
+  })
+
+  it('passes read_file context along with a full result', async () => {
+    const inputRaw = JSON.stringify({ path: '/workspace/HEARTBEAT.yml' })
+    const result = 'priority_bands:\n  high: 1.0\n'.repeat(30)
+    const onShowResult = vi.fn()
+    const { app, el } = await mountRunTrace([
+      {
+        type: 'tool-group',
+        key: 'read-file-group',
+        group: {
+          groupId: 'read-file-group',
+          operationKey: 'read_file',
+          label: 'read_file',
+          iconName: 'fileText',
+          secondary: '',
+          isRunning: false,
+          isError: false,
+          status: 'success',
+          calls: [
+            {
+              toolId: 'tool-1',
+              renderKey: 'tool-1',
+              name: 'read_file',
+              displayName: 'read_file',
+              inputRaw,
+              inputPreview: inputRaw,
+              isRunning: false,
+              status: 'success',
+              isError: false,
+              result,
+              resultPreview: result.slice(0, 200),
+              isOpen: true,
+            },
+          ],
+        },
+      },
+    ], {
+      isToolItemOpen: () => true,
+      onShowResult,
+    })
+
+    const viewFull = el.querySelector<HTMLButtonElement>('.step-view-btn')
+    expect(viewFull).not.toBeNull()
+    viewFull?.click()
+
+    expect(onShowResult).toHaveBeenCalledWith(result, 'read_file · result', {
+      toolName: 'read_file',
+      inputRaw,
+      section: 'result',
+    })
     app.unmount()
   })
 })

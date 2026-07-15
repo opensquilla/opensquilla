@@ -2,6 +2,7 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
+| 0.5.0rc4 | v0.5.0rc4 | 2026-07-13 | Preview: safe profile recovery, explicit Windows Portable transfer, Desktop data retention, update reliability, and OSS downloads |
 | 0.5.0rc3 | v0.5.0rc3 | 2026-07-10 | Preview: legacy-home migration, provider and routing expansion, desktop/Web UI improvements, runtime hardening, and container images |
 | 0.5.0rc2 | v0.5.0rc2 | 2026-07-06 | Preview: provider/router recovery, Web UI upload refresh, desktop/session fixes, and CI contract repair |
 | 0.5.0rc1 | v0.5.0rc1 | 2026-07-04 | Preview: Model Ensemble routing, Control UI, managed execution, OpenTUI, and portable retirement |
@@ -34,6 +35,12 @@ Existing 0.4.x release pages keep their legacy Windows portable downloads for
 historical compatibility, while new 0.5.x releases publish only the listed
 Electron desktop artifacts, updater metadata, versioned wheel, and checksums.
 
+For Windows Desktop upgrades from RC3 to RC4 or later, users must install the
+new version directly over the existing installation and must not uninstall RC3
+first. The RC3 uninstaller may remove `%APPDATA%\OpenSquilla`; release guidance
+must tell users to back up that directory. RC4 and later NSIS packages set
+`deleteAppDataOnUninstall=false`.
+
 Container tags follow a separate policy: each release publishes
 `ghcr.io/opensquilla/opensquilla:<git-tag>`, and Docker `:latest`
 tracks the most recently pushed release tag, including previews and backports.
@@ -60,17 +67,29 @@ switch. `OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true` or:
 disable_network_observability = true
 ```
 
-disables automatic install telemetry, passive update checks, and desktop
-startup auto-update checks. The legacy compatibility environment variables
+disables automatic install telemetry, passive update checks, and automatic
+desktop update checks at startup and, while the app remains open, at most once
+per day. The legacy compatibility environment variables
 `OPENSQUILLA_TELEMETRY_DISABLED=true` and
 `OPENSQUILLA_UPDATE_CHECK_DISABLED=true` remain honored. Manual user-initiated
-release, download, or update checks may still contact GitHub after user intent.
+update-availability checks do not bypass these controls. Opening a release page
+or downloading an asset is a separate user-initiated action and may still
+contact GitHub.
+
+Update discovery follows the installed release channel. Stable builds only
+offer newer stable releases. Preview builds offer the highest published release
+on the same version base — a later RC or the final stable release — and never
+jump to a preview on a different base. Supported macOS desktop builds check
+after startup and at most once per day while the app remains open; surfaces
+without native update support refresh the passive Control UI notice through the
+local gateway. These long-running checks are included starting with RC4, so an
+already-installed Windows RC3 still requires a manual, in-place RC4 upgrade.
 
 Preview README install commands must use tag-pinned URLs such as:
 
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe`
-- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe`
+- `https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`
 
 ## Release SOP
 
@@ -95,29 +114,29 @@ Preview README install commands must use tag-pinned URLs such as:
    more time, then create the annotated tag on that exact SHA:
 
    ```sh
-   git tag -a v0.5.0rc3 <verified-sha> -m "OpenSquilla 0.5.0 Preview 3"
-   git push origin v0.5.0rc3
+   git tag -a v0.5.0rc4 <verified-sha> -m "OpenSquilla 0.5.0 Preview 4"
+   git push origin v0.5.0rc4
    ```
 
 8. Wait for both `.github/workflows/wheelhouse-release.yml` and
    `.github/workflows/docker-image.yml`. Review the draft GitHub Release. For
-   `v0.5.0rc3`, confirm it is a pre-release, is not marked
+   `v0.5.0rc4`, confirm it is a pre-release, is not marked
    Latest, and contains only the Electron installers, updater metadata,
    versioned wheel, `SHA256SUMS`, plus GitHub's generated source archives. It
    must not contain `OpenSquilla-*-portable.zip` or
    `OpenSquilla-windows-x64-portable.zip`.
 9. Verify GHCR before publishing broadly. For the first container release, make
    the newly created `ghcr.io/opensquilla/opensquilla` package public, then
-   confirm both `v0.5.0rc3` and `latest` resolve to an amd64/arm64 manifest and
+   confirm both `v0.5.0rc4` and `latest` resolve to an amd64/arm64 manifest and
    pass a gateway health smoke test.
 10. Publish the GitHub Release only after maintainer confirmation, then run the
    post-publish tag URL checks:
 
    ```sh
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-mac-arm64.dmg
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/OpenSquilla-0.5.0-rc3-win-x64.exe
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/opensquilla-0.5.0rc3-py3-none-any.whl
-   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc3/SHA256SUMS
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-mac-arm64.dmg
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/OpenSquilla-0.5.0-rc4-win-x64.exe
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl
+   curl --fail --head --location https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/SHA256SUMS
    ```
 
 11. If a release tag is wrong before publication, stop and report its peeled
@@ -125,8 +144,8 @@ Preview README install commands must use tag-pinned URLs such as:
     Move it only through the protected-tag repair procedure, restore protection,
     and verify both workflows and the remote peeled tag before continuing.
 12. For subsequent previews: bump the package version, docs, workflow
-    contracts, and tag to the next preview version, for example `0.5.0rc4` /
-    `v0.5.0rc4`. Preview GitHub Releases must remain pre-releases and use
+    contracts, and tag to the next preview version, for example `0.5.0rc5` /
+    `v0.5.0rc5`. Preview GitHub Releases must remain pre-releases and use
     tag-pinned README URLs until a later stable release is intentionally
     promoted.
 
@@ -136,13 +155,13 @@ These checks cannot be fully proven by local artifact generation:
 
 - The tag exists on GitHub and matches `pyproject.toml`.
 - The release workflow can fetch hydrated Git LFS router assets.
-- The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 3`.
+- The draft GitHub Release title is `OpenSquilla 0.5.0 Preview 4`.
 - The draft GitHub Release is marked Pre-release and is not marked Latest.
 - Preview GitHub Releases contain the Electron installers, updater metadata,
   versioned wheel, and `SHA256SUMS` after `gh release upload --clobber`.
 - Preview GitHub Releases do not contain Windows portable zips or portable
   latest aliases.
-- The GHCR package is public, and `v0.5.0rc3` plus `latest` expose both amd64
+- The GHCR package is public, and `v0.5.0rc4` plus `latest` expose both amd64
   and arm64 images that pass the gateway health smoke test.
 - After a preview GitHub Release is published, the tag-pinned release asset URLs
   resolve.
@@ -154,5 +173,5 @@ These checks cannot be fully proven by local artifact generation:
 
 Release assets are distributed as built artifacts, so the package filename,
 installer name, wheel name, and tag should describe the same preview build.
-PEP 440 accepts `0.5.0rc3`, while the public GitHub Release title can use the
-friendlier name "OpenSquilla 0.5.0 Preview 3".
+PEP 440 accepts `0.5.0rc4`, while the public GitHub Release title can use the
+friendlier name "OpenSquilla 0.5.0 Preview 4".

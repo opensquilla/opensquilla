@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -25,6 +28,11 @@ TIER_A_MYPY_PARTITION: tuple[str, ...] = (
 )
 
 
+@pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS") == "true"
+    and os.environ.get("GITHUB_WORKFLOW") == "CI",
+    reason="the ubuntu-quality job runs mypy over all of src/opensquilla before pytest",
+)
 def test_tier_a_mypy_partition_stays_clean() -> None:
     result = subprocess.run(
         [sys.executable, "-m", "mypy", *TIER_A_MYPY_PARTITION],

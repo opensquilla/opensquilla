@@ -728,6 +728,7 @@ def test_openrouter_video_resolves_relative_polling_url(
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(module, "_request_json", fake_request_json)
     monkeypatch.setattr(module, "_download", fake_download)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(sys, "stdin", io.StringIO("make a short video"))
     monkeypatch.setattr(
         sys,

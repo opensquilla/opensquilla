@@ -4,18 +4,19 @@
 // only: props in, events out — no RPC, no form state.
 //
 // Three render modes per cell:
-//   • default    — model is a free-text input, thinking a select, image a switch
-//                  (byte-for-byte the Router section's previous inline table);
-//   • combobox   — the model cell upgrades to SetupModelCombobox only when the
-//                  discovered-model list belongs to the SAME provider the tier
-//                  routes through (free text always keeps working elsewhere);
+//   • default    — the stable model input stays in free-text mode;
+//   • combobox   — that same input gains a provider-scoped catalog only when
+//                  a verified live listing exists (no remount on async arrival);
 //   • readonly   — preset preview: no editable controls at all.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
 import SetupModelCombobox from '@/components/setup/SetupModelCombobox.vue'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
-import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
+import type {
+  DiscoveredModelCatalog,
+  DiscoveredModelsByProvider,
+} from '@/composables/setup/useSetupProviderForm'
 
 const { t } = useI18n()
 
@@ -24,18 +25,13 @@ const props = withDefaults(defineProps<{
   tierLabel: (tier: string) => string
   disabled?: boolean
   readonly?: boolean
-  // Live-discovered models from the provider panel's connection machine, plus
-  // the provider they were discovered for. A tier's model cell only upgrades
-  // to the combobox when that tier actually routes through the same provider.
-  models?: DiscoveredModel[]
-  modelsProvider?: string
-  modelSource?: string
+  // Provider-scoped live catalogs. A tier only receives the catalog belonging
+  // to its own normalized provider id, so mixed-provider routes stay isolated.
+  modelsByProvider?: DiscoveredModelsByProvider
 }>(), {
   disabled: false,
   readonly: false,
-  models: () => [],
-  modelsProvider: '',
-  modelSource: 'none',
+  modelsByProvider: () => ({}),
 })
 
 const emit = defineEmits<{
@@ -43,17 +39,23 @@ const emit = defineEmits<{
 }>()
 
 const THINKING_LEVELS = ['', 'off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh']
+const EMPTY_CATALOG: DiscoveredModelCatalog = { models: [], source: 'none' }
 
-function useCombobox(row: SetupTierRow): boolean {
+function catalogFor(row: SetupTierRow): DiscoveredModelCatalog {
+  const provider = row.provider.trim().toLowerCase()
+  return props.modelsByProvider[provider] || EMPTY_CATALOG
+}
+
+function hasLiveCatalog(row: SetupTierRow): boolean {
   if (props.readonly || props.disabled) return false
-  if (!props.models.length || !props.modelsProvider) return false
-  return row.provider === props.modelsProvider
+  const catalog = catalogFor(row)
+  return catalog.source === 'live' && catalog.models.length > 0
 }
 
 // The combobox dropdown is absolutely positioned; the table's rounded-corner
 // overflow clip would cut it off, so overflow opens up only when a combobox
 // is actually rendered.
-const hasCombobox = computed(() => props.rows.some(row => useCombobox(row)))
+const hasCombobox = computed(() => props.rows.some(row => hasLiveCatalog(row)))
 </script>
 
 <template>
@@ -76,15 +78,14 @@ const hasCombobox = computed(() => props.rows.some(row => useCombobox(row)))
       </template>
       <template v-else>
         <SetupModelCombobox
-          v-if="useCombobox(tier)"
           cell
           :field="{ name: `tier_${tier.name}_model`, label: t('setup.router.tierModelAria', { tier: tier.name }), placeholder: t('setup.router.tierModelAria', { tier: tier.name }) }"
           :value="tier.model"
-          :models="models"
-          :model-source="modelSource"
+          :models="catalogFor(tier).models"
+          :model-source="catalogFor(tier).source"
+          :disabled="disabled"
           @update="(val) => emit('updateTierField', tier.name, 'model', val)"
         />
-        <input v-else :value="tier.model" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :placeholder="t('setup.router.tierModelAria', { tier: tier.name })" :disabled="disabled" @input="emit('updateTierField', tier.name, 'model', ($event.target as HTMLInputElement).value)">
         <select :value="tier.thinkingLevel" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })" :disabled="disabled" @change="emit('updateTierField', tier.name, 'thinkingLevel', ($event.target as HTMLSelectElement).value)">
           <option v-for="v in THINKING_LEVELS" :key="v" :value="v">{{ v || '-' }}</option>
         </select>

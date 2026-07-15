@@ -12,6 +12,7 @@ import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandler
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
+import { createClientMessageId } from '@/utils/chat/messageIdentity'
 import { PENDING_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 
 type RpcClient = {
@@ -206,6 +207,7 @@ export function useChatSend(options: UseChatSendOptions) {
       role: 'user',
       text: userText,
       ts: now,
+      clientId: createClientMessageId(),
       ...(displayAttachments.length > 0 ? { attachments: displayAttachments } : {}),
     })
     options.autoScroll.value = true

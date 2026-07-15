@@ -88,6 +88,16 @@ export type ChatToolCallRenderItem = ChatToolCall & {
   renderKey: string
 }
 
+// Context travels with an expanded tool payload so the full-result viewer can
+// describe the content without trying to reverse-engineer it from its title.
+// `inputRaw` is already part of the rendered tool trace; the viewer only uses
+// it to extract safe display metadata such as a read_file path.
+export interface ToolResultContext {
+  toolName?: string
+  inputRaw?: string
+  section?: 'input' | 'result' | 'error'
+}
+
 export interface ChatToolCallGroup {
   groupId: string
   operationKey: string
@@ -242,6 +252,8 @@ export interface ChatEnsembleUsageRow {
   costUsd?: number
   cost_source?: string
   costSource?: string
+  elapsed_ms?: number
+  elapsedMs?: number
   [key: string]: unknown
 }
 
@@ -267,9 +279,10 @@ export interface ChatEnsembleMetaModel {
   input: number
   output: number
   costUsd: number
-  // Live per-member lifecycle during streaming: 'running' while the proposer is
-  // still generating, 'done' once it finishes. Absent for settled/history rows.
-  status?: 'running' | 'done'
+  // Live per-member lifecycle during streaming. Absent for settled/history rows.
+  status?: 'running' | 'done' | 'failed'
+  elapsedMs?: number
+  error?: string
 }
 
 export interface ChatEnsembleMeta {
@@ -295,6 +308,8 @@ export interface ChatMessage {
   role: ChatRole
   text: string
   ts: string | number | null
+  /** Stable client-only identity for optimistic rows before the backend assigns messageId. */
+  clientId?: string
   reasoning?: ChatReasoning
   routerDecision?: import('./rpc').RouterDecisionPayload | null
   artifacts?: ArtifactPayload[]
@@ -345,6 +360,7 @@ export interface ChatMessageMeta {
 
 export interface ChatRenderedMessage {
   id?: string
+  clientId?: string
   sourceIndex?: number
   role: string
   displayRole: string

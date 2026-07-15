@@ -271,7 +271,8 @@ def test_replace_is_commit_point_with_no_target_chmod_afterward(tmp_path, monkey
     persist_config(cfg, path=target, backup=False)
 
     assert tomllib.loads(target.read_text())["port"] == 18795
-    assert target.stat().st_mode & 0o777 == 0o600
+    if os.name != "nt":
+        assert target.stat().st_mode & 0o777 == 0o600
 
 
 # ---------------------------------------------------------------------------

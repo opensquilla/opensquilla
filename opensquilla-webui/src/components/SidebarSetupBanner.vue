@@ -47,10 +47,10 @@ function openSetup() { router.push('/settings/auto') }
 function openReadiness() { router.push('/overview') }
 
 // Legacy-home advisory: detection is a read-only scan safe under a running
-// gateway, but the import itself needs a quiesced gateway, so this banner only
-// advises. On the web the operator stops the gateway and runs the suggested
-// CLI command; on desktop the Settings → Runtime "Import legacy data" action
-// owns the whole stop → import → restart lifecycle.
+// gateway, but the transfer itself needs a quiesced gateway, so this banner only
+// advises on the web. Desktop already has the native Settings transfer flow;
+// showing the same candidate in its sidebar would turn a normal upgrade (or an
+// explicit onboarding skip) into a repeated migration prompt.
 const isDesktop = platform.capabilities.isDesktop
 const legacy = computed(() => readinessLegacyData(status.value))
 
@@ -59,11 +59,12 @@ const legacy = computed(() => readinessLegacyData(status.value))
 const legacyDismissedSignature = ref<string | null>(null)
 const legacySignature = computed(() => JSON.stringify(legacy.value))
 const legacyVisible = computed(
-  () => legacy.value !== null && legacyDismissedSignature.value !== legacySignature.value,
+  () => !isDesktop
+    && legacy.value !== null
+    && legacyDismissedSignature.value !== legacySignature.value,
 )
 
 function dismissLegacy() { legacyDismissedSignature.value = legacySignature.value }
-function openRuntimeSettings() { router.push('/settings/runtime') }
 
 async function copyMigrateCommand(command: string) {
   try {
@@ -135,27 +136,12 @@ async function copyMigrateCommand(command: string) {
     <p class="sidebar-setup-banner__path" data-testid="legacy-data-path">
       <code>{{ legacy.path }}</code>
     </p>
-    <template v-if="isDesktop">
-      <p class="sidebar-setup-banner__hint">{{ t('shared.legacyDataBanner.hintDesktop') }}</p>
-      <div class="sidebar-setup-banner__actions">
-        <button
-          type="button"
-          class="sidebar-setup-banner__cta"
-          data-testid="legacy-data-open-settings"
-          @click="openRuntimeSettings"
-        >
-          {{ t('shared.legacyDataBanner.openSettings') }}
-        </button>
-      </div>
-    </template>
-    <template v-else>
-      <p class="sidebar-setup-banner__hint">{{ t('shared.legacyDataBanner.hintWeb') }}</p>
-      <SetupCommandBlock
-        :command="legacy.command"
-        :copy-label="t('shared.legacyDataBanner.copyCommand')"
-        wrap
-        @copy="copyMigrateCommand"
-      />
-    </template>
+    <p class="sidebar-setup-banner__hint">{{ t('shared.legacyDataBanner.hintWeb') }}</p>
+    <SetupCommandBlock
+      :command="legacy.command"
+      :copy-label="t('shared.legacyDataBanner.copyCommand')"
+      wrap
+      @copy="copyMigrateCommand"
+    />
   </section>
 </template>

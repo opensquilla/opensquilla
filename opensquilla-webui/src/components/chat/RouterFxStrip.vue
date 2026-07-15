@@ -14,12 +14,13 @@
         :aria-label="ensembleButtonLabel"
         :aria-expanded="inspectorOpen ? 'true' : 'false'"
         :aria-controls="inspectorId"
+        :aria-busy="!isEnsembleDone ? 'true' : 'false'"
         :disabled="!hasInspector"
         data-testid="router-ensemble-toggle"
         @click="toggleInspector"
       >
         <span :class="['router-fx-ensemble__dot', { done: isEnsembleDone, pending: !hasEnsembleModels }]" aria-hidden="true"></span>
-        <span class="router-fx-ensemble__label">{{ ensembleStatusLabel }}</span>
+        <span class="router-fx-ensemble__label" role="status" aria-live="polite">{{ ensembleStatusLabel }}</span>
         <span class="router-fx-ensemble__meta">{{ ensembleMetaLabel }}</span>
         <span v-if="!isEnsembleDone" class="router-fx-ensemble__scan" aria-hidden="true"></span>
       </button>
@@ -39,17 +40,21 @@
             v-for="model in ensembleModels"
             :key="`${model.role}:${model.provider}:${model.model}`"
             class="router-fx-inspector__row"
-            :class="{ 'router-fx-inspector__row--running': model.status === 'running' }"
+            :class="{
+              'router-fx-inspector__row--running': model.status === 'running',
+              'router-fx-inspector__row--failed': model.status === 'failed',
+            }"
             :data-status="model.status || undefined"
           >
             <span class="router-fx-inspector__role">{{ model.role }}</span>
             <span class="router-fx-inspector__model" :title="model.model">{{ model.modelShort }}</span>
-            <span class="router-fx-inspector__usage">
+            <span class="router-fx-inspector__usage" :title="model.error || undefined">
               <span
                 v-if="model.status === 'running'"
                 class="router-fx-inspector__spin"
                 aria-hidden="true"
               ></span>
+              <template v-else-if="model.status === 'failed'">{{ ensembleModelFailure(model) }}</template>
               <template v-else>{{ ensembleModelUsage(model) }}</template>
             </span>
           </div>
@@ -116,19 +121,32 @@ const isEnsembleHandoff = computed(() => props.message.routerState === 'handoff'
 const hasInspector = computed(() =>
   isEnsemblePanel.value || hasEnsembleModels.value || (ensemble.value?.modelCount || 0) > 0,
 )
-// Synthesizing is "done" once the turn settles OR every revealed member has
-// finished. The latter freezes the strip (green dot, no scan) while the
-// aggregator/tools keep running below, instead of animating for the whole turn.
-const allMembersDone = computed(() =>
-  hasEnsembleModels.value && ensembleModels.value.every(member => member.status === 'done'),
+// A live ensemble is complete only after the aggregator has reached a terminal
+// state. Proposer completion alone is the handoff into synthesis, not the end.
+const hasAggregator = computed(() =>
+  ensembleModels.value.some(member => member.role === 'aggregator'),
+)
+const allMembersTerminal = computed(() =>
+  hasEnsembleModels.value && ensembleModels.value.every(
+    member => member.status === 'done' || member.status === 'failed',
+  ),
 )
 const isEnsembleDone = computed(
-  () => allMembersDone.value || (Boolean(ensemble.value) && props.message.routerSettled === true),
+  () => (hasAggregator.value && allMembersTerminal.value)
+    || (Boolean(ensemble.value) && props.message.routerSettled === true),
 )
 const isLegacyGrid = computed(() => props.message.routerPanel === 'legacy-grid')
 const gridColumnCount = computed(() => isLegacyGrid.value ? 5 : Math.min(4, Math.max(2, gridCells.value.length)))
 const mobileGridColumnCount = computed(() => isLegacyGrid.value ? 3 : (gridCells.value.length > 2 ? 2 : Math.max(1, gridCells.value.length)))
-const candidateCount = computed(() => ensemble.value?.modelCount || ensembleModels.value.length)
+// The terminal breakdown contains the aggregator as a model row, while the
+// router label describes proposer candidates. Prefer the trace's explicit
+// candidate count and otherwise exclude the aggregator row.
+const candidateCount = computed(() => {
+  const traced = Number(ensemble.value?.totalCandidates || 0)
+  if (traced > 0) return traced
+  const proposers = ensembleModels.value.filter(member => member.role !== 'aggregator').length
+  return proposers || ensemble.value?.modelCount || ensembleModels.value.length
+})
 const totalCandidates = computed(() => ensemble.value?.totalCandidates || 0)
 const hasKnownCandidateCount = computed(() => candidateCount.value > 0)
 const emptyTraceLabel = computed(() =>
@@ -178,7 +196,22 @@ function toggleInspector() {
 
 function ensembleModelUsage(model: ChatEnsembleMetaModel): string {
   const total = model.input + model.output
-  return total > 0 ? t('chat.routerFx.ensembleTokens', { count: total }) : t('chat.routerFx.ensembleUsed')
+  const usage = total > 0 ? t('chat.routerFx.ensembleTokens', { count: total }) : t('chat.routerFx.ensembleUsed')
+  const elapsed = ensembleModelElapsed(model)
+  return elapsed ? `${usage} · ${elapsed}` : usage
+}
+
+function ensembleModelFailure(model: ChatEnsembleMetaModel): string {
+  const failed = t('chat.routerFx.ensembleFailed')
+  const elapsed = ensembleModelElapsed(model)
+  return elapsed ? `${failed} · ${elapsed}` : failed
+}
+
+function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
+  const elapsedMs = Number(model.elapsedMs || 0)
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return ''
+  const seconds = elapsedMs / 1000
+  return `${seconds >= 10 ? Math.round(seconds) : Number(seconds.toFixed(1))}s`
 }
 </script>
 
@@ -464,6 +497,11 @@ function ensembleModelUsage(model: ChatEnsembleMetaModel): string {
 
 .router-fx-inspector__row--running .router-fx-inspector__model {
   color: var(--router-accent);
+}
+
+.router-fx-inspector__row--failed .router-fx-inspector__model,
+.router-fx-inspector__row--failed .router-fx-inspector__usage {
+  color: var(--danger);
 }
 
 .router-fx-inspector__spin {

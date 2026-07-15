@@ -10,7 +10,6 @@ layer, which requires a quiesced gateway.
 from __future__ import annotations
 
 import os
-import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,7 +43,6 @@ def detect_legacy_home(target: Path | None = None) -> LegacyHomeCandidate | None
     try:
         from opensquilla.migration.opensquilla_home import (
             _same_path,
-            _source_marker_matches_target,
             detect_desktop_home,
             detect_legacy_cli_home,
             enumerate_portable_homes,
@@ -59,7 +57,6 @@ def detect_legacy_home(target: Path | None = None) -> LegacyHomeCandidate | None
         if (
             desktop_home is not None
             and not _same_path(desktop_home, resolved_target)
-            and not _source_marker_matches_target(desktop_home, resolved_target)
         ):
             return LegacyHomeCandidate(path=desktop_home, kind="desktop-home")
         if sys.platform == "win32" or _portable_bases_present():
@@ -67,8 +64,6 @@ def detect_legacy_home(target: Path | None = None) -> LegacyHomeCandidate | None
                 # Never offer the live home as its own migration source
                 # (mirrors the detect_legacy_cli_home guard).
                 if _same_path(candidate.path, resolved_target):
-                    continue
-                if _source_marker_matches_target(candidate.path, resolved_target):
                     continue
                 return LegacyHomeCandidate(path=candidate.path, kind="windows-portable")
     except OSError:
@@ -93,7 +88,6 @@ def _portable_bases_present() -> bool:
 
 
 def _command_path(path: Path) -> str:
-    raw = str(path)
-    if any(ch.isspace() for ch in raw):
-        return shlex.quote(raw)
-    return raw
+    from opensquilla.onboarding.next_steps import quote_cli_arg
+
+    return quote_cli_arg(path)

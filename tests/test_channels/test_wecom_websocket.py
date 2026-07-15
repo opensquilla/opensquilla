@@ -112,7 +112,7 @@ async def test_wecom_websocket_subscribes_to_ai_bot_endpoint(
         assert calls == [
             {
                 "url": "wss://openws.work.weixin.qq.com",
-                "kwargs": {"ping_interval": 30.0, "ping_timeout": 30.0},
+                "kwargs": {"ping_interval": None},
             }
         ]
         assert "wsagent" not in calls[0]["url"]

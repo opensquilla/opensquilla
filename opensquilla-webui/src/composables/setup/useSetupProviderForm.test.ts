@@ -469,6 +469,54 @@ describe('useSetupProviderForm — connection state machine', () => {
     expect(callMock).toHaveBeenCalledTimes(1) // stale ok never triggers discover
   })
 
+  it('deduplicates concurrent model discovery requests', async () => {
+    const resolvers: Array<(value: unknown) => void> = []
+    callMock.mockImplementation((method: string) => {
+      if (method !== 'onboarding.models.discover') {
+        throw new Error(`unexpected rpc method: ${method}`)
+      }
+      return new Promise(resolve => { resolvers.push(resolve) })
+    })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+
+    const first = f.discoverModels()
+    const second = f.discoverModels()
+    resolvers.forEach(resolve => resolve(DISCOVER_OK))
+    await Promise.all([first, second])
+
+    expect(callMock).toHaveBeenCalledTimes(1)
+    expect(f.connection.value.models).toHaveLength(1)
+  })
+
+  it('starts fresh discovery when a probe supersedes an in-flight listing', async () => {
+    let discoverCalls = 0
+    let resolveFirstDiscover!: (value: unknown) => void
+    callMock.mockImplementation((method: string) => {
+      if (method === 'onboarding.provider.probe') return Promise.resolve(PROBE_OK)
+      if (method === 'onboarding.models.discover') {
+        discoverCalls += 1
+        if (discoverCalls === 1) {
+          return new Promise(resolve => { resolveFirstDiscover = resolve })
+        }
+        return Promise.resolve(DISCOVER_OK)
+      }
+      throw new Error(`unexpected rpc method: ${method}`)
+    })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+
+    const staleListing = f.discoverModels()
+    const probe = f.probeConnection({ defaultModel: 'test-model' })
+    await Promise.resolve()
+    resolveFirstDiscover(DISCOVER_OK)
+    await Promise.all([staleListing, probe])
+
+    expect(discoverCalls).toBe(2)
+    expect(f.connection.value.phase).toBe('verified')
+    expect(f.connection.value.models).toHaveLength(1)
+  })
+
   it('a failed discover keeps the verified phase and sets discoverError', async () => {
     mockRpc({ discover: { ok: false, failureKind: 'bad_request', detail: 'listing unsupported', source: 'none', models: [] } })
     const f = useSetupProviderForm()
@@ -491,5 +539,23 @@ describe('useSetupProviderForm — connection state machine', () => {
     expect(f.connection.value.models).toEqual([])
     expect(f.connection.value.modelSource).toBe('none')
     expect(f.connection.value.discoverError).toBe('')
+  })
+
+  it('drops model rows when the gateway marks the catalog source as none', async () => {
+    mockRpc({
+      discover: {
+        ok: true,
+        failureKind: '',
+        detail: '',
+        source: 'none',
+        models: [DISCOVER_ROW],
+      },
+    })
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    await f.probeConnection({ defaultModel: 'm' })
+
+    expect(f.connection.value.models).toEqual([])
+    expect(f.connection.value.modelSource).toBe('none')
   })
 })

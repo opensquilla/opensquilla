@@ -6,7 +6,7 @@ import contextlib
 import io
 import json
 import sys
-from datetime import datetime
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 
@@ -39,21 +39,47 @@ from opensquilla.migration.opensquilla_home import (
     OpenSquillaHomeMigrator,
     OpenSquillaMigrationOptions,
     PortableCandidate,
+    detect_desktop_home,
+    detect_legacy_cli_home,
     enumerate_portable_homes,
+    inspect_opensquilla_home_candidate,
     is_valid_opensquilla_home,
 )
 from opensquilla.migration.orchestrator import (
     DetectedMigrationSource,
     detect_default_sources,
 )
+from opensquilla.paths import default_opensquilla_home
 
 migrate_app = typer.Typer(
-    help="Migration helpers for legacy OpenSquilla homes and external agent runtimes.",
+    help=(
+        "Profile transfer for a supported OpenSquilla CLI or Desktop profile, "
+        "historical Windows Portable data, and external agent runtimes."
+    ),
     invoke_without_command=True,
     no_args_is_help=False,
 )
 
 _AUTO_DETECT_SOURCES: tuple[str, ...] = ("opensquilla", "openclaw", "hermes")
+
+
+@contextlib.contextmanager
+def _guard_foreign_migration_target() -> Iterator[None]:
+    """Guard and lock a Desktop target without changing ordinary CLI behavior.
+
+    The first Desktop inspection is deliberately read-only and happens before
+    the lifecycle context can create the legacy ``gateway.pid.lock`` file.
+    OpenSquilla self-import does not use this context: it owns a sorted,
+    multi-profile source/target lock transaction internally.
+    """
+
+    from opensquilla.recovery import guard_desktop_profile, guarded_desktop_profile
+
+    if guard_desktop_profile() is None:
+        yield
+        return
+    with guarded_desktop_profile():
+        yield
 
 
 def _split_csv(values: list[str] | None) -> tuple[str, ...]:
@@ -82,7 +108,31 @@ def _detect_migration_sources() -> list[DetectedMigrationSource]:
     The shared detector preserves the OpenSquilla source kind so portable
     homes are dispatched through the matching migration contract.
     """
-    return detect_default_sources()
+    detected = [
+        item
+        for item in detect_default_sources()
+        if not (
+            item.name == "opensquilla" and item.source_kind == "windows-portable"
+        )
+    ]
+    # The legacy detector historically collapsed Portable homes to the newest
+    # mtime. RC4 keeps every candidate visible and never turns that estimate
+    # into a selection decision.
+    target = default_opensquilla_home()
+    for candidate in enumerate_portable_homes():
+        try:
+            if candidate.path.resolve(strict=False) == target.resolve(strict=False):
+                continue
+        except OSError:
+            pass
+        detected.append(
+            DetectedMigrationSource(
+                "opensquilla",
+                candidate.path,
+                source_kind="windows-portable",
+            )
+        )
+    return detected
 
 
 def _prompt_source_selection(detected: list[DetectedMigrationSource]) -> list[str]:
@@ -93,11 +143,23 @@ def _prompt_source_selection(detected: list[DetectedMigrationSource]) -> list[st
     """
     import questionary
 
+    target = default_opensquilla_home()
     choices = [
         questionary.Choice(
-            title=f"{source.name} ({source.path})",
+            title=(
+                _describe_portable_candidate(metadata)
+                if source.name == "opensquilla"
+                and (
+                    metadata := inspect_opensquilla_home_candidate(
+                        source.path,
+                        kind=source.source_kind or "cli-home",
+                        target=target,
+                    )
+                ) is not None
+                else f"{source.name} ({source.path})"
+            ),
             value=source.name,
-            checked=True,
+            checked=source.name != "opensquilla",
         )
         for source in detected
     ]
@@ -106,6 +168,20 @@ def _prompt_source_selection(detected: list[DetectedMigrationSource]) -> list[st
         choices=choices,
     ).ask()
     return list(answer or [])
+
+
+def _detected_source_payload(source: DetectedMigrationSource) -> dict[str, Any]:
+    payload: dict[str, Any] = {"name": source.name, "path": str(source.path)}
+    if source.name != "opensquilla":
+        return payload
+    candidate = inspect_opensquilla_home_candidate(
+        source.path,
+        kind=source.source_kind or "cli-home",
+        target=default_opensquilla_home(),
+    )
+    if candidate is None:
+        return payload
+    return {"name": source.name, **candidate.as_payload()}
 
 
 def _run_one_migration(
@@ -117,6 +193,8 @@ def _run_one_migration(
     apply: bool,
     migrate_secrets: bool,
     overwrite: bool,
+    replace_target: bool,
+    confirm_replace_target: Path | None,
     preset: str,
     include: tuple[str, ...],
     exclude: tuple[str, ...],
@@ -137,6 +215,8 @@ def _run_one_migration(
             kind=source_kind or "cli-home",
             config_path=config,
             apply=apply,
+            replace_target=replace_target,
+            confirm_replace_target=confirm_replace_target,
             overwrite=overwrite,
         )
         migrator: Any = OpenSquillaHomeMigrator(opensquilla_options)
@@ -183,10 +263,16 @@ def _run_one_migration(
     else:  # pragma: no cover - guarded earlier
         raise typer.Exit(2)
 
-    if json_output:
-        with contextlib.redirect_stdout(io.StringIO()):
-            return cast(dict[str, Any], migrator.migrate())
-    return cast(dict[str, Any], migrator.migrate())
+    def execute() -> dict[str, Any]:
+        if json_output:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return cast(dict[str, Any], migrator.migrate())
+        return cast(dict[str, Any], migrator.migrate())
+
+    if name == "opensquilla":
+        return execute()
+    with _guard_foreign_migration_target():
+        return execute()
 
 
 @migrate_app.callback()
@@ -219,7 +305,20 @@ def migrate_root(
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
-        help="Overwrite target workspace files after making item-level backups.",
+        help=(
+            "Foreign migrations: overwrite item conflicts. OpenSquilla imports: "
+            "deprecated alias for --replace-target; exact target confirmation is still required."
+        ),
+    ),
+    replace_target: bool = typer.Option(
+        False,
+        "--replace-target",
+        help="Replace a non-empty OpenSquilla target as one whole-profile transaction.",
+    ),
+    confirm_replace_target: Path | None = typer.Option(
+        None,
+        "--confirm-replace-target",
+        help="Exact resolved target path required for a non-interactive profile replacement.",
     ),
     preset: str = typer.Option(
         "full",
@@ -263,6 +362,10 @@ def migrate_root(
     for ``--source`` (non-TTY, ``--json``).
     """
     if ctx.invoked_subcommand is not None:
+        if ctx.invoked_subcommand in {"openclaw", "hermes"}:
+            lifecycle = _guard_foreign_migration_target()
+            lifecycle.__enter__()
+            ctx.call_on_close(lambda: lifecycle.__exit__(None, None, None))
         return
 
     detected = _detect_migration_sources()
@@ -288,12 +391,56 @@ def migrate_root(
         raise typer.Exit(0)
 
     source_filter = _split_csv(source)
+    portable_candidates = [
+        item
+        for item in detected
+        if item.name == "opensquilla" and item.source_kind == "windows-portable"
+    ]
+    nonportable_opensquilla = any(
+        item.name == "opensquilla" and item.source_kind != "windows-portable"
+        for item in detected
+    )
+    if portable_candidates and not source_filter:
+        portable_selection_payload = {
+            "detected": [_detected_source_payload(item) for item in detected],
+            "message": (
+                "Portable OpenSquilla homes require an explicit path. Re-run with "
+                "`opensquilla migrate opensquilla --kind windows-portable "
+                "--home <path>` after reviewing the candidates."
+            ),
+        }
+        if json_output:
+            typer.echo(json.dumps(portable_selection_payload, ensure_ascii=False))
+        else:
+            console.print(portable_selection_payload["message"])
+            for item in portable_candidates:
+                candidate = inspect_opensquilla_home_candidate(
+                    item.path,
+                    kind=item.source_kind or "windows-portable",
+                    target=default_opensquilla_home(),
+                )
+                console.print(
+                    f"  - {_describe_portable_candidate(candidate)}"
+                    if candidate is not None
+                    else f"  - {item.path}"
+                )
+        raise typer.Exit(0)
     if source_filter:
         unknown = sorted(set(source_filter) - set(_AUTO_DETECT_SOURCES))
         if unknown:
             typer.echo(
                 f"Unknown migration source: {', '.join(unknown)} "
                 f"(known: {', '.join(_AUTO_DETECT_SOURCES)})"
+            )
+            raise typer.Exit(2)
+        if (
+            "opensquilla" in source_filter
+            and portable_candidates
+            and not nonportable_opensquilla
+        ):
+            typer.echo(
+                "--source opensquilla does not choose among Portable homes. Use "
+                "`opensquilla migrate opensquilla --kind windows-portable --home <path>`."
             )
             raise typer.Exit(2)
         missing = sorted(set(source_filter) - set(detected_names))
@@ -304,26 +451,32 @@ def migrate_root(
             )
             raise typer.Exit(2)
         selected = [name for name in _AUTO_DETECT_SOURCES if name in source_filter]
-    elif len(detected) == 1:
-        # Single source found: just run it, no need to ask.
+    elif len(detected) == 1 and detected[0].name != "opensquilla":
+        # Preserve the established convenience for foreign runtimes. A
+        # same-product profile import is different: it replaces/copies identity,
+        # memory, sessions and configuration, so even a single CLI home must be
+        # shown and explicitly confirmed.
         selected = detected_names
     else:
         # Multiple sources, no explicit filter. TTY: prompt. Non-TTY: list and exit.
         stdin_is_tty = _stdin_is_tty()
         if not stdin_is_tty or json_output:
-            selection_payload: dict[str, Any] = {
-                "detected": [
-                    {
-                        "name": item.name,
-                        "path": str(item.path),
-                    }
-                    for item in detected
-                ],
-                "message": (
+            selection_message = (
+                "An OpenSquilla profile was detected. Re-run with "
+                "`--source opensquilla` after explicitly confirming the displayed path."
+                if len(detected) == 1 and detected[0].name == "opensquilla"
+                else (
                     "Multiple migration sources detected. Re-run with "
                     "`--source <names>` to select. Example: "
                     f"`opensquilla migrate --source {','.join(detected_names)} --apply`"
-                ),
+                )
+            )
+            selection_payload: dict[str, Any] = {
+                "detected": [
+                    _detected_source_payload(item)
+                    for item in detected
+                ],
+                "message": selection_message,
             }
             if json_output:
                 typer.echo(json.dumps(selection_payload, ensure_ascii=False))
@@ -331,7 +484,20 @@ def migrate_root(
                 console.print(selection_payload["message"])
                 console.print("[dim]Detected sources:[/dim]")
                 for item in detected:
-                    console.print(f"  - {item.name}: {item.path}")
+                    metadata = (
+                        inspect_opensquilla_home_candidate(
+                            item.path,
+                            kind=item.source_kind or "cli-home",
+                            target=default_opensquilla_home(),
+                        )
+                        if item.name == "opensquilla"
+                        else None
+                    )
+                    console.print(
+                        f"  - {_describe_portable_candidate(metadata)}"
+                        if metadata is not None
+                        else f"  - {item.name}: {item.path}"
+                    )
             raise typer.Exit(0)
         selected = _prompt_source_selection(detected)
         if not selected:
@@ -367,9 +533,9 @@ def migrate_root(
                 skill_conflict=skill_conflict,
             )
 
-    detected_by_name: dict[str, DetectedMigrationSource] = {
-        item.name: item for item in detected
-    }
+    detected_by_name: dict[str, DetectedMigrationSource] = {}
+    for item in detected:
+        detected_by_name.setdefault(item.name, item)
     reports: dict[str, dict[str, Any]] = {}
     has_error = False
     for name in selected:
@@ -382,6 +548,8 @@ def migrate_root(
             apply=apply,
             migrate_secrets=migrate_secrets,
             overwrite=overwrite,
+            replace_target=replace_target,
+            confirm_replace_target=confirm_replace_target,
             preset=preset,
             include=include_options,
             exclude=exclude_options,
@@ -482,13 +650,95 @@ def _reject_invalid_hermes_options(
         raise typer.Exit(2)
 
 
+@migrate_app.command("verify-opensquilla-import", hidden=True)
+def verify_opensquilla_import_command(
+    source: Path = typer.Option(..., "--source", help="Exact imported profile source root."),
+    target: Path = typer.Option(..., "--target", help="Exact Desktop target profile root."),
+    source_kind: str = typer.Option(..., "--source-kind", help="Recorded OpenSquilla source kind."),
+    transaction_id: str | None = typer.Option(
+        None,
+        "--transaction-id",
+        help="Optional exact transaction id reported by the import child.",
+    ),
+    exclude_transaction_id: list[str] | None = typer.Option(
+        None,
+        "--exclude-transaction-id",
+        help="Receipt ids that existed before this import attempt.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the fixed JSON protocol."),
+) -> None:
+    """Internal, offline verification for a committed whole-profile import."""
+
+    from opensquilla.migration.opensquilla_home import verify_committed_profile_import
+    from opensquilla.recovery import RecoveryError
+
+    normalized_source = source.expanduser().absolute()
+    normalized_target = target.expanduser().absolute()
+    try:
+        payload = verify_committed_profile_import(
+            normalized_source,
+            normalized_target,
+            source_kind=source_kind,
+            transaction_id=transaction_id,
+            excluded_transaction_ids=tuple(exclude_transaction_id or ()),
+        )
+    except RecoveryError as exc:
+        payload = {
+            "schema_version": 1,
+            "outcome": "unsafe",
+            "stable_code": exc.stable_code,
+            "source": str(normalized_source),
+            "source_kind": source_kind,
+            "target": str(normalized_target),
+            "transaction_id": "",
+            "matching_transaction_ids": [],
+            "provider_connection": None,
+            "report": None,
+        }
+    except Exception:
+        payload = {
+            "schema_version": 1,
+            "outcome": "unsafe",
+            "stable_code": "profile_import_receipt_verification_failed",
+            "source": str(normalized_source),
+            "source_kind": source_kind,
+            "target": str(normalized_target),
+            "transaction_id": "",
+            "matching_transaction_ids": [],
+            "provider_connection": None,
+            "report": None,
+        }
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    typer.echo(f"{payload['outcome']}: {payload['stable_code']}")
+
+
 def _describe_portable_candidate(candidate: PortableCandidate) -> str:
-    era = candidate.era_hint or "unknown era"
-    last_used = datetime.fromtimestamp(candidate.last_used).isoformat(timespec="seconds")
-    return f"{candidate.path} ({era}, last used {last_used}, {candidate.size_bytes} bytes)"
+    version = candidate.version or "unknown version"
+    activity = candidate.estimated_activity_at or "unknown"
+    sessions = (
+        f"{candidate.session_count} sessions"
+        if candidate.session_count is not None
+        else "session count unavailable"
+    )
+    size = (
+        f"{candidate.size_bytes} bytes"
+        if candidate.size_bytes is not None
+        else "size unavailable"
+    )
+    imported = ", previously imported" if candidate.previously_imported else ""
+    return (
+        f"{candidate.path} (version {version}, estimated recent activity {activity}, "
+        f"{sessions}, {size}{imported})"
+    )
 
 
-def _prompt_portable_home(candidates: list[PortableCandidate]) -> Path:
+def _prompt_opensquilla_home(
+    candidates: list[PortableCandidate],
+    *,
+    prompt: str,
+) -> Path:
     import questionary
 
     choices = [
@@ -499,7 +749,7 @@ def _prompt_portable_home(candidates: list[PortableCandidate]) -> Path:
         for index, candidate in enumerate(candidates, start=1)
     ]
     answer = questionary.select(
-        "Which portable OpenSquilla home should be imported?",
+        prompt,
         choices=choices,
     ).ask()
     if not answer:
@@ -509,7 +759,7 @@ def _prompt_portable_home(candidates: list[PortableCandidate]) -> Path:
 
 def _resolve_portable_source(home: Path | None, *, json_output: bool) -> Path:
     """Resolve the portable source home for ``--kind windows-portable``."""
-    candidates = enumerate_portable_homes()
+    candidates = enumerate_portable_homes(target=default_opensquilla_home())
     if home is not None:
         selected = Path(home).expanduser()
         for candidate in candidates:
@@ -522,8 +772,6 @@ def _resolve_portable_source(home: Path | None, *, json_output: bool) -> Path:
             return selected
         typer.echo(f"--home does not point at a portable OpenSquilla home: {selected}")
         raise typer.Exit(2)
-    if len(candidates) == 1:
-        return candidates[0].path
     if not candidates:
         typer.echo(
             "No portable OpenSquilla homes were found under LOCALAPPDATA/TEMP. "
@@ -531,11 +779,68 @@ def _resolve_portable_source(home: Path | None, *, json_output: bool) -> Path:
         )
         raise typer.Exit(2)
     if json_output or not _stdin_is_tty():
-        lines = ["Multiple portable OpenSquilla homes found; re-run with --home <path>:"]
-        lines.extend(f"  - {_describe_portable_candidate(candidate)}" for candidate in candidates)
-        typer.echo("\n".join(lines))
+        message = "Portable OpenSquilla homes found; explicitly confirm one with --home <path>."
+        if json_output:
+            typer.echo(json.dumps({
+                "requires_selection": True,
+                "candidates": [candidate.as_payload() for candidate in candidates],
+                "message": message,
+            }, ensure_ascii=False))
+        else:
+            lines = [message]
+            lines.extend(
+                f"  - {_describe_portable_candidate(candidate)}" for candidate in candidates
+            )
+            typer.echo("\n".join(lines))
         raise typer.Exit(2)
-    return _prompt_portable_home(candidates)
+    return _prompt_opensquilla_home(
+        candidates,
+        prompt="Which portable OpenSquilla home should be imported?",
+    )
+
+
+def _resolve_implicit_opensquilla_source(*, kind: str, json_output: bool) -> Path:
+    """Show the detected same-product source and require explicit confirmation."""
+
+    target = default_opensquilla_home()
+    detected = (
+        detect_legacy_cli_home(target)
+        if kind == "cli-home"
+        else detect_desktop_home()
+    )
+    candidate = (
+        inspect_opensquilla_home_candidate(detected, kind=kind, target=target)
+        if detected is not None
+        else None
+    )
+    if candidate is None:
+        typer.echo(
+            f"No {kind} OpenSquilla home was found. Pass --source <path> explicitly."
+        )
+        raise typer.Exit(2)
+    message = (
+        "An OpenSquilla profile was found; explicitly confirm it with "
+        f"--source {candidate.path}."
+    )
+    if json_output or not _stdin_is_tty():
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {
+                        "requires_selection": True,
+                        "candidates": [candidate.as_payload()],
+                        "message": message,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            typer.echo(f"{message}\n  - {_describe_portable_candidate(candidate)}")
+        raise typer.Exit(2)
+    return _prompt_opensquilla_home(
+        [candidate],
+        prompt="Confirm the OpenSquilla profile to import.",
+    )
 
 
 @migrate_app.command("opensquilla")
@@ -543,7 +848,10 @@ def migrate_opensquilla(
     source: Path | None = typer.Option(
         None,
         "--source",
-        help="Legacy OpenSquilla home directory (any kind).",
+        help=(
+            "Supported OpenSquilla CLI or Desktop profile, or historical Windows "
+            "Portable profile directory."
+        ),
     ),
     kind: str = typer.Option(
         "cli-home",
@@ -568,11 +876,32 @@ def migrate_opensquilla(
     overwrite: bool = typer.Option(
         False,
         "--overwrite",
-        help="Overwrite a non-empty target home after taking timestamped backups.",
+        help=(
+            "Deprecated alias for --replace-target. Apply still requires "
+            "--confirm-replace-target with the exact resolved target path."
+        ),
+    ),
+    replace_target: bool = typer.Option(
+        False,
+        "--replace-target",
+        help="Back up and replace a non-empty target as a whole profile (never merge).",
+    ),
+    confirm_replace_target: Path | None = typer.Option(
+        None,
+        "--confirm-replace-target",
+        help="Exact resolved target path required when replacing a non-empty target.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON."),
+    inspect_candidate: bool = typer.Option(
+        False,
+        "--inspect-candidate",
+        help=(
+            "Read bounded, privacy-safe candidate metadata without planning or "
+            "applying an import."
+        ),
+    ),
 ) -> None:
-    """Import a legacy OpenSquilla home (CLI, Windows portable, or desktop)."""
+    """Import a supported CLI/Desktop profile or historical Windows Portable data."""
 
     if config is not None:
         typer.echo(
@@ -592,14 +921,46 @@ def migrate_opensquilla(
         typer.echo("--home applies to --kind windows-portable only; use --source instead.")
         raise typer.Exit(2)
     source_path = source
-    if source_path is None and kind == "windows-portable":
+    if source_path is None and kind == "windows-portable" and home is not None:
         source_path = _resolve_portable_source(home, json_output=json_output)
+    if inspect_candidate:
+        if source_path is None:
+            typer.echo("--inspect-candidate requires --source or --home.")
+            raise typer.Exit(2)
+        candidate = inspect_opensquilla_home_candidate(
+            Path(source_path).expanduser(),
+            kind=kind,
+            target=default_opensquilla_home(),
+        )
+        if candidate is None:
+            payload = {
+                "candidate": None,
+                "error": "The selected path is not a plain OpenSquilla profile home.",
+            }
+            typer.echo(json.dumps(payload, ensure_ascii=False) if json_output else payload["error"])
+            raise typer.Exit(2)
+        if json_output:
+            typer.echo(json.dumps({"candidate": candidate.as_payload()}, ensure_ascii=False))
+        else:
+            console.print(_describe_portable_candidate(candidate))
+        raise typer.Exit(0)
+    if source_path is None:
+        source_path = (
+            _resolve_portable_source(home, json_output=json_output)
+            if kind == "windows-portable"
+            else _resolve_implicit_opensquilla_source(
+                kind=kind,
+                json_output=json_output,
+            )
+        )
 
     options = OpenSquillaMigrationOptions(
         source=source_path,
         kind=kind,
         config_path=config,
         apply=apply,
+        replace_target=replace_target,
+        confirm_replace_target=confirm_replace_target,
         overwrite=overwrite,
     )
     if json_output:

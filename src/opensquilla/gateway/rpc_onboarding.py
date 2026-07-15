@@ -174,12 +174,12 @@ def _sync_search_provider(config: Any) -> None:
 def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     from opensquilla.onboarding.config_store import persist_config
 
-    if (
-        ctx.config is not None
-        and ctx.config is not new_cfg
-        and hasattr(new_cfg, "inherit_runtime_secrets")
-    ):
-        inherit_runtime_secrets(ctx.config, new_cfg)
+    # Mutation results are cloned from the active config and carry their own
+    # authoritative runtime-secret markers.  Do not re-inherit the live set
+    # here: an explicit credential replacement deliberately clears its old
+    # env-derived marker so the new value is persisted.  Copying the marker
+    # back would silently omit the replacement from disk and keep exposing the
+    # startup environment credential through the live settings UI.
     path = _config_path_for(ctx, new_cfg) or _config_path_for(ctx, ctx.config)
     persist = persist_config(new_cfg, path=path, restart_required=restart_required)
     # Preserve the resolved path on the running config so subsequent saves
@@ -438,20 +438,21 @@ async def _provider_credential_reveal(params: Any, ctx: RpcContext) -> dict[str,
 
 @_d.method("onboarding.models.discover", scope="operator.admin")
 async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
-    """List a candidate provider's live models without persisting anything.
+    """List verified picker-safe models without persisting anything.
 
     Admin-scoped (like ``onboarding.provider.probe``): the request carries
     candidate credentials, so it must not be reachable at the read/write
     tiers even though it changes no state.
 
-    No SSRF guard by design: discovery legitimately targets self-hosted and
-    loopback model servers (Ollama, vLLM, LM Studio), and the admin gate is
-    the trust boundary — an SSRF filter would break exactly those setups.
+    Selector discovery is fail-closed: only registry-verified providers on
+    their official hosts are queried. Self-hosted and arbitrary endpoints
+    remain manual-entry surfaces; raw CLI diagnostics retain their broader
+    endpoint-probing behavior.
 
     Blank credentials fall back to the stored config's, mirroring
     ``upsert_llm_provider``'s keep semantics.
     """
-    from opensquilla.onboarding.probe import discover_provider_models
+    from opensquilla.onboarding.probe import discover_selectable_provider_models
 
     provider_id = _require(params, "providerId")
     p = params if isinstance(params, dict) else {}
@@ -471,7 +472,7 @@ async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
         if not proxy:
             proxy = str(getattr(cfg.llm, "proxy", "") or "")
     with _validation_error("onboarding.provider.invalid"):
-        result = await discover_provider_models(
+        result = await discover_selectable_provider_models(
             provider_id=provider_id,
             api_key=api_key,
             api_key_env=api_key_env,

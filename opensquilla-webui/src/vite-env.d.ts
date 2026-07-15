@@ -8,10 +8,24 @@ import type {
   DesktopSettingsPayload,
 } from './platform/types'
 
+type MigrationSourceKind = 'cli-home' | 'desktop-home' | 'windows-portable'
+type DesktopCleanupMode = 'reset-current-settings' | 'delete-current-profile' | 'delete-all-user-data'
+interface DesktopCleanupReport {
+  schema_version: 1
+  outcome: 'ready' | 'blocked' | 'complete' | 'partial'
+  stable_code: string
+  mode: DesktopCleanupMode
+  items: Array<{ kind: string; path: string; exists: boolean; identity: string | null }>
+  transaction_id: string
+  revision: number
+  scope_fingerprint: string
+}
+
 declare global {
   interface OpenSquillaDesktopApi {
     getOsLocale: () => Promise<string | undefined>
     isAutoUpdateEnabled: () => Promise<boolean>
+    isDesktopUpdateManaged?: () => Promise<boolean>
     getUpdateState?: () => Promise<DesktopUpdateState>
     checkForUpdates?: () => Promise<DesktopUpdateState>
     downloadUpdate?: () => Promise<DesktopUpdateState>
@@ -24,16 +38,51 @@ declare global {
     getDesktopSettings: () => Promise<DesktopSettings>
     saveDesktopSettings: (payload: DesktopSettingsPayload) => Promise<DesktopSettings>
     resetDesktopSettings: () => Promise<{ ok: boolean }>
+    inspectDesktopCleanup?: (payload: { mode: DesktopCleanupMode }) => Promise<{
+      ok: boolean
+      previewId: string | null
+      report: DesktopCleanupReport
+      profile: { kind: 'primary' | 'recovery'; recoveryId: string | null }
+    }>
+    discardDesktopCleanup?: (payload: { previewId: string }) => Promise<boolean>
+    applyDesktopCleanup?: (payload: {
+      previewId: string
+      acknowledged: boolean
+      confirmation: string
+    }) => Promise<{
+      ok: boolean
+      aborted?: boolean
+      scheduled?: boolean
+      partial?: boolean
+      previewId?: string | null
+      report?: DesktopCleanupReport
+      profile?: { kind: 'primary' | 'recovery'; recoveryId: string | null }
+      detail?: string
+    }>
+    revealDesktopUserData?: () => Promise<boolean>
+    abandonCleanupTransaction?: () => Promise<unknown>
     setNativeTheme?: (payload: { source: 'light' | 'dark' | 'system' }) => Promise<unknown>
     openArtifact: (payload: ArtifactOpenRequest) => Promise<ArtifactNativeOpenResult>
     getOnboardingDefaults: () => Promise<unknown>
     saveOnboarding: (payload: unknown) => Promise<unknown>
     cancelOnboarding: () => Promise<unknown>
     getBootState: () => Promise<unknown>
+    getRecoveryState?: () => Promise<unknown>
+    getDesktopProfileKind?: () => Promise<'primary' | 'recovery' | null>
     retryStartup: () => Promise<unknown>
     quitApp: () => Promise<unknown>
+    migrationSummary?: (payload?: { source?: string }) => Promise<unknown>
+    migrationBrowseSource?: (payload: { kind: MigrationSourceKind }) => Promise<unknown>
+    migrationRun?: (payload: { previewId: string; overwrite?: boolean }) => Promise<unknown>
+    migrationTakeLastResult?: () => Promise<unknown>
+    migrationPeekLastResult?: () => Promise<unknown>
+    migrationDismissLastResult?: () => Promise<unknown>
+    revealRecoveryPath?: (payload: {
+      target: 'primary' | 'active' | 'backups'
+    }) => Promise<boolean>
     onBootStatus: (callback: (payload: unknown) => void) => () => void
     onBootError: (callback: (payload: unknown) => void) => () => void
+    onMigrationProgress?: (callback: (payload: unknown) => void) => () => void
   }
 
   interface Window {

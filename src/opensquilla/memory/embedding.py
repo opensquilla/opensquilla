@@ -10,7 +10,7 @@ import httpx
 import structlog
 
 from opensquilla.env import trust_env as _trust_env
-from opensquilla.provider.openrouter_attribution import openrouter_app_headers
+from opensquilla.provider.app_attribution import provider_app_headers
 
 logger = structlog.get_logger(__name__)
 
@@ -119,7 +119,7 @@ class OpenAIEmbeddingProvider:
 
     def _headers(self) -> dict[str, str]:
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        headers.update(openrouter_app_headers(self._base_url))
+        headers.update(provider_app_headers(self._base_url))
         headers.update(self._extra_headers)
         return headers
 

@@ -9,6 +9,8 @@ requires typing a confirmation phrase in interactive mode, and any non-TTY /
 
 from __future__ import annotations
 
+import os
+
 import typer
 
 
@@ -82,6 +84,17 @@ def uninstall_command(
         purge_all=purge_all,
         remove_source_dir=remove_source_dir,
     )
+    profile_kind = os.environ.get("OPENSQUILLA_PROFILE_KIND", "").strip().lower()
+    if profile_kind.startswith("desktop-") and options.any_purge:
+        emit_error(
+            "Desktop data spans the primary profile, recovery profiles, credentials, "
+            "logs, and backups. Use Desktop Settings → Data cleanup so every item is "
+            "listed and confirmed; the generic uninstall command cannot safely perform "
+            "a partial Desktop purge.",
+            json_output=json_output,
+            code="DESKTOP_CLEANUP_REQUIRED",
+        )
+        raise typer.Exit(2)
     inventory = discover()
     plan = build_plan(inventory, options)
 

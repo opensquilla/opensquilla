@@ -110,14 +110,15 @@
           {{ t('common.cancel') }}
         </button>
       </div>
-      <div
-        ref="threadRef"
-        class="chat-thread"
-        role="region"
-        :aria-label="t('chat.conversation')"
-        :aria-busy="isStreaming"
-        @scroll="onThreadScroll"
-      >
+      <div class="chat-thread-shell">
+        <div
+          ref="threadRef"
+          class="chat-thread"
+          role="region"
+          :aria-label="t('chat.conversation')"
+          :aria-busy="isStreaming"
+          @scroll="onThreadScroll"
+        >
         <template v-if="isNewChatLanding">
           <div ref="agentSwitcherRef" class="chat-landing-agent">
             <button
@@ -322,10 +323,10 @@
           </div>
         </div>
 
-        <!-- Soft stall banner: content events went silent past the watchdog
-             threshold while nothing legitimate (tool run, approval) explains
-             it. "Keep waiting" dismisses and re-arms; "Interrupt" stops the
-             turn through the same path as the composer stop button. -->
+        <!-- Soft long-running banner: content events crossed the high watchdog
+             threshold while no backend-deadline-owned phase (tool, approval,
+             ensemble) explains it. "Keep waiting" suppresses this silence
+             episode; "Interrupt" uses the composer stop path. -->
         <ChatStallNotice
           v-if="stallActive"
           :seconds="stallSeconds"
@@ -374,6 +375,19 @@
             @dismiss="dismissClarify"
           />
         </template>
+        </div>
+        <ConversationMinimap
+          v-if="!isNewChatLanding && !shareMode"
+          :messages="renderedMessages"
+          :scroll-container="threadRef"
+          :strip-time-prefix="stripTimePrefix"
+          :session-key="sessionKey"
+          :history-has-more="historyState.hasMore"
+          :history-loading="historyState.loading"
+          @navigate="onHistoryNavigate"
+          @navigate-end="onHistoryNavigateEnd"
+          @load-earlier="loadEarlierHistory"
+        />
       </div>
     </div>
 
@@ -487,6 +501,7 @@
       :open="toolResultModal.open"
       :title="toolResultModal.title"
       :content="toolResultModal.content"
+      :context="toolResultModal.context"
       @close="toolResultModal.open = false"
     />
 
@@ -537,6 +552,7 @@ import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatStallNotice from '@/components/chat/ChatStallNotice.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
+import ConversationMinimap from '@/components/chat/ConversationMinimap.vue'
 import EmptyStateChips from '@/components/chat/EmptyStateChips.vue'
 import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
 import MetaPreflightCard from '@/components/chat/MetaPreflightCard.vue'
@@ -594,6 +610,7 @@ import type {
   ChatRunStatus,
   ChatRunStatusSource,
   ChatRunStatusState,
+  ToolResultContext,
 } from '@/types/chat'
 import type {
   ArtifactPayload,
@@ -603,6 +620,7 @@ import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
+import { createHistoryNavigationScrollLock } from '@/utils/chat/historyNavigationScrollLock'
 import { isCurrentSessionPayload as payloadIsCurrentSession } from '@/utils/chat/streamEvents'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
@@ -644,7 +662,12 @@ const CHAT_RUN_STATUS_VALUES: ChatRunStatusState[] = [
   'cancelled',
 ]
 
-const toolResultModal = ref({ open: false, title: '', content: '' })
+const toolResultModal = ref<{
+  open: boolean
+  title: string
+  content: string
+  context?: ToolResultContext
+}>({ open: false, title: '', content: '' })
 
 /* ── Stores / Router ───────────────────────────────────────────────── */
 
@@ -675,6 +698,7 @@ const sessionKey = ref('')
 const inputText = ref('')
 const aborted = ref(false)
 const autoScroll = ref(true)
+const historyNavigationScrollLock = createHistoryNavigationScrollLock(autoScroll)
 const composing = ref(false)
 const messages = ref<Message[]>([])
 
@@ -766,6 +790,7 @@ const chatStream = useChatStream({
   stripProtocolTextLeak,
   scrollToBottom,
   interruptState,
+  rpcPolicy: () => rpc.policy,
 })
 const {
   isStreaming,
@@ -779,6 +804,7 @@ const {
   streamPhaseElapsed,
   streamStepLabel,
   streamToolElapsedText,
+  streamIdleTimeoutMs,
   thinkingVisible,
   thinkingText,
   startStreaming,
@@ -905,6 +931,7 @@ const chatRouterDecisionRuntime = useChatRouterDecisionRuntime({
   messages,
   sessionKey,
   isStreaming,
+  autoScroll,
   modelRoutingMode,
   streamBubble,
   streamHasVisibleOutput,
@@ -1422,10 +1449,10 @@ const liveInterruptParts = computed(() =>
       ),
 )
 
-// Soft content-silence watchdog: raises a dismissible stall banner when the
-// live turn stops producing content events (heartbeats keep the hard idle
-// timeout fed, so a wedged provider would otherwise spin silently for 210s).
-const stallWatchdog = useChatStallWatchdog({ isStreaming })
+// Soft content-silence watchdog: after the high negotiated threshold, surface
+// a neutral long-running notice. Backend-deadline-owned Ensemble phases remain
+// suppressed, while the hard idle timer continues to mean no events at all.
+const stallWatchdog = useChatStallWatchdog({ isStreaming, streamIdleGraceMs: streamIdleTimeoutMs })
 const { stallActive, stallSeconds } = stallWatchdog
 
 const chatRpcSubscriptions = useChatRpcSubscriptions(rpc, {
@@ -1961,7 +1988,10 @@ function shareTitle(): string {
 
 function scrollToBottom() {
   nextTick(() => {
-    if (threadRef.value) {
+    // A stream/event may request a follow while the reader is at the live edge,
+    // then the reader can scroll up before Vue applies this next-tick callback.
+    // Re-check here so that queued automatic scrolls never override that choice.
+    if (threadRef.value && autoScroll.value) {
       threadRef.value.scrollTop = threadRef.value.scrollHeight
     }
   })
@@ -1970,7 +2000,18 @@ function scrollToBottom() {
 function onThreadScroll() {
   if (!threadRef.value) return
   const gap = threadRef.value.scrollHeight - threadRef.value.scrollTop - threadRef.value.clientHeight
-  autoScroll.value = gap < 60
+  historyNavigationScrollLock.updateFromScroll(gap)
+}
+
+function onHistoryNavigate() {
+  historyNavigationScrollLock.start()
+}
+
+function onHistoryNavigateEnd() {
+  historyNavigationScrollLock.finish()
+  // Reconcile once at the final position: scroll events emitted during the
+  // smooth transition were intentionally ignored while the lock was active.
+  onThreadScroll()
 }
 
 // Show the jump-to-latest affordance whenever the reader has scrolled up off the
@@ -1978,14 +2019,15 @@ function onThreadScroll() {
 // Re-pinning autoScroll lets the stream resume following the bottom.
 const showJumpToLatest = computed(() => !autoScroll.value && messages.value.length > 0)
 function jumpToLatest() {
+  historyNavigationScrollLock.finish()
   autoScroll.value = true
   scrollToBottom()
 }
 
 /* ── Tool calls ────────────────────────────────────────────────────── */
 
-function showToolResultModal(content: string, title = t('chat.toolResult')) {
-  toolResultModal.value = { open: true, title, content }
+function showToolResultModal(content: string, title = t('chat.toolResult'), context?: ToolResultContext) {
+  toolResultModal.value = { open: true, title, content, context }
 }
 
 /* ── Attachments ───────────────────────────────────────────────────── */

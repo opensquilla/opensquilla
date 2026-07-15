@@ -63,6 +63,37 @@
      right edge of that reserved content box. */
 }
 
+/* 769–959px fine-pointer windows keep a docked compact sidebar. In that band
+   collapse secondary action labels to icons and guarantee a readable title
+   allocation instead of letting the fixed right-side groups squeeze it away. */
+.main--sidebar-compact .chat-header {
+  padding-left: 0.75rem;
+}
+
+.main--sidebar-compact .chat-header-left {
+  flex: 1 1 auto;
+  min-width: 5rem;
+}
+
+.main--sidebar-compact .chat-header .chat-label {
+  flex: 1 1 auto;
+  min-width: 3.5rem;
+}
+
+.main--sidebar-compact .chat-header-right {
+  gap: var(--sp-1);
+}
+
+.main--sidebar-compact .chat-header .chat-share-btn__label {
+  display: none;
+}
+
+.main--sidebar-compact .chat-header .chat-share-btn {
+  width: 1.875rem;
+  min-width: 1.875rem;
+  padding-inline: 0;
+}
+
 .chat-share-banner {
   display: flex;
   align-items: center;
@@ -296,7 +327,22 @@
   background: var(--bg-surface);
 }
 
+.chat-thread-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  container: chat-thread-shell / inline-size;
+}
+
 .chat--new-landing .chat-body {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.chat--new-landing .chat-thread-shell {
   flex: 0 0 auto;
   overflow: visible;
 }

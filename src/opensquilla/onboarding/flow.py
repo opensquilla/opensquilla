@@ -664,12 +664,12 @@ def _run_provider_discovery(
     """
     import asyncio
 
-    from opensquilla.onboarding.probe import discover_provider_models
+    from opensquilla.onboarding.probe import discover_selectable_provider_models
 
     try:
         with _quiet_provider_logs():
             return asyncio.run(
-                discover_provider_models(
+                discover_selectable_provider_models(
                     provider_id=provider_id,
                     api_key=api_key,
                     api_key_env=api_key_env,
@@ -731,9 +731,9 @@ def _ask_direct_provider_model(
     models (with a "type a model id…" escape back to the free-text prompt).
 
     A probe needs a model id; the provider's ``default_direct_model`` is used
-    when present. Direct providers that ship no default model still verify
-    connectivity through discovery, which needs no model and doubles as the
-    credential check.
+    when present. Direct providers that ship no default model try trusted live
+    discovery first. When that yields no selectable rows, the free-text model
+    is probed after entry so credential verification remains intact.
 
     On a same-provider re-run ``stored_model`` seeds the free-text prompt and
     pre-selects the stored model in the discovery picker, so Enter-through
@@ -745,12 +745,13 @@ def _ask_direct_provider_model(
 
     outcome = _probe_and_confirm(questionary, spec, answers)
     if outcome == "no_model":
-        # No probe model: the discovery below doubles as the connection
-        # check, so the announcement still belongs before it.
+        # No probe model yet: trusted discovery may verify the connection;
+        # otherwise the free-text model is probed below.
         console.print("[dim]Checking the connection…[/dim]")
     elif outcome == "failed":
         return _prompt_free_text_model(questionary, stored_model=stored_model)
     probed = outcome == "verified"
+    needs_typed_probe = outcome == "no_model"
 
     discovery = _run_provider_discovery(
         provider_id=spec.provider_id,
@@ -770,9 +771,22 @@ def _ask_direct_provider_model(
 
     if probed:
         console.print(f"[{ACCENT_SOFT}]◆[/] [dim]connection verified[/dim]")
+    if discovery is None:
+        return _prompt_free_text_model(questionary, stored_model=stored_model)
     models = list(getattr(discovery, "models", []) or []) if discovery else []
     if not models:
-        return _prompt_free_text_model(questionary, stored_model=stored_model)
+        model = _prompt_free_text_model(questionary, stored_model=stored_model)
+        if needs_typed_probe:
+            typed_outcome = _probe_and_confirm(
+                questionary,
+                spec,
+                answers,
+                probe_model=model,
+                announce=False,
+            )
+            if typed_outcome == "verified":
+                console.print(f"[{ACCENT_SOFT}]◆[/] [dim]connection verified[/dim]")
+        return model
 
     choices = [_discovered_model_label(model) for model in models] + [
         _TYPE_MODEL_ID_CHOICE
@@ -815,7 +829,14 @@ def _confirm_save_after_failed_check(questionary, spec, detail: str) -> bool:
     )
 
 
-def _probe_and_confirm(questionary, spec, answers: dict[str, Any]) -> str:
+def _probe_and_confirm(
+    questionary,
+    spec,
+    answers: dict[str, Any],
+    *,
+    probe_model: str = "",
+    announce: bool = True,
+) -> str:
     """The shared probe-then-"Save anyway?" core of both provider checks.
 
     Direct and router-supported providers verify with the exact same UX —
@@ -823,9 +844,9 @@ def _probe_and_confirm(questionary, spec, answers: dict[str, Any]) -> str:
     panel, the same default-yes "Save anyway?" escape — so a UX change made
     here reaches both paths at once. Returns one of:
 
-    - ``"no_model"``: the spec ships no probe model; nothing was attempted
-      and nothing was printed (the caller decides what verification, if
-      any, replaces the probe).
+    - ``"no_model"``: neither the caller nor the spec supplied a probe model;
+      nothing was attempted or printed (the caller decides what verification,
+      if any, replaces the probe).
     - ``"skipped"``: the probe could not even be attempted — degrade
       silently, verification never blocks setup.
     - ``"verified"``: the probe succeeded (the caller prints the verified
@@ -834,13 +855,14 @@ def _probe_and_confirm(questionary, spec, answers: dict[str, Any]) -> str:
 
     Declining the save raises ``UserCancelledError(section="provider")``.
     """
-    probe_model = str(getattr(spec, "default_direct_model", "") or "").strip()
-    if not probe_model:
+    model = str(probe_model or getattr(spec, "default_direct_model", "") or "").strip()
+    if not model:
         return "no_model"
-    console.print("[dim]Checking the connection…[/dim]")
+    if announce:
+        console.print("[dim]Checking the connection…[/dim]")
     probe = _run_provider_probe(
         provider_id=spec.provider_id,
-        model=probe_model,
+        model=model,
         api_key=answers.get("api_key", ""),
         api_key_env=answers.get("api_key_env", ""),
         base_url=answers.get("base_url", ""),

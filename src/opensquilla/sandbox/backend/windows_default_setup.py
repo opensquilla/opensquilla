@@ -32,8 +32,19 @@ class WindowsDefaultSetupMarker:
 
 
 def default_setup_marker_path(home: Path | None = None) -> Path:
-    root = home if home is not None else Path.home()
-    return root / ".opensquilla" / "sandbox" / "setup_marker.json"
+    if home is not None:
+        # An explicit ``home`` retains the support-probe contract: callers are
+        # asking about the legacy sandbox state below that Windows user home.
+        root = home / ".opensquilla"
+    else:
+        # Runtime marker state is profile-scoped. In particular, Desktop sets
+        # OPENSQUILLA_STATE_DIR to its active profile; falling back to
+        # Path.home() here would mutate a CLI profile selected as an import
+        # source and violate the migration source-read-only guarantee.
+        from opensquilla.paths import default_opensquilla_home
+
+        root = default_opensquilla_home()
+    return root / "sandbox" / "setup_marker.json"
 
 
 def write_setup_marker(

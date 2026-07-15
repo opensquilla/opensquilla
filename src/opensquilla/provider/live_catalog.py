@@ -27,6 +27,7 @@ import structlog
 
 from opensquilla.env import trust_env as _trust_env
 
+from .app_attribution import provider_app_headers
 from .model_catalog import DEFAULT_MAX_TOKENS as _NEAR_WINDOW_MARGIN
 from .registry import UnknownProviderError, get_provider_spec
 
@@ -172,7 +173,7 @@ async def fetch_live_catalog_entries(
     async with httpx.AsyncClient(
         timeout=timeout, trust_env=_trust_env(), proxy=proxy or None
     ) as client:
-        resp = await client.get(url)
+        resp = await client.get(url, headers=provider_app_headers(url))
         resp.raise_for_status()
         payload = resp.json()
     return parser(payload if isinstance(payload, Mapping) else {})

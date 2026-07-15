@@ -230,19 +230,20 @@ pre {
 
 /* ── App shell layout (overlay sidebar) ──────────────────────────────── */
 #app {
+  --sidebar-width: 260px;
   display: flex;
   min-height: 100vh;
   min-height: 100dvh;
 }
 
-/* Sidebar: floating overlay */
+/* Sidebar: explicit dock on desktop, explicit drawer on mobile. */
 .sidebar {
   position: fixed;
   top: 0;
   left: 0;
   bottom: 0;
   z-index: 200;
-  width: 260px;
+  width: var(--sidebar-width);
   background: var(--sidebar-bg);
   border-right: 0;
   display: flex;
@@ -250,7 +251,7 @@ pre {
   padding: 8px 0 10px;
   overflow: hidden;
   transform: translateX(-100%);
-  transition: transform var(--dur-enter) cubic-bezier(0.32, 0.72, 0, 1);
+  transition: transform var(--dur-base) var(--ease-out);
 }
 
 /* Docked: fixed in place, pushes main content */
@@ -258,49 +259,23 @@ pre {
   transform: translateX(0);
 }
 
-/* Hovered: floating overlay, does NOT push main content. The drop shadow lives
-   on a separate compositor layer (.sidebar-shadow) so it fades via opacity
-   instead of repainting a multi-layer box-shadow on .sidebar every frame — and
-   since .sidebar is overflow:hidden, a child shadow would be clipped anyway. */
-.sidebar.hovered {
-  transform: translateX(0);
+/* Drawer is a runtime layout mode, not merely a viewport media query: coarse-
+   only tablets and phone landscape can enter it above 768px. App.vue owns the
+   mode decision and applies this class so behavior and presentation cannot
+   disagree. */
+.sidebar.sidebar--drawer {
+  box-sizing: border-box;
+  width: min(280px, calc(100vw - 24px));
+  padding-top: calc(8px + env(safe-area-inset-top, 0px));
+  padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  padding-left: env(safe-area-inset-left, 0px);
 }
 
-/* Sidebar drop shadow as its own layer: a static box-shadow faded in/out via
-   opacity (compositor) and slid in lockstep with the sidebar (same duration +
-   easing as .sidebar's transform) so the slide and its shadow stay in sync. */
-.sidebar-shadow {
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 260px;
-  z-index: 199;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateX(-100%);
+.sidebar.sidebar--drawer.docked {
   box-shadow:
     0 0 0 1px rgba(0, 0, 0, 0.03),
     4px 0 24px rgba(0, 0, 0, 0.08),
     8px 0 48px rgba(0, 0, 0, 0.04);
-  transition: opacity var(--dur-enter) cubic-bezier(0.32, 0.72, 0, 1),
-              transform var(--dur-enter) cubic-bezier(0.32, 0.72, 0, 1);
-  will-change: opacity, transform;
-}
-.sidebar-shadow.visible {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-/* Hover trigger strip on left edge */
-.sidebar-hover-trigger {
-  position: fixed;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 4px;
-  z-index: 199;
-  cursor: pointer;
 }
 
 /* Sidebar header: brand + toggle */
@@ -313,6 +288,7 @@ pre {
 }
 
 .sidebar-dock-toggle {
+  position: relative;
   width: 28px;
   height: 28px;
   display: flex;
@@ -335,6 +311,72 @@ pre {
 /* Topbar toggle — shown when sidebar is collapsed */
 .topbar-toggle {
   margin-right: var(--sp-2);
+}
+
+.sidebar-toggle-tip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 220;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: max-content;
+  max-width: min(220px, calc(100vw - 24px));
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  color: var(--text);
+  box-shadow: var(--shadow-md);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(-2px) scale(0.98);
+  transform-origin: top left;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    transform var(--dur-fast) var(--ease-out),
+    visibility 0s linear var(--dur-fast);
+}
+
+.sidebar-toggle-tip--sidebar {
+  right: 0;
+  left: auto;
+  transform-origin: top right;
+}
+
+.sidebar-toggle-tip kbd {
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.625rem;
+  font-weight: 600;
+}
+
+.sidebar-dock-toggle:hover .sidebar-toggle-tip,
+.sidebar-dock-toggle:focus-visible .sidebar-toggle-tip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0) scale(1);
+  transition-delay: var(--dur-base), var(--dur-base), 0s;
+}
+
+.sidebar-dock-toggle:focus-visible .sidebar-toggle-tip {
+  transition-delay: 0s;
+}
+
+@media (hover: none) {
+  .sidebar-toggle-tip {
+    display: none;
+  }
 }
 
 /* ── New Sidebar Design ──────────────────────────────────────────────── */
@@ -985,9 +1027,13 @@ pre {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
-/* Mobile drawer scrim: render only in the <=768px overlay layout */
+/* App renders the scrim only while the runtime layout mode is `drawer`. */
 .sidebar-scrim {
-  display: none;
+  display: block;
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: var(--scrim);
 }
 
 /* Mobile bottom tab bar: render only in the <=768px shell */
@@ -1260,7 +1306,62 @@ pre {
 
 /* Main is pushed when sidebar is docked */
 .main.docked {
-  margin-left: 260px;
+  margin-left: var(--sidebar-width);
+}
+
+.main.main--sidebar-drawer.docked {
+  margin-left: 0;
+}
+
+/* Runtime drawer mode also covers coarse-only tablets and phone landscape
+   above the 768px CSS breakpoint, so its visible topbar controls must carry
+   the same 44px touch contract as portrait mobile. */
+.main--sidebar-drawer .topbar .btn,
+.main--sidebar-drawer .topbar .sidebar-dock-toggle {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.main--sidebar-drawer .topbar .sidebar-dock-toggle {
+  width: 44px;
+  height: 44px;
+}
+
+.main--sidebar-drawer .topbar .conn-pill {
+  min-height: 44px;
+}
+
+/* The compact dock leaves 509–699px for the main pane. Preserve the high-value
+   connection/theme affordances, but collapse language to its icon and hide the
+   optional music control so the chat title and actions retain real space. */
+.main--sidebar-compact .topbar-right {
+  gap: var(--sp-1);
+}
+
+.main--sidebar-compact .topbar-right .lang-menu-trigger {
+  justify-content: center;
+  width: 28px;
+  padding-inline: 0;
+}
+
+.main--sidebar-compact .topbar-right .lang-menu-current,
+.main--sidebar-compact .topbar-right .bgm-menu-wrap {
+  display: none;
+}
+
+/* Drawer affordances retain the mobile touch contract even when a coarse-only
+   device enters drawer mode above the phone breakpoint. */
+.sidebar--drawer .sidebar-dock-toggle,
+.sidebar--drawer .sidebar-core .sidebar-fn-item,
+.sidebar--drawer .sidebar-foot .sidebar-fn-item,
+.sidebar--drawer .sidebar-cmd-btn,
+.sidebar--drawer .sidebar-history-item {
+  min-height: 44px;
+}
+
+.sidebar--drawer .sidebar-dock-toggle {
+  width: 44px;
+  height: 44px;
 }
 
 .topbar {
@@ -1464,24 +1565,13 @@ pre {
     gap: var(--sp-2);
   }
 
+  .sidebar-dock-toggle {
+    width: 44px;
+    height: 44px;
+  }
+
   .sidebar {
     width: 280px;
-  }
-
-  .sidebar.docked {
-    box-shadow:
-      0 0 0 1px rgba(0, 0, 0, 0.03),
-      4px 0 24px rgba(0, 0, 0, 0.08),
-      8px 0 48px rgba(0, 0, 0, 0.04);
-  }
-
-  /* Tap-to-close backdrop behind the open drawer */
-  .sidebar-scrim {
-    display: block;
-    position: fixed;
-    inset: 0;
-    z-index: 150;
-    background: var(--scrim);
   }
 
   .main.docked {

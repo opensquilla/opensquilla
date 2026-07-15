@@ -6,6 +6,7 @@ import fnmatch
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -250,8 +251,10 @@ def _git_files(root: Path) -> list[str] | None:
     try:
         # -z: NUL-separated verbatim paths, so core.quotePath never C-quotes a
         # non-ASCII name into an octal-escape string that matches nothing on
-        # disk. Decoding with the filesystem rules (surrogateescape) means even
-        # undecodable path bytes can never crash completion.
+        # disk. Keep the platform's normal filesystem decoding first, then fall
+        # back to surrogateescape because Windows' surrogatepass handler can
+        # raise for malformed UTF-8 bytes. Completion must remain available for
+        # every Git path without changing valid Windows path decoding.
         result = subprocess.run(
             ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             cwd=root,
@@ -263,10 +266,17 @@ def _git_files(root: Path) -> list[str] | None:
     if result.returncode != 0:
         return None
     return [
-        Path(os.fsdecode(entry)).as_posix()
+        Path(_decode_git_path(entry)).as_posix()
         for entry in result.stdout.split(b"\0")
         if entry
     ]
+
+
+def _decode_git_path(entry: bytes) -> str:
+    try:
+        return os.fsdecode(entry)
+    except UnicodeDecodeError:
+        return entry.decode(sys.getfilesystemencoding(), errors="surrogateescape")
 
 
 def _walk_files(root: Path, *, max_walk: int) -> list[str]:

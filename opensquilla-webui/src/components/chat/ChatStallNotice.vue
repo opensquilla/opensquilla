@@ -1,6 +1,5 @@
 <template>
-  <!-- Content-silence stall notice: the soft watchdog flags a wedged provider
-       run long before the hard idle timeout would end the turn. -->
+  <!-- Neutral long-running notice shown only after the high soft threshold. -->
   <div class="stall-notice" role="status" aria-live="polite" data-testid="chat-stall-notice">
     <span class="stall-notice__dot" aria-hidden="true" />
     <div class="stall-notice__text">
@@ -39,7 +38,7 @@ defineProps<{
 }>()
 
 defineEmits<{
-  /** "Keep waiting" — dismiss the banner; the watchdog re-arms later. */
+  /** "Keep waiting" — suppress this silence episode until real progress. */
   wait: []
   /** "Interrupt turn" — same stop path as the composer stop button. */
   interrupt: []

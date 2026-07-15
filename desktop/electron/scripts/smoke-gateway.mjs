@@ -112,7 +112,7 @@ async function selectRuntimeGateway() {
   return sourceRuntimeGatewayDir
 }
 
-function smokeEnv(tempHome, stateDir, config) {
+function smokeEnv(tempHome, config) {
   const env = {}
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith('OPENSQUILLA_')) continue
@@ -125,7 +125,9 @@ function smokeEnv(tempHome, stateDir, config) {
     USERPROFILE: tempHome,
     OPENSQUILLA_DESKTOP: '1',
     OPENSQUILLA_INSTALL_METHOD: 'desktop',
-    OPENSQUILLA_STATE_DIR: stateDir,
+    // The Desktop contract treats OPENSQUILLA_STATE_DIR as the profile root H.
+    // Runtime databases still live below H/state; config must remain at H/config.toml.
+    OPENSQUILLA_STATE_DIR: tempHome,
     OPENSQUILLA_GATEWAY_CONFIG_PATH: config,
     PYTHONUNBUFFERED: '1',
     PYTHONUTF8: '1',
@@ -337,6 +339,7 @@ async function main() {
   const tempHome = await mkdtemp(join(tmpdir(), 'opensquilla-gateway-smoke-'))
   const config = join(tempHome, 'config.toml')
   const stateDir = join(tempHome, 'state')
+  const workspaceDir = join(tempHome, 'workspace')
   let child = null
   const stdoutTail = []
   const stderrTail = []
@@ -345,6 +348,8 @@ async function main() {
 
   try {
     await mkdir(stateDir, { recursive: true })
+    await mkdir(workspaceDir, { recursive: true })
+    await writeFile(join(workspaceDir, 'SOUL.md'), 'synthetic packaged gateway smoke\n', 'utf8')
     await writeFile(
       config,
       [
@@ -358,7 +363,7 @@ async function main() {
     const port = await findFreePort()
     child = spawn(gatewayBinary, ['gateway', 'run', '--port', String(port), '--bind', '127.0.0.1', '--config', config], {
       cwd: dirname(gatewayBinary),
-      env: smokeEnv(tempHome, stateDir, config),
+      env: smokeEnv(tempHome, config),
       windowsHide: true,
     })
 

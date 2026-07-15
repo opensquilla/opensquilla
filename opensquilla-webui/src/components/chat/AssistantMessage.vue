@@ -35,7 +35,7 @@
         :tool-secondary-text="toolSecondaryText"
         @toggle-group="$emit('toggleToolGroup', $event)"
         @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title) => $emit('showToolResult', content, title)"
+        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
       />
       <template v-else>
         <TextPart v-if="standaloneTextPart" :part="standaloneTextPart" :sources="message.sources ?? []" @citation="onCitation" />
@@ -51,7 +51,7 @@
         :tool-secondary-text="toolSecondaryText"
         @toggle-group="$emit('toggleToolGroup', $event)"
         @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title) => $emit('showToolResult', content, title)"
+        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
       />
 
       <!-- Inline interrupts: approval / clarify requests that blocked the run,
@@ -143,10 +143,6 @@
                   <div class="msg-meta-popover__row">
                     <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cost') }}</span>
                     <span class="msg-meta-popover__value">{{ fmtUsd(message.meta.ensemble.costUsd || message.meta.costUsd) }}</span>
-                  </div>
-                  <div class="msg-meta-popover__row">
-                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.saved') }}</span>
-                    <span class="msg-meta-popover__value">{{ ensembleSavedText }}</span>
                   </div>
                   <div v-if="message.meta.ensemble.fallbackUsed" class="msg-meta-popover__row">
                     <span class="msg-meta-popover__label">{{ t('chat.msgMeta.fallback') }}</span>
@@ -252,6 +248,7 @@ import type {
   ChatToolCall,
   ChatToolCallGroup,
   ChatToolCallRenderItem,
+  ToolResultContext,
 } from '@/types/chat'
 import type { ChatPart } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
@@ -286,7 +283,7 @@ const emit = defineEmits<{
   downloadArtifact: [artifact: ArtifactPayload]
   toggleToolGroup: [groupId: string]
   toggleToolItem: [renderKey: string]
-  showToolResult: [content: string, title: string]
+  showToolResult: [content: string, title: string, context?: ToolResultContext]
   fork: []
   resolveInterrupt: [id: string, decision: 'allow-once' | 'allow-always' | 'deny', note?: string]
   extendInterrupt: [id: string]
@@ -390,13 +387,6 @@ const ensembleSummary = computed(() => {
   const requests = ensemble.requestCount > 0 ? `${ensemble.requestCount} requests` : ''
   const profile = ensemble.profile && ensemble.profile !== 'llm_ensemble' ? ensemble.profile : ''
   return [profile, requests].filter(Boolean).join(' · ') || `${ensemble.modelCount} models`
-})
-
-const ensembleSavedText = computed(() => {
-  const ensemble = props.message.meta?.ensemble
-  if (!ensemble) return fmtUsd(0)
-  const suffix = ensemble.savedPct > 0 ? ` · ${Math.round(ensemble.savedPct)}%` : ''
-  return `${fmtUsd(ensemble.savedUsd)}${suffix}`
 })
 
 const metaDetailsId = computed(

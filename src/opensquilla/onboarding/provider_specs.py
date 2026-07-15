@@ -59,7 +59,8 @@ _PROVIDER_LABELS: dict[str, str] = {
     "deepseek": "DeepSeek",
     "gemini": "Google Gemini",
     "dashscope": "Aliyun DashScope",
-    "bailian_coding": "Bailian Coding",
+    "bailian_coding": "Bailian Coding (International)",
+    "bailian_coding_cn": "Bailian Coding (Mainland China)",
     "moonshot": "Moonshot AI",
     "kimi_coding_openai": "Kimi Coding OpenAI-compatible",
     "kimi_coding_anthropic": "Kimi Coding Anthropic-compatible",
@@ -145,6 +146,11 @@ _ONBOARDING_VERIFIED_PROVIDER_IDS = frozenset(
 
 _LOCAL_PROVIDER_IDS = frozenset({"ollama", "vllm", "lm_studio", "ovms"})
 _OAUTH_PROVIDER_IDS = frozenset({"openai_codex", "github_copilot"})
+_BAILIAN_CODING_PROVIDER_IDS = frozenset({"bailian_coding", "bailian_coding_cn"})
+_DIRECT_MODEL_DEFAULTS = {
+    "bailian_coding": "qwen3.7-plus",
+    "bailian_coding_cn": "qwen3.7-plus",
+}
 
 
 def _deployment_for(spec: ProviderSpec) -> Deployment:
@@ -183,11 +189,14 @@ def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
             else "A provider model id."
         )
     if spec.requires_api_key():
-        needs.append(
-            f"API key via {spec.env_key} or a one-time paste."
-            if spec.env_key
-            else "Provider API key."
-        )
+        if spec.provider_id in _BAILIAN_CODING_PROVIDER_IDS:
+            needs.append("A dedicated Coding Plan API key starting with sk-sp-.")
+        else:
+            needs.append(
+                f"API key via {spec.env_key} or a one-time paste."
+                if spec.env_key
+                else "Provider API key."
+            )
     if spec.requires_base_url():
         needs.append("Provider base URL.")
     if spec.provider_id in _LOCAL_PROVIDER_IDS:
@@ -198,6 +207,8 @@ def _what_you_need(spec: ProviderSpec) -> tuple[str, ...]:
 
 
 def _default_direct_model(provider_id: str) -> str:
+    if default_model := _DIRECT_MODEL_DEFAULTS.get(provider_id):
+        return default_model
     preset = get_preset(provider_id)
     if preset is None or preset.synthesized:
         if provider_id in _INLINE_ROUTER_SUPPORTED_PROVIDER_IDS and preset is not None:
@@ -225,6 +236,21 @@ def _model_description(spec: ProviderSpec, *, router_supported: bool) -> str:
 
 def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
     router_supported = _is_router_supported_provider(spec.provider_id)
+    api_key_description = (
+        (
+            "Use the dedicated Coding Plan API key starting with sk-sp-. "
+            "Standard Model Studio keys are not interchangeable. "
+        )
+        if spec.provider_id in _BAILIAN_CODING_PROVIDER_IDS
+        else ""
+    )
+    api_key_description += (
+        "Saved as plaintext api_key in the config file and used "
+        f"ahead of {spec.env_key}. Leave blank to read "
+        f"{spec.env_key} from the environment instead."
+        if spec.env_key
+        else "Saved as plaintext api_key in the config file."
+    )
     return (
         ProviderSetupField(
             name="model",
@@ -240,15 +266,7 @@ def _fields_for(spec: ProviderSpec) -> tuple[ProviderSetupField, ...]:
             field_type="password",
             required=spec.requires_api_key(),
             default="",
-            description=(
-                (
-                    "Saved as plaintext api_key in the config file and used "
-                    f"ahead of {spec.env_key}. Leave blank to read "
-                    f"{spec.env_key} from the environment instead."
-                )
-                if spec.env_key
-                else "Saved as plaintext api_key in the config file."
-            ),
+            description=api_key_description,
             secret=True,
         ),
         *(

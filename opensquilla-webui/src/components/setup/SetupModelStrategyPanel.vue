@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n'
 import SetupTierTable from '@/components/setup/SetupTierTable.vue'
 import type { ModelStrategy } from '@/composables/setup/useSetupModelStrategyForm'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
-import type { DiscoveredModel } from '@/composables/setup/useSetupProviderForm'
+import type { DiscoveredModelsByProvider } from '@/composables/setup/useSetupProviderForm'
 import {
   ENSEMBLE_PROPOSER_ROLES,
   type EnsembleCandidateRole,
@@ -34,14 +34,14 @@ interface RouterPanelContract {
   textTiers: readonly string[]
   tierRows: readonly SetupTierRow[]
   tierLabel: (tier: string) => string
-  discoveredModels?: DiscoveredModel[]
-  discoveredModelsProvider?: string
-  discoveredModelSource?: string
+  discoveredModelsByProvider?: DiscoveredModelsByProvider
   hasMixedTierProviders: boolean
 }
 
 interface EnsemblePanelContract {
   enabled: boolean
+  activeProvider?: string
+  activeModel?: string
   selectionMode: string
   scheme: EnsembleScheme
   schemeCardsAvailable: boolean
@@ -114,17 +114,19 @@ const defaultRouteModel = computed(() => {
   return tier?.model || ''
 })
 
-const defaultRouteProvider = computed(() => {
-  const tier = props.panel.router.tierRows.find(row => row.name === props.panel.router.routerDefaultTier)
-    || props.panel.router.tierRows[0]
-  return displayProvider(tier?.provider || '')
-})
-
-const dependencyModel = computed(() => defaultRouteModel.value || props.panel.providerLabel)
-const dependencyProvider = computed(() => defaultRouteProvider.value || props.panel.providerLabel)
-
 const ensembleScheme = computed(() => props.panel.ensemble.scheme)
 const customLineup = computed(() => props.panel.ensemble.custom)
+const currentModel = computed(() => (
+  props.panel.ensemble.activeModel
+  || customLineup.value.inheritedAggregatorModel
+  || defaultRouteModel.value
+  || props.panel.providerLabel
+))
+const currentProvider = computed(() => displayProvider(
+  props.panel.ensemble.activeProvider
+  || customLineup.value.inheritedAggregatorProvider
+  || '',
+) || props.panel.providerLabel)
 const capacityCells = computed(() => {
   const lineup = customLineup.value
   return Array.from({ length: lineup.maxProposers }, (_, index) => ({
@@ -222,7 +224,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
         <div class="control-section__head">
           <h3 class="control-section__title">{{ t('setup.modelStrategy.routerTitle') }}</h3>
           <p class="control-section__desc">
-            {{ t('setup.modelStrategy.routerDependency', { provider: dependencyProvider, model: dependencyModel }) }}
+            {{ t('setup.modelStrategy.routerDependency', { provider: currentProvider, model: currentModel }) }}
           </p>
         </div>
 
@@ -268,9 +270,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           :rows="panel.router.tierRows"
           :tier-label="panel.router.tierLabel"
           :disabled="routerEditingDisabled"
-          :models="panel.router.discoveredModels || []"
-          :models-provider="panel.router.discoveredModelsProvider || ''"
-          :model-source="panel.router.discoveredModelSource || 'none'"
+          :models-by-provider="panel.router.discoveredModelsByProvider || {}"
           @update-tier-field="(name, key, value) => emit('updateTierField', name, key, value)"
         />
       </section>
@@ -279,7 +279,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
         <div class="control-section__head">
           <h3 class="control-section__title">{{ t('setup.modelStrategy.ensembleTitle') }}</h3>
           <p class="control-section__desc">
-            {{ t('setup.modelStrategy.ensembleDependency', { provider: dependencyProvider, model: dependencyModel }) }}
+            {{ t('setup.modelStrategy.ensembleDependency', { provider: currentProvider, model: currentModel }) }}
           </p>
         </div>
 
@@ -425,7 +425,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
               >
                 <span class="setup-model-strategy__candidate-main">
                   <span class="setup-model-strategy__candidate-label">
-                    {{ displayProvider(customLineup.inheritedAggregatorProvider) }} · {{ customLineup.inheritedAggregatorModel || dependencyModel }}
+                    {{ displayProvider(customLineup.inheritedAggregatorProvider) }} · {{ customLineup.inheritedAggregatorModel || currentModel }}
                   </span>
                   <span class="setup-model-strategy__candidate-source">{{ t('setup.modelStrategy.aggregatorInheritedNote') }}</span>
                 </span>
@@ -581,7 +581,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
               }) }}
             </span>
             <span class="control-row__desc">
-              {{ t('setup.modelStrategy.ensembleFailure', { provider: dependencyProvider, model: dependencyModel }) }}
+              {{ t('setup.modelStrategy.ensembleFailure', { provider: currentProvider, model: currentModel }) }}
             </span>
           </div>
           <div class="control-row__control">
@@ -602,7 +602,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
         <div class="control-section__head">
           <h3 class="control-section__title">{{ t('setup.modelStrategy.singleTitle') }}</h3>
           <p class="control-section__desc">
-            {{ t('setup.modelStrategy.singleDependency', { provider: panel.providerLabel, model: dependencyModel }) }}
+            {{ t('setup.modelStrategy.singleDependency', { provider: currentProvider, model: currentModel }) }}
           </p>
         </div>
         <p class="setup-model-strategy__muted">{{ t('setup.modelStrategy.singleDesc') }}</p>

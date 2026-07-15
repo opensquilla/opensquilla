@@ -1,13 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { ref } from 'vue'
-import { useChatStream } from './useChatStream'
+import {
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  streamIdleTimeoutFromPolicy,
+  useChatStream,
+} from './useChatStream'
 import type { ChatMessage } from '@/types/chat'
 
 // Focused coverage for the streaming render coalescer: stream deltas are
 // batched onto the frame clock (requestAnimationFrame) and the live reveal
 // renders with syntax highlighting deferred. The test env is `node`, so rAF is
 // stubbed and driven manually; fake timers cover the Date.now() flush throttle.
-function makeStream(renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolean }) => `<p>${t}</p>`)) {
+function makeStream(
+  renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolean }) => `<p>${t}</p>`),
+  rpcPolicy?: () => Record<string, unknown> | undefined,
+) {
   const scrollToBottom = vi.fn()
   const messages = ref<ChatMessage[]>([])
   const api = useChatStream({
@@ -21,6 +28,7 @@ function makeStream(renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolea
     stripGeneratedArtifactMarkers: (t: string) => t,
     stripProtocolTextLeak: (t: string) => t,
     scrollToBottom,
+    rpcPolicy,
   })
   return { api, messages, scrollToBottom, renderMarkdown }
 }
@@ -40,6 +48,27 @@ describe('useChatStream render coalescing', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+
+  it('uses valid negotiated idle grace and falls back to 630s for invalid policy', () => {
+    expect(streamIdleTimeoutFromPolicy({ webui_stream_idle_grace_ms: 1_260_000 })).toBe(1_260_000)
+    expect(streamIdleTimeoutFromPolicy(undefined)).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+    expect(streamIdleTimeoutFromPolicy({ webui_stream_idle_grace_ms: 0 })).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+    expect(streamIdleTimeoutFromPolicy({ webui_stream_idle_grace_ms: '1260000' })).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+  })
+
+  it('re-reads policy whenever the hard idle timer is reset', () => {
+    let policy = { webui_stream_idle_grace_ms: 1_260_000 }
+    const { api } = makeStream(undefined, () => policy)
+
+    api.startStreaming()
+    api.resetStreamIdleTimer()
+    expect(api.streamIdleTimeoutMs.value).toBe(1_260_000)
+
+    policy = { webui_stream_idle_grace_ms: 900_000 }
+    api.resetStreamIdleTimer()
+    expect(api.streamIdleTimeoutMs.value).toBe(900_000)
+    api.cleanup()
   })
 
   it('coalesces rapid deltas into a single frame flush and defers highlighting', () => {

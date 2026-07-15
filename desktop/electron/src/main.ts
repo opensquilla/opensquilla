@@ -1,23 +1,63 @@
-import { app, BrowserWindow, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, Menu, ipcMain, nativeTheme, safeStorage, shell } from 'electron'
 import electronUpdater from 'electron-updater'
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, createWriteStream, existsSync, lstatSync, mkdirSync, opendirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync, type Stats } from 'node:fs'
 import { access, constants, readFile, readdir, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import net from 'node:net'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DESKTOP_LOCALES, resolveLocaleFromTags, type DesktopLocale } from './desktop-locale.js'
-import { buildCliInvocation } from './cli-invocation.js'
-import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
 import {
-  GITHUB_UPDATE_OWNER,
-  GITHUB_UPDATE_REPO,
-  parseOpenSquillaReleaseTag,
-  selectMacPrereleaseCandidate,
-  type ReleaseSummary,
-} from './update-feed-resolver.js'
+  classifyDesktopOnboardingDataFlow,
+  isProvenFreshPrimaryDesktopProfile,
+} from './desktop-data-flow.js'
+import {
+  allProfileContexts as enumerateDesktopProfileContexts,
+  contextForProfile,
+  desktopProfileContextPath,
+  isRecoveryProfileId,
+  loadDesktopProfileContext,
+  profileKindEnvironment,
+  updateDesktopProfileContextFile,
+  type DesktopAttentionAcknowledgement,
+  type DesktopProfileContext,
+  type DesktopProfilePaths,
+} from './desktop-profile-context.js'
+import { DesktopWriterAdmission } from './desktop-writer-admission.js'
+import { buildCliInvocation } from './cli-invocation.js'
+import {
+  cleanupSelectorArgs,
+  desktopCleanupScopeIsContained,
+  DesktopCleanupPreviewStore,
+  parseDesktopCleanupMode,
+  parseDesktopCleanupProtocol,
+  sameDesktopCleanupScope,
+  type DesktopCleanupMode,
+  type DesktopCleanupReport,
+  type DesktopCleanupSelection,
+  type TrustedDesktopCleanupPreview,
+} from './desktop-cleanup.js'
+import { secretStorageBackendForPolicy, shouldUseChromiumMockKeychainForPolicy } from './secret-storage-policy.js'
+import { parseOpenSquillaReleaseTag } from './update-feed-resolver.js'
+import {
+  candidateFromUpdateChannel,
+  orderedUpdateSources,
+  updateAssetUrl,
+  updateChannelManifestUrl,
+  updateFeedBaseUrl,
+  UpdateChannelError,
+  type DesktopUpdateCandidate,
+  type DesktopUpdatePlatform,
+  type DesktopUpdateSource,
+} from './update-channel.js'
+import {
+  parseSha256SumsForAsset,
+  readResponseTextWithLimit,
+  streamResponseToVerifiedFile,
+} from './update-verification.js'
+import { isUpdateCheckAllowed, UpdateCheckScheduler } from './update-check-scheduler.js'
 
 interface GatewayState {
   url: string
@@ -29,8 +69,10 @@ interface GatewayState {
 }
 
 type SecretEncryption = 'safeStorage' | 'plain'
+type DesktopConfigAuthority = 'generated' | 'profile'
 type RouterMode = 'recommended' | 'openrouter-mix' | 'disabled'
 type ModelRoutingMode = 'squilla_router' | 'direct' | 'llm_ensemble'
+type StaticEnsembleSelectionMode = 'static_openrouter_b5' | 'static_tokenrhythm_b5'
 type TextRouterTier = 'c0' | 'c1' | 'c2' | 'c3'
 
 interface ProviderCatalogEntry {
@@ -41,6 +83,7 @@ interface ProviderCatalogEntry {
   apiKeyEnv: string
   requiresApiKey: boolean
   routerSupported: boolean
+  ensembleSelectionMode?: StaticEnsembleSelectionMode
   deployment: 'cloud' | 'local'
   note: string
 }
@@ -78,6 +121,8 @@ interface DesktopConnection {
   encryptedSearchApiKey?: string
   encryption: SecretEncryption
   disableNetworkObservability: boolean
+  configAuthority: DesktopConfigAuthority
+  importTransactionId: string
   createdAt: string
   updatedAt: string
 }
@@ -112,6 +157,7 @@ interface DesktopSettingsSnapshot {
   searchApiKeyEnv: string
   searchApiKeyConfigured: boolean
   disableNetworkObservability: boolean
+  configManagedByProfile: boolean
   searchProviders: SearchProviderCatalogEntry[]
   providers?: { providerId: string; label: string; model: string; baseUrl: string }[]
   gateway: GatewayState
@@ -122,6 +168,43 @@ interface RuntimeLaunch {
   args: string[]
   cwd: string
   mode: 'bundled' | 'dev'
+}
+
+type RecoveryOutcome = 'ready' | 'attention' | 'recovery_required' | 'recovery_profile'
+
+interface RecoveryCandidate {
+  kind: string
+  path: string
+  exists: boolean
+  valid: boolean
+  configured: boolean
+  identity?: string
+  modified_at_ns?: number
+}
+
+interface RecoveryProtocolResult {
+  schema_version: number
+  outcome: RecoveryOutcome
+  stable_code: string
+  primary_home: string
+  effective_workspace: string | null
+  candidates: RecoveryCandidate[]
+  allowed_actions: string[]
+  transaction_id: string | null
+  revision: number
+}
+
+interface DesktopRecoveryViewState {
+  inspection: RecoveryProtocolResult | null
+  activeProfile: {
+    kind: 'primary' | 'recovery'
+    recoveryId: string | null
+    home: string
+  }
+  recoveryProfiles: { id: string; home: string }[]
+  blocked: boolean
+  busy: boolean
+  error: string | null
 }
 
 type BootPhaseId = 'profile' | 'gateway-start' | 'gateway-health' | 'control' | 'ready'
@@ -175,6 +258,7 @@ function applyDesktopNativeTheme(source: DesktopNativeThemeSource): { source: De
   return { source, shouldUseDarkColors: nativeTheme.shouldUseDarkColors }
 }
 let gatewayProcess: ChildProcessWithoutNullStreams | null = null
+let gatewayProfileKey: string | null = null
 let isQuitting = false
 // Opt stopGateway into the Windows HTTP graceful-drain path even while isQuitting
 // is set, for the update/uninstall flows that keep the main process alive and
@@ -203,6 +287,7 @@ let rejectOnboarding: ((error: Error) => void) | null = null
 // Legacy home detected for the CURRENT onboarding run. The onboarding migrate
 // IPC handlers read the source path/kind from here (main-process truth), never
 // from the renderer payload.
+let onboardingMigrationCandidates: LegacyImportCandidate[] = []
 let onboardingMigrationCandidate: LegacyImportCandidate | null = null
 let onboardingMigrationPreviewApprovedAt = 0
 let secretStorageBackendCache: SecretEncryption | null = null
@@ -214,7 +299,36 @@ let bootStatus: BootStatus = {
 }
 let bootError: BootError | null = null
 let forceOnboardingOnNextStartup = false
+let recoveryInspection: RecoveryProtocolResult | null = null
+let primaryRecoveryInspection: RecoveryProtocolResult | null = null
+let recoveryOperationBusy = false
+let recoveryOperationError: string | null = null
+let attentionPromptInFlight: Promise<void> | null = null
+let attentionPromptedThisSession = ''
+const desktopCleanupPreviews = new DesktopCleanupPreviewStore()
+let desktopCleanupBusy = false
+// Keep the post-exit delete-all helper and its open stdin pipe strongly
+// reachable until Electron exits. The pipe is unref'ed (so it cannot delay
+// exit) but must not be garbage-collected and closed while Chromium still owns
+// userData handles.
+let pendingDeleteAllHelper: ChildProcess | null = null
 const gatewayProcessTreeChildren = new WeakSet<ChildProcessWithoutNullStreams>()
+const desktopWriters = new DesktopWriterAdmission()
+let desktopOpenFlowRevision = 0
+let desktopOpenFlowPromise: Promise<void> | null = null
+
+function invalidateDesktopOpenFlow(): number {
+  desktopOpenFlowRevision += 1
+  return desktopOpenFlowRevision
+}
+
+function beginDesktopWriterOperation(label: string): () => void {
+  return desktopWriters.begin(label)
+}
+
+function waitForDesktopWriterOperations(maximumActive = 0): Promise<void> {
+  return desktopWriters.waitForAtMost(maximumActive)
+}
 
 const gatewayState: GatewayState = {
   url: '',
@@ -224,8 +338,67 @@ const gatewayState: GatewayState = {
   logPath: '',
 }
 
+let desktopProfileContextCache: DesktopProfileContext | null = null
+// A persisted recovery choice is offered after restart, but a fresh Electron
+// process must not start that writer until the user explicitly confirms it.
+let activeRecoveryProfileConfirmedThisProcess = false
+
+function desktopProfileContext(): DesktopProfileContext {
+  if (!desktopProfileContextCache) {
+    desktopProfileContextCache = loadDesktopProfileContext(app.getPath('userData'))
+  }
+  return desktopProfileContextCache
+}
+
+function activeDesktopProfile(): DesktopProfilePaths {
+  return desktopProfileContext().active
+}
+
+function primaryDesktopProfile(): DesktopProfilePaths {
+  return desktopProfileContext().primary
+}
+
+function allProfileContexts(): DesktopProfilePaths[] {
+  return enumerateDesktopProfileContexts(app.getPath('userData'))
+}
+
+async function updateDesktopProfileContext(
+  updater: (current: DesktopProfileContext) => DesktopProfileContext,
+): Promise<DesktopProfileContext> {
+  const finishWriter = recoveryOperationBusy
+    ? () => {}
+    : beginDesktopWriterOperation('update Desktop profile context')
+  try {
+    const context = await updateDesktopProfileContextFile(app.getPath('userData'), updater)
+    desktopProfileContextCache = context
+    return context
+  } finally {
+    finishWriter()
+  }
+}
+
+async function selectDesktopProfile(
+  kind: 'primary' | 'recovery',
+  recoveryId: string | null = null,
+): Promise<void> {
+  invalidateDesktopOpenFlow()
+  await updateDesktopProfileContext((current) => contextForProfile(
+    app.getPath('userData'),
+    kind,
+    recoveryId,
+    new Date().toISOString(),
+    current.persisted.attention_acknowledgement,
+  ))
+  activeRecoveryProfileConfirmedThisProcess = kind === 'recovery'
+  createApplicationMenu()
+}
+
 function desktopHome(): string {
-  return join(app.getPath('userData'), 'opensquilla')
+  return activeDesktopProfile().home
+}
+
+function primaryDesktopHome(): string {
+  return primaryDesktopProfile().home
 }
 
 function desktopConfigPath(): string {
@@ -237,83 +410,57 @@ function desktopStateDir(): string {
 }
 
 function credentialPath(): string {
-  return join(app.getPath('userData'), 'desktop-credential.json')
+  return activeDesktopProfile().credentialPath
 }
 
-// ── Legacy desktop layout relocation (one-time) ────────────────────────────
-// Until 0.5.x the gateway child ran with OPENSQUILLA_STATE_DIR=desktopStateDir()
-// (<home>/state). The Python side treats that env var as the OpenSquilla HOME
-// ROOT, so home-derived data — managed skills, the default workspace with
-// MEMORY.md, session-archive, router self-learning, a user .env, and the
-// paths.state_dir() consumers that nested a second state/ level — landed one
-// level too deep. The gateway spawn now passes desktopHome(); this moves the
-// legacy nested layout up one level, once, before the first spawn with the new
-// env. Databases under state/ (sessions.db, scheduler.db, agents/) are pinned
-// by the TOML state_dir and were always correct — they are never touched.
-// Design: docs/features/legacy-home-migration-design.md (Phase 1).
-const DESKTOP_LAYOUT_MARKER = 'desktop-layout-v2.json'
-const LEGACY_HOME_ENTRIES = [
-  'skills',
-  'skills-taps.json',
-  'skills-lock.json',
-  'workspace',
-  'session-archive',
-  'router',
-  '.env',
-]
-
-function relocateLegacyDesktopStateLayout(): void {
-  const home = desktopHome()
-  const state = desktopStateDir()
-  const markerPath = join(home, DESKTOP_LAYOUT_MARKER)
-  if (existsSync(markerPath)) return
-  if (!existsSync(state)) {
-    // Fresh profile: nothing nested to move; stamp so we never rescan.
-    mkdirSync(home, { recursive: true })
-    writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved: [] }) + '\n', 'utf-8')
-    return
-  }
-  const moved: string[] = []
-  let failed = false
-  const moveUp = (sourceDir: string, name: string, label: string) => {
-    const src = join(sourceDir, name)
-    if (!existsSync(src)) return
-    const dst = join(sourceDir === state ? home : state, name)
-    try {
-      if (existsSync(dst)) {
-        // Never merge or overwrite: park the legacy copy beside the new one.
-        const parked = join(sourceDir, `${name}.pre-relocation`)
-        if (!existsSync(parked)) renameSync(src, parked)
-      } else {
-        renameSync(src, dst)
-        moved.push(label)
-      }
-    } catch (error) {
-      failed = true
-      desktopLog('desktop_layout_relocation_entry_failed', { name: label, error: String(error) })
-    }
-  }
-  for (const name of LEGACY_HOME_ENTRIES) moveUp(state, name, name)
-  // Flatten the nested state/state tree written by direct paths.state_dir()
-  // consumers (router calibration, sandbox grants, approval queue, safety log).
-  const nested = join(state, 'state')
-  if (existsSync(nested)) {
-    for (const name of readdirSync(nested)) moveUp(nested, name, `state/${name}`)
-    try {
-      if (readdirSync(nested).length === 0) rmdirSync(nested)
-    } catch {
-      // A non-empty or locked nested dir stays in place; harmless.
-    }
-  }
-  if (failed) {
-    // No marker on failure: a locked entry (e.g. a lingering gateway) defers
-    // the whole relocation to the next boot instead of stranding half of it.
-    desktopLog('desktop_layout_relocation_deferred', { moved })
-    return
-  }
-  writeFileSync(markerPath, JSON.stringify({ migratedAt: new Date().toISOString(), moved }) + '\n', 'utf-8')
-  if (moved.length > 0) desktopLog('desktop_layout_relocated', { moved })
+function desktopLogsDir(): string {
+  return activeDesktopProfile().logsDir
 }
+
+function desktopProfileKey(profile = activeDesktopProfile()): string {
+  return profile.kind === 'primary' ? 'primary' : `recovery:${profile.recoveryId}`
+}
+
+const PROFILE_SCOPED_DATA_ENV = [
+  'OPENSQUILLA_HOME',
+  'OPENSQUILLA_GATEWAY_STATE_DIR',
+  'OPENSQUILLA_GATEWAY_WORKSPACE_DIR',
+  'OPENSQUILLA_WORKSPACE_DIR',
+  'OPENSQUILLA_MEMORY_DIR',
+  'OPENSQUILLA_SESSION_ARCHIVE_DIR',
+  'OPENSQUILLA_LOG_DIR',
+  'OPENSQUILLA_TURN_CALL_LOG_DIR',
+  'OPENSQUILLA_LLM_TRACE_PATH',
+  'OPENSQUILLA_RUNTIME_EVENTS_PATH',
+  'OPENSQUILLA_PATCH_EVIDENCE_LEDGER_PATH',
+] as const
+
+function desktopChildEnvironment(
+  profile: DesktopProfilePaths,
+  additions: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env }
+  if (profile.kind === 'recovery') {
+    // Recovery profiles are isolated homes and must not inherit primary or
+    // external live data roots from the Desktop process environment.
+    for (const name of PROFILE_SCOPED_DATA_ENV) delete environment[name]
+  }
+  return {
+    ...environment,
+    ...additions,
+    OPENSQUILLA_DESKTOP: '1',
+    OPENSQUILLA_INSTALL_METHOD: 'desktop',
+    OPENSQUILLA_PROFILE_KIND: profileKindEnvironment(profile.kind),
+    OPENSQUILLA_GATEWAY_CONFIG_PATH: join(profile.home, 'config.toml'),
+    // Historical name retained for compatibility: this is H, never H/state.
+    OPENSQUILLA_STATE_DIR: profile.home,
+  }
+}
+
+// ── RC4 Desktop layout recovery boundary ───────────────────────────────
+// RC3's direct TypeScript relocation is intentionally retired. RC4 evaluates
+// historical layouts through the Python recovery engine before any profile
+// writer starts; ambiguous or conflicting trees are never moved here.
 
 // ── Legacy home import detection ────────────────────────────────────────────
 // Quick read-only scan for a legacy OpenSquilla home this desktop profile could
@@ -321,41 +468,122 @@ function relocateLegacyDesktopStateLayout(): void {
 // (config.toml, state/, or workspace/ inside), so both sides agree on what
 // counts as a home — but the import itself always runs through the bundled CLI
 // (`opensquilla migrate opensquilla`) so the migration logic exists exactly
-// once, in Python. Design: docs/features/legacy-home-migration-design.md
-// (Phase 3).
+// once, in Python; Electron only owns trusted source selection and lifecycle.
+type MigrationSourceKind = 'cli-home' | 'desktop-home' | 'windows-portable'
+
 interface LegacyImportCandidate {
-  kind: 'cli-home' | 'windows-portable'
+  kind: MigrationSourceKind
   path: string
+  version: string | null
+  estimated_activity_at: string | null
+  session_count: number | null
+  size_bytes: number | null
+  previously_imported: boolean
 }
+
+function parseMigrationSourceKind(payload: unknown): MigrationSourceKind | null {
+  const record = migrationRecord(payload)
+  const kind = record?.kind
+  return kind === 'cli-home' || kind === 'desktop-home' || kind === 'windows-portable'
+    ? kind
+    : null
+}
+
+const manuallyApprovedMigrationCandidates = new Map<string, LegacyImportCandidate>()
 
 function looksLikeOpenSquillaHome(path: string): boolean {
   try {
-    if (!statSync(path).isDirectory()) return false
+    const info = lstatSync(path)
+    if (!info.isDirectory() || info.isSymbolicLink()) return false
   } catch {
     return false
   }
-  return (
-    existsSync(join(path, 'config.toml'))
-    || existsSync(join(path, 'state'))
-    || existsSync(join(path, 'workspace'))
-  )
+  for (const [name, expected] of [
+    ['config.toml', 'file'],
+    ['state', 'directory'],
+    ['workspace', 'directory'],
+  ] as const) {
+    try {
+      const info = lstatSync(join(path, name))
+      if (info.isSymbolicLink()) continue
+      if (expected === 'file' ? info.isFile() : info.isDirectory()) return true
+    } catch {
+      // Missing or unreadable shape probes do not make this a candidate.
+    }
+  }
+  return false
+}
+
+const LEGACY_METADATA_MAX_CANDIDATES = 12
+const LEGACY_METADATA_MAX_DIRECTORY_ENTRIES = 256
+const LEGACY_METADATA_TIMEOUT_MS = 5_000
+const LEGACY_METADATA_WORKERS = 3
+
+function legacyCandidateActivity(home: string): string | null {
+  try {
+    const info = lstatSync(home)
+    if (!info.isDirectory() || info.isSymbolicLink()) return null
+    return new Date(info.mtimeMs).toISOString()
+  } catch {
+    return null
+  }
+}
+
+function legacyImportCandidate(
+  kind: LegacyImportCandidate['kind'],
+  path: string,
+): LegacyImportCandidate {
+  return {
+    kind,
+    path,
+    version: null,
+    estimated_activity_at: legacyCandidateActivity(path),
+    session_count: null,
+    size_bytes: null,
+    // Python enriches this advisory field while inspecting the candidate. It
+    // never suppresses an otherwise valid source.
+    previously_imported: false,
+  }
+}
+
+function legacyCandidateIdentity(path: string, info: Stats): string {
+  const device = Number(info.dev)
+  const inode = Number(info.ino)
+  if (
+    Number.isSafeInteger(device)
+    && Number.isSafeInteger(inode)
+    && (device !== 0 || inode !== 0)
+  ) return `stat:${device}:${inode}`
+
+  let canonical: string
+  try {
+    canonical = realpathSync(path)
+  } catch {
+    canonical = resolve(path)
+  }
+  return `path:${process.platform === 'win32' ? canonical.toLowerCase() : canonical}`
 }
 
 // Compare via realpath so a symlinked/relocated desktop home is never offered
 // to itself as an import source.
 function resolvedPathsEqual(a: string, b: string): boolean {
   const canonical = (path: string): string => {
+    let value: string
     try {
-      return realpathSync(path)
+      value = realpathSync(path)
     } catch {
-      return resolve(path)
+      value = resolve(path)
     }
+    // Python persists comparison paths through os.path.normcase(), which
+    // lowercases Windows paths. Keep the trusted Electron boundary on the
+    // same contract so equivalent drive/path casing is not rejected after a
+    // successful verifier round trip.
+    return process.platform === 'win32' ? value.toLowerCase() : value
   }
   return canonical(a) === canonical(b)
 }
 
 const MIGRATION_ITEM_STATUSES = new Set(['migrated', 'planned', 'skipped', 'error'])
-const MIGRATION_TRANSACTION_ID_RE = /^\d{20}$/
 
 interface MigrationReportExpectation {
   source: string
@@ -434,9 +662,64 @@ function migrationReportValidationError(
 }
 
 function migrationReportErrors(report: Record<string, unknown>): Record<string, unknown>[] {
-  return (report.items as unknown[])
+  if (!Array.isArray(report.items)) return []
+  return report.items
     .map((item) => migrationRecord(item))
     .filter((item): item is Record<string, unknown> => item?.status === 'error')
+}
+
+const DESKTOP_MIGRATION_FAILURE_CODES = new Set([
+  'source_snapshot_locked',
+  'source_snapshot_changed',
+  'source_snapshot_unreadable',
+  'migration_apply_failed',
+  'gateway_restart_failed',
+])
+
+function migrationFailureFromReport(report: Record<string, unknown> | null): {
+  failureCode: string
+  failureStage: DesktopMigrationFailureStage
+  detail: string
+} | null {
+  if (!report) return null
+  const item = migrationReportErrors(report)[0]
+  if (!item) return null
+  const details = migrationRecord(item.details)
+  const stableCode = typeof details?.stable_code === 'string'
+    && DESKTOP_MIGRATION_FAILURE_CODES.has(details.stable_code)
+    ? details.stable_code
+    : 'migration_apply_failed'
+  const kind = typeof item.kind === 'string' ? item.kind : ''
+  const detail = typeof item.reason === 'string' && item.reason.trim()
+    ? item.reason.trim().slice(0, 1000)
+    : 'Data transfer did not complete.'
+  return {
+    failureCode: stableCode,
+    failureStage: kind.startsWith('preflight/') || kind === 'source' || kind === 'target'
+      ? 'preflight'
+      : 'apply',
+    detail,
+  }
+}
+
+function conciseMigrationProcessError(value: string): string {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => line && !line.startsWith('{') && !line.startsWith('['))
+    ?.slice(0, 1000) || 'The migration command did not return a valid result.'
+}
+
+const MIGRATION_TRANSACTION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const IMPORTED_PROVIDER_API_KEY_ENV_RE = /^[A-Za-z_][A-Za-z0-9_]*_(?:KEY|TOKEN)$/i
+
+function migrationTransactionIdFromReport(report: Record<string, unknown> | null): string | null {
+  if (!report || typeof report.output_dir !== 'string') return null
+  const transactionId = basename(report.output_dir)
+  return MIGRATION_TRANSACTION_ID_RE.test(transactionId)
+    && resolvedPathsEqual(dirname(report.output_dir), migrationReceiptRoot())
+    ? transactionId
+    : null
 }
 
 function windowsPortableHomeRoots(): string[] {
@@ -448,139 +731,86 @@ function windowsPortableHomeRoots(): string[] {
   return roots
 }
 
-function targetHasAppliedImportReceipt(
-  source: string,
-  target: string,
-  transactionId?: string,
-): boolean {
-  const receiptRoot = join(target, 'migration', 'opensquilla')
-  let transactionIds: string[]
-  if (transactionId) {
-    if (!MIGRATION_TRANSACTION_ID_RE.test(transactionId)) return false
-    transactionIds = [transactionId]
-  } else {
-    try {
-      transactionIds = readdirSync(receiptRoot)
-        .filter((entry) => MIGRATION_TRANSACTION_ID_RE.test(entry))
-        .sort()
-        .reverse()
-    } catch {
-      return false
-    }
-  }
-  for (const candidateId of transactionIds) {
-    const receiptDir = join(receiptRoot, candidateId)
-    try {
-      const report = JSON.parse(readFileSync(join(receiptDir, 'report.json'), 'utf8')) as unknown
-      const validationError = migrationReportValidationError(report, {
-        source,
-        target,
-        apply: true,
-      })
-      const record = migrationRecord(report)
-      if (
-        validationError === null
-        && record
-        && typeof record.output_dir === 'string'
-        && resolvedPathsEqual(record.output_dir, receiptDir)
-        && migrationReportErrors(record).length === 0
-      ) {
-        return true
-      }
-    } catch {
-      // Ignore incomplete or unrelated report directories and keep looking.
-    }
-  }
-  return false
-}
+function detectWindowsPortableImportCandidates(): LegacyImportCandidate[] {
+  if (process.platform !== 'win32') return []
 
-function sourceWasImportedToTarget(source: string, target: string): boolean {
-  try {
-    const payload = JSON.parse(
-      readFileSync(join(source, '.opensquilla-imported.json'), 'utf8'),
-    ) as { target?: unknown; transaction_id?: unknown }
-    if (typeof payload.target === 'string' && resolvedPathsEqual(payload.target, target)) {
-      const transactionId = typeof payload.transaction_id === 'string'
-        ? payload.transaction_id
-        : ''
-      if (targetHasAppliedImportReceipt(source, target, transactionId)) return true
-    }
-  } catch {
-    // A process can exit after publishing the receipt but before this
-    // best-effort source marker is written. Fall through to the receipt scan.
-  }
-  return targetHasAppliedImportReceipt(source, target)
-}
-
-// The Python importer publishes a complete sibling staging tree by renaming the
-// old target aside and then renaming staging into place. A crash between those
-// two operations leaves this durable journal. Recover it before onboarding or
-// layout relocation can create a fresh empty target over the missing profile.
-function recoverInterruptedDesktopImport(): void {
-  const target = desktopHome()
-  const parent = dirname(target)
-  const journal = join(parent, `.${basename(target)}.import-commit.json`)
-  if (!existsSync(journal)) return
-  const payload = JSON.parse(readFileSync(journal, 'utf8')) as Record<string, unknown>
-  const recordedTarget = String(payload.target || '')
-  const staging = String(payload.staging || '')
-  const backup = String(payload.backup || '')
-  const phase = String(payload.phase || '')
-  const validPhase = ['prepared', 'target-backed-up', 'published'].includes(phase)
-  const validStaging = dirname(resolve(staging)) === resolve(parent)
-    && basename(staging).startsWith('.opensquilla-import-')
-  const validBackup = dirname(resolve(backup)) === resolve(parent)
-    && basename(backup).startsWith(`${basename(target)}.backup.`)
-  if (!resolvedPathsEqual(recordedTarget, target) || !validPhase || !validStaging || !validBackup) {
-    throw new Error(`Unsafe or malformed desktop import recovery journal: ${journal}`)
-  }
-
-  if (!existsSync(target) && existsSync(backup)) {
-    renameSync(backup, target)
-  } else if (!existsSync(target) && phase !== 'prepared') {
-    throw new Error('Interrupted desktop import has no target or rollback backup.')
-  }
-  rmSync(staging, { recursive: true, force: true })
-  unlinkSync(journal)
-  desktopLog('migration_recovered', { phase, target })
-}
-
-function detectLegacyImportCandidate(): LegacyImportCandidate | null {
-  // The plain CLI home wins over portable unpacks when both exist.
-  const cliHome = join(homedir(), '.opensquilla')
-  if (
-    looksLikeOpenSquillaHome(cliHome)
-    && !resolvedPathsEqual(cliHome, desktopHome())
-    && !sourceWasImportedToTarget(cliHome, desktopHome())
-  ) {
-    return { kind: 'cli-home', path: cliHome }
-  }
-  if (process.platform !== 'win32') return null
-  // Windows portable bundles unpack under LOCALAPPDATA/TEMP; pick the home with
-  // the newest config.toml so a stale unpack does not shadow the live one.
-  let best: { path: string; mtime: number } | null = null
+  const candidates: LegacyImportCandidate[] = []
+  const identities = new Set<string>()
   for (const root of windowsPortableHomeRoots()) {
-    let entries: string[] = []
+    let directory: ReturnType<typeof opendirSync> | null = null
     try {
-      entries = readdirSync(root)
+      const rootInfo = lstatSync(root)
+      if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) continue
+      directory = opendirSync(root)
     } catch {
       continue
     }
-    for (const entry of entries) {
-      const candidate = join(root, entry)
-      if (!looksLikeOpenSquillaHome(candidate)) continue
-      if (resolvedPathsEqual(candidate, desktopHome())) continue
-      if (sourceWasImportedToTarget(candidate, desktopHome())) continue
-      let mtime = 0
-      try {
-        mtime = statSync(join(candidate, 'config.toml')).mtimeMs
-      } catch {
-        mtime = 0
+    try {
+      for (let inspected = 0; inspected < LEGACY_METADATA_MAX_DIRECTORY_ENTRIES; inspected += 1) {
+        const entry = directory.readSync()
+        if (!entry) break
+        const path = join(root, entry.name)
+        if (!looksLikeOpenSquillaHome(path) || resolvedPathsEqual(path, primaryDesktopHome())) {
+          continue
+        }
+        try {
+          const info = lstatSync(path)
+          if (!info.isDirectory() || info.isSymbolicLink()) continue
+          const identity = legacyCandidateIdentity(path, info)
+          if (identities.has(identity)) continue
+          identities.add(identity)
+          candidates.push(legacyImportCandidate('windows-portable', path))
+        } catch {
+          // A candidate can disappear between enumeration and display.
+        }
+        if (candidates.length >= LEGACY_METADATA_MAX_CANDIDATES) break
       }
-      if (!best || mtime > best.mtime) best = { path: candidate, mtime }
+    } finally {
+      directory.closeSync()
+    }
+    if (candidates.length >= LEGACY_METADATA_MAX_CANDIDATES) break
+  }
+  return candidates.sort((left, right) => left.path.localeCompare(right.path))
+}
+
+function detectLegacyImportCandidates(): LegacyImportCandidate[] {
+  const candidates: LegacyImportCandidate[] = []
+  const identities = new Set<string>()
+  const addCandidate = (candidate: LegacyImportCandidate) => {
+    try {
+      const info = lstatSync(candidate.path)
+      if (!info.isDirectory() || info.isSymbolicLink()) return
+      const identity = legacyCandidateIdentity(candidate.path, info)
+      if (identities.has(identity)) return
+      identities.add(identity)
+      candidates.push(candidate)
+    } catch {
+      // A candidate can disappear between enumeration and display.
     }
   }
-  return best ? { kind: 'windows-portable', path: best.path } : null
+
+  // Explicitly browsed source classifications win over automatic heuristics.
+  for (const candidate of manuallyApprovedMigrationCandidates.values()) {
+    if (
+      looksLikeOpenSquillaHome(candidate.path)
+      && !resolvedPathsEqual(candidate.path, primaryDesktopHome())
+    ) addCandidate(legacyImportCandidate(candidate.kind, candidate.path))
+  }
+
+  const cliHome = join(homedir(), '.opensquilla')
+  if (
+    looksLikeOpenSquillaHome(cliHome)
+    && !resolvedPathsEqual(cliHome, primaryDesktopHome())
+  ) {
+    addCandidate(legacyImportCandidate('cli-home', cliHome))
+  }
+  for (const candidate of detectWindowsPortableImportCandidates()) addCandidate(candidate)
+  return candidates.sort((left, right) => (
+    Number(manuallyApprovedMigrationCandidates.has(resolve(right.path)))
+    - Number(manuallyApprovedMigrationCandidates.has(resolve(left.path)))
+    || left.kind.localeCompare(right.kind)
+    || left.path.localeCompare(right.path)
+  )).slice(0, LEGACY_METADATA_MAX_CANDIDATES)
 }
 
 function bootPagePath(): string {
@@ -687,7 +917,8 @@ const LEGACY_TEXT_TIER_ALIASES: Record<string, TextRouterTier> = {
 function canonicalTierKey(name: string): string {
   return LEGACY_TEXT_TIER_ALIASES[name] ?? name
 }
-const ROUTER_PROFILE_IDS = new Set(['openrouter', 'dashscope', 'deepseek', 'gemini', 'volcengine', 'openai', 'zhipu', 'moonshot'])
+const ROUTER_PROFILE_IDS = new Set(['tokenrhythm', 'openrouter', 'dashscope', 'deepseek', 'gemini', 'volcengine', 'openai', 'zhipu', 'moonshot'])
+const INLINE_ROUTER_PROFILE_IDS = new Set(['tokenrhythm'])
 const TOKENRHYTHM_REGISTER_URL = 'https://tokenrhythm.studio/register'
 
 const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
@@ -698,7 +929,8 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     baseUrl: 'https://tokenrhythm.studio/v1',
     apiKeyEnv: 'TOKENRHYTHM_API_KEY',
     requiresApiKey: true,
-    routerSupported: false,
+    routerSupported: true,
+    ensembleSelectionMode: 'static_tokenrhythm_b5',
     deployment: 'cloud',
     note: 'DeepSeek, GLM, MiniMax and Kimi model families on one key.',
   },
@@ -710,6 +942,7 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     apiKeyEnv: 'OPENROUTER_API_KEY',
     requiresApiKey: true,
     routerSupported: true,
+    ensembleSelectionMode: 'static_openrouter_b5',
     deployment: 'cloud',
     note: 'One account for mixed-model routing.',
   },
@@ -756,6 +989,28 @@ const PROVIDER_CATALOG: ProviderCatalogEntry[] = [
     routerSupported: true,
     deployment: 'cloud',
     note: 'Qwen tier profile for Mainland-friendly access.',
+  },
+  {
+    id: 'bailian_coding_cn',
+    label: 'Bailian Coding (Mainland China)',
+    model: 'qwen3.7-plus',
+    baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
+    apiKeyEnv: 'BAILIAN_API_KEY',
+    requiresApiKey: true,
+    routerSupported: false,
+    deployment: 'cloud',
+    note: 'Mainland China Coding Plan. Requires a dedicated sk-sp- API key.',
+  },
+  {
+    id: 'bailian_coding',
+    label: 'Bailian Coding (International)',
+    model: 'qwen3.7-plus',
+    baseUrl: 'https://coding-intl.dashscope.aliyuncs.com/v1',
+    apiKeyEnv: 'BAILIAN_API_KEY',
+    requiresApiKey: true,
+    routerSupported: false,
+    deployment: 'cloud',
+    note: 'International Coding Plan. Requires a dedicated sk-sp- API key.',
   },
   {
     id: 'deepseek',
@@ -1042,6 +1297,13 @@ function minimaxRouterProfile(provider: string): Record<string, RouterTier> {
 }
 
 const ROUTER_PROFILES: Record<string, Record<string, RouterTier>> = {
+  tokenrhythm: {
+    c0: { provider: 'tokenrhythm', model: 'deepseek-v4-flash', description: 'Fast DeepSeek route for simple work', supportsImage: false },
+    c1: { provider: 'tokenrhythm', model: 'deepseek-v4-pro', description: 'Balanced DeepSeek route for normal agent work', supportsImage: false },
+    c2: { provider: 'tokenrhythm', model: 'kimi-k2.7-code', description: 'Strong Kimi route for harder coding and analysis', supportsImage: false },
+    c3: { provider: 'tokenrhythm', model: 'glm-5.2', description: 'Highest-tier GLM route for deep review and planning', supportsImage: false },
+    image_model: { provider: 'tokenrhythm', model: 'kimi-k2.6', description: 'Vision route for image attachments', supportsImage: true, imageOnly: true },
+  },
   openrouter: {
     c0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash', description: 'Fast everyday work', thinkingLevel: 'high' },
     c1: { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', description: 'Balanced agent work', thinkingLevel: 'high' },
@@ -1176,7 +1438,9 @@ function normalizeRouterMode(raw: unknown, provider: string): RouterMode {
 
 function modelRoutingModeAllowed(mode: ModelRoutingMode, provider: string): boolean {
   if (mode === 'direct') return true
-  if (mode === 'llm_ensemble') return provider === 'openrouter'
+  if (mode === 'llm_ensemble') {
+    return Boolean(PROVIDER_BY_ID.get(provider)?.ensembleSelectionMode)
+  }
   return ROUTER_PROFILE_IDS.has(provider)
 }
 
@@ -1201,7 +1465,7 @@ function normalizeModelRoutingMode(raw: unknown, provider: string, fallbackRoute
 
 function routerModeForModelRoutingMode(mode: ModelRoutingMode, provider: string): RouterMode {
   if (mode === 'direct') return 'disabled'
-  if (mode === 'llm_ensemble' && provider === 'openrouter') return 'recommended'
+  if (mode === 'llm_ensemble' && modelRoutingModeAllowed(mode, provider)) return 'recommended'
   return normalizeRouterMode('recommended', provider)
 }
 
@@ -1272,6 +1536,15 @@ function tomlString(value: string): string {
   return JSON.stringify(value)
 }
 
+function inlineScriptJson(value: unknown): string {
+  const serialized = JSON.stringify(value)
+  if (serialized === undefined) return 'null'
+  return serialized
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029')
+}
+
 function routerTierTomlLines(name: string, tier: RouterTier): string[] {
   const lines = [
     `[squilla_router.tiers.${name}]`,
@@ -1300,7 +1573,9 @@ function routerConfigTomlLines(credential: DesktopConnection): string[] {
     'enabled = true',
     'rollout_phase = "full"',
     `default_tier = ${tomlString(credential.routerDefaultTier)}`,
-    ...(credential.routerMode === 'recommended' ? [`tier_profile = ${tomlString(credential.provider)}`] : []),
+    ...(credential.routerMode === 'recommended' && !INLINE_ROUTER_PROFILE_IDS.has(credential.provider)
+      ? [`tier_profile = ${tomlString(credential.provider)}`]
+      : []),
     ...tierLines,
   ]
 }
@@ -1313,11 +1588,15 @@ function ensembleConfigTomlLines(credential: DesktopConnection): string[] {
       'enabled = false',
     ]
   }
+  const selectionMode = PROVIDER_BY_ID.get(credential.provider)?.ensembleSelectionMode
+  if (!selectionMode) {
+    throw new Error(`LLM Ensemble is not supported for provider ${credential.provider}.`)
+  }
   return [
     '',
     '[llm_ensemble]',
     'enabled = true',
-    'selection_mode = "static_openrouter_b5"',
+    `selection_mode = ${tomlString(selectionMode)}`,
   ]
 }
 
@@ -1424,11 +1703,7 @@ function decryptSearchApiKey(record: DesktopConnection): string {
 }
 
 function isConnectionReady(record: DesktopConnection): boolean {
-  try {
-    return !providerDefaults(record.provider).requiresApiKey || Boolean(decryptApiKey(record))
-  } catch {
-    return false
-  }
+  return !providerDefaults(record.provider).requiresApiKey || Boolean(decryptApiKey(record))
 }
 
 function normalizeDesktopCredential(parsed: Partial<DesktopConnection>): DesktopConnection {
@@ -1442,6 +1717,19 @@ function normalizeDesktopCredential(parsed: Partial<DesktopConnection>): Desktop
   const routerTiers = normalizeRouterTiers(parsed.routerTiers, defaultTiers)
   const searchProvider = normalizeSearchProvider(parsed.searchProvider)
   const searchDefaults = searchProviderDefaults(searchProvider)
+  const configAuthority: DesktopConfigAuthority = parsed.configAuthority === 'profile'
+    ? 'profile'
+    : 'generated'
+  const importTransactionId = typeof parsed.importTransactionId === 'string'
+    && MIGRATION_TRANSACTION_ID_RE.test(parsed.importTransactionId)
+    ? parsed.importTransactionId
+    : ''
+  if (
+    (configAuthority === 'profile' && !importTransactionId)
+    || (configAuthority === 'generated' && importTransactionId)
+  ) {
+    throw new Error('Desktop credential config authority does not match its import transaction.')
+  }
   const now = new Date().toISOString()
   return {
     provider,
@@ -1458,6 +1746,8 @@ function normalizeDesktopCredential(parsed: Partial<DesktopConnection>): Desktop
     encryptedSearchApiKey: parsed.encryptedSearchApiKey || '',
     encryption: parsed.encryption === 'safeStorage' ? 'safeStorage' : 'plain',
     disableNetworkObservability: normalizeBooleanSetting(parsed.disableNetworkObservability, false),
+    configAuthority,
+    importTransactionId,
     createdAt: parsed.createdAt || now,
     updatedAt: parsed.updatedAt || now,
   }
@@ -1482,13 +1772,24 @@ async function loadDesktopCredential(): Promise<DesktopConnection | null> {
   try {
     const raw = await readFile(credentialPath(), 'utf8')
     return normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>)
-  } catch {
-    return null
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw new Error('Saved Desktop credential is invalid or unreadable.', { cause: error })
   }
 }
 
-async function saveDesktopCredential(payload: OnboardingPayload): Promise<DesktopConnection> {
+async function saveDesktopCredential(
+  payload: OnboardingPayload,
+  writerReserved = false,
+): Promise<DesktopConnection> {
+  const targetProfile = activeDesktopProfile()
+  const expectedCredential = await readOptionalDesktopText(targetProfile.credentialPath)
   const existing = await loadDesktopCredential()
+  if (existing?.configAuthority === 'profile') {
+    throw new Error(
+      'This imported profile keeps config.toml authoritative; change settings in the Control UI.',
+    )
+  }
   const provider = normalizeProvider(payload.provider ?? existing?.provider)
   const defaults = providerDefaults(provider)
   const legacyRouterMode = normalizeRouterMode(payload.routerMode ?? existing?.routerMode, provider)
@@ -1532,7 +1833,9 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     : configDisableNetworkObservability ?? existing?.disableNetworkObservability ?? false
 
   if (defaults.requiresApiKey && !encryptedApiKey) throw new Error('API key is required.')
-  if (modelRoutingMode === 'llm_ensemble' && provider !== 'openrouter') throw new Error('LLM Ensemble requires OpenRouter in desktop onboarding.')
+  if (modelRoutingMode === 'llm_ensemble' && !modelRoutingModeAllowed(modelRoutingMode, provider)) {
+    throw new Error('LLM Ensemble requires OpenRouter or TokenRhythm in desktop onboarding.')
+  }
   if (!routerModel && routerMode !== 'disabled') throw new Error('Router tiers require a default model.')
   if (!model) throw new Error('Model is required.')
   if (searchDefaults.requiresApiKey && !encryptedSearchApiKey) {
@@ -1555,14 +1858,119 @@ async function saveDesktopCredential(payload: OnboardingPayload): Promise<Deskto
     encryptedSearchApiKey,
     encryption,
     disableNetworkObservability,
+    configAuthority: 'generated',
+    importTransactionId: '',
     createdAt: existing?.createdAt || now,
     updatedAt: now,
   }
 
-  mkdirSync(app.getPath('userData'), { recursive: true })
-  await atomicWriteFile(credentialPath(), JSON.stringify(credential, null, 2), 0o600)
-  await writeDesktopConfig(credential)
-  return credential
+  const finishWriter = writerReserved
+    ? () => {}
+    : beginDesktopWriterOperation('save desktop settings')
+  try {
+    await applyDesktopSettingsPair(
+      targetProfile,
+      credential,
+      JSON.stringify(credential, null, 2),
+      expectedCredential,
+      writerReserved,
+    )
+    return credential
+  } finally {
+    finishWriter()
+  }
+}
+
+function buildImportedDesktopCredential(
+  prefill: MigrationProviderPrefill,
+  importTransactionId: string,
+  apiKeyOverride = '',
+): DesktopConnection {
+  const provider = normalizeProvider(prefill.provider)
+  const defaults = providerDefaults(provider)
+  const apiKey = apiKeyOverride.trim() || prefill.apiKey.trim()
+  if (defaults.requiresApiKey && !apiKey) throw new Error('API key is required.')
+  const secret = apiKey ? encryptSecret(apiKey) : null
+  if (!MIGRATION_TRANSACTION_ID_RE.test(importTransactionId)) {
+    throw new Error('A verified import transaction is required before credential adoption.')
+  }
+  const now = new Date().toISOString()
+  return normalizeDesktopCredential({
+    provider,
+    model: prefill.model || defaults.model,
+    baseUrl: prefill.baseUrl || defaults.baseUrl,
+    apiKeyEnv: prefill.apiKeyEnv || defaults.apiKeyEnv,
+    encryptedApiKey: secret?.value || '',
+    encryption: secret?.encryption || 'plain',
+    disableNetworkObservability: readDesktopConfigNetworkObservabilitySetting() ?? false,
+    configAuthority: 'profile',
+    importTransactionId,
+    createdAt: now,
+    updatedAt: now,
+  })
+}
+
+async function saveImportedDesktopCredential(
+  prefill: MigrationProviderPrefill,
+  importTransactionId: string,
+  apiKeyOverride = '',
+  writerReserved = false,
+): Promise<DesktopConnection> {
+  const profile = primaryDesktopProfile()
+  if (activeDesktopProfile().kind !== 'primary') {
+    throw new Error('Imported credentials can be adopted only into the primary profile.')
+  }
+  const expectedCredential = await readOptionalDesktopText(profile.credentialPath)
+  const importedConfig = await readOptionalDesktopText(join(profile.home, 'config.toml'))
+  if (importedConfig === null) {
+    throw new Error('The imported profile config.toml is missing; recover the profile before adoption.')
+  }
+  if (gatewayState.url && await healthCheck(gatewayState.url)) {
+    throw new Error('A gateway is still serving this profile; stop it before adopting credentials.')
+  }
+  const credential = buildImportedDesktopCredential(prefill, importTransactionId, apiKeyOverride)
+  const finishWriter = writerReserved
+    ? () => {}
+    : beginDesktopWriterOperation('adopt imported desktop credential')
+  try {
+    const inspection = await preflightDesktopConfigWrite(profile)
+    const result = await runRecoveryCli(
+      profile,
+      [
+        'apply-settings',
+        '--home', profile.home,
+        '--transaction-id', inspection.transaction_id ?? '',
+        '--expected-revision', String(inspection.revision),
+        '--json',
+      ],
+      JSON.stringify({
+        expected_config: importedConfig,
+        config: importedConfig,
+        expected_credential: expectedCredential,
+        credential: JSON.stringify(credential, null, 2),
+      }),
+      true,
+    )
+    recoveryInspection = result
+    primaryRecoveryInspection = result
+    publishRecoveryState()
+    if (result.outcome === 'recovery_required') {
+      throw new Error(`Imported credential was not adopted (${result.stable_code}).`)
+    }
+    const readback = await loadDesktopCredential()
+    const expectedKey = apiKeyOverride.trim() || prefill.apiKey.trim()
+    if (
+      !readback
+      || readback.configAuthority !== 'profile'
+      || readback.importTransactionId !== importTransactionId
+      || decryptApiKey(readback) !== expectedKey
+    ) {
+      throw new Error('Imported credential readback did not match the verified transaction.')
+    }
+    return readback
+  } finally {
+    finishWriter()
+  }
 }
 
 // Sections the desktop config template owns and regenerates from the credential
@@ -1573,7 +1981,7 @@ const DESKTOP_OWNED_CONFIG_SECTIONS = ['llm', 'squilla_router', 'llm_ensemble', 
 // top-level key present in config.toml was written by the Control UI / RPC (which
 // serializes the whole GatewayConfig, so scalar fields like
 // llm_request_timeout_seconds land in the TOML preamble) and must be preserved.
-const DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS = ['state_dir', 'search_provider', 'search_api_key_env']
+const DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS = ['search_provider', 'search_api_key_env']
 
 function isDesktopOwnedConfigSection(header: string): boolean {
   const name = header.trim()
@@ -1603,38 +2011,62 @@ function foreignConfigPreambleLines(raw: string): string[] {
   const out: string[] = []
   for (const rawLine of raw.split(/\r?\n/)) {
     if (/^\s*\[/.test(rawLine)) break // reached the first section header
-    const key = rawLine.match(/^\s*([A-Za-z0-9_-]+)\s*=/)
+    const key = rawLine.match(/^\s*(?:([A-Za-z0-9_-]+)|"([A-Za-z0-9_-]+)"|'([A-Za-z0-9_-]+)')\s*=/)
     if (!key) continue // blank line or comment
-    if (DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS.includes(key[1] ?? '')) continue
+    const keyName = key[1] || key[2] || key[3] || ''
+    if (DESKTOP_OWNED_CONFIG_PREAMBLE_KEYS.includes(keyName)) continue
     out.push(rawLine)
   }
   return out
 }
 
-async function writeDesktopConfig(credential: DesktopConnection): Promise<void> {
-  mkdirSync(desktopHome(), { recursive: true })
-  mkdirSync(desktopStateDir(), { recursive: true })
-  // Only the desktop-owned sections/keys are regenerated from the credential; any
-  // other sections (channels, memory, sandbox, mcp, scheduler, …) AND top-level
-  // scalar keys (llm_request_timeout_seconds, log_level, …) the Control UI wrote
-  // via RPC are read back and preserved, so a settings save no longer wipes live
-  // configuration.
+async function readOptionalDesktopText(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, 'utf8')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
+  }
+}
+
+async function preflightDesktopConfigWrite(
+  profile = activeDesktopProfile(),
+): Promise<RecoveryProtocolResult> {
+  const inspection = await inspectDesktopProfile(profile)
+  if (inspection.outcome === 'recovery_required') {
+    if (desktopProfileKey() === desktopProfileKey(profile)) {
+      recoveryInspection = inspection
+      publishRecoveryState()
+    }
+    throw new Error(
+      `Desktop profile requires recovery before settings can be written (${inspection.stable_code}).`,
+    )
+  }
+  return inspection
+}
+
+function renderDesktopConfigAfterPreflight(
+  profile: DesktopProfilePaths,
+  credential: DesktopConnection,
+  inspection: RecoveryProtocolResult,
+  existingRaw: string | null,
+): string {
   let preservedForeignSections: string[] = []
   let preservedForeignPreamble: string[] = []
-  try {
-    const existingRaw = readFileSync(desktopConfigPath(), 'utf8')
+  if (existingRaw !== null) {
     preservedForeignSections = foreignConfigSectionLines(existingRaw)
     preservedForeignPreamble = foreignConfigPreambleLines(existingRaw)
-  } catch {
-    // No existing config to preserve (fresh install) or unreadable.
   }
-  const config = [
-    `state_dir = ${tomlString(desktopStateDir())}`,
+  const hasPersistedState = preservedForeignPreamble.some((line) => (
+    /^\s*(?:state_dir|"state_dir"|'state_dir')\s*=/.test(line)
+  ))
+  const authoritativeState = inspection.candidates.find((candidate) => candidate.kind === 'state')?.path
+  return [
+    ...(!hasPersistedState && authoritativeState && resolvedPathsEqual(authoritativeState, join(profile.home, 'state'))
+      ? [`state_dir = ${tomlString(join(profile.home, 'state'))}`]
+      : []),
     `search_provider = ${tomlString(credential.searchProvider)}`,
     ...(credential.searchApiKeyEnv ? [`search_api_key_env = ${tomlString(credential.searchApiKeyEnv)}`] : []),
-    // search_max_results is intentionally omitted so the gateway's own default
-    // governs instead of pinning it to a hardcoded value.
-    // Preserved RPC-written top-level keys stay in the preamble (before any table).
     ...preservedForeignPreamble,
     '',
     '[llm]',
@@ -1653,7 +2085,101 @@ async function writeDesktopConfig(credential: DesktopConnection): Promise<void> 
     '',
     ...(preservedForeignSections.length ? [...preservedForeignSections, ''] : []),
   ].join('\n')
-  await atomicWriteFile(desktopConfigPath(), config, 0o600)
+}
+
+async function applyDesktopSettingsPair(
+  profile: DesktopProfilePaths,
+  credential: DesktopConnection,
+  candidateCredential: string,
+  expectedCredential: string | null,
+  writerReserved = false,
+): Promise<RecoveryProtocolResult> {
+  const targetProfileKey = desktopProfileKey(profile)
+  if (desktopProfileKey() !== targetProfileKey) {
+    throw new Error('The active Desktop profile changed before settings could be saved; retry.')
+  }
+  const ownedGatewayWasRunning = Boolean(gatewayProcess && gatewayState.owned)
+  if (!ownedGatewayWasRunning && gatewayState.url && await healthCheck(gatewayState.url)) {
+    throw new Error('A gateway is still serving this profile; stop it and retry the settings save.')
+  }
+  if (ownedGatewayWasRunning) await stopOwnedGatewayAndWait()
+  let restartSafe = false
+  try {
+    if (desktopProfileKey() !== targetProfileKey) {
+      throw new Error('The active Desktop profile changed while its gateway was stopping; retry.')
+    }
+    const inspection = await preflightDesktopConfigWrite(profile)
+    const expectedConfig = await readOptionalDesktopText(join(profile.home, 'config.toml'))
+    const currentCredential = await readOptionalDesktopText(profile.credentialPath)
+    if (currentCredential !== expectedCredential) {
+      throw new Error('Desktop credential changed while settings were being prepared; retry.')
+    }
+    const candidateConfig = renderDesktopConfigAfterPreflight(
+      profile,
+      credential,
+      inspection,
+      expectedConfig,
+    )
+    const result = await runRecoveryCli(
+      profile,
+      [
+        'apply-settings',
+        '--home', profile.home,
+        '--transaction-id', inspection.transaction_id ?? '',
+        '--expected-revision', String(inspection.revision),
+        '--json',
+      ],
+      JSON.stringify({
+        expected_config: expectedConfig,
+        config: candidateConfig,
+        expected_credential: expectedCredential,
+        credential: candidateCredential,
+      }),
+      writerReserved,
+    )
+    recoveryInspection = result
+    if (profile.kind === 'primary') primaryRecoveryInspection = result
+    restartSafe = result.outcome !== 'recovery_required'
+    publishRecoveryState()
+    if (!restartSafe) {
+      throw new Error(`Desktop settings were not applied (${result.stable_code}).`)
+    }
+    return result
+  } finally {
+    if (ownedGatewayWasRunning && desktopProfileKey() === targetProfileKey) {
+      if (!restartSafe) {
+        const after = await inspectDesktopProfile(profile)
+        recoveryInspection = after
+        if (profile.kind === 'primary') primaryRecoveryInspection = after
+        restartSafe = after.outcome !== 'recovery_required'
+      }
+      if (restartSafe) {
+        clearReusableGatewayState()
+        bootError = null
+        void openOrResumeDesktopApp()
+      } else {
+        await restoreMainWindowToBootPage()
+        publishRecoveryState()
+      }
+    }
+  }
+}
+
+async function writeDesktopConfig(credential: DesktopConnection): Promise<void> {
+  if (credential.configAuthority === 'profile') {
+    throw new Error('Imported profile config.toml is authoritative and cannot be regenerated.')
+  }
+  const profile = activeDesktopProfile()
+  const expectedCredential = await readOptionalDesktopText(profile.credentialPath)
+  if (expectedCredential === null) {
+    throw new Error('Desktop credential disappeared before config initialization.')
+  }
+  const finishWriter = beginDesktopWriterOperation('write desktop config')
+  try {
+    await applyDesktopSettingsPair(profile, credential, expectedCredential, expectedCredential, true)
+  } finally {
+    finishWriter()
+  }
 }
 
 function settingsSnapshot(connection: DesktopConnection | null): DesktopSettingsSnapshot {
@@ -1679,6 +2205,7 @@ function settingsSnapshot(connection: DesktopConnection | null): DesktopSettings
     searchApiKeyEnv: connection?.searchApiKeyEnv || searchDefaults.envKey,
     searchApiKeyConfigured: Boolean(connection?.encryptedSearchApiKey),
     disableNetworkObservability: connection?.disableNetworkObservability ?? false,
+    configManagedByProfile: connection?.configAuthority === 'profile',
     searchProviders: SEARCH_PROVIDER_CATALOG,
     providers: PROVIDER_CATALOG.map((entry) => ({
       providerId: entry.id,
@@ -1699,23 +2226,13 @@ async function saveDesktopSettings(payload: DesktopSettingsPayload): Promise<Des
   return settingsSnapshot(connection)
 }
 
-async function resetDesktopSettings(): Promise<void> {
-  // Drop the credential AND the generated config so the next launch re-runs
-  // onboarding and reseeds a clean config (the config is now the RPC-owned
-  // source of truth, so it is no longer regenerated on every boot).
-  await rm(credentialPath(), { force: true })
-  await rm(desktopConfigPath(), { force: true })
-  transientPendingMigrationProviderSetup = null
-  await rm(pendingMigrationProviderSetupPath(), { force: true })
-  await rm(desktopMigrationResultPath(), { force: true })
-}
-
 function clearReusableGatewayState(): void {
   gatewayState.url = ''
   gatewayState.port = 0
   gatewayState.owned = false
   gatewayState.status = 'stopped'
   gatewayState.error = undefined
+  gatewayProfileKey = null
 }
 
 interface ArtifactOpenRequest {
@@ -2029,6 +2546,19 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Check for Updates…',
     'menu.relaunchToUpdate': 'Relaunch to Update',
     'menu.downloadDiagnostics': 'Download Diagnostics…',
+    'menu.profile': 'Profile',
+    'menu.showProfile': 'Show Active Profile',
+    'menu.reviewProfile': 'Review Profile Paths…',
+    'menu.switchRecovery': 'Switch to Recovery Profile',
+    'menu.returnPrimary': 'Return to Primary Profile',
+    'attention.title': 'An upgrade workspace was found',
+    'attention.message': 'OpenSquilla is safely using your current workspace. Chats are not affected by this choice.',
+    'attention.detail': 'If the agent identity or memory looks unfamiliar, review the other workspace. OpenSquilla will not delete, merge, or move either workspace.',
+    'attention.currentWorkspace': 'Current workspace',
+    'attention.otherWorkspace': 'Other detected workspace',
+    'attention.later': 'Review Later',
+    'attention.keepCurrent': 'Continue with Current Workspace',
+    'attention.chooseWorkspace': 'Review Other Workspace…',
     'update.newVersionTitle': 'A new version is available',
     'update.newVersionDetail': 'OpenSquilla {version} is available. Download it now?',
     'update.download': 'Download',
@@ -2039,6 +2569,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': "You're up to date",
     'update.upToDateDetail': 'OpenSquilla {version} is the latest version.',
     'update.errorTitle': 'Update check failed',
+    'update.manifestInvalid': 'The update information is invalid. Please try again later.',
+    'update.sourceUnavailable': 'The update service is temporarily unavailable. Please try again later.',
+    'update.checksumUnavailable': 'The installer cannot be verified because the canonical GitHub checksum is unavailable. No installer was opened.',
+    'update.integrityFailed': 'The downloaded installer failed integrity verification and was deleted.',
+    'update.downloadFailed': 'The update could not be downloaded. Please try again.',
+    'update.installFailed': 'The update installer could not be opened. Please try again.',
     'update.moveToApplications': 'Move OpenSquilla to your Applications folder to enable automatic updates, then try again.',
     'update.gatewayShutdownTimeout': 'OpenSquilla could not stop the local runtime. Try relaunching to update again.',
     'update.mockInstallTitle': 'Mock update restart',
@@ -2048,20 +2584,46 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Sessions, configuration, and secrets will be removed. The installed app itself will remain; remove it through your OS after the app closes.',
     'uninstall.cancel': 'Cancel',
     'uninstall.deleteEverything': 'Delete everything',
-    'migration.nav.title': 'Import',
-    'migration.nav.sub': 'Existing data',
-    'migration.step.badge': 'Import',
-    'migration.step.heading': 'Import existing OpenSquilla data',
-    'migration.step.subtitle': 'OpenSquilla found data from a previous installation on this machine. Preview what would be imported and bring it into the desktop app, or skip and start fresh.',
-    'migration.step.sourceLabel': 'Detected data location',
-    'migration.step.preview': 'Preview import',
-    'migration.step.import': 'Import',
-    'migration.step.skip': 'Skip',
+    'cleanup.moreItems': 'more locations',
+    'cleanup.cancel': 'Cancel',
+    'cleanup.deleteProfileConfirm': 'Delete profile',
+    'cleanup.deleteProfileTitle': 'Delete the current profile?',
+    'cleanup.deleteProfileMessage': 'This permanently deletes the listed current profile data, credential, and logs. Other recovery profiles and backups are kept.',
+    'cleanup.deleteAllConfirm': 'Delete all data',
+    'cleanup.deleteAllTitle': 'Delete all OpenSquilla user data?',
+    'cleanup.deleteAllMessage': 'OpenSquilla will close first. The deletion starts only after the app and local runtime have fully exited.',
+    'cleanup.abandonConfirm': 'Preserve and continue',
+    'cleanup.abandonTitle': 'Leave the interrupted cleanup?',
+    'cleanup.abandonMessage': 'OpenSquilla will preserve every surviving file and archive only the cleanup transaction record.',
+    'cleanup.abandonDetail': 'Nothing else will be deleted. Review the remaining profile before continuing to use it.',
+    'migration.nav.title': 'Portable data',
+    'migration.nav.sub': 'Optional copy',
+    'migration.step.badge': 'Optional',
+    'migration.step.heading': 'Legacy Windows Portable data found',
+    'migration.step.subtitle': 'Copy your chats, Agents, and settings into this Desktop app.',
+    'migration.step.assurance': 'Your original Portable data will not be modified or deleted.',
+    'migration.step.sourceLabel': 'Choose Portable data',
+    'migration.step.selectionHint': 'Select a source, then review what will be copied.',
+    'migration.step.candidateVersion': 'Version {version}',
+    'migration.step.candidateSessions': '{n} chats',
+    'migration.step.candidateActivity': 'Last activity {value}',
+    'migration.step.manualTypeLabel': 'Portable data not listed?',
+    'migration.step.manualTypePlaceholder': 'Choose Portable data',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Legacy Windows Portable',
+    'migration.step.browse': 'Choose Portable data folder…',
+    'migration.step.preview': 'Review this data',
+    'migration.step.import': 'Copy and continue',
+    'migration.step.skip': 'Not now',
     'migration.overwriteTitle': 'Replace conflicting desktop data?',
-    'migration.overwriteMessage': 'This import will replace data in the current desktop profile.',
+    'migration.overwriteMessage': 'The selected installation will replace the current Desktop data.',
     'migration.overwriteDetail': 'A complete timestamped backup will be retained. Confirm the source below before continuing.',
+    'migration.overwriteNoMerge': 'Profile files and chat databases are never merged.',
+    'migration.overwriteSourceUntouched': 'The selected source profile remains unchanged.',
+    'migration.overwriteNoSync': 'The Desktop profile and source will not sync after transfer.',
     'migration.overwriteCancel': 'Cancel',
-    'migration.overwriteConfirm': 'Import and replace',
+    'migration.overwriteConfirm': 'Back up and replace',
     'launch.alreadyRunningTitle': 'OpenSquilla is already running',
     'launch.alreadyRunningMessage': 'Another OpenSquilla window is already open on this machine. Bringing it to the front.',
     'window.onboarding': 'Set up OpenSquilla',
@@ -2072,7 +2634,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Ready',
     'onboarding.title': 'Set up OpenSquilla',
     'onboarding.rail.title': 'Desktop setup',
-    'onboarding.rail.subtitle': 'Configure the local runtime in the same order as the guided CLI.',
+    'onboarding.rail.subtitle': 'Set up OpenSquilla on this device.',
     'onboarding.rail.foot': 'OpenSquilla keeps this profile local to this device.',
     'onboarding.language.label': 'Language',
     'onboarding.aria.setupSteps': 'Setup steps',
@@ -2117,7 +2679,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.next': 'Next',
     'onboarding.step3.badge': 'Advanced',
     'onboarding.step3.heading': 'Choose routing mode',
-    'onboarding.step3.subtitle': 'Decide whether OpenSquilla should use Smart Router tiers, call one fixed model, or use the OpenRouter ensemble.',
+    'onboarding.step3.subtitle': 'Decide whether OpenSquilla should use Smart Router tiers, call one fixed model, or use the current provider\'s ensemble.',
     'onboarding.step3.back': 'Back',
     'onboarding.step3.next': 'Next',
     'onboarding.step3.directModel': 'Direct model',
@@ -2141,6 +2703,19 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': '检查更新…',
     'menu.relaunchToUpdate': '重启以更新',
     'menu.downloadDiagnostics': '下载诊断信息…',
+    'menu.profile': '配置',
+    'menu.showProfile': '显示当前配置',
+    'menu.reviewProfile': '检查配置路径…',
+    'menu.switchRecovery': '切换到恢复配置',
+    'menu.returnPrimary': '返回主配置',
+    'attention.title': '发现升级前的工作区',
+    'attention.message': 'OpenSquilla 正在安全地使用当前工作区，聊天记录不受此选择影响。',
+    'attention.detail': '如果 Agent 的身份或记忆看起来陌生，可以核对另一个工作区。OpenSquilla 不会删除、合并或移动任何一边。',
+    'attention.currentWorkspace': '当前工作区',
+    'attention.otherWorkspace': '检测到的其他工作区',
+    'attention.later': '稍后核对',
+    'attention.keepCurrent': '继续使用当前工作区',
+    'attention.chooseWorkspace': '核对其他工作区…',
     'update.newVersionTitle': '有新版本可用',
     'update.newVersionDetail': 'OpenSquilla {version} 已发布，现在下载吗？',
     'update.download': '下载',
@@ -2151,6 +2726,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': '已是最新版本',
     'update.upToDateDetail': 'OpenSquilla {version} 已是最新版本。',
     'update.errorTitle': '检查更新失败',
+    'update.manifestInvalid': '更新信息无效，请稍后重试。',
+    'update.sourceUnavailable': '更新服务暂时不可用，请稍后重试。',
+    'update.checksumUnavailable': '无法获取 GitHub 官方校验和，因此不能验证安装包；未打开任何安装包。',
+    'update.integrityFailed': '下载的安装包未通过完整性校验，已将其删除。',
+    'update.downloadFailed': '更新下载安装失败，请重试。',
+    'update.installFailed': '无法打开更新安装包，请重试。',
     'update.moveToApplications': '请先将 OpenSquilla 移动到"应用程序"文件夹以启用自动更新，然后重试。',
     'update.gatewayShutdownTimeout': 'OpenSquilla 无法停止本地运行时。请再次尝试重启以更新。',
     'update.mockInstallTitle': '模拟重启更新',
@@ -2160,20 +2741,46 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': '会话、配置和密钥都将被移除。已安装的应用本身会保留；应用关闭后请通过操作系统将其卸载。',
     'uninstall.cancel': '取消',
     'uninstall.deleteEverything': '全部删除',
-    'migration.nav.title': '导入',
-    'migration.nav.sub': '现有数据',
-    'migration.step.badge': '导入',
-    'migration.step.heading': '导入现有的 OpenSquilla 数据',
-    'migration.step.subtitle': 'OpenSquilla 在本机上发现了先前安装留下的数据。可以先预览将导入的内容并将其导入桌面应用，也可以跳过并全新开始。',
-    'migration.step.sourceLabel': '检测到的数据位置',
-    'migration.step.preview': '预览导入',
-    'migration.step.import': '导入',
-    'migration.step.skip': '跳过',
+    'cleanup.moreItems': '个其他位置',
+    'cleanup.cancel': '取消',
+    'cleanup.deleteProfileConfirm': '删除配置文件',
+    'cleanup.deleteProfileTitle': '删除当前配置文件？',
+    'cleanup.deleteProfileMessage': '这会永久删除列出的当前配置文件数据、凭据和日志。其他恢复配置文件和备份会保留。',
+    'cleanup.deleteAllConfirm': '删除全部数据',
+    'cleanup.deleteAllTitle': '删除全部 OpenSquilla 用户数据？',
+    'cleanup.deleteAllMessage': 'OpenSquilla 会先退出。只有应用和本地运行时完全退出后，删除才会开始。',
+    'cleanup.abandonConfirm': '保留并继续',
+    'cleanup.abandonTitle': '结束未完成的清理？',
+    'cleanup.abandonMessage': 'OpenSquilla 会保留所有仍存在的文件，仅归档清理事务记录。',
+    'cleanup.abandonDetail': '不会继续删除任何内容。继续使用前请检查剩余的配置文件。',
+    'migration.nav.title': 'Portable 数据',
+    'migration.nav.sub': '可选复制',
+    'migration.step.badge': '可选',
+    'migration.step.heading': '发现旧版 Windows Portable 数据',
+    'migration.step.subtitle': '可以将原来的聊天、Agent 和设置复制到当前桌面安装版。',
+    'migration.step.assurance': '原 Portable 数据不会被修改或删除。',
+    'migration.step.sourceLabel': '选择 Portable 数据',
+    'migration.step.selectionHint': '选择一个来源后，先核对将复制的内容。',
+    'migration.step.candidateVersion': '版本 {version}',
+    'migration.step.candidateSessions': '{n} 个聊天',
+    'migration.step.candidateActivity': '最近活动 {value}',
+    'migration.step.manualTypeLabel': '没有找到 Portable 数据？',
+    'migration.step.manualTypePlaceholder': '选择 Portable 数据',
+    'migration.source.cli': 'OpenSquilla 终端安装版',
+    'migration.source.desktop': 'OpenSquilla 桌面安装版',
+    'migration.source.portable': '旧版 Windows Portable',
+    'migration.step.browse': '选择 Portable 数据目录…',
+    'migration.step.preview': '核对这套数据',
+    'migration.step.import': '复制并继续',
+    'migration.step.skip': '暂不转移',
     'migration.overwriteTitle': '替换冲突的桌面数据？',
-    'migration.overwriteMessage': '此次导入将替换当前桌面配置中的数据。',
+    'migration.overwriteMessage': '所选安装的数据将替换当前桌面数据。',
     'migration.overwriteDetail': '系统会保留完整的时间戳备份。继续前请确认下方的数据来源。',
+    'migration.overwriteNoMerge': '配置文件和聊天数据库绝不会合并。',
+    'migration.overwriteSourceUntouched': '所选来源配置保持原样。',
+    'migration.overwriteNoSync': '转移后，桌面端数据与来源不会自动同步。',
     'migration.overwriteCancel': '取消',
-    'migration.overwriteConfirm': '导入并替换',
+    'migration.overwriteConfirm': '备份并替换',
     'launch.alreadyRunningTitle': 'OpenSquilla 已在运行',
     'launch.alreadyRunningMessage': '本机已打开另一个 OpenSquilla 窗口。正在将其置于前台。',
     'window.onboarding': '设置 OpenSquilla',
@@ -2184,8 +2791,8 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': '就绪',
     'onboarding.title': '设置 OpenSquilla',
     'onboarding.rail.title': '桌面设置',
-    'onboarding.rail.subtitle': '按照引导式 CLI 的相同顺序配置本地运行时。',
-    'onboarding.rail.foot': 'OpenSquilla 将此配置保留在本设备本地。',
+    'onboarding.rail.subtitle': '在本机完成 OpenSquilla 的基本设置。',
+    'onboarding.rail.foot': '桌面端设置会保存在本机。',
     'onboarding.language.label': '语言',
     'onboarding.aria.setupSteps': '设置步骤',
     'onboarding.aria.setupDepth': '设置深度',
@@ -2229,7 +2836,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.step2.next': '下一步',
     'onboarding.step3.badge': '高级',
     'onboarding.step3.heading': '选择路由模式',
-    'onboarding.step3.subtitle': '选择 OpenSquilla 使用 Smart Router 层级、直连一个固定模型，还是使用 OpenRouter Ensemble。',
+    'onboarding.step3.subtitle': '选择 OpenSquilla 使用 Smart Router 层级、直连一个固定模型，还是使用当前提供商的 Ensemble。',
     'onboarding.step3.back': '返回',
     'onboarding.step3.next': '下一步',
     'onboarding.step3.directModel': '直连模型',
@@ -2253,6 +2860,19 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'アップデートを確認…',
     'menu.relaunchToUpdate': '再起動してアップデート',
     'menu.downloadDiagnostics': '診断情報をダウンロード…',
+    'menu.profile': 'プロファイル',
+    'menu.showProfile': '使用中のプロファイルを表示',
+    'menu.reviewProfile': 'プロファイルパスを確認…',
+    'menu.switchRecovery': '復旧プロファイルに切り替え',
+    'menu.returnPrimary': 'プライマリプロファイルに戻る',
+    'attention.title': 'アップグレード前のワークスペースが見つかりました',
+    'attention.message': 'OpenSquilla は現在のワークスペースを安全に使用しています。チャット履歴はこの選択の影響を受けません。',
+    'attention.detail': 'エージェントの本人情報や記憶に違和感がある場合は、もう一方のワークスペースを確認してください。どちらも削除、結合、移動されません。',
+    'attention.currentWorkspace': '現在のワークスペース',
+    'attention.otherWorkspace': '検出された別のワークスペース',
+    'attention.later': '後で確認',
+    'attention.keepCurrent': '現在のワークスペースを使う',
+    'attention.chooseWorkspace': '別のワークスペースを確認…',
     'update.newVersionTitle': '新しいバージョンが利用可能です',
     'update.newVersionDetail': 'OpenSquilla {version} が利用可能です。今すぐダウンロードしますか？',
     'update.download': 'ダウンロード',
@@ -2263,6 +2883,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': '最新の状態です',
     'update.upToDateDetail': 'OpenSquilla {version} が最新バージョンです。',
     'update.errorTitle': 'アップデートの確認に失敗しました',
+    'update.manifestInvalid': 'アップデート情報が無効です。しばらくしてから再試行してください。',
+    'update.sourceUnavailable': 'アップデートサービスを一時的に利用できません。後でもう一度お試しください。',
+    'update.checksumUnavailable': 'GitHub の正規チェックサムを取得できないため、インストーラを検証できません。インストーラは開かれていません。',
+    'update.integrityFailed': 'ダウンロードしたインストーラは整合性検証に失敗したため削除されました。',
+    'update.downloadFailed': 'アップデートをダウンロードできませんでした。もう一度お試しください。',
+    'update.installFailed': 'アップデートインストーラを開けませんでした。もう一度お試しください。',
     'update.moveToApplications': '自動アップデートを有効にするには、OpenSquilla を「アプリケーション」フォルダに移動してから再試行してください。',
     'update.gatewayShutdownTimeout': 'ローカルランタイムを停止できませんでした。もう一度、再起動してアップデートをお試しください。',
     'uninstall.confirmTitle': 'ローカルの OpenSquilla デスクトップデータを削除しますか？',
@@ -2270,20 +2896,46 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'セッション、設定、シークレットが削除されます。インストール済みのアプリ自体は残ります。アプリを閉じた後、OS から削除してください。',
     'uninstall.cancel': 'キャンセル',
     'uninstall.deleteEverything': 'すべて削除',
-    'migration.nav.title': 'インポート',
-    'migration.nav.sub': '既存データ',
-    'migration.step.badge': 'インポート',
-    'migration.step.heading': '既存の OpenSquilla データをインポート',
-    'migration.step.subtitle': 'このマシンで以前のインストールのデータが見つかりました。インポートされる内容をプレビューしてデスクトップアプリに取り込むか、スキップして新規に始められます。',
-    'migration.step.sourceLabel': '検出されたデータの場所',
-    'migration.step.preview': 'インポートをプレビュー',
-    'migration.step.import': 'インポート',
-    'migration.step.skip': 'スキップ',
+    'cleanup.moreItems': '件のその他の場所',
+    'cleanup.cancel': 'キャンセル',
+    'cleanup.deleteProfileConfirm': 'プロファイルを削除',
+    'cleanup.deleteProfileTitle': '現在のプロファイルを削除しますか？',
+    'cleanup.deleteProfileMessage': '一覧の現在のプロファイルデータ、認証情報、ログを完全に削除します。他のリカバリープロファイルとバックアップは保持されます。',
+    'cleanup.deleteAllConfirm': 'すべてのデータを削除',
+    'cleanup.deleteAllTitle': 'OpenSquilla のすべてのユーザーデータを削除しますか？',
+    'cleanup.deleteAllMessage': 'OpenSquilla を先に終了します。アプリとローカルランタイムが完全に終了した後にのみ削除を開始します。',
+    'cleanup.abandonConfirm': '保持して続行',
+    'cleanup.abandonTitle': '中断したクリーンアップを終了しますか？',
+    'cleanup.abandonMessage': '残っているすべてのファイルを保持し、クリーンアップのトランザクション記録だけをアーカイブします。',
+    'cleanup.abandonDetail': 'これ以上は削除しません。使用を続ける前に残りのプロファイルを確認してください。',
+    'migration.nav.title': 'Portable データ',
+    'migration.nav.sub': '任意のコピー',
+    'migration.step.badge': '任意',
+    'migration.step.heading': '旧 Windows Portable データが見つかりました',
+    'migration.step.subtitle': 'チャット、Agent、設定をこの Desktop アプリにコピーできます。',
+    'migration.step.assurance': '元の Portable データは変更も削除もされません。',
+    'migration.step.sourceLabel': 'Portable データを選択',
+    'migration.step.selectionHint': 'コピー元を選択してから、コピー内容を確認してください。',
+    'migration.step.candidateVersion': 'バージョン {version}',
+    'migration.step.candidateSessions': '{n} 件のチャット',
+    'migration.step.candidateActivity': '最終利用 {value}',
+    'migration.step.manualTypeLabel': 'Portable データが表示されない場合',
+    'migration.step.manualTypePlaceholder': 'Portable データを選択',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': '旧 Windows Portable',
+    'migration.step.browse': 'Portable データフォルダーを選択…',
+    'migration.step.preview': 'このデータを確認',
+    'migration.step.import': 'コピーして続行',
+    'migration.step.skip': '今は転送しない',
     'migration.overwriteTitle': '競合するデスクトップデータを置き換えますか？',
-    'migration.overwriteMessage': 'このインポートは現在のデスクトッププロファイルのデータを置き換えます。',
+    'migration.overwriteMessage': '選択したインストールのデータで現在の Desktop データを置き換えます。',
     'migration.overwriteDetail': 'タイムスタンプ付きの完全なバックアップが保持されます。続行する前に以下の移行元を確認してください。',
+    'migration.overwriteNoMerge': 'プロファイルファイルとチャット DB は結合されません。',
+    'migration.overwriteSourceUntouched': '選択した移行元プロファイルは変更されません。',
+    'migration.overwriteNoSync': '転送後、Desktop と移行元は同期されません。',
     'migration.overwriteCancel': 'キャンセル',
-    'migration.overwriteConfirm': 'インポートして置換',
+    'migration.overwriteConfirm': 'バックアップして置換',
     'launch.alreadyRunningTitle': 'OpenSquilla はすでに実行中です',
     'launch.alreadyRunningMessage': 'このマシンでは別の OpenSquilla ウィンドウがすでに開いています。前面に表示します。',
     'window.onboarding': 'OpenSquilla をセットアップ',
@@ -2294,7 +2946,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': '準備完了',
     'onboarding.title': 'OpenSquilla をセットアップ',
     'onboarding.rail.title': 'デスクトップ設定',
-    'onboarding.rail.subtitle': 'ガイド付き CLI と同じ順序でローカルランタイムを設定します。',
+    'onboarding.rail.subtitle': 'このデバイスで OpenSquilla を設定します。',
     'onboarding.rail.foot': 'OpenSquilla はこのプロファイルをこのデバイス内に保持します。',
     'onboarding.language.label': '言語',
     'onboarding.aria.setupSteps': 'セットアップ手順',
@@ -2339,7 +2991,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'ルーティングモード',
     'onboarding.step3.badge': '詳細',
     'onboarding.step3.heading': 'ルーティングモードを選択',
-    'onboarding.step3.subtitle': 'OpenSquilla が Smart Router のティアを使うか、固定モデルを 1 つ呼び出すか、OpenRouter アンサンブルを使うかを選びます。',
+    'onboarding.step3.subtitle': 'OpenSquilla が Smart Router のティアを使うか、固定モデルを 1 つ呼び出すか、現在のプロバイダーのアンサンブルを使うかを選びます。',
     'onboarding.step3.back': '戻る',
     'onboarding.step3.next': '次へ',
     'onboarding.step3.directModel': '直接モデル',
@@ -2363,6 +3015,19 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Rechercher les mises à jour…',
     'menu.relaunchToUpdate': 'Relancer pour mettre à jour',
     'menu.downloadDiagnostics': 'Télécharger le diagnostic…',
+    'menu.profile': 'Profil',
+    'menu.showProfile': 'Afficher le profil actif',
+    'menu.reviewProfile': 'Vérifier les chemins du profil…',
+    'menu.switchRecovery': 'Basculer vers un profil de récupération',
+    'menu.returnPrimary': 'Revenir au profil principal',
+    'attention.title': 'Un espace de travail antérieur a été trouvé',
+    'attention.message': 'OpenSquilla utilise en toute sécurité votre espace de travail actuel. Les discussions ne sont pas affectées par ce choix.',
+    'attention.detail': 'Si l’identité ou la mémoire de l’agent semble inhabituelle, vérifiez l’autre espace de travail. Aucun espace ne sera supprimé, fusionné ou déplacé.',
+    'attention.currentWorkspace': 'Espace de travail actuel',
+    'attention.otherWorkspace': 'Autre espace détecté',
+    'attention.later': 'Vérifier plus tard',
+    'attention.keepCurrent': 'Continuer avec l’espace actuel',
+    'attention.chooseWorkspace': 'Vérifier l’autre espace…',
     'update.newVersionTitle': 'Une nouvelle version est disponible',
     'update.newVersionDetail': 'OpenSquilla {version} est disponible. Télécharger maintenant ?',
     'update.download': 'Télécharger',
@@ -2373,6 +3038,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': 'Vous êtes à jour',
     'update.upToDateDetail': 'OpenSquilla {version} est la dernière version.',
     'update.errorTitle': 'Échec de la recherche de mises à jour',
+    'update.manifestInvalid': 'Les informations de mise à jour sont invalides. Réessayez plus tard.',
+    'update.sourceUnavailable': 'Le service de mise à jour est temporairement indisponible. Réessayez plus tard.',
+    'update.checksumUnavailable': 'Le programme d’installation ne peut pas être vérifié car la somme de contrôle GitHub officielle est indisponible. Aucun programme n’a été ouvert.',
+    'update.integrityFailed': 'Le programme d’installation téléchargé a échoué au contrôle d’intégrité et a été supprimé.',
+    'update.downloadFailed': 'Impossible de télécharger la mise à jour. Réessayez.',
+    'update.installFailed': 'Impossible d’ouvrir le programme d’installation. Réessayez.',
     'update.moveToApplications': 'Déplacez OpenSquilla dans votre dossier Applications pour activer les mises à jour automatiques, puis réessayez.',
     'update.gatewayShutdownTimeout': 'OpenSquilla n\'a pas pu arrêter le runtime local. Réessayez de relancer la mise à jour.',
     'uninstall.confirmTitle': 'Supprimer les données locales du bureau OpenSquilla ?',
@@ -2380,20 +3051,46 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Les sessions, la configuration et les secrets seront supprimés. L’application installée elle-même sera conservée ; supprimez-la via votre système d’exploitation après la fermeture de l’application.',
     'uninstall.cancel': 'Annuler',
     'uninstall.deleteEverything': 'Tout supprimer',
-    'migration.nav.title': 'Importation',
-    'migration.nav.sub': 'Données existantes',
-    'migration.step.badge': 'Importation',
-    'migration.step.heading': 'Importer les données OpenSquilla existantes',
-    'migration.step.subtitle': 'OpenSquilla a trouvé sur cette machine des données d\'une installation précédente. Prévisualisez ce qui serait importé et récupérez-les dans l\'application de bureau, ou ignorez cette étape pour repartir de zéro.',
-    'migration.step.sourceLabel': 'Emplacement des données détecté',
-    'migration.step.preview': 'Aperçu de l\'importation',
-    'migration.step.import': 'Importer',
-    'migration.step.skip': 'Ignorer',
+    'cleanup.moreItems': 'autres emplacements',
+    'cleanup.cancel': 'Annuler',
+    'cleanup.deleteProfileConfirm': 'Supprimer le profil',
+    'cleanup.deleteProfileTitle': 'Supprimer le profil actuel ?',
+    'cleanup.deleteProfileMessage': 'Cette action supprime définitivement les données, l’identifiant et les journaux listés du profil actuel. Les autres profils de récupération et sauvegardes sont conservés.',
+    'cleanup.deleteAllConfirm': 'Supprimer toutes les données',
+    'cleanup.deleteAllTitle': 'Supprimer toutes les données utilisateur OpenSquilla ?',
+    'cleanup.deleteAllMessage': 'OpenSquilla va d’abord se fermer. La suppression ne commence qu’après l’arrêt complet de l’application et de l’environnement local.',
+    'cleanup.abandonConfirm': 'Conserver et continuer',
+    'cleanup.abandonTitle': 'Quitter le nettoyage interrompu ?',
+    'cleanup.abandonMessage': 'OpenSquilla conserve tous les fichiers restants et archive uniquement l’enregistrement de transaction du nettoyage.',
+    'cleanup.abandonDetail': 'Aucun autre élément ne sera supprimé. Vérifiez le profil restant avant de continuer à l’utiliser.',
+    'migration.nav.title': 'Données Portable',
+    'migration.nav.sub': 'Copie facultative',
+    'migration.step.badge': 'Facultatif',
+    'migration.step.heading': 'Données Windows Portable anciennes détectées',
+    'migration.step.subtitle': 'Copiez vos discussions, Agents et réglages dans cette application Desktop.',
+    'migration.step.assurance': 'Les données Portable d’origine ne seront ni modifiées ni supprimées.',
+    'migration.step.sourceLabel': 'Choisir les données Portable',
+    'migration.step.selectionHint': 'Sélectionnez une source, puis vérifiez ce qui sera copié.',
+    'migration.step.candidateVersion': 'Version {version}',
+    'migration.step.candidateSessions': '{n} discussions',
+    'migration.step.candidateActivity': 'Dernière activité {value}',
+    'migration.step.manualTypeLabel': 'Données Portable absentes ?',
+    'migration.step.manualTypePlaceholder': 'Choisir des données Portable',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Ancien Windows Portable',
+    'migration.step.browse': 'Choisir le dossier de données Portable…',
+    'migration.step.preview': 'Vérifier ces données',
+    'migration.step.import': 'Copier et continuer',
+    'migration.step.skip': 'Pas maintenant',
     'migration.overwriteTitle': 'Remplacer les données de bureau en conflit ?',
-    'migration.overwriteMessage': 'Cette importation remplacera des données du profil de bureau actuel.',
+    'migration.overwriteMessage': 'L’installation sélectionnée remplacera les données Desktop actuelles.',
     'migration.overwriteDetail': 'Une sauvegarde complète horodatée sera conservée. Vérifiez la source ci-dessous avant de continuer.',
+    'migration.overwriteNoMerge': 'Les fichiers de profil et bases de conversations ne sont jamais fusionnés.',
+    'migration.overwriteSourceUntouched': 'Le profil source sélectionné reste inchangé.',
+    'migration.overwriteNoSync': 'Après le transfert, le profil Desktop et la source ne seront pas synchronisés.',
     'migration.overwriteCancel': 'Annuler',
-    'migration.overwriteConfirm': 'Importer et remplacer',
+    'migration.overwriteConfirm': 'Sauvegarder et remplacer',
     'launch.alreadyRunningTitle': 'OpenSquilla est déjà en cours d’exécution',
     'launch.alreadyRunningMessage': 'Une autre fenêtre OpenSquilla est déjà ouverte sur cette machine. Elle va être mise au premier plan.',
     'window.onboarding': 'Configurer OpenSquilla',
@@ -2404,7 +3101,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Prêt',
     'onboarding.title': 'Configurer OpenSquilla',
     'onboarding.rail.title': 'Configuration du bureau',
-    'onboarding.rail.subtitle': 'Configurez le runtime local dans le même ordre que la CLI guidée.',
+    'onboarding.rail.subtitle': 'Configurez OpenSquilla sur cet appareil.',
     'onboarding.rail.foot': 'OpenSquilla conserve ce profil en local sur cet appareil.',
     'onboarding.language.label': 'Langue',
     'onboarding.aria.setupSteps': 'Étapes de configuration',
@@ -2449,7 +3146,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'Mode de routage',
     'onboarding.step3.badge': 'Avancé',
     'onboarding.step3.heading': 'Choisir le mode de routage',
-    'onboarding.step3.subtitle': "Décidez si OpenSquilla doit utiliser les niveaux du Smart Router, appeler un seul modèle fixe, ou utiliser l'ensemble OpenRouter.",
+    'onboarding.step3.subtitle': "Décidez si OpenSquilla doit utiliser les niveaux du Smart Router, appeler un seul modèle fixe, ou utiliser l'ensemble du fournisseur actuel.",
     'onboarding.step3.back': 'Retour',
     'onboarding.step3.next': 'Suivant',
     'onboarding.step3.directModel': 'Modèle direct',
@@ -2473,6 +3170,19 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Nach Updates suchen…',
     'menu.relaunchToUpdate': 'Zum Aktualisieren neu starten',
     'menu.downloadDiagnostics': 'Diagnose herunterladen…',
+    'menu.profile': 'Profil',
+    'menu.showProfile': 'Aktives Profil anzeigen',
+    'menu.reviewProfile': 'Profilpfade prüfen…',
+    'menu.switchRecovery': 'Zum Wiederherstellungsprofil wechseln',
+    'menu.returnPrimary': 'Zum Hauptprofil zurückkehren',
+    'attention.title': 'Ein früherer Arbeitsbereich wurde gefunden',
+    'attention.message': 'OpenSquilla verwendet den aktuellen Arbeitsbereich sicher weiter. Chats werden von dieser Auswahl nicht beeinflusst.',
+    'attention.detail': 'Wenn Identität oder Erinnerung des Agenten ungewohnt wirken, prüfen Sie den anderen Arbeitsbereich. Keiner wird gelöscht, zusammengeführt oder verschoben.',
+    'attention.currentWorkspace': 'Aktueller Arbeitsbereich',
+    'attention.otherWorkspace': 'Anderer erkannter Arbeitsbereich',
+    'attention.later': 'Später prüfen',
+    'attention.keepCurrent': 'Aktuellen Arbeitsbereich verwenden',
+    'attention.chooseWorkspace': 'Anderen Arbeitsbereich prüfen…',
     'update.newVersionTitle': 'Eine neue Version ist verfügbar',
     'update.newVersionDetail': 'OpenSquilla {version} ist verfügbar. Jetzt herunterladen?',
     'update.download': 'Herunterladen',
@@ -2483,6 +3193,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': 'Sie sind auf dem neuesten Stand',
     'update.upToDateDetail': 'OpenSquilla {version} ist die neueste Version.',
     'update.errorTitle': 'Update-Prüfung fehlgeschlagen',
+    'update.manifestInvalid': 'Die Update-Informationen sind ungültig. Versuchen Sie es später erneut.',
+    'update.sourceUnavailable': 'Der Update-Dienst ist vorübergehend nicht verfügbar. Versuchen Sie es später erneut.',
+    'update.checksumUnavailable': 'Das Installationsprogramm kann nicht geprüft werden, weil die offizielle GitHub-Prüfsumme nicht verfügbar ist. Es wurde nichts geöffnet.',
+    'update.integrityFailed': 'Das heruntergeladene Installationsprogramm hat die Integritätsprüfung nicht bestanden und wurde gelöscht.',
+    'update.downloadFailed': 'Das Update konnte nicht heruntergeladen werden. Versuchen Sie es erneut.',
+    'update.installFailed': 'Das Update-Installationsprogramm konnte nicht geöffnet werden. Versuchen Sie es erneut.',
     'update.moveToApplications': 'Verschieben Sie OpenSquilla in Ihren Programme-Ordner, um automatische Updates zu aktivieren, und versuchen Sie es erneut.',
     'update.gatewayShutdownTimeout': 'OpenSquilla konnte die lokale Laufzeitumgebung nicht stoppen. Versuchen Sie erneut, zum Aktualisieren neu zu starten.',
     'uninstall.confirmTitle': 'Lokale OpenSquilla-Desktop-Daten löschen?',
@@ -2490,20 +3206,46 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Sitzungen, Konfiguration und Secrets werden entfernt. Die installierte App selbst bleibt erhalten; entfernen Sie sie nach dem Schließen der App über Ihr Betriebssystem.',
     'uninstall.cancel': 'Abbrechen',
     'uninstall.deleteEverything': 'Alles löschen',
-    'migration.nav.title': 'Import',
-    'migration.nav.sub': 'Vorhandene Daten',
-    'migration.step.badge': 'Import',
-    'migration.step.heading': 'Vorhandene OpenSquilla-Daten importieren',
-    'migration.step.subtitle': 'OpenSquilla hat auf diesem Gerät Daten einer früheren Installation gefunden. Sehen Sie sich in der Vorschau an, was importiert würde, und übernehmen Sie die Daten in die Desktop-App — oder überspringen Sie den Schritt und beginnen Sie neu.',
-    'migration.step.sourceLabel': 'Erkannter Datenspeicherort',
-    'migration.step.preview': 'Import-Vorschau',
-    'migration.step.import': 'Importieren',
-    'migration.step.skip': 'Überspringen',
+    'cleanup.moreItems': 'weitere Speicherorte',
+    'cleanup.cancel': 'Abbrechen',
+    'cleanup.deleteProfileConfirm': 'Profil löschen',
+    'cleanup.deleteProfileTitle': 'Aktuelles Profil löschen?',
+    'cleanup.deleteProfileMessage': 'Die aufgeführten Daten, Zugangsdaten und Protokolle des aktuellen Profils werden dauerhaft gelöscht. Andere Wiederherstellungsprofile und Sicherungen bleiben erhalten.',
+    'cleanup.deleteAllConfirm': 'Alle Daten löschen',
+    'cleanup.deleteAllTitle': 'Alle OpenSquilla-Benutzerdaten löschen?',
+    'cleanup.deleteAllMessage': 'OpenSquilla wird zuerst beendet. Die Löschung beginnt erst, wenn App und lokale Laufzeit vollständig beendet sind.',
+    'cleanup.abandonConfirm': 'Behalten und fortfahren',
+    'cleanup.abandonTitle': 'Unterbrochene Bereinigung verlassen?',
+    'cleanup.abandonMessage': 'OpenSquilla behält alle verbliebenen Dateien und archiviert nur den Transaktionsdatensatz der Bereinigung.',
+    'cleanup.abandonDetail': 'Es wird nichts weiter gelöscht. Prüfen Sie das verbleibende Profil, bevor Sie es weiter verwenden.',
+    'migration.nav.title': 'Portable-Daten',
+    'migration.nav.sub': 'Optionale Kopie',
+    'migration.step.badge': 'Optional',
+    'migration.step.heading': 'Ältere Windows-Portable-Daten gefunden',
+    'migration.step.subtitle': 'Kopieren Sie Chats, Agents und Einstellungen in diese Desktop-App.',
+    'migration.step.assurance': 'Die ursprünglichen Portable-Daten werden weder geändert noch gelöscht.',
+    'migration.step.sourceLabel': 'Portable-Daten auswählen',
+    'migration.step.selectionHint': 'Wählen Sie eine Quelle und prüfen Sie dann, was kopiert wird.',
+    'migration.step.candidateVersion': 'Version {version}',
+    'migration.step.candidateSessions': '{n} Chats',
+    'migration.step.candidateActivity': 'Letzte Aktivität {value}',
+    'migration.step.manualTypeLabel': 'Portable-Daten fehlen?',
+    'migration.step.manualTypePlaceholder': 'Portable-Daten auswählen',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Älteres Windows Portable',
+    'migration.step.browse': 'Portable-Datenordner auswählen…',
+    'migration.step.preview': 'Diese Daten prüfen',
+    'migration.step.import': 'Kopieren und fortfahren',
+    'migration.step.skip': 'Jetzt nicht',
     'migration.overwriteTitle': 'Konfliktierende Desktop-Daten ersetzen?',
-    'migration.overwriteMessage': 'Dieser Import ersetzt Daten im aktuellen Desktop-Profil.',
+    'migration.overwriteMessage': 'Die ausgewählte Installation ersetzt die aktuellen Desktop-Daten.',
     'migration.overwriteDetail': 'Eine vollständige Sicherung mit Zeitstempel bleibt erhalten. Prüfen Sie vor dem Fortfahren die Quelle unten.',
+    'migration.overwriteNoMerge': 'Profildateien und Chat-Datenbanken werden nie zusammengeführt.',
+    'migration.overwriteSourceUntouched': 'Das ausgewählte Quellprofil bleibt unverändert.',
+    'migration.overwriteNoSync': 'Nach dem Transfer werden Desktop-Profil und Quelle nicht synchronisiert.',
     'migration.overwriteCancel': 'Abbrechen',
-    'migration.overwriteConfirm': 'Importieren und ersetzen',
+    'migration.overwriteConfirm': 'Sichern und ersetzen',
     'launch.alreadyRunningTitle': 'OpenSquilla läuft bereits',
     'launch.alreadyRunningMessage': 'Auf diesem Gerät ist bereits ein anderes OpenSquilla-Fenster geöffnet. Es wird in den Vordergrund geholt.',
     'window.onboarding': 'OpenSquilla einrichten',
@@ -2514,7 +3256,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Bereit',
     'onboarding.title': 'OpenSquilla einrichten',
     'onboarding.rail.title': 'Desktop-Einrichtung',
-    'onboarding.rail.subtitle': 'Richten Sie die lokale Laufzeitumgebung in derselben Reihenfolge wie die geführte CLI ein.',
+    'onboarding.rail.subtitle': 'Richten Sie OpenSquilla auf diesem Gerät ein.',
     'onboarding.rail.foot': 'OpenSquilla behält dieses Profil lokal auf diesem Gerät.',
     'onboarding.language.label': 'Sprache',
     'onboarding.aria.setupSteps': 'Einrichtungsschritte',
@@ -2559,7 +3301,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'Routing-Modus',
     'onboarding.step3.badge': 'Erweitert',
     'onboarding.step3.heading': 'Routing-Modus wählen',
-    'onboarding.step3.subtitle': 'Legen Sie fest, ob OpenSquilla die Smart-Router-Stufen verwenden, ein festes Modell aufrufen oder das OpenRouter-Ensemble nutzen soll.',
+    'onboarding.step3.subtitle': 'Legen Sie fest, ob OpenSquilla die Smart-Router-Stufen verwenden, ein festes Modell aufrufen oder das Ensemble des aktuellen Anbieters nutzen soll.',
     'onboarding.step3.back': 'Zurück',
     'onboarding.step3.next': 'Weiter',
     'onboarding.step3.directModel': 'Direktes Modell',
@@ -2583,6 +3325,19 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'menu.checkForUpdates': 'Buscar actualizaciones…',
     'menu.relaunchToUpdate': 'Reiniciar para actualizar',
     'menu.downloadDiagnostics': 'Descargar diagnóstico…',
+    'menu.profile': 'Perfil',
+    'menu.showProfile': 'Mostrar perfil activo',
+    'menu.reviewProfile': 'Revisar rutas del perfil…',
+    'menu.switchRecovery': 'Cambiar al perfil de recuperación',
+    'menu.returnPrimary': 'Volver al perfil principal',
+    'attention.title': 'Se encontró un espacio de trabajo anterior',
+    'attention.message': 'OpenSquilla está usando de forma segura el espacio de trabajo actual. Los chats no se ven afectados por esta elección.',
+    'attention.detail': 'Si la identidad o la memoria del agente parecen extrañas, revisa el otro espacio de trabajo. Ninguno se eliminará, combinará ni moverá.',
+    'attention.currentWorkspace': 'Espacio de trabajo actual',
+    'attention.otherWorkspace': 'Otro espacio detectado',
+    'attention.later': 'Revisar más tarde',
+    'attention.keepCurrent': 'Continuar con el espacio actual',
+    'attention.chooseWorkspace': 'Revisar el otro espacio…',
     'update.newVersionTitle': 'Hay una nueva versión disponible',
     'update.newVersionDetail': 'OpenSquilla {version} está disponible. ¿Descargar ahora?',
     'update.download': 'Descargar',
@@ -2593,6 +3348,12 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'update.upToDateTitle': 'Estás al día',
     'update.upToDateDetail': 'OpenSquilla {version} es la última versión.',
     'update.errorTitle': 'Error al buscar actualizaciones',
+    'update.manifestInvalid': 'La información de actualización no es válida. Inténtalo más tarde.',
+    'update.sourceUnavailable': 'El servicio de actualizaciones no está disponible temporalmente. Inténtalo más tarde.',
+    'update.checksumUnavailable': 'No se puede verificar el instalador porque la suma de comprobación oficial de GitHub no está disponible. No se abrió ningún instalador.',
+    'update.integrityFailed': 'El instalador descargado no superó la verificación de integridad y se eliminó.',
+    'update.downloadFailed': 'No se pudo descargar la actualización. Inténtalo de nuevo.',
+    'update.installFailed': 'No se pudo abrir el instalador de la actualización. Inténtalo de nuevo.',
     'update.moveToApplications': 'Mueve OpenSquilla a tu carpeta de Aplicaciones para habilitar las actualizaciones automáticas e inténtalo de nuevo.',
     'update.gatewayShutdownTimeout': 'OpenSquilla no pudo detener el runtime local. Intenta reiniciar para actualizar de nuevo.',
     'uninstall.confirmTitle': '¿Eliminar los datos locales de escritorio de OpenSquilla?',
@@ -2600,20 +3361,46 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'uninstall.confirmDetail': 'Se eliminarán las sesiones, la configuración y los secretos. La aplicación instalada en sí permanecerá; elimínala a través de tu sistema operativo después de cerrar la aplicación.',
     'uninstall.cancel': 'Cancelar',
     'uninstall.deleteEverything': 'Eliminar todo',
-    'migration.nav.title': 'Importación',
-    'migration.nav.sub': 'Datos existentes',
-    'migration.step.badge': 'Importación',
-    'migration.step.heading': 'Importar los datos existentes de OpenSquilla',
-    'migration.step.subtitle': 'OpenSquilla encontró datos de una instalación anterior en esta máquina. Previsualiza lo que se importaría y tráelo a la aplicación de escritorio, u omite este paso y empieza de cero.',
-    'migration.step.sourceLabel': 'Ubicación de datos detectada',
-    'migration.step.preview': 'Vista previa de la importación',
-    'migration.step.import': 'Importar',
-    'migration.step.skip': 'Omitir',
+    'cleanup.moreItems': 'ubicaciones adicionales',
+    'cleanup.cancel': 'Cancelar',
+    'cleanup.deleteProfileConfirm': 'Eliminar perfil',
+    'cleanup.deleteProfileTitle': '¿Eliminar el perfil actual?',
+    'cleanup.deleteProfileMessage': 'Esto elimina permanentemente los datos, la credencial y los registros enumerados del perfil actual. Se conservan otros perfiles de recuperación y copias de seguridad.',
+    'cleanup.deleteAllConfirm': 'Eliminar todos los datos',
+    'cleanup.deleteAllTitle': '¿Eliminar todos los datos de usuario de OpenSquilla?',
+    'cleanup.deleteAllMessage': 'OpenSquilla se cerrará primero. La eliminación solo comienza cuando la app y el entorno local hayan terminado por completo.',
+    'cleanup.abandonConfirm': 'Conservar y continuar',
+    'cleanup.abandonTitle': '¿Salir de la limpieza interrumpida?',
+    'cleanup.abandonMessage': 'OpenSquilla conserva todos los archivos restantes y archiva únicamente el registro de transacción de limpieza.',
+    'cleanup.abandonDetail': 'No se eliminará nada más. Revisa el perfil restante antes de seguir usándolo.',
+    'migration.nav.title': 'Datos Portable',
+    'migration.nav.sub': 'Copia opcional',
+    'migration.step.badge': 'Opcional',
+    'migration.step.heading': 'Se encontraron datos de Windows Portable anterior',
+    'migration.step.subtitle': 'Copia tus chats, Agents y ajustes en esta aplicación de escritorio.',
+    'migration.step.assurance': 'Los datos Portable originales no se modificarán ni eliminarán.',
+    'migration.step.sourceLabel': 'Elegir datos Portable',
+    'migration.step.selectionHint': 'Selecciona una fuente y revisa qué se copiará.',
+    'migration.step.candidateVersion': 'Versión {version}',
+    'migration.step.candidateSessions': '{n} chats',
+    'migration.step.candidateActivity': 'Última actividad {value}',
+    'migration.step.manualTypeLabel': '¿No aparecen los datos Portable?',
+    'migration.step.manualTypePlaceholder': 'Elegir datos Portable',
+    'migration.source.cli': 'OpenSquilla CLI',
+    'migration.source.desktop': 'OpenSquilla Desktop',
+    'migration.source.portable': 'Windows Portable anterior',
+    'migration.step.browse': 'Elegir carpeta de datos Portable…',
+    'migration.step.preview': 'Revisar estos datos',
+    'migration.step.import': 'Copiar y continuar',
+    'migration.step.skip': 'Ahora no',
     'migration.overwriteTitle': '¿Reemplazar los datos de escritorio en conflicto?',
-    'migration.overwriteMessage': 'Esta importación reemplazará datos del perfil de escritorio actual.',
+    'migration.overwriteMessage': 'La instalación seleccionada reemplazará los datos actuales de Desktop.',
     'migration.overwriteDetail': 'Se conservará una copia de seguridad completa con marca de tiempo. Confirma la fuente indicada abajo antes de continuar.',
+    'migration.overwriteNoMerge': 'Los archivos de perfil y las bases de chats nunca se combinan.',
+    'migration.overwriteSourceUntouched': 'El perfil de origen seleccionado permanece sin cambios.',
+    'migration.overwriteNoSync': 'Después de transferir, el perfil Desktop y el origen no se sincronizarán.',
     'migration.overwriteCancel': 'Cancelar',
-    'migration.overwriteConfirm': 'Importar y reemplazar',
+    'migration.overwriteConfirm': 'Respaldar y reemplazar',
     'launch.alreadyRunningTitle': 'OpenSquilla ya se está ejecutando',
     'launch.alreadyRunningMessage': 'Ya hay otra ventana de OpenSquilla abierta en esta máquina. Se traerá al frente.',
     'window.onboarding': 'Configurar OpenSquilla',
@@ -2624,7 +3411,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'boot.ready': 'Listo',
     'onboarding.title': 'Configurar OpenSquilla',
     'onboarding.rail.title': 'Configuración de escritorio',
-    'onboarding.rail.subtitle': 'Configura el runtime local en el mismo orden que la CLI guiada.',
+    'onboarding.rail.subtitle': 'Configura OpenSquilla en este dispositivo.',
     'onboarding.rail.foot': 'OpenSquilla mantiene este perfil local en este dispositivo.',
     'onboarding.language.label': 'Idioma',
     'onboarding.aria.setupSteps': 'Pasos de configuración',
@@ -2669,7 +3456,7 @@ const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {
     'onboarding.aria.modelRoutingMode': 'Modo de enrutamiento',
     'onboarding.step3.badge': 'Avanzado',
     'onboarding.step3.heading': 'Elige el modo de enrutamiento',
-    'onboarding.step3.subtitle': 'Decide si OpenSquilla debe usar los niveles del Smart Router, llamar a un único modelo fijo o usar el ensemble de OpenRouter.',
+    'onboarding.step3.subtitle': 'Decide si OpenSquilla debe usar los niveles del Smart Router, llamar a un único modelo fijo o usar el ensemble del proveedor actual.',
     'onboarding.step3.back': 'Atrás',
     'onboarding.step3.next': 'Siguiente',
     'onboarding.step3.directModel': 'Modelo directo',
@@ -2701,9 +3488,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Direct single model',
     modeDirectDesc: 'Send every request to one provider model without tier routing or ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: 'Use the OpenRouter static B5 ensemble and skip the tier table.',
+    modeEnsembleDesc: "Use this provider's static B5 ensemble and skip the tier table.",
     modeSmartRouterUnavailable: 'This provider does not have desktop tier defaults yet.',
-    modeEnsembleUnavailable: 'Ensemble setup currently requires OpenRouter.',
+    modeEnsembleUnavailable: 'Ensemble setup currently requires OpenRouter or TokenRhythm.',
     directModelPrompt: 'Requests will use this model directly.',
     directModelLabel: 'Direct model',
     noModel: 'No model',
@@ -2722,14 +3509,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'Default router tier requires a model.',
     searchApiKeyRequired: '{label} search API key is required.',
     migrationPreviewRunning: 'Checking the existing data…',
-    migrationApplyRunning: 'Importing data… this can take a few minutes.',
-    migrationItems: 'Items — {counts}',
-    migrationPausedJobs: 'Scheduler jobs to import (arrive paused): {n}',
+    migrationApplyRunning: 'Copying Portable data… this can take a few minutes.',
+    migrationReady: '{n} data groups are ready to copy.',
+    migrationSkippedDetails: '{n} inapplicable items will stay excluded.',
+    migrationTechnicalDetails: 'Technical details',
+    migrationPausedJobs: 'Scheduler jobs to copy (arrive paused): {n}',
     migrationDisk: 'Disk: {required} required, {free} free',
     migrationNotesLabel: 'Notes',
     migrationPreviewFailed: 'Preview failed: {detail}',
-    migrationApplyFailed: 'Import failed: {detail}',
-    migrationDone: 'Import complete. {n} scheduler job(s) arrived paused — re-enable them in the Cron view. Your original data remains untouched at {path}.',
+    migrationApplyFailed: 'Copy failed: {detail}',
+    migrationDone: 'Copy complete. {n} scheduler job(s) arrived paused — re-enable them in the Cron view. Your original Portable data remains unchanged at {path}.',
     stepLabel: 'Step {n}',
   },
   'zh-Hans': {
@@ -2739,9 +3528,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: '直连单模型',
     modeDirectDesc: '每个请求都发送到一个固定模型，不使用层级路由或 Ensemble。',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: '使用 OpenRouter static B5 Ensemble，并跳过层级表。',
+    modeEnsembleDesc: '使用当前提供商的 static B5 Ensemble，并跳过层级表。',
     modeSmartRouterUnavailable: '此提供商尚无桌面层级默认值。',
-    modeEnsembleUnavailable: '当前 onboarding 中 Ensemble 需要 OpenRouter。',
+    modeEnsembleUnavailable: '当前 onboarding 中 Ensemble 需要 OpenRouter 或 TokenRhythm。',
     directModelPrompt: '请求会直接使用此模型。',
     directModelLabel: '直连模型',
     noModel: '无模型',
@@ -2760,14 +3549,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: '默认路由层级需要一个模型。',
     searchApiKeyRequired: '需要 {label} 搜索 API 密钥。',
     migrationPreviewRunning: '正在检查现有数据……',
-    migrationApplyRunning: '正在导入数据……可能需要几分钟。',
-    migrationItems: '条目 — {counts}',
-    migrationPausedJobs: '将导入的计划任务（导入后为暂停状态）：{n}',
+    migrationApplyRunning: '正在复制 Portable 数据……可能需要几分钟。',
+    migrationReady: '已核对：{n} 类数据可以复制。',
+    migrationSkippedDetails: '{n} 项不适用内容将保持排除。',
+    migrationTechnicalDetails: '技术详情',
+    migrationPausedJobs: '将复制的计划任务（复制后为暂停状态）：{n}',
     migrationDisk: '磁盘：需要 {required}，可用 {free}',
     migrationNotesLabel: '备注',
     migrationPreviewFailed: '预览失败：{detail}',
-    migrationApplyFailed: '导入失败：{detail}',
-    migrationDone: '导入完成。{n} 个计划任务已以暂停状态导入——请在 Cron 视图中重新启用。原始数据仍原样保留在 {path}。',
+    migrationApplyFailed: '复制失败：{detail}',
+    migrationDone: '复制完成。{n} 个计划任务已以暂停状态复制——请在 Cron 视图中重新启用。原 Portable 数据仍原样保留在 {path}。',
     stepLabel: '步骤 {n}',
   },
   ja: {
@@ -2777,9 +3568,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: '直接単一モデル',
     modeDirectDesc: 'すべてのリクエストを、ティアルーティングやアンサンブルなしで 1 つのプロバイダーモデルに送信します。',
     modeEnsembleTitle: 'アンサンブル',
-    modeEnsembleDesc: 'OpenRouter の static B5 アンサンブルを使用し、ティア表をスキップします。',
+    modeEnsembleDesc: '現在のプロバイダーの static B5 アンサンブルを使用し、ティア表をスキップします。',
     modeSmartRouterUnavailable: 'このプロバイダーにはまだデスクトップ用のティアデフォルトがありません。',
-    modeEnsembleUnavailable: 'アンサンブルの設定には現在 OpenRouter が必要です。',
+    modeEnsembleUnavailable: 'アンサンブルの設定には現在 OpenRouter または TokenRhythm が必要です。',
     directModelPrompt: 'リクエストはこのモデルを直接使用します。',
     directModelRequiredDirect: '直接単一モデルモードには直接モデルが必要です。',
     directModelLabel: '直接モデル',
@@ -2798,14 +3589,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'デフォルトのルーターティアにはモデルが必要です。',
     searchApiKeyRequired: '{label} の検索 API キーが必要です。',
     migrationPreviewRunning: '既存データを確認しています…',
-    migrationApplyRunning: 'データをインポートしています… 数分かかることがあります。',
-    migrationItems: '項目 — {counts}',
-    migrationPausedJobs: 'インポートされるスケジュールジョブ（一時停止状態で取り込み）: {n}',
+    migrationApplyRunning: 'Portable データをコピーしています… 数分かかることがあります。',
+    migrationReady: '{n} 種類のデータをコピーできます。',
+    migrationSkippedDetails: '対象外の {n} 件は除外されます。',
+    migrationTechnicalDetails: '技術詳細',
+    migrationPausedJobs: 'コピーされるスケジュールジョブ（一時停止状態）: {n}',
     migrationDisk: 'ディスク: 必要 {required} / 空き {free}',
     migrationNotesLabel: '補足',
     migrationPreviewFailed: 'プレビューに失敗しました: {detail}',
-    migrationApplyFailed: 'インポートに失敗しました: {detail}',
-    migrationDone: 'インポートが完了しました。{n} 件のスケジュールジョブは一時停止状態で取り込まれました — Cron ビューで再度有効にしてください。元のデータは {path} にそのまま残っています。',
+    migrationApplyFailed: 'コピーに失敗しました: {detail}',
+    migrationDone: 'コピーが完了しました。{n} 件のスケジュールジョブは一時停止状態です — Cron ビューで再度有効にしてください。元の Portable データは {path} にそのまま残っています。',
     stepLabel: 'ステップ {n}',
   },
   fr: {
@@ -2815,9 +3608,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Modèle unique direct',
     modeDirectDesc: 'Envoyer chaque requête à un seul modèle du fournisseur, sans routage par niveaux ni ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: "Utiliser l'ensemble statique B5 d'OpenRouter et ignorer le tableau des niveaux.",
+    modeEnsembleDesc: "Utiliser l'ensemble statique B5 de ce fournisseur et ignorer le tableau des niveaux.",
     modeSmartRouterUnavailable: "Ce fournisseur n'a pas encore de niveaux par défaut pour le bureau.",
-    modeEnsembleUnavailable: "La configuration de l'ensemble nécessite actuellement OpenRouter.",
+    modeEnsembleUnavailable: "La configuration de l'ensemble nécessite actuellement OpenRouter ou TokenRhythm.",
     directModelPrompt: 'Les requêtes utiliseront directement ce modèle.',
     directModelRequiredDirect: 'Un modèle direct est requis pour le mode Modèle unique direct.',
     directModelLabel: 'Modèle direct',
@@ -2836,14 +3629,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'Le niveau de routeur par défaut nécessite un modèle.',
     searchApiKeyRequired: 'La clé API de recherche {label} est requise.',
     migrationPreviewRunning: 'Vérification des données existantes…',
-    migrationApplyRunning: 'Importation des données… cela peut prendre quelques minutes.',
-    migrationItems: 'Éléments — {counts}',
-    migrationPausedJobs: 'Tâches planifiées à importer (arrivent en pause) : {n}',
+    migrationApplyRunning: 'Copie des données Portable… cela peut prendre quelques minutes.',
+    migrationReady: '{n} groupes de données sont prêts à être copiés.',
+    migrationSkippedDetails: '{n} éléments non applicables resteront exclus.',
+    migrationTechnicalDetails: 'Détails techniques',
+    migrationPausedJobs: 'Tâches planifiées à copier (arrivent en pause) : {n}',
     migrationDisk: 'Disque : {required} requis, {free} libres',
     migrationNotesLabel: 'Remarques',
     migrationPreviewFailed: "Échec de l'aperçu : {detail}",
-    migrationApplyFailed: "Échec de l'importation : {detail}",
-    migrationDone: "Importation terminée. {n} tâche(s) planifiée(s) sont arrivées en pause — réactivez-les dans la vue Cron. Vos données d'origine restent intactes dans {path}.",
+    migrationApplyFailed: 'Échec de la copie : {detail}',
+    migrationDone: "Copie terminée. {n} tâche(s) planifiée(s) sont arrivées en pause — réactivez-les dans la vue Cron. Vos données Portable d'origine restent intactes dans {path}.",
     stepLabel: 'Étape {n}',
   },
   de: {
@@ -2853,9 +3648,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Einzelnes Direktmodell',
     modeDirectDesc: 'Jede Anfrage an ein einzelnes Anbietermodell senden, ohne Stufenrouting oder Ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: 'Das statische B5-Ensemble von OpenRouter verwenden und die Stufentabelle überspringen.',
+    modeEnsembleDesc: 'Das statische B5-Ensemble dieses Anbieters verwenden und die Stufentabelle überspringen.',
     modeSmartRouterUnavailable: 'Dieser Anbieter hat noch keine Desktop-Stufenstandards.',
-    modeEnsembleUnavailable: 'Die Ensemble-Einrichtung erfordert derzeit OpenRouter.',
+    modeEnsembleUnavailable: 'Die Ensemble-Einrichtung erfordert derzeit OpenRouter oder TokenRhythm.',
     directModelPrompt: 'Anfragen verwenden dieses Modell direkt.',
     directModelRequiredDirect: 'Für den Modus „Einzelnes Direktmodell“ ist ein direktes Modell erforderlich.',
     directModelLabel: 'Direktes Modell',
@@ -2874,14 +3669,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'Die Standard-Routerstufe erfordert ein Modell.',
     searchApiKeyRequired: 'Der Such-API-Schlüssel für {label} ist erforderlich.',
     migrationPreviewRunning: 'Vorhandene Daten werden geprüft…',
-    migrationApplyRunning: 'Daten werden importiert… das kann einige Minuten dauern.',
-    migrationItems: 'Elemente — {counts}',
-    migrationPausedJobs: 'Zu importierende Scheduler-Jobs (kommen pausiert an): {n}',
+    migrationApplyRunning: 'Portable-Daten werden kopiert… das kann einige Minuten dauern.',
+    migrationReady: '{n} Datengruppen können kopiert werden.',
+    migrationSkippedDetails: '{n} nicht zutreffende Elemente bleiben ausgeschlossen.',
+    migrationTechnicalDetails: 'Technische Details',
+    migrationPausedJobs: 'Zu kopierende Scheduler-Jobs (kommen pausiert an): {n}',
     migrationDisk: 'Speicher: {required} benötigt, {free} frei',
     migrationNotesLabel: 'Hinweise',
     migrationPreviewFailed: 'Vorschau fehlgeschlagen: {detail}',
-    migrationApplyFailed: 'Import fehlgeschlagen: {detail}',
-    migrationDone: 'Import abgeschlossen. {n} Scheduler-Job(s) sind pausiert angekommen — aktivieren Sie sie in der Cron-Ansicht wieder. Ihre ursprünglichen Daten bleiben unverändert unter {path}.',
+    migrationApplyFailed: 'Kopieren fehlgeschlagen: {detail}',
+    migrationDone: 'Kopieren abgeschlossen. {n} Scheduler-Job(s) sind pausiert angekommen — aktivieren Sie sie in der Cron-Ansicht wieder. Ihre ursprünglichen Portable-Daten bleiben unverändert unter {path}.',
     stepLabel: 'Schritt {n}',
   },
   es: {
@@ -2891,9 +3688,9 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     modeDirectTitle: 'Modelo único directo',
     modeDirectDesc: 'Enviar cada solicitud a un único modelo del proveedor, sin enrutamiento por niveles ni ensemble.',
     modeEnsembleTitle: 'Ensemble',
-    modeEnsembleDesc: 'Usar el ensemble estático B5 de OpenRouter y omitir la tabla de niveles.',
+    modeEnsembleDesc: 'Usar el ensemble estático B5 de este proveedor y omitir la tabla de niveles.',
     modeSmartRouterUnavailable: 'Este proveedor aún no tiene valores de nivel predeterminados para el escritorio.',
-    modeEnsembleUnavailable: 'La configuración del ensemble requiere actualmente OpenRouter.',
+    modeEnsembleUnavailable: 'La configuración del ensemble requiere actualmente OpenRouter o TokenRhythm.',
     directModelPrompt: 'Las solicitudes usarán este modelo directamente.',
     directModelRequiredDirect: 'Se requiere un modelo directo para el modo Modelo único directo.',
     directModelLabel: 'Modelo directo',
@@ -2912,14 +3709,16 @@ const ONBOARDING_SCRIPT_MESSAGES: Record<DesktopLocale, Record<string, string>> 
     defaultTierRequiresModel: 'El nivel de enrutador predeterminado requiere un modelo.',
     searchApiKeyRequired: 'Se requiere la clave API de búsqueda de {label}.',
     migrationPreviewRunning: 'Comprobando los datos existentes…',
-    migrationApplyRunning: 'Importando datos… esto puede tardar unos minutos.',
-    migrationItems: 'Elementos — {counts}',
-    migrationPausedJobs: 'Tareas programadas a importar (llegan en pausa): {n}',
+    migrationApplyRunning: 'Copiando datos Portable… esto puede tardar unos minutos.',
+    migrationReady: '{n} grupos de datos están listos para copiarse.',
+    migrationSkippedDetails: '{n} elementos no aplicables seguirán excluidos.',
+    migrationTechnicalDetails: 'Detalles técnicos',
+    migrationPausedJobs: 'Tareas programadas a copiar (llegan en pausa): {n}',
     migrationDisk: 'Disco: {required} necesarios, {free} libres',
     migrationNotesLabel: 'Notas',
     migrationPreviewFailed: 'Error en la vista previa: {detail}',
-    migrationApplyFailed: 'Error en la importación: {detail}',
-    migrationDone: 'Importación completada. {n} tarea(s) programada(s) llegaron en pausa: vuelve a activarlas en la vista Cron. Tus datos originales permanecen intactos en {path}.',
+    migrationApplyFailed: 'Error al copiar: {detail}',
+    migrationDone: 'Copia completada. {n} tarea(s) programada(s) llegaron en pausa: vuelve a activarlas en la vista Cron. Tus datos Portable originales permanecen intactos en {path}.',
     stepLabel: 'Paso {n}',
   },
 }
@@ -2929,7 +3728,15 @@ function desktopT(key: string): string {
 }
 
 function createApplicationMenu(): void {
-  if (!shouldUseNativeApplicationMenu) {
+  const recoveryProfileActive = activeDesktopProfile().kind === 'recovery'
+  const attentionActive = recoveryInspection?.outcome === 'attention'
+  const availableRecoveryProfiles = allProfileContexts().filter((profile) => (
+    profile.kind === 'recovery' && profile.recoveryId
+  ))
+  const profileMenuActive = recoveryProfileActive
+    || attentionActive
+    || availableRecoveryProfiles.length > 0
+  if (!shouldUseNativeApplicationMenu && !profileMenuActive) {
     Menu.setApplicationMenu(null)
     return
   }
@@ -2965,11 +3772,81 @@ function createApplicationMenu(): void {
   )
   appSubmenu.push({ type: 'separator' }, { role: 'quit' })
 
+  const profileSubmenu: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: desktopT('menu.showProfile'),
+      click: () => {
+        const home = activeDesktopProfile().home
+        if (existsSync(home)) void shell.showItemInFolder(home)
+        else void shell.openPath(dirname(home)).catch(() => null)
+      },
+    },
+  ]
+  if (attentionActive && recoveryInspection) {
+    profileSubmenu.push({
+      label: desktopT('menu.reviewProfile'),
+      click: () => {
+        if (recoveryInspection) void showAttentionPrompt(recoveryInspection, true)
+      },
+    })
+  }
+  if (availableRecoveryProfiles.length > 0) {
+    profileSubmenu.push(
+      { type: 'separator' },
+      {
+        label: desktopT('menu.switchRecovery'),
+        submenu: availableRecoveryProfiles.map((profile) => ({
+          label: `Recovery ${profile.recoveryId?.slice(0, 8)}`,
+          enabled: profile.recoveryId !== activeDesktopProfile().recoveryId,
+          click: () => {
+            void withRecoveryOperation(() => launchRecoveryProfile({
+              mode: 'continue',
+              recoveryId: profile.recoveryId,
+              copyPrimaryCredential: false,
+            })).then((result) => {
+              if (result.ok) return
+              void dialog.showMessageBox({
+                type: 'warning',
+                buttons: ['OK'],
+                message: desktopT('menu.switchRecovery'),
+                detail: result.error,
+              })
+            })
+          },
+        })),
+      },
+    )
+  }
+  if (recoveryProfileActive) {
+    profileSubmenu.push(
+      { type: 'separator' },
+      {
+        label: desktopT('menu.returnPrimary'),
+        click: () => {
+          void withRecoveryOperation(retryOrReturnPrimaryProfile).then((result) => {
+            if (!result.ok || result.value.outcome !== 'recovery_required') return
+            void dialog.showMessageBox({
+              type: 'warning',
+              buttons: ['OK'],
+              message: desktopT('menu.returnPrimary'),
+              detail: result.value.stable_code,
+            })
+          })
+        },
+      },
+    )
+  }
+
   const template: Electron.MenuItemConstructorOptions[] = [
     {
       label: app.name,
       submenu: appSubmenu,
     },
+    ...(profileMenuActive ? [{
+      label: desktopT('menu.profile'),
+      submenu: profileSubmenu,
+      enabled: currentOnboardingWindow() === null,
+    }] : []),
     {
       label: desktopT('menu.edit'),
       submenu: [
@@ -3068,9 +3945,13 @@ function localeOptionsHtml(): string {
 }
 
 function onboardingHtml(
-  detection: LegacyImportCandidate | null = null,
+  detections: LegacyImportCandidate[] = [],
   pendingProviderSetup: MigrationProviderPrefill | null = null,
+  portableTransferEnabled = false,
 ): string {
+  const migrationStepEnabled = portableTransferEnabled
+    && detections.length > 0
+    && detections.every((candidate) => candidate.kind === 'windows-portable')
   return `<!doctype html>
 <html lang="${desktopLocale}">
 <head>
@@ -3742,6 +4623,93 @@ function onboardingHtml(
       align-items: center;
       gap: 10px;
     }
+    .migration-assurance {
+      border-color: rgba(37,99,58,0.18);
+      background: rgba(37,99,58,0.06);
+      color: #36533d;
+    }
+    .migration-section-label {
+      margin: 0;
+      color: #454b44;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .migration-candidate-list {
+      display: grid;
+      gap: 9px;
+    }
+    .migration-candidate-row {
+      display: grid;
+      gap: 5px;
+    }
+    .migration-candidate-row > details {
+      margin: 0 8px;
+      padding: 7px 10px;
+    }
+    .migration-candidate {
+      appearance: none;
+      width: 100%;
+      min-height: 62px;
+      display: grid;
+      gap: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.62);
+      color: var(--ink);
+      padding: 12px 13px;
+      text-align: left;
+      transition: border-color 160ms ease, box-shadow 160ms ease, background 160ms ease;
+    }
+    .migration-candidate:hover {
+      border-color: rgba(242,106,27,0.34);
+      background: rgba(255,255,255,0.88);
+    }
+    .migration-candidate[aria-pressed="true"] {
+      border-color: var(--accent);
+      background: #fffaf4;
+      box-shadow: 0 10px 22px rgba(54,42,28,0.06);
+    }
+    .migration-candidate:focus-visible {
+      outline: 3px solid rgba(242,106,27,0.3);
+      outline-offset: 2px;
+    }
+    .migration-candidate:disabled {
+      cursor: wait;
+      opacity: 0.62;
+    }
+    .migration-candidate-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .migration-candidate-head strong {
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .migration-candidate-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px 12px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .migration-selection-hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .migration-manual-controls {
+      display: grid;
+      gap: 9px;
+      margin-top: 11px;
+    }
+    .migration-manual-controls button {
+      border-radius: 8px;
+      white-space: nowrap;
+    }
     .migration-status {
       display: flex;
       align-items: center;
@@ -3781,6 +4749,16 @@ function onboardingHtml(
       .provider-grid, .setup-mode-grid, .choice-row, .tier-defaults, .field-pair { grid-template-columns: 1fr; }
       .provider-feature { grid-template-columns: 1fr; }
       .provider-feature-cta { width: 100%; }
+      .migration-manual-controls { grid-template-columns: 1fr; }
+      .migration-buttons { width: 100%; flex-wrap: wrap; justify-content: flex-end; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
     }
   </style>
 </head>
@@ -3792,11 +4770,11 @@ function onboardingHtml(
         <p data-i18n="onboarding.rail.subtitle">${ot('onboarding.rail.subtitle')}</p>
       </section>
       <nav class="progress" aria-label="${ot('onboarding.aria.setupSteps')}" data-i18n-aria="onboarding.aria.setupSteps">
-        ${detection ? `<button class="step active" type="button" data-step-label="5">
+        ${migrationStepEnabled ? `<button class="step active" type="button" data-step-label="5">
           <span class="step-index">1</span>
           <span><strong data-i18n="migration.nav.title">${ot('migration.nav.title')}</strong><span data-i18n="migration.nav.sub">${ot('migration.nav.sub')}</span></span>
         </button>` : ''}
-        <button class="step${detection ? '' : ' active'}" type="button" data-step-label="0">
+        <button class="step${migrationStepEnabled ? '' : ' active'}" type="button" data-step-label="0">
           <span class="step-index">1</span>
           <span><strong data-i18n="onboarding.nav.mode.title">${ot('onboarding.nav.mode.title')}</strong><span data-i18n="onboarding.nav.mode.sub">${ot('onboarding.nav.mode.sub')}</span></span>
         </button>
@@ -3828,7 +4806,7 @@ function onboardingHtml(
       </div>
     </aside>
     <form id="setup-form" class="deck">
-      ${detection ? `<section class="setup-card active" data-screen="5">
+      ${migrationStepEnabled ? `<section class="setup-card active" data-screen="5">
         <header class="card-head">
           <div>
             <p class="eyebrow">Step 01</p>
@@ -3838,20 +4816,30 @@ function onboardingHtml(
           <span class="card-badge" data-i18n="migration.step.badge">${ot('migration.step.badge')}</span>
         </header>
         <div class="card-body">
-          <div class="note"><span data-i18n="migration.step.sourceLabel">${ot('migration.step.sourceLabel')}</span><code class="migration-path">${escapeHtmlServer(detection.path)}</code></div>
-          <div class="note migration-status" id="migrationStatus" hidden><span class="migration-spinner"></span><span id="migrationStatusLabel"></span></div>
+          <div class="note migration-assurance" data-i18n="migration.step.assurance">${ot('migration.step.assurance')}</div>
+          <p class="migration-section-label" id="migrationSourceLabel" data-i18n="migration.step.sourceLabel">${ot('migration.step.sourceLabel')}</p>
+          <div class="migration-candidate-list" id="migrationCandidateList" role="group" aria-labelledby="migrationSourceLabel" aria-describedby="migrationSelectionHint"></div>
+          <input id="migrationSource" type="hidden" value="" />
+          <p class="migration-selection-hint" id="migrationSelectionHint" data-i18n="migration.step.selectionHint">${ot('migration.step.selectionHint')}</p>
+          <details>
+            <summary data-i18n="migration.step.manualTypeLabel">${ot('migration.step.manualTypeLabel')}</summary>
+            <div class="migration-manual-controls">
+              <button class="secondary" type="button" id="migrationBrowse" data-i18n="migration.step.browse">${ot('migration.step.browse')}</button>
+            </div>
+          </details>
+          <div class="note migration-status" id="migrationStatus" role="status" aria-live="polite" hidden><span class="migration-spinner"></span><span id="migrationStatusLabel"></span></div>
           <div class="note" id="migrationSummary" hidden></div>
           <div class="note" id="migrationDoneNote" hidden></div>
         </div>
         <footer class="actions">
           <button class="secondary" type="button" id="migrationSkip" data-i18n="migration.step.skip">${ot('migration.step.skip')}</button>
           <div class="migration-buttons">
-            <button class="secondary" type="button" id="migrationPreview" data-i18n="migration.step.preview">${ot('migration.step.preview')}</button>
-            <button class="primary" type="button" id="migrationImport" data-i18n="migration.step.import" disabled>${ot('migration.step.import')}</button>
+            <button class="primary" type="button" id="migrationPreview" data-i18n="migration.step.preview">${ot('migration.step.preview')}</button>
+            <button class="primary" type="button" id="migrationImport" data-i18n="migration.step.import" hidden>${ot('migration.step.import')}</button>
           </div>
         </footer>
       </section>` : ''}
-      <section class="setup-card${detection ? '' : ' active'}" data-screen="0">
+      <section class="setup-card${migrationStepEnabled ? '' : ' active'}" data-screen="0">
         <header class="card-head">
           <div>
             <p class="eyebrow">Step 01</p>
@@ -4004,15 +4992,15 @@ function onboardingHtml(
           <button class="primary" type="button" id="finish" data-i18n="onboarding.step5.finish">${ot('onboarding.step5.finish')}</button>
         </footer>
       </section>
-      <div class="error" id="error"></div>
+      <div class="error" id="error" role="alert" aria-live="assertive"></div>
     </form>
   </main>
   <script>
-    const desktopMessages = ${JSON.stringify(DESKTOP_MESSAGES)};
-    const onboardingMessageCatalog = ${JSON.stringify(ONBOARDING_SCRIPT_MESSAGES)};
-    const providerNoteCatalog = ${JSON.stringify(PROVIDER_NOTE_MESSAGES)};
-    const searchNoteCatalog = ${JSON.stringify(SEARCH_PROVIDER_NOTE_MESSAGES)};
-    let activeLocale = ${JSON.stringify(desktopLocale)};
+    const desktopMessages = ${inlineScriptJson(DESKTOP_MESSAGES)};
+    const onboardingMessageCatalog = ${inlineScriptJson(ONBOARDING_SCRIPT_MESSAGES)};
+    const providerNoteCatalog = ${inlineScriptJson(PROVIDER_NOTE_MESSAGES)};
+    const searchNoteCatalog = ${inlineScriptJson(SEARCH_PROVIDER_NOTE_MESSAGES)};
+    let activeLocale = ${inlineScriptJson(desktopLocale)};
     let t = messagesFor(activeLocale);
     function messagesFor(locale) {
       return Object.assign({}, onboardingMessageCatalog.en, onboardingMessageCatalog[locale] || {});
@@ -4025,13 +5013,22 @@ function onboardingHtml(
       if (vars) for (const name of Object.keys(vars)) out = out.split('{' + name + '}').join(String(vars[name]));
       return out;
     }
-    const providers = ${JSON.stringify(PROVIDER_CATALOG)};
-    const searchProviders = ${JSON.stringify(SEARCH_PROVIDER_CATALOG)};
-    const routerProfiles = ${JSON.stringify(ROUTER_PROFILES)};
-    const textTiers = ${JSON.stringify(TEXT_ROUTER_TIERS)};
-    const migrationCandidate = ${JSON.stringify(detection)};
-    const initialProviderPrefill = ${JSON.stringify(pendingProviderSetup)};
-    let step = ${detection ? 5 : 0};
+    function desktopFmt(key, vars) {
+      let out = desktopMessage(activeLocale, key);
+      if (vars) for (const name of Object.keys(vars)) out = out.split('{' + name + '}').join(String(vars[name]));
+      return out;
+    }
+    const providers = ${inlineScriptJson(PROVIDER_CATALOG)};
+    const searchProviders = ${inlineScriptJson(SEARCH_PROVIDER_CATALOG)};
+    const routerProfiles = ${inlineScriptJson(ROUTER_PROFILES)};
+    const textTiers = ${inlineScriptJson(TEXT_ROUTER_TIERS)};
+    const migrationCandidates = ${inlineScriptJson(detections)};
+    const migrationStepEnabled = ${inlineScriptJson(migrationStepEnabled)};
+    let migrationCandidate = null;
+    let renderMigrationCandidates = () => {};
+    let renderMigrationPreviewSummary = () => {};
+    const initialProviderPrefill = ${inlineScriptJson(pendingProviderSetup)};
+    let step = ${migrationStepEnabled ? 5 : 0};
     let routerTiers = clone(routerProfiles.openrouter);
     const setupMode = document.getElementById('setupMode');
     const provider = document.getElementById('provider');
@@ -4075,7 +5072,7 @@ function onboardingHtml(
       return {
         squilla_router: Boolean(selected.routerSupported),
         direct: true,
-        llm_ensemble: selected.id === 'openrouter',
+        llm_ensemble: Boolean(selected.ensembleSelectionMode),
       };
     }
     function defaultModelRoutingModeFor(selected) {
@@ -4085,7 +5082,6 @@ function onboardingHtml(
       routerMode.value = modelRoutingMode.value === 'direct' ? 'disabled' : 'recommended';
     }
 	    function profileKeyForMode() {
-	      if (modelRoutingMode.value === 'llm_ensemble') return 'openrouter';
 	      return provider.value;
 	    }
 	    function setEndpointPanelOpen(open) {
@@ -4245,6 +5241,8 @@ function onboardingHtml(
       });
       renderProviderGrid();
       renderSearchProviderGrid();
+      renderMigrationCandidates();
+      renderMigrationPreviewSummary();
       syncProviderDefaults(false);
       render();
     }
@@ -4293,7 +5291,7 @@ function onboardingHtml(
           : [0, 1, 2, 4];
       // The migration step (screen 5) leads the route only when a legacy home
       // was detected; render() renumbers and hides rail entries automatically.
-      return migrationCandidate ? [5, ...base] : base;
+      return migrationStepEnabled ? [5, ...base] : base;
     }
     function routePosition(targetStep) {
       return routeSteps().indexOf(targetStep);
@@ -4308,6 +5306,15 @@ function onboardingHtml(
       const index = Math.max(0, route.indexOf(currentStep));
       return route[Math.max(0, index - 1)];
     }
+    function focusStepHeading(screen) {
+      if (!screen) return;
+      window.requestAnimationFrame(() => {
+        const heading = screen.querySelector('h2');
+        if (!heading) return;
+        heading.setAttribute('tabindex', '-1');
+        heading.focus({ preventScroll: true });
+      });
+    }
     function setStep(nextStep) {
       const current = document.querySelector('.setup-card.active');
       const route = routeSteps();
@@ -4316,8 +5323,10 @@ function onboardingHtml(
         screen.classList.remove('active', 'leaving');
       });
       if (current) current.classList.add('leaving');
-      document.querySelector('[data-screen="' + step + '"]').classList.add('active');
+      const nextScreen = document.querySelector('[data-screen="' + step + '"]');
+      nextScreen.classList.add('active');
       render();
+      focusStepHeading(nextScreen);
     }
     function render() {
       const route = routeSteps();
@@ -4466,7 +5475,11 @@ function onboardingHtml(
       renderProviderGrid();
       render();
     }
-    if (migrationCandidate) {
+    if (migrationStepEnabled) {
+      const migrationSource = document.getElementById('migrationSource');
+      const migrationCandidateList = document.getElementById('migrationCandidateList');
+      const migrationSelectionHint = document.getElementById('migrationSelectionHint');
+      const migrationBrowseButton = document.getElementById('migrationBrowse');
       const migrationPreviewButton = document.getElementById('migrationPreview');
       const migrationImportButton = document.getElementById('migrationImport');
       const migrationSkipButton = document.getElementById('migrationSkip');
@@ -4476,6 +5489,117 @@ function onboardingHtml(
       const migrationDoneNote = document.getElementById('migrationDoneNote');
       let migrationBusy = false;
       let migrationPreviewOk = false;
+      let migrationLastReport = null;
+      migrationPreviewButton.disabled = true;
+      function migrationSourceLabel() {
+        return desktopMessage(activeLocale, 'migration.source.portable');
+      }
+      function migrationCandidateName(candidate, index) {
+        const name = String(candidate.path || '').replace(/\\\\/g, '/').split('/').filter(Boolean).pop();
+        return name
+          ? migrationSourceLabel() + ' · ' + name
+          : migrationSourceLabel() + ' ' + String(index + 1);
+      }
+      function migrationCandidateMeta(candidate) {
+        const parts = [];
+        if (candidate.version) {
+          parts.push(desktopFmt('migration.step.candidateVersion', { version: candidate.version }));
+        }
+        if (
+          candidate.session_count !== null
+          && candidate.session_count !== undefined
+          && Number.isFinite(Number(candidate.session_count))
+        ) {
+          parts.push(desktopFmt('migration.step.candidateSessions', { n: candidate.session_count }));
+        }
+        if (candidate.estimated_activity_at) {
+          const date = new Date(candidate.estimated_activity_at);
+          if (!Number.isNaN(date.getTime())) {
+            parts.push(desktopFmt('migration.step.candidateActivity', {
+              value: new Intl.DateTimeFormat(activeLocale, { dateStyle: 'medium' }).format(date),
+            }));
+          }
+        }
+        return parts;
+      }
+      renderMigrationCandidates = () => {
+        const selectedPath = migrationSource.value;
+        migrationCandidateList.innerHTML = migrationCandidates.map((candidate, index) => {
+          const selected = candidate.path === selectedPath;
+          const meta = migrationCandidateMeta(candidate);
+          return '<div class="migration-candidate-row">'
+            + '<button class="migration-candidate" type="button" data-migration-candidate="' + index
+            + '" aria-pressed="' + String(selected) + '"' + (migrationBusy ? ' disabled' : '') + '>'
+            + '<span class="migration-candidate-head"><strong>' + escapeHtml(migrationCandidateName(candidate, index)) + '</strong></span>'
+            + (meta.length ? '<span class="migration-candidate-meta">' + meta.map((item) => '<span>' + escapeHtml(item) + '</span>').join('') + '</span>' : '')
+            + '</button>'
+            + '<details><summary>' + escapeHtml(t.migrationTechnicalDetails) + '</summary>'
+            + '<span class="migration-path">' + escapeHtml(candidate.path) + '</span></details>'
+            + '</div>';
+        }).join('');
+        migrationCandidateList.querySelectorAll('[data-migration-candidate]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const index = Number(button.dataset.migrationCandidate);
+            const candidate = migrationCandidates[index];
+            if (!candidate || migrationBusy) return;
+            migrationSource.value = candidate.path;
+            renderMigrationCandidates();
+            migrationSource.dispatchEvent(new Event('change'));
+          });
+        });
+        migrationSelectionHint.hidden = migrationPreviewOk;
+      };
+      function resetMigrationPreview() {
+        migrationPreviewOk = false;
+        migrationImportButton.disabled = true;
+        migrationImportButton.hidden = true;
+        migrationPreviewButton.hidden = false;
+        migrationLastReport = null;
+        migrationSummary.hidden = true;
+        migrationDoneNote.hidden = true;
+        migrationSelectionHint.hidden = false;
+      }
+      migrationSource.addEventListener('change', async () => {
+        resetMigrationPreview();
+        errorBox.textContent = '';
+        const selected = migrationCandidates.find((item) => item.path === migrationSource.value) || null;
+        migrationCandidate = null;
+        migrationPreviewButton.disabled = true;
+        if (!selected) {
+          renderMigrationCandidates();
+          await window.opensquillaDesktop.selectOnboardingMigration({ source: '' });
+          return;
+        }
+        const requestedSource = selected.path;
+        const result = await window.opensquillaDesktop.selectOnboardingMigration({ source: selected.path });
+        if (migrationSource.value !== requestedSource) return;
+        if (!result || !result.ok) {
+          migrationSource.value = '';
+          renderMigrationCandidates();
+          errorBox.textContent = result && result.error ? String(result.error) : 'Could not select that Portable data.';
+          return;
+        }
+        migrationCandidate = selected;
+        migrationPreviewButton.disabled = false;
+        renderMigrationCandidates();
+      });
+      migrationBrowseButton.addEventListener('click', async () => {
+        if (migrationBusy) return;
+        errorBox.textContent = '';
+        const result = await window.opensquillaDesktop.browseOnboardingMigration();
+        if (!result || result.aborted) return;
+        if (!result.ok || !result.candidate) {
+          errorBox.textContent = result && result.error ? String(result.error) : 'Could not inspect that profile folder.';
+          return;
+        }
+        const candidate = result.candidate;
+        const existing = migrationCandidates.findIndex((item) => item.path === candidate.path);
+        if (existing >= 0) migrationCandidates[existing] = candidate;
+        else migrationCandidates.push(candidate);
+        migrationSource.value = candidate.path;
+        renderMigrationCandidates();
+        migrationSource.dispatchEvent(new Event('change'));
+      });
       function setMigrationStatus(label) {
         if (label) {
           migrationStatusLabel.textContent = label;
@@ -4493,43 +5617,58 @@ function onboardingHtml(
         return String(Math.round(bytes)) + ' B';
       }
       function migrationErrorDetail(result, errors) {
+        if (result && result.error) return String(result.error);
         if (errors && errors.length) {
           return errors.map((item) => String((item && (item.reason || item.kind)) || '')).filter(Boolean).join('; ');
         }
-        if (result && result.error) return String(result.error);
         if (result && result.raw) return String(result.raw).slice(-400);
         return '';
       }
       function renderMigrationReport(report) {
         if (!report || typeof report !== 'object') {
+          migrationLastReport = null;
           migrationSummary.hidden = true;
           return [];
         }
+        migrationLastReport = report;
         const items = Array.isArray(report.items) ? report.items : [];
-        const counts = {};
-        for (const item of items) {
-          const status = String((item && item.status) || 'unknown');
-          counts[status] = (counts[status] || 0) + 1;
-        }
-        const countsText = Object.keys(counts).sort().map((status) => status + ': ' + counts[status]).join(', ') || '0';
+        const readyCount = items.filter((item) => (
+          item && (item.status === 'planned' || item.status === 'migrated')
+        )).length;
+        const skippedCount = items.filter((item) => item && item.status === 'skipped').length;
         const pausedCount = Array.isArray(report.paused_jobs) ? report.paused_jobs.length : 0;
         const preflight = (report.preflight && typeof report.preflight === 'object') ? report.preflight : {};
+        const diskRequired = Number(preflight.disk_required_bytes);
+        const diskFree = Number(preflight.disk_free_bytes);
+        const hasDiskEstimate = Number.isFinite(diskRequired) && diskRequired >= 0
+          && Number.isFinite(diskFree) && diskFree >= 0;
         const lines = [
-          fmt('migrationItems', { counts: countsText }),
-          fmt('migrationPausedJobs', { n: pausedCount }),
-          fmt('migrationDisk', {
-            required: formatMigrationBytes(preflight.disk_required_bytes),
-            free: formatMigrationBytes(preflight.disk_free_bytes),
-          }),
+          fmt('migrationReady', { n: readyCount }),
+          ...(pausedCount > 0 ? [fmt('migrationPausedJobs', { n: pausedCount })] : []),
+          ...(hasDiskEstimate ? [fmt('migrationDisk', {
+            required: formatMigrationBytes(diskRequired),
+            free: formatMigrationBytes(diskFree),
+          })] : []),
         ];
         const notes = Array.isArray(report.notes) ? report.notes : [];
+        const technicalLines = [
+          ...(skippedCount > 0 ? [fmt('migrationSkippedDetails', { n: skippedCount })] : []),
+          ...(notes.length
+            ? [t.migrationNotesLabel + ': ' + notes.map((note) => String(note)).join(' | ')]
+            : []),
+        ];
         migrationSummary.innerHTML = lines.map((line) => '<div>' + escapeHtml(line) + '</div>').join('')
-          + (notes.length
-            ? '<div>' + escapeHtml(t.migrationNotesLabel) + ': ' + escapeHtml(notes.map((note) => String(note)).join(' | ')) + '</div>'
+          + (technicalLines.length
+            ? '<details><summary>' + escapeHtml(t.migrationTechnicalDetails) + '</summary>'
+              + technicalLines.map((line) => '<div>' + escapeHtml(line) + '</div>').join('')
+              + '</details>'
             : '');
         migrationSummary.hidden = false;
         return items.filter((item) => item && item.status === 'error');
       }
+      renderMigrationPreviewSummary = () => {
+        if (migrationLastReport) renderMigrationReport(migrationLastReport);
+      };
       if (typeof window.opensquillaDesktop.onMigrationProgress === 'function') {
         window.opensquillaDesktop.onMigrationProgress((payload) => {
           const phase = payload && payload.phase;
@@ -4539,13 +5678,16 @@ function onboardingHtml(
         });
       }
       migrationPreviewButton.addEventListener('click', async () => {
-        if (migrationBusy) return;
+        if (migrationBusy || !migrationCandidate) return;
         migrationBusy = true;
         migrationPreviewOk = false;
         errorBox.textContent = '';
         migrationDoneNote.hidden = true;
         migrationPreviewButton.disabled = true;
         migrationImportButton.disabled = true;
+        migrationSource.disabled = true;
+        migrationBrowseButton.disabled = true;
+        renderMigrationCandidates();
         setMigrationStatus(t.migrationPreviewRunning);
         try {
           const result = await window.opensquillaDesktop.previewOnboardingMigration();
@@ -4562,6 +5704,11 @@ function onboardingHtml(
           setMigrationStatus('');
           migrationPreviewButton.disabled = false;
           migrationImportButton.disabled = !migrationPreviewOk;
+          migrationPreviewButton.hidden = migrationPreviewOk;
+          migrationImportButton.hidden = !migrationPreviewOk;
+          migrationSource.disabled = false;
+          migrationBrowseButton.disabled = false;
+          renderMigrationCandidates();
         }
       });
       migrationImportButton.addEventListener('click', async () => {
@@ -4571,6 +5718,9 @@ function onboardingHtml(
         migrationPreviewButton.disabled = true;
         migrationImportButton.disabled = true;
         migrationSkipButton.disabled = true;
+        migrationSource.disabled = true;
+        migrationBrowseButton.disabled = true;
+        renderMigrationCandidates();
         setMigrationStatus(t.migrationApplyRunning);
         let imported = false;
         try {
@@ -4593,6 +5743,9 @@ function onboardingHtml(
           migrationBusy = false;
           setMigrationStatus('');
           migrationSkipButton.disabled = false;
+          migrationSource.disabled = false;
+          migrationBrowseButton.disabled = false;
+          renderMigrationCandidates();
           if (imported) {
             // Leave the completion note readable for a beat, then continue to
             // the provider step with the imported connection prefilled. The
@@ -4604,7 +5757,9 @@ function onboardingHtml(
           } else {
             migrationPreviewOk = false;
             migrationPreviewButton.disabled = false;
+            migrationPreviewButton.hidden = false;
             migrationImportButton.disabled = true;
+            migrationImportButton.hidden = true;
           }
         }
       });
@@ -4613,19 +5768,23 @@ function onboardingHtml(
         errorBox.textContent = '';
         setStep(nextRouteStep(step));
       });
+      renderMigrationCandidates();
     }
     renderProviderGrid();
     renderSearchProviderGrid();
     syncProviderDefaults(true);
     applyMigrationPrefill(initialProviderPrefill);
     render();
+    focusStepHeading(document.querySelector('.setup-card.active'));
   </script>
 </body>
 </html>`
 }
 
 async function runOnboarding(): Promise<DesktopConnection> {
-  const pendingProviderSetup = await loadPendingMigrationProviderSetup()
+  const pendingProviderSetup = activeDesktopProfile().kind === 'primary'
+    ? await loadPendingMigrationProviderSetup()
+    : null
   const existing = await loadDesktopCredential()
   // A saved credential encrypted with the OS keychain that this session cannot
   // read (keychain locked or unavailable) must not be treated as "no credential":
@@ -4656,10 +5815,29 @@ async function runOnboarding(): Promise<DesktopConnection> {
     return existing
   }
 
-  // No usable credential: this is the first-run (or reset) path, the only
-  // interaction point before the gateway first boots — so offer the legacy home
-  // import here, before provider setup (the import must precede first boot).
-  onboardingMigrationCandidate = pendingProviderSetup ? null : detectLegacyImportCandidate()
+  // First-run transfer is a narrow Windows Portable upgrade path. CLI homes and
+  // other Desktop profiles are always explicit Settings actions, even when the
+  // recovery engine has proved the current Desktop H empty.
+  const onboardingDataInput = {
+    platform: process.platform,
+    profileKind: activeDesktopProfile().kind,
+    pendingProviderSetup: pendingProviderSetup !== null,
+    inspection: recoveryInspection,
+  } as const
+  const detectedCandidates = (
+    process.platform === 'win32'
+    && isProvenFreshPrimaryDesktopProfile(onboardingDataInput)
+  )
+    ? await enrichLegacyImportCandidates(detectWindowsPortableImportCandidates())
+    : []
+  const onboardingDataFlow = classifyDesktopOnboardingDataFlow({
+    ...onboardingDataInput,
+    candidateKinds: detectedCandidates.map((candidate) => candidate.kind),
+  })
+  onboardingMigrationCandidates = onboardingDataFlow === 'portable-transfer'
+    ? detectedCandidates
+    : []
+  onboardingMigrationCandidate = null
   onboardingMigrationPreviewApprovedAt = 0
 
   return new Promise((resolveCredential, rejectCredential) => {
@@ -4726,7 +5904,11 @@ async function runOnboarding(): Promise<DesktopConnection> {
       }
     })
 
-    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(onboardingMigrationCandidate, pendingProviderSetup))}`).catch((error) => {
+    onboardingWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(onboardingHtml(
+      onboardingMigrationCandidates,
+      pendingProviderSetup,
+      onboardingDataFlow === 'portable-transfer',
+    ))}`).catch((error) => {
       rejectCredential(error instanceof Error ? error : new Error(String(error)))
     })
   })
@@ -4834,6 +6016,357 @@ async function resolveGatewayRuntime(): Promise<RuntimeLaunch> {
     cwd: repoRoot,
     mode: 'dev',
   }
+}
+
+const RECOVERY_PROTOCOL_SCHEMA_VERSION = 1
+const RECOVERY_STDOUT_LIMIT = 2 * 1024 * 1024
+const RECOVERY_COMMAND_TIMEOUT_MS = 60_000
+const RECOVERY_OUTCOMES = new Set<RecoveryOutcome>([
+  'ready',
+  'attention',
+  'recovery_required',
+  'recovery_profile',
+])
+
+function recoveryRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
+function parseRecoveryProtocol(value: unknown): RecoveryProtocolResult {
+  const record = recoveryRecord(value)
+  if (!record) throw new Error('Recovery command returned an invalid protocol object.')
+  const outcome = String(record.outcome || '') as RecoveryOutcome
+  if (record.schema_version !== RECOVERY_PROTOCOL_SCHEMA_VERSION) {
+    throw new Error('Recovery command returned an unsupported protocol schema.')
+  }
+  if (!RECOVERY_OUTCOMES.has(outcome)) {
+    throw new Error('Recovery command returned an invalid outcome.')
+  }
+  if (typeof record.stable_code !== 'string' || !record.stable_code) {
+    throw new Error('Recovery command omitted its stable code.')
+  }
+  if (typeof record.primary_home !== 'string' || !record.primary_home) {
+    throw new Error('Recovery command omitted its primary home.')
+  }
+  if (record.effective_workspace !== null && typeof record.effective_workspace !== 'string') {
+    throw new Error('Recovery command returned an invalid workspace.')
+  }
+  if (!Array.isArray(record.candidates) || !Array.isArray(record.allowed_actions)) {
+    throw new Error('Recovery command returned invalid recovery actions.')
+  }
+  const candidates = record.candidates.map((value) => {
+    const candidate = recoveryRecord(value)
+    if (
+      !candidate
+      || typeof candidate.kind !== 'string'
+      || typeof candidate.path !== 'string'
+      || typeof candidate.exists !== 'boolean'
+      || typeof candidate.valid !== 'boolean'
+      || typeof candidate.configured !== 'boolean'
+    ) {
+      throw new Error('Recovery command returned an invalid workspace candidate.')
+    }
+    return {
+      kind: candidate.kind,
+      path: candidate.path,
+      exists: candidate.exists,
+      valid: candidate.valid,
+      configured: candidate.configured,
+      ...(typeof candidate.identity === 'string' ? { identity: candidate.identity } : {}),
+      ...(typeof candidate.modified_at_ns === 'number'
+        ? { modified_at_ns: candidate.modified_at_ns }
+        : {}),
+    }
+  })
+  const allowedActions = record.allowed_actions.map((action) => {
+    if (typeof action !== 'string') throw new Error('Recovery command returned an invalid action.')
+    return action
+  })
+  if (record.transaction_id !== null && typeof record.transaction_id !== 'string') {
+    throw new Error('Recovery command returned an invalid transaction id.')
+  }
+  if (!Number.isSafeInteger(record.revision) || Number(record.revision) < 0) {
+    throw new Error('Recovery command returned an invalid revision.')
+  }
+  return {
+    schema_version: RECOVERY_PROTOCOL_SCHEMA_VERSION,
+    outcome,
+    stable_code: record.stable_code,
+    primary_home: record.primary_home,
+    effective_workspace: record.effective_workspace as string | null,
+    candidates,
+    allowed_actions: allowedActions,
+    transaction_id: record.transaction_id as string | null,
+    revision: Number(record.revision),
+  }
+}
+
+function recoveryFailureResult(home: string, stableCode: string): RecoveryProtocolResult {
+  return {
+    schema_version: RECOVERY_PROTOCOL_SCHEMA_VERSION,
+    outcome: 'recovery_required',
+    stable_code: stableCode,
+    primary_home: home,
+    effective_workspace: null,
+    candidates: [],
+    allowed_actions: [
+      'continue-recovery-profile',
+      'create-recovery-profile',
+      'retry-primary-profile',
+      'show-backups',
+      'copy-diagnostics',
+    ],
+    transaction_id: null,
+    revision: 0,
+  }
+}
+
+async function runRecoveryCli(
+  profile: DesktopProfilePaths,
+  commandArgs: string[],
+  stdinPayload?: string,
+  writerReserved = false,
+): Promise<RecoveryProtocolResult> {
+  const mutating = commandArgs[0] !== 'inspect'
+  const kindAwareCommands = new Set(['inspect', 'reconcile', 'choose-workspace'])
+  const effectiveArgs = kindAwareCommands.has(commandArgs[0] || '')
+    && !commandArgs.includes('--profile-kind')
+    ? [...commandArgs, '--profile-kind', profileKindEnvironment(profile.kind)]
+    : commandArgs
+  const finishWriter = mutating && !recoveryOperationBusy && !writerReserved
+    ? beginDesktopWriterOperation(`recovery ${commandArgs[0] || 'operation'}`)
+    : () => {}
+  try {
+    const runtime = await resolveGatewayRuntime()
+    const prefix = runtime.args.slice(0, -2)
+    return await new Promise((resolveResult, rejectResult) => {
+      const child = spawn(runtime.command, [...prefix, 'recovery', ...effectiveArgs], {
+        cwd: runtime.cwd,
+        windowsHide: true,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: desktopChildEnvironment(profile, {
+          OPENSQUILLA_RECOVERY_OFFLINE: '1',
+          PYTHONUNBUFFERED: '1',
+          PYTHONUTF8: '1',
+          PYTHONIOENCODING: 'utf-8:replace',
+        }),
+      })
+      let stdout = ''
+      let oversized = false
+      let settled = false
+      let timeout: NodeJS.Timeout | null = null
+      const finish = (error?: Error, result?: RecoveryProtocolResult) => {
+        if (settled) return
+        settled = true
+        if (timeout) clearTimeout(timeout)
+        if (error) rejectResult(error)
+        else resolveResult(result as RecoveryProtocolResult)
+      }
+      if (!mutating) {
+        timeout = setTimeout(() => {
+          child.kill()
+          finish(new Error('Recovery command timed out.'))
+        }, RECOVERY_COMMAND_TIMEOUT_MS)
+        timeout.unref()
+      }
+      child.stdin.once('error', () => {})
+      child.stdin.end(stdinPayload ?? '')
+      child.stdout.on('data', (chunk) => {
+        if (oversized) return
+        stdout += String(chunk)
+        if (stdout.length > RECOVERY_STDOUT_LIMIT) {
+          oversized = true
+          if (!mutating) child.kill()
+        }
+      })
+      // The renderer receives only parsed protocol JSON. stderr is drained but
+      // never copied into diagnostics because it may contain local details.
+      child.stderr.resume()
+      child.once('error', (error) => finish(
+        error instanceof Error ? error : new Error(String(error)),
+      ))
+      child.once('close', (code) => {
+        if (oversized) return finish(new Error('Recovery command output exceeded its limit.'))
+        try {
+          return finish(undefined, parseRecoveryProtocol(JSON.parse(stdout)))
+        } catch (error) {
+          if (code !== 0) {
+            return finish(new Error(`Recovery command failed with exit code ${code ?? 'unknown'}.`))
+          }
+          return finish(error instanceof Error ? error : new Error(String(error)))
+        }
+      })
+    })
+  } finally {
+    finishWriter()
+  }
+}
+
+async function inspectDesktopProfile(profile: DesktopProfilePaths): Promise<RecoveryProtocolResult> {
+  try {
+    return await runRecoveryCli(profile, ['inspect', '--home', profile.home, '--json'])
+  } catch (error) {
+    desktopLog('recovery_inspect_failed', {
+      profileKind: profile.kind,
+      error: error instanceof Error ? error.message : 'unknown error',
+    })
+    return recoveryFailureResult(
+      profile.kind === 'primary' ? profile.home : primaryDesktopProfile().home,
+      'desktop_recovery_inspect_failed',
+    )
+  }
+}
+
+function recoveryStateSnapshot(): DesktopRecoveryViewState {
+  const active = activeDesktopProfile()
+  return {
+    inspection: recoveryInspection,
+    activeProfile: {
+      kind: active.kind,
+      recoveryId: active.recoveryId,
+      home: active.home,
+    },
+    recoveryProfiles: allProfileContexts()
+      .filter((profile) => profile.kind === 'recovery' && profile.recoveryId)
+      .map((profile) => ({ id: profile.recoveryId as string, home: profile.home })),
+    blocked: recoveryInspection?.outcome === 'recovery_required',
+    busy: recoveryOperationBusy,
+    error: recoveryOperationError,
+  }
+}
+
+function publishRecoveryState(): void {
+  mainWindow?.webContents.send('desktop:recovery:state-changed', recoveryStateSnapshot())
+}
+
+function sanitizedRecoveryDiagnostics(): string {
+  const report = recoveryInspection
+  const redactPath = (value: string | null): string | null => {
+    if (!value) return value
+    const userData = app.getPath('userData')
+    const home = homedir()
+    if (value === userData || value.startsWith(`${userData}/`) || value.startsWith(`${userData}\\`)) {
+      return `<USER_DATA>${value.slice(userData.length)}`
+    }
+    if (value === home || value.startsWith(`${home}/`) || value.startsWith(`${home}\\`)) {
+      return `<HOME>${value.slice(home.length)}`
+    }
+    return '<EXTERNAL_PATH>'
+  }
+  return JSON.stringify({
+    schema_version: RECOVERY_PROTOCOL_SCHEMA_VERSION,
+    app_version: app.getVersion(),
+    platform: process.platform,
+    profile_kind: activeDesktopProfile().kind,
+    outcome: report?.outcome ?? 'recovery_required',
+    stable_code: report?.stable_code ?? 'desktop_recovery_state_unavailable',
+    primary_home: redactPath(report?.primary_home ?? primaryDesktopProfile().home),
+    effective_workspace: redactPath(report?.effective_workspace ?? null),
+    candidates: (report?.candidates ?? []).map((candidate) => ({
+      kind: candidate.kind,
+      path: redactPath(candidate.path),
+      exists: candidate.exists,
+      valid: candidate.valid,
+      configured: candidate.configured,
+    })),
+    allowed_actions: report?.allowed_actions ?? [],
+    transaction_id: report?.transaction_id ?? null,
+    revision: report?.revision ?? 0,
+  }, null, 2)
+}
+
+function attentionAcknowledgementFor(
+  report: RecoveryProtocolResult,
+): DesktopAttentionAcknowledgement {
+  return {
+    stable_code: report.stable_code,
+    candidates: report.candidates
+      .filter((candidate) => ['canonical', 'legacy', 'external'].includes(candidate.kind))
+      .map((candidate) => ({
+        path: candidate.path,
+        identity: candidate.identity ?? null,
+        modified_at_ns: candidate.modified_at_ns ?? null,
+      }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+  }
+}
+
+async function persistAttentionAcknowledgement(
+  acknowledgement: DesktopAttentionAcknowledgement,
+): Promise<void> {
+  await updateDesktopProfileContext((current) => contextForProfile(
+    app.getPath('userData'),
+    current.active.kind,
+    current.active.recoveryId,
+    new Date().toISOString(),
+    acknowledgement,
+  ))
+}
+
+async function showAttentionPrompt(
+  report: RecoveryProtocolResult,
+  force = false,
+): Promise<void> {
+  if (report.outcome !== 'attention' || activeDesktopProfile().kind !== 'primary') return
+  const acknowledgement = attentionAcknowledgementFor(report)
+  const identity = JSON.stringify(acknowledgement)
+  const persisted = desktopProfileContext().persisted.attention_acknowledgement
+  if (!force && (JSON.stringify(persisted) === identity || attentionPromptedThisSession === identity)) {
+    return
+  }
+  if (attentionPromptInFlight) return attentionPromptInFlight
+  attentionPromptedThisSession = identity
+  attentionPromptInFlight = (async () => {
+    const currentWorkspace = report.effective_workspace
+    const otherWorkspacePaths = report.candidates
+      .filter((candidate) => (
+        ['canonical', 'legacy', 'external'].includes(candidate.kind)
+        && candidate.exists
+        && (!currentWorkspace || !resolvedPathsEqual(candidate.path, currentWorkspace))
+      ))
+      .map((candidate) => candidate.path)
+    const workspaceLines = [
+      ...(currentWorkspace
+        ? [`${desktopT('attention.currentWorkspace')}: ${currentWorkspace}`]
+        : []),
+      ...otherWorkspacePaths.map((path) => `${desktopT('attention.otherWorkspace')}: ${path}`),
+    ]
+    const options: Electron.MessageBoxOptions = {
+      type: 'info',
+      buttons: [
+        desktopT('attention.later'),
+        desktopT('attention.keepCurrent'),
+        desktopT('attention.chooseWorkspace'),
+      ],
+      defaultId: 1,
+      cancelId: 0,
+      title: desktopT('attention.title'),
+      message: desktopT('attention.message'),
+      detail: [desktopT('attention.detail'), ...workspaceLines].join('\n\n'),
+    }
+    const window = currentMainWindow()
+    const result = window
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options)
+    if (result.response === 1) {
+      await persistAttentionAcknowledgement(acknowledgement)
+    } else if (result.response === 2) {
+      const choice = await withRecoveryOperation(() => choosePrimaryWorkspace(null))
+      if (!choice.ok && choice.error !== 'Workspace selection was cancelled.') {
+        await dialog.showMessageBox({
+          type: 'error',
+          buttons: ['OK'],
+          message: desktopT('attention.title'),
+          detail: choice.error,
+        })
+      }
+    }
+  })().finally(() => {
+    attentionPromptInFlight = null
+  })
+  return attentionPromptInFlight
 }
 
 const GATEWAY_PORT_FIRST = 18791
@@ -4976,6 +6509,7 @@ function hasGatewayProcessExited(process: ChildProcessWithoutNullStreams | null)
 }
 
 async function reuseHealthyGatewayState(): Promise<GatewayState | null> {
+  if (gatewayProfileKey !== desktopProfileKey()) return null
   if (!gatewayState.url) return null
   if (gatewayState.status !== 'ready' && !gatewayProcess) return null
 
@@ -5016,12 +6550,18 @@ async function startGateway(): Promise<GatewayState> {
     gatewayState.error = undefined
   }
 
-  const overrideUrl = process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
+  const activeProfile = activeDesktopProfile()
+  // A recovery profile must always launch its own isolated Desktop gateway; a
+  // developer override may point at a primary/CLI runtime with different data.
+  const overrideUrl = activeProfile.kind === 'primary'
+    ? process.env.OPENSQUILLA_DESKTOP_GATEWAY_URL
+    : undefined
   if (overrideUrl) {
     sendBootStatus('gateway-health')
     gatewayState.url = overrideUrl.replace(/\/$/, '')
     gatewayState.port = Number(new URL(gatewayState.url).port || 0)
     gatewayState.owned = false
+    gatewayProfileKey = desktopProfileKey(activeProfile)
     gatewayState.status = (await healthCheck(gatewayState.url)) ? 'ready' : 'error'
     if (gatewayState.status !== 'ready') {
       throw new Error(`Configured gateway is not healthy: ${gatewayState.url}`)
@@ -5030,9 +6570,6 @@ async function startGateway(): Promise<GatewayState> {
   }
 
   sendBootStatus('profile')
-  recoverInterruptedDesktopImport()
-  await recoverPendingMigrationReconciliation()
-  relocateLegacyDesktopStateLayout()
   const connection = await runOnboarding()
   forceOnboardingOnNextStartup = false
   const apiKey = decryptApiKey(connection)
@@ -5052,7 +6589,7 @@ async function startGateway(): Promise<GatewayState> {
 
   const port = await findGatewayPort()
   const url = `http://127.0.0.1:${port}`
-  const logDir = join(app.getPath('userData'), 'logs')
+  const logDir = desktopLogsDir()
   mkdirSync(logDir, { recursive: true })
   const logPath = join(logDir, 'gateway.log')
   const logStream = createWriteStream(logPath, { flags: 'a' })
@@ -5078,27 +6615,20 @@ async function startGateway(): Promise<GatewayState> {
 
   const nodeBinCandidates = desktopNodeBinCandidates()
   const childPath = desktopChildPath(nodeBinCandidates)
-  const childEnv = {
-    ...process.env,
+  const childEnv = desktopChildEnvironment(activeProfile, {
     PATH: childPath,
     ...(process.platform === 'win32' ? { Path: childPath } : {}),
     ...(connection.apiKeyEnv && apiKey ? { [connection.apiKeyEnv]: apiKey } : {}),
     ...(connection.searchApiKeyEnv && searchApiKey ? { [connection.searchApiKeyEnv]: searchApiKey } : {}),
-    OPENSQUILLA_DESKTOP: '1',
-    OPENSQUILLA_INSTALL_METHOD: 'desktop',
-    OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
     OPENSQUILLA_NODE_BIN_DIR: nodeBinCandidates.join(pathDelimiter()),
-    // OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT on the Python side
-    // (runtime state goes into its state/ subdir, matching the TOML-pinned
-    // state_dir below). Passing the state subdir here would re-root skills,
-    // workspace, session-archive, and .env one level too deep — see
-    // relocateLegacyDesktopStateLayout().
-    OPENSQUILLA_STATE_DIR: desktopHome(),
+    // desktopChildEnvironment pins OPENSQUILLA_STATE_DIR to H. RC4's Python
+    // recovery engine has already validated/reconciled the historical nested
+    // layout before this writer is admitted.
     ...(connection.disableNetworkObservability ? { OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY: '1' } : {}),
     PYTHONUNBUFFERED: '1',
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8:replace',
-  }
+  })
 
   const child = spawn(
     runtime.command,
@@ -5113,6 +6643,12 @@ async function startGateway(): Promise<GatewayState> {
     }
   )
   gatewayProcess = child
+  gatewayProfileKey = desktopProfileKey(activeProfile)
+  desktopLog('gateway_spawned', {
+    profileKind: activeProfile.kind,
+    pid: child.pid,
+    port,
+  })
   if (runtime.mode === 'dev') gatewayProcessTreeChildren.add(child)
 
   let gatewayOutputTail = ''
@@ -5377,22 +6913,181 @@ async function restoreMainWindowToBootPage(): Promise<void> {
   }
 }
 
-async function openOrResumeDesktopApp(): Promise<void> {
-  if (isQuitting) return
-  await createMainWindow()
-  focusMainWindow()
-
-  try {
-    const reusableGateway = forceOnboardingOnNextStartup ? null : await reuseHealthyGatewayState()
-    const gateway = reusableGateway ?? await ensureGatewayStarted()
-    await loadControlUiIntoCurrentWindow(gateway.url)
-  } catch (error) {
-    if (gatewayState.status !== 'ready') {
-      gatewayState.status = 'error'
-      gatewayState.error = error instanceof Error ? error.message : String(error)
-    }
-    if (currentMainWindow()) sendBootError(error)
+async function stopOwnedGatewayAndWait(): Promise<void> {
+  const child = gatewayProcess && gatewayState.owned
+    ? gatewayProcess
+    : updateGatewayShutdownProcess
+  if (!child) {
+    clearReusableGatewayState()
+    return
   }
+  if (gatewayProcess === child && gatewayState.owned) stopGateway()
+  const exited = await waitForGatewayProcessExit(child)
+  if (!exited) throw new Error('The Desktop gateway did not stop before the recovery operation.')
+  if (updateGatewayShutdownProcess === child) updateGatewayShutdownProcess = null
+  clearReusableGatewayState()
+}
+
+async function inspectActiveProfileBeforeStartup(): Promise<boolean> {
+  const context = desktopProfileContext()
+  if (context.issue) {
+    recoveryOperationError = null
+    recoveryInspection = recoveryFailureResult(context.primary.home, context.issue)
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    bootError = null
+    await restoreMainWindowToBootPage()
+    publishRecoveryState()
+    createApplicationMenu()
+    return false
+  }
+
+  if (context.active.kind === 'recovery' && !activeRecoveryProfileConfirmedThisProcess) {
+    recoveryOperationError = null
+    recoveryInspection = recoveryFailureResult(
+      context.primary.home,
+      'desktop_recovery_profile_confirmation_required',
+    )
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    bootError = null
+    await restoreMainWindowToBootPage()
+    publishRecoveryState()
+    createApplicationMenu()
+    return false
+  }
+
+  const active = activeDesktopProfile()
+  recoveryOperationError = null
+  let inspection = await inspectDesktopProfile(active)
+  if (
+    inspection.outcome === 'recovery_required'
+    && inspection.allowed_actions.includes('recover-settings')
+  ) {
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    try {
+      inspection = await runRecoveryCli(active, [
+        'recover-settings', '--home', active.home, '--json',
+      ])
+    } catch (error) {
+      desktopLog('settings_transaction_recovery_failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      })
+      inspection = recoveryFailureResult(active.home, 'settings_transaction_recovery_failed')
+    }
+  }
+
+  const provenLegacyAttention = inspection.outcome === 'attention'
+    && ['legacy_workspace_pinned', 'legacy_workspace_deferred'].includes(inspection.stable_code)
+    && inspection.allowed_actions.some((action) => (
+      action === 'reconcile' || action === 'finalize-layout'
+    ))
+  const provenReconcile = inspection.outcome === 'recovery_required'
+    && inspection.allowed_actions.includes('reconcile')
+  const safeLayoutFinalize = inspection.outcome === 'ready'
+    && inspection.allowed_actions.includes('finalize-layout')
+  if (
+    active.kind === 'primary'
+    && (provenReconcile || provenLegacyAttention || safeLayoutFinalize)
+  ) {
+    if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+    try {
+      inspection = await runRecoveryCli(active, [
+        'reconcile', '--home', active.home, '--json',
+      ])
+    } catch (error) {
+      desktopLog('recovery_reconcile_failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      })
+      inspection = recoveryFailureResult(active.home, 'desktop_recovery_reconcile_failed')
+    }
+  }
+
+  if (active.kind === 'primary' && inspection.outcome !== 'recovery_required') {
+    try {
+      // A whole-profile transaction may have committed immediately before the
+      // Electron process stopped. The narrow layout receipt is the authority
+      // for finishing provider credential reconciliation.
+      await recoverPendingMigrationReconciliation()
+      inspection = await inspectDesktopProfile(active)
+    } catch (error) {
+      desktopLog('migration_reconciliation_startup_failed', {
+        error: error instanceof Error ? error.message : 'unknown error',
+      })
+      inspection = recoveryFailureResult(active.home, 'migration_reconciliation_failed')
+    }
+  }
+
+  if (!existsSync(desktopProfileContextPath(app.getPath('userData')))) {
+    await updateDesktopProfileContext((current) => contextForProfile(
+      app.getPath('userData'),
+      current.active.kind,
+      current.active.recoveryId,
+      new Date().toISOString(),
+      current.persisted.attention_acknowledgement,
+    ))
+  }
+
+  recoveryInspection = inspection
+  if (active.kind === 'primary') primaryRecoveryInspection = inspection
+  publishRecoveryState()
+  createApplicationMenu()
+  if (inspection.outcome !== 'recovery_required') return true
+
+  if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+  bootError = null
+  await restoreMainWindowToBootPage()
+  publishRecoveryState()
+  return false
+}
+
+async function openOrResumeDesktopApp(): Promise<void> {
+  invalidateDesktopOpenFlow()
+  if (desktopOpenFlowPromise) return await desktopOpenFlowPromise
+
+  desktopOpenFlowPromise = (async () => {
+    while (!isQuitting) {
+      const revision = desktopOpenFlowRevision
+      const requestedProfileKey = desktopProfileKey()
+      await createMainWindow()
+      focusMainWindow()
+
+      try {
+        if (await inspectActiveProfileBeforeStartup()) {
+          if (revision === desktopOpenFlowRevision && requestedProfileKey === desktopProfileKey()) {
+            const reusableGateway = forceOnboardingOnNextStartup
+              ? null
+              : await reuseHealthyGatewayState()
+            const gateway = reusableGateway ?? await ensureGatewayStarted()
+            if (revision === desktopOpenFlowRevision && requestedProfileKey === desktopProfileKey()) {
+              await loadControlUiIntoCurrentWindow(gateway.url)
+              if (recoveryInspection?.outcome === 'attention') {
+                void showAttentionPrompt(recoveryInspection)
+              }
+            }
+          }
+        }
+      } catch (error) {
+        if (gatewayState.status !== 'ready') {
+          gatewayState.status = 'error'
+          gatewayState.error = error instanceof Error ? error.message : String(error)
+        }
+        desktopLog('desktop_open_failed', {
+          profileKind: activeDesktopProfile().kind,
+          gatewayPid: gatewayProcess?.pid,
+          gatewayStatus: gatewayState.status,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        if (currentMainWindow()) sendBootError(error)
+      }
+      if (revision === desktopOpenFlowRevision) return
+      if (gatewayProfileKey && gatewayProfileKey !== desktopProfileKey()) {
+        if (gatewayProcess && gatewayState.owned) await stopOwnedGatewayAndWait()
+        else clearReusableGatewayState()
+      }
+    }
+  })().finally(() => {
+    desktopOpenFlowPromise = null
+  })
+  await desktopOpenFlowPromise
 }
 
 // SIGKILL deadline for the owned gateway child. The Python gateway drains
@@ -5560,21 +7255,22 @@ function stopGateway(): void {
   hardTerminateGatewayProcess(child, GATEWAY_SHUTDOWN_KILL_AFTER_MS)
 }
 
-// ── Auto-update (electron-updater) ──────────────────────────────────────────
-// Phase 1 scope is macOS only. macOS release builds are Developer-ID signed +
-// notarized and ship the zip + latest-mac.yml feed that Squirrel.Mac consumes,
-// so in-place auto-update is safe. Windows builds are currently UNSIGNED, which
-// would make silent NSIS updates trip SmartScreen/UAC — so Windows stays on the
-// manual-download path (the in-app web notice) until a code-signing certificate
-// is in place. OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE=1 opts in for local testing
-// only; OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE=1 turns the feature off entirely.
+// ── Desktop updates ──────────────────────────────────────────────────────────
+// macOS release builds are Developer-ID signed + notarized and ship the zip +
+// latest-mac.yml feed that Squirrel.Mac consumes, so in-place auto-update is
+// safe. Windows builds are currently unsigned, so the desktop shell discovers
+// the release but opens its exact versioned NSIS installer for an explicit
+// manual install. OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE=1 opts in to native
+// Windows updating for local tests only; OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE
+// disables all shell-managed discovery.
 const { autoUpdater } = electronUpdater
 
 let autoUpdaterReady = false
-let manualUpdateCheck = false
 let updateDownloadInProgress = false
+let manualInstallerActionInProgress = false
 let updateApplying = false
 let downloadedUpdateVersion: string | null = null
+let verifiedManualInstallerPath: string | null = null
 let updateGatewayShutdownProcess: ChildProcessWithoutNullStreams | null = null
 let mockDownloadedUpdate = false
 let mockUpdatePromptActive = false
@@ -5593,6 +7289,16 @@ type DesktopUpdateStatus =
   | 'error'
   | 'applying'
 
+type DesktopUpdateInstallMode = 'native' | 'manual' | 'unsupported'
+type DesktopUpdateErrorCode =
+  | 'source_unreachable'
+  | 'manifest_invalid'
+  | 'checksum_unavailable'
+  | 'integrity_failed'
+  | 'download_failed'
+  | 'install_failed'
+  | null
+
 interface DesktopUpdateState {
   status: DesktopUpdateStatus
   currentVersion: string
@@ -5600,26 +7306,57 @@ interface DesktopUpdateState {
   progress: number | null
   checkedAt: string | null
   error: string | null
+  errorCode: DesktopUpdateErrorCode
   snoozedUntil: string | null
+  canCheck: boolean
   canNativeInstall: boolean
+  installMode: DesktopUpdateInstallMode
   releaseUrl: string | null
+  source: DesktopUpdateSource | null
+  fallbackUsed: boolean
+}
+
+interface DesktopUpdateFailureFallback {
+  state: DesktopUpdateState
+  candidate: DesktopUpdateCandidate | null
+}
+
+interface NativeUpdateReady {
+  tag: string
+  version: string
+  source: DesktopUpdateSource
 }
 
 interface DesktopUpdatePersistedState {
   snoozedVersion?: string
   snoozedUntil?: string
+  lastSuccessfulSource?: DesktopUpdateSource
 }
 
 const UPDATE_SNOOZE_MS = 24 * 60 * 60 * 1000
+const UPDATE_CHECK_INITIAL_DELAY_MS = 12_000
+const MOCK_UPDATE_CHECK_INITIAL_DELAY_MS = 1_000
+const UPDATE_CHECK_REPEAT_DELAY_MS = 24 * 60 * 60 * 1000
+const UPDATE_CHECKSUM_MAX_BYTES = 1024 * 1024
+const UPDATE_INSTALLER_MAX_BYTES = 4 * 1024 * 1024 * 1024
+const UPDATE_INSTALLER_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000
 
 let desktopUpdateStatus: DesktopUpdateStatus = 'idle'
 let desktopUpdateLatestVersion: string | null = null
 let desktopUpdateProgress: number | null = null
 let desktopUpdateCheckedAt: string | null = null
 let desktopUpdateError: string | null = null
+let desktopUpdateErrorCode: DesktopUpdateErrorCode = null
+let desktopUpdateReleaseUrl: string | null = null
+let desktopUpdateSource: DesktopUpdateSource | null = null
+let desktopUpdateFallbackUsed = false
+let desktopUpdateCandidate: DesktopUpdateCandidate | null = null
+let nativeUpdateReady: NativeUpdateReady | null = null
+let lastSuccessfulUpdateSource: DesktopUpdateSource | null = null
 let desktopUpdateSnoozedVersion: string | null = null
 let desktopUpdateSnoozedUntil: string | null = null
 let desktopUpdatePersistenceLoaded = false
+let desktopUpdatePersistenceWrite: Promise<void> = Promise.resolve()
 
 const NETWORK_OBSERVABILITY_DISABLE_ENV_KEYS = [
   'OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY',
@@ -5702,13 +7439,19 @@ function mockUpdateVersion(): string | null {
 }
 
 function desktopUpdateMenuEnabled(): boolean {
-  return autoUpdateSupported() || mockUpdateVersion() !== null
+  return desktopUpdateManaged() || mockUpdateVersion() !== null
 }
 
-function autoUpdateSupported(): boolean {
+function desktopUpdateManaged(): boolean {
   if (!app.isPackaged) return false
   if (desktopNetworkObservabilityDisabled()) return false
   if (process.env.OPENSQUILLA_DESKTOP_DISABLE_AUTO_UPDATE === '1') return false
+  return process.platform === 'darwin' || process.platform === 'win32'
+}
+
+function autoUpdateSupported(): boolean {
+  if (desktopNetworkObservabilityDisabled()) return false
+  if (!desktopUpdateManaged()) return false
   if (process.platform === 'darwin') return true
   if (process.platform === 'win32' && process.env.OPENSQUILLA_DESKTOP_ENABLE_WIN_UPDATE === '1') {
     return true
@@ -5720,8 +7463,16 @@ function nativeAutoUpdateEnabled(): boolean {
   return mockUpdateVersion() !== null || (autoUpdateSupported() && macUpdateLocationOk())
 }
 
+function desktopUpdateInstallMode(): DesktopUpdateInstallMode {
+  if (nativeAutoUpdateEnabled()) return 'native'
+  if (desktopUpdateManaged() && process.platform === 'win32') return 'manual'
+  return 'unsupported'
+}
+
 function desktopUpdateStatePath(): string {
-  return join(desktopStateDir(), 'desktop-update.json')
+  // Update availability is application-global and may be read before profile
+  // inspection, so it must never resolve through an untrusted selected H.
+  return join(app.getPath('userData'), 'desktop-update.json')
 }
 
 function loadDesktopUpdatePersistence(): void {
@@ -5731,6 +7482,9 @@ function loadDesktopUpdatePersistence(): void {
     const path = desktopUpdateStatePath()
     if (!existsSync(path)) return
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as DesktopUpdatePersistedState
+    if (parsed.lastSuccessfulSource === 'oss' || parsed.lastSuccessfulSource === 'github') {
+      lastSuccessfulUpdateSource = parsed.lastSuccessfulSource
+    }
     const snoozedVersion = String(parsed.snoozedVersion || '').trim()
     const snoozedUntil = String(parsed.snoozedUntil || '').trim()
     if (!snoozedVersion || !snoozedUntil) return
@@ -5743,24 +7497,28 @@ function loadDesktopUpdatePersistence(): void {
   }
 }
 
-async function persistDesktopUpdateSnooze(): Promise<void> {
-  try {
-    mkdirSync(desktopStateDir(), { recursive: true })
-    await writeFile(
-      desktopUpdateStatePath(),
-      JSON.stringify(
-        {
-          snoozedVersion: desktopUpdateSnoozedVersion || undefined,
-          snoozedUntil: desktopUpdateSnoozedUntil || undefined,
-        },
-        null,
-        2,
-      ),
-      { mode: 0o600 },
-    )
-  } catch (err) {
-    console.warn('[updater] failed to persist update snooze', err)
-  }
+function persistDesktopUpdateState(): Promise<void> {
+  desktopUpdatePersistenceWrite = desktopUpdatePersistenceWrite.then(async () => {
+    try {
+      mkdirSync(app.getPath('userData'), { recursive: true })
+      await atomicWriteFile(
+        desktopUpdateStatePath(),
+        JSON.stringify(
+          {
+            snoozedVersion: desktopUpdateSnoozedVersion || undefined,
+            snoozedUntil: desktopUpdateSnoozedUntil || undefined,
+            lastSuccessfulSource: lastSuccessfulUpdateSource || undefined,
+          },
+          null,
+          2,
+        ),
+        0o600,
+      )
+    } catch (err) {
+      console.warn('[updater] failed to persist update state', err)
+    }
+  })
+  return desktopUpdatePersistenceWrite
 }
 
 function activeDesktopUpdateSnoozeFor(version: string | null): string | null {
@@ -5770,7 +7528,7 @@ function activeDesktopUpdateSnoozeFor(version: string | null): string | null {
   if (Date.parse(desktopUpdateSnoozedUntil) <= Date.now()) {
     desktopUpdateSnoozedVersion = null
     desktopUpdateSnoozedUntil = null
-    void persistDesktopUpdateSnooze()
+    void persistDesktopUpdateState()
     return null
   }
   return desktopUpdateSnoozedUntil
@@ -5781,11 +7539,12 @@ function clearDesktopUpdateSnoozeIfVersionChanged(version: string | null): void 
   if (!version || !desktopUpdateSnoozedVersion || desktopUpdateSnoozedVersion === version) return
   desktopUpdateSnoozedVersion = null
   desktopUpdateSnoozedUntil = null
-  void persistDesktopUpdateSnooze()
+  void persistDesktopUpdateState()
 }
 
 function desktopUpdateSnapshot(): DesktopUpdateState {
   const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  const installMode = desktopUpdateInstallMode()
   return {
     status: desktopUpdateStatus,
     currentVersion: app.getVersion(),
@@ -5793,9 +7552,14 @@ function desktopUpdateSnapshot(): DesktopUpdateState {
     progress: desktopUpdateProgress,
     checkedAt: desktopUpdateCheckedAt,
     error: desktopUpdateError,
+    errorCode: desktopUpdateErrorCode,
     snoozedUntil: activeDesktopUpdateSnoozeFor(latestVersion),
-    canNativeInstall: nativeAutoUpdateEnabled(),
-    releaseUrl: null,
+    canCheck: desktopUpdateManaged() || mockUpdateVersion() !== null,
+    canNativeInstall: installMode === 'native',
+    installMode,
+    releaseUrl: desktopUpdateReleaseUrl,
+    source: desktopUpdateSource,
+    fallbackUsed: desktopUpdateFallbackUsed,
   }
 }
 
@@ -5812,17 +7576,35 @@ function setDesktopUpdateState(patch: Partial<DesktopUpdateState>): DesktopUpdat
   if ('latestVersion' in patch) desktopUpdateLatestVersion = patch.latestVersion ?? null
   if ('progress' in patch) desktopUpdateProgress = patch.progress ?? null
   if ('checkedAt' in patch) desktopUpdateCheckedAt = patch.checkedAt ?? null
-  if ('error' in patch) desktopUpdateError = patch.error ?? null
+  if ('error' in patch) {
+    desktopUpdateError = patch.error ?? null
+    if (patch.error == null && !('errorCode' in patch)) desktopUpdateErrorCode = null
+  }
+  if ('errorCode' in patch) desktopUpdateErrorCode = patch.errorCode ?? null
+  if ('releaseUrl' in patch) desktopUpdateReleaseUrl = patch.releaseUrl ?? null
+  if ('source' in patch) desktopUpdateSource = patch.source ?? null
+  if ('fallbackUsed' in patch) desktopUpdateFallbackUsed = patch.fallbackUsed ?? false
   clearDesktopUpdateSnoozeIfVersionChanged(desktopUpdateLatestVersion || downloadedUpdateVersion)
   return publishDesktopUpdateState()
 }
 
 async function dismissDesktopUpdate(): Promise<DesktopUpdateState> {
   const latestVersion = desktopUpdateLatestVersion || downloadedUpdateVersion
+  if (!latestVersion && desktopUpdateStatus === 'error') {
+    return setDesktopUpdateState({
+      status: 'idle',
+      progress: null,
+      error: null,
+      errorCode: null,
+      releaseUrl: null,
+      source: null,
+      fallbackUsed: false,
+    })
+  }
   if (latestVersion) {
     desktopUpdateSnoozedVersion = latestVersion
     desktopUpdateSnoozedUntil = new Date(Date.now() + UPDATE_SNOOZE_MS).toISOString()
-    await persistDesktopUpdateSnooze()
+    await persistDesktopUpdateState()
   }
   return publishDesktopUpdateState()
 }
@@ -5867,23 +7649,57 @@ function showUpdateDialog(
   return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
 }
 
-function showUpdateError(err: unknown): void {
-  const shouldNotify = manualUpdateCheck || updateDownloadInProgress
-  manualUpdateCheck = false
+function classifyDesktopUpdateError(err: unknown): Exclude<DesktopUpdateErrorCode, null> {
+  if (err instanceof UpdateChannelError) {
+    if (err.code === 'manifest_invalid' || err.code === 'current_version_invalid') return 'manifest_invalid'
+    if (err.code === 'checksum_unavailable') return 'checksum_unavailable'
+    if (err.code === 'integrity_failed') return 'integrity_failed'
+    if (err.code === 'download_failed') return 'download_failed'
+    if (err.code === 'install_failed') return 'install_failed'
+    return 'source_unreachable'
+  }
+  return updateDownloadInProgress ? 'download_failed' : 'source_unreachable'
+}
+
+function desktopUpdateErrorMessage(code: Exclude<DesktopUpdateErrorCode, null>): string {
+  if (code === 'manifest_invalid') return desktopT('update.manifestInvalid')
+  if (code === 'checksum_unavailable') return desktopT('update.checksumUnavailable')
+  if (code === 'integrity_failed') return desktopT('update.integrityFailed')
+  if (code === 'download_failed') return desktopT('update.downloadFailed')
+  if (code === 'install_failed') return desktopT('update.installFailed')
+  return desktopT('update.sourceUnavailable')
+}
+
+function showUpdateError(
+  err: unknown,
+  silentFallback: DesktopUpdateFailureFallback | null = null,
+): void {
+  const shouldNotify = desktopUpdateCheckScheduler.consumeManualRequest() || updateDownloadInProgress
+  const errorCode = classifyDesktopUpdateError(err)
   updateDownloadInProgress = false
   if (!shouldNotify) {
-    // electron-updater delivers each failure twice (it emits 'error' AND rejects
-    // the promise our try/catch awaits). The first delivery publishes the visible
-    // error and clears the notify flags; without this guard the second, now-silent
-    // delivery would clobber that error back to idle and wipe the known
-    // latestVersion. Leave an already-published error in place.
-    if (desktopUpdateStatus === 'error') return
+    if (silentFallback && !['checking', 'downloading', 'applying'].includes(silentFallback.state.status)) {
+      desktopUpdateCandidate = silentFallback.candidate
+      setDesktopUpdateState({
+        status: silentFallback.state.status,
+        latestVersion: silentFallback.state.latestVersion,
+        progress: silentFallback.state.progress,
+        checkedAt: silentFallback.state.checkedAt,
+        error: silentFallback.state.error,
+        errorCode: silentFallback.state.errorCode,
+        releaseUrl: silentFallback.state.releaseUrl,
+        source: silentFallback.state.source,
+        fallbackUsed: silentFallback.state.fallbackUsed,
+      })
+      return
+    }
     setDesktopUpdateState({
       status: downloadedUpdateVersion ? 'downloaded' : 'idle',
       latestVersion: downloadedUpdateVersion,
       progress: downloadedUpdateVersion ? 100 : null,
       checkedAt: new Date().toISOString(),
       error: null,
+      errorCode: null,
     })
     return
   }
@@ -5891,7 +7707,8 @@ function showUpdateError(err: unknown): void {
     status: 'error',
     progress: null,
     checkedAt: new Date().toISOString(),
-    error: String(err instanceof Error ? err.message : err ?? ''),
+    error: desktopUpdateErrorMessage(errorCode),
+    errorCode,
   })
 }
 
@@ -5919,12 +7736,34 @@ async function runMockUpdateFlow(version: string): Promise<void> {
   } finally {
     mockUpdatePromptActive = false
     updateDownloadInProgress = false
-    manualUpdateCheck = false
   }
 }
 
 async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
-  if (updateDownloadInProgress || updateApplying || desktopUpdateStatus === 'downloaded') {
+  if (
+    desktopUpdateInstallMode() === 'manual'
+    && desktopUpdateStatus === 'downloaded'
+    && verifiedManualInstallerPath
+  ) {
+    try {
+      shell.showItemInFolder(verifiedManualInstallerPath)
+    } catch (err) {
+      console.error('[updater] failed to reveal verified manual installer', err)
+      return setDesktopUpdateState({
+        status: 'error',
+        progress: null,
+        error: desktopUpdateErrorMessage('install_failed'),
+        errorCode: 'install_failed',
+      })
+    }
+    return desktopUpdateSnapshot()
+  }
+  if (
+    updateDownloadInProgress
+    || manualInstallerActionInProgress
+    || updateApplying
+    || desktopUpdateStatus === 'downloaded'
+  ) {
     return desktopUpdateSnapshot()
   }
 
@@ -5953,27 +7792,108 @@ async function downloadDesktopUpdate(): Promise<DesktopUpdateState> {
     })
   }
 
+  if (desktopUpdateInstallMode() === 'manual') {
+    manualInstallerActionInProgress = true
+    try {
+      if (desktopUpdateStatus === 'checking') await checkForUpdates(true)
+      if (!desktopUpdateCandidate) await checkForUpdates(true)
+      const candidate = desktopUpdateCandidate
+      if (!candidate || desktopUpdateStatus !== 'available') return desktopUpdateSnapshot()
+      updateDownloadInProgress = true
+      verifiedManualInstallerPath = null
+
+      let chosen: { source: DesktopUpdateSource; fallbackUsed: boolean }
+      try {
+        chosen = await chooseDesktopUpdateSource(candidate, candidate.installer)
+      } catch (err) {
+        console.error('[updater] manual installer sources are unreachable', err)
+        return setDesktopUpdateState({
+          status: 'error',
+          progress: null,
+          checkedAt: new Date().toISOString(),
+          error: desktopUpdateErrorMessage('source_unreachable'),
+          errorCode: 'source_unreachable',
+        })
+      }
+
+      const installerUrl = updateAssetUrl(candidate, chosen.source)
+      setDesktopUpdateState({
+        status: 'downloading',
+        latestVersion: candidate.version,
+        progress: 0,
+        releaseUrl: installerUrl,
+        source: chosen.source,
+        fallbackUsed: chosen.fallbackUsed,
+        error: null,
+        errorCode: null,
+      })
+      try {
+        const expectedSha256 = await fetchCanonicalWindowsInstallerDigest(candidate)
+        const verified = await downloadVerifiedWindowsInstallerWithFallback(
+          candidate,
+          chosen,
+          expectedSha256,
+        )
+        verifiedManualInstallerPath = verified.path
+        rememberSuccessfulUpdateSource(verified.source)
+        setDesktopUpdateState({
+          status: 'downloaded',
+          latestVersion: candidate.version,
+          progress: 100,
+          checkedAt: new Date().toISOString(),
+          releaseUrl: updateAssetUrl(candidate, verified.source),
+          source: verified.source,
+          fallbackUsed: verified.fallbackUsed,
+          error: null,
+          errorCode: null,
+        })
+        try {
+          shell.showItemInFolder(verified.path)
+        } catch (err) {
+          throw new UpdateChannelError(
+            'install_failed',
+            `The verified installer could not be shown: ${String(err instanceof Error ? err.message : err)}`,
+          )
+        }
+      } catch (err) {
+        console.error('[updater] failed to prepare verified manual installer', err)
+        showUpdateError(err)
+        return desktopUpdateSnapshot()
+      }
+      return desktopUpdateSnapshot()
+    } finally {
+      updateDownloadInProgress = false
+      manualInstallerActionInProgress = false
+    }
+  }
+
   if (!autoUpdateSupported()) return desktopUpdateSnapshot()
   if (!macUpdateLocationOk()) {
     return setDesktopUpdateState({
       status: 'error',
       progress: null,
       error: desktopT('update.moveToApplications'),
+      errorCode: null,
     })
   }
 
   initAutoUpdater()
-  if (!desktopUpdateLatestVersion) await checkForUpdates(true)
-  if (!desktopUpdateLatestVersion) return desktopUpdateSnapshot()
+  let candidate = desktopUpdateCandidate
+  if (!candidate || !nativeUpdateReadyFor(candidate)) {
+    await checkForUpdates(true)
+    candidate = desktopUpdateCandidate
+  }
+  if (!candidate || !nativeUpdateReadyFor(candidate)) return desktopUpdateSnapshot()
 
   updateDownloadInProgress = true
   setDesktopUpdateState({
     status: 'downloading',
+    latestVersion: candidate.version,
     progress: 0,
     error: null,
   })
   try {
-    await autoUpdater.downloadUpdate()
+    await downloadNativeDesktopUpdateWithFallback()
   } catch (err) {
     console.error('[updater] download failed', err)
     showUpdateError(err)
@@ -5990,6 +7910,13 @@ function initAutoUpdater(): void {
   // restart path so applyDownloadedUpdate() can drain the owned gateway first.
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
+  // electron-updater generates a persistent per-install staging UUID even
+  // when no staged rollout is configured. Override the outbound header with a
+  // fixed, non-user-specific value; OpenSquilla channels do not use rollout
+  // bucketing and update checks should not add a cross-request identifier.
+  autoUpdater.requestHeaders = {
+    'x-user-staging-id': '00000000-0000-4000-8000-000000000000',
+  }
   autoUpdater.logger = {
     info: (m: unknown) => console.log('[updater]', m),
     warn: (m: unknown) => console.warn('[updater]', m),
@@ -5998,28 +7925,11 @@ function initAutoUpdater(): void {
   }
 
   autoUpdater.on('update-available', (info) => {
-    const version = String(info?.version ?? '')
-    manualUpdateCheck = false
-    updateDownloadInProgress = false
-    setDesktopUpdateState({
-      status: 'available',
-      latestVersion: version || null,
-      progress: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-    })
+    console.log('[updater] provider reports update available', String(info?.version ?? ''))
   })
 
-  autoUpdater.on('update-not-available', () => {
-    manualUpdateCheck = false
-    updateDownloadInProgress = false
-    setDesktopUpdateState({
-      status: 'not-available',
-      latestVersion: app.getVersion(),
-      progress: null,
-      checkedAt: new Date().toISOString(),
-      error: null,
-    })
+  autoUpdater.on('update-not-available', (info) => {
+    console.log('[updater] provider reports no update', String(info?.version ?? ''))
   })
 
   autoUpdater.on('download-progress', (progress) => {
@@ -6032,7 +7942,6 @@ function initAutoUpdater(): void {
   })
 
   autoUpdater.on('update-downloaded', (info) => {
-    manualUpdateCheck = false
     updateDownloadInProgress = false
     const version = String(info?.version ?? '')
     downloadedUpdateVersion = version
@@ -6049,62 +7958,442 @@ function initAutoUpdater(): void {
 
   autoUpdater.on('error', (err) => {
     console.error('[updater] error', err)
-    showUpdateError(err)
+    // electron-updater also rejects the active check/download promise. The
+    // promise owner performs source fallback and publishes at most one final
+    // error after both sources have failed.
   })
 }
 
-// ── macOS prerelease update discovery ───────────────────────────────────────
-// The tag-parsing + candidate-selection logic lives in ./update-feed-resolver so
-// it can be unit-tested without Electron; the pieces below are the Electron-bound
-// glue (current version, GitHub fetch, feed wiring).
+// ── Static release-channel discovery and regional source selection ─────────
+// GitHub Release remains the source of truth, but clients discover the moving
+// stable / same-base preview channel from a small OSS JSON manifest. Once the
+// strict tag is known, metadata and installers can come from either the OSS
+// version directory or the matching GitHub Release without using the anonymous
+// GitHub Releases API.
 
-// The running app version if it is a prerelease we can resolve upgrades for.
-function currentPrereleaseReleaseTarget(): { base: string; rc: number } | null {
-  const parsed = parseOpenSquillaReleaseTag(app.getVersion())
-  return parsed && parsed.rc !== null ? { base: parsed.base, rc: parsed.rc } : null
+interface ResolvedDesktopUpdate {
+  candidate: DesktopUpdateCandidate
+  source: DesktopUpdateSource
+  fallbackUsed: boolean
 }
 
-async function fetchGithubReleaseSummaries(): Promise<ReleaseSummary[]> {
-  const url = `https://api.github.com/repos/${GITHUB_UPDATE_OWNER}/${GITHUB_UPDATE_REPO}/releases?per_page=50`
-  const response = await fetch(url, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'OpenSquilla-Desktop' },
-    signal: AbortSignal.timeout(8000),
-  })
-  if (!response.ok) throw new Error(`GitHub releases request failed: ${response.status}`)
-  const data = await response.json()
-  return Array.isArray(data) ? (data as ReleaseSummary[]) : []
+function desktopUpdatePlatform(): DesktopUpdatePlatform | null {
+  if (process.platform === 'darwin' && process.arch === 'arm64') return 'darwin-arm64'
+  if (process.platform === 'win32' && process.arch === 'x64') return 'win32-x64'
+  return null
 }
 
-// Returns 'default' to leave the built-in GitHub provider in place (stable
-// builds, non-macOS, dev), 'configured' after pointing a generic feed at the
-// resolved candidate, or 'up-to-date' when no newer same-base release exists.
-async function configureDesktopUpdateFeed(): Promise<'default' | 'configured' | 'up-to-date'> {
-  // Default (stable builds, GitHub provider path): never silently downgrade.
+function desktopUpdateLocaleTags(): string[] {
+  const preferred = typeof app.getPreferredSystemLanguages === 'function'
+    ? app.getPreferredSystemLanguages()
+    : []
+  return [...preferred, app.getLocale()]
+}
+
+async function fetchDesktopUpdateChannel(): Promise<unknown> {
+  const rootOverride = (process.env.OPENSQUILLA_DESKTOP_UPDATE_CHANNEL_ROOT || '').trim()
+  const url = updateChannelManifestUrl(app.getVersion(), rootOverride || undefined)
+  if (!url) {
+    throw new UpdateChannelError('manifest_invalid', 'The installed version has no supported update channel.')
+  }
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(8000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'source_unreachable',
+      `The update channel is temporarily unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    throw new UpdateChannelError('source_unreachable', 'The update channel is temporarily unavailable.')
+  }
+  try {
+    return await response.json()
+  } catch {
+    throw new UpdateChannelError('manifest_invalid', 'The update channel returned invalid JSON.')
+  }
+}
+
+async function probeDesktopUpdateSource(
+  candidate: DesktopUpdateCandidate,
+  source: DesktopUpdateSource,
+  asset = candidate.feed,
+): Promise<void> {
+  const url = updateAssetUrl(candidate, source, asset)
+  let response: Response
+  try {
+    response = await fetch(url, {
+      headers: { Accept: 'application/octet-stream', Range: 'bytes=0-0', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(5000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'source_unreachable',
+      `${source} update source is unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    throw new UpdateChannelError('source_unreachable', `${source} update source is unavailable.`)
+  }
+  await response.body?.cancel().catch(() => {})
+}
+
+async function chooseDesktopUpdateSource(
+  candidate: DesktopUpdateCandidate,
+  asset = candidate.feed,
+): Promise<{ source: DesktopUpdateSource; fallbackUsed: boolean }> {
+  loadDesktopUpdatePersistence()
+  const order = orderedUpdateSources(
+    desktopUpdateLocaleTags(),
+    lastSuccessfulUpdateSource,
+    process.env.OPENSQUILLA_DESKTOP_UPDATE_SOURCE,
+  )
+  let lastError: unknown = null
+  for (let index = 0; index < order.length; index += 1) {
+    const source = order[index]
+    try {
+      await probeDesktopUpdateSource(candidate, source, asset)
+      return { source, fallbackUsed: index > 0 }
+    } catch (err) {
+      lastError = err
+      desktopLog('update_source_probe_failed', {
+        source,
+        error: String(err instanceof Error ? err.message : err),
+      })
+    }
+  }
+  if (lastError instanceof UpdateChannelError) throw lastError
+  throw new UpdateChannelError('source_unreachable', 'No desktop update source is reachable.')
+}
+
+function rememberSuccessfulUpdateSource(source: DesktopUpdateSource): void {
+  if (lastSuccessfulUpdateSource === source) return
+  lastSuccessfulUpdateSource = source
+  void persistDesktopUpdateState()
+}
+
+async function fetchCanonicalWindowsInstallerDigest(
+  candidate: DesktopUpdateCandidate,
+): Promise<string> {
+  const checksumUrl = updateAssetUrl(candidate, 'github', 'SHA256SUMS')
+  let response: Response
+  try {
+    response = await fetch(checksumUrl, {
+      headers: { Accept: 'text/plain', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(10_000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'checksum_unavailable',
+      `The canonical GitHub checksum is unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new UpdateChannelError(
+      'checksum_unavailable',
+      `The canonical GitHub checksum returned HTTP ${response.status}.`,
+    )
+  }
+  try {
+    const contents = await readResponseTextWithLimit(response, UPDATE_CHECKSUM_MAX_BYTES)
+    return parseSha256SumsForAsset(contents, candidate.installer)
+  } catch (err) {
+    if (err instanceof UpdateChannelError) throw err
+    throw new UpdateChannelError(
+      'integrity_failed',
+      `The canonical GitHub checksum could not be parsed: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+}
+
+async function downloadVerifiedWindowsInstaller(
+  candidate: DesktopUpdateCandidate,
+  source: DesktopUpdateSource,
+  expectedSha256: string,
+): Promise<string> {
+  const installerUrl = updateAssetUrl(candidate, source)
+  let response: Response
+  try {
+    response = await fetch(installerUrl, {
+      headers: { Accept: 'application/octet-stream', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(UPDATE_INSTALLER_DOWNLOAD_TIMEOUT_MS),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'download_failed',
+      `The installer download failed: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new UpdateChannelError('download_failed', `The installer returned HTTP ${response.status}.`)
+  }
+
+  const destinationPath = join(
+    app.getPath('userData'),
+    'update-downloads',
+    candidate.installer,
+  )
+  let lastProgress = -1
+  let reportedUnknownLength = false
+  try {
+    const result = await streamResponseToVerifiedFile(
+      response,
+      destinationPath,
+      expectedSha256,
+      {
+        maxBytes: UPDATE_INSTALLER_MAX_BYTES,
+        onProgress(receivedBytes, totalBytes) {
+          if (totalBytes === null || totalBytes <= 0) {
+            if (reportedUnknownLength) return
+            reportedUnknownLength = true
+            setDesktopUpdateState({ status: 'downloading', progress: null, error: null })
+            return
+          }
+          const progress = Math.max(0, Math.min(100, Math.floor((receivedBytes / totalBytes) * 100)))
+          if (progress === lastProgress) return
+          lastProgress = progress
+          setDesktopUpdateState({ status: 'downloading', progress, error: null })
+        },
+      },
+    )
+    return result.path
+  } catch (err) {
+    if (err instanceof UpdateChannelError) throw err
+    throw new UpdateChannelError(
+      'download_failed',
+      `The installer download could not be saved: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+}
+
+interface VerifiedManualInstaller {
+  path: string
+  source: DesktopUpdateSource
+  fallbackUsed: boolean
+}
+
+async function downloadVerifiedWindowsInstallerWithFallback(
+  candidate: DesktopUpdateCandidate,
+  chosen: { source: DesktopUpdateSource; fallbackUsed: boolean },
+  expectedSha256: string,
+): Promise<VerifiedManualInstaller> {
+  const attempts: DesktopUpdateSource[] = [
+    chosen.source,
+    alternateDesktopUpdateSource(chosen.source),
+  ]
+  let lastError: unknown = null
+  let integrityError: UpdateChannelError | null = null
+  for (let index = 0; index < attempts.length; index += 1) {
+    const source = attempts[index]
+    const fallbackUsed = chosen.fallbackUsed || index > 0
+    setDesktopUpdateState({
+      status: 'downloading',
+      progress: 0,
+      releaseUrl: updateAssetUrl(candidate, source),
+      source,
+      fallbackUsed,
+      error: null,
+      errorCode: null,
+    })
+    try {
+      const path = await downloadVerifiedWindowsInstaller(candidate, source, expectedSha256)
+      return { path, source, fallbackUsed }
+    } catch (err) {
+      lastError = err
+      if (err instanceof UpdateChannelError && err.code === 'integrity_failed') {
+        integrityError = err
+      }
+      const retryable = err instanceof UpdateChannelError
+        && (err.code === 'download_failed' || err.code === 'integrity_failed')
+      desktopLog('update_manual_download_failed', {
+        source,
+        retrying: retryable && index + 1 < attempts.length,
+        error: String(err instanceof Error ? err.message : err),
+      })
+      if (!retryable) throw err
+    }
+  }
+  if (integrityError) throw integrityError
+  if (lastError instanceof Error) throw lastError
+  throw new UpdateChannelError('download_failed', 'No verified Windows installer source is reachable.')
+}
+
+function alternateDesktopUpdateSource(source: DesktopUpdateSource): DesktopUpdateSource {
+  return source === 'oss' ? 'github' : 'oss'
+}
+
+function nativeUpdateReadyFor(candidate: DesktopUpdateCandidate): boolean {
+  return nativeUpdateReady?.tag === candidate.tag
+    && nativeUpdateReady.version === candidate.version
+    && nativeUpdateReady.source === desktopUpdateSource
+}
+
+async function resolveDesktopUpdate(): Promise<ResolvedDesktopUpdate | null> {
+  const platform = desktopUpdatePlatform()
+  if (!platform) {
+    throw new UpdateChannelError('manifest_invalid', 'This desktop architecture has no update feed.')
+  }
+  const manifest = await fetchDesktopUpdateChannel()
+  const candidate = candidateFromUpdateChannel(app.getVersion(), manifest, platform)
+  if (!candidate) return null
+  const chosen = await chooseDesktopUpdateSource(candidate)
+  return { candidate, ...chosen }
+}
+
+function configureDesktopUpdateFeed(resolved: ResolvedDesktopUpdate): void {
   autoUpdater.allowDowngrade = false
-  if (process.platform !== 'darwin' || !app.isPackaged) return 'default'
-  const current = currentPrereleaseReleaseTarget()
-  if (!current) return 'default'
-  const candidate = selectMacPrereleaseCandidate(current, await fetchGithubReleaseSummaries())
-  if (!candidate) return 'up-to-date'
-  // Generic provider + channel 'latest' fetches latest-mac.yml from this exact
-  // release; the yml's version is then gated by electron-updater's isUpdateAvailable.
-  autoUpdater.setFeedURL({ provider: 'generic', url: candidate.feedUrl, channel: 'latest' })
-  // The resolver already decided this candidate is the correct forward move by
-  // NUMERIC rc order. electron-updater's gate uses semver.gt, which sorts rc
-  // identifiers as strings — so 0.5.0-rc10 ranks BELOW 0.5.0-rc9/rc2 and the
-  // update would be wrongly rejected. Allow the "downgrade": we only ever point
-  // the feed at a genuinely newer release, never an older one.
-  autoUpdater.allowDowngrade = true
-  desktopLog('update_feed_resolved', { tag: candidate.tag, version: candidate.version })
-  return 'configured'
+  autoUpdater.setFeedURL({
+    provider: 'generic',
+    url: updateFeedBaseUrl(resolved.candidate, resolved.source),
+    channel: 'latest',
+  })
+  // The strict manifest resolver already proved a same-base RC is a forward
+  // move. electron-updater compares identifiers such as rc9/rc10 lexically, so
+  // allow its apparent "downgrade" only for that validated prerelease path.
+  const current = parseOpenSquillaReleaseTag(app.getVersion())
+  autoUpdater.allowDowngrade = current?.rc !== null && current?.rc !== undefined
+  desktopLog('update_feed_resolved', {
+    tag: resolved.candidate.tag,
+    version: resolved.candidate.version,
+    source: resolved.source,
+    fallbackUsed: resolved.fallbackUsed,
+  })
 }
 
-async function checkForUpdates(manual: boolean): Promise<void> {
-  if (updateDownloadInProgress || updateApplying) return
+async function checkNativeDesktopUpdate(resolved: ResolvedDesktopUpdate): Promise<void> {
+  nativeUpdateReady = null
+  const attempts: ResolvedDesktopUpdate[] = [
+    resolved,
+    {
+      candidate: resolved.candidate,
+      source: alternateDesktopUpdateSource(resolved.source),
+      fallbackUsed: true,
+    },
+  ]
+  let lastError: unknown = null
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index]
+    try {
+      if (index > 0) await probeDesktopUpdateSource(attempt.candidate, attempt.source)
+      configureDesktopUpdateFeed(attempt)
+      const result = await autoUpdater.checkForUpdates()
+      const feedVersion = String(result?.updateInfo?.version ?? '').trim()
+      if (result?.isUpdateAvailable !== true || feedVersion !== attempt.candidate.version) {
+        throw new UpdateChannelError(
+          'manifest_invalid',
+          `Update feed did not offer the expected version ${attempt.candidate.version} (received ${feedVersion || '<missing>'}).`,
+        )
+      }
+      rememberSuccessfulUpdateSource(attempt.source)
+      desktopUpdateCandidate = attempt.candidate
+      nativeUpdateReady = {
+        tag: attempt.candidate.tag,
+        version: attempt.candidate.version,
+        source: attempt.source,
+      }
+      setDesktopUpdateState({
+        status: 'available',
+        latestVersion: attempt.candidate.version,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        releaseUrl: attempt.candidate.releaseUrl,
+        source: attempt.source,
+        fallbackUsed: resolved.fallbackUsed || attempt.fallbackUsed,
+        error: null,
+        errorCode: null,
+      })
+      return
+    } catch (err) {
+      lastError = err
+      desktopLog('update_native_check_failed', {
+        source: attempt.source,
+        error: String(err instanceof Error ? err.message : err),
+      })
+    }
+  }
+  throw lastError ?? new UpdateChannelError('source_unreachable', 'No desktop update source is reachable.')
+}
+
+async function downloadNativeDesktopUpdateWithFallback(): Promise<void> {
+  const readyCandidate = desktopUpdateCandidate
+  if (!readyCandidate || !nativeUpdateReadyFor(readyCandidate)) {
+    throw new UpdateChannelError('manifest_invalid', 'The selected native update feed is not verified.')
+  }
+  try {
+    await autoUpdater.downloadUpdate()
+    return
+  } catch (firstError) {
+    const candidate = desktopUpdateCandidate
+    const currentSource = desktopUpdateSource
+    if (!candidate || !currentSource) throw firstError
+    nativeUpdateReady = null
+
+    const fallback: ResolvedDesktopUpdate = {
+      candidate,
+      source: alternateDesktopUpdateSource(currentSource),
+      fallbackUsed: true,
+    }
+    desktopLog('update_native_download_retry', {
+      from: currentSource,
+      to: fallback.source,
+      error: String(firstError instanceof Error ? firstError.message : firstError),
+    })
+    await probeDesktopUpdateSource(candidate, fallback.source)
+    configureDesktopUpdateFeed(fallback)
+    const result = await autoUpdater.checkForUpdates()
+    const feedVersion = String(result?.updateInfo?.version ?? '').trim()
+    if (result?.isUpdateAvailable !== true || feedVersion !== candidate.version) {
+      throw new UpdateChannelError(
+        'manifest_invalid',
+        `Fallback update feed did not offer ${candidate.version} (received ${feedVersion || '<missing>'}).`,
+      )
+    }
+    rememberSuccessfulUpdateSource(fallback.source)
+    nativeUpdateReady = {
+      tag: candidate.tag,
+      version: candidate.version,
+      source: fallback.source,
+    }
+    updateDownloadInProgress = true
+    setDesktopUpdateState({
+      status: 'downloading',
+      latestVersion: candidate.version,
+      progress: 0,
+      source: fallback.source,
+      fallbackUsed: true,
+      releaseUrl: candidate.releaseUrl,
+      error: null,
+      errorCode: null,
+    })
+    await autoUpdater.downloadUpdate()
+  }
+}
+
+function desktopUpdateCheckAllowed(): boolean {
+  return isUpdateCheckAllowed({
+    downloading: updateDownloadInProgress || (manualInstallerActionInProgress && desktopUpdateCandidate !== null),
+    applying: updateApplying,
+    downloaded: downloadedUpdateVersion !== null || desktopUpdateStatus === 'downloaded',
+  })
+}
+
+async function runDesktopUpdateCheck(): Promise<void> {
+  // Keep this defensive guard even though the scheduler checks the same state:
+  // download/apply events can change it between admission and execution.
+  if (!desktopUpdateCheckAllowed()) return
 
   const mockVersion = mockUpdateVersion()
   if (mockVersion !== null) {
-    manualUpdateCheck = manual
     setDesktopUpdateState({
       status: 'checking',
       latestVersion: desktopUpdateLatestVersion || mockVersion,
@@ -6116,58 +8405,95 @@ async function checkForUpdates(manual: boolean): Promise<void> {
     return
   }
 
-  if (!autoUpdateSupported()) {
-    if (manual) {
+  if (!desktopUpdateManaged()) {
+    if (desktopUpdateCheckScheduler.manualRequestPending) {
       setDesktopUpdateState({
         status: 'error',
         progress: null,
         checkedAt: new Date().toISOString(),
         error: desktopT('update.errorTitle'),
+        errorCode: 'source_unreachable',
       })
     }
     return
   }
 
   // Guide the user to /Applications first, otherwise the in-place swap fails.
-  if (!macUpdateLocationOk()) {
+  if (process.platform === 'darwin' && !macUpdateLocationOk()) {
     setDesktopUpdateState({
       status: 'error',
       progress: null,
       checkedAt: new Date().toISOString(),
       error: desktopT('update.moveToApplications'),
+      errorCode: null,
     })
     return
   }
 
-  initAutoUpdater()
-  manualUpdateCheck = manual
+  if (nativeAutoUpdateEnabled()) initAutoUpdater()
+  const failureFallback: DesktopUpdateFailureFallback = {
+    state: desktopUpdateSnapshot(),
+    candidate: desktopUpdateCandidate,
+  }
+  if (desktopUpdateInstallMode() === 'native') nativeUpdateReady = null
   setDesktopUpdateState({
     status: 'checking',
     progress: null,
     checkedAt: new Date().toISOString(),
     error: null,
+    errorCode: null,
   })
   try {
-    const feed = await configureDesktopUpdateFeed()
-    if (feed === 'up-to-date') {
-      // A packaged macOS prerelease with no newer same-base release. Report
-      // up-to-date directly — the default GitHub provider would find nothing
-      // (the rc tags are PEP440, not npm semver) and raise a spurious error.
-      manualUpdateCheck = false
+    const resolved = await resolveDesktopUpdate()
+    if (!resolved) {
+      desktopUpdateCandidate = null
+      nativeUpdateReady = null
+      verifiedManualInstallerPath = null
       setDesktopUpdateState({
         status: 'not-available',
         latestVersion: app.getVersion(),
         progress: null,
         checkedAt: new Date().toISOString(),
         error: null,
+        errorCode: null,
+        releaseUrl: null,
+        source: null,
+        fallbackUsed: false,
       })
       return
     }
-    await autoUpdater.checkForUpdates()
+    const manualInstall = desktopUpdateInstallMode() === 'manual'
+    if (manualInstall) {
+      verifiedManualInstallerPath = null
+      desktopUpdateCandidate = resolved.candidate
+      setDesktopUpdateState({
+        status: 'available',
+        latestVersion: resolved.candidate.version,
+        progress: null,
+        checkedAt: new Date().toISOString(),
+        releaseUrl: updateAssetUrl(resolved.candidate, resolved.source),
+        source: resolved.source,
+        fallbackUsed: resolved.fallbackUsed,
+        error: null,
+        errorCode: null,
+      })
+      return
+    }
+    await checkNativeDesktopUpdate(resolved)
   } catch (err) {
     console.error('[updater] checkForUpdates failed', err)
-    showUpdateError(err)
+    showUpdateError(err, failureFallback)
   }
+}
+
+const desktopUpdateCheckScheduler = new UpdateCheckScheduler({
+  runCheck: runDesktopUpdateCheck,
+  canCheck: desktopUpdateCheckAllowed,
+  repeatDelayMs: UPDATE_CHECK_REPEAT_DELAY_MS,
+})
+
+function checkForUpdates(manual: boolean): Promise<void> {
+  return desktopUpdateCheckScheduler.request(manual)
 }
 
 function gatewayProcessForUpdateInstall(): ChildProcessWithoutNullStreams | null {
@@ -6197,7 +8523,11 @@ async function waitForGatewayProcessExit(
   })
 }
 
-function restoreDownloadedUpdateRetryState(pendingVersion: string | null): void {
+function restoreDownloadedUpdateRetryState(
+  pendingVersion: string | null,
+  writerAdmissionToken: symbol | null = null,
+): void {
+  if (writerAdmissionToken) desktopWriters.reopen(writerAdmissionToken)
   downloadedUpdateVersion = pendingVersion
   updateApplying = false
   isQuitting = false
@@ -6249,6 +8579,11 @@ async function applyDownloadedUpdate(): Promise<void> {
   }
   const pendingVersion = downloadedUpdateVersion
   updateApplying = true
+  // Never interrupt a reconcile/workspace/settings transaction after it has
+  // been admitted. Close new writers and wait for existing operations to
+  // finish naturally before the installer handoff.
+  const updateWriterAdmission = desktopWriters.close('apply downloaded update')
+  await waitForDesktopWriterOperations()
   downloadedUpdateVersion = null
   createApplicationMenu()
   setDesktopUpdateState({
@@ -6273,7 +8608,7 @@ async function applyDownloadedUpdate(): Promise<void> {
     }
     const exited = await waitForGatewayProcessExit(child)
     if (!exited) {
-      restoreDownloadedUpdateRetryState(pendingVersion)
+      restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)
       void showUpdateDialog({
         type: 'error',
         buttons: ['OK'],
@@ -6290,7 +8625,7 @@ async function applyDownloadedUpdate(): Promise<void> {
   try {
     autoUpdater.quitAndInstall(false, true)
   } catch (err) {
-    restoreDownloadedUpdateRetryState(pendingVersion)
+    restoreDownloadedUpdateRetryState(pendingVersion, updateWriterAdmission)
     void showUpdateDialog({
       type: 'error',
       buttons: ['OK'],
@@ -6306,11 +8641,11 @@ async function applyDownloadedUpdate(): Promise<void> {
   }
 }
 
-// Lets the gateway-served Control UI know whether THIS desktop runtime can
-// apply updates natively right now. The web "a newer version is available"
-// banner suppresses itself only when this is true, so unsupported platforms
-// (e.g. unsigned Windows, or macOS running outside /Applications) still show
-// the passive notice.
+// Lets the gateway-served Control UI know whether this desktop owns update
+// discovery. Discovery ownership and native installation are deliberately separate:
+// unsigned Windows builds use the managed exact-installer flow, while macOS
+// can install the verified archive in place.
+ipcMain.handle('desktop:update:managed', () => desktopUpdateManaged() || mockUpdateVersion() !== null)
 ipcMain.handle('desktop:update:supported', () => nativeAutoUpdateEnabled())
 ipcMain.handle('desktop:update:state', () => desktopUpdateSnapshot())
 ipcMain.handle('desktop:update:check', async () => {
@@ -6357,199 +8692,574 @@ ipcMain.handle('gateway:reveal-log', async () => {
 })
 ipcMain.handle('desktop:settings:get', async () => loadDesktopSettings())
 ipcMain.handle('desktop:settings:save', async (_event, payload: DesktopSettingsPayload) => saveDesktopSettings(payload))
-ipcMain.handle('desktop:settings:reset', async () => {
-  await resetDesktopSettings()
-  forceOnboardingOnNextStartup = true
-  const child = gatewayProcess && gatewayState.owned ? gatewayProcess : null
-  if (child) {
-    stopGateway()
-    await waitForGatewayProcessExit(child)
-  }
-  clearReusableGatewayState()
-  // This IPC is also reachable from the live Control UI (Settings → Runtime),
-  // which stays on the now-dead gateway after the reset. Return the window to the
-  // boot splash and re-run startup so onboarding re-runs, instead of stranding
-  // the user on a dead page. (The boot.html caller also calls retryStartup; the
-  // in-flight start is joined, not double-started.)
-  bootError = null
-  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
-  void openOrResumeDesktopApp()
-  return { ok: true }
+ipcMain.handle('desktop:settings:reset', async (event) => {
+  if (!trustedRecoveryIpc(event)) throw new Error('Untrusted Desktop reset request.')
+  return await resetDesktopSettingsThroughCleanup()
 })
 ipcMain.handle('desktop:artifact:open', async (_event, payload: ArtifactOpenRequest) => openArtifactWithDefaultApp(payload))
 
 // ── Desktop data cleanup ───────────────────────────────────────────────────
-// The data deletion logic lives in the Python core (`opensquilla uninstall`);
-// the desktop only triggers it via the bundled CLI and then removes the few
-// desktop-owned files that live outside the OpenSquilla home (the encrypted
-// credential and gateway logs under userData/). It intentionally does not
-// remove the installed .app / NSIS application; users do that through the OS.
-//
-// Path note: OPENSQUILLA_STATE_DIR names the OpenSquilla home root. Both the
-// gateway spawn and this uninstall CLI pass desktopHome()
-// (<userData>/opensquilla), so config.toml + state/ resolve identically
-// everywhere.
-async function runUninstallCli(
-  extraArgs: string[],
-): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const runtime = await resolveGatewayRuntime()
-  const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
-  const child = spawn(runtime.command, [...prefix, 'uninstall', ...extraArgs], {
-    cwd: runtime.cwd,
-    windowsHide: true,
-    env: {
-      ...process.env,
-      OPENSQUILLA_DESKTOP: '1',
-      OPENSQUILLA_INSTALL_METHOD: 'desktop',
-      OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
-      OPENSQUILLA_STATE_DIR: desktopHome(),
-      PYTHONUNBUFFERED: '1',
-      PYTHONUTF8: '1',
-      PYTHONIOENCODING: 'utf-8:replace',
-    },
-  })
-  let stdout = ''
-  let stderr = ''
-  child.stdout.on('data', (chunk) => {
-    stdout += String(chunk)
-  })
-  child.stderr.on('data', (chunk) => {
-    stderr += String(chunk)
-  })
-  const code: number = await new Promise((res) => {
-    child.once('exit', (c) => res(c ?? 1))
-    child.once('error', () => res(1))
-  })
-  return { ok: code === 0, stdout, stderr }
+// Python owns inventory, locking, CAS, no-follow deletion, and partial recovery.
+// Electron owns only trusted IPC, gateway/writer quiescence, explicit native
+// confirmation, and post-operation lifecycle. Renderer payloads never provide a
+// path, profile selector, transaction id, or revision.
+const DESKTOP_CLEANUP_STDOUT_LIMIT = 2 * 1024 * 1024
+const DESKTOP_CLEANUP_INSPECT_TIMEOUT_MS = 30_000
+const DESKTOP_CLEANUP_APPROVAL_LIMIT = 512 * 1024
+const DELETE_ALL_CONFIRMATION = 'DELETE ALL OPENSQUILLA DATA'
+
+function currentDesktopCleanupSelection(mode: DesktopCleanupMode): DesktopCleanupSelection {
+  const profile = activeDesktopProfile()
+  return {
+    mode,
+    profileKind: profile.kind,
+    recoveryId: profile.recoveryId,
+    profileKey: desktopProfileKey(profile),
+  }
 }
 
-ipcMain.handle('desktop:uninstall:summary', async () => {
-  const { ok, stdout } = await runUninstallCli(['--dry-run', '--json'])
-  try {
-    return { ok, plan: JSON.parse(stdout) }
-  } catch {
-    return { ok: false, plan: null, raw: stdout }
+async function runDesktopCleanupCli(
+  profile: DesktopProfilePaths,
+  command: 'cleanup-inspect' | 'cleanup-apply',
+  args: string[],
+): Promise<DesktopCleanupReport> {
+  const runtime = await resolveGatewayRuntime()
+  const prefix = runtime.args.slice(0, -2)
+  return await new Promise((resolveResult, rejectResult) => {
+    const child = spawn(runtime.command, [...prefix, 'recovery', command, ...args], {
+      cwd: runtime.cwd,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: desktopChildEnvironment(profile, {
+        OPENSQUILLA_RECOVERY_OFFLINE: '1',
+        PYTHONUNBUFFERED: '1',
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8:replace',
+      }),
+    })
+    let stdout = ''
+    let oversized = false
+    let settled = false
+    let inspectTimeout: NodeJS.Timeout | null = null
+    const finish = (error?: Error, report?: DesktopCleanupReport) => {
+      if (settled) return
+      settled = true
+      if (inspectTimeout) clearTimeout(inspectTimeout)
+      if (error) rejectResult(error)
+      else resolveResult(report as DesktopCleanupReport)
+    }
+    if (command === 'cleanup-inspect') {
+      inspectTimeout = setTimeout(() => {
+        child.kill()
+        finish(new Error('Cleanup inventory inspection timed out.'))
+      }, DESKTOP_CLEANUP_INSPECT_TIMEOUT_MS)
+      inspectTimeout.unref()
+    }
+    child.stdout.on('data', (chunk) => {
+      if (oversized) return
+      stdout += String(chunk)
+      if (stdout.length > DESKTOP_CLEANUP_STDOUT_LIMIT) {
+        oversized = true
+        if (command === 'cleanup-inspect') child.kill()
+      }
+    })
+    // Never copy stderr into a renderer response or diagnostic: filesystem and
+    // environment details can be sensitive. The stable JSON code is sufficient.
+    child.stderr.resume()
+    child.once('error', (error) => finish(
+      error instanceof Error ? error : new Error(String(error)),
+    ))
+    child.once('close', (code) => {
+      if (oversized) return finish(new Error('Cleanup command output exceeded its limit.'))
+      try {
+        return finish(undefined, parseDesktopCleanupProtocol(JSON.parse(stdout)))
+      } catch (error) {
+        if (code !== 0) {
+          return finish(new Error(`Cleanup command failed with exit code ${code ?? 'unknown'}.`))
+        }
+        return finish(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  })
+}
+
+async function inspectDesktopCleanup(mode: DesktopCleanupMode): Promise<{
+  ok: boolean
+  previewId: string | null
+  report: DesktopCleanupReport
+  profile: { kind: 'primary' | 'recovery'; recoveryId: string | null }
+}> {
+  desktopCleanupPreviews.clear()
+  const profile = activeDesktopProfile()
+  const selection = currentDesktopCleanupSelection(mode)
+  const report = await runDesktopCleanupCli(profile, 'cleanup-inspect', [
+    '--user-data', app.getPath('userData'),
+    ...cleanupSelectorArgs(selection),
+    '--json',
+  ])
+  if (report.mode !== mode) throw new Error('Cleanup inventory did not match the requested mode.')
+  const preview = report.outcome === 'ready'
+    ? desktopCleanupPreviews.create(report, selection)
+    : null
+  return {
+    ok: report.outcome === 'ready',
+    previewId: preview?.id ?? null,
+    report,
+    profile: { kind: profile.kind, recoveryId: profile.recoveryId },
   }
+}
+
+function cleanupInventoryDetail(report: DesktopCleanupReport): string {
+  const paths = report.items
+    .filter((item) => item.exists)
+    .slice(0, 8)
+    .map((item) => item.path)
+  const remaining = report.items.filter((item) => item.exists).length - paths.length
+  return [
+    ...paths,
+    ...(remaining > 0 ? [`+${remaining} ${desktopT('cleanup.moreItems')}`] : []),
+  ].join('\n')
+}
+
+async function confirmDesktopCleanup(report: DesktopCleanupReport): Promise<boolean> {
+  if (report.mode === 'reset-current-settings') return true
+  const deleteAll = report.mode === 'delete-all-user-data'
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    buttons: [desktopT('cleanup.cancel'), desktopT(
+      deleteAll ? 'cleanup.deleteAllConfirm' : 'cleanup.deleteProfileConfirm',
+    )],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: desktopT(deleteAll ? 'cleanup.deleteAllTitle' : 'cleanup.deleteProfileTitle'),
+    message: desktopT(deleteAll ? 'cleanup.deleteAllMessage' : 'cleanup.deleteProfileMessage'),
+    detail: cleanupInventoryDetail(report),
+  }
+  const window = currentMainWindow()
+  const choice = window
+    ? await dialog.showMessageBox(window, options)
+    : await dialog.showMessageBox(options)
+  return choice.response === 1
+}
+
+async function spawnDeleteAllAfterElectronExit(
+  profile: DesktopProfilePaths,
+  selection: DesktopCleanupSelection,
+  approvedScopeFingerprint: string,
+  approvedReport: DesktopCleanupReport,
+): Promise<void> {
+  const runtime = await resolveGatewayRuntime()
+  const prefix = runtime.args.slice(0, -2)
+  const args = [
+    ...prefix,
+    'recovery', 'cleanup-apply',
+    '--user-data', app.getPath('userData'),
+    ...cleanupSelectorArgs(selection),
+    // The child waits for this process's stdin pipe to close, performs a fresh
+    // post-exit inventory, and applies that inventory. This avoids Windows open
+    // handles and Chromium writes invalidating the live-process preview.
+    '--after-parent-exit',
+    '--transaction-id', 'post-exit-reinspect',
+    '--expected-revision', '0',
+    '--expected-scope-fingerprint', approvedScopeFingerprint,
+    '--confirm-user-data', app.getPath('userData'),
+    '--json',
+  ]
+  const approval = `${JSON.stringify({
+    schema_version: 1,
+    scope_fingerprint: approvedScopeFingerprint,
+    items: approvedReport.items.map((item) => ({ kind: item.kind, path: item.path })),
+  })}\n`
+  if (Buffer.byteLength(approval, 'utf8') > DESKTOP_CLEANUP_APPROVAL_LIMIT) {
+    throw new Error('The confirmed cleanup inventory is too large for the exit handoff.')
+  }
+  await new Promise<void>((resolveSpawn, rejectSpawn) => {
+    const helper = spawn(runtime.command, args, {
+      cwd: runtime.cwd,
+      windowsHide: true,
+      detached: true,
+      stdio: ['pipe', 'ignore', 'ignore'],
+      env: desktopChildEnvironment(profile, {
+        OPENSQUILLA_RECOVERY_OFFLINE: '1',
+        PYTHONUNBUFFERED: '1',
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8:replace',
+      }),
+    })
+    let settled = false
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      if (error) rejectSpawn(error)
+      else resolveSpawn()
+    }
+    helper.stdin.on('error', (error) => finish(
+      error instanceof Error ? error : new Error(String(error)),
+    ))
+    helper.once('error', (error) => finish(
+      error instanceof Error ? error : new Error(String(error)),
+    ))
+    helper.once('spawn', () => {
+      helper.once('exit', () => {
+        if (pendingDeleteAllHelper === helper) pendingDeleteAllHelper = null
+      })
+      helper.stdin.write(approval, 'utf8', (error) => {
+        if (error) return finish(error)
+        // Deliberately keep stdin open. The helper reads this bounded approval
+        // and then waits for EOF, which is emitted only when Electron exits and
+        // releases its Chromium/userData handles.
+        pendingDeleteAllHelper = helper
+        helper.unref()
+        ;(helper.stdin as NodeJS.WritableStream & { unref?: () => void }).unref?.()
+        finish()
+      })
+    })
+  })
+}
+
+async function restoreAfterIncompleteCleanup(
+  profile: DesktopProfilePaths,
+  preserveControlUi = false,
+): Promise<void> {
+  isQuitting = false
+  clearReusableGatewayState()
+  const inspection = await inspectDesktopProfile(profile)
+  recoveryInspection = inspection
+  if (profile.kind === 'primary') primaryRecoveryInspection = inspection
+  bootError = null
+  if (!preserveControlUi || inspection.outcome === 'recovery_required') {
+    await restoreMainWindowToBootPage()
+  }
+  publishRecoveryState()
+  if (inspection.outcome !== 'recovery_required') void openOrResumeDesktopApp()
+}
+
+ipcMain.handle('desktop:cleanup:inspect', async (event, payload?: { mode?: unknown }) => {
+  if (!trustedRecoveryIpc(event)) throw new Error('Untrusted Desktop cleanup request.')
+  if (desktopCleanupBusy) throw new Error('Another Desktop cleanup operation is running.')
+  const mode = parseDesktopCleanupMode(payload?.mode)
+  if (!mode) throw new Error('Choose a supported Desktop cleanup action.')
+  return await inspectDesktopCleanup(mode)
 })
 
-ipcMain.handle('desktop:uninstall:run', async (_event, payload?: { purgeData?: boolean }) => {
-  const purgeData = Boolean(payload?.purgeData)
+ipcMain.handle('desktop:cleanup:discard', (event, payload?: { previewId?: unknown }) => {
+  if (!trustedRecoveryIpc(event)) throw new Error('Untrusted Desktop cleanup request.')
+  return desktopCleanupPreviews.discard(payload?.previewId, desktopProfileKey())
+})
 
-  // A total wipe is irreversible: confirm at the main-process trust boundary
-  // (a renderer-forged IPC call alone must not be able to delete all data).
-  if (purgeData) {
-    const { response } = await dialog.showMessageBox({
-      type: 'warning',
-      buttons: [desktopT('uninstall.cancel'), desktopT('uninstall.deleteEverything')],
-      defaultId: 0,
-      cancelId: 0,
-      title: desktopT('uninstall.confirmTitle'),
-      message: desktopT('uninstall.confirmMessage'),
-      detail: desktopT('uninstall.confirmDetail'),
-    })
-    if (response !== 1) return { ok: false, aborted: true, detail: 'cancelled' }
+async function applyApprovedDesktopCleanup(
+  preview: TrustedDesktopCleanupPreview,
+  approval: { acknowledged: boolean; confirmation: string },
+) {
+  const active = activeDesktopProfile()
+  const report = preview.report
+  if (
+    report.mode !== 'reset-current-settings'
+    && approval.acknowledged !== true
+  ) return { ok: false, detail: 'Confirm that you reviewed every listed location.' }
+  if (
+    report.mode === 'delete-all-user-data'
+    && approval.confirmation !== DELETE_ALL_CONFIRMATION
+  ) return { ok: false, detail: `Type ${DELETE_ALL_CONFIRMATION} to confirm.` }
+  if (!await confirmDesktopCleanup(report)) {
+    const replacement = await inspectDesktopCleanup(report.mode).catch(() => null)
+    return {
+      ...(replacement || {}),
+      ok: false,
+      aborted: true,
+      detail: 'cancelled',
+    }
   }
 
-  // Quiesce the owned gateway before the CLI touches files. Wait for the child to
-  // actually EXIT (child.killed flips true the instant SIGTERM is sent, not when
-  // the drain finishes), bounded by the kill deadline.
-  isQuitting = true
-  if (gatewayProcess && gatewayState.owned) {
-    const child = gatewayProcess
-    // We stay alive and await the exit, so let the gateway take its Windows HTTP
-    // graceful drain instead of an immediate TerminateProcess.
+  const exclusive = desktopWriters.tryBeginExclusive('Desktop data cleanup')
+  if (!exclusive) {
+    return { ok: false, detail: 'OpenSquilla is finishing another profile operation. Try again.' }
+  }
+  desktopCleanupBusy = true
+  let shouldQuit = false
+  try {
+    await waitForDesktopWriterOperations(1)
+    if (desktopProfileKey(active) !== desktopProfileKey()) {
+      return { ok: false, detail: 'The active profile changed. Review the cleanup inventory again.' }
+    }
+    if ((!gatewayProcess || !gatewayState.owned) && gatewayState.url && await healthCheck(gatewayState.url)) {
+      return { ok: false, detail: 'A gateway is still serving this profile; stop it and retry.' }
+    }
+    isQuitting = true
     allowGracefulShutdownWhileQuitting = true
     try {
-      stopGateway()
+      await stopOwnedGatewayAndWait()
     } finally {
       allowGracefulShutdownWhileQuitting = false
     }
-    await new Promise<void>((res) => {
-      if (child.exitCode !== null || child.signalCode !== null) return res()
-      child.once('exit', () => res())
-      setTimeout(res, GATEWAY_SHUTDOWN_KILL_AFTER_MS).unref()
-    })
-  }
 
-  // Refuse to purge while a gateway still serves this profile (covers an
-  // unmanaged/adopted gateway the desktop did not spawn). The app keeps running,
-  // so clear isQuitting to restore normal gateway-crash reporting.
-  if (purgeData && gatewayState.url && (await healthCheck(gatewayState.url))) {
-    isQuitting = false
+    // Gateway shutdown legitimately changes state/log metadata, so the old CAS
+    // revision cannot be applied directly. Reinspect after every writer is gone
+    // and accept only the exact same mode + bounded kind/path scope the user saw.
+    // The refreshed transaction/revision then becomes the apply authority.
+    const refreshed = await runDesktopCleanupCli(active, 'cleanup-inspect', [
+      '--user-data', app.getPath('userData'),
+      ...cleanupSelectorArgs(preview.selection),
+      '--json',
+    ])
+    if (
+      refreshed.outcome !== 'ready'
+      || !sameDesktopCleanupScope(report, refreshed, app.getPath('userData'))
+    ) {
+      const replacement = refreshed.outcome === 'ready'
+        && desktopCleanupScopeIsContained(refreshed, app.getPath('userData'))
+        ? desktopCleanupPreviews.create(refreshed, preview.selection)
+        : null
+      await restoreAfterIncompleteCleanup(active, true)
+      return {
+        ok: false,
+        previewId: replacement?.id ?? null,
+        report: refreshed,
+        profile: { kind: active.kind, recoveryId: active.recoveryId },
+        detail: 'The cleanup locations changed while the local runtime stopped. Review them again.',
+      }
+    }
+
+    if (report.mode === 'delete-all-user-data') {
+      await spawnDeleteAllAfterElectronExit(
+        active,
+        preview.selection,
+        refreshed.scope_fingerprint,
+        report,
+      )
+      shouldQuit = true
+      return { ok: true, scheduled: true, report }
+    }
+
+    const result = await runDesktopCleanupCli(active, 'cleanup-apply', [
+      '--user-data', app.getPath('userData'),
+      ...cleanupSelectorArgs(preview.selection),
+      '--transaction-id', refreshed.transaction_id,
+      '--expected-revision', String(refreshed.revision),
+      '--confirm-user-data', app.getPath('userData'),
+      '--json',
+    ])
+    if (result.outcome === 'complete') {
+      if (report.mode === 'reset-current-settings') {
+        transientPendingMigrationProviderSetup = null
+        forceOnboardingOnNextStartup = true
+        isQuitting = false
+        clearReusableGatewayState()
+        bootError = null
+        setImmediate(() => {
+          void currentMainWindow()?.loadFile(bootPagePath()).then(() => openOrResumeDesktopApp())
+        })
+      } else {
+        shouldQuit = true
+      }
+      return { ok: true, report: result }
+    }
+    await restoreAfterIncompleteCleanup(active)
     return {
       ok: false,
-      aborted: true,
-      detail: 'A gateway is still serving this profile; stop it and retry.',
+      partial: result.outcome === 'partial',
+      report: result,
+      detail: result.stable_code,
+    }
+  } catch (error) {
+    await restoreAfterIncompleteCleanup(active).catch(() => null)
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) }
+  } finally {
+    exclusive.finish()
+    // app.exit bypasses quit handlers that write desktop.log. Once a profile is
+    // deleted, Electron must not reopen writer admission or recreate any path
+    // inside the confirmed scope. Only a failed/cancelled operation may reopen.
+    if (shouldQuit) {
+      app.exit(0)
+    } else {
+      desktopWriters.reopen(exclusive.admissionToken)
+      desktopCleanupBusy = false
     }
   }
+}
 
-  const args = ['--yes', '--json']
-  if (purgeData) args.push('--purge-all', '--confirm-purge-all', 'delete everything')
-  const result = await runUninstallCli(args)
-
-  // The CLI exited non-zero (e.g. quiesce refused, or a delete failed). The app
-  // is still running, so restore normal crash reporting and surface the reason.
-  if (!result.ok) {
-    isQuitting = false
-    return { ok: false, detail: (result.stderr || result.stdout || '').slice(-2000) }
+async function resetDesktopSettingsThroughCleanup() {
+  if (desktopCleanupBusy) return { ok: false, detail: 'Another cleanup operation is running.' }
+  const inspection = await inspectDesktopCleanup('reset-current-settings')
+  if (!inspection.ok || !inspection.previewId) {
+    return { ok: false, report: inspection.report, detail: inspection.report.stable_code }
   }
+  const preview = desktopCleanupPreviews.consume(
+    inspection.previewId,
+    desktopProfileKey(activeDesktopProfile()),
+  )
+  if (!preview) return { ok: false, detail: 'The cleanup inventory changed. Try again.' }
+  return await applyApprovedDesktopCleanup(preview, {
+    acknowledged: true,
+    confirmation: '',
+  })
+}
 
-  // Remove desktop-owned files outside the OpenSquilla home (only on a full data
-  // purge — these hold the encrypted credential and logs).
-  if (purgeData) {
-    await rm(credentialPath(), { force: true }).catch(() => null)
-    transientPendingMigrationProviderSetup = null
-    await rm(pendingMigrationProviderSetupPath(), { force: true }).catch(() => null)
-    await rm(desktopMigrationResultPath(), { force: true }).catch(() => null)
-    await rm(join(app.getPath('userData'), 'logs'), { recursive: true, force: true }).catch(() => null)
+ipcMain.handle('desktop:cleanup:apply', async (event, payload?: {
+  previewId?: unknown
+  acknowledged?: unknown
+  confirmation?: unknown
+}) => {
+  if (!trustedRecoveryIpc(event)) throw new Error('Untrusted Desktop cleanup request.')
+  if (desktopCleanupBusy) return { ok: false, detail: 'Another cleanup operation is running.' }
+  const active = activeDesktopProfile()
+  const preview = desktopCleanupPreviews.consume(payload?.previewId, desktopProfileKey(active))
+  if (!preview) {
+    desktopCleanupPreviews.clear()
+    return { ok: false, detail: 'The cleanup inventory is missing or expired. Review it again.' }
   }
-  // The app keeps running after a successful data cleanup (the user closes it
-  // later), so clear the quit latch — otherwise it stays true and silently
-  // suppresses reporting of any later gateway crash.
-  isQuitting = false
-  return result
+  return await applyApprovedDesktopCleanup(preview, {
+    acknowledged: payload?.acknowledged === true,
+    confirmation: typeof payload?.confirmation === 'string' ? payload.confirmation : '',
+  })
+})
+
+ipcMain.handle('desktop:cleanup:reveal-user-data', async (event) => {
+  if (!trustedRecoveryIpc(event)) throw new Error('Untrusted Desktop cleanup request.')
+  await shell.showItemInFolder(app.getPath('userData'))
+  return true
 })
 
 // ── Legacy home migration (Phase 3 entry points) ─────────────────────────────
 // The import logic lives once in Python (`opensquilla migrate opensquilla`,
 // dry-run by default); the desktop only detects candidates, orchestrates the
-// gateway lifecycle, and spawns the bundled CLI — mirroring the uninstall flow
-// above. Design: docs/features/legacy-home-migration-design.md (Phase 3).
+// gateway lifecycle, and spawns the bundled CLI.
 async function runMigrateCli(
   extraArgs: string[],
+  timeoutMs = 0,
+  writerReserved = false,
+  subcommand = 'opensquilla',
 ): Promise<{ ok: boolean; stdout: string; stderr: string }> {
-  const runtime = await resolveGatewayRuntime()
-  const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
-  const child = spawn(runtime.command, [...prefix, 'migrate', 'opensquilla', ...extraArgs], {
-    cwd: runtime.cwd,
-    windowsHide: true,
-    env: {
-      ...process.env,
-      OPENSQUILLA_DESKTOP: '1',
-      OPENSQUILLA_INSTALL_METHOD: 'desktop',
-      OPENSQUILLA_GATEWAY_CONFIG_PATH: desktopConfigPath(),
-      // OPENSQUILLA_STATE_DIR names the OpenSquilla HOME ROOT: the migrator's
-      // import TARGET. It must match the gateway spawn (desktopHome()), or the
-      // import would land in a home the gateway never reads.
-      OPENSQUILLA_STATE_DIR: desktopHome(),
-      PYTHONUNBUFFERED: '1',
-      PYTHONUTF8: '1',
-      PYTHONIOENCODING: 'utf-8:replace',
-    },
-  })
-  let stdout = ''
-  let stderr = ''
-  child.stdout.on('data', (chunk) => {
-    stdout += String(chunk)
-  })
-  child.stderr.on('data', (chunk) => {
-    stderr += String(chunk)
-  })
-  const code: number = await new Promise((res) => {
-    child.once('exit', (c) => res(c ?? 1))
-    child.once('error', () => res(1))
-  })
-  return { ok: code === 0, stdout, stderr }
+  const mutating = extraArgs.includes('--apply')
+  const finishWriter = mutating && !writerReserved
+    ? beginDesktopWriterOperation('complete profile import')
+    : () => {}
+  try {
+    const primary = primaryDesktopProfile()
+    const runtime = await resolveGatewayRuntime()
+    const prefix = runtime.args.slice(0, -2) // drop the trailing ['gateway','run']
+    const child = spawn(runtime.command, [...prefix, 'migrate', subcommand, ...extraArgs], {
+      cwd: runtime.cwd,
+      windowsHide: true,
+      env: desktopChildEnvironment(primary, {
+        // Complete profile import is always anchored to the primary H. Recovery
+        // profiles are deliberately never valid import targets.
+        PYTHONUNBUFFERED: '1',
+        PYTHONUTF8: '1',
+        PYTHONIOENCODING: 'utf-8:replace',
+        ...(subcommand === 'verify-opensquilla-import'
+          ? { OPENSQUILLA_RECOVERY_OFFLINE: '1' }
+          : {}),
+      }),
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    const code: number = await new Promise((res) => {
+      let settled = false
+      let timer: NodeJS.Timeout | null = null
+      const finish = (value: number) => {
+        if (settled) return
+        settled = true
+        if (timer) clearTimeout(timer)
+        res(value)
+      }
+      child.once('exit', (c) => finish(c ?? 1))
+      child.once('error', () => finish(1))
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          stderr += `Candidate metadata inspection exceeded ${timeoutMs}ms.`
+          child.kill()
+          finish(124)
+        }, timeoutMs)
+        timer.unref()
+      }
+    })
+    return { ok: code === 0, stdout, stderr }
+  } finally {
+    finishWriter()
+  }
+}
+
+function normalizedLegacyCandidateMetadata(
+  value: unknown,
+  expected: LegacyImportCandidate,
+): LegacyImportCandidate | null {
+  const root = migrationRecord(value)
+  const candidate = migrationRecord(root?.candidate)
+  if (
+    !candidate
+    || candidate.kind !== expected.kind
+    || typeof candidate.path !== 'string'
+    || !resolvedPathsEqual(candidate.path, expected.path)
+  ) return null
+  const version = candidate.version
+  const activity = candidate.estimated_activity_at
+  const sessions = candidate.session_count
+  const size = candidate.size_bytes
+  const imported = candidate.previously_imported
+  if (
+    (version !== null && typeof version !== 'string')
+    || (activity !== null && typeof activity !== 'string')
+    || (sessions !== null && (!Number.isSafeInteger(sessions) || Number(sessions) < 0))
+    || (size !== null && (!Number.isSafeInteger(size) || Number(size) < 0))
+    || typeof imported !== 'boolean'
+  ) return null
+  return {
+    kind: expected.kind,
+    path: expected.path,
+    version: typeof version === 'string' ? version.slice(0, 80) : null,
+    estimated_activity_at: typeof activity === 'string' ? activity : null,
+    session_count: sessions === null ? null : Number(sessions),
+    size_bytes: size === null ? null : Number(size),
+    previously_imported: imported,
+  }
+}
+
+async function inspectLegacyImportCandidate(
+  candidate: LegacyImportCandidate,
+): Promise<LegacyImportCandidate> {
+  try {
+    const result = await runMigrateCli([
+      '--source', candidate.path,
+      '--kind', candidate.kind,
+      '--inspect-candidate',
+      '--json',
+    ], LEGACY_METADATA_TIMEOUT_MS)
+    if (!result.ok) return candidate
+    return normalizedLegacyCandidateMetadata(JSON.parse(result.stdout), candidate) ?? candidate
+  } catch {
+    return candidate
+  }
+}
+
+async function enrichLegacyImportCandidates(
+  candidates: LegacyImportCandidate[],
+): Promise<LegacyImportCandidate[]> {
+  const bounded = candidates.slice(0, LEGACY_METADATA_MAX_CANDIDATES)
+  const enriched = new Array<LegacyImportCandidate>(bounded.length)
+  let next = 0
+  const worker = async () => {
+    while (next < bounded.length) {
+      const index = next
+      next += 1
+      const candidate = bounded[index]
+      if (candidate) enriched[index] = await inspectLegacyImportCandidate(candidate)
+    }
+  }
+  await Promise.all(
+    Array.from(
+      { length: Math.min(LEGACY_METADATA_WORKERS, bounded.length) },
+      () => worker(),
+    ),
+  )
+  return enriched
 }
 
 // Run the migrate CLI in JSON mode and parse its report. A blocked run exits
@@ -6557,8 +9267,13 @@ async function runMigrateCli(
 // and report are independent signals.
 async function migrateSummaryJson(
   extraArgs: string[],
+  writerReserved = false,
 ): Promise<{ ok: boolean; report: Record<string, unknown> | null; raw: string }> {
-  const { ok, stdout, stderr } = await runMigrateCli([...extraArgs, '--json'])
+  const { ok, stdout, stderr } = await runMigrateCli(
+    [...extraArgs, '--json'],
+    0,
+    writerReserved,
+  )
   try {
     return { ok, report: JSON.parse(stdout) as Record<string, unknown>, raw: stdout }
   } catch {
@@ -6598,6 +9313,8 @@ interface PendingMigrationProviderSetup extends MigrationProviderPrefill {
   sourceKind: LegacyImportCandidate['kind']
   target: string
   knownReceiptIds: string[]
+  committedTransactionId: string
+  credentialBackupPath: string
 }
 
 let transientPendingMigrationProviderSetup: PendingMigrationProviderSetup | null = null
@@ -6607,17 +9324,150 @@ function pendingMigrationProviderSetupPath(): string {
 }
 
 function migrationReceiptRoot(): string {
-  return join(desktopHome(), 'migration', 'opensquilla')
+  return join(primaryDesktopHome(), 'migration', 'opensquilla')
 }
 
-async function listMigrationReceiptIds(): Promise<string[]> {
-  try {
-    const entries = await readdir(migrationReceiptRoot(), { withFileTypes: true })
-    return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
+interface ImportReceiptVerificationResult {
+  schema_version: 1
+  outcome: 'verified' | 'not_found' | 'invalid' | 'unsafe'
+  stable_code: string
+  source: string
+  source_kind: LegacyImportCandidate['kind']
+  target: string
+  transaction_id: string
+  matching_transaction_ids: string[]
+  provider_connection: {
+    provider: string
+    model: string
+    base_url: string
+    api_key_env: string
+  } | null
+  report: Record<string, unknown> | null
+}
+
+function parseImportReceiptVerification(
+  value: unknown,
+  intent: Pick<PendingMigrationProviderSetup, 'source' | 'sourceKind' | 'target'>,
+): ImportReceiptVerificationResult {
+  const record = migrationRecord(value)
+  const expectedKeys = [
+    'schema_version',
+    'outcome',
+    'stable_code',
+    'source',
+    'source_kind',
+    'target',
+    'transaction_id',
+    'matching_transaction_ids',
+    'provider_connection',
+    'report',
+  ].sort()
+  if (!record || Object.keys(record).sort().join('\0') !== expectedKeys.join('\0')) {
+    throw new Error('Import receipt verifier returned an invalid protocol shape.')
   }
+  if (
+    record.schema_version !== 1
+    || !['verified', 'not_found', 'invalid', 'unsafe'].includes(String(record.outcome))
+    || typeof record.stable_code !== 'string'
+    || !record.stable_code
+    || typeof record.source !== 'string'
+    || !resolvedPathsEqual(record.source, intent.source)
+    || record.source_kind !== intent.sourceKind
+    || typeof record.target !== 'string'
+    || !resolvedPathsEqual(record.target, intent.target)
+    || typeof record.transaction_id !== 'string'
+    || !Array.isArray(record.matching_transaction_ids)
+    || record.matching_transaction_ids.length > 128
+    || record.matching_transaction_ids.some((id) => (
+      typeof id !== 'string' || !MIGRATION_TRANSACTION_ID_RE.test(id)
+    ))
+  ) {
+    throw new Error('Import receipt verifier returned invalid metadata.')
+  }
+  const outcome = record.outcome as ImportReceiptVerificationResult['outcome']
+  const transactionId = record.transaction_id
+  const report = migrationRecord(record.report)
+  const providerConnection = migrationRecord(record.provider_connection)
+  if (providerConnection && (
+    Object.keys(providerConnection).sort().join('\0')
+      !== ['api_key_env', 'base_url', 'model', 'provider'].join('\0')
+    || Object.values(providerConnection).some((item) => typeof item !== 'string')
+    || !String(providerConnection.provider).trim()
+    || (
+      providerConnection.api_key_env !== ''
+      && !IMPORTED_PROVIDER_API_KEY_ENV_RE.test(String(providerConnection.api_key_env))
+    )
+  )) {
+    throw new Error('Import receipt verifier returned an invalid provider connection.')
+  }
+  if (
+    (outcome === 'verified'
+      && (
+        !MIGRATION_TRANSACTION_ID_RE.test(transactionId)
+        || !record.matching_transaction_ids.includes(transactionId)
+        || !report
+      ))
+    || (outcome !== 'verified' && (
+      transactionId !== ''
+      || record.report !== null
+      || record.provider_connection !== null
+    ))
+  ) {
+    throw new Error('Import receipt verifier returned an inconsistent outcome.')
+  }
+  if (report) {
+    const validationError = migrationReportValidationError(report, {
+      source: intent.source,
+      sourceKind: intent.sourceKind,
+      target: intent.target,
+      apply: true,
+    })
+    if (validationError || migrationTransactionIdFromReport(report) !== transactionId) {
+      throw new Error(validationError || 'Import receipt report transaction is invalid.')
+    }
+  }
+  return {
+    schema_version: 1,
+    outcome,
+    stable_code: record.stable_code,
+    source: record.source,
+    source_kind: record.source_kind as LegacyImportCandidate['kind'],
+    target: record.target,
+    transaction_id: transactionId,
+    matching_transaction_ids: [...record.matching_transaction_ids] as string[],
+    provider_connection: providerConnection
+      ? {
+          provider: String(providerConnection.provider),
+          model: String(providerConnection.model),
+          base_url: String(providerConnection.base_url),
+          api_key_env: String(providerConnection.api_key_env),
+        }
+      : null,
+    report,
+  }
+}
+
+async function verifyCommittedProfileImport(
+  intent: Pick<PendingMigrationProviderSetup, 'source' | 'sourceKind' | 'target'>,
+  options: { transactionId?: string | null; excludedTransactionIds?: string[] } = {},
+): Promise<ImportReceiptVerificationResult> {
+  const excluded = options.excludedTransactionIds ?? []
+  const args = [
+    '--source', intent.source,
+    '--target', intent.target,
+    '--source-kind', intent.sourceKind,
+    ...(options.transactionId ? ['--transaction-id', options.transactionId] : []),
+    ...excluded.flatMap((id) => ['--exclude-transaction-id', id]),
+    '--json',
+  ]
+  const result = await runMigrateCli(
+    args,
+    RECOVERY_COMMAND_TIMEOUT_MS,
+    true,
+    'verify-opensquilla-import',
+  )
+  if (!result.ok) throw new Error('Import receipt verifier did not complete successfully.')
+  return parseImportReceiptVerification(JSON.parse(result.stdout), intent)
 }
 
 async function readPendingMigrationProviderSetup(): Promise<PendingMigrationProviderSetup | null> {
@@ -6645,13 +9495,22 @@ async function readPendingMigrationProviderSetup(): Promise<PendingMigrationProv
   const phase = legacyShape ? 'needs-setup' : payload.phase
   const source = legacyShape ? '' : String(payload.source || '')
   const sourceKind = legacyShape ? 'cli-home' : String(payload.sourceKind || '')
-  const target = legacyShape ? desktopHome() : String(payload.target || '')
+  const target = legacyShape ? primaryDesktopHome() : String(payload.target || '')
   if (
     !legacyShape
     && (
       payload.version !== 1
       || !Array.isArray(payload.knownReceiptIds)
-      || payload.knownReceiptIds.some((value) => typeof value !== 'string')
+      || payload.knownReceiptIds.length > 128
+      || payload.knownReceiptIds.some((value) => (
+        typeof value !== 'string' || !MIGRATION_TRANSACTION_ID_RE.test(value)
+      ))
+      || typeof payload.committedTransactionId !== 'string'
+      || typeof payload.credentialBackupPath !== 'string'
+      || (
+        payload.committedTransactionId !== ''
+        && !MIGRATION_TRANSACTION_ID_RE.test(payload.committedTransactionId)
+      )
     )
   ) {
     throw new Error('The pending desktop import record has invalid transaction metadata.')
@@ -6659,11 +9518,19 @@ async function readPendingMigrationProviderSetup(): Promise<PendingMigrationProv
   const knownReceiptIds = legacyShape
     ? []
     : payload.knownReceiptIds as string[]
+  const credentialBackupPath = legacyShape ? '' : String(payload.credentialBackupPath || '')
   if (
     (phase !== 'applying' && phase !== 'needs-setup')
-    || !resolvedPathsEqual(target, desktopHome())
+    || !resolvedPathsEqual(target, primaryDesktopHome())
     || (!legacyShape && !source)
-    || !['cli-home', 'windows-portable'].includes(sourceKind)
+    || !['cli-home', 'desktop-home', 'windows-portable'].includes(sourceKind)
+    || (
+      credentialBackupPath !== ''
+      && !resolvedPathsEqual(
+        credentialBackupPath,
+        importedCredentialBackupPath(String(payload.committedTransactionId || '')),
+      )
+    )
   ) {
     throw new Error('The pending desktop import record does not match this desktop profile.')
   }
@@ -6674,11 +9541,15 @@ async function readPendingMigrationProviderSetup(): Promise<PendingMigrationProv
     sourceKind: sourceKind as LegacyImportCandidate['kind'],
     target,
     knownReceiptIds,
+    committedTransactionId: legacyShape
+      ? ''
+      : String(payload.committedTransactionId || ''),
+    credentialBackupPath,
     provider: String(payload.provider || ''),
     model: String(payload.model || ''),
     baseUrl: String(payload.baseUrl || ''),
     apiKeyEnv: String(payload.apiKeyEnv || ''),
-    // Secrets are always re-read from the imported target, never the marker.
+    // Secrets are never copied from the imported target into this marker.
     apiKey: '',
   }
   return transientPendingMigrationProviderSetup
@@ -6700,13 +9571,22 @@ async function persistPendingMigrationProviderSetup(
 async function beginMigrationReconciliationIntent(
   candidate: LegacyImportCandidate,
 ): Promise<PendingMigrationProviderSetup> {
+  const verificationIntent = {
+    source: candidate.path,
+    sourceKind: candidate.kind,
+    target: primaryDesktopHome(),
+  }
+  const existing = await verifyCommittedProfileImport(verificationIntent)
+  if (existing.outcome === 'invalid' || existing.outcome === 'unsafe') {
+    throw new Error(`Could not establish the import receipt baseline (${existing.stable_code}).`)
+  }
   const intent: PendingMigrationProviderSetup = {
     version: 1,
     phase: 'applying',
-    source: candidate.path,
-    sourceKind: candidate.kind,
-    target: desktopHome(),
-    knownReceiptIds: await listMigrationReceiptIds(),
+    ...verificationIntent,
+    knownReceiptIds: existing.matching_transaction_ids,
+    committedTransactionId: '',
+    credentialBackupPath: '',
     provider: '',
     model: '',
     baseUrl: '',
@@ -6719,40 +9599,89 @@ async function beginMigrationReconciliationIntent(
 
 async function findAppliedReceiptForIntent(
   intent: PendingMigrationProviderSetup,
-): Promise<{ transactionId: string; report: Record<string, unknown> } | null> {
+  reportedTransactionId: string | null = null,
+): Promise<{
+  transactionId: string
+  report: Record<string, unknown>
+  providerConnection: ImportReceiptVerificationResult['provider_connection']
+} | null> {
   const known = new Set(intent.knownReceiptIds)
-  const candidates = (await listMigrationReceiptIds())
-    .filter((transactionId) => !known.has(transactionId))
-    .sort()
-    .reverse()
-  for (const transactionId of candidates) {
-    if (!MIGRATION_TRANSACTION_ID_RE.test(transactionId)) continue
-    try {
-      const report = JSON.parse(
-        await readFile(join(migrationReceiptRoot(), transactionId, 'report.json'), 'utf8'),
-      ) as unknown
-      if (
-        migrationReportValidationError(report, {
-          source: intent.source,
-          sourceKind: intent.sourceKind,
-          target: intent.target,
-          apply: true,
-        }) === null
-        && migrationReportErrors(report as Record<string, unknown>).length === 0
-      ) {
-        return { transactionId, report: report as Record<string, unknown> }
-      }
-    } catch {
-      // Ignore incomplete/unrelated report directories and keep looking.
-    }
+  if (reportedTransactionId && known.has(reportedTransactionId)) return null
+  const result = await verifyCommittedProfileImport(intent, {
+    transactionId: reportedTransactionId,
+    excludedTransactionIds: intent.knownReceiptIds,
+  })
+  if (result.outcome === 'not_found') return null
+  if (result.outcome !== 'verified' || !result.report) {
+    throw new Error(`Import receipt verification is unsafe (${result.stable_code}).`)
   }
-  return null
+  return {
+    transactionId: result.transaction_id,
+    report: result.report,
+    providerConnection: result.provider_connection,
+  }
+}
+
+async function bindMigrationIntentToReceipt(
+  intent: PendingMigrationProviderSetup,
+  receipt: {
+    transactionId: string
+    providerConnection: ImportReceiptVerificationResult['provider_connection']
+  },
+): Promise<PendingMigrationProviderSetup> {
+  if (!MIGRATION_TRANSACTION_ID_RE.test(receipt.transactionId)) {
+    throw new Error('The committed import transaction id is invalid.')
+  }
+  const bound = {
+    ...intent,
+    committedTransactionId: receipt.transactionId,
+    provider: receipt.providerConnection?.provider || '',
+    model: receipt.providerConnection?.model || '',
+    baseUrl: receipt.providerConnection?.base_url || '',
+    apiKeyEnv: receipt.providerConnection?.api_key_env || '',
+    apiKey: '',
+  }
+  await persistPendingMigrationProviderSetup(bound)
+  return bound
+}
+
+function importedCredentialBackupPath(transactionId: string): string {
+  return join(
+    app.getPath('userData'),
+    `desktop-credential.import-backup.${transactionId}.json`,
+  )
+}
+
+async function prepareImportedCredentialBackup(
+  intent: PendingMigrationProviderSetup,
+): Promise<PendingMigrationProviderSetup> {
+  if (!MIGRATION_TRANSACTION_ID_RE.test(intent.committedTransactionId)) {
+    throw new Error('A verified transaction is required before credential backup.')
+  }
+  const expectedPath = importedCredentialBackupPath(intent.committedTransactionId)
+  if (intent.credentialBackupPath) {
+    if (!resolvedPathsEqual(intent.credentialBackupPath, expectedPath)) {
+      throw new Error('The imported credential backup path is invalid.')
+    }
+    return intent
+  }
+  const current = await readOptionalDesktopText(primaryDesktopProfile().credentialPath)
+  if (current === null) return intent
+  // Python's settings transaction parks the existing credential at this exact
+  // transaction-bound path with its handle-safe native no-replace primitive.
+  // Electron records the location for recovery UI only and never writes bytes.
+  const updated = { ...intent, credentialBackupPath: expectedPath }
+  await persistPendingMigrationProviderSetup(updated)
+  return updated
 }
 
 async function writePendingMigrationProviderSetup(
   prefill: MigrationProviderPrefill | null,
   intent: PendingMigrationProviderSetup,
 ): Promise<void> {
+  if (!MIGRATION_TRANSACTION_ID_RE.test(intent.committedTransactionId)) {
+    throw new Error('Provider setup cannot continue without a verified import transaction.')
+  }
   const pending: PendingMigrationProviderSetup = {
     ...intent,
     phase: 'needs-setup',
@@ -6760,8 +9689,8 @@ async function writePendingMigrationProviderSetup(
     model: prefill?.model || '',
     baseUrl: prefill?.baseUrl || '',
     apiKeyEnv: prefill?.apiKeyEnv || '',
-    // A provider key never belongs in this durable prompt marker. The imported
-    // target .env remains the source until the user confirms it into safeStorage.
+    // A provider key never belongs in this durable prompt marker. Required keys
+    // are entered explicitly by the user and stored through safeStorage.
     apiKey: '',
   }
   await persistPendingMigrationProviderSetup(pending)
@@ -6772,59 +9701,78 @@ async function clearPendingMigrationProviderSetup(): Promise<void> {
   await rm(pendingMigrationProviderSetupPath(), { force: true })
 }
 
-async function scrubImportedProviderEnvEntry(envKey: string): Promise<void> {
-  if (!envKey) return
-  const envPath = join(desktopHome(), '.env')
-  let raw = ''
-  try {
-    raw = await readFile(envPath, 'utf8')
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
-    throw error
-  }
-  const lines = raw.split(/\r?\n/)
-  const kept = lines.filter((line) => {
-    const entry = line.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=/)
-    return !entry || entry[1] !== envKey
-  })
-  if (kept.length === lines.length) return
-  while (kept.length > 0 && kept[kept.length - 1] === '') kept.pop()
-  await atomicWriteFile(envPath, kept.length > 0 ? `${kept.join('\n')}\n` : '', 0o600)
-}
-
 async function loadPendingMigrationProviderSetup(): Promise<MigrationProviderPrefill | null> {
   const pending = await readPendingMigrationProviderSetup()
   if (!pending) return null
   if (pending.phase === 'applying') {
     throw new Error('An interrupted desktop import still needs reconciliation.')
   }
-  const live = readMigratedProviderPrefill()
-  return {
-    provider: live?.provider || pending.provider,
-    model: live?.model || pending.model,
-    baseUrl: live?.baseUrl || pending.baseUrl,
-    apiKeyEnv: live?.apiKeyEnv || pending.apiKeyEnv,
-    apiKey: live?.apiKey || '',
+  return migrationProviderPrefill(pending)
+}
+
+function normalizedImportedBaseUrl(value: string): string {
+  const raw = value.trim()
+  try {
+    const parsed = new URL(raw)
+    parsed.hash = ''
+    return parsed.toString().replace(/\/$/, '')
+  } catch {
+    return raw.replace(/\/+$/, '')
   }
+}
+
+function existingCredentialMatchesImportedReplay(
+  existing: DesktopConnection,
+  prefill: MigrationProviderPrefill,
+  intent: PendingMigrationProviderSetup,
+): boolean {
+  const provider = normalizeProvider(prefill.provider)
+  const defaults = providerDefaults(provider)
+  return Boolean(intent.committedTransactionId)
+    && existing.configAuthority === 'profile'
+    && existing.importTransactionId === intent.committedTransactionId
+    && normalizeProvider(existing.provider) === provider
+    && existing.model.trim() === (prefill.model || defaults.model).trim()
+    && normalizedImportedBaseUrl(existing.baseUrl)
+      === normalizedImportedBaseUrl(prefill.baseUrl || defaults.baseUrl)
+    && existing.apiKeyEnv === (prefill.apiKeyEnv || defaults.apiKeyEnv)
+    && isConnectionReady(existing)
+    && (!prefill.apiKey || decryptApiKey(existing) === prefill.apiKey)
 }
 
 async function reconcileImportedDesktopCredential(
   intent: PendingMigrationProviderSetup,
+  writerReserved = false,
 ): Promise<{ requiresSetup: boolean }> {
-  const prefill = readMigratedProviderPrefill()
+  const prefill = migrationProviderPrefill(intent)
+  const existing = await loadDesktopCredential()
+  if (
+    existing
+    && prefill?.provider
+    && existingCredentialMatchesImportedReplay(existing, prefill, intent)
+  ) {
+    await clearPendingMigrationProviderSetup()
+    return { requiresSetup: false }
+  }
   if (prefill?.provider) {
     const defaults = providerDefaults(prefill.provider)
     if (!defaults.requiresApiKey || prefill.apiKey) {
       try {
-        await saveDesktopCredential(prefill)
-        await scrubImportedProviderEnvEntry(prefill.apiKeyEnv)
-        await clearPendingMigrationProviderSetup()
-        return { requiresSetup: false }
+        await saveImportedDesktopCredential(
+          prefill,
+          intent.committedTransactionId,
+          '',
+          writerReserved,
+        )
       } catch (error) {
-        desktopLog('migration_credential_adoption_failed', {
-          error: error instanceof Error ? error.message : String(error),
-        })
+        const detail = error instanceof Error ? error.message : String(error)
+        if (!detail.startsWith('The OS keychain')) throw error
+        desktopLog('migration_credential_adoption_deferred', { reason: 'keychain-unavailable' })
+        await writePendingMigrationProviderSetup(prefill, intent)
+        return { requiresSetup: true }
       }
+      await clearPendingMigrationProviderSetup()
+      return { requiresSetup: false }
     }
   }
   await writePendingMigrationProviderSetup(prefill, intent)
@@ -6832,72 +9780,58 @@ async function reconcileImportedDesktopCredential(
 }
 
 async function recoverPendingMigrationReconciliation(): Promise<void> {
-  const pending = await readPendingMigrationProviderSetup()
-  if (!pending || pending.phase !== 'applying') return
-  const receipt = await findAppliedReceiptForIntent(pending)
-  if (!receipt) {
-    // The commit journal has already been recovered before this runs. With no
-    // new target-side applied receipt, the attempted import never published.
-    await clearPendingMigrationProviderSetup()
-    return
+  const initial = await readPendingMigrationProviderSetup()
+  if (!initial || initial.phase !== 'applying') return
+  const finishWriter = beginDesktopWriterOperation('recover imported provider settings')
+  try {
+    let pending = await readPendingMigrationProviderSetup()
+    if (!pending || pending.phase !== 'applying') return
+    const receipt = await findAppliedReceiptForIntent(pending)
+    if (!receipt) {
+      // Profile inspection has already recovered any unfinished replacement
+      // transaction. With no new layout receipt, this attempt never committed.
+      await clearPendingMigrationProviderSetup()
+      return
+    }
+    pending = await bindMigrationIntentToReceipt(pending, receipt)
+    pending = await prepareImportedCredentialBackup(pending)
+    await reconcileImportedDesktopCredential(pending, true)
+  } finally {
+    finishWriter()
   }
-  await reconcileImportedDesktopCredential(pending)
 }
 
-// After a successful apply the migrator has rewritten the target config.toml
-// and .env. Read the [llm] section back (line-based, like the privacy-config
-// reader — the file is generated, simple TOML) so the onboarding provider step
-// starts prefilled from the imported connection. The api key travels only over
-// the onboarding IPC response — the same trust boundary as saveOnboarding — and
-// is never logged and never part of any report.
-function readMigratedProviderPrefill(): MigrationProviderPrefill | null {
-  let raw = ''
+async function refreshPrimaryRecoveryAfterImportAttempt(): Promise<boolean> {
+  const primary = primaryDesktopProfile()
+  let inspection: RecoveryProtocolResult
   try {
-    raw = readFileSync(desktopConfigPath(), 'utf8')
+    inspection = await inspectDesktopProfile(primary)
   } catch {
-    return null
+    inspection = recoveryFailureResult(primary.home, 'migration_failure_inspection_failed')
   }
-  let inLlmSection = false
-  const values: Record<string, string> = {}
-  for (const rawLine of raw.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith('#')) continue
-    const section = line.match(/^\[([^\]]+)\]$/)
-    if (section) {
-      inLlmSection = section[1]?.trim() === 'llm'
-      continue
-    }
-    if (!inLlmSection) continue
-    const setting = line.match(/^([A-Za-z0-9_]+)\s*=\s*("(?:[^"\\]|\\.)*")\s*$/)
-    if (!setting) continue
-    try {
-      values[setting[1] ?? ''] = JSON.parse(setting[2] ?? '""') as string
-    } catch {
-      continue
-    }
-  }
-  const provider = (values.provider || '').trim()
-  if (!provider) return null
-  const apiKeyEnv = (values.api_key_env || '').trim()
-  let apiKey = ''
-  if (apiKeyEnv) {
-    try {
-      const envRaw = readFileSync(join(desktopHome(), '.env'), 'utf8')
-      for (const envLine of envRaw.split(/\r?\n/)) {
-        const entry = envLine.match(/^\s*(?:export\s+)?([A-Za-z0-9_]+)\s*=\s*(.*)$/)
-        if (!entry || entry[1] !== apiKeyEnv) continue
-        apiKey = String(entry[2] ?? '').trim().replace(/^(["'])(.*)\1$/, '$2')
-      }
-    } catch {
-      // No migrated .env; the user types the key as usual.
-    }
-  }
+  recoveryInspection = inspection
+  primaryRecoveryInspection = inspection
+  publishRecoveryState()
+  createApplicationMenu()
+  if (inspection.outcome !== 'recovery_required') return false
+  bootError = null
+  await restoreMainWindowToBootPage()
+  return true
+}
+
+function migrationProviderPrefill(
+  intent: PendingMigrationProviderSetup,
+): MigrationProviderPrefill | null {
+  if (!intent.provider) return null
   return {
-    provider,
-    model: (values.model || '').trim(),
-    baseUrl: (values.base_url || '').trim(),
-    apiKeyEnv,
-    apiKey,
+    provider: intent.provider,
+    model: intent.model,
+    baseUrl: intent.baseUrl,
+    apiKeyEnv: intent.apiKeyEnv,
+    // Never parse or auto-adopt imported dotenv secrets. Dotenv syntax is richer
+    // than this process can safely patch losslessly, so preserve the source bytes
+    // and require explicit entry for providers that need a key.
+    apiKey: '',
   }
 }
 
@@ -6908,6 +9842,8 @@ interface TrustedDesktopMigrationPreview {
   createdAt: number
 }
 
+type DesktopMigrationFailureStage = 'preflight' | 'apply' | 'restart'
+
 interface DesktopMigrationResult {
   id: string
   at: string
@@ -6915,11 +9851,61 @@ interface DesktopMigrationResult {
   migrationApplied: boolean
   restartOk: boolean
   requiresProviderSetup: boolean
+  source?: string
+  sourceKind?: MigrationSourceKind
+  targetReplaced?: boolean
+  credentialBackupPath?: string
+  failureCode?: string
+  failureStage?: DesktopMigrationFailureStage
   detail?: string
 }
 
 const DESKTOP_MIGRATION_PREVIEW_TTL_MS = 10 * 60 * 1000
 let trustedDesktopMigrationPreview: TrustedDesktopMigrationPreview | null = null
+
+function normalizeOwnedDesktopTargetGatewayPreview(
+  report: Record<string, unknown>,
+): Record<string, unknown> {
+  const preflight = migrationRecord(report.preflight)
+  if (
+    activeDesktopProfile().kind !== 'primary'
+    || !gatewayProcess
+    || !gatewayState.owned
+    || hasGatewayProcessExited(gatewayProcess)
+    || gatewayProfileKey !== desktopProfileKey(primaryDesktopProfile())
+    || preflight?.source_gateway_running !== false
+    || preflight?.target_gateway_running !== true
+    || !Array.isArray(report.items)
+  ) return report
+
+  const target = primaryDesktopHome()
+  const matchingIndexes: number[] = []
+  for (const [index, value] of report.items.entries()) {
+    const item = migrationRecord(value)
+    if (
+      item?.kind === 'preflight/gateway'
+      && item.status === 'error'
+      && typeof item.source === 'string'
+      && resolvedPathsEqual(item.source, target)
+      && item.destination === null
+      && item.reason === 'a gateway is running on the target home; stop it and re-run'
+    ) matchingIndexes.push(index)
+  }
+  if (matchingIndexes.length !== 1) return report
+  const matchingIndex = matchingIndexes[0]
+  return {
+    ...report,
+    items: report.items.map((value, index) => (
+      index !== matchingIndex
+        ? value
+        : {
+            ...(migrationRecord(value) as Record<string, unknown>),
+            status: 'skipped',
+            reason: 'Desktop owns the target gateway and will stop it before apply',
+          }
+    )),
+  }
+}
 
 function migrationPreviewAllowsApply(
   report: Record<string, unknown>,
@@ -6951,7 +9937,7 @@ async function persistDesktopMigrationResult(result: DesktopMigrationResult): Pr
   }
 }
 
-async function takeDesktopMigrationResult(): Promise<DesktopMigrationResult | null> {
+async function readDesktopMigrationResult(): Promise<DesktopMigrationResult | null> {
   let raw = ''
   try {
     raw = await readFile(desktopMigrationResultPath(), 'utf8')
@@ -6968,48 +9954,149 @@ async function takeDesktopMigrationResult(): Promise<DesktopMigrationResult | nu
     migrationApplied: parsed.migrationApplied === true,
     restartOk: parsed.restartOk === true,
     requiresProviderSetup: parsed.requiresProviderSetup === true,
+    ...(typeof parsed.source === 'string' && parsed.source ? { source: parsed.source } : {}),
+    ...(parseMigrationSourceKind({ kind: parsed.sourceKind })
+      ? { sourceKind: parsed.sourceKind as MigrationSourceKind }
+      : {}),
+    ...(typeof parsed.targetReplaced === 'boolean'
+      ? { targetReplaced: parsed.targetReplaced }
+      : {}),
+    ...(typeof parsed.credentialBackupPath === 'string' && parsed.credentialBackupPath
+      ? { credentialBackupPath: parsed.credentialBackupPath }
+      : {}),
+    ...(typeof parsed.failureCode === 'string' && parsed.failureCode
+      ? { failureCode: parsed.failureCode }
+      : {}),
+    ...(['preflight', 'apply', 'restart'].includes(String(parsed.failureStage || ''))
+      ? { failureStage: parsed.failureStage as DesktopMigrationFailureStage }
+      : {}),
     ...(typeof parsed.detail === 'string' && parsed.detail ? { detail: parsed.detail } : {}),
   }
   if (!result.id || !result.at) throw new Error('Saved desktop migration result is malformed.')
-  await rm(desktopMigrationResultPath(), { force: true })
   return result
 }
 
-ipcMain.handle('desktop:migration:summary', async () => {
+async function takeDesktopMigrationResult(): Promise<DesktopMigrationResult | null> {
+  const result = await readDesktopMigrationResult()
+  if (result) await rm(desktopMigrationResultPath(), { force: true })
+  return result
+}
+
+async function dismissDesktopMigrationResult(): Promise<{ ok: true }> {
+  await rm(desktopMigrationResultPath(), { force: true })
+  return { ok: true }
+}
+
+function migrationCandidateWithPreview(
+  candidate: LegacyImportCandidate,
+  report: Record<string, unknown>,
+): LegacyImportCandidate {
+  const preflight = migrationRecord(report.preflight)
+  const sessionCount = preflight?.session_count
+  return {
+    ...candidate,
+    session_count: Number.isSafeInteger(sessionCount) && Number(sessionCount) >= 0
+      ? Number(sessionCount)
+      : null,
+  }
+}
+
+ipcMain.handle('desktop:migration:browse-source', async (event, payload?: unknown) => {
+  if (!trustedRecoveryIpc(event) || activeDesktopProfile().kind !== 'primary') {
+    return { ok: false, error: 'Data transfer is available only in the primary profile.' }
+  }
+  const sourceKind = parseMigrationSourceKind(payload)
+  if (!sourceKind) {
+    return { ok: false, error: 'Choose the OpenSquilla profile type first.' }
+  }
+  const window = currentMainWindow()
+  const options: Electron.OpenDialogOptions = {
+    title: 'Choose an OpenSquilla profile',
+    properties: ['openDirectory'],
+  }
+  const choice = window
+    ? await dialog.showOpenDialog(window, options)
+    : await dialog.showOpenDialog(options)
+  if (choice.canceled || choice.filePaths.length !== 1) return { ok: false, aborted: true }
+  const path = choice.filePaths[0] || ''
+  if (!path || !looksLikeOpenSquillaHome(path) || resolvedPathsEqual(path, primaryDesktopHome())) {
+    return { ok: false, error: 'Choose a plain OpenSquilla profile directory.' }
+  }
+  const candidate = await inspectLegacyImportCandidate(legacyImportCandidate(sourceKind, path))
+  manuallyApprovedMigrationCandidates.set(resolve(path), candidate)
+  return { ok: true, candidate }
+})
+
+ipcMain.handle('desktop:migration:summary', async (event, payload?: { source?: unknown }) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, candidate: null, report: null, raw: 'Untrusted data transfer request.' }
+  }
+  if (activeDesktopProfile().kind !== 'primary') {
+    return {
+      ok: false,
+      candidate: null,
+      report: null,
+      raw: 'Return to the primary profile before transferring data.',
+    }
+  }
   trustedDesktopMigrationPreview = null
-  const candidate = detectLegacyImportCandidate()
-  if (!candidate) return { ok: true, candidate: null, report: null }
+  const candidates = await enrichLegacyImportCandidates(detectLegacyImportCandidates())
+  const source = typeof payload?.source === 'string' ? payload.source : ''
+  const candidate = source
+    ? candidates.find((item) => resolvedPathsEqual(item.path, source)) || null
+    : null
+  if (!candidate) {
+    return { ok: true, candidates, candidate: null, report: null, requiresSelection: true }
+  }
   // Dry-run is read-only, so the running gateway is deliberately left alone.
   publishDesktopMigrationProgress('preview')
-  const { ok, report, raw } = await migrateSummaryJson([
+  const { report, raw } = await migrateSummaryJson([
     '--source', candidate.path, '--kind', candidate.kind,
   ])
   const validationError = migrationReportValidationError(report, {
     source: candidate.path,
     sourceKind: candidate.kind,
-    target: desktopHome(),
+    target: primaryDesktopHome(),
     apply: false,
   })
   if (validationError || !report) {
     const detail = validationError || raw || 'Invalid migration report'
     publishDesktopMigrationProgress('error', detail)
-    return { ok: false, candidate, report: null, raw: detail }
+    return { ok: false, candidates, candidate, report: null, raw: detail }
   }
+  const previewReport = normalizeOwnedDesktopTargetGatewayPreview(report)
+  const previewOk = migrationReportErrors(previewReport).length === 0
   const preview: TrustedDesktopMigrationPreview = {
     id: randomUUID(),
-    candidate,
-    report,
+    candidate: migrationCandidateWithPreview(candidate, previewReport),
+    report: previewReport,
     createdAt: Date.now(),
   }
   trustedDesktopMigrationPreview = preview
-  publishDesktopMigrationProgress(ok ? 'done' : 'error')
-  return { ok, candidate, report, previewId: preview.id }
+  publishDesktopMigrationProgress(previewOk ? 'done' : 'error')
+  return {
+    ok: previewOk,
+    candidates,
+    candidate: preview.candidate,
+    report: previewReport,
+    previewId: preview.id,
+  }
 })
 
 ipcMain.handle('desktop:migration:run', async (
-  _event,
+  event,
   payload?: { overwrite?: boolean; previewId?: string },
 ) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, report: null, detail: 'Untrusted data transfer request.' }
+  }
+  if (activeDesktopProfile().kind !== 'primary') {
+    return {
+      ok: false,
+      report: null,
+      detail: 'Return to the primary profile before transferring data.',
+    }
+  }
   const preview = trustedDesktopMigrationPreview
   if (
     !preview
@@ -7020,7 +10107,7 @@ ipcMain.handle('desktop:migration:run', async (
     return {
       ok: false,
       report: null,
-      detail: 'The migration preview is missing or expired. Preview the import again.',
+      detail: 'The transfer preview is missing or expired. Review the data again.',
     }
   }
   const candidate = preview.candidate
@@ -7030,13 +10117,10 @@ ipcMain.handle('desktop:migration:run', async (
     return {
       ok: false,
       report: preview.report,
-      detail: 'The approved preview does not permit this import mode. Preview again.',
+      detail: 'The approved preview does not permit this transfer mode. Review the data again.',
     }
   }
-  if (
-    !looksLikeOpenSquillaHome(candidate.path)
-    || sourceWasImportedToTarget(candidate.path, desktopHome())
-  ) {
+  if (!looksLikeOpenSquillaHome(candidate.path)) {
     trustedDesktopMigrationPreview = null
     return {
       ok: false,
@@ -7052,7 +10136,13 @@ ipcMain.handle('desktop:migration:run', async (
       cancelId: 0,
       title: desktopT('migration.overwriteTitle'),
       message: desktopT('migration.overwriteMessage'),
-      detail: `${desktopT('migration.overwriteDetail')}\n\n${candidate.path}`,
+      detail: [
+        desktopT('migration.overwriteDetail'),
+        desktopT('migration.overwriteNoMerge'),
+        desktopT('migration.overwriteSourceUntouched'),
+        desktopT('migration.overwriteNoSync'),
+        candidate.path,
+      ].join('\n\n'),
     }
     const window = currentMainWindow()
     const confirmation = window
@@ -7062,6 +10152,28 @@ ipcMain.handle('desktop:migration:run', async (
       return { ok: false, aborted: true, report: preview.report, detail: 'cancelled' }
     }
   }
+  const exclusive = desktopWriters.tryBeginExclusive('complete profile import')
+  if (!exclusive) {
+    return {
+      ok: false,
+      report: preview.report,
+      detail: 'Another profile operation, update, or quit is already in progress.',
+    }
+  }
+  let report: Record<string, unknown> | null = null
+  let migrationVerified = false
+  let migrationApplied = false
+  let restartOk = false
+  let requiresProviderSetup = false
+  let failureCode = ''
+  let failureStage: DesktopMigrationFailureStage | '' = ''
+  let detail = ''
+  let intent: PendingMigrationProviderSetup | null = null
+  let restartAllowed = true
+  let shouldRestart = true
+  let lifecycleOwnsAdmission = false
+  try {
+    await waitForDesktopWriterOperations(1)
   trustedDesktopMigrationPreview = null
 
   // A live gateway not owned by this process must remain attached and untouched.
@@ -7076,6 +10188,8 @@ ipcMain.handle('desktop:migration:run', async (
         migrationApplied: false,
         restartOk: true,
         requiresProviderSetup: false,
+        failureCode: 'migration_apply_failed',
+        failureStage: 'preflight',
         detail: 'A gateway is still serving this profile; stop it and retry.',
       }
       await persistDesktopMigrationResult(refused)
@@ -7084,15 +10198,6 @@ ipcMain.handle('desktop:migration:run', async (
   }
 
   publishDesktopMigrationProgress('applying')
-  let report: Record<string, unknown> | null = null
-  let migrationVerified = false
-  let migrationApplied = false
-  let restartOk = false
-  let requiresProviderSetup = false
-  let detail = ''
-  let intent: PendingMigrationProviderSetup | null = null
-  let restartAllowed = true
-  let shouldRestart = true
   isQuitting = true
   try {
     // Quiesce the owned gateway before the CLI writes (the uninstall-run
@@ -7114,7 +10219,7 @@ ipcMain.handle('desktop:migration:run', async (
         gatewayProcess = child
         gatewayState.owned = true
         gatewayState.status = 'error'
-        gatewayState.error = 'The desktop gateway did not exit before the import deadline.'
+        gatewayState.error = 'The desktop gateway did not exit before the transfer deadline.'
         restartAllowed = false
         throw new Error(gatewayState.error)
       }
@@ -7136,9 +10241,12 @@ ipcMain.handle('desktop:migration:run', async (
     intent = await beginMigrationReconciliationIntent(candidate)
     const result = await runMigrateCli([
       '--source', candidate.path, '--kind', candidate.kind, '--apply',
-      ...(overwrite ? ['--overwrite'] : []),
+      ...(overwrite ? [
+        '--replace-target',
+        '--confirm-replace-target', primaryDesktopHome(),
+      ] : []),
       '--json',
-    ])
+    ], 0, true)
     try {
       report = migrationRecord(JSON.parse(result.stdout))
     } catch {
@@ -7147,22 +10255,32 @@ ipcMain.handle('desktop:migration:run', async (
     const validationError = migrationReportValidationError(report, {
       source: candidate.path,
       sourceKind: candidate.kind,
-      target: desktopHome(),
+      target: primaryDesktopHome(),
       apply: true,
     })
+    const reportFailure = migrationFailureFromReport(report)
     migrationVerified = result.ok
       && report !== null
       && validationError === null
       && migrationReportErrors(report).length === 0
-    detail = migrationVerified
-      ? ''
-      : (validationError || result.stderr || result.stdout || 'Invalid migration report').slice(-2000)
+    if (!migrationVerified) {
+      failureCode = reportFailure?.failureCode || 'migration_apply_failed'
+      failureStage = reportFailure?.failureStage || 'apply'
+      detail = validationError
+        || reportFailure?.detail
+        || conciseMigrationProcessError(result.stderr)
+    }
   } catch (error) {
-    detail = error instanceof Error ? error.message : String(error)
+    failureCode ||= 'migration_apply_failed'
+    failureStage ||= 'preflight'
+    detail ||= error instanceof Error ? error.message : String(error)
   } finally {
     if (intent) {
       try {
-        const receipt = await findAppliedReceiptForIntent(intent)
+        const receipt = await findAppliedReceiptForIntent(
+          intent,
+          migrationVerified ? migrationTransactionIdFromReport(report) : null,
+        )
         if (receipt) {
           migrationApplied = true
           if (!migrationVerified) report = receipt.report
@@ -7170,41 +10288,66 @@ ipcMain.handle('desktop:migration:run', async (
           // durable commit authority. The CLI child can lose stdout or exit
           // nonzero after that atomic rename without making the import a failure.
           migrationVerified = true
-          const reconciliation = await reconcileImportedDesktopCredential(intent)
+          intent = await bindMigrationIntentToReceipt(intent, receipt)
+          intent = await prepareImportedCredentialBackup(intent)
+          const reconciliation = await reconcileImportedDesktopCredential(intent, true)
           requiresProviderSetup = reconciliation.requiresSetup
         } else {
           if (migrationVerified) {
             detail = 'The migration command succeeded without a valid target-side receipt.'
+            failureCode = 'migration_apply_failed'
+            failureStage = 'apply'
             migrationVerified = false
           }
           await clearPendingMigrationProviderSetup()
         }
       } catch (error) {
         migrationVerified = false
+        failureCode ||= 'migration_apply_failed'
+        failureStage ||= 'apply'
         const reconciliationError = error instanceof Error ? error.message : String(error)
         detail = detail ? `${detail}; ${reconciliationError}` : reconciliationError
       }
     }
     publishDesktopMigrationProgress(migrationVerified ? 'done' : 'error', detail || undefined)
-    // Restart via the boot splash on every path. The imported profile is not
-    // considered ready until the replacement gateway is healthy (and, when a
-    // key could not be adopted, the durable provider-confirmation flow finishes).
     isQuitting = false
-    if (restartAllowed && shouldRestart) {
-      clearReusableGatewayState()
-      bootError = null
-      await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
-      await openOrResumeDesktopApp()
-      restartOk = gatewayState.status === 'ready'
-        && Boolean(gatewayState.url)
-        && await healthCheck(gatewayState.url)
-    } else if (!shouldRestart) {
-      restartOk = Boolean(gatewayState.url) && await healthCheck(gatewayState.url)
-    }
+  }
+  } finally {
+    // Receipt verification, credential adoption (or a durable needs-setup
+    // marker), and reconciliation are complete. Reopen writer admission before
+    // restart: an imported provider that needs user input must be able to save
+    // onboarding settings in this same process.
+    isQuitting = false
+    exclusive.finish()
+    lifecycleOwnsAdmission = desktopWriters.hasOtherOwner(exclusive.admissionToken)
+    desktopWriters.reopen(exclusive.admissionToken)
   }
 
-  if (migrationApplied && !restartOk && !detail) {
-    detail = 'Import applied, but the desktop gateway did not become healthy.'
+  // Restart via the boot splash on every path unless update/quit closed writer
+  // admission while the import drained. In that case the lifecycle owner takes
+  // over and the durable pending marker resumes safely on the next launch.
+  if (lifecycleOwnsAdmission || desktopWriters.closed) {
+    restartAllowed = false
+    shouldRestart = false
+    if (migrationApplied && !detail) detail = 'Transfer applied; restart deferred to the active lifecycle operation.'
+  } else if (restartAllowed && shouldRestart) {
+    clearReusableGatewayState()
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    await openOrResumeDesktopApp()
+    restartOk = gatewayState.status === 'ready'
+      && Boolean(gatewayState.url)
+      && await healthCheck(gatewayState.url)
+  } else if (!shouldRestart) {
+    restartOk = Boolean(gatewayState.url) && await healthCheck(gatewayState.url)
+  }
+  if (migrationApplied && !restartOk) {
+    failureCode = 'gateway_restart_failed'
+    failureStage = 'restart'
+    if (!detail) detail = 'Transfer applied, but the desktop gateway did not become healthy.'
+  } else if (!migrationApplied && !migrationVerified) {
+    failureCode ||= 'migration_apply_failed'
+    failureStage ||= 'apply'
   }
   const finalResult: DesktopMigrationResult = {
     id: randomUUID(),
@@ -7213,18 +10356,428 @@ ipcMain.handle('desktop:migration:run', async (
     migrationApplied,
     restartOk,
     requiresProviderSetup,
+    source: candidate.path,
+    sourceKind: candidate.kind,
+    targetReplaced: overwrite && migrationApplied,
+    ...(intent?.credentialBackupPath
+      ? { credentialBackupPath: intent.credentialBackupPath }
+      : {}),
+    ...(failureCode ? { failureCode } : {}),
+    ...(failureStage ? { failureStage } : {}),
     ...(detail ? { detail } : {}),
   }
   await persistDesktopMigrationResult(finalResult)
   return { ...finalResult, report }
 })
 
-ipcMain.handle('desktop:migration:last-result', takeDesktopMigrationResult)
+ipcMain.handle('desktop:migration:last-result', async (event) => (
+  trustedRecoveryIpc(event) ? await takeDesktopMigrationResult() : null
+))
+ipcMain.handle('desktop:migration:peek-last-result', async (event) => (
+  trustedRecoveryIpc(event) ? await readDesktopMigrationResult() : null
+))
+ipcMain.handle('desktop:migration:dismiss-last-result', async (event) => (
+  trustedRecoveryIpc(event) ? await dismissDesktopMigrationResult() : { ok: false }
+))
+
+function trustedRecoveryIpc(event: Electron.IpcMainInvokeEvent): boolean {
+  const window = currentMainWindow()
+  if (!window || event.sender !== window.webContents) return false
+  const url = event.senderFrame?.url || event.sender.getURL()
+  try {
+    const sender = new URL(url)
+    if (sender.protocol === 'file:') {
+      return resolve(fileURLToPath(sender)) === resolve(bootPagePath())
+    }
+    if (!gatewayState.owned || !gatewayState.url) return false
+    const gateway = new URL(gatewayState.url)
+    return (
+      sender.origin === gateway.origin
+      && (sender.pathname === '/control' || sender.pathname.startsWith('/control/'))
+    )
+  } catch {
+    return false
+  }
+}
+
+function trustedOnboardingIpc(event: Electron.IpcMainInvokeEvent): boolean {
+  const window = currentOnboardingWindow()
+  if (!window || event.sender !== window.webContents) return false
+  return (event.senderFrame?.url || event.sender.getURL()).startsWith('data:text/html')
+}
+
+async function withRecoveryOperation<T>(
+  operation: () => Promise<T>,
+): Promise<{ ok: true; value: T; state: DesktopRecoveryViewState } | {
+  ok: false
+  error: string
+  state: DesktopRecoveryViewState
+}> {
+  if (recoveryOperationBusy) {
+    return {
+      ok: false,
+      error: 'Another recovery operation is already running.',
+      state: recoveryStateSnapshot(),
+    }
+  }
+  const exclusive = desktopWriters.tryBeginExclusive('Desktop profile recovery')
+  if (!exclusive) {
+    return {
+      ok: false,
+      error: 'OpenSquilla is finishing another profile or lifecycle operation. Try again shortly.',
+      state: recoveryStateSnapshot(),
+    }
+  }
+  recoveryOperationBusy = true
+  recoveryOperationError = null
+  publishRecoveryState()
+  let outcome: { ok: true; value: T } | { ok: false; error: string }
+  try {
+    await waitForDesktopWriterOperations(1)
+    const value = await operation()
+    outcome = { ok: true, value }
+  } catch (error) {
+    recoveryOperationError = error instanceof Error ? error.message : String(error)
+    desktopLog('recovery_operation_failed', { error: recoveryOperationError })
+    outcome = { ok: false, error: recoveryOperationError }
+  } finally {
+    exclusive.finish()
+    desktopWriters.reopen(exclusive.admissionToken)
+    recoveryOperationBusy = false
+    publishRecoveryState()
+  }
+  // Build the response only after the authoritative busy=false transition.
+  // Otherwise the renderer can apply a stale busy snapshot after the final
+  // event and leave every recovery action disabled.
+  return { ...outcome, state: recoveryStateSnapshot() }
+}
+
+async function copyPrimaryCredentialToRecovery(profile: DesktopProfilePaths): Promise<void> {
+  const raw = await readFile(primaryDesktopProfile().credentialPath, 'utf8')
+  const credential = normalizeDesktopCredential(JSON.parse(raw) as Partial<DesktopConnection>)
+  if (credential.encryptedApiKey && !decryptApiKey(credential)) {
+    throw new Error('The primary provider credential cannot be decrypted on this device.')
+  }
+  if (credential.encryptedSearchApiKey && !decryptSearchApiKey(credential)) {
+    throw new Error('The primary search credential cannot be decrypted on this device.')
+  }
+  const now = new Date().toISOString()
+  const recoveryCredential: DesktopConnection = {
+    ...credential,
+    configAuthority: 'generated',
+    importTransactionId: '',
+    createdAt: now,
+    updatedAt: now,
+  }
+  await atomicWriteFile(profile.credentialPath, JSON.stringify(recoveryCredential, null, 2), 0o600)
+}
+
+async function createRecoveryProfile(copyPrimaryCredential: boolean): Promise<DesktopProfilePaths> {
+  const recoveryId = randomUUID()
+  const context = contextForProfile(app.getPath('userData'), 'recovery', recoveryId)
+  const profile = context.active
+  const recoveryRoot = join(app.getPath('userData'), 'recovery-profiles')
+  mkdirSync(recoveryRoot, { recursive: true, mode: 0o700 })
+  const rootInfo = lstatSync(recoveryRoot)
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
+    throw new Error('The recovery profile directory is not a safe local directory.')
+  }
+  const profileRoot = dirname(profile.home)
+  mkdirSync(profileRoot, { recursive: false, mode: 0o700 })
+  mkdirSync(profile.home, { recursive: false, mode: 0o700 })
+  mkdirSync(profile.logsDir, { recursive: false, mode: 0o700 })
+  if (copyPrimaryCredential) await copyPrimaryCredentialToRecovery(profile)
+  return profile
+}
+
+async function launchRecoveryProfile(
+  payload: { mode?: unknown; recoveryId?: unknown; copyPrimaryCredential?: unknown } | null,
+): Promise<DesktopProfilePaths> {
+  const mode = payload?.mode === 'continue'
+    ? 'continue'
+    : payload?.mode === 'create'
+      ? 'create'
+      : null
+  if (!mode) throw new Error('Choose whether to create or continue a recovery profile.')
+  let profile: DesktopProfilePaths
+  if (mode === 'create') {
+    profile = await createRecoveryProfile(payload?.copyPrimaryCredential === true)
+  } else {
+    const recoveryId = payload?.recoveryId
+    if (!isRecoveryProfileId(recoveryId)) throw new Error('Choose an existing recovery profile.')
+    const existing = allProfileContexts().find((item) => (
+      item.kind === 'recovery' && item.recoveryId === recoveryId
+    ))
+    if (!existing) throw new Error('The selected recovery profile is no longer available.')
+    profile = existing
+  }
+
+  await stopOwnedGatewayAndWait()
+  await selectDesktopProfile('recovery', profile.recoveryId)
+  clearReusableGatewayState()
+  recoveryInspection = null
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  void openOrResumeDesktopApp()
+  return profile
+}
+
+async function inspectPrimaryForReturn(): Promise<RecoveryProtocolResult> {
+  const inspection = await inspectDesktopProfile(primaryDesktopProfile())
+  primaryRecoveryInspection = inspection
+  return inspection
+}
+
+async function retryOrReturnPrimaryProfile(): Promise<RecoveryProtocolResult> {
+  const inspection = await inspectPrimaryForReturn()
+  if (inspection.outcome === 'recovery_required') {
+    recoveryInspection = inspection
+    publishRecoveryState()
+    return inspection
+  }
+
+  await stopOwnedGatewayAndWait()
+  await selectDesktopProfile('primary')
+  clearReusableGatewayState()
+  recoveryInspection = inspection
+  bootError = null
+  await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+  void openOrResumeDesktopApp()
+  return inspection
+}
+
+async function recoverPrimaryProfileTransaction(): Promise<RecoveryProtocolResult> {
+  const primary = primaryDesktopProfile()
+  let inspection = primaryRecoveryInspection
+  if (!inspection) inspection = await inspectPrimaryForReturn()
+  if (
+    !inspection.allowed_actions.includes('recover-transaction')
+    || !inspection.transaction_id
+  ) {
+    throw new Error('The interrupted profile operation cannot be recovered automatically.')
+  }
+
+  await stopOwnedGatewayAndWait()
+  const result = await runRecoveryCli(primary, [
+    'recover-transaction',
+    '--home', primary.home,
+    '--transaction-id', inspection.transaction_id,
+    '--expected-revision', String(inspection.revision),
+    '--json',
+  ])
+  primaryRecoveryInspection = result
+  recoveryInspection = result
+  if (result.outcome !== 'recovery_required') {
+    await selectDesktopProfile('primary')
+    clearReusableGatewayState()
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    void openOrResumeDesktopApp()
+  }
+  publishRecoveryState()
+  return result
+}
+
+async function abandonActiveCleanupTransaction(): Promise<RecoveryProtocolResult> {
+  const profile = activeDesktopProfile()
+  let inspection = recoveryInspection
+  if (!inspection || inspection.stable_code !== 'cleanup_transaction_incomplete') {
+    inspection = await inspectDesktopProfile(profile)
+  }
+  if (
+    inspection.stable_code !== 'cleanup_transaction_incomplete'
+    || !inspection.allowed_actions.includes('abandon-cleanup')
+    || !inspection.transaction_id
+  ) {
+    throw new Error('No interrupted cleanup is available to preserve and leave.')
+  }
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    buttons: [desktopT('cleanup.cancel'), desktopT('cleanup.abandonConfirm')],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+    title: desktopT('cleanup.abandonTitle'),
+    message: desktopT('cleanup.abandonMessage'),
+    detail: desktopT('cleanup.abandonDetail'),
+  }
+  const window = currentMainWindow()
+  const choice = window
+    ? await dialog.showMessageBox(window, options)
+    : await dialog.showMessageBox(options)
+  if (choice.response !== 1) return inspection
+
+  await stopOwnedGatewayAndWait()
+  // Stopping the runtime can legitimately change state metadata. Refresh the
+  // cleanup authority after every writer is gone so a retry never reuses a
+  // cached transaction/revision.
+  inspection = await inspectDesktopProfile(profile)
+  recoveryInspection = inspection
+  if (profile.kind === 'primary') primaryRecoveryInspection = inspection
+  publishRecoveryState()
+  if (
+    inspection.stable_code !== 'cleanup_transaction_incomplete'
+    || !inspection.allowed_actions.includes('abandon-cleanup')
+    || !inspection.transaction_id
+  ) {
+    throw new Error('The interrupted cleanup changed. Review the current recovery state.')
+  }
+  const result = await runRecoveryCli(profile, [
+    'abandon-cleanup',
+    '--user-data', app.getPath('userData'),
+    '--home', profile.home,
+    '--profile-kind', profileKindEnvironment(profile.kind),
+    '--transaction-id', inspection.transaction_id,
+    '--expected-revision', String(inspection.revision),
+    '--json',
+  ])
+  recoveryInspection = result
+  if (profile.kind === 'primary') primaryRecoveryInspection = result
+  publishRecoveryState()
+  if (result.outcome !== 'recovery_required') {
+    if (!existsSync(desktopProfileContextPath(app.getPath('userData')))) {
+      await updateDesktopProfileContext((current) => contextForProfile(
+        app.getPath('userData'),
+        profile.kind,
+        profile.recoveryId,
+        new Date().toISOString(),
+        current.persisted.attention_acknowledgement,
+      ))
+    }
+    clearReusableGatewayState()
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    void openOrResumeDesktopApp()
+  }
+  return result
+}
+
+async function choosePrimaryWorkspace(
+  requestedWorkspace: unknown,
+): Promise<RecoveryProtocolResult> {
+  const primary = primaryDesktopProfile()
+  let inspection = primaryRecoveryInspection
+  if (!inspection) inspection = await inspectPrimaryForReturn()
+
+  let workspace = ''
+  if (typeof requestedWorkspace === 'string' && requestedWorkspace) {
+    const candidate = inspection.candidates.find((item) => (
+      ['canonical', 'legacy', 'external'].includes(item.kind)
+      && item.path === requestedWorkspace
+      && item.exists
+      && item.valid
+    ))
+    if (!candidate) throw new Error('The selected workspace is not an inspected valid candidate.')
+    workspace = candidate.path
+  } else {
+    const window = currentMainWindow()
+    const options: Electron.OpenDialogOptions = {
+      title: 'Choose an OpenSquilla workspace',
+      properties: ['openDirectory'],
+    }
+    const choice = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+    if (choice.canceled || choice.filePaths.length !== 1) {
+      throw new Error('Workspace selection was cancelled.')
+    }
+    workspace = choice.filePaths[0] || ''
+  }
+  if (!workspace) throw new Error('Choose a workspace directory.')
+  if (!inspection.transaction_id) {
+    throw new Error('Recovery inspection did not provide a transaction id.')
+  }
+
+  await stopOwnedGatewayAndWait()
+  const result = await runRecoveryCli(primary, [
+    'choose-workspace',
+    '--home', primary.home,
+    '--transaction-id', inspection.transaction_id,
+    '--expected-revision', String(inspection.revision),
+    '--workspace', workspace,
+    '--json',
+  ])
+  primaryRecoveryInspection = result
+  recoveryInspection = result
+  if (result.outcome !== 'recovery_required') {
+    await selectDesktopProfile('primary')
+    clearReusableGatewayState()
+    bootError = null
+    await currentMainWindow()?.loadFile(bootPagePath()).catch(() => null)
+    void openOrResumeDesktopApp()
+  }
+  publishRecoveryState()
+  return result
+}
+
+ipcMain.handle('desktop:recovery:state', () => recoveryStateSnapshot())
+ipcMain.handle('desktop:recovery:choose-workspace', async (
+  event,
+  payload?: { workspace?: unknown },
+) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(() => choosePrimaryWorkspace(payload?.workspace))
+})
+ipcMain.handle('desktop:recovery:recover-transaction', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(recoverPrimaryProfileTransaction)
+})
+ipcMain.handle('desktop:recovery:abandon-cleanup', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(abandonActiveCleanupTransaction)
+})
+ipcMain.handle('desktop:recovery:launch-safe', async (
+  event,
+  payload?: { mode?: unknown; recoveryId?: unknown; copyPrimaryCredential?: unknown },
+) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(() => launchRecoveryProfile(payload || null))
+})
+ipcMain.handle('desktop:recovery:retry-primary', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(retryOrReturnPrimaryProfile)
+})
+ipcMain.handle('desktop:recovery:return-primary', async (event) => {
+  if (!trustedRecoveryIpc(event)) {
+    return { ok: false, error: 'Recovery actions are available only from the recovery page.' }
+  }
+  return withRecoveryOperation(retryOrReturnPrimaryProfile)
+})
+ipcMain.handle('desktop:recovery:reveal-path', async (
+  event,
+  payload?: { target?: unknown },
+) => {
+  if (!trustedRecoveryIpc(event)) return false
+  const target = payload?.target === 'active'
+    ? activeDesktopProfile().home
+    : payload?.target === 'backups'
+      ? app.getPath('userData')
+      : primaryDesktopProfile().home
+  if (existsSync(target)) await shell.showItemInFolder(target)
+  else await shell.openPath(dirname(target)).catch(() => null)
+  return true
+})
+ipcMain.handle('desktop:recovery:copy-diagnostics', async (event) => {
+  if (!trustedRecoveryIpc(event)) return false
+  clipboard.writeText(sanitizedRecoveryDiagnostics())
+  return true
+})
 
 ipcMain.handle('desktop:boot:state', () => ({
   status: bootStatus,
   error: bootError,
   gateway: { ...gatewayState },
+  recovery: recoveryStateSnapshot(),
 }))
 ipcMain.handle('desktop:boot:retry', async () => {
   // Backs both the boot-error "Retry" button and the Control UI "Restart
@@ -7268,19 +10821,45 @@ ipcMain.handle('desktop:onboarding:defaults', () => ({
     profiles: ROUTER_PROFILES,
   },
 }))
-ipcMain.handle('desktop:onboarding:save', async (_event, payload: OnboardingPayload) => {
+ipcMain.handle('desktop:onboarding:save', async (event, payload: OnboardingPayload) => {
   // Only honor this while an onboarding flow is actually awaiting a result. The
   // same preload bridge is attached to the Control UI window, so without this
   // guard any script on the gateway-served page could rewrite the credential and
   // regenerate config.toml outside onboarding.
-  if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
-  const pendingMigration = await readPendingMigrationProviderSetup()
-  const credential = await saveDesktopCredential(payload)
-  if (pendingMigration?.phase === 'needs-setup') {
-    await scrubImportedProviderEnvEntry(pendingMigration.apiKeyEnv)
+  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
+    return { ok: false, error: 'No trusted onboarding is in progress.' }
   }
-  await clearPendingMigrationProviderSetup()
-  applyDesktopLocaleChoice(payload.locale)
+  if (
+    activeDesktopProfile().kind === 'primary'
+    && await refreshPrimaryRecoveryAfterImportAttempt()
+  ) {
+    return {
+      ok: false,
+      error: 'The primary profile requires recovery before setup can write to it.',
+    }
+  }
+  let credential: DesktopConnection
+  const finishWriter = beginDesktopWriterOperation('complete desktop onboarding')
+  try {
+    // Re-read the marker only after reserving the writer. Credential/config,
+    // locale, and marker removal then converge as one lifecycle operation that
+    // update/quit must drain. Imported .env bytes are deliberately untouched.
+    const pendingMigration = await readPendingMigrationProviderSetup()
+    if (pendingMigration?.phase === 'needs-setup' && pendingMigration.provider) {
+      credential = await saveImportedDesktopCredential(
+        pendingMigration,
+        pendingMigration.committedTransactionId,
+        String(payload.apiKey || ''),
+        true,
+      )
+    } else {
+      credential = await saveDesktopCredential(payload, true)
+    }
+    applyDesktopLocaleChoice(payload.locale)
+    await clearPendingMigrationProviderSetup()
+  } finally {
+    finishWriter()
+  }
   const resolve = resolveOnboarding
   resolveOnboarding = null
   rejectOnboarding = null
@@ -7299,47 +10878,152 @@ ipcMain.handle('desktop:onboarding:cancel', () => {
   app.quit()
   return { ok: true }
 })
-ipcMain.handle('desktop:onboarding:migrate:preview', async () => {
+function onboardingPortableTransferError(): string | null {
+  if (process.platform !== 'win32') {
+    return 'Windows Portable transfer is available only in the Windows Desktop app.'
+  }
+  if (activeDesktopProfile().kind !== 'primary') {
+    return 'Recovery profiles cannot copy another profile.'
+  }
+  if (
+    recoveryInspection?.outcome !== 'ready'
+    || recoveryInspection.stable_code !== 'fresh_profile'
+  ) {
+    return 'This Desktop profile is no longer empty. Finish setup, then use Settings to transfer data.'
+  }
+  if (onboardingMigrationCandidates.some((candidate) => candidate.kind !== 'windows-portable')) {
+    return 'Only legacy Windows Portable data can be copied during first setup.'
+  }
+  return null
+}
+
+function onboardingTargetNotEmptyError(
+  report: Record<string, unknown> | null,
+  raw = '',
+): string | null {
+  const blockedByReport = report !== null
+    && migrationReportErrors(report).some((item) => item.kind === 'preflight/target')
+  const blockedBeforeReport = raw.includes('target home contains real data;')
+  return blockedByReport || blockedBeforeReport
+    ? 'This Desktop profile is no longer empty. Finish setup, then use Settings to transfer data safely.'
+    : null
+}
+
+ipcMain.handle('desktop:onboarding:migrate:browse', async (event) => {
+  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
+  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
+  const window = currentOnboardingWindow()
+  const choice = window
+    ? await dialog.showOpenDialog(window, {
+        title: 'Choose legacy Windows Portable data',
+        properties: ['openDirectory'],
+      })
+    : { canceled: true, filePaths: [] }
+  if (choice.canceled || choice.filePaths.length !== 1) return { ok: false, aborted: true }
+  const path = choice.filePaths[0] || ''
+  if (!path || !looksLikeOpenSquillaHome(path) || resolvedPathsEqual(path, primaryDesktopHome())) {
+    return { ok: false, error: 'Choose a plain legacy Windows Portable data directory.' }
+  }
+  const candidate = await inspectLegacyImportCandidate(
+    legacyImportCandidate('windows-portable', path),
+  )
+  const existing = onboardingMigrationCandidates.findIndex((value) => (
+    resolvedPathsEqual(value.path, candidate.path)
+  ))
+  if (existing >= 0) onboardingMigrationCandidates[existing] = candidate
+  else onboardingMigrationCandidates.push(candidate)
+  onboardingMigrationCandidate = candidate
+  onboardingMigrationPreviewApprovedAt = 0
+  return { ok: true, candidate }
+})
+
+ipcMain.handle('desktop:onboarding:migrate:select', (event, payload?: { source?: unknown }) => {
+  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
+  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
+  const source = typeof payload?.source === 'string' ? payload.source : ''
+  const candidate = onboardingMigrationCandidates.find((value) => (
+    value.kind === 'windows-portable' && value.path === source
+  )) || null
+  onboardingMigrationCandidate = candidate
+  onboardingMigrationPreviewApprovedAt = 0
+  return candidate
+    ? { ok: true, candidate }
+    : { ok: false, error: 'Choose one of the inspected OpenSquilla profiles.' }
+})
+
+ipcMain.handle('desktop:onboarding:migrate:preview', async (event) => {
   // Same guard as desktop:onboarding:save: the preload bridge is also attached
   // to the Control UI window, so these only respond while onboarding awaits.
   // The source path/kind come from the main process's own detection, never
   // from the renderer.
-  if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
+  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
+  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
   const candidate = onboardingMigrationCandidate
-  if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  if (!candidate || candidate.kind !== 'windows-portable') {
+    return { ok: false, error: 'No legacy Windows Portable data was selected.' }
+  }
   onboardingMigrationPreviewApprovedAt = 0
   publishDesktopMigrationProgress('preview')
-  const { ok, report, raw } = await migrateSummaryJson([
+  const { report, raw } = await migrateSummaryJson([
     '--source', candidate.path, '--kind', candidate.kind,
   ])
   const validationError = migrationReportValidationError(report, {
     source: candidate.path,
     sourceKind: candidate.kind,
-    target: desktopHome(),
+    target: primaryDesktopHome(),
     apply: false,
   })
-  const approved = ok
-    && report !== null
+  const targetNotEmptyError = onboardingTargetNotEmptyError(report, raw)
+  const approved = report !== null
     && validationError === null
     && migrationReportErrors(report).length === 0
-  if (approved) onboardingMigrationPreviewApprovedAt = Date.now()
-  publishDesktopMigrationProgress(approved ? 'done' : 'error', validationError || undefined)
+  if (approved) {
+    onboardingMigrationPreviewApprovedAt = Date.now()
+  }
+  const detail = validationError || targetNotEmptyError || undefined
+  publishDesktopMigrationProgress(approved ? 'done' : 'error', detail)
   return validationError
     ? { ok: false, report: null, raw: validationError }
-    : { ok, report, raw }
+    : {
+        ok: approved,
+        report,
+        raw,
+        ...(targetNotEmptyError ? { error: targetNotEmptyError } : {}),
+      }
 })
-ipcMain.handle('desktop:onboarding:migrate:apply', async () => {
-  if (!resolveOnboarding) return { ok: false, error: 'No onboarding in progress.' }
+ipcMain.handle('desktop:onboarding:migrate:apply', async (event) => {
+  if (!resolveOnboarding || !trustedOnboardingIpc(event)) {
+    return { ok: false, error: 'No trusted Portable copy is in progress.' }
+  }
+  const guardError = onboardingPortableTransferError()
+  if (guardError) return { ok: false, error: guardError }
   const candidate = onboardingMigrationCandidate
-  if (!candidate) return { ok: false, error: 'No legacy OpenSquilla home was detected.' }
+  if (!candidate || candidate.kind !== 'windows-portable') {
+    return { ok: false, error: 'No legacy Windows Portable data was selected.' }
+  }
   if (
     !onboardingMigrationPreviewApprovedAt
     || Date.now() - onboardingMigrationPreviewApprovedAt > DESKTOP_MIGRATION_PREVIEW_TTL_MS
   ) {
     onboardingMigrationPreviewApprovedAt = 0
-    return { ok: false, error: 'Preview the import again before applying it.' }
+    return { ok: false, error: 'Review the Portable data again before copying it.' }
   }
   onboardingMigrationPreviewApprovedAt = 0
+  const exclusive = desktopWriters.tryBeginExclusive('onboarding complete profile import')
+  if (!exclusive) {
+    return { ok: false, error: 'Another profile operation, update, or quit is already in progress.' }
+  }
+  try {
+    await waitForDesktopWriterOperations(1)
   // Onboarding runs before the first gateway spawn, so there is nothing to
   // quiesce here — the import lands before boot creates sessions.db and before
   // scheduler jobs (imported paused) are scanned.
@@ -7349,22 +11033,31 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async () => {
     intent = await beginMigrationReconciliationIntent(candidate)
     const result = await migrateSummaryJson([
       '--source', candidate.path, '--kind', candidate.kind, '--apply',
-    ])
+    ], true)
     const validationError = migrationReportValidationError(result.report, {
       source: candidate.path,
       sourceKind: candidate.kind,
-      target: desktopHome(),
+      target: primaryDesktopHome(),
       apply: true,
     })
-    const receipt = await findAppliedReceiptForIntent(intent)
+    const receipt = await findAppliedReceiptForIntent(
+      intent,
+      migrationTransactionIdFromReport(result.report),
+    )
     if (!receipt) {
       await clearPendingMigrationProviderSetup()
-      const detail = validationError || result.raw || 'Import did not publish a valid receipt.'
+      const detail = onboardingTargetNotEmptyError(result.report, result.raw)
+        || validationError
+        || result.raw
+        || 'Copy did not publish a valid receipt.'
+      const recoveryRequired = await refreshPrimaryRecoveryAfterImportAttempt()
       publishDesktopMigrationProgress('error', detail)
-      return { ok: false, report: result.report, raw: detail, prefill: null }
+      return { ok: false, error: detail, report: result.report, raw: detail, prefill: null, recoveryRequired }
     }
 
-    const prefill = readMigratedProviderPrefill()
+    intent = await bindMigrationIntentToReceipt(intent, receipt)
+    intent = await prepareImportedCredentialBackup(intent)
+    const prefill = migrationProviderPrefill(intent)
     await writePendingMigrationProviderSetup(prefill, intent)
     const outputVerified = result.ok
       && result.report !== null
@@ -7381,27 +11074,55 @@ ipcMain.handle('desktop:onboarding:migrate:apply', async () => {
       prefill,
     }
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
+    const rawDetail = error instanceof Error ? error.message : String(error)
+    const detail = onboardingTargetNotEmptyError(null, rawDetail) || rawDetail
     if (intent) {
       const receipt = await findAppliedReceiptForIntent(intent).catch(() => null)
       if (receipt) {
-        const prefill = readMigratedProviderPrefill()
+        intent = await bindMigrationIntentToReceipt(intent, receipt)
+        intent = await prepareImportedCredentialBackup(intent)
+        const prefill = migrationProviderPrefill(intent)
         await writePendingMigrationProviderSetup(prefill, intent)
         publishDesktopMigrationProgress('done')
         return { ok: true, report: receipt.report, raw: detail, prefill }
       }
       await clearPendingMigrationProviderSetup().catch(() => null)
     }
+    const recoveryRequired = await refreshPrimaryRecoveryAfterImportAttempt()
     publishDesktopMigrationProgress('error', detail)
-    return { ok: false, report: null, raw: detail, prefill: null }
+    return { ok: false, error: detail, report: null, raw: detail, prefill: null, recoveryRequired }
+  }
+  } finally {
+    exclusive.finish()
+    desktopWriters.reopen(exclusive.admissionToken)
   }
 })
 
 // Set once the Windows graceful-drain-on-quit sequence has run so the re-issued
 // quit (after app.exit is deferred) is not intercepted a second time.
 let windowsQuitDrainDone = false
+let quitDeferredForDesktopWriters = false
+let quitWriterAdmission: symbol | null = null
 
 app.on('before-quit', (event) => {
+  desktopUpdateCheckScheduler.stop()
+  if (desktopWriters.activeCount > 0 || quitDeferredForDesktopWriters) {
+    event.preventDefault()
+    if (!quitDeferredForDesktopWriters) {
+      quitDeferredForDesktopWriters = true
+      quitWriterAdmission ??= desktopWriters.close('quit')
+      isQuitting = false
+      desktopLog('quit_deferred_for_profile_writer', {
+        activeWriters: desktopWriters.activeCount,
+      })
+      void waitForDesktopWriterOperations().then(() => {
+        quitDeferredForDesktopWriters = false
+        app.quit()
+      })
+    }
+    return
+  }
+  quitWriterAdmission ??= desktopWriters.close('quit')
   desktopLog('before_quit', { platform: process.platform, drained: windowsQuitDrainDone })
   isQuitting = true
   // On Windows there is no real SIGTERM, so the normal close path would
@@ -7532,14 +11253,10 @@ if (!gotSingleInstanceLock) {
     void openOrResumeDesktopApp()
     initAutoUpdater()
     if (mockUpdateVersion() !== null) {
-      setTimeout(() => {
-        void checkForUpdates(false)
-      }, 1_000).unref()
-    } else if (autoUpdateSupported()) {
+      desktopUpdateCheckScheduler.start(MOCK_UPDATE_CHECK_INITIAL_DELAY_MS)
+    } else if (desktopUpdateManaged()) {
       // Delay the silent startup check so it doesn't compete with gateway boot.
-      setTimeout(() => {
-        void checkForUpdates(false)
-      }, 12_000).unref()
+      desktopUpdateCheckScheduler.start(UPDATE_CHECK_INITIAL_DELAY_MS)
     }
   })
 }

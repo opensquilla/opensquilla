@@ -1,6 +1,6 @@
 {
   "name": "@opensquilla/desktop-electron",
-  "version": "0.5.0-rc3",
+  "version": "0.5.0-rc4",
   "private": true,
   "description": "Electron desktop shell for the OpenSquilla Control UI.",
   "repository": {
@@ -22,9 +22,18 @@
     "test:cli-invocation": "npm run build && node scripts/test-cli-invocation.mjs",
     "test:secret-storage": "npm run build && node scripts/test-secret-storage-policy.mjs",
     "test:update-resolver": "npm run build && node scripts/test-update-resolver.mjs",
+    "test:update-scheduler": "npm run build && node scripts/test-update-check-scheduler.mjs",
     "test:desktop-locale": "npm run build && node scripts/test-desktop-locale.mjs",
+    "test:profile-substrate": "npm run build && node scripts/test-desktop-profile-substrate.mjs && node scripts/test-desktop-profile-context.mjs",
+    "test:profile-recovery-flow": "npm run build && node scripts/test-profile-recovery-flow.mjs",
+    "test:profile-recovery-accessibility": "npm run build && node scripts/test-profile-recovery-accessibility.mjs",
+    "test:profile-import-flow": "npm run build && node scripts/test-profile-import-flow.mjs",
+    "test:unsafe-profile-no-write": "npm run build && node scripts/test-unsafe-profile-no-write.mjs",
+    "test:profile-recovery": "npm run build && node scripts/test-profile-recovery-flow.mjs && node scripts/test-profile-recovery-accessibility.mjs && node scripts/test-unsafe-profile-no-write.mjs",
+    "test:desktop-cleanup": "npm run build && node scripts/test-desktop-cleanup-contract.mjs",
+    "test:desktop-cleanup-flow": "npm run build && node scripts/test-desktop-cleanup-flow.mjs",
     "test:mock-update-flow": "npm run build && node scripts/test-mock-update-flow.mjs",
-    "test:onboarding-flow": "npm run build && node scripts/test-onboarding-flow.mjs",
+    "test:onboarding-flow": "npm run build && node scripts/test-onboarding-data-flow.mjs && node scripts/test-onboarding-flow.mjs",
     "start": "electron .",
     "pack": "npm run build && electron-builder --dir",
     "dist": "npm run build && electron-builder"
@@ -111,7 +120,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": true,
+      "deleteAppDataOnUninstall": false,
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico"
     }

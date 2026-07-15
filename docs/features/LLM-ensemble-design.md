@@ -256,7 +256,9 @@ Static presets expose no lineup tuning — the models are fixed in code. Custom
 lineups are tuned entirely through the `candidates` list (subject to the bounds
 above). Both share the fixed-lineup runtime defaults, which an operator may
 still override explicitly (`min_successful_proposers`,
-`proposer_timeout_seconds`, `aggregator_timeout_seconds`, `shuffle_candidates`).
+`proposer_timeout_seconds`, `aggregator_timeout_seconds`, `shuffle_candidates`,
+`proposer_tools`, `aggregator_tools`). Proposer and aggregator tool permissions are
+independent; both receive the outer tool set only when their corresponding switch is enabled.
 
 ---
 

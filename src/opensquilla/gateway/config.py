@@ -457,6 +457,7 @@ class LlmEnsembleConfig(BaseSettings):
     ] = "static_openrouter_b5"
     ranking_user_profile_enabled: bool = True
     proposer_tools: bool = False
+    aggregator_tools: bool = True
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"
     model_options: list[str] = Field(default_factory=_default_llm_ensemble_model_options)

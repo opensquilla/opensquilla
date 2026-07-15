@@ -45,6 +45,7 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
     poison_python3.write_text(
         "#!/usr/bin/env bash\necho 'unexpected python3 PATH lookup' >&2\nexit 97\n",
         encoding="utf-8",
+        newline="\n",
     )
     poison_python3.chmod(0o755)
     remote_root = tmp_path / "oss"
@@ -58,6 +59,9 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
             import shutil
             import sys
             from pathlib import Path
+
+            if os.name == "nt":
+                sys.stdout.reconfigure(newline="\\n")
 
             args = sys.argv[1:]
             with Path(os.environ["FAKE_OSS_LOG"]).open("a", encoding="utf-8") as log:
@@ -133,11 +137,13 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
             """
         ),
         encoding="utf-8",
+        newline="\n",
     )
     fake = fake_bin / "ossutil"
     fake.write_text(
         '#!/usr/bin/env bash\nexec "$FAKE_OSS_PYTHON" "$FAKE_OSS_SCRIPT" "$@"\n',
         encoding="utf-8",
+        newline="\n",
     )
     fake.chmod(0o755)
     return fake_bin, remote_root, call_log
@@ -318,9 +324,11 @@ def test_version_scoped_oss_objects_are_write_once_and_race_safe(tmp_path: Path)
     payload = release_assets / "payload.bin"
     checksums = release_assets / "SHA256SUMS"
     payload.write_bytes(b"first-published-payload")
-    checksums.write_text("first-published-checksums\n", encoding="utf-8")
-    (release_assets / "CHECKSUMMED_ASSETS").write_text("payload.bin\n", encoding="utf-8")
-    (channel_assets / "TARGETS").write_text("", encoding="utf-8")
+    checksums.write_text("first-published-checksums\n", encoding="utf-8", newline="\n")
+    (release_assets / "CHECKSUMMED_ASSETS").write_text(
+        "payload.bin\n", encoding="utf-8", newline="\n"
+    )
+    (channel_assets / "TARGETS").write_text("", encoding="utf-8", newline="\n")
 
     first = _run_upload_step(
         tmp_path,
@@ -349,7 +357,7 @@ def test_version_scoped_oss_objects_are_write_once_and_race_safe(tmp_path: Path)
     assert not any(call[:2] == ["api", "put-object"] for call in identical_calls)
 
     payload.write_bytes(b"mutated-payload")
-    checksums.write_text("mutated-checksums\n", encoding="utf-8")
+    checksums.write_text("mutated-checksums\n", encoding="utf-8", newline="\n")
     changed = _run_upload_step(
         tmp_path,
         fake_bin,
@@ -366,7 +374,7 @@ def test_version_scoped_oss_objects_are_write_once_and_race_safe(tmp_path: Path)
 
     racy_payload = release_assets / "racy.bin"
     racy_payload.write_bytes(b"workflow-payload")
-    (release_assets / "CHECKSUMMED_ASSETS").write_text("racy.bin\n", encoding="utf-8")
+    (release_assets / "CHECKSUMMED_ASSETS").write_text("racy.bin\n", encoding="utf-8", newline="\n")
     race_url = "oss://release-bucket/releases/v0.5.0rc4/racy.bin"
     raced = _run_upload_step(
         tmp_path,

@@ -1963,6 +1963,7 @@
     "aiModelRouter": "AI モデルルーター",
     "aiModelEnsembleRouter": "AI モデル集約ルーター",
     "routerFx": {
+      "selectedModel": "ルーターが {model} を選択しました",
       "ensembleSelecting": "AI モデル集約ルーター · 候補を選択中",
       "ensembleHandedOff": "AI モデル集約ルーター · エージェントへ引き継ぎ済み",
       "ensembleRunning": "AI モデル集約ルーター · {count} 件の候補を統合中",

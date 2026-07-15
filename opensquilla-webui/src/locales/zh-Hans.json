@@ -1963,6 +1963,7 @@
     "aiModelRouter": "AI 模型路由",
     "aiModelEnsembleRouter": "AI 模型聚合路由",
     "routerFx": {
+      "selectedModel": "路由已选择 {model}",
       "ensembleSelecting": "AI 模型聚合路由 · 正在选择候选",
       "ensembleHandedOff": "AI 模型聚合路由 · 已交给 Agent",
       "ensembleRunning": "AI 模型聚合路由 · {count} 个候选正在合成",

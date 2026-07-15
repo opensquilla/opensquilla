@@ -26,21 +26,24 @@ if TYPE_CHECKING:
     from opensquilla.engine.types import ThinkingLevel
 
 
-def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
+def _resolve_reasoning_effort(level: ThinkingLevel | str | None, budget: int) -> str:
     """Map ThinkingLevel to OpenRouter/DeepSeek effort string."""
     from opensquilla.engine.types import (
         ThinkingLevel,  # local: avoids circular import at module load
     )
 
     _level_map = {
-        ThinkingLevel.MINIMAL: "minimal",
-        ThinkingLevel.LOW: "low",
-        ThinkingLevel.MEDIUM: "medium",
-        ThinkingLevel.HIGH: "high",
-        ThinkingLevel.XHIGH: "xhigh",
+        ThinkingLevel.MINIMAL.value: "minimal",
+        ThinkingLevel.LOW.value: "low",
+        ThinkingLevel.MEDIUM.value: "medium",
+        ThinkingLevel.HIGH.value: "high",
+        ThinkingLevel.XHIGH.value: "xhigh",
     }
-    if level and level in _level_map:
-        return _level_map[level]
+    normalized = str(getattr(level, "value", level) or "").strip().lower()
+    if normalized == "max":
+        return "max"
+    if normalized in _level_map:
+        return _level_map[normalized]
     if budget <= 1024:
         return "low"
     elif budget <= 10000:
@@ -49,18 +52,19 @@ def _resolve_reasoning_effort(level: ThinkingLevel | None, budget: int) -> str:
         return "high"
 
 
-def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | None) -> str:
+def _resolve_deepseek_reasoning_effort(level: ThinkingLevel | str | None) -> str:
     """Map OpenSquilla thinking levels to DeepSeek V4's documented effort values."""
     from opensquilla.engine.types import (
         ThinkingLevel,  # local: avoids circular import at module load
     )
 
-    if level == ThinkingLevel.XHIGH:
+    normalized = str(getattr(level, "value", level) or "").strip().lower()
+    if normalized in {ThinkingLevel.XHIGH.value, "max"}:
         return "max"
     return "high"
 
 
-def _resolve_tokenhub_reasoning_effort(level: ThinkingLevel | None) -> str:
+def _resolve_tokenhub_reasoning_effort(level: ThinkingLevel | str | None) -> str:
     """Map OpenSquilla thinking levels to TokenHub's documented effort values.
 
     TokenHub's hy3 family accepts exactly ``low`` and ``high`` — anything
@@ -70,7 +74,8 @@ def _resolve_tokenhub_reasoning_effort(level: ThinkingLevel | None) -> str:
         ThinkingLevel,  # local: avoids circular import at module load
     )
 
-    if level in (ThinkingLevel.MINIMAL, ThinkingLevel.LOW):
+    normalized = str(getattr(level, "value", level) or "").strip().lower()
+    if normalized in (ThinkingLevel.MINIMAL.value, ThinkingLevel.LOW.value):
         return "low"
     return "high"
 
@@ -85,7 +90,7 @@ def _gemini_supports_reasoning_none(model: str) -> bool:
 class ReasoningEnableArgs:
     """Inputs a dialect may consume when turning thinking on."""
 
-    thinking_level: ThinkingLevel | None
+    thinking_level: ThinkingLevel | str | None
     thinking_budget_tokens: int
 
     @property

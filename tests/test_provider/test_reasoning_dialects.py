@@ -133,6 +133,16 @@ def test_openrouter_enable_payload() -> None:
     assert _enabled("openrouter", _HIGH_ARGS) == {"reasoning": {"effort": "high"}}
 
 
+def test_openrouter_preserves_provider_native_max_effort() -> None:
+    args = ReasoningEnableArgs(thinking_level="max", thinking_budget_tokens=50_000)
+    assert _enabled("openrouter", args) == {"reasoning": {"effort": "max"}}
+
+
+def test_openrouter_preserves_string_xhigh_effort() -> None:
+    args = ReasoningEnableArgs(thinking_level="xhigh", thinking_budget_tokens=50_000)
+    assert _enabled("openrouter", args) == {"reasoning": {"effort": "xhigh"}}
+
+
 def test_openrouter_disable_payload_is_gated_on_policy_model_set() -> None:
     disable_set = frozenset({"z-ai/glm-5"})
     listed = ReasoningDisableArgs(

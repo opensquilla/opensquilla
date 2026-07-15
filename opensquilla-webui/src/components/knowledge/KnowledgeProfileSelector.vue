@@ -73,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -96,6 +96,9 @@ const profileValues = computed<Array<string | null>>(() => [
   null,
   ...props.profiles.map(profile => profile.id),
 ])
+const profileIdSequence = computed(() => JSON.stringify(
+  props.profiles.map(profile => profile.id),
+))
 const rovingProfile = ref<string | null | undefined>(undefined)
 const tabbableProfile = computed<string | null>(() => {
   if (
@@ -122,6 +125,14 @@ function tabIndex(profile: string | null): number {
 function setRovingProfile(profile: string | null) {
   rovingProfile.value = profile
 }
+
+function syncRovingToDraft() {
+  rovingProfile.value = props.draft === null || availableIds.value.has(props.draft)
+    ? props.draft
+    : null
+}
+
+watch([() => props.draft, profileIdSequence], syncRovingToDraft)
 
 function onRadioKeydown(profile: string | null, event: KeyboardEvent) {
   let step: -1 | 1

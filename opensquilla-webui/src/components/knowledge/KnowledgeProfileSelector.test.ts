@@ -1,17 +1,27 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createApp, nextTick, type App } from 'vue'
+import { createApp, h, nextTick, reactive, type App } from 'vue'
 import i18n from '@/i18n'
 import KnowledgeProfileSelector from './KnowledgeProfileSelector.vue'
 
 const mountedApps: App[] = []
 
-async function mountSelector(overrides: Record<string, unknown> = {}) {
+interface SelectorProps {
+  profiles: Array<{ id: string; label: string }>
+  providerDefault: string | null
+  savedOverride: string | null
+  draft: string | null
+  saving: boolean
+  disabled: boolean
+  error: string
+}
+
+async function mountSelector(overrides: Partial<SelectorProps> = {}) {
   const root = document.createElement('div')
   document.body.appendChild(root)
   const onChange = vi.fn()
   const onSave = vi.fn()
-  const app = createApp(KnowledgeProfileSelector, {
+  const props = reactive<SelectorProps>({
     profiles: [
       { id: 'vector', label: 'Vector' },
       { id: 'hybrid', label: 'Hybrid' },
@@ -22,15 +32,16 @@ async function mountSelector(overrides: Record<string, unknown> = {}) {
     saving: false,
     disabled: false,
     error: '',
-    onChange,
-    onSave,
     ...overrides,
+  })
+  const app = createApp({
+    render: () => h(KnowledgeProfileSelector, { ...props, onChange, onSave }),
   })
   app.use(i18n)
   app.mount(root)
   mountedApps.push(app)
   await nextTick()
-  return { root, onChange, onSave }
+  return { root, props, onChange, onSave }
 }
 
 beforeEach(() => {
@@ -136,6 +147,52 @@ describe('KnowledgeProfileSelector', () => {
     expect(hybrid.tabIndex).toBe(0)
     expect(onChange.mock.calls).toEqual([[null], ['hybrid']])
     expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('syncs the tab stop when a controlled parent changes the draft', async () => {
+    const { root, props } = await mountSelector()
+    const provider = root.querySelector<HTMLButtonElement>('[data-profile-id="provider-default"]')!
+    const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+
+    provider.focus()
+    provider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+    expect(vector.tabIndex).toBe(0)
+
+    props.draft = 'hybrid'
+    await nextTick()
+    const hybrid = root.querySelector<HTMLButtonElement>('[data-profile-id="hybrid"]')!
+    const tabbable = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .filter(radio => radio.tabIndex === 0)
+    expect(hybrid.getAttribute('aria-checked')).toBe('true')
+    expect(tabbable).toEqual([hybrid])
+  })
+
+  it('syncs the fallback when profile updates invalidate and restore the draft', async () => {
+    const { root, props } = await mountSelector({ draft: 'vector' })
+    const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+
+    vector.focus()
+    vector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+
+    props.profiles = [{ id: 'hybrid', label: 'Hybrid' }]
+    await nextTick()
+    const provider = root.querySelector<HTMLButtonElement>('[data-profile-id="provider-default"]')!
+    let tabbable = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .filter(radio => radio.tabIndex === 0)
+    expect(tabbable).toEqual([provider])
+
+    props.profiles = [
+      { id: 'vector', label: 'Vector' },
+      { id: 'hybrid', label: 'Hybrid' },
+    ]
+    await nextTick()
+    const restoredVector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+    tabbable = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .filter(radio => radio.tabIndex === 0)
+    expect(restoredVector.getAttribute('aria-checked')).toBe('true')
+    expect(tabbable).toEqual([restoredVector])
   })
 
   it('keeps a fallback tab stop when the draft profile is unavailable', async () => {

@@ -12,7 +12,7 @@
         :tabindex="tabIndex(null)"
         :aria-checked="checked(null)"
         :disabled="disabled || saving"
-        @click="emit('change', null)"
+        @click="selectProfile(null)"
         @focus="setRovingProfile(null)"
         @keydown="onRadioKeydown(null, $event)"
       >
@@ -31,7 +31,7 @@
         :tabindex="tabIndex(profile.id)"
         :aria-checked="checked(profile.id)"
         :disabled="disabled || saving"
-        @click="emit('change', profile.id)"
+        @click="selectProfile(profile.id)"
         @focus="setRovingProfile(profile.id)"
         @keydown="onRadioKeydown(profile.id, $event)"
       >
@@ -99,6 +99,7 @@ const profileValues = computed<Array<string | null>>(() => [
 const profileIdSequence = computed(() => JSON.stringify(
   props.profiles.map(profile => profile.id),
 ))
+const pendingProfile = ref<string | null | undefined>(undefined)
 const rovingProfile = ref<string | null | undefined>(undefined)
 const tabbableProfile = computed<string | null>(() => {
   if (
@@ -115,7 +116,10 @@ const savedUnavailable = computed(
 const effective = computed(() => props.savedOverride || props.providerDefault)
 
 function checked(profile: string | null): boolean {
-  return props.draft === profile
+  const selectedProfile = pendingProfile.value === undefined
+    ? props.draft
+    : pendingProfile.value
+  return selectedProfile === profile
 }
 
 function tabIndex(profile: string | null): number {
@@ -126,7 +130,14 @@ function setRovingProfile(profile: string | null) {
   rovingProfile.value = profile
 }
 
+function selectProfile(profile: string | null) {
+  pendingProfile.value = profile
+  rovingProfile.value = profile
+  emit('change', profile)
+}
+
 function syncRovingToDraft() {
+  pendingProfile.value = undefined
   rovingProfile.value = props.draft === null || availableIds.value.has(props.draft)
     ? props.draft
     : null
@@ -156,9 +167,8 @@ function onRadioKeydown(profile: string | null, event: KeyboardEvent) {
 
   event.preventDefault()
   const nextProfile = values[nextIndex]
-  rovingProfile.value = nextProfile
+  selectProfile(nextProfile)
   nextButton.focus()
-  emit('change', nextProfile)
 }
 </script>
 

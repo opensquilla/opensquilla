@@ -44,6 +44,22 @@ async function mountSelector(overrides: Partial<SelectorProps> = {}) {
   return { root, props, onChange, onSave }
 }
 
+function expectFocusedSelection(
+  root: HTMLElement,
+  profileId: string,
+  uncheckedProfileIds: string[],
+) {
+  const selected = root.querySelector<HTMLButtonElement>(`[data-profile-id="${profileId}"]`)!
+  const radios = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+  expect(document.activeElement).toBe(selected)
+  expect(radios.filter(radio => radio.tabIndex === 0)).toEqual([selected])
+  expect(selected.getAttribute('aria-checked')).toBe('true')
+  for (const uncheckedId of uncheckedProfileIds) {
+    expect(root.querySelector(`[data-profile-id="${uncheckedId}"]`)
+      ?.getAttribute('aria-checked')).toBe('false')
+  }
+}
+
 beforeEach(() => {
   i18n.global.locale.value = 'en'
   i18n.global.mergeLocaleMessage('en', {
@@ -79,10 +95,13 @@ describe('KnowledgeProfileSelector', () => {
 
   it('emits a draft change without saving immediately', async () => {
     const { root, onChange, onSave } = await mountSelector()
-    root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!.click()
+    const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+    vector.focus()
+    vector.click()
     await nextTick()
     expect(onChange).toHaveBeenCalledWith('vector')
     expect(onSave).not.toHaveBeenCalled()
+    expectFocusedSelection(root, 'vector', ['provider-default', 'hybrid'])
   })
 
   it('emits null for follow-provider and enables save only when dirty', async () => {
@@ -109,23 +128,34 @@ describe('KnowledgeProfileSelector', () => {
     expect(root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!.tabIndex).toBe(0)
   })
 
+  it('does not change the checked selection on focus alone', async () => {
+    const { root } = await mountSelector({ draft: 'vector' })
+    const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+    const hybrid = root.querySelector<HTMLButtonElement>('[data-profile-id="hybrid"]')!
+
+    hybrid.focus()
+    await nextTick()
+    const tabbable = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .filter(radio => radio.tabIndex === 0)
+    expect(tabbable).toEqual([hybrid])
+    expect(vector.getAttribute('aria-checked')).toBe('true')
+    expect(hybrid.getAttribute('aria-checked')).toBe('false')
+  })
+
   it('moves right and down with wrapping without waiting for controlled writeback', async () => {
     const { root, onChange, onSave } = await mountSelector({ draft: 'vector' })
-    const provider = root.querySelector<HTMLButtonElement>('[data-profile-id="provider-default"]')!
     const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
     const hybrid = root.querySelector<HTMLButtonElement>('[data-profile-id="hybrid"]')!
 
     vector.focus()
     vector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
     await nextTick()
-    expect(document.activeElement).toBe(hybrid)
-    expect(hybrid.tabIndex).toBe(0)
+    expectFocusedSelection(root, 'hybrid', ['provider-default', 'vector'])
 
     // Deliberately do not write the emitted value back to draft before the next key.
     hybrid.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
     await nextTick()
-    expect(document.activeElement).toBe(provider)
-    expect(provider.tabIndex).toBe(0)
+    expectFocusedSelection(root, 'provider-default', ['vector', 'hybrid'])
     expect(onChange.mock.calls).toEqual([['hybrid'], [null]])
     expect(onSave).not.toHaveBeenCalled()
   })
@@ -134,17 +164,15 @@ describe('KnowledgeProfileSelector', () => {
     const { root, onChange, onSave } = await mountSelector({ draft: 'vector' })
     const provider = root.querySelector<HTMLButtonElement>('[data-profile-id="provider-default"]')!
     const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
-    const hybrid = root.querySelector<HTMLButtonElement>('[data-profile-id="hybrid"]')!
 
     vector.focus()
     vector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
     await nextTick()
-    expect(document.activeElement).toBe(provider)
+    expectFocusedSelection(root, 'provider-default', ['vector', 'hybrid'])
 
     provider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
     await nextTick()
-    expect(document.activeElement).toBe(hybrid)
-    expect(hybrid.tabIndex).toBe(0)
+    expectFocusedSelection(root, 'hybrid', ['provider-default', 'vector'])
     expect(onChange.mock.calls).toEqual([[null], ['hybrid']])
     expect(onSave).not.toHaveBeenCalled()
   })
@@ -201,6 +229,8 @@ describe('KnowledgeProfileSelector', () => {
       .filter(radio => radio.tabIndex === 0)
     expect(tabbable).toHaveLength(1)
     expect(tabbable[0].dataset.profileId).toBe('provider-default')
+    expect(Array.from(root.querySelectorAll('[role="radio"]'))
+      .every(radio => radio.getAttribute('aria-checked') === 'false')).toBe(true)
   })
 
   it('marks a saved profile that is no longer advertised as unavailable', async () => {

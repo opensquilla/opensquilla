@@ -5326,6 +5326,12 @@ class TurnRunner:
                 static_b5_credential_available,
                 static_b5_profile,
             )
+            from opensquilla.provider.ensemble_observability import (
+                log_ensemble_decision_failed,
+                log_ensemble_decision_skipped,
+                log_ensemble_decision_started,
+                log_ensemble_decision_steps,
+            )
             current_provider_config = (
                 getattr(cloned_selector, "current_config", None)
                 if cloned_selector is not None
@@ -5345,19 +5351,52 @@ class TurnRunner:
                 and current_provider_config is not None
                 else (True, "")
             )
+            ensemble_decision_id = str(
+                turn.metadata.get("router_decision_id") or uuid.uuid4().hex
+            )
+            turn.metadata["ensemble_decision_id"] = ensemble_decision_id
+            ranking_user_profile_enabled = (
+                bool(
+                    getattr(
+                        ensemble_cfg,
+                        "ranking_user_profile_enabled",
+                        True,
+                    )
+                )
+                if selection_mode == "router_dynamic"
+                else None
+            )
+            log_ensemble_decision_started(
+                decision_id=ensemble_decision_id,
+                selection_mode=selection_mode,
+                turn_metadata=turn.metadata,
+                user_profile_enabled=ranking_user_profile_enabled,
+            )
             if current_provider_config is None:
+                log_ensemble_decision_skipped(
+                    decision_id=ensemble_decision_id,
+                    selection_mode=selection_mode,
+                    reason="missing_provider_selector_current_config",
+                )
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason="missing_provider_selector_current_config",
+                    decision_id=ensemble_decision_id,
                 )
             elif not getattr(current_provider_config, "provider", None) or not getattr(
                 current_provider_config,
                 "model",
                 None,
             ):
+                log_ensemble_decision_skipped(
+                    decision_id=ensemble_decision_id,
+                    selection_mode=selection_mode,
+                    reason="incomplete_provider_selector_current_config",
+                )
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason="incomplete_provider_selector_current_config",
+                    decision_id=ensemble_decision_id,
                 )
             elif static_b5_profile(selection_mode) is not None and not (
                 static_b5_credential_available(
@@ -5370,9 +5409,15 @@ class TurnRunner:
                 # members can never succeed; wrapping would still post the
                 # conversation upstream with an empty bearer token on every
                 # turn. Keep the single-model provider instead.
+                log_ensemble_decision_skipped(
+                    decision_id=ensemble_decision_id,
+                    selection_mode=selection_mode,
+                    reason=f"{selection_mode}_no_credential",
+                )
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason=f"{selection_mode}_no_credential",
+                    decision_id=ensemble_decision_id,
                 )
                 turn.metadata["ensemble_wrap_skipped_reason"] = (
                     f"{selection_mode}_no_credential"
@@ -5381,9 +5426,15 @@ class TurnRunner:
                 # Same empty-bearer protection for the explicit custom
                 # lineup: a member whose provider resolves no key can never
                 # succeed, and a lineup without proposers cannot fuse.
+                log_ensemble_decision_skipped(
+                    decision_id=ensemble_decision_id,
+                    selection_mode=selection_mode,
+                    reason=f"{selection_mode}_not_ready:{custom_b5_reason}",
+                )
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason=f"{selection_mode}_not_ready:{custom_b5_reason}",
+                    decision_id=ensemble_decision_id,
                 )
                 turn.metadata["ensemble_wrap_skipped_reason"] = (
                     f"{selection_mode}_not_ready:{custom_b5_reason}"
@@ -5454,7 +5505,11 @@ class TurnRunner:
                             aggregator_output_tokens=aggregator_output_tokens,
                             ranking_config=ranking_config,
                         )
-                        user_profile = mock_user_profile(ranking_config)
+                        user_profile = (
+                            mock_user_profile(ranking_config)
+                            if ranking_user_profile_enabled
+                            else None
+                        )
                         analyzer_provider = self._router_dynamic_task_analyzer_provider(
                             current_provider_config,
                             session_key=turn.session_key,
@@ -5471,8 +5526,10 @@ class TurnRunner:
                             analyzer_provider_id=TASK_ANALYZER_PROVIDER_ID,
                             analyzer_model_id=TASK_ANALYZER_MODEL_ID,
                             ranking_config=ranking_config,
+                            decision_id=ensemble_decision_id,
                         )
                         ranking_inputs = {
+                            "decision_id": ensemble_decision_id,
                             "task_analysis": task_analysis,
                             "user_profile": user_profile,
                             "request_context": request_context,
@@ -5487,6 +5544,19 @@ class TurnRunner:
                         turn.metadata["router_dynamic_request_context_hash"] = (
                             request_context.get("snapshot_hash")
                         )
+                        turn.metadata["router_dynamic_user_profile"] = {
+                            "enabled": ranking_user_profile_enabled,
+                            "source": (
+                                str(user_profile.get("profile_source") or "")
+                                if user_profile is not None
+                                else ""
+                            ),
+                            "version": (
+                                str(user_profile.get("profile_version") or "")
+                                if user_profile is not None
+                                else ""
+                            ),
+                        }
 
                     ensemble_provider = build_ensemble_provider_from_config(
                         config=self._config,
@@ -5501,10 +5571,17 @@ class TurnRunner:
                         ),
                     )
                 except dynamic_ranking_errors as exc:
+                    log_ensemble_decision_failed(
+                        decision_id=ensemble_decision_id,
+                        selection_mode=selection_mode,
+                        reason="router_dynamic_ranking_unavailable",
+                        error=exc,
+                    )
                     log.warning(
                         "llm_ensemble.wrap_skipped",
                         reason="router_dynamic_ranking_unavailable",
                         error=str(exc),
+                        decision_id=ensemble_decision_id,
                     )
                     turn.metadata.pop("ensemble_enabled", None)
                     turn.metadata["ensemble_wrap_skipped_reason"] = (
@@ -5512,22 +5589,45 @@ class TurnRunner:
                     )
                     turn.metadata["router_dynamic_ranking_error"] = str(exc)
                 except TreeBaselineSelectionError as exc:
+                    log_ensemble_decision_failed(
+                        decision_id=ensemble_decision_id,
+                        selection_mode=selection_mode,
+                        reason="router_tree_baseline_unavailable",
+                        error=exc,
+                    )
                     log.warning(
                         "llm_ensemble.wrap_skipped",
                         reason="router_tree_baseline_unavailable",
                         error=str(exc),
+                        decision_id=ensemble_decision_id,
                     )
                     turn.metadata.pop("ensemble_enabled", None)
                     turn.metadata["ensemble_wrap_skipped_reason"] = (
                         "router_tree_baseline_unavailable"
                     )
                     turn.metadata["router_tree_baseline_error"] = str(exc)
+                except Exception as exc:
+                    log_ensemble_decision_failed(
+                        decision_id=ensemble_decision_id,
+                        selection_mode=selection_mode,
+                        reason="ensemble_selection_error",
+                        error=exc,
+                    )
+                    raise
                 else:
                     provider = ensemble_provider
+                    plan = ensemble_provider.selection_plan
+                    plan["decision_id"] = ensemble_decision_id
+                    log_ensemble_decision_steps(
+                        decision_id=ensemble_decision_id,
+                        selection_mode=selection_mode,
+                        profile_name=ensemble_provider.profile_name,
+                        selection_plan=plan,
+                    )
                     if selection_mode == "router_dynamic":
-                        plan = ensemble_provider.selection_plan
                         self._remember_router_dynamic_route(turn.session_key, plan)
                         turn.metadata["router_dynamic_decision"] = {
+                            "decision_id": ensemble_decision_id,
                             "ranking_version": plan.get("ranking_version"),
                             "registry_snapshot_version": plan.get(
                                 "registry_snapshot_version"
@@ -5541,8 +5641,8 @@ class TurnRunner:
                             "session": dict(plan.get("session") or {}),
                         }
                     elif selection_mode == TREE_BASELINE_SELECTION_MODE:
-                        plan = ensemble_provider.selection_plan
                         turn.metadata["router_tree_baseline_decision"] = {
+                            "decision_id": ensemble_decision_id,
                             "algorithm_version": plan.get("algorithm_version"),
                             "config_version": plan.get("config_version"),
                             "config_hash": plan.get("config_hash"),

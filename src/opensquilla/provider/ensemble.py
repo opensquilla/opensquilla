@@ -1708,9 +1708,18 @@ def _build_router_dynamic_members(
             aggregator_output_tokens=aggregator_output_tokens,
             ranking_config=ranking_config,
         )
-    user_profile = inputs.get("user_profile")
-    if not isinstance(user_profile, Mapping):
-        user_profile = mock_user_profile(ranking_config)
+    user_profile_enabled = bool(
+        getattr(ensemble_cfg, "ranking_user_profile_enabled", True)
+    )
+    supplied_user_profile = inputs.get("user_profile")
+    user_profile: Mapping[str, Any] | None = None
+    if user_profile_enabled:
+        user_profile = (
+            supplied_user_profile
+            if isinstance(supplied_user_profile, Mapping)
+            else mock_user_profile(ranking_config)
+        )
+    decision_id = str(inputs.get("decision_id") or "")
     task_analysis = inputs.get("task_analysis")
     if not isinstance(task_analysis, TaskAnalysisResult):
         fallback_profile = fallback_task_profile(
@@ -1797,6 +1806,7 @@ def _build_router_dynamic_members(
         routed_tier=routed_tier,
         routing_confidence=routing_confidence,
         ranking_config=ranking_config,
+        decision_id=decision_id,
     )
     proposers = [
         _member_from_ref(
@@ -2357,6 +2367,19 @@ def build_ensemble_provider_from_config(
     selection_plan["configured_shuffle_candidates"] = configured_shuffle_candidates
     selection_plan["effective_shuffle_candidates"] = shuffle_candidates
     selection_plan["quorum_grace_seconds"] = quorum_grace_seconds
+    selection_plan["selection_mode"] = selection_mode
+    selection_plan["profile"] = profile_name
+    selection_plan.setdefault(
+        "selected_P",
+        [
+            f"{member.provider_config.provider}:{member.provider_config.model}"
+            for member in proposers
+        ],
+    )
+    selection_plan.setdefault(
+        "selected_A",
+        f"{aggregator.provider_config.provider}:{aggregator.provider_config.model}",
+    )
     request_budget_bindings = (
         _runtime_member_request_budget_bindings(
             config=config,

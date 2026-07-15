@@ -1869,7 +1869,7 @@ async def analyze_task_with_provider(
     *,
     provider: LLMProvider | None,
     message: str,
-    user_profile: Mapping[str, Any],
+    user_profile: Mapping[str, Any] | None,
     request_context: Mapping[str, Any],
     routed_tier: str,
     routing_confidence: float,
@@ -1879,6 +1879,7 @@ async def analyze_task_with_provider(
     analyzer_provider_id: str = "",
     analyzer_model_id: str = "",
     ranking_config: Mapping[str, Any] | None = None,
+    decision_id: str = "",
 ) -> TaskAnalysisResult:
     """Use the caller-supplied dedicated provider as the task analyzer."""
 
@@ -1916,6 +1917,16 @@ async def analyze_task_with_provider(
     )
     model_id = analyzer_model_id.strip() or str(getattr(provider, "model", "") or "")
     if provider is None:
+        log.warning(
+            "llm_ensemble.router_dynamic.task_analyzer_fallback",
+            decision_id=decision_id,
+            analyzer_version=TASK_ANALYZER_VERSION,
+            reason="provider_unavailable",
+            provider=provider_id or "unknown",
+            model=model_id,
+            routed_tier=_router_tier(routed_tier, effective_config),
+            user_profile_enabled=user_profile is not None,
+        )
         return TaskAnalysisResult(
             profile=fallback,
             source="router_fallback",
@@ -1951,7 +1962,7 @@ async def analyze_task_with_provider(
     constraint_values = _ranking_mapping(
         effective_config, "task_profile_schema", "constraint_values"
     )
-    analyzer_input = {
+    analyzer_input: dict[str, Any] = {
         "task": analysis_message,
         "allowed_capabilities": list(CAPABILITIES),
         "allowed_domains": list(DOMAINS),
@@ -1968,16 +1979,19 @@ async def analyze_task_with_provider(
             effective_config, "task_profile_schema", "session_intents"
         ),
         "request_context": request_context,
-        "user_profile": user_profile,
     }
+    if user_profile is not None:
+        analyzer_input["user_profile"] = user_profile
     log.info(
         "llm_ensemble.router_dynamic.task_analyzer_started",
+        decision_id=decision_id,
         analyzer_version=TASK_ANALYZER_VERSION,
         provider=provider_id or "unknown",
         model=model_id,
         input_chars=len(message),
         input_truncated=len(analysis_message) < len(message),
         request_context_hash=request_context.get("snapshot_hash"),
+        user_profile_enabled=user_profile is not None,
     )
     usage: dict[str, Any] = {}
     try:
@@ -2030,6 +2044,7 @@ async def analyze_task_with_provider(
                             except Exception:  # noqa: BLE001 - accounting cannot break routing
                                 log.warning(
                                     "llm_ensemble.router_dynamic.task_analyzer_usage_failed",
+                                    decision_id=decision_id,
                                     provider=provider_id or "unknown",
                                     model=model_id,
                                 )
@@ -2056,11 +2071,13 @@ async def analyze_task_with_provider(
         reason = type(exc).__name__
         log.warning(
             "llm_ensemble.router_dynamic.task_analyzer_fallback",
+            decision_id=decision_id,
             analyzer_version=TASK_ANALYZER_VERSION,
             reason=reason,
             provider=provider_id or "unknown",
             model=model_id,
             routed_tier=_router_tier(routed_tier, effective_config),
+            user_profile_enabled=user_profile is not None,
         )
         return TaskAnalysisResult(
             profile=fallback,
@@ -2082,6 +2099,7 @@ async def analyze_task_with_provider(
     )
     log.info(
         "llm_ensemble.router_dynamic.task_analyzer_completed",
+        decision_id=decision_id,
         analyzer_version=TASK_ANALYZER_VERSION,
         provider=provider_id,
         model=model_id,
@@ -2091,6 +2109,7 @@ async def analyze_task_with_provider(
         input_tokens=usage.get("input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
         billed_cost=usage.get("billed_cost", 0.0),
+        user_profile_enabled=user_profile is not None,
     )
     return TaskAnalysisResult(
         profile=profile,
@@ -2840,7 +2859,7 @@ def _model_price(model: RankedModel, ranking_config: Mapping[str, Any]) -> float
 
 def _cost_latency_weights(
     task_profile: Mapping[str, Any],
-    user_profile: Mapping[str, Any],
+    user_profile: Mapping[str, Any] | None,
     ranking_config: Mapping[str, Any],
 ) -> tuple[float, float]:
     constraints = task_profile.get("constraints")
@@ -2863,6 +2882,8 @@ def _cost_latency_weights(
         task_latency_weights.get(str(constraints_map.get("latency") or "normal")),
         default_latency,
     )
+    if user_profile is None:
+        return cost_weight, latency_weight
     preference = user_profile.get("preference")
     preference_map = preference if isinstance(preference, Mapping) else {}
     sensitivity = str(preference_map.get("cost_sensitivity") or "medium")
@@ -2902,23 +2923,29 @@ def _cost_latency_weights(
 def _base_score_row(
     model: RankedModel,
     task_profile: Mapping[str, Any],
-    user_profile: Mapping[str, Any],
+    user_profile: Mapping[str, Any] | None,
     request_context: Mapping[str, Any],
     ranking_config: Mapping[str, Any],
 ) -> dict[str, Any]:
     task_match = _task_match(
         model, task_profile, ranking_config, role="proposer"
     )
-    user_score = _user_score(model, user_profile, task_profile, ranking_config)
+    user_score = (
+        _user_score(model, user_profile, task_profile, ranking_config)
+        if user_profile is not None
+        else 0.0
+    )
     session_score = _session_score(
         model, task_profile, request_context, ranking_config
     )
-    quality_clean = (
-        _ranking_number(ranking_config, "quality", "task_match_weight")
-        * task_match
-        + _ranking_number(ranking_config, "quality", "user_score_weight")
-        * user_score
-    )
+    quality_clean = task_match
+    if user_profile is not None:
+        quality_clean = (
+            _ranking_number(ranking_config, "quality", "task_match_weight")
+            * task_match
+            + _ranking_number(ranking_config, "quality", "user_score_weight")
+            * user_score
+        )
     quality = _clamp(quality_clean + session_score)
     price_reference = _ranking_number(
         ranking_config, "normalization", "price_reference_usd_per_million"
@@ -3241,7 +3268,7 @@ def _aggregator_rows(
     *,
     proposers: Sequence[RankedModel],
     task_profile: Mapping[str, Any],
-    user_profile: Mapping[str, Any],
+    user_profile: Mapping[str, Any] | None,
     request_context: Mapping[str, Any],
     ranking_config: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -3266,12 +3293,13 @@ def _aggregator_rows(
     latency_reference = _ranking_number(
         ranking_config, "normalization", "latency_reference_ms"
     )
+    effective_user_profile = user_profile if user_profile is not None else {}
     for model in models:
         reasons, context_need = _hard_filter_reasons(
             model,
             role="aggregator",
             task_profile=task_profile,
-            user_profile=user_profile,
+            user_profile=effective_user_profile,
             request_context=request_context,
             proposer_count=len(proposers),
             ranking_config=ranking_config,
@@ -3372,12 +3400,13 @@ def _aggregator_score_trace(
 def rank_models(
     *,
     task_analysis: TaskAnalysisResult,
-    user_profile: Mapping[str, Any],
+    user_profile: Mapping[str, Any] | None,
     request_context: Mapping[str, Any],
     registry_snapshot: Mapping[str, Any],
     routed_tier: str,
     routing_confidence: float,
     ranking_config: Mapping[str, Any] | None = None,
+    decision_id: str = "",
 ) -> RankingDecision:
     """Select ``(P, A)`` using the Step2 chapter-6 ranking pipeline."""
 
@@ -3411,13 +3440,15 @@ def rank_models(
             "router_dynamic registry snapshot contains duplicate model identities"
         )
     registry_snapshot_hash = _canonical_hash(registry_snapshot)
+    user_profile_enabled = user_profile is not None
+    effective_user_profile = user_profile if user_profile is not None else {}
 
     task_profile, session_trace = _apply_session_adjustment(
         task_analysis.profile, request_context, effective_ranking_config
     )
     effective_tier = _effective_tier(task_profile, effective_ranking_config)
     minimum, maximum, bound_reasons = _proposer_bounds(
-        task_profile, user_profile, effective_ranking_config
+        task_profile, effective_user_profile, effective_ranking_config
     )
 
     proposer_filters: list[dict[str, Any]] = []
@@ -3427,7 +3458,7 @@ def rank_models(
             model,
             role="proposer",
             task_profile=task_profile,
-            user_profile=user_profile,
+            user_profile=effective_user_profile,
             request_context=request_context,
             proposer_count=1,
             ranking_config=effective_ranking_config,
@@ -3451,6 +3482,8 @@ def rank_models(
                 no_eligible_reason_counts[reason] = no_eligible_reason_counts.get(reason, 0) + 1
         log.warning(
             "llm_ensemble.router_dynamic.no_eligible_proposer",
+            decision_id=decision_id,
+            user_profile_enabled=user_profile_enabled,
             registry_snapshot_version=registry_snapshot.get("snapshot_version"),
             filter_reason_counts=no_eligible_reason_counts,
         )
@@ -3666,6 +3699,7 @@ def rank_models(
     }
     trace = {
         "strategy": "router_dynamic",
+        "decision_id": decision_id,
         "ranking_version": RANKING_VERSION,
         "ranking_config_schema_version": str(
             effective_ranking_config["schema_version"]
@@ -3688,8 +3722,9 @@ def rank_models(
         "task_profile_pre_escalation": session_trace.pop("task_profile_pre_escalation"),
         "task_profile_post_escalation": session_trace.pop("task_profile_post_escalation"),
         "session": session_trace,
-        "user_profile_version": str(user_profile.get("profile_version") or ""),
-        "user_profile_source": str(user_profile.get("profile_source") or ""),
+        "user_profile_enabled": user_profile_enabled,
+        "user_profile_version": str(effective_user_profile.get("profile_version") or ""),
+        "user_profile_source": str(effective_user_profile.get("profile_source") or ""),
         "request_context_hash": request_context.get("snapshot_hash")
         or _canonical_hash(request_context),
         "candidate_pool_size": len(models),
@@ -3733,6 +3768,8 @@ def rank_models(
     }
     log.info(
         "llm_ensemble.router_dynamic.candidate_pool_recorded",
+        decision_id=decision_id,
+        user_profile_enabled=user_profile_enabled,
         registry_snapshot_version=trace["registry_snapshot_version"],
         registry_snapshot_hash=registry_snapshot_hash,
         candidate_pool_size=len(models),
@@ -3742,6 +3779,7 @@ def rank_models(
     )
     log.info(
         "llm_ensemble.router_dynamic.model_scores_recorded",
+        decision_id=decision_id,
         ranking_version=RANKING_VERSION,
         score_count=len(score_rows),
         top_l=top_l,
@@ -3749,6 +3787,7 @@ def rank_models(
     )
     log.info(
         "llm_ensemble.router_dynamic.proposer_selection_recorded",
+        decision_id=decision_id,
         selected_P=selected_ids,
         N_min=minimum,
         N_max=maximum,
@@ -3757,6 +3796,7 @@ def rank_models(
     )
     log.info(
         "llm_ensemble.router_dynamic.aggregator_selection_recorded",
+        decision_id=decision_id,
         selected_A=aggregator.identity,
         context_need_tokens=aggregator_row["context_need_tokens"],
         overlap_flag=overlap,
@@ -3766,6 +3806,8 @@ def rank_models(
     )
     log.info(
         "llm_ensemble.router_dynamic.router_decision_recorded",
+        decision_id=decision_id,
+        user_profile_enabled=user_profile_enabled,
         ranking_version=RANKING_VERSION,
         selected_P=selected_ids,
         selected_A=aggregator.identity,

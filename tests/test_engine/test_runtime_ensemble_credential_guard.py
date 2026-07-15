@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
+import structlog.testing
 
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.gateway.config import GatewayConfig, SquillaRouterConfig
@@ -77,15 +78,16 @@ async def test_static_b5_wrap_skipped_without_openrouter_credential(
     selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
     single_provider = _Provider()
 
-    turn, provider = await runner._run_pipeline(
-        "hello",
-        "agent:main:test",
-        single_provider,
-        selector,
-        [],
-        "system prompt",
-        [],
-    )
+    with structlog.testing.capture_logs() as captured:
+        turn, provider = await runner._run_pipeline(
+            "hello",
+            "agent:main:test",
+            single_provider,
+            selector,
+            [],
+            "system prompt",
+            [],
+        )
 
     # The model-override step may re-resolve a fresh single-model provider from
     # the selector; the guard's contract is that no ensemble wrap happens.
@@ -95,6 +97,17 @@ async def test_static_b5_wrap_skipped_without_openrouter_credential(
         "static_openrouter_b5_no_credential"
     )
     assert "ensemble_enabled" not in turn.metadata
+    decision_id = turn.metadata["ensemble_decision_id"]
+    routing_events = [
+        row
+        for row in captured
+        if str(row["event"]).startswith("llm_ensemble.routing.")
+    ]
+    assert [row["event"] for row in routing_events] == [
+        "llm_ensemble.routing.decision_started",
+        "llm_ensemble.routing.decision_skipped",
+    ]
+    assert all(row["decision_id"] == decision_id for row in routing_events)
 
 
 async def test_static_b5_wraps_when_openrouter_env_key_present(
@@ -301,6 +314,7 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     assert analyzer_calls[0]["provider"] is fixed_analyzer_provider
     assert analyzer_calls[0]["analyzer_provider_id"] == TASK_ANALYZER_PROVIDER_ID
     assert analyzer_calls[0]["analyzer_model_id"] == TASK_ANALYZER_MODEL_ID
+    assert isinstance(analyzer_calls[0]["user_profile"], dict)
     assert turn.metadata["routed_model_before_ensemble"] != TASK_ANALYZER_MODEL_ID
     assert turn.metadata["router_dynamic_task_analyzer"]["provider"] == (
         TASK_ANALYZER_PROVIDER_ID
@@ -308,6 +322,83 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     assert turn.metadata["router_dynamic_task_analyzer"]["model"] == (
         TASK_ANALYZER_MODEL_ID
     )
+
+
+async def test_router_dynamic_can_bypass_user_profile_and_emits_decision_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    analyzer_calls: list[dict[str, Any]] = []
+
+    async def fake_analyze_task_with_provider(**kwargs: Any) -> TaskAnalysisResult:
+        analyzer_calls.append(kwargs)
+        profile = fallback_task_profile(
+            routed_tier=str(kwargs["routed_tier"]),
+            request_context=kwargs["request_context"],
+        )
+        return TaskAnalysisResult(
+            profile=profile,
+            source="test",
+            schema_valid=True,
+            confidence=1.0,
+        )
+
+    monkeypatch.setattr(
+        "opensquilla.provider.ranking_router.analyze_task_with_provider",
+        fake_analyze_task_with_provider,
+    )
+    runner = TurnRunner(
+        provider_selector=None,
+        config=_static_b5_config(
+            selection_mode="router_dynamic",
+            ranking_user_profile_enabled=False,
+        ),
+    )
+    selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
+
+    with structlog.testing.capture_logs() as captured:
+        turn, provider = await runner._run_pipeline(
+            "route without a user profile",
+            "agent:main:no-ranking-profile",
+            _Provider(),
+            selector,
+            [],
+            "system prompt",
+            [],
+        )
+
+    assert isinstance(provider, EnsembleProvider)
+    assert len(analyzer_calls) == 1
+    assert analyzer_calls[0]["user_profile"] is None
+    decision_id = turn.metadata["ensemble_decision_id"]
+    assert analyzer_calls[0]["decision_id"] == decision_id
+    assert turn.metadata["router_dynamic_user_profile"] == {
+        "enabled": False,
+        "source": "",
+        "version": "",
+    }
+    assert provider.selection_plan["decision_id"] == decision_id
+    assert provider.selection_plan["user_profile_enabled"] is False
+    assert turn.metadata["router_dynamic_decision"]["decision_id"] == decision_id
+
+    routing_events = [
+        row
+        for row in captured
+        if str(row["event"]).startswith("llm_ensemble.routing.")
+    ]
+    assert routing_events[0]["event"] == "llm_ensemble.routing.decision_started"
+    assert routing_events[-1]["event"] == "llm_ensemble.routing.decision_completed"
+    assert all(row["decision_id"] == decision_id for row in routing_events)
+    assert [row["sequence"] for row in routing_events] == list(
+        range(len(routing_events))
+    )
+    assert {
+        "llm_ensemble.routing.task_analysis_recorded",
+        "llm_ensemble.routing.hard_filter_recorded",
+        "llm_ensemble.routing.model_score_recorded",
+        "llm_ensemble.routing.proposer_step_recorded",
+        "llm_ensemble.routing.aggregator_score_recorded",
+    }.issubset({row["event"] for row in routing_events})
 
 
 async def test_router_tree_baseline_never_calls_the_remote_task_analyzer(

@@ -507,6 +507,7 @@ class EnsembleProvider:
         shuffle_candidates: bool = True,
         record_candidates: bool = False,
         proposer_tools: bool = False,
+        aggregator_tools: bool = True,
         quorum_grace_seconds: float = 0.0,
         selection_plan: Mapping[str, Any] | None = None,
         _member_request_budget_bindings: Mapping[
@@ -526,6 +527,7 @@ class EnsembleProvider:
         self.shuffle_candidates = bool(shuffle_candidates)
         self.record_candidates = bool(record_candidates)
         self.proposer_tools = bool(proposer_tools)
+        self.aggregator_tools = bool(aggregator_tools)
         self.quorum_grace_seconds = max(0.0, float(quorum_grace_seconds or 0.0))
         self.selection_plan = dict(selection_plan or {})
         self._member_request_budget_bindings = dict(
@@ -734,6 +736,7 @@ class EnsembleProvider:
             successful,
             candidate_order_seed=candidate_order_seed,
         )
+        aggregator_request_tools = tools if self.aggregator_tools else None
         trace = self._trace_payload(
             candidates,
             successful_count=len(successful),
@@ -743,7 +746,7 @@ class EnsembleProvider:
             selected_candidates=successful,
             final_request_member=self.aggregator,
             final_request_config=aggregator_cfg,
-            final_request_tools=tools,
+            final_request_tools=aggregator_request_tools,
             final_request_messages=aggregator_messages,
             final_request_timeout_seconds=self.aggregator_timeout_seconds,
             candidate_order_seed=candidate_order_seed,
@@ -752,7 +755,7 @@ class EnsembleProvider:
         async for event in self._stream_final_aggregator(
             provider=provider,
             messages=aggregator_messages,
-            tools=tools,
+            tools=aggregator_request_tools,
             config=aggregator_cfg,
             prior_rows=proposer_rows,
             trace=trace,
@@ -1090,6 +1093,7 @@ class EnsembleProvider:
             "shuffle_candidates": self.shuffle_candidates,
             "record_candidates": self.record_candidates,
             "proposer_tools": self.proposer_tools,
+            "aggregator_tools": self.aggregator_tools,
             "proposer_timeout_seconds": self.proposer_timeout_seconds,
             "aggregator_timeout_seconds": self.aggregator_timeout_seconds,
             "quorum_grace_seconds": self.quorum_grace_seconds,
@@ -2403,6 +2407,7 @@ def build_ensemble_provider_from_config(
         shuffle_candidates=shuffle_candidates,
         record_candidates=bool(getattr(ensemble_cfg, "record_candidates", False)),
         proposer_tools=bool(getattr(ensemble_cfg, "proposer_tools", False)),
+        aggregator_tools=bool(getattr(ensemble_cfg, "aggregator_tools", True)),
         quorum_grace_seconds=quorum_grace_seconds,
         selection_plan=selection_plan,
         _member_request_budget_bindings=request_budget_bindings,

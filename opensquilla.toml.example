@@ -261,6 +261,7 @@ all_failed_policy = "fallback_single"
 # Advanced knobs — TOML-only (not on the configure RPC surface). Defaults:
 # mode = "b5_fusion"                  # only supported ensemble mode
 # proposer_tools = false              # allow tool calls inside proposer turns
+# aggregator_tools = true             # allow tool calls inside the final fusion turn
 # candidate_max_chars = 24000         # per-candidate transcript budget (0 = unlimited)
 # proposer_timeout_seconds = 3600.0
 # aggregator_timeout_seconds = 3600.0

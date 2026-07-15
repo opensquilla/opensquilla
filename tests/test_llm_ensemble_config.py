@@ -19,6 +19,7 @@ def test_llm_ensemble_defaults_to_disabled_for_model_router_first_install() -> N
     assert ensemble.selection_mode == "static_openrouter_b5"
     assert ensemble.ranking_user_profile_enabled is True
     assert ensemble.proposer_tools is False
+    assert ensemble.aggregator_tools is True
     assert ensemble.min_successful_proposers == 1
     assert ensemble.model_options == []
     assert ensemble.candidates == []

@@ -555,6 +555,36 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
 
 
 @pytest.mark.asyncio
+async def test_ensemble_can_disable_aggregator_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="p1")]),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="no-aggregator-tools",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        aggregator_tools=False,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert [call["tools"] for call in registry.calls] == [None, None]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["aggregator_tools"] is False
+    assert done.ensemble_trace["final_request"]["execution"]["tools_enabled"] is False
+
+
+@pytest.mark.asyncio
 async def test_shuffled_candidate_order_is_replayable_from_trace_seed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

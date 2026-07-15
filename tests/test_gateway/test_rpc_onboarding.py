@@ -1170,6 +1170,96 @@ async def test_provider_configure_syncs_env_key_to_provider_selector(tmp_path, m
 
 
 @pytest.mark.asyncio
+async def test_provider_configure_refreshes_shared_live_catalog_before_return(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.provider.model_catalog import ModelCatalog, set_shared_catalog
+
+    fetches: list[str] = []
+
+    async def fake_fetch(url: str, shape: str, **kwargs) -> dict:
+        fetches.append(url)
+        return {
+            "qwen3.7-max": {
+                "context_window": 1_000_000,
+                "max_output_tokens": 131_072,
+            }
+        }
+
+    monkeypatch.setattr(
+        "opensquilla.provider.live_catalog.fetch_live_catalog_entries",
+        fake_fetch,
+    )
+    catalog = ModelCatalog()
+    set_shared_catalog(catalog)
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig()
+    ctx.config.config_path = str(tmp_path / "c.toml")
+
+    try:
+        res = await get_dispatcher().dispatch(
+            "r1",
+            "onboarding.provider.configure",
+            {
+                "providerId": "tokenrhythm",
+                "model": "qwen3.7-max",
+                "apiKey": "dummy-tokenrhythm-key",
+            },
+            ctx,
+        )
+
+        assert res.error is None, res.error
+        assert fetches == ["https://tokenrhythm.studio/api/models"]
+        assert catalog.resolve_entry("qwen3.7-max", provider="tokenrhythm").source == "live"
+        assert catalog.resolve_max_tokens("qwen3.7-max", provider="tokenrhythm") == 131_072
+    finally:
+        set_shared_catalog(None)
+
+
+@pytest.mark.asyncio
+async def test_provider_configure_survives_live_catalog_failure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.provider.model_catalog import ModelCatalog, set_shared_catalog
+
+    async def failing_fetch(*args, **kwargs) -> dict:
+        raise OSError("synthetic catalog outage")
+
+    monkeypatch.setattr(
+        "opensquilla.provider.live_catalog.fetch_live_catalog_entries",
+        failing_fetch,
+    )
+    catalog = ModelCatalog()
+    set_shared_catalog(catalog)
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig()
+    ctx.config.config_path = str(tmp_path / "c.toml")
+
+    try:
+        res = await get_dispatcher().dispatch(
+            "r1",
+            "onboarding.provider.configure",
+            {
+                "providerId": "tokenrhythm",
+                "model": "qwen3.7-max",
+                "apiKey": "dummy-tokenrhythm-key",
+            },
+            ctx,
+        )
+
+        assert res.error is None, res.error
+        assert ctx.config.llm.provider == "tokenrhythm"
+        assert catalog.resolve_max_tokens("qwen3.7-max", provider="tokenrhythm") == 131_072
+        assert catalog.resolve_entry("qwen3.7-max", provider="tokenrhythm").source == "corrections"
+    finally:
+        set_shared_catalog(None)
+
+
+@pytest.mark.asyncio
 async def test_channel_disable_then_remove(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     d = get_dispatcher()

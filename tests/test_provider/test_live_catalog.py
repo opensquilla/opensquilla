@@ -97,6 +97,29 @@ def test_parse_tokenrhythm_models_coerces_string_and_float_budget_fields() -> No
     assert fields["max_output_tokens"] == 384_000
 
 
+def test_parse_tokenrhythm_qwen_max_output_is_exact_128_kib_tokens() -> None:
+    entries = parse_tokenrhythm_models(
+        {
+            "code": 0,
+            "data": [
+                _tokenrhythm_row(
+                    id="qwen3.7-max",
+                    name="Qwen3.7 Max",
+                    contextWindow=1_000_000,
+                    maxOutputTokens=131_072,
+                )
+            ],
+        }
+    )
+
+    catalog = ModelCatalog()
+    catalog.set_live_provider_entries("tokenrhythm", entries)
+
+    assert entries["qwen3.7-max"]["max_output_tokens"] == 131_072
+    assert catalog.resolve_entry("qwen3.7-max", provider="tokenrhythm").source == "live"
+    assert catalog.resolve_max_tokens("qwen3.7-max", provider="tokenrhythm") == 131_072
+
+
 def test_parse_tokenrhythm_models_halves_near_window_output_caps() -> None:
     # A published output cap at/near the whole window (input and output
     # share it) would trip resolve_max_tokens' request-safety clamp down to

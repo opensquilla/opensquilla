@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
@@ -554,6 +555,46 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
 
 
 @pytest.mark.asyncio
+async def test_shuffled_candidate_order_is_replayable_from_trace_seed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="draft-p1"), DoneEvent(model="p1")]),
+            "p2": _FakePlan([TextDeltaEvent(text="draft-p2"), DoneEvent(model="p2")]),
+            "p3": _FakePlan([TextDeltaEvent(text="draft-p3"), DoneEvent(model="p3")]),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="replayable-order",
+        proposers=[_member("p1"), _member("p2"), _member("p3")],
+        aggregator=_member("agg"),
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=True,
+    )
+
+    events = await _collect(provider)
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    seed = done.ensemble_trace["candidate_order_seed"]
+    expected_order = [0, 1, 2]
+    random.Random(seed).shuffle(expected_order)
+    assert done.ensemble_trace["candidate_display_order"] == expected_order
+
+    aggregator_call = next(call for call in registry.calls if call["model"] == "agg")
+    candidate_prompt = str(aggregator_call["messages"][-1].content)
+    prompt_order = sorted(
+        range(3),
+        key=lambda index: candidate_prompt.index(f"draft-p{index + 1}"),
+    )
+    assert prompt_order == expected_order
+
+
+@pytest.mark.asyncio
 async def test_ensemble_resolves_max_tokens_per_openrouter_member(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -789,6 +830,50 @@ def test_all_lineup_modes_rebind_global_context_without_catalog(
     assert all(binding.context_window_tokens == 500_000 for binding in bindings)
     assert all(binding.context_window_source == "config" for binding in bindings)
     assert all(binding.rederive is True for binding in bindings)
+
+
+def test_router_dynamic_selection_plan_is_materialized_without_rewriting_members() -> None:
+    config = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-pro",
+            "api_key": "fake",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+            "shuffle_candidates": False,
+        },
+    )
+    provider = build_ensemble_provider_from_config(
+        config=config,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="deepseek/deepseek-v4-pro",
+            api_key="fake",
+        ),
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c2"},
+    )
+    plan = provider.selection_plan
+
+    assert [
+        f"{member.provider_config.provider}:{member.provider_config.model}"
+        for member in provider.proposers
+    ] == plan["selected_P"]
+    assert (
+        f"{provider.aggregator.provider_config.provider}:"
+        f"{provider.aggregator.provider_config.model}"
+    ) == plan["selected_A"]
+    assert provider.min_successful_proposers == min(
+        plan["N_min"], len(provider.proposers)
+    )
+    assert plan["effective_min_successful_proposers"] == (
+        provider.min_successful_proposers
+    )
+    assert provider.shuffle_candidates is bool(
+        plan["aggregator"]["requires_order_randomization"]
+    )
 
 
 @pytest.mark.parametrize(

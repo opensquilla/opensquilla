@@ -205,7 +205,18 @@ def test_router_dynamic_ignores_legacy_default_openrouter_model_options() -> Non
 
     pool = provider.selection_plan["candidate_pool"]
     assert all(candidate["source"] != "legacy_model_options" for candidate in pool)
-    assert all(candidate["provider"] != "openrouter" for candidate in pool)
+    # The packaged JSON snapshot remains visible for replay, but deployments
+    # without an OpenRouter credential are removed by availability filtering.
+    openrouter_ids = {
+        candidate["identity"] for candidate in pool if candidate["provider"] == "openrouter"
+    }
+    proposer_filters = provider.selection_plan["hard_filter"]["proposer_results"]
+    assert openrouter_ids
+    assert all(
+        "credential_unavailable" in row["reasons"]
+        for row in proposer_filters
+        if row["identity"] in openrouter_ids
+    )
 
 
 def test_llm_ensemble_validates_selection_mode() -> None:
@@ -323,7 +334,10 @@ def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> No
     assert provider.aggregator.provider_config.provider_routing == {"z-ai/glm-5.2": "z-ai"}
 
 
-def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
+@pytest.mark.parametrize("routed_tier", ["c0", "t1"])
+def test_router_dynamic_ensemble_uses_step2_tier1_single_proposer_bound(
+    routed_tier: str,
+) -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
@@ -342,25 +356,31 @@ def test_router_dynamic_ensemble_uses_small_c0_slot_template() -> None:
         config=cfg,
         inherited_provider_config=inherited,
         fallback_provider=None,
-        turn_metadata={"routed_tier": "c0", "routing_confidence": 0.93},
+        turn_metadata={"routed_tier": routed_tier, "routing_confidence": 0.93},
     )
 
     assert provider.profile_name == "router_dynamic/c0"
-    assert [member.label for member in provider.proposers] == ["anchor", "cheap_contrast"]
-    assert [member.provider_config.model for member in provider.proposers][0] == (
-        "deepseek/deepseek-v4-flash"
+    assert [member.label for member in provider.proposers] == ["proposer_1"]
+    assert len(provider.proposers) == 1
+    assert provider.min_successful_proposers == 1
+    assert provider.selection_plan["ranking_version"] == "step2-ranking-v1"
+    assert provider.selection_plan["N_min"] == 1
+    assert provider.selection_plan["N_max"] == 1
+    assert provider.selection_plan["selected_P"] == [
+        f"{provider.proposers[0].provider_config.provider}:"
+        f"{provider.proposers[0].provider_config.model}"
+    ]
+    assert provider.selection_plan["selected_A"] == (
+        f"{provider.aggregator.provider_config.provider}:"
+        f"{provider.aggregator.provider_config.model}"
     )
-    assert len(provider.proposers) == 2
-    assert provider.min_successful_proposers == 2
-    assert provider.selection_plan["slot_template"] == ["anchor", "cheap_contrast"]
-    assert provider.selection_plan["aggregator_slot"] == "aggregator_fast"
-    assert provider.selection_plan["duplicate_policy"] == "selected_penalty"
+    assert provider.selection_plan["selection_steps"][0]["step"] == 1
     assert provider.proposer_timeout_seconds == 3600.0
     assert provider.aggregator_timeout_seconds == 3600.0
     assert provider.quorum_grace_seconds == 0.0
 
 
-def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
+def test_router_dynamic_ensemble_uses_step2_greedy_c2_selection() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
@@ -390,15 +410,15 @@ def test_router_dynamic_ensemble_uses_slot_specific_c2_selection() -> None:
 
     assert provider.profile_name == "router_dynamic/c2"
     assert [member.label for member in provider.proposers] == [
-        "anchor",
-        "adjacent_tier_check",
-        "orthogonal_family",
+        f"proposer_{index + 1}" for index in range(len(provider.proposers))
     ]
-    assert provider.proposers[0].provider_config.model == "z-ai/glm-5.2"
-    assert provider.selection_plan["aggregator_slot"] == "aggregator_strong"
-    assert provider.selection_plan["slots"][1]["slot"] == "adjacent_tier_check"
-    assert provider.selection_plan["slots"][2]["slot"] == "orthogonal_family"
-    assert provider.selection_plan["aggregator"]["slot"] == "aggregator_strong"
+    assert 2 <= len(provider.proposers) <= 3
+    assert provider.min_successful_proposers == 2
+    assert provider.selection_plan["N_min"] == 2
+    assert provider.selection_plan["N_max"] == 3
+    assert len(provider.selection_plan["selection_steps"]) == len(provider.proposers)
+    assert "Score_agg" in provider.selection_plan["aggregator"]["selected"]
+    assert provider.selection_plan["hard_filter"]["eligible_proposer_ids"]
     assert provider.selection_plan["candidate_pool_size"] >= 5
 
 

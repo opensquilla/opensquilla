@@ -102,6 +102,20 @@ def _common_fields() -> tuple[ChannelSetupField, ...]:
             advanced=True,
         ),
         ChannelSetupField(
+            "pairing_approved_notice",
+            "Tell senders when approved",
+            "bool",
+            required=False,
+            default=True,
+            description=(
+                "When you approve a pairing request, the bot replies to that sender so "
+                "they know to send a message. Turn off to approve silently."
+            ),
+            group="access",
+            advanced=True,
+            show_when={"dm_access": "pairing"},
+        ),
+        ChannelSetupField(
             "allowed_senders",
             "Allowed sender ids",
             "text",

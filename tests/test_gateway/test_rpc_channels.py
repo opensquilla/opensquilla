@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import httpx
 import pytest
 
@@ -471,3 +473,137 @@ async def test_channels_status_counts_pending_pairings_per_channel():
     assert rpc_res.error is None, rpc_res.error
     rows = {row["name"]: row for row in rpc_res.payload["channels"]}
     assert rows["work"]["pendingPairings"] == 2
+
+
+class _NoticeAdapter:
+    """Captures what a channel would deliver to an approved sender."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.sent: list[object] = []
+        self._fail = fail
+
+    async def send(self, message):
+        if self._fail:
+            raise RuntimeError("provider unreachable")
+        self.sent.append(message)
+
+
+class _NoticeStore:
+    def __init__(self, status: str = "pending", reply_to: str | None = "dm-chat-1") -> None:
+        self.record = SimpleNamespace(
+            pairing_id="p1",
+            channel_name="work",
+            provider="slack",
+            account_id="acct",
+            sender_id="U-1",
+            sender_name="Ada",
+            status=status,
+            created_at=1.0,
+            approved_at=None,
+            reply_to=reply_to,
+        )
+
+    def list_pairings(self, *, channel_name=None, status=None):
+        if status is not None and self.record.status != status:
+            return []
+        return [self.record]
+
+    def set_pairing_status(self, *, channel_name, pairing_id, status):
+        self.record.status = status
+        self.record.approved_at = 2.0
+        return self.record
+
+
+def _notice_ctx(adapter, store, *, notice: bool = True):
+    ctx = _admin_ctx()
+    res = upsert_channel(
+        GatewayConfig(),
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "xoxb-secret",
+            "signing_secret": "ss",
+            "pairing_approved_notice": notice,
+        },
+    )
+    ctx.config = res.config
+
+    class _Manager:
+        _delivery_store = store
+        _channel_types: dict = {}
+
+        async def health(self):
+            return {}
+
+        def get(self, name):
+            return adapter
+
+    ctx.channel_manager = _Manager()
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_notifies_sender_on_the_address_it_arrived_on():
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore())
+
+    res = await get_dispatcher().dispatch(
+        "r1", "channels.pairing.approve", {"channelName": "work", "pairingId": "p1"}, ctx
+    )
+
+    assert res.error is None, res.error
+    assert len(adapter.sent) == 1
+    assert adapter.sent[0].reply_to == "dm-chat-1"
+    assert adapter.sent[0].metadata.get("pairing_approved") is True
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_skips_notice_when_channel_opts_out():
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore(), notice=False)
+
+    res = await get_dispatcher().dispatch(
+        "r1", "channels.pairing.approve", {"channelName": "work", "pairingId": "p1"}, ctx
+    )
+
+    assert res.error is None, res.error
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_pairing_reapprove_does_not_notify_again():
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore(status="approved"))
+
+    res = await get_dispatcher().dispatch(
+        "r1", "channels.pairing.approve", {"channelName": "work", "pairingId": "p1"}, ctx
+    )
+
+    assert res.error is None, res.error
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_survives_a_failing_notice():
+    # The approval already committed; a delivery failure must not surface.
+    ctx = _notice_ctx(_NoticeAdapter(fail=True), _NoticeStore())
+
+    res = await get_dispatcher().dispatch(
+        "r1", "channels.pairing.approve", {"channelName": "work", "pairingId": "p1"}, ctx
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["pairing"]["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_without_a_stored_address_is_silent():
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore(reply_to=None))
+
+    res = await get_dispatcher().dispatch(
+        "r1", "channels.pairing.approve", {"channelName": "work", "pairingId": "p1"}, ctx
+    )
+
+    assert res.error is None, res.error
+    assert adapter.sent == []

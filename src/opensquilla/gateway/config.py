@@ -1406,6 +1406,9 @@ class ConfiguredChannelEntry(BaseModel):
     debounce_window_s: float = 0.0
     status_reactions_enabled: bool = False
     dm_access: Literal["pairing", "open", "allowlist"] = "pairing"
+    # When a pairing is approved, tell the sender they can start — otherwise
+    # approval is silent and they never know to send another message.
+    pairing_approved_notice: bool = True
     allowed_senders: list[str] = Field(default_factory=list)
 
     @field_validator("allowed_senders", mode="before")

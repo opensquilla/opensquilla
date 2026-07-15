@@ -514,7 +514,7 @@
       "advancedGroup": "Avanzado: acceso y comportamiento",
       "fieldRequired": "Este campo es obligatorio",
       "fixRequired": "Completa primero los campos obligatorios resaltados",
-      "pairingExplainer": "Con el emparejamiento, la primera persona que escriba a tu bot recibe un código de 8 caracteres: apruébalo en Canales → Emparejamientos. No se le notifica la aprobación y debe escribir de nuevo al bot."
+      "pairingExplainer": "Con el emparejamiento, la primera persona que escriba a tu bot recibe un código de 8 caracteres: apruébalo en Canales → Emparejamientos. El bot le avisará de que ya puede empezar (puedes desactivarlo abajo)."
     },
     "search": {
       "title": "Búsqueda web",
@@ -1400,7 +1400,7 @@
         "approveLabel": "Aprobar el acceso de {sender}",
         "revokeLabel": "Revocar el acceso de {sender}",
         "approveConfirmTitle": "¿Aprobar la solicitud de vinculación?",
-        "approveConfirmBody": "¿Conceder a {sender} acceso a {channel}? No se le notificará: pídele que vuelva a escribir al bot después de que apruebes.",
+        "approveConfirmBody": "¿Conceder a {sender} acceso a {channel}? El bot le avisará de que ya puede empezar a chatear.",
         "revokeConfirmTitle": "¿Revocar el acceso vinculado?",
         "revokeConfirmBody": "¿Quitar el acceso de {sender} a {channel}? Necesitará aprobación antes de iniciar otra conversación.",
         "loadFailed": "No se pudo cargar el acceso vinculado: {error}",

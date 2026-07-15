@@ -62,6 +62,9 @@ class ChannelPairing:
     approved_at: float | None
     revoked_at: float | None
     request_count: int
+    # Address the request arrived on, so an approval can reach the sender who
+    # has no session yet. Never holds message content — only the route.
+    reply_to: str | None = None
 
 
 def _safe_message_json(message: IncomingMessage | OutgoingMessage) -> str:
@@ -198,13 +201,28 @@ class ChannelDeliveryStore:
                     approved_at  REAL,
                     revoked_at   REAL,
                     request_count INTEGER NOT NULL DEFAULT 1,
+                    reply_to     TEXT,
                     UNIQUE (channel_name, account_id, sender_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_channel_pairings_status
                 ON channel_pairings(channel_name, status, created_at);
                 """
             )
+            self._migrate_pairing_columns()
             self._conn.commit()
+
+    def _migrate_pairing_columns(self) -> None:
+        """Add pairing columns introduced after the table shipped.
+
+        ``CREATE TABLE IF NOT EXISTS`` is a no-op on an existing database, so
+        stores created before a column existed need it added explicitly or
+        every read raises "no such column".
+        """
+        existing = {
+            str(row["name"]) for row in self._conn.execute("PRAGMA table_info(channel_pairings)")
+        }
+        if "reply_to" not in existing:
+            self._conn.execute("ALTER TABLE channel_pairings ADD COLUMN reply_to TEXT")
 
     @staticmethod
     def _pairing_from_row(row: sqlite3.Row) -> ChannelPairing:
@@ -221,6 +239,7 @@ class ChannelDeliveryStore:
             approved_at=(
                 float(row["approved_at"]) if row["approved_at"] is not None else None
             ),
+            reply_to=(str(row["reply_to"]) if row["reply_to"] else None),
             revoked_at=(
                 float(row["revoked_at"]) if row["revoked_at"] is not None else None
             ),
@@ -235,8 +254,14 @@ class ChannelDeliveryStore:
         account_id: str,
         sender_id: str,
         sender_name: str | None = None,
+        reply_to: str | None = None,
     ) -> ChannelPairing:
-        """Create or refresh a pending request without storing message content."""
+        """Create or refresh a pending request without storing message content.
+
+        ``reply_to`` is the address the request arrived on — kept so an
+        approval can reach a sender who has no session yet. It is a route,
+        never content.
+        """
         if not channel_name.strip() or not sender_id.strip():
             raise ValueError("channel_name and sender_id are required")
         now = time.time()
@@ -249,12 +274,13 @@ class ChannelDeliveryStore:
             self._conn.execute(
                 "INSERT INTO channel_pairings "
                 "(pairing_id, channel_name, provider, account_id, sender_id, "
-                "sender_name, status, created_at, last_seen_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?) "
+                "sender_name, status, created_at, last_seen_at, reply_to) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?) "
                 "ON CONFLICT(channel_name, account_id, sender_id) DO UPDATE SET "
                 "provider = excluded.provider, "
                 "sender_name = COALESCE(excluded.sender_name, channel_pairings.sender_name), "
                 "last_seen_at = excluded.last_seen_at, "
+                "reply_to = COALESCE(excluded.reply_to, channel_pairings.reply_to), "
                 "request_count = channel_pairings.request_count + 1",
                 (
                     pairing_id,
@@ -265,6 +291,7 @@ class ChannelDeliveryStore:
                     safe_name,
                     now,
                     now,
+                    (reply_to.strip() or None) if isinstance(reply_to, str) else None,
                 ),
             )
             row = self._conn.execute(

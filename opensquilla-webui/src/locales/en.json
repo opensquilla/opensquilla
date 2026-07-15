@@ -431,7 +431,7 @@
       "schemePresetDesc": "The provider's tuned lineup: four proposers plus one aggregator, ready to use.",
       "schemeCustomTitle": "Custom ensemble",
       "schemeCustomBadge": "Advanced",
-      "schemeCustomDesc": "Build your own lineup with roles; mix providers when needed.",
+      "schemeCustomDesc": "Build a role-based lineup from models available through the current provider.",
       "presetNoteDeepseek": "Reasoning anchor — baseline drafts for complex tasks",
       "presetNoteGlm": "Long-form and structured output — contrasts the DeepSeek family",
       "presetNoteKimi": "Code and tool intent — covers programming requests",

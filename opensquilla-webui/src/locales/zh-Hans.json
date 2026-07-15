@@ -431,7 +431,7 @@
       "schemePresetDesc": "服务商官方调优阵容:四个候选生成模型加一个综合模型,开箱即用。",
       "schemeCustomTitle": "自定义聚合",
       "schemeCustomBadge": "进阶",
-      "schemeCustomDesc": "按角色自行搭建阵容,可跨服务商混编。",
+      "schemeCustomDesc": "从当前服务商的模型中按角色搭建阵容。",
       "presetNoteDeepseek": "推理主力——复杂任务的基准草稿",
       "presetNoteGlm": "长文与结构化输出——与 DeepSeek 家族形成对照",
       "presetNoteKimi": "代码与工具意图——覆盖编程类请求",

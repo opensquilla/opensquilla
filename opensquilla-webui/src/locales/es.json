@@ -431,7 +431,7 @@
       "schemePresetDesc": "La alineación ajustada del proveedor: cuatro proponentes más un agregador, lista para usar.",
       "schemeCustomTitle": "Ensamble personalizado",
       "schemeCustomBadge": "Avanzado",
-      "schemeCustomDesc": "Crea tu propia alineación con roles; mezcla proveedores si lo necesitas.",
+      "schemeCustomDesc": "Crea una alineación por roles con modelos del proveedor actual.",
       "presetNoteDeepseek": "Ancla de razonamiento — borradores base para tareas complejas",
       "presetNoteGlm": "Texto largo y salida estructurada — contrasta con la familia DeepSeek",
       "presetNoteKimi": "Código e intención de herramientas — cubre solicitudes de programación",

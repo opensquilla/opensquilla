@@ -431,7 +431,7 @@
       "schemePresetDesc": "Die abgestimmte Aufstellung des Anbieters: vier Entwurfsmodelle plus ein Aggregator, sofort einsatzbereit.",
       "schemeCustomTitle": "Eigenes Ensemble",
       "schemeCustomBadge": "Erweitert",
-      "schemeCustomDesc": "Eigene Aufstellung mit Rollen aufbauen; bei Bedarf Anbieter mischen.",
+      "schemeCustomDesc": "Eine rollenbasierte Aufstellung aus Modellen des aktuellen Anbieters erstellen.",
       "presetNoteDeepseek": "Reasoning-Anker — Basisentwürfe für komplexe Aufgaben",
       "presetNoteGlm": "Langtext und strukturierte Ausgabe — Kontrast zur DeepSeek-Familie",
       "presetNoteKimi": "Code- und Tool-Intention — deckt Programmieranfragen ab",

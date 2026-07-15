@@ -446,7 +446,12 @@ const currentModel = computed(() => (config.value.llm || {}).model || '')
 const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
 // Lazy: routerPanel is declared below; this computed is only evaluated from
 // user-triggered strategy switches, long after setup completes.
-const modelStrategyTierCandidates = computed(() => ensembleTierCandidates.value)
+const modelStrategyTierCandidates = computed(() => {
+  const provider = normalizeProviderId(currentProvider.value)
+  return ensembleTierCandidates.value.filter(
+    candidate => normalizeProviderId(candidate.provider) === provider,
+  )
+})
 const modelStrategyForm = useSetupModelStrategyForm(
   routerForm,
   ensembleForm,
@@ -824,7 +829,7 @@ const ensemblePanel = ensembleForm.createPanel({
   statusText: ensembleStatusText,
   activeProvider: currentProvider,
   activeModel: currentModel,
-  tierCandidates: ensembleTierCandidates,
+  tierCandidates: modelStrategyTierCandidates,
   credentialStatus: computed(() => status.value.ensembleCredentialStatus || []),
 })
 
@@ -1306,7 +1311,7 @@ function setEnsembleCandidateRole(candidate: EnsembleCandidateView, role: Ensemb
 }
 
 function importEnsembleTierCandidates() {
-  ensembleForm.importTierCandidates(ensembleTierCandidates.value)
+  ensembleForm.importTierCandidates(modelStrategyTierCandidates.value, currentProvider.value)
 }
 
 function migrateEnsembleLegacy() {

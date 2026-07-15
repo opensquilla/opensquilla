@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import SetupModelCombobox from '@/components/setup/SetupModelCombobox.vue'
 import SetupTierTable from '@/components/setup/SetupTierTable.vue'
 import type { ModelStrategy } from '@/composables/setup/useSetupModelStrategyForm'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
-import type { DiscoveredModelsByProvider } from '@/composables/setup/useSetupProviderForm'
+import type {
+  DiscoveredModelCatalog,
+  DiscoveredModelsByProvider,
+} from '@/composables/setup/useSetupProviderForm'
 import {
   ENSEMBLE_PROPOSER_ROLES,
   type EnsembleCandidateRole,
@@ -90,7 +94,6 @@ const emit = defineEmits<{
 
 const showRouterDetails = computed(() => props.panel.activeStrategy === 'router')
 const routerEditingDisabled = computed(() => !props.panel.hasSavedProvider)
-const newCandidateProvider = ref('')
 const newCandidateModel = ref('')
 const newCandidateRole = ref<EnsembleCandidateRole>('')
 
@@ -116,6 +119,11 @@ const defaultRouteModel = computed(() => {
 
 const ensembleScheme = computed(() => props.panel.ensemble.scheme)
 const customLineup = computed(() => props.panel.ensemble.custom)
+const candidateProviderId = computed(() => String(
+  props.panel.ensemble.activeProvider
+  || customLineup.value.inheritedAggregatorProvider
+  || '',
+).trim().toLowerCase())
 const currentModel = computed(() => (
   props.panel.ensemble.activeModel
   || customLineup.value.inheritedAggregatorModel
@@ -123,10 +131,23 @@ const currentModel = computed(() => (
   || props.panel.providerLabel
 ))
 const currentProvider = computed(() => displayProvider(
-  props.panel.ensemble.activeProvider
-  || customLineup.value.inheritedAggregatorProvider
-  || '',
+  candidateProviderId.value,
 ) || props.panel.providerLabel)
+const emptyCandidateCatalog: DiscoveredModelCatalog = { models: [], source: 'none' }
+const candidateModelCatalog = computed(() => (
+  props.panel.router.discoveredModelsByProvider?.[candidateProviderId.value]
+  || emptyCandidateCatalog
+))
+const canSubmitCandidate = computed(() => (
+  Boolean(candidateProviderId.value && newCandidateModel.value.trim())
+  && (newCandidateRole.value === 'aggregator' || customLineup.value.canAddProposer)
+))
+
+watch(candidateProviderId, () => {
+  // A model id is provider-scoped. Never carry a half-entered value across a
+  // provider configuration change while the settings dialog remains mounted.
+  newCandidateModel.value = ''
+})
 const capacityCells = computed(() => {
   const lineup = customLineup.value
   return Array.from({ length: lineup.maxProposers }, (_, index) => ({
@@ -147,11 +168,10 @@ function presetMemberNoteKey(model: string): string {
 }
 
 function submitCandidate() {
-  const provider = newCandidateProvider.value.trim()
+  const provider = candidateProviderId.value
   const model = newCandidateModel.value.trim()
   if (!provider || !model) return
   emit('addEnsembleCandidate', provider, model, newCandidateRole.value)
-  newCandidateProvider.value = ''
   newCandidateModel.value = ''
   newCandidateRole.value = ''
 }
@@ -532,24 +552,31 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
             </p>
 
             <div class="setup-model-strategy__candidate-add">
-              <input
-                v-model="newCandidateProvider"
-                class="control-input"
-                type="text"
-                name="setup_model_strategy_add_candidate_provider"
-                :placeholder="t('setup.modelStrategy.addCandidateProviderPlaceholder')"
+              <div
+                class="control-input setup-model-strategy__candidate-provider-lock"
+                role="textbox"
+                aria-readonly="true"
                 :aria-label="t('setup.modelStrategy.addCandidateProviderLabel')"
-                @keydown.enter.prevent="submitCandidate"
               >
-              <input
-                v-model="newCandidateModel"
-                class="control-input"
-                type="text"
-                name="setup_model_strategy_add_candidate_model"
-                :placeholder="t('setup.modelStrategy.addCandidateModelPlaceholder')"
-                :aria-label="t('setup.modelStrategy.addCandidateModelLabel')"
-                @keydown.enter.prevent="submitCandidate"
-              >
+                <span class="setup-model-strategy__candidate-provider-label">
+                  {{ t('setup.modelStrategy.addCandidateProviderLabel') }}
+                </span>
+                <strong>{{ currentProvider }}</strong>
+              </div>
+              <SetupModelCombobox
+                cell
+                class="setup-model-strategy__candidate-model"
+                input-class="control-input"
+                :field="{
+                  name: 'ensemble_candidate_model',
+                  label: t('setup.modelStrategy.addCandidateModelLabel'),
+                  placeholder: t('setup.modelStrategy.addCandidateModelPlaceholder'),
+                }"
+                :value="newCandidateModel"
+                :models="candidateModelCatalog.models"
+                :model-source="candidateModelCatalog.source"
+                @update="newCandidateModel = $event"
+              />
               <select
                 v-model="newCandidateRole"
                 class="control-input setup-model-strategy__role-select"
@@ -564,7 +591,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
                 type="button"
                 class="btn"
                 data-testid="setup-model-strategy-add-candidate"
-                :disabled="!customLineup.canAddProposer && newCandidateRole !== 'aggregator'"
+                :disabled="!canSubmitCandidate"
                 @click="submitCandidate"
               >
                 {{ t('setup.modelStrategy.addCandidate') }}
@@ -750,6 +777,28 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   display: grid;
   gap: var(--sp-2);
   grid-template-columns: minmax(7rem, 0.4fr) minmax(10rem, 1fr) minmax(7rem, auto) auto;
+}
+
+.setup-model-strategy__candidate-provider-lock {
+  align-items: center;
+  background: var(--bg-elevated);
+  cursor: default;
+  display: flex;
+  gap: var(--sp-2);
+  overflow: hidden;
+}
+
+.setup-model-strategy__candidate-provider-label {
+  color: var(--muted);
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+}
+
+.setup-model-strategy__candidate-provider-lock strong {
+  font-size: var(--fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .setup-model-strategy__candidate-add .control-input {

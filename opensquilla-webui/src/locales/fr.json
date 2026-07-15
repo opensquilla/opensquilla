@@ -431,7 +431,7 @@
       "schemePresetDesc": "La composition optimisée du fournisseur : quatre proposants plus un agrégateur, prête à l'emploi.",
       "schemeCustomTitle": "Ensemble personnalisé",
       "schemeCustomBadge": "Avancé",
-      "schemeCustomDesc": "Composez votre propre alignement avec des rôles ; mélangez les fournisseurs au besoin.",
+      "schemeCustomDesc": "Composez une sélection par rôles avec les modèles du fournisseur actuel.",
       "presetNoteDeepseek": "Ancre de raisonnement — brouillons de référence pour les tâches complexes",
       "presetNoteGlm": "Texte long et sortie structurée — contraste avec la famille DeepSeek",
       "presetNoteKimi": "Code et intention d'outils — couvre les demandes de programmation",

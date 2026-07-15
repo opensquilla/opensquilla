@@ -431,7 +431,7 @@
       "schemePresetDesc": "プロバイダー公式の調整済み編成:候補モデル 4 つと統合モデル 1 つ、すぐに使えます。",
       "schemeCustomTitle": "カスタムアンサンブル",
       "schemeCustomBadge": "上級",
-      "schemeCustomDesc": "役割を付けて独自の編成を構築。必要ならプロバイダーを混在できます。",
+      "schemeCustomDesc": "現在のプロバイダーで利用できるモデルから、役割ごとに編成します。",
       "presetNoteDeepseek": "推論の主力 — 複雑なタスクの基準ドラフト",
       "presetNoteGlm": "長文と構造化出力 — DeepSeek 系との対照",
       "presetNoteKimi": "コードとツール意図 — プログラミング要求をカバー",

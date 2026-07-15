@@ -240,6 +240,18 @@ describe('useSetupEnsembleForm — scheme switching', () => {
     expect(f.candidates.value[0]!.role).toBe('critic')
     expect(f.candidates.value[1]!.role).toBe('fast_check')
   })
+
+  it('activateForProvider only seeds tiers from the active provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({})
+    f.activateForProvider('volcengine', [
+      { provider: 'volcengine', model: 'doubao-2.0-pro', tier: 'c3' },
+      { provider: 'openrouter', model: 'z-ai/glm-5.2', tier: 'c2' },
+    ])
+    expect(f.candidates.value.map(c => `${c.provider}/${c.model}`)).toEqual([
+      'volcengine/doubao-2.0-pro',
+    ])
+  })
 })
 
 describe('useSetupEnsembleForm — custom lineup editing', () => {
@@ -317,6 +329,22 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
       { provider: 'volcengine', model: 'deepseek-v4-flash', tier: 'c0' },
     ])
     expect(f.candidates.value.map(c => c.model)).toEqual(['doubao-2.0-pro', 'deepseek-v4-flash'])
+  })
+
+  it('importTierCandidates can restrict new rows to the current provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [{ provider: 'openrouter', model: 'existing-cross-provider' }],
+    })
+    f.importTierCandidates([
+      { provider: 'volcengine', model: 'doubao-2.0-pro', tier: 'c3' },
+      { provider: 'openrouter', model: 'z-ai/glm-5.2', tier: 'c2' },
+    ], 'volcengine')
+    expect(f.candidates.value.map(c => `${c.provider}/${c.model}`)).toEqual([
+      'openrouter/existing-cross-provider',
+      'volcengine/doubao-2.0-pro',
+    ])
   })
 
   it('migrateLegacyToCustom folds legacy inputs into a capped custom lineup', () => {

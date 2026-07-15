@@ -34,6 +34,8 @@ data/
 !src/opensquilla/contrib/codetask/data/**
 .opensquilla/
 benchmarks/
+!configs/benchmarks/
+!configs/benchmarks/*.json
 specs/
 /reports/
 # Local agent/editor instructions and runtime state.

@@ -136,6 +136,7 @@ const mobileReaderOpen = ref(false)
 let statusRequestId = 0
 let activationRequestId = 0
 let readerRequestId = 0
+let readerInflightKey: string | null = null
 let pageActive = false
 
 const profileDirty = computed(() => profileDraft.value !== savedOverride.value)
@@ -198,11 +199,20 @@ function consumeMobileReaderMarker() {
   if (hasMarker) window.history.back()
 }
 
-function syncMobileReader(state: unknown) {
+function syncMobileReaderUi(state: unknown) {
   const evidenceId = isMobileViewport() ? readerMarker(state) : null
-  mobileReaderOpen.value = evidenceId !== null
-  if (!evidenceId) return
+  if (!evidenceId || !canRead.value) {
+    mobileReaderOpen.value = false
+    return null
+  }
+  mobileReaderOpen.value = true
   selectedEvidenceId.value = evidenceId
+  return evidenceId
+}
+
+function ensureMobileReader(state: unknown) {
+  const evidenceId = syncMobileReaderUi(state)
+  if (!evidenceId) return
   if (getResponse.value?.evidenceId !== evidenceId) void readEvidence(evidenceId, null)
 }
 
@@ -217,22 +227,24 @@ async function loadStatus({ preserveDraft = true }: LoadStatusOptions = {}) {
       !pageActive
       || activationId !== activationRequestId
       || requestId !== statusRequestId
-    ) return
+    ) return false
     const normalized = normalizeRagProviderStatus(await rpc.call('knowledge.status', {}))
     if (!normalized) throw new Error(t('rag.errors.invalidStatusResponse'))
     if (
       !pageActive
       || activationId !== activationRequestId
       || requestId !== statusRequestId
-    ) return
+    ) return false
 
     const keepDirtyDraft = preserveDraft && profileDirty.value
     status.value = normalized
     savedOverride.value = normalized.retrievalProfileOverride
     if (!keepDirtyDraft) profileDraft.value = normalized.retrievalProfileOverride
+    return true
   } catch (value) {
-    if (requestId !== statusRequestId) return
+    if (requestId !== statusRequestId) return false
     statusError.value = message(value)
+    return false
   } finally {
     if (requestId === statusRequestId) loadingStatus.value = false
   }
@@ -275,6 +287,7 @@ async function search() {
     )
     if (!normalized) throw new Error(t('rag.errors.invalidSearchResponse'))
     readerRequestId += 1
+    readerInflightKey = null
     reading.value = false
     readError.value = ''
     searchResponse.value = normalized
@@ -289,6 +302,7 @@ async function search() {
 }
 
 async function selectEvidence(evidenceId: string) {
+  if (!canRead.value) return
   selectedEvidenceId.value = evidenceId
   openMobileReader(evidenceId)
   await readEvidence(evidenceId, null)
@@ -296,7 +310,11 @@ async function selectEvidence(evidenceId: string) {
 
 async function readEvidence(evidenceId: string, cursor: string | null) {
   if (!canRead.value) return
+  const requestKey = JSON.stringify([evidenceId, cursor])
+  if (readerInflightKey === requestKey) return
   const requestId = ++readerRequestId
+  readerInflightKey = requestKey
+  if (getResponse.value?.evidenceId !== evidenceId) getResponse.value = null
   reading.value = true
   readError.value = ''
   try {
@@ -310,7 +328,10 @@ async function readEvidence(evidenceId: string, cursor: string | null) {
     if (requestId !== readerRequestId) return
     readError.value = message(value)
   } finally {
-    if (requestId === readerRequestId) reading.value = false
+    if (requestId === readerRequestId) {
+      reading.value = false
+      if (readerInflightKey === requestKey) readerInflightKey = null
+    }
   }
 }
 
@@ -321,11 +342,7 @@ function closeMobileReader() {
 }
 
 function onPopState(event: PopStateEvent) {
-  const evidenceId = isMobileViewport() ? readerMarker(event.state) : null
-  mobileReaderOpen.value = evidenceId !== null
-  if (!evidenceId) return
-  selectedEvidenceId.value = evidenceId
-  if (getResponse.value?.evidenceId !== evidenceId) void readEvidence(evidenceId, null)
+  ensureMobileReader(event.state)
 }
 
 function teardownPage() {
@@ -335,10 +352,14 @@ function teardownPage() {
 onActivated(() => {
   pageActive = true
   activationRequestId += 1
+  const activationId = activationRequestId
   teardownPage()
   window.addEventListener('popstate', onPopState)
-  syncMobileReader(window.history.state)
-  void loadStatus({ preserveDraft: true })
+  syncMobileReaderUi(window.history.state)
+  void loadStatus({ preserveDraft: true }).then((loaded) => {
+    if (!loaded || !pageActive || activationId !== activationRequestId) return
+    ensureMobileReader(window.history.state)
+  })
 })
 
 onDeactivated(() => {
@@ -347,6 +368,7 @@ onDeactivated(() => {
   teardownPage()
   statusRequestId += 1
   readerRequestId += 1
+  readerInflightKey = null
   loadingStatus.value = false
   reading.value = false
   mobileReaderOpen.value = false
@@ -358,6 +380,7 @@ onUnmounted(() => {
   teardownPage()
   statusRequestId += 1
   readerRequestId += 1
+  readerInflightKey = null
 })
 </script>
 

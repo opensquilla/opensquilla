@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -1530,11 +1531,13 @@ async def test_shell_write_to_protected_metadata_requires_elevation_before_backe
     )
 
     with tool_context(workspace, run_mode="trusted"):
+        git_target = repo / ".git/_sandbox_should_not_write.txt"
+        codex_target = repo / ".codex/_sandbox_should_not_write.txt"
         git_result = await shell.exec_command(
-            f"sh -lc 'printf \"%s\\n\" blocked > {repo}/.git/_sandbox_should_not_write.txt'"
+            f"touch {shlex.quote(str(git_target))}"
         )
         codex_result = await shell.exec_command(
-            f"sh -lc 'printf \"%s\\n\" blocked > {repo}/.codex/_sandbox_should_not_write.txt'"
+            f"touch {shlex.quote(str(codex_target))}"
         )
 
     git_payload = json.loads(git_result)

@@ -246,7 +246,11 @@ def test_supplied_windows_context_preserves_special_root_flavor(
     )
 
     assert PureWindowsPath(r"C:\Windows") in profile.readable_roots
-    assert profile.resolve(workspace / r"C:\Windows" / "System32") is FileSystemAccess.WRITE
+    windows_root = Path(r"C:\Windows")
+    expected_access = (
+        FileSystemAccess.READ if windows_root.is_absolute() else FileSystemAccess.WRITE
+    )
+    assert profile.resolve(workspace / windows_root / "System32") is expected_access
     assert profile.resolve(workspace / "src" / "app.py") is FileSystemAccess.WRITE
 
 

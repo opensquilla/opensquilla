@@ -553,6 +553,16 @@ def test_tool_result_handler_projects_large_write_file_arguments() -> None:
         "name": "write_file",
         "result": "Written 6011 bytes to index.html",
         "is_error": False,
+        "delivery_summary": {
+            "returned_count": None,
+            "result_chars": 32,
+            "provider_budget_violation": False,
+        },
+        "preview_summary": {
+            "displayed_count": None,
+            "preview_chars": 32,
+            "preview_truncated": False,
+        },
     }
 
 

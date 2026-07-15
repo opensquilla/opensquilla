@@ -1,3 +1,5 @@
+"""Gateway-owned tool bindings for the external RAG Provider."""
+
 from __future__ import annotations
 
 import json

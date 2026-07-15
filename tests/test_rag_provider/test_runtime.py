@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
+from opensquilla.gateway.rag_provider_runtime import RagProviderRuntime, RagProviderState
 from opensquilla.rag_provider.protocol import ProviderIncompatible, validate_capabilities
-from opensquilla.rag_provider.runtime import RagProviderRuntime, RagProviderState
 from opensquilla.tools.registry import ToolRegistry
 
 from .test_protocol import capabilities

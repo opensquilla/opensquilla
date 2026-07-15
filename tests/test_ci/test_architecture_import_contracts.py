@@ -93,6 +93,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("gateway", "onboarding"),
     ("gateway", "persistence"),
     ("gateway", "provider"),
+    # Gateway owns Provider lifecycle, dynamic tool registration, and operator
+    # RPC projection; rag_provider remains a leaf transport/protocol package.
+    ("gateway", "rag_provider"),
     ("gateway", "sandbox"),
     ("gateway", "scheduler"),
     ("gateway", "search"),

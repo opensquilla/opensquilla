@@ -51,7 +51,7 @@ async def test_disabled_config_does_not_construct_rag_provider_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.rag_provider import runtime as runtime_module
+    from opensquilla.gateway import rag_provider_runtime as runtime_module
 
     calls: list[tuple[Any, Any]] = []
 
@@ -78,7 +78,7 @@ async def test_enabled_config_owns_one_started_rag_provider_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from opensquilla.rag_provider import runtime as runtime_module
+    from opensquilla.gateway import rag_provider_runtime as runtime_module
 
     instances: list[Any] = []
 

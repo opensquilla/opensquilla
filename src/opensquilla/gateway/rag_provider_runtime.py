@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from opensquilla.gateway.rag_provider_tools import (
+    ToolBinding,
+    rag_provider_tool_bindings,
+)
 from opensquilla.rag_provider.protocol import (
     CapabilitiesSnapshot,
     ProviderAuthenticationError,
@@ -16,7 +20,6 @@ from opensquilla.rag_provider.protocol import (
     ProviderUnavailable,
     SearchBudget,
 )
-from opensquilla.rag_provider.tools import ToolBinding, rag_provider_tool_bindings
 from opensquilla.tools.registry import ToolRegistry
 
 

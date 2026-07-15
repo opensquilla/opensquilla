@@ -4,13 +4,13 @@ import json
 
 import pytest
 
+from opensquilla.gateway.rag_provider_tools import rag_provider_tool_bindings
 from opensquilla.rag_provider.protocol import (
     ProviderNotFound,
     ProviderProtocolViolation,
     ProviderUnavailable,
     ValidatedSearchResponse,
 )
-from opensquilla.rag_provider.tools import rag_provider_tool_bindings
 from opensquilla.tools.types import ToolError
 
 

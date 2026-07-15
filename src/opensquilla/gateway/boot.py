@@ -2371,7 +2371,7 @@ async def build_services(
     rag_provider_runtime = None
     if bool(config.knowledge.enabled):
         try:
-            from opensquilla.rag_provider.runtime import create_rag_provider_runtime
+            from opensquilla.gateway.rag_provider_runtime import create_rag_provider_runtime
 
             rag_provider_runtime = create_rag_provider_runtime(config, tool_registry)
             await rag_provider_runtime.start()

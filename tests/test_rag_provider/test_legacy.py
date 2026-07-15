@@ -4,9 +4,9 @@ from dataclasses import dataclass
 
 import pytest
 
+from opensquilla.gateway.rag_provider_runtime import RagProviderRuntime, RagProviderState
 from opensquilla.rag_provider.legacy import LEGACY_WARNING, LegacyKnowledgeAdapter
 from opensquilla.rag_provider.protocol import ProviderNotFound, SearchBudget
-from opensquilla.rag_provider.runtime import RagProviderRuntime, RagProviderState
 from opensquilla.tools.registry import ToolRegistry
 
 

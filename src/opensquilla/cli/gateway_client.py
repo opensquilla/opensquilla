@@ -116,9 +116,19 @@ class GatewayClient:
         self._http_base = base.rstrip("/")
         self._auth_token = token
 
-        # Wait for connect.challenge
+        # Wait for connect.challenge. A malformed frame from the server or
+        # an intercepting proxy should not abort the connection with a
+        # bare ``JSONDecodeError``; surface a clean shutdown instead.
         raw = await self._ws.recv()
-        challenge = json.loads(raw)
+        try:
+            challenge = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"Malformed handshake frame from gateway: {exc.msg} "
+                f"(line {exc.lineno} col {exc.colno})"
+            ) from exc
+        if not isinstance(challenge, dict):
+            raise SystemExit(f"Unexpected handshake frame: {challenge!r}")
         if challenge.get("type") != "event" or challenge.get("event") != "connect.challenge":
             raise SystemExit(f"Unexpected handshake frame: {challenge}")
 
@@ -145,10 +155,19 @@ class GatewayClient:
 
         # Wait for hello-ok
         raw = await self._ws.recv()
-        hello = json.loads(raw)
+        try:
+            hello = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"Malformed hello frame from gateway: {exc.msg} "
+                f"(line {exc.lineno} col {exc.colno})"
+            ) from exc
+        if not isinstance(hello, dict):
+            raise SystemExit(f"Handshake failed: {hello!r}")
         if hello.get("type") != "hello-ok":
             raise SystemExit(f"Handshake failed: {hello}")
-        policy = hello.get("policy") if isinstance(hello.get("policy"), dict) else {}
+        policy_value = hello.get("policy")
+        policy = cast(dict[str, Any], policy_value) if isinstance(policy_value, dict) else {}
         self._heartbeat_interval = _heartbeat_interval_from_policy(policy)
 
         # Start background listener and application-level keepalive.
@@ -220,10 +239,43 @@ class GatewayClient:
         """Read frames and route to pending futures or the event queue."""
         try:
             async for raw in self._ws:
-                frame = json.loads(raw)
+                # Malformed protocol frames cannot be matched safely to
+                # pending requests. Fail the connection explicitly so no
+                # caller remains blocked on a future that cannot resolve.
+                try:
+                    frame = json.loads(raw)
+                except json.JSONDecodeError:
+                    self._mark_connection_failed(
+                        ConnectionError(
+                            "Gateway sent a malformed frame; closing connection"
+                        )
+                    )
+                    return
+                if not isinstance(frame, dict):
+                    self._mark_connection_failed(
+                        ConnectionError(
+                            "Gateway sent a non-object frame; closing connection"
+                        )
+                    )
+                    return
                 frame_type = frame.get("type")
                 if frame_type == "res":
-                    fut = self._pending.pop(frame["id"], None)
+                    frame_id = frame.get("id")
+                    if not isinstance(frame_id, str):
+                        # A response frame whose id is missing or not a
+                        # string can never be matched to its pending
+                        # request. Treat it as a protocol error and fail
+                        # in-flight RPCs so callers get a clean
+                        # connection error instead of hanging forever on
+                        # a future that nothing will ever resolve.
+                        self._mark_connection_failed(
+                            ConnectionError(
+                                "Gateway sent a response frame with a "
+                                "missing or invalid id; closing connection"
+                            )
+                        )
+                        return
+                    fut = self._pending.pop(frame_id, None)
                     if fut and not fut.done():
                         fut.set_result(frame)
                 elif frame_type == "event":

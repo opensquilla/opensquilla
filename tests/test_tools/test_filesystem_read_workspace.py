@@ -706,13 +706,14 @@ async def test_workspace_strict_surfaces_list_dir_symlink_escape(tmp_path: Path)
 
 @pytest.mark.asyncio
 async def test_list_dir_survives_broken_symlink(tmp_path: Path) -> None:
-    (tmp_path / "ok.txt").write_text("hello\n", encoding="utf-8")
+    ordinary = tmp_path / "ok.txt"
+    ordinary.write_text("hello\n", encoding="utf-8")
     _make_symlink(tmp_path / "dangling", tmp_path / "missing-target")
 
     with tool_context(tmp_path):
         output = await fs.list_dir(str(tmp_path))
 
-    assert "[file] ok.txt (6 bytes)" in output
+    assert f"[file] ok.txt ({ordinary.stat().st_size} bytes)" in output
     assert "[link] dangling (broken symlink)" in output
 
 

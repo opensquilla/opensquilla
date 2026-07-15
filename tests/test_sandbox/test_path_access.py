@@ -456,7 +456,7 @@ async def test_filesystem_list_root_uses_global_readonly_root(
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
     with tool_context(workspace, workspace_strict=True):
-        result = await fs.list_dir(str(Path(tmp_path.anchor)))
+        result = await fs.list_dir(str(tmp_path))
 
     assert '"status": "blocked"' not in result
     assert "[dir]" in result
@@ -474,9 +474,14 @@ async def test_filesystem_reads_dot_credential_names_through_readonly_root(
     credential.write_text("test fixture body\n", encoding="utf-8")
 
     _install_filesystem_read_backend()
+    _disable_global_root_readonly()
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
-    with tool_context(workspace, workspace_strict=True):
+    with tool_context(workspace, workspace_strict=True) as ctx:
+        ctx.sandbox_file_system_profile = FileSystemPermissionProfile.read_only(
+            readable_roots=(tmp_path,),
+            host_root_readonly=False,
+        )
         result = await fs.read_file(str(credential))
 
     assert "test fixture body" in result
@@ -731,6 +736,7 @@ async def test_default_profile_allows_direct_filesystem_write_under_slash_tmp(
     runtime = get_runtime()
     assert runtime is not None
     runtime.settings.exclude_slash_tmp = False
+    runtime.settings.exclude_tmpdir_env_var = False
 
     with tool_context(workspace):
         result = await fs.write_file(str(target), "tmp body\n")

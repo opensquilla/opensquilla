@@ -35,6 +35,7 @@ from opensquilla.sandbox.operation_runtime import (
     SandboxToolDescriptor,
 )
 from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
+from opensquilla.sandbox.permissions import FileSystemAccess
 from opensquilla.tools.mutation_receipts import (
     fingerprint_path,
     record_semantic_mutation_receipt,
@@ -812,6 +813,31 @@ def _strict_read_mount_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _strict_read_profile_roots() -> tuple[Path, ...]:
+    """Return readable roots from the same profile used by direct tools.
+
+    Linux expresses Codex's host-readable policy as a read-only ``/`` mount,
+    while Windows expresses it as a set of platform-specific profile entries.
+    Strict workspace reads must understand both representations or filesystem
+    tools disagree with shell and patch tools on Windows.
+    """
+
+    profile = active_file_system_profile(_workspace_root())
+    if profile is None:
+        return tuple()
+    roots: list[Path] = []
+    for entry in profile.entries:
+        if entry.access is FileSystemAccess.DENY:
+            continue
+        try:
+            root = Path(entry.path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _strict_read_roots() -> tuple[Path, ...]:
     if full_host_access_active():
         return tuple()
@@ -825,6 +851,9 @@ def _strict_read_roots() -> tuple[Path, ...]:
     for mount_root in _strict_read_mount_roots():
         if mount_root not in roots:
             roots.append(mount_root)
+    for profile_root in _strict_read_profile_roots():
+        if profile_root not in roots:
+            roots.append(profile_root)
     return tuple(roots)
 
 

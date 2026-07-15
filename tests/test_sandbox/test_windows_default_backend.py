@@ -447,7 +447,9 @@ def test_windows_profile_grants_keep_final_pure_windows_declaration(
 
     grants = mod._profile_acl_grants(request, profile)
 
-    assert [(str(grant.path), grant.access.value) for grant in grants] == [("D:/workspace", "RX")]
+    assert [(str(grant.path), grant.access.value) for grant in grants] == [
+        (str(Path(windows_root)), "RX")
+    ]
 
 
 def test_payload_contains_cache_env_and_run_mode(

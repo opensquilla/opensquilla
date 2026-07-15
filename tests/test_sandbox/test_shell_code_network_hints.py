@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -270,7 +271,7 @@ async def test_trusted_shell_outside_write_requires_explicit_elevation(
     )
     try:
         result = await shell.exec_command(
-            f"touch {target}",
+            f"touch {shlex.quote(str(target))}",
             workdir=str(managed_runtime),
         )
     finally:
@@ -289,7 +290,7 @@ async def test_shell_exact_elevation_grant_runs_host_once(
     from opensquilla.tools.builtin import shell
 
     target = managed_runtime.parent / "outside-approved" / "probe.txt"
-    command = f"touch {target}"
+    command = f"touch {shlex.quote(str(target))}"
     host_calls: list[tuple[str, str | None]] = []
 
     async def _fake_host(command, *, cwd, **kwargs):
@@ -483,7 +484,7 @@ async def test_shell_changed_command_cannot_consume_elevation_grant(
     from opensquilla.tools.builtin import shell
 
     target = managed_runtime.parent / "outside-changed" / "probe.txt"
-    original = f"touch {target}"
+    original = f"touch {shlex.quote(str(target))}"
     changed = f"rm -rf {target.parent}"
     host_calls: list[str] = []
 
@@ -541,8 +542,12 @@ async def test_background_process_uses_the_same_exact_elevation_contract(
 ) -> None:
     from opensquilla.tools.builtin import shell
 
-    original = f"touch {managed_runtime.parent / 'background-one.txt'}"
-    changed = f"touch {managed_runtime.parent / 'background-two.txt'}"
+    original = (
+        f"touch {shlex.quote(str(managed_runtime.parent / 'background-one.txt'))}"
+    )
+    changed = (
+        f"touch {shlex.quote(str(managed_runtime.parent / 'background-two.txt'))}"
+    )
 
     async def _host_spawn_must_not_run(*args, **kwargs):
         raise AssertionError("a changed background action must not spawn")

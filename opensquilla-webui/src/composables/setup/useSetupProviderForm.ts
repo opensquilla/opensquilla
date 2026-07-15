@@ -49,6 +49,7 @@ interface ProviderPanelContext {
   llmTimeoutSeconds: Ref<number>
   contextWindowTokens: Ref<string>
   contextWindowGlobal: ComputedRef<number | null>
+  effectiveMaxTokens: ComputedRef<EffectiveMaxTokens | null>
   providerIsLocal: ComputedRef<boolean>
 }
 
@@ -96,6 +97,11 @@ export interface DiscoveredModel {
 export interface DiscoveredModelCatalog {
   models: DiscoveredModel[]
   source: 'live' | 'none'
+}
+
+export interface EffectiveMaxTokens {
+  value: number
+  source: 'config' | 'catalog' | 'default'
 }
 
 /** Provider ids are normalized before they become catalog keys. */
@@ -502,6 +508,7 @@ export function useSetupProviderForm() {
       llmTimeoutSeconds: context.llmTimeoutSeconds.value,
       contextWindowTokens: context.contextWindowTokens.value,
       contextWindowGlobal: context.contextWindowGlobal.value,
+      effectiveMaxTokens: context.effectiveMaxTokens.value,
       providerIsLocal: context.providerIsLocal.value,
       connection: connection.value,
       providerFieldValue: (field: ProviderField) => fieldValue(field, context.currentConfig.value),

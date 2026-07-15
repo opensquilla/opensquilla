@@ -8,6 +8,7 @@ import {
   normalizeDiscoveredModels,
   useSetupProviderForm,
   type DiscoveredModelsByProvider,
+  type EffectiveMaxTokens,
 } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 import {
@@ -243,6 +244,10 @@ interface ConfigData {
   }
 }
 
+interface EffectiveConfigData {
+  fields?: Record<string, { value?: unknown; source?: string }>
+}
+
 export interface SettingsActionItem {
   label: string
   section: SettingsSectionId
@@ -261,6 +266,7 @@ const t = i18n.global.t
 const catalog = ref<OnboardingCatalog>({})
 const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
+const effectiveConfig = ref<EffectiveConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
@@ -383,15 +389,19 @@ onUnmounted(() => {
 async function loadData() {
   try {
     await rpc.waitForConnection()
-    const [cat, st, cfg, chStatus] = await Promise.all([
+    const [cat, st, cfg, chStatus, effective] = await Promise.all([
       rpc.call<OnboardingCatalog>('onboarding.catalog'),
       rpc.call<OnboardingStatus>('onboarding.status'),
       rpc.call<ConfigData>('config.get'),
       rpc.call<{ channels: ChannelStatusRow[] }>('channels.status').catch(() => ({ channels: [] })),
+      // Optional on older gateways: effective metadata must never block the
+      // settings surface or provider saves.
+      rpc.call<EffectiveConfigData>('config.effective').catch(() => ({ fields: {} })),
     ])
     catalog.value = cat || {}
     status.value = st || {}
     config.value = cfg || {}
+    effectiveConfig.value = effective || {}
     channelStatus.value = chStatus || { channels: [] }
     resetTierModelDiscovery()
 
@@ -491,6 +501,36 @@ const providerIsLocal = computed(() => {
 const contextWindowGlobal = computed<number | null>(() => {
   const raw = Number((config.value.llm || {}).context_window_tokens)
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null
+})
+
+const effectiveMaxTokens = computed<EffectiveMaxTokens | null>(() => {
+  const fields = effectiveConfig.value.fields || {}
+  const effectiveProvider = normalizeProviderId(fields['llm.provider']?.value)
+  const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
+  const effectiveModel = String(fields['llm.model']?.value || '').trim()
+  const selectedModel = currentFormModelValue()
+  if (
+    !effectiveProvider
+    || effectiveProvider !== selectedProvider
+    || !effectiveModel
+    || effectiveModel !== selectedModel
+  ) {
+    return null
+  }
+  const record = fields['llm.max_tokens']
+  const value = Number(record?.value)
+  const source = String(record?.source || '')
+  if (
+    !Number.isFinite(value)
+    || value <= 0
+    || !['config', 'catalog', 'default'].includes(source)
+  ) {
+    return null
+  }
+  return {
+    value: Math.floor(value),
+    source: source as EffectiveMaxTokens['source'],
+  }
 })
 
 const providerSummary = computed(() => {
@@ -707,6 +747,7 @@ const providerPanel = providerForm.createPanel({
   llmTimeoutSeconds: promotedForm.llmTimeoutSeconds,
   contextWindowTokens: promotedForm.contextWindowTokens,
   contextWindowGlobal,
+  effectiveMaxTokens,
   providerIsLocal,
 })
 

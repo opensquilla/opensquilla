@@ -528,10 +528,14 @@ def _validate_setup_directory_lease(
 
 def _write_json_atomic_no_follow(path: Path, payload: dict[str, object]) -> None:
     data = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
-    if os.name == "nt":
-        _write_json_windows_no_follow(path, data)
-        return
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    if os.name == "nt":
+        try:
+            _write_json_windows_no_follow(temporary, data)
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(temporary, flags, 0o600)
     try:

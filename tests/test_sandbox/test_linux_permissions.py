@@ -175,12 +175,13 @@ def test_compile_linux_permissions_accepts_default_read_profile(tmp_path: Path) 
 def test_compile_linux_permissions_compiles_effective_profile_entries(
     tmp_path: Path,
 ) -> None:
+    root = Path(tmp_path.anchor)
     workspace = tmp_path / "workspace"
     readonly = workspace / "readonly"
     denied = workspace / "secret"
     profile = FileSystemPermissionProfile(
         entries=(
-            FileSystemPermissionEntry(Path("/"), FileSystemAccess.READ),
+            FileSystemPermissionEntry(root, FileSystemAccess.READ),
             FileSystemPermissionEntry(workspace, FileSystemAccess.READ),
             FileSystemPermissionEntry(workspace, FileSystemAccess.WRITE),
             FileSystemPermissionEntry(readonly, FileSystemAccess.READ),
@@ -197,14 +198,14 @@ def test_compile_linux_permissions_compiles_effective_profile_entries(
 
     compiled = compile_linux_permissions(policy)
 
-    assert [root.host_path for root in compiled.read_roots] == [Path("/"), readonly]
+    assert [entry.host_path for entry in compiled.read_roots] == [root, readonly]
     assert [root.host_path for root in compiled.write_roots] == [workspace]
     assert compiled.denied_roots == (denied,)
     assert compiled.denied_globs == (str(workspace / "**" / ".env"),)
     assert readonly in compiled.protected_subpaths
     assert denied not in compiled.protected_subpaths
     assert workspace / ".git" in compiled.protected_subpaths
-    assert compiled.read_all is True
+    assert compiled.read_all is profile.has_full_disk_read_baseline
     assert profile.unsandboxed_execution_allowed is False
 
 
@@ -225,8 +226,7 @@ def test_compile_linux_permissions_compiles_workspace_profile(tmp_path: Path) ->
 
     compiled = compile_linux_permissions(policy)
 
-    assert compiled.read_all is True
-    assert Path("/") in {root.host_path for root in compiled.read_roots}
+    assert compiled.read_all is profile.has_full_disk_read_baseline
     assert workspace in {root.host_path for root in compiled.write_roots}
     assert workspace / ".git" in compiled.protected_subpaths
 

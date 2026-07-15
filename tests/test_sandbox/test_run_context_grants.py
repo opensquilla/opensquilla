@@ -1440,7 +1440,7 @@ async def test_set_run_mode_preserves_name_agnostic_fallback_workspace(
     tmp_path,
     workspace_path,
 ):
-    from opensquilla.sandbox.run_context import set_run_mode
+    from opensquilla.sandbox.run_context import normalize_workspace_path, set_run_mode
     from opensquilla.sandbox.run_mode import RunMode
 
     manager = _SessionManager()
@@ -1458,7 +1458,7 @@ async def test_set_run_mode_preserves_name_agnostic_fallback_workspace(
         workspace=fallback_workspace,
     )
 
-    expected = str(Path(fallback_workspace).expanduser().resolve(strict=False))
+    expected = normalize_workspace_path(fallback_workspace)
     assert updated.workspace == expected
     assert manager.node.origin["sandbox_run_context"]["workspace"] == expected
 
@@ -1504,6 +1504,7 @@ async def test_set_workspace_allows_root_nested_deployment_workspace():
 
 @pytest.mark.asyncio
 async def test_set_workspace_allows_paths_without_sensitive_name_rules():
+    from opensquilla.sandbox.run_context import normalize_workspace_path
     from opensquilla.sandbox.run_context_service import set_workspace
 
     for workspace_path in (
@@ -1541,7 +1542,7 @@ async def test_set_workspace_allows_paths_without_sensitive_name_rules():
             config=_config(),
             current_workspace=None,
         )
-        assert updated.workspace == str(Path(workspace_path).resolve(strict=False))
+        assert updated.workspace == normalize_workspace_path(workspace_path)
 
 
 @pytest.mark.asyncio
@@ -1845,7 +1846,7 @@ async def test_saved_root_nested_workspace_is_allowed():
     ],
 )
 async def test_saved_workspace_is_name_agnostic(workspace_path):
-    from opensquilla.sandbox.run_context import get_run_context
+    from opensquilla.sandbox.run_context import get_run_context, normalize_workspace_path
 
     manager = _SessionManager()
     manager.node.origin = {
@@ -1862,7 +1863,7 @@ async def test_saved_workspace_is_name_agnostic(workspace_path):
         workspace=None,
     )
 
-    assert ctx.workspace == str(Path(workspace_path).resolve(strict=False))
+    assert ctx.workspace == normalize_workspace_path(workspace_path)
 
 
 @pytest.mark.asyncio

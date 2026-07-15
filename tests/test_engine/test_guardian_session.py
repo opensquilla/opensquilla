@@ -140,7 +140,8 @@ def test_guardian_context_installs_read_only_filesystem_profile(tmp_path: Path) 
 
     assert profile is not None
     assert profile.resolve(tmp_path / "repo.py") is FileSystemAccess.READ
-    assert profile.resolve(Path("/tmp/guardian-probe")) is FileSystemAccess.READ
+    readable_root = profile.readable_roots[0]
+    assert profile.resolve(readable_root / "guardian-probe") is FileSystemAccess.READ
     token = current_tool_context.set(manager._context)
     try:
         assert active_file_system_profile(tmp_path) is profile

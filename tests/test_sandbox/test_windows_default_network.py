@@ -391,6 +391,33 @@ def test_setup_marker_replaces_symlink_without_writing_its_target(tmp_path) -> N
     assert json.loads(marker.read_text(encoding="utf-8"))["setupVersion"] == mod.SETUP_VERSION
 
 
+def test_setup_marker_windows_writer_atomically_replaces_symlink(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    outside = tmp_path / "outside.json"
+    outside.write_text("do not touch", encoding="utf-8")
+    marker = tmp_path / "setup_marker.json"
+    marker.symlink_to(outside)
+    writer_paths = []
+
+    def fake_windows_writer(path, data):
+        writer_paths.append(path)
+        path.write_bytes(data)
+
+    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod, "_write_json_windows_no_follow", fake_windows_writer)
+
+    mod.write_setup_marker(marker)
+
+    assert writer_paths and writer_paths[0] != marker
+    assert outside.read_text(encoding="utf-8") == "do not touch"
+    assert not marker.is_symlink()
+    assert json.loads(marker.read_text(encoding="utf-8"))["setupVersion"] == mod.SETUP_VERSION
+
+
 def test_lock_revalidates_tree_before_each_recursive_acl_mutation(monkeypatch, tmp_path) -> None:
     from opensquilla.sandbox.backend import windows_default_setup as mod
 

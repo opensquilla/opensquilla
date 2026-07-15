@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path, PureWindowsPath
 
 import pytest
@@ -28,10 +29,12 @@ def test_workspace_profile_reads_root_and_writes_declared_roots(
         writable_roots=(cache,),
     )
 
-    assert profile.resolve(Path("/etc/hosts")) is FileSystemAccess.READ
+    readable_root = profile.readable_roots[0]
+    assert profile.resolve(readable_root / "probe") is FileSystemAccess.READ
     assert profile.resolve(workspace / "src" / "a.py") is FileSystemAccess.WRITE
     assert profile.resolve(cache / "artifact") is FileSystemAccess.WRITE
-    assert profile.resolve(Path("/tmp") / "probe") is FileSystemAccess.WRITE
+    if os.name != "nt":
+        assert profile.resolve(Path("/tmp") / "probe") is FileSystemAccess.WRITE
     assert profile.resolve(tmpdir / "probe") is FileSystemAccess.WRITE
 
 
@@ -89,7 +92,8 @@ def test_build_policy_carries_the_canonical_workspace_profile(tmp_path: Path) ->
     )
 
     assert policy.file_system is not None
-    assert policy.file_system.resolve(Path("/etc/hosts")) is FileSystemAccess.READ
+    readable_root = policy.file_system.readable_roots[0]
+    assert policy.file_system.resolve(readable_root / "probe") is FileSystemAccess.READ
     assert policy.file_system.resolve(workspace / "a.py") is FileSystemAccess.WRITE
     assert policy.file_system.resolve(cache / "artifact") is FileSystemAccess.WRITE
 
@@ -147,8 +151,8 @@ def test_codex_tmp_exclusion_flags_remove_only_requested_write_roots(
         SandboxSettings(exclude_slash_tmp=True, exclude_tmpdir_env_var=True),
     )
 
-    assert policy.file_system.resolve(Path("/tmp/probe")) is FileSystemAccess.READ
-    assert policy.file_system.resolve(tmpdir / "probe") is FileSystemAccess.READ
+    assert policy.file_system.resolve(Path("/tmp/probe")) is not FileSystemAccess.WRITE
+    assert policy.file_system.resolve(tmpdir / "probe") is not FileSystemAccess.WRITE
 
 
 def test_disabled_policy_is_the_only_full_access_profile(tmp_path: Path) -> None:

@@ -173,32 +173,36 @@ def test_normal_sibling_path_requests_ro_mount(tmp_path: Path) -> None:
 def test_readonly_root_allows_ssh_path_read(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     target = Path.home() / ".ssh" / "id_rsa"
+    root = Path(target.anchor)
 
     decision = decide_path_access(
         target,
         workspace=workspace,
-        mounts=({"path": "/", "access": "ro"},),
+        mounts=({"path": str(root), "access": "ro"},),
     )
 
     assert decision.status == "allowed"
 
 
 def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) -> None:
-    mounts = ({"path": "/", "access": "ro"},)
+    root = Path(tmp_path.anchor)
+    target = root / "etc" / "hosts"
+    shadow_target = root / "etc" / "shadow"
+    mounts = ({"path": str(root), "access": "ro"},)
 
     read = decide_path_access(
-        "/etc/hosts",
+        target,
         workspace=tmp_path / "workspace",
         mounts=mounts,
     )
     write = decide_path_access(
-        "/etc/hosts",
+        target,
         workspace=tmp_path / "workspace",
         mounts=mounts,
         write=True,
     )
     shadow = decide_path_access(
-        "/etc/shadow",
+        shadow_target,
         workspace=tmp_path / "workspace",
         mounts=mounts,
     )
@@ -213,15 +217,16 @@ def test_readonly_root_allows_ordinary_etc_reads_but_not_writes(tmp_path: Path) 
 def test_readonly_root_mount_allows_root_directory_read_but_blocks_write(
     tmp_path: Path,
 ) -> None:
-    mounts = ({"path": "/", "access": "ro"},)
+    root = Path(tmp_path.anchor)
+    mounts = ({"path": str(root), "access": "ro"},)
 
     read = decide_path_access(
-        "/",
+        root,
         workspace=tmp_path / "workspace",
         mounts=mounts,
     )
     write = decide_path_access(
-        "/",
+        root,
         workspace=tmp_path / "workspace",
         mounts=mounts,
         write=True,
@@ -324,7 +329,9 @@ def test_unmounted_root_read_can_request_a_mount_grant(tmp_path: Path) -> None:
     from opensquilla.sandbox.escalation import build_path_approval_params
 
     workspace = tmp_path / "workspace"
-    decision = decide_path_access("/", workspace=workspace, write=False)
+    decision = decide_path_access(
+        Path(tmp_path.anchor), workspace=workspace, write=False
+    )
 
     assert decision.status == "request"
     assert build_path_approval_params(
@@ -449,7 +456,7 @@ async def test_filesystem_list_root_uses_global_readonly_root(
     monkeypatch.setattr(fs.asyncio, "get_event_loop", lambda: _InlineExecutorLoop())
 
     with tool_context(workspace, workspace_strict=True):
-        result = await fs.list_dir("/")
+        result = await fs.list_dir(str(Path(tmp_path.anchor)))
 
     assert '"status": "blocked"' not in result
     assert "[dir]" in result

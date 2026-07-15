@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.rag_provider_runtime import RagProviderState
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.gateway.rpc_knowledge import (
     _handle_knowledge_get,
@@ -12,7 +13,6 @@ from opensquilla.gateway.rpc_knowledge import (
     _handle_knowledge_search,
     _handle_knowledge_status,
 )
-from opensquilla.gateway.rag_provider_runtime import RagProviderState
 from opensquilla.rag_provider.protocol import ValidatedSearchResponse
 
 

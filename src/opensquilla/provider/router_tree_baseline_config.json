@@ -1,0 +1,350 @@
+{
+  "schema_version": "router-tree-baseline-config-v1",
+  "config_version": "legacy-router-dynamic-2026-07-03.1",
+  "algorithm_version": "legacy-router-dynamic-v1",
+  "default_tier": "c1",
+  "default_provider": "openrouter",
+  "default_model_options": [
+    "deepseek/deepseek-v4-pro",
+    "z-ai/glm-5.2",
+    "qwen/qwen3.7-plus",
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3.7-max",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.7-code",
+    "minimax/minimax-m3"
+  ],
+  "tiers": ["c0", "c1", "c2", "c3"],
+  "trace": {
+    "candidate_decimal_places": 4,
+    "score_decimal_places": 5,
+    "top_candidates": 3
+  },
+  "slot_templates": {
+    "c0": ["anchor", "cheap_contrast"],
+    "c1": ["anchor", "balanced_contrast"],
+    "c2": ["anchor", "adjacent_tier_check", "orthogonal_family"],
+    "c3": ["anchor", "strong_critic", "orthogonal_family", "fast_sanity"]
+  },
+  "aggregator_slots": {
+    "c0": "aggregator_fast",
+    "c1": "aggregator_balanced",
+    "c2": "aggregator_strong",
+    "c3": "aggregator_strong"
+  },
+  "scoring": {
+    "weight_sum_tolerance": 1e-9,
+    "tier_distance_divisor": 3.0,
+    "default_selected_penalty": 0.25,
+    "family_name_parts": 2,
+    "default_thinking": "xhigh",
+    "slot_weights": {
+      "cheap_contrast": {
+        "quality": 0.16,
+        "affinity": 0.12,
+        "diversity": 0.22,
+        "cost": 0.24,
+        "role": 0.26
+      },
+      "balanced_contrast": {
+        "quality": 0.22,
+        "affinity": 0.18,
+        "diversity": 0.24,
+        "cost": 0.12,
+        "role": 0.24
+      },
+      "adjacent_tier_check": {
+        "quality": 0.22,
+        "affinity": 0.24,
+        "diversity": 0.12,
+        "cost": 0.08,
+        "role": 0.34
+      },
+      "orthogonal_family": {
+        "quality": 0.22,
+        "affinity": 0.12,
+        "diversity": 0.34,
+        "cost": 0.08,
+        "role": 0.24
+      },
+      "strong_critic": {
+        "quality": 0.34,
+        "affinity": 0.12,
+        "diversity": 0.12,
+        "cost": 0.02,
+        "role": 0.40
+      },
+      "fast_sanity": {
+        "quality": 0.12,
+        "affinity": 0.16,
+        "diversity": 0.14,
+        "cost": 0.32,
+        "role": 0.26
+      },
+      "aggregator_fast": {
+        "quality": 0.24,
+        "affinity": 0.18,
+        "diversity": 0.12,
+        "cost": 0.24,
+        "role": 0.22
+      },
+      "aggregator_balanced": {
+        "quality": 0.30,
+        "affinity": 0.20,
+        "diversity": 0.14,
+        "cost": 0.10,
+        "role": 0.26
+      },
+      "aggregator_strong": {
+        "quality": 0.38,
+        "affinity": 0.16,
+        "diversity": 0.10,
+        "cost": 0.04,
+        "role": 0.32
+      }
+    },
+    "selected_penalties": {
+      "cheap_contrast": 0.34,
+      "balanced_contrast": 0.30,
+      "adjacent_tier_check": 0.26,
+      "orthogonal_family": 0.32,
+      "strong_critic": 0.22,
+      "fast_sanity": 0.24,
+      "aggregator_fast": 0.16,
+      "aggregator_balanced": 0.14,
+      "aggregator_strong": 0.12
+    },
+    "tier_quality_priors": {
+      "c0": 0.56,
+      "c1": 0.72,
+      "c2": 0.82,
+      "c3": 0.91
+    },
+    "tier_cost_latency_priors": {
+      "c0": 0.92,
+      "c1": 0.74,
+      "c2": 0.58,
+      "c3": 0.36
+    },
+    "router_affinity": {
+      "low_confidence_penalty_scale": 0.45,
+      "confidence_penalty_scale": 0.55
+    },
+    "contrast": {
+      "weights": {
+        "family": 0.55,
+        "vendor": 0.30,
+        "provider": 0.15
+      },
+      "different_scores": {
+        "family": 1.0,
+        "vendor": 1.0,
+        "provider": 1.0
+      },
+      "same_scores": {
+        "family": 0.20,
+        "vendor": 0.30,
+        "provider": 0.50
+      }
+    },
+    "diversity": {
+      "empty_selected_score": 1.0,
+      "family": {"new": 0.35, "existing": 0.04},
+      "vendor": {"new": 0.25, "existing": 0.03},
+      "provider": {"new": 0.15, "existing": 0.04},
+      "tier": {"new": 0.15, "existing": 0.03},
+      "architecture": {"new": 0.10, "existing": 0.02}
+    },
+    "adjacent_scores": {
+      "distance_one": 1.0,
+      "distance_zero": 0.55,
+      "other": 0.25
+    },
+    "role_match": {
+      "cheap_contrast": {
+        "tier_target": {"weight": 0.45, "targets": [0, 1]},
+        "contrast": {"weight": 0.35},
+        "cost_latency": {"weight": 0.20}
+      },
+      "balanced_contrast": {
+        "tier_target": {"weight": 0.40, "targets": [1, 2]},
+        "contrast": {"weight": 0.35},
+        "quality": {"weight": 0.25}
+      },
+      "adjacent_tier_check": {
+        "adjacent": {"weight": 0.50},
+        "quality": {"weight": 0.25},
+        "relative_tier_target": {"weight": 0.15, "offsets": [-1, 1]},
+        "contrast": {"weight": 0.10}
+      },
+      "orthogonal_family": {
+        "contrast": {"weight": 0.55},
+        "diversity": {"weight": 0.25},
+        "relative_tier_target": {"weight": 0.20, "offsets": [0, 1]}
+      },
+      "strong_critic": {
+        "tier_target": {"weight": 0.55, "targets": [3]},
+        "quality": {"weight": 0.35},
+        "contrast": {"weight": 0.10}
+      },
+      "fast_sanity": {
+        "tier_target": {"weight": 0.50, "targets": [0, 1]},
+        "cost_latency": {"weight": 0.35},
+        "contrast": {"weight": 0.15}
+      },
+      "aggregator_fast": {
+        "tier_target": {"weight": 0.40, "targets": [0, 1]},
+        "quality": {"weight": 0.30},
+        "cost_latency": {"weight": 0.20},
+        "contrast": {"weight": 0.10}
+      },
+      "aggregator_balanced": {
+        "tier_target": {"weight": 0.40, "targets": [1, 2]},
+        "quality": {"weight": 0.35},
+        "diversity": {"weight": 0.15},
+        "cost_latency": {"weight": 0.10}
+      },
+      "aggregator_strong": {
+        "tier_target": {"weight": 0.45, "targets": [2, 3]},
+        "quality": {"weight": 0.40},
+        "diversity": {"weight": 0.10},
+        "cost_latency": {"weight": 0.05}
+      }
+    }
+  },
+  "model_catalog": {
+    "deepseek/deepseek-v4-flash": {
+      "tier": "c0",
+      "quality": 0.40,
+      "cost_latency": 1.00,
+      "family": "deepseek-v4",
+      "vendor": "deepseek",
+      "architecture": "reasoning-transformer"
+    },
+    "deepseek/deepseek-v4-pro": {
+      "tier": "c1",
+      "quality": 0.44,
+      "cost_latency": 0.68,
+      "family": "deepseek-v4",
+      "vendor": "deepseek",
+      "architecture": "reasoning-transformer"
+    },
+    "google/gemini-3-flash-preview": {
+      "tier": "c1",
+      "quality": 0.38,
+      "cost_latency": 0.46,
+      "family": "gemini-3",
+      "vendor": "google",
+      "architecture": "gemini",
+      "supports_vision": true
+    },
+    "openai/gpt-5.4-mini": {
+      "tier": "c1",
+      "quality": 0.40,
+      "cost_latency": 0.38,
+      "family": "gpt-5",
+      "vendor": "openai",
+      "architecture": "gpt"
+    },
+    "z-ai/glm-5.2": {
+      "tier": "c2",
+      "quality": 0.51,
+      "cost_latency": 0.45,
+      "family": "glm-5",
+      "vendor": "z-ai",
+      "architecture": "glm"
+    },
+    "qwen/qwen3.7-plus": {
+      "tier": "c2",
+      "quality": 0.39,
+      "cost_latency": 0.63,
+      "family": "qwen3",
+      "vendor": "qwen",
+      "architecture": "qwen"
+    },
+    "anthropic/claude-sonnet-4.6": {
+      "tier": "c2",
+      "quality": 0.34,
+      "cost_latency": 0.14,
+      "family": "claude-4",
+      "vendor": "anthropic",
+      "architecture": "claude"
+    },
+    "moonshotai/kimi-k2.6": {
+      "tier": "c2",
+      "quality": 0.43,
+      "cost_latency": 0.43,
+      "family": "kimi-k2",
+      "vendor": "moonshotai",
+      "architecture": "kimi",
+      "supports_vision": true
+    },
+    "moonshotai/kimi-k2.7-code": {
+      "tier": "c2",
+      "quality": 0.42,
+      "cost_latency": 0.43,
+      "family": "kimi-k2-code",
+      "vendor": "moonshotai",
+      "architecture": "kimi",
+      "supports_vision": true
+    },
+    "minimax/minimax-m3": {
+      "tier": "c2",
+      "quality": 0.44,
+      "cost_latency": 0.64,
+      "family": "minimax-m3",
+      "vendor": "minimax",
+      "architecture": "minimax",
+      "supports_vision": true
+    },
+    "mistralai/mistral-large-2512": {
+      "tier": "c2",
+      "quality": 0.22,
+      "cost_latency": 0.59,
+      "family": "mistral-large",
+      "vendor": "mistralai",
+      "architecture": "mistral"
+    },
+    "meta-llama/llama-4-maverick": {
+      "tier": "c2",
+      "quality": 0.14,
+      "cost_latency": 0.78,
+      "family": "llama-4",
+      "vendor": "meta-llama",
+      "architecture": "llama",
+      "supports_vision": true
+    },
+    "anthropic/claude-opus-4.8": {
+      "tier": "c3",
+      "quality": 0.56,
+      "cost_latency": 0.03,
+      "family": "claude-4",
+      "vendor": "anthropic",
+      "architecture": "claude"
+    },
+    "qwen/qwen3.7-max": {
+      "tier": "c3",
+      "quality": 0.46,
+      "cost_latency": 0.40,
+      "family": "qwen3",
+      "vendor": "qwen",
+      "architecture": "qwen"
+    },
+    "openai/gpt-5.5": {
+      "tier": "c3",
+      "quality": 0.55,
+      "cost_latency": 0.00,
+      "family": "gpt-5",
+      "vendor": "openai",
+      "architecture": "gpt"
+    },
+    "x-ai/grok-4.3": {
+      "tier": "c3",
+      "quality": 0.38,
+      "cost_latency": 0.47,
+      "family": "grok-4",
+      "vendor": "x-ai",
+      "architecture": "grok"
+    }
+  }
+}

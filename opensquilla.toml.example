@@ -176,17 +176,17 @@ base_url = "https://tokenrhythm.studio/v1"
 "z-ai/glm-5.1" = "z-ai"
 "z-ai/glm-5.2" = "z-ai"
 
-# LLM ensemble routing — the DEFAULT routing surface.
-# A fresh install ships enabled = true with selection_mode =
-# "static_openrouter_b5": each turn fans out to a fixed five-member
-# OpenRouter proposer set and fuses their candidates into one answer.
+# Optional LLM ensemble routing. This example enables a fixed five-member
+# OpenRouter lineup and fuses its proposer drafts into one answer.
 #
 # Upgrade note (0.5.0rc1 → current):
 #   * static_openrouter_b5 is the default for FRESH installs only. Configs
 #     saved by earlier versions keep their stored `enabled` value.
-#   * Enabling the ensemble now selects "static_openrouter_b5", where
-#     0.5.0rc1's enable toggle gave "router_dynamic". Set
-#     selection_mode = "router_dynamic" to restore the rc1 behavior.
+#   * Current `router_dynamic` is the profile-driven Step2 ranker and invokes
+#     its dedicated task analyzer before selecting proposers and aggregator.
+#   * The pre-Step2 local-tree behavior is preserved as the benchmark mode
+#     `router_tree_baseline`; it uses SquillaRouter's local tier/model result
+#     directly and never invokes the remote task analyzer.
 #
 # Credential requirement: static_openrouter_b5 runs its members on
 # OpenRouter, so it needs a resolvable OpenRouter credential — the [llm]
@@ -200,10 +200,15 @@ base_url = "https://tokenrhythm.studio/v1"
 # aggregator) and needs a TokenRhythm credential the same way (the [llm]
 # api_key when the active provider is "tokenrhythm", or
 # TOKENRHYTHM_API_KEY in the environment).
+# router_tree_baseline's frozen default candidate pool also uses OpenRouter
+# model ids. Set OPENROUTER_API_KEY, run it with OpenRouter as the active
+# provider, or replace model_options with candidates available on your
+# configured providers.
 #
-# The keys below are also writable at runtime via the Web UI / the
-# `onboarding.ensemble.configure` RPC; omitted keys keep their current
-# values. Changes take effect on the next turn without a gateway restart.
+# Most keys below are also writable at runtime via the existing Web UI / RPC;
+# router_tree_baseline is intentionally configured directly in this TOML file.
+# Omitted keys keep their current values. Changes take effect on the next turn
+# without a gateway restart.
 [llm_ensemble]
 enabled = true
 # "static_openrouter_b5": fixed five-member OpenRouter proposer set (default).
@@ -215,8 +220,10 @@ enabled = true
 #   proposer role values ("primary", "contrast", "fast_check", "critic")
 #   remain accepted and preserved as advisory decision-trace labels; they all
 #   run and appear in the settings panel as Proposer.
-# "router_dynamic": legacy automatic selection; kept readable for existing
-#   configs but no longer offered in the Web UI.
+# "router_dynamic": profile-driven Step2 ranking with the dedicated task
+#   analyzer; supported through TOML/RPC/CLI but not offered in the Web UI.
+# "router_tree_baseline": frozen pre-Step2 local-tree slot-template baseline;
+#   supported through TOML/RPC/CLI but not offered in the Web UI.
 selection_mode = "static_openrouter_b5"
 # Explicit lineup for custom_b5 (ignored by the static profiles):
 # [[llm_ensemble.candidates]]
@@ -228,7 +235,11 @@ selection_mode = "static_openrouter_b5"
 # model = "deepseek-v4-pro"
 # role = "aggregator"
 #
-# Candidate pool for the legacy router_dynamic mode (ignored otherwise).
+# Candidate pool for the dynamic modes (ignored by static/custom modes).
+# router_tree_baseline consumes a non-empty list exactly; when omitted/empty it
+# injects this original eight-model default from its own frozen JSON.
+# router_dynamic uses its versioned model-profile registry when this untouched
+# legacy default is present; non-default entries extend its registry snapshot.
 model_options = [
   "deepseek/deepseek-v4-pro",
   "z-ai/glm-5.2",

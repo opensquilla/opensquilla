@@ -1435,8 +1435,8 @@ def configure_command(
         "",
         "--selection-mode",
         help=(
-            "Ensemble selection mode: router_dynamic, static_openrouter_b5, "
-            "static_tokenrhythm_b5, or custom_b5."
+            "Ensemble selection mode: router_dynamic, router_tree_baseline, "
+            "static_openrouter_b5, static_tokenrhythm_b5, or custom_b5."
         ),
         rich_help_panel="LLM ensemble",
     ),

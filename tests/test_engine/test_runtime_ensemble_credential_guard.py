@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -16,6 +17,7 @@ from opensquilla.provider.ranking_router import (
     fallback_task_profile,
 )
 from opensquilla.provider.selector import ProviderConfig
+from opensquilla.provider.tree_baseline_router import TreeBaselineError
 
 
 class _Provider:
@@ -309,6 +311,105 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     assert turn.metadata["router_dynamic_task_analyzer"]["model"] == (
         TASK_ANALYZER_MODEL_ID
     )
+
+
+async def test_router_tree_baseline_never_calls_the_remote_task_analyzer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def unexpected_analyzer_call(**kwargs: Any) -> TaskAnalysisResult:
+        raise AssertionError(f"tree baseline invoked analyzer with {kwargs!r}")
+
+    monkeypatch.setattr(
+        "opensquilla.provider.ranking_router.analyze_task_with_provider",
+        unexpected_analyzer_call,
+    )
+    runner = TurnRunner(
+        provider_selector=None,
+        config=_static_b5_config(selection_mode="router_tree_baseline"),
+    )
+    selector = _FakeSelector(provider="openrouter", api_key="sk-or-synthetic")
+
+    turn, provider = await runner._run_pipeline(
+        "use the local tree baseline",
+        "agent:main:tree-baseline",
+        _Provider(),
+        selector,
+        [],
+        "system prompt",
+        [],
+    )
+
+    assert isinstance(provider, EnsembleProvider)
+    assert provider.profile_name == "router_tree_baseline/c1"
+    assert provider.selection_plan["router_source"] == "compatibility_default"
+    assert "router_dynamic_task_analyzer" not in turn.metadata
+    assert turn.metadata["router_tree_baseline_decision"]["routed_tier"] == "c1"
+    assert turn.metadata["router_tree_baseline_decision"]["selected_P"]
+    assert turn.metadata["router_tree_baseline_decision"]["selected_A"]
+
+
+async def test_router_tree_baseline_runs_without_the_ranking_module(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "opensquilla.provider.ranking_router",
+        None,
+    )
+    runner = TurnRunner(
+        provider_selector=None,
+        config=_static_b5_config(selection_mode="router_tree_baseline"),
+    )
+    selector = _FakeSelector(provider="openrouter", api_key="sk-or-synthetic")
+
+    turn, provider = await runner._run_pipeline(
+        "run the isolated local tree baseline",
+        "agent:main:tree-baseline-no-ranking",
+        _Provider(),
+        selector,
+        [],
+        "system prompt",
+        [],
+    )
+
+    assert isinstance(provider, EnsembleProvider)
+    assert provider.profile_name == "router_tree_baseline/c1"
+    assert turn.metadata["router_tree_baseline_decision"]["selected_P"]
+
+
+async def test_router_tree_baseline_selection_failure_fails_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_selection(**kwargs: Any) -> None:
+        raise TreeBaselineError(f"invalid frozen config: {sorted(kwargs)}")
+
+    monkeypatch.setattr(
+        "opensquilla.provider.tree_baseline_router.select_tree_baseline",
+        fail_selection,
+    )
+    runner = TurnRunner(
+        provider_selector=None,
+        config=_static_b5_config(selection_mode="router_tree_baseline"),
+    )
+    selector = _FakeSelector(provider="openrouter", api_key="sk-or-synthetic")
+
+    turn, provider = await runner._run_pipeline(
+        "use the local tree baseline",
+        "agent:main:tree-baseline-fail-open",
+        _Provider(),
+        selector,
+        [],
+        "system prompt",
+        [],
+    )
+
+    assert isinstance(provider, _Provider)
+    assert not isinstance(provider, EnsembleProvider)
+    assert "ensemble_enabled" not in turn.metadata
+    assert turn.metadata["ensemble_wrap_skipped_reason"] == (
+        "router_tree_baseline_unavailable"
+    )
+    assert "invalid frozen config" in turn.metadata["router_tree_baseline_error"]
 
 
 def test_router_dynamic_task_analyzer_resolution_failure_uses_local_fallback(

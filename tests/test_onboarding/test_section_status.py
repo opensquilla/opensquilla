@@ -6,6 +6,7 @@ import pytest
 
 from opensquilla.gateway.config import (
     GatewayConfig,
+    LEGACY_OPENROUTER_MODEL_OPTIONS,
     LlmProviderConfig,
     MemoryEmbeddingConfig,
     SlackChannelEntry,
@@ -214,6 +215,74 @@ def test_ensemble_status_uses_profile_credential_resolution(monkeypatch):
         "source": "explicit",
         "envKey": "OPENAI_API_KEY",
     }
+
+
+def test_tree_baseline_status_reports_legacy_openrouter_pool_credentials(
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+            "base_url": "https://api.deepseek.com",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_tree_baseline",
+        },
+    )
+
+    status = get_onboarding_status(cfg)
+
+    assert [row["provider"] for row in status.ensemble_credential_status] == [
+        "deepseek",
+        "openrouter",
+    ]
+    assert status.ensemble_credential_status[1]["available"] is False
+    assert status.section_details["ensemble"]["detail"] == (
+        "selection mode: router_tree_baseline (8 models)"
+    )
+
+
+@pytest.mark.parametrize("selection_mode", ["static_tokenrhythm_b5", "custom_b5"])
+def test_non_tree_modes_ignore_legacy_openrouter_model_options(selection_mode):
+    ensemble: dict[str, object] = {
+        "enabled": True,
+        "selection_mode": selection_mode,
+        "model_options": list(LEGACY_OPENROUTER_MODEL_OPTIONS),
+    }
+    if selection_mode == "custom_b5":
+        ensemble["candidates"] = [
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "source": "custom",
+                "enabled": True,
+            },
+            {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "source": "custom",
+                "enabled": True,
+            },
+        ]
+    cfg = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+        },
+        llm_ensemble=ensemble,
+    )
+
+    status = get_onboarding_status(cfg)
+
+    providers = {
+        str(row["provider"]) for row in status.ensemble_credential_status
+    }
+    assert "openrouter" not in providers
 
 
 def test_llm_credential_status_reports_explicit_key(cfg):

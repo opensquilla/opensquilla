@@ -5827,16 +5827,21 @@ class TurnRunner:
             )
             from opensquilla.provider.ensemble import (
                 CUSTOM_B5_SELECTION_MODE,
+                TREE_BASELINE_SELECTION_MODE,
+                TreeBaselineSelectionError,
                 build_ensemble_provider_from_config,
             )
-            from opensquilla.provider.ranking_router import DynamicRankingError
-
             current_provider_config = (
                 getattr(cloned_selector, "current_config", None)
                 if cloned_selector is not None
                 else None
             )
             selection_mode = str(getattr(ensemble_cfg, "selection_mode", "") or "")
+            dynamic_ranking_errors: tuple[type[Exception], ...] = ()
+            if selection_mode == "router_dynamic":
+                from opensquilla.provider.ranking_router import DynamicRankingError
+
+                dynamic_ranking_errors = (DynamicRankingError,)
             # The shared deployment resolver marks an unexecutable member
             # unavailable before any network call. Keep the ensemble wrapper so
             # custom lineups can retain quorum semantics when only one provider
@@ -5993,7 +5998,7 @@ class TurnRunner:
                         _session_key=turn.session_key,
                         _fallback_selector=cloned_selector,
                     )
-                except DynamicRankingError as exc:
+                except dynamic_ranking_errors as exc:
                     log.warning(
                         "llm_ensemble.wrap_skipped",
                         reason="router_dynamic_ranking_unavailable",
@@ -6004,6 +6009,17 @@ class TurnRunner:
                         "router_dynamic_ranking_unavailable"
                     )
                     turn.metadata["router_dynamic_ranking_error"] = str(exc)
+                except TreeBaselineSelectionError as exc:
+                    log.warning(
+                        "llm_ensemble.wrap_skipped",
+                        reason="router_tree_baseline_unavailable",
+                        error=str(exc),
+                    )
+                    turn.metadata.pop("ensemble_enabled", None)
+                    turn.metadata["ensemble_wrap_skipped_reason"] = (
+                        "router_tree_baseline_unavailable"
+                    )
+                    turn.metadata["router_tree_baseline_error"] = str(exc)
                 else:
                     provider = ensemble_provider
                     if selection_mode == "router_dynamic":
@@ -6021,6 +6037,17 @@ class TurnRunner:
                             "selected_A": plan.get("selected_A"),
                             "effective_tier": plan.get("effective_tier"),
                             "session": dict(plan.get("session") or {}),
+                        }
+                    elif selection_mode == TREE_BASELINE_SELECTION_MODE:
+                        plan = ensemble_provider.selection_plan
+                        turn.metadata["router_tree_baseline_decision"] = {
+                            "algorithm_version": plan.get("algorithm_version"),
+                            "config_version": plan.get("config_version"),
+                            "config_hash": plan.get("config_hash"),
+                            "router_source": plan.get("router_source"),
+                            "routed_tier": plan.get("routed_tier"),
+                            "selected_P": list(plan.get("selected_P") or []),
+                            "selected_A": plan.get("selected_A"),
                         }
 
         return turn, provider

@@ -47,7 +47,7 @@ get more proposers and stronger critics.
 
 ## Selection strategies
 
-There are four selection modes, dispatched by
+There are five selection modes, dispatched by
 `llm_ensemble.selection_mode` in
 `build_ensemble_provider_from_config`
 (`src/opensquilla/provider/ensemble.py`):
@@ -58,16 +58,19 @@ There are four selection modes, dispatched by
 | `static_tokenrhythm_b5` | Static lineup | Supported |
 | `custom_b5` | Static lineup (user-authored) | Supported |
 | `router_dynamic` | Dynamic Step2 ranking | Supported (config-only) |
+| `router_tree_baseline` | Frozen local-tree slot ranking | Supported (config-only benchmark) |
 
 The first three modes are **static**: the lineup is fixed ahead of the turn,
 either from a packaged preset or from an explicit user-authored list. The last
-is **dynamic**: the lineup is scored and assembled per turn from the router's
-own tier decision.
+two are **dynamic**: they assemble a lineup per turn, but deliberately use
+different algorithms. `router_dynamic` runs the current task-analyzer and
+Step2 ranker; `router_tree_baseline` freezes the former slot-template selector
+for apples-to-apples benchmark comparisons.
 
-Fresh configs default to `static_openrouter_b5`. The Web UI offers only the
-static families (preset + custom); `router_dynamic` is no longer offered there
-and stored configs surface a one-click migration to `custom_b5`. Direct
-TOML/RPC configuration keeps working for every mode.
+Fresh configs default to `static_openrouter_b5`. The Web UI remains unchanged:
+it offers the static families (preset + custom) and its existing
+`router_dynamic` compatibility path. `router_tree_baseline` is selected
+directly in TOML for benchmark runs; this change adds no Web UI surface.
 
 ---
 
@@ -158,8 +161,8 @@ Lineup assembly (`_build_custom_b5_members`):
 
 Enforced by `LlmEnsembleConfig._validate_custom_b5_lineup`
 (`src/opensquilla/gateway/config.py`), checked **only** when
-`selection_mode == "custom_b5"` (presets carry fixed lineups; `router_dynamic`
-selects per turn):
+`selection_mode == "custom_b5"` (presets carry fixed lineups; both dynamic
+modes select per turn):
 
 - At most **one** enabled candidate may carry role `aggregator`.
 - Enabled proposer count must stay within
@@ -185,8 +188,8 @@ the stored value still equals its legacy default (`_static_default_if_legacy`),
 so operator overrides are preserved. Quorum grace is a runtime family policy,
 not a public configuration field:
 
-| Parameter | `router_dynamic` default | Fixed-lineup default |
-|-----------|---------------------------|----------------------|
+| Parameter | Dynamic-mode configured default | Fixed-lineup default |
+|-----------|---------------------------------|----------------------|
 | `min_successful_proposers` | 1 | 3 (presets) / `N-1` (custom, "all but one") |
 | `proposer_timeout_seconds` | 3600 | 300 |
 | `aggregator_timeout_seconds` | 3600 | 480 |
@@ -257,7 +260,178 @@ still override explicitly (`min_successful_proposers`,
 
 ---
 
-# Part 2 — `router_dynamic` Step2 Ranking
+# Part 2 — `router_tree_baseline` Local-Tree Baseline
+
+> **Status: supported, config-only benchmark mode.** This mode preserves the
+> multi-model selection algorithm used by `router_dynamic` before the Step2
+> ranker replaced it. It is intentionally versioned and isolated so benchmark
+> results do not drift when the production ranker changes.
+
+`router_tree_baseline` is a two-stage local-tree pipeline:
+
+1. The existing SquillaRouter step runs first. Its bundled local predictor
+   chooses the tier (`C0`-`C3`) and anchor model and writes the route and
+   confidence into turn metadata.
+2. The baseline selector consumes that tier, confidence, and anchor. It fills a
+   fixed set of proposer roles and independently selects an aggregator from the
+   same pool.
+
+The baseline selector does **not** invoke the dedicated Opus task analyzer,
+build a task profile, apply session intent, or run the current Step2 hard-filter
+and rerank pipeline. It also does not run SquillaRouter a second time: the
+router decision already present on the turn is its input. For a real local-tree
+benchmark, `squilla_router.enabled` must therefore be `true`; without route
+metadata the selector remains runnable but falls back to `C1` with confidence
+`0`, which is a compatibility fallback rather than the intended benchmark.
+
+Implementation:
+
+- `src/opensquilla/provider/tree_baseline_router.py` — validation, candidate
+  normalization, legacy scoring, deterministic selection, and replay trace;
+- `src/opensquilla/provider/router_tree_baseline_config.json` — frozen slot
+  templates, model priors, every score/penalty coefficient, trace precision,
+  algorithm version, and config version;
+- `src/opensquilla/provider/ensemble.py` — adapts current config into the
+  candidate pool and materializes the selected provider members;
+- `src/opensquilla/engine/runtime.py` — dispatches the mode without analyzer
+  invocation and stores its compact decision metadata.
+
+### Isolation from `router_dynamic`
+
+The two dynamic modes share only the generic ensemble execution runtime after
+their members have been selected. Their selection implementations are kept
+separate:
+
+- `router_dynamic` imports only `ranking_router.py` and its two
+  `router_dynamic_*.json` snapshots;
+- `router_tree_baseline` lazily imports `tree_baseline_router.py` only after
+  that exact mode is dispatched, and reads only
+  `router_tree_baseline_config.json`;
+- neither selector module imports the other;
+- runtime catches `DynamicRankingError` and `TreeBaselineSelectionError` in
+  separate branches, preserving the existing ranking fallback reason and
+  metadata keys unchanged.
+
+This means a missing or malformed tree-baseline module/config cannot affect a
+`router_dynamic` turn. The mode names are the configuration boundary:
+
+```toml
+[llm_ensemble]
+# Choose exactly one:
+selection_mode = "router_dynamic"
+# selection_mode = "router_tree_baseline"
+```
+
+## 2.1 Candidate pool and tier inputs
+
+The routed tier is read in this order:
+
+1. `turn.metadata.routed_tier`;
+2. `routing_extra.final_tier`;
+3. `routing_extra.base_tier`;
+4. frozen default `C1`.
+
+Legacy `T0`-`T3` values are accepted as aliases for `C0`-`C3`. The candidate
+pool is stable-order deduplicated by `(provider, model)` and contains:
+
+1. the routed model as the mandatory `anchor`;
+2. enabled `llm_ensemble.candidates` rows (a current-config adapter);
+3. every `llm_ensemble.model_options` entry;
+4. every configured `squilla_router.tiers` model.
+
+Unlike current `router_dynamic`, omitting `model_options` injects the original
+eight-model pool frozen in the baseline JSON. Those models were part of the old
+selector's default and therefore remain part of this benchmark. A configured
+non-empty list replaces that default; an empty list retains the frozen default.
+Known models receive the frozen quality, cost/latency, family, vendor,
+architecture, and tier priors from the JSON snapshot. Unknown models receive
+tier priors and deterministic identity heuristics, so custom pools are still
+replayable.
+
+The frozen default entries are OpenRouter model IDs. A run using that default
+needs an inherited OpenRouter credential or `OPENROUTER_API_KEY`; otherwise use
+a configured non-empty `model_options` list on providers available to the
+benchmark environment. Onboarding status includes every effective pool
+provider so missing credentials are visible before the run.
+
+## 2.2 Fixed tier templates
+
+The local-tree tier fixes the number and semantic role of proposer slots:
+
+| Tier | Proposer slots | Aggregator slot |
+|------|----------------|-----------------|
+| `C0` | `anchor`, `cheap_contrast` | `aggregator_fast` |
+| `C1` | `anchor`, `balanced_contrast` | `aggregator_balanced` |
+| `C2` | `anchor`, `adjacent_tier_check`, `orthogonal_family` | `aggregator_strong` |
+| `C3` | `anchor`, `strong_critic`, `orthogonal_family`, `fast_sanity` | `aggregator_strong` |
+
+This produces 2, 2, 3, or 4 proposer calls plus one aggregator call. The anchor
+is never reranked; it is the model selected by SquillaRouter. Every remaining
+slot is selected greedily from the complete pool. A model may fill more than
+one role when the pool is small, but each reuse incurs that slot's configured
+duplicate penalty.
+
+## 2.3 Legacy scoring and deterministic selection
+
+For candidate `m` and slot `s`, the frozen score is:
+
+```text
+Score(m, s) =
+    w_quality(s)  * quality_prior(m)
+  + w_affinity(s) * router_affinity(m, routed_tier, confidence)
+  + w_diversity(s) * diversity(m, already_selected)
+  + w_cost(s)     * cost_latency_prior(m)
+  + w_role(s)     * role_match(m, s)
+  - selected_penalty(s) * prior_selection_count(m)
+```
+
+`role_match` is itself slot-specific. Cheap/fast slots reward lower tiers and
+cost/latency; contrast slots reward different family/vendor/provider; adjacent
+checks reward a one-tier distance; critic/strong aggregator slots reward high
+tier and quality; orthogonal slots emphasize contrast and incremental
+diversity. Router affinity penalizes tier distance more strongly as local-router
+confidence rises, preserving the old behavior where low confidence relaxed the
+tier lock.
+
+There are no scoring magic numbers in Python. All weights, sub-feature weights,
+same/different contrast values, diversity increments, tier priors, distance
+scales, duplicate penalties, and the original default pool live in
+`router_tree_baseline_config.json`. Selection-time loading validates finite ranges,
+slot coverage, and weight sums. The trace records the config SHA-256 plus its
+algorithm/config versions.
+
+Scores sort by total score, then quality prior, cost/latency prior, and original
+pool order. The same inputs and JSON snapshot therefore select the same lineup.
+The aggregator is scored only after all proposers are selected, so its diversity
+and duplicate terms see the final proposer set.
+
+## 2.4 Runtime behavior and configuration
+
+The mode keeps the dynamic-family runtime defaults: configured quorum `1`,
+3,600-second proposer/aggregator timeouts, candidate shuffling enabled, and no
+quorum grace. Quorum is clamped to the selected proposer count. Candidate
+shuffling only changes the order shown to the aggregator; it does not change
+the deterministic model selection.
+
+The selection plan records the complete candidate pool, top scores per slot,
+score components/weights, selected `P`/`A`, routed tier/confidence, config hash,
+and `uses_remote_task_analyzer=false`. Runtime also exposes a compact
+`router_tree_baseline_decision` in turn metadata. An invalid or unavailable
+baseline snapshot fails open to the already-routed single provider with reason
+`router_tree_baseline_unavailable`.
+
+```toml
+[squilla_router]
+enabled = true
+
+[llm_ensemble]
+enabled = true
+selection_mode = "router_tree_baseline"
+```
+
+---
+
+# Part 3 — `router_dynamic` Step2 Ranking
 
 > **Status: supported, config-only.** The Web UI still offers the static
 > families and migration to `custom_b5`, but existing TOML/RPC configs can use
@@ -279,7 +453,7 @@ every turn. The implementation is split across:
 - `src/opensquilla/engine/runtime.py` — analyzer invocation, per-session route
   continuity, usage accounting, and single-provider fail-open behavior.
 
-## 2.1 Per-turn inputs
+## 3.1 Per-turn inputs
 
 Before ranking, runtime builds four replaceable inputs:
 
@@ -313,7 +487,7 @@ ranking JSON. It records token and billed-cost usage in the normal session usage
 tracker. A syntactically valid JSON fragment is accepted only after the provider
 emits its terminal `DoneEvent`; incomplete streams use the fallback profile.
 
-## 2.2 Hard filters
+## 3.2 Hard filters
 
 Every candidate is checked separately for proposer and aggregator roles before
 it can be scored. A candidate is rejected for any of these reasons:
@@ -340,7 +514,7 @@ Aggregator feasibility is checked during every proposer-selection step, so the
 greedy selector cannot build a proposer set that no remaining aggregator can
 consume.
 
-## 2.3 Base scoring
+## 3.3 Base scoring
 
 For each eligible proposer, task match combines capability, domain, and tier
 profile expectations. It is blended with the mock user score, then adjusted by
@@ -362,7 +536,7 @@ constraints plus user preference. Ties are deterministic: higher score, then
 higher quality, then lexical deployment identity. These defaults, including
 normalization denominators and blend weights, come from the ranking JSON.
 
-## 2.4 Dynamic proposer count
+## 3.4 Dynamic proposer count
 
 The effective tier is the rounded expectation of `tier_dist`:
 
@@ -378,7 +552,7 @@ Hard cost/latency constraints cap the set at two; when filters or the candidate
 pool prevent `N_min`, ranking returns the best feasible set and records
 `coverage_shortfall=true` instead of violating a hard filter.
 
-## 2.5 Greedy proposer selection
+## 3.5 Greedy proposer selection
 
 This stage is a deterministic feature-based rerank; it does **not** call an
 additional LLM or cross-encoder reranker. Ranking keeps the top
@@ -418,7 +592,7 @@ records each component and the top three alternatives for every step, plus
 whether selection reached `N_max`, exhausted the pool/quality floor, or could
 not preserve aggregator feasibility.
 
-## 2.6 Aggregator selection
+## 3.6 Aggregator selection
 
 After `P` is fixed, all aggregator-eligible models are rescored with the full
 aggregator context requirement:
@@ -438,7 +612,7 @@ aggregation trace records both the random seed and the resulting candidate-index
 order so the exact aggregator input can be replayed without relying on
 process-global RNG state.
 
-## 2.7 Session intent
+## 3.7 Session intent
 
 Session adjustments activate only when analyzer confidence is at least `0.60`
 and a previous dynamic route exists:
@@ -453,7 +627,7 @@ Runtime keeps only route identities, feedback, and escalation level in a
 bounded in-memory cache of 1,024 sessions. It never stores prompt or candidate
 content there.
 
-## 2.8 Output, fallback, and observability
+## 3.8 Output, fallback, and observability
 
 `_build_router_dynamic_members` returns `router_dynamic/c0` through
 `router_dynamic/c3`, `proposer_1...N`, one `aggregator`, and a replay-oriented
@@ -485,7 +659,7 @@ records `candidate_order_seed` and
 All use the `llm_ensemble.router_dynamic.` event prefix and omit raw user or
 candidate content.
 
-## 2.9 Configuration surface
+## 3.9 Configuration surface
 
 ```toml
 [llm_ensemble]

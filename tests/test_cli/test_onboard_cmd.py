@@ -2459,6 +2459,27 @@ def test_configure_ensemble_noninteractive(tmp_path, monkeypatch):
     assert ensemble["all_failed_policy"] == "error"
 
 
+def test_configure_ensemble_accepts_tree_baseline(tmp_path, monkeypatch):
+    target = tmp_path / "c.toml"
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+
+    result = runner.invoke(
+        app,
+        [
+            "configure",
+            "ensemble",
+            "--enabled",
+            "--selection-mode",
+            "router_tree_baseline",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    ensemble = tomllib.loads(target.read_text())["llm_ensemble"]
+    assert ensemble["enabled"] is True
+    assert ensemble["selection_mode"] == "router_tree_baseline"
+
+
 def test_onboard_configure_ensemble_alias_uses_setup_engine(tmp_path, monkeypatch):
     target = tmp_path / "c.toml"
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))

@@ -2042,6 +2042,12 @@ def static_b5_profile(selection_mode: str) -> StaticB5Profile | None:
 
 
 CUSTOM_B5_SELECTION_MODE = "custom_b5"
+TREE_BASELINE_SELECTION_MODE = "router_tree_baseline"
+
+
+class TreeBaselineSelectionError(ValueError):
+    """The isolated tree-baseline selector could not build a lineup."""
+
 
 # Advisory proposer roles for the explicit custom lineup, in display order.
 # They label what each member contributes and ride the selection plan into
@@ -3078,6 +3084,101 @@ def _build_router_dynamic_members(
     return f"router_dynamic/{profile_tier}", proposers, aggregator, decision.trace
 
 
+def _build_router_tree_baseline_members(
+    *,
+    config: Any,
+    inherited_provider_config: ProviderConfig,
+    turn_metadata: Mapping[str, Any] | None,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
+) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
+    """Materialize the frozen pre-Step2 local-tree selection strategy."""
+
+    from .tree_baseline_router import TreeBaselineError, select_tree_baseline
+
+    metadata = dict(turn_metadata or {})
+    extra = metadata.get("routing_extra")
+    extra_map = extra if isinstance(extra, Mapping) else {}
+    routed_tier = (
+        metadata.get("routed_tier")
+        or extra_map.get("final_tier")
+        or extra_map.get("base_tier")
+    )
+    ensemble_cfg = getattr(config, "llm_ensemble", None)
+    structured_candidates = [
+        {
+            "provider": str(getattr(candidate, "provider", "") or ""),
+            "model": str(getattr(candidate, "model", "") or ""),
+            "source": str(getattr(candidate, "source", "") or "custom"),
+            "enabled": bool(getattr(candidate, "enabled", True)),
+        }
+        for candidate in getattr(ensemble_cfg, "candidates", []) or []
+    ]
+    router_cfg = getattr(config, "squilla_router", None)
+    router_tiers = getattr(router_cfg, "tiers", {}) or {}
+    configured_model_options = list(
+        getattr(ensemble_cfg, "model_options", []) or []
+    )
+    ensemble_fields_set = set(
+        getattr(ensemble_cfg, "model_fields_set", set()) or set()
+    )
+    explicit_model_options = (
+        configured_model_options
+        if "model_options" in ensemble_fields_set and configured_model_options
+        else None
+    )
+    try:
+        decision = select_tree_baseline(
+            anchor_provider=inherited_provider_config.provider,
+            anchor_model=inherited_provider_config.model,
+            routed_tier=routed_tier,
+            routing_confidence=metadata.get("routing_confidence"),
+            structured_candidates=structured_candidates,
+            model_options=explicit_model_options,
+            router_tiers=router_tiers if isinstance(router_tiers, Mapping) else {},
+            router_source=(
+                "squilla_router_local_tree"
+                if routed_tier
+                else "compatibility_default"
+            ),
+        )
+    except TreeBaselineError as exc:
+        raise TreeBaselineSelectionError(str(exc)) from exc
+    proposers = [
+        _member_from_ref(
+            _EnsembleModelRef(
+                provider=selection.candidate.provider,
+                model=selection.candidate.model,
+                thinking=selection.candidate.thinking,
+            ),
+            config=config,
+            inherited=inherited_provider_config,
+            label=selection.slot,
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
+        )
+        for selection in decision.proposers
+    ]
+    aggregator = _member_from_ref(
+        _EnsembleModelRef(
+            provider=decision.aggregator.candidate.provider,
+            model=decision.aggregator.candidate.model,
+            thinking=decision.aggregator.candidate.thinking,
+        ),
+        config=config,
+        inherited=inherited_provider_config,
+        label="aggregator",
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
+    )
+    return (
+        f"{TREE_BASELINE_SELECTION_MODE}/{decision.routed_tier}",
+        proposers,
+        aggregator,
+        decision.trace,
+    )
+
+
 def _static_b5_ref(provider_id: str, model: str) -> _EnsembleModelRef:
     return _EnsembleModelRef(provider=provider_id, model=model, thinking=None)
 
@@ -3509,6 +3610,16 @@ def build_ensemble_provider_from_config(
             credential_pool_acquirer=_credential_pool_acquirer,
             session_key=_session_key,
         )
+    elif selection_mode == TREE_BASELINE_SELECTION_MODE:
+        profile_name, proposers, aggregator, selection_plan = (
+            _build_router_tree_baseline_members(
+                config=config,
+                inherited_provider_config=inherited_provider_config,
+                turn_metadata=turn_metadata,
+                credential_pool_acquirer=_credential_pool_acquirer,
+                session_key=_session_key,
+            )
+        )
     elif selection_mode == "router_dynamic":
         profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
             config=config,
@@ -3523,7 +3634,7 @@ def build_ensemble_provider_from_config(
     is_custom_b5 = selection_mode == CUSTOM_B5_SELECTION_MODE
     # Static and custom lineups share the fixed-lineup defaults family
     # (quorum replacement, 300/480s timeouts, no shuffle, quorum grace);
-    # router_dynamic keeps the legacy defaults untouched.
+    # Dynamic modes keep the legacy defaults untouched.
     is_static_b5 = static_profile is not None or is_custom_b5
     configured_min_success = int(getattr(ensemble_cfg, "min_successful_proposers", 1) or 1)
     requested_min_success = configured_min_success

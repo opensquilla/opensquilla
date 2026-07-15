@@ -449,7 +449,11 @@ class LlmEnsembleConfig(BaseSettings):
     enabled: bool = False
     mode: Literal["b5_fusion"] = "b5_fusion"
     selection_mode: Literal[
-        "router_dynamic", "static_openrouter_b5", "static_tokenrhythm_b5", "custom_b5"
+        "router_dynamic",
+        "router_tree_baseline",
+        "static_openrouter_b5",
+        "static_tokenrhythm_b5",
+        "custom_b5",
     ] = "static_openrouter_b5"
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
@@ -480,9 +484,9 @@ class LlmEnsembleConfig(BaseSettings):
         """Bound the explicit custom_b5 lineup.
 
         Only the custom mode is checked: static profiles carry fixed lineups
-        and router_dynamic selects members per turn, so neither can exceed the
-        cap. The aggregator is structural — at most one candidate may carry
-        the role; the last enabled proposer count must stay within
+        and the dynamic router modes select members per turn, so neither can
+        exceed the cap. The aggregator is structural — at most one candidate
+        may carry the role; the last enabled proposer count must stay within
         [CUSTOM_B5_MIN_PROPOSERS, CUSTOM_B5_MAX_PROPOSERS]. Disabled rows are
         kept (read compatibility) but never counted.
         """
@@ -530,6 +534,7 @@ class LlmEnsembleConfig(BaseSettings):
 
 STATIC_OPENROUTER_B5_SELECTION_MODE = "static_openrouter_b5"
 STATIC_TOKENRHYTHM_B5_SELECTION_MODE = "static_tokenrhythm_b5"
+ROUTER_TREE_BASELINE_SELECTION_MODE = "router_tree_baseline"
 # selection_mode → member provider id for the static B5 profiles. Must stay
 # in lockstep with provider.ensemble.STATIC_B5_PROFILES (gateway must not be
 # imported from provider, so a parity test pins the two tables together).

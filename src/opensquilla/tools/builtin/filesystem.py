@@ -1044,11 +1044,13 @@ async def _gate_out_of_workspace_write(
     prefix_rule: list[str] | None = None,
 ) -> tuple[dict[str, object] | None, bool]:
     """Return ``(block, elevated)`` after hard policy and exact-action gating."""
+    if full_host_access_active():
+        return None, False
+
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
 
-    elevated_full = full_host_access_active()
-    if not elevated_full and not _sandbox_path_access_enabled():
+    if not _sandbox_path_access_enabled():
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
             return (
@@ -1157,8 +1159,6 @@ async def _gate_out_of_workspace_write(
     if _memory_source_rel_path(resolved) is not None:
         return None, False
     if _active_sandbox_mount_allows(resolved, write=True):
-        return None, False
-    if elevated_full:
         return None, False
     return _outside_workspace_write_block(tool_name, resolved, original_path), False
 

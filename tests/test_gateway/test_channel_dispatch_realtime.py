@@ -1255,6 +1255,35 @@ async def test_saved_channel_run_context_is_applied_to_route_envelope(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_global_full_mode_is_applied_to_channel_without_saved_override(tmp_path) -> None:
+    from opensquilla.gateway.channel_dispatch import _apply_saved_channel_run_context
+
+    envelope = build_channel_route_envelope(
+        _message(),
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    manager = _RunContextSessionManager(None)
+    config = SimpleNamespace(
+        sandbox=SimpleNamespace(run_mode="full", sandbox=False, security_grading=False),
+        permissions=SimpleNamespace(default_mode="full"),
+    )
+
+    await _apply_saved_channel_run_context(
+        envelope,
+        session_manager=manager,
+        config=config,
+        workspace_dir=str(tmp_path),
+        principal_is_owner=True,
+    )
+
+    assert envelope.metadata["run_mode"] == RunMode.FULL.value
+    assert envelope.metadata["elevated"] == "full"
+    assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"
+
+
+@pytest.mark.asyncio
 async def test_unlisted_channel_sender_keeps_restricted_tool_context_for_agent_turn(
     tmp_path,
 ) -> None:

@@ -9,7 +9,8 @@ import pytest
 
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.sandbox import sensitive_paths
-from opensquilla.sandbox.integration import reset_runtime
+from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.tools.builtin import patch as patch_tool
 from opensquilla.tools.registry import get_default_registry
 from opensquilla.tools.types import (
@@ -514,6 +515,47 @@ async def test_apply_patch_run_mode_full_skips_sandbox_wrapper_gate(
         "Applied patch: 1 file(s) modified Note: workspace changes are now present. "
         "Before final, inspect git_diff and run focused verification for the changed behavior."
     )
+    assert outside.read_text(encoding="utf-8") == "new\n"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_sandbox_disabled_ignores_stale_restricted_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("old\n", encoding="utf-8")
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False),
+        workspace=workspace,
+    )
+    monkeypatch.setattr(patch_tool, "_default_patch_root", lambda: tmp_path.resolve())
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(workspace),
+            workspace_lockdown=True,
+            workspace_write_deny_globs=["**"],
+            run_mode="standard",
+            session_key="full-patch",
+        )
+    )
+    try:
+        await patch_tool.apply_patch(
+            """*** Begin Patch
+*** Update File: outside.txt
+@@@ -1,1 +1,1 @@@
+-old
++new
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+
     assert outside.read_text(encoding="utf-8") == "new\n"
     assert get_approval_queue().list_pending("exec") == []
 

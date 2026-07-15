@@ -556,7 +556,12 @@ async def test_workspace_write_deny_block_is_actionable_in_tool_failure_envelope
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     configure_runtime(
-        SandboxSettings(sandbox=False, security_grading=False, allow_legacy_mode=True),
+        SandboxSettings(
+            sandbox=True,
+            security_grading=True,
+            backend="noop",
+            allow_legacy_mode=True,
+        ),
         workspace=workspace,
     )
     handler = build_tool_handler(get_default_registry())
@@ -595,6 +600,38 @@ async def test_workspace_write_deny_block_is_actionable_in_tool_failure_envelope
     assert "internal error" not in envelope["user_message"]
     assert envelope["retry_allowed"] is False
     assert not (workspace / "test_bug.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_sandbox_disabled_write_ignores_stale_restricted_tool_context(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "probe.txt"
+    configure_runtime(
+        SandboxSettings(sandbox=False, security_grading=False),
+        workspace=workspace,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            workspace_dir=str(workspace),
+            workspace_strict=True,
+            workspace_lockdown=True,
+            workspace_write_deny_globs=["**"],
+            run_mode="standard",
+            session_key="full-write",
+        )
+    )
+    try:
+        await fs.write_file(str(outside), "ok\n")
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+
+    assert outside.read_text(encoding="utf-8") == "ok\n"
 
 
 @pytest.mark.asyncio

@@ -407,6 +407,11 @@ def _gate_patch_ops(
     workspace = filesystem._workspace_root()
     boundary_targets: list[tuple[Path, PatchOp]] = []
 
+    if elevated_full:
+        for op in ops:
+            _validate_path(op.path, root)
+        return None, False
+
     if sandbox_permissions not in {"use_default", "require_escalated"}:
         return (
             {

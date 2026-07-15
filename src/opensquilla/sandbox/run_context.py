@@ -510,6 +510,7 @@ async def get_run_context(
     workspace: str | None,
     include_user_grants: bool = True,
 ) -> RunContext:
+    configured_mode = config_run_mode(config)
     node = await _get_session_node(session_manager, session_key)
     if node is not None:
         origin = _origin_dict(node)
@@ -518,9 +519,11 @@ async def get_run_context(
             "saved",
         )
         if saved is not None:
+            if configured_mode == RunMode.FULL and saved.run_mode != RunMode.FULL:
+                saved = replace(saved, run_mode=RunMode.FULL, source="global_full")
             return _with_user_grants(saved) if include_user_grants else saved
     context = RunContext(
-        run_mode=config_run_mode(config),
+        run_mode=configured_mode,
         workspace=_workspace_from_payload(workspace),
         source="default",
     )

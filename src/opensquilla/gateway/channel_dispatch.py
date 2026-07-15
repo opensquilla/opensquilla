@@ -1207,7 +1207,7 @@ async def _apply_saved_channel_run_context(
     workspace_dir: str | None,
     principal_is_owner: bool,
 ) -> None:
-    """Attach saved sandbox run context to a channel route when one exists."""
+    """Attach the effective saved or global sandbox context to a channel route."""
     if route_envelope is None or session_manager is None or config is None:
         return
     try:
@@ -1230,8 +1230,6 @@ async def _apply_saved_channel_run_context(
             session_key=getattr(route_envelope, "session_key", ""),
             error_type=type(exc).__name__,
         )
-        return
-    if getattr(run_context, "source", "") != "saved":
         return
     _apply_run_context_route_metadata(
         route_envelope,

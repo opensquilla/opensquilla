@@ -43,13 +43,21 @@ def current_run_mode() -> str | None:
 def full_host_access_active() -> bool:
     """True when the current tool call should use Full Host Access semantics."""
 
-    return current_run_mode() == "full"
+    if current_run_mode() == "full":
+        return True
+    try:
+        from opensquilla.sandbox.integration import get_runtime
+
+        runtime = get_runtime()
+    except Exception:
+        return False
+    return bool(runtime is not None and not runtime.effective.sandbox_enabled)
 
 
 def trusted_sandbox_active() -> bool:
     """True when the current tool call is in Managed Execution mode."""
 
-    return current_run_mode() == "trusted"
+    return not full_host_access_active() and current_run_mode() == "trusted"
 
 
 __all__ = [

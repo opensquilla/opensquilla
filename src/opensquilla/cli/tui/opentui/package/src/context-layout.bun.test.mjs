@@ -16,7 +16,6 @@ import {
   normalizeContextUpdate,
 } from "./contextView.mjs";
 import { createDispatcher } from "./ipc.mjs";
-import { toggleFlowDetails } from "./main.mjs";
 import { THEME } from "./theme.mjs";
 import { textWidth } from "./primitives.mjs";
 
@@ -394,17 +393,6 @@ test("the composer border stays free of duplicate turn activity", async () => {
     expect(String(bottomTitle).trim()).toBe("");
     renderer.destroy?.();
   }
-});
-
-test("Ctrl+O flow helper prefers a flow contract and tolerates legacy turns", () => {
-  let flowCalls = 0;
-  expect(toggleFlowDetails({ toggleDetails: () => { flowCalls += 1; }, turns: [] })).toBe(true);
-  expect(flowCalls).toBe(1);
-
-  let turnCalls = 0;
-  expect(toggleFlowDetails({ turns: [{ toggleDetails: () => { turnCalls += 1; } }, {}] })).toBe(true);
-  expect(turnCalls).toBe(1);
-  expect(toggleFlowDetails({ turns: [{}] })).toBe(false);
 });
 
 test("IPC dispatch recognizes the additive context.update frame", () => {

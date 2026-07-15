@@ -706,6 +706,91 @@ async def test_external_projection_cancellation_never_aborts_originating_turn() 
 
 
 @pytest.mark.asyncio
+async def test_external_projection_normalizes_legacy_task_failure_and_stops() -> None:
+    from opensquilla.cli.repl import gateway_runtime
+
+    class _NoMoreFrames:
+        async def get(self) -> dict[str, Any]:
+            raise AssertionError("external projection read past a terminal task event")
+
+    adapter = gateway_runtime._ExternalTurnClient(
+        object(),
+        _NoMoreFrames(),
+        {
+            "event": "task.failed",
+            "payload": {
+                "turn_id": "turn-web",
+                "client_message_id": "message-web",
+                "terminal_reason": "error",
+            },
+        },
+        turn_id="turn-web",
+        client_message_id="message-web",
+    )
+
+    events = [
+        event
+        async for event in adapter.send_message(
+            "agent:main:shared",
+            "ignored",
+        )
+    ]
+
+    assert [event["event"] for event in events] == ["session.event.error"]
+    assert events[0]["code"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_external_projection_does_not_end_on_untracked_task_group_terminal() -> None:
+    from opensquilla.cli.repl import gateway_runtime
+
+    class _RemainingFrames:
+        def __init__(self) -> None:
+            self.frames = [
+                {
+                    "event": "session.event.done",
+                    "payload": {
+                        "turn_id": "turn-web",
+                        "client_message_id": "message-web",
+                    },
+                }
+            ]
+
+        async def get(self) -> dict[str, Any]:
+            if not self.frames:
+                raise AssertionError("external projection read past session completion")
+            return self.frames.pop(0)
+
+    adapter = gateway_runtime._ExternalTurnClient(
+        object(),
+        _RemainingFrames(),
+        {
+            "event": "session.event.task_group.done",
+            "payload": {
+                "turn_id": "turn-web",
+                "client_message_id": "message-web",
+                "group_id": "untracked-group",
+            },
+        },
+        turn_id="turn-web",
+        client_message_id="message-web",
+    )
+
+    events = [
+        event
+        async for event in adapter.send_message(
+            "agent:main:shared",
+            "ignored",
+        )
+    ]
+
+    assert [event["event"] for event in events] == [
+        "session.event.task_group.done",
+        "session.event.done",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_approval_watcher_fails_pending_overlays_closed_on_disconnect() -> None:
     from opensquilla.cli.repl import gateway_runtime
 

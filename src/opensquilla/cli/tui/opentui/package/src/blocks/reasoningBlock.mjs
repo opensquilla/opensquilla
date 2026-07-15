@@ -1,5 +1,5 @@
 import { THEME } from "../theme.mjs";
-import { TOOL_INDENT, cellWidth, clipToCells, stripTerminalControls, timelineAvailCells } from "../primitives.mjs";
+import { TOOL_INDENT, clipToCells, stripTerminalControls, timelineAvailCells, wrapToCells } from "../primitives.mjs";
 import { destroyRenderable } from "../renderableLifecycle.mjs";
 
 // Extended reasoning stays compact by default, but compact no longer means
@@ -13,33 +13,6 @@ const MAX_LIVE_PEEK_ROWS = 8;
 export function livePeekRows(terminalHeight) {
   const height = Math.max(1, Number(terminalHeight) || 24);
   return Math.max(MIN_LIVE_PEEK_ROWS, Math.min(MAX_LIVE_PEEK_ROWS, Math.floor(height / 5)));
-}
-
-function wrapToCells(line, cells) {
-  const budget = Math.max(1, cells);
-  const rows = [];
-  let rest = Array.from(line);
-  while (rest.length) {
-    let used = 0;
-    let cut = 0;
-    let lastSpace = -1;
-    while (cut < rest.length) {
-      const width = cellWidth(rest[cut], rest[cut + 1]);
-      if (used + width > budget) break;
-      used += width;
-      cut += 1;
-      if (rest[cut - 1] === " ") lastSpace = cut;
-    }
-    if (cut >= rest.length) {
-      rows.push(rest.join(""));
-      break;
-    }
-    const breakAt = lastSpace > 0 ? lastSpace : Math.max(1, cut);
-    rows.push(rest.slice(0, breakAt).join("").trimEnd());
-    rest = rest.slice(breakAt);
-    while (rest.length && rest[0] === " ") rest.shift();
-  }
-  return rows.length ? rows : [""];
 }
 
 export function createReasoningBlock(ctx) {

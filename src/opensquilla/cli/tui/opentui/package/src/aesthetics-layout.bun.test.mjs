@@ -11,9 +11,8 @@
 // Run with: bun test src/aesthetics-layout.bun.test.mjs
 import { test, expect } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
-import { BoxRenderable, ScrollBoxRenderable, TextRenderable } from "@opentui/core";
+import { BoxRenderable, TextRenderable } from "@opentui/core";
 
-import { shouldFollowBottom } from "./main.mjs";
 import { createTurnView } from "./turnView.mjs";
 import { applyTheme, THEME } from "./theme.mjs";
 
@@ -293,97 +292,5 @@ test("a prompt block never seals an open card; only usage closes it", async () =
   const closed = footers();
   expect(closed).toHaveLength(1);
   expect(closed[0]).toContain("in 5 / out 2");
-  renderer.destroy?.();
-});
-
-test("scrollbox public geometry preserves history and resumes bottom-follow", async () => {
-  // Verify the user-visible sticky-scroll behavior without pinning OpenTUI's
-  // private manual-scroll fields, which legitimately changed between 0.3 and
-  // 0.4. The app-level scroller owns the held/following product contract.
-  const { renderer, renderOnce } = await createTestRenderer({ width: 40, height: 10 });
-  const scrollBox = new ScrollBoxRenderable(renderer, {
-    id: "conv",
-    position: "absolute",
-    left: 0,
-    top: 0,
-    right: 0,
-    height: 6,
-    stickyScroll: true,
-    stickyStart: "bottom",
-    scrollY: true,
-    scrollX: false,
-  });
-  renderer.root.add(scrollBox);
-  scrollBox.focusable = false; // keyboard stays with the composer
-  for (let i = 0; i < 30; i += 1) {
-    scrollBox.add(new TextRenderable(renderer, { id: `l${i}`, content: `line ${i}` }));
-  }
-  await renderOnce();
-
-  expect(shouldFollowBottom(scrollBox)).toBe(true);
-  scrollBox.scrollTop = 0;
-  expect(shouldFollowBottom(scrollBox)).toBe(false);
-
-  // Growing content while held must not yank the viewport away from history.
-  scrollBox.add(new TextRenderable(renderer, { id: "held-append", content: "held append" }));
-  await renderOnce();
-  expect(scrollBox.scrollTop).toBe(0);
-
-  // Returning to the public bottom position re-enables sticky following.
-  scrollBox.scrollTop = scrollBox.scrollHeight;
-  expect(shouldFollowBottom(scrollBox)).toBe(true);
-  scrollBox.add(new TextRenderable(renderer, { id: "follow-append", content: "follow append" }));
-  await renderOnce();
-  expect(shouldFollowBottom(scrollBox)).toBe(true);
-
-  // focusable=false keeps a click from focusing the transcript scroller, so
-  // arrows/j/k can never double-drive it alongside the composer.
-  scrollBox.focus();
-  expect(scrollBox.focused).toBe(false);
-  renderer.destroy?.();
-});
-
-test("wheel-scrolling back to the bottom re-engages bottom-follow for the next append", async () => {
-  // A return to the public bottom position is re-consent to follow regardless
-  // of how a particular OpenTUI release represents sticky state internally.
-  const { renderer, renderOnce } = await createTestRenderer({ width: 40, height: 10 });
-  const scrollBox = new ScrollBoxRenderable(renderer, {
-    id: "conv",
-    position: "absolute",
-    left: 0,
-    top: 0,
-    right: 0,
-    height: 6,
-    stickyScroll: true,
-    stickyStart: "bottom",
-    scrollY: true,
-    scrollX: false,
-  });
-  renderer.root.add(scrollBox);
-  scrollBox.focusable = false;
-  for (let i = 0; i < 30; i += 1) {
-    scrollBox.add(new TextRenderable(renderer, { id: `l${i}`, content: `line ${i}` }));
-  }
-  await renderOnce();
-  const wheel = (direction, delta) =>
-    scrollBox.onMouseEvent({ type: "scroll", scroll: { direction, delta }, modifiers: {} });
-
-  expect(shouldFollowBottom(scrollBox)).toBe(true); // following by default
-
-  // Wheel up mid-stream: the hold sticks — appends must not yank back down.
-  wheel("up", 3);
-  expect(shouldFollowBottom(scrollBox)).toBe(false);
-
-  // Wheel back down to the bottom using only public geometry.
-  wheel("down", 30);
-  expect(shouldFollowBottom(scrollBox)).toBe(true);
-
-  // So a multi-row append right after the return still snaps to the new bottom.
-  const pinned = shouldFollowBottom(scrollBox);
-  scrollBox.add(new TextRenderable(renderer, { id: "n1", content: "new 1" }));
-  scrollBox.add(new TextRenderable(renderer, { id: "n2", content: "new 2" }));
-  await renderOnce();
-  if (pinned) scrollBox.scrollTop = scrollBox.scrollHeight;
-  expect(shouldFollowBottom(scrollBox)).toBe(true);
   renderer.destroy?.();
 });

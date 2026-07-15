@@ -56,6 +56,28 @@ async def test_loopback_transport_rejects_bad_token_then_accepts_one_client() ->
 
 
 @pytest.mark.asyncio
+async def test_loopback_transport_rejects_non_object_auth_json() -> None:
+    connection = HostConnection()
+    await connection.listen()
+    env = connection.environment
+    reader, writer = await asyncio.open_connection(
+        env["OPENSQUILLA_OPENTUI_IPC_HOST"],
+        int(env["OPENSQUILLA_OPENTUI_IPC_PORT"]),
+    )
+
+    try:
+        writer.write(b"[]\n")
+        await writer.drain()
+        response = json.loads(await asyncio.wait_for(reader.readline(), timeout=1.0))
+        assert response["type"] == "auth.error"
+        assert await asyncio.wait_for(reader.readline(), timeout=1.0) == b""
+    finally:
+        writer.close()
+        await writer.wait_closed()
+        await connection.close()
+
+
+@pytest.mark.asyncio
 async def test_loopback_listener_is_closed_after_authenticated_client() -> None:
     connection = HostConnection()
     await connection.listen()
@@ -76,3 +98,33 @@ async def test_loopback_listener_is_closed_after_authenticated_client() -> None:
     writer.close()
     await writer.wait_closed()
     await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_readline_replaces_invalid_utf8_before_json_validation() -> None:
+    connection = HostConnection()
+    reader = asyncio.StreamReader()
+    reader.feed_data(b"\xff\xfe invalid utf-8 bytes\n")
+    reader.feed_eof()
+    connection._reader = reader
+
+    assert await connection.readline() == "\ufffd\ufffd invalid utf-8 bytes\n"
+
+
+@pytest.mark.asyncio
+async def test_send_frame_backslash_escapes_lone_surrogates() -> None:
+    written: list[bytes] = []
+
+    class _Writer:
+        def write(self, data: bytes) -> None:
+            written.append(data)
+
+        async def drain(self) -> None:
+            return None
+
+    connection = HostConnection()
+    connection._writer = _Writer()
+
+    await connection.send_frame('{"text":"file_\udc80.txt"}\n')
+
+    assert written == [b'{"text":"file_\\udc80.txt"}\n']

@@ -3,7 +3,7 @@ import process from "node:process";
 import { THEME, applyTheme, onThemeApplied } from "./theme.mjs";
 import { registerThemeStyles } from "./syntaxTheme.mjs";
 import { noticeContent, recolorNoticeNodes } from "./ansiNotice.mjs";
-import { clampFooterHeight, copySelectionToClipboard, isPinnedToBottom, stripTerminalControls } from "./primitives.mjs";
+import { clampFooterHeight, copySelectionToClipboard, stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
 import { createContextRail } from "./contextView.mjs";
 import { replaceHistoryConversation } from "./historyRenderer.mjs";
@@ -41,31 +41,6 @@ if (import.meta.main && (process.argv.includes("--help") || process.argv.include
 const FOOTER_HEIGHT = 6;
 // Footer height clamped to the terminal so a very short pane never overflows it.
 const footerRows = (h) => clampFooterHeight(FOOTER_HEIGHT, h);
-
-// Decide, using only public geometry, whether the view is at the bottom. The
-// application-level scroller owns follow/held semantics; OpenTUI private
-// sticky-scroll flags are deliberately not part of our product contract.
-// Exported for the Bun integration tests.
-export function shouldFollowBottom(scrollBox) {
-  return isPinnedToBottom(scrollBox.scrollTop, scrollBox.scrollHeight, scrollBox.height, 0);
-}
-
-// Toggle expanded transcript detail through whichever optional contract the
-// active turn-flow implementation exposes. Kept pure for keyboard regression
-// tests and tolerant of older turn views that only implement the base stream.
-export function toggleFlowDetails(flow) {
-  if (typeof flow?.toggleDetails === "function") {
-    flow.toggleDetails();
-    return true;
-  }
-  let handled = false;
-  for (const turn of flow?.turns ?? []) {
-    if (typeof turn?.toggleDetails !== "function") continue;
-    turn.toggleDetails();
-    handled = true;
-  }
-  return handled;
-}
 
 // Host-local escape hatch. Every quit key normally routes over IPC (Ctrl+C ->
 // input.cancel, Ctrl+D -> input.eof) and Python drives shutdown — but a
@@ -307,7 +282,6 @@ async function main() {
     onContextUpdate: (snapshot) => {
       const result = contextRail.updateContext(snapshot);
       contextGeometryChanged ||= Boolean(result?.geometryChanged);
-      welcome.updateContext(snapshot);
     },
     onRouterUpdate: (snapshot) => contextRail.updateRouter(snapshot),
     onFullRedraw: () => requestFullRepaint(renderer),
@@ -350,12 +324,12 @@ async function main() {
   const newTurnFlow = () => createTurnFlow((id) => createTurnView(turnDeps, id ?? scrollbackSeq++));
   flow = newTurnFlow();
   // Keyboard-only access to expanded thinking/tool detail without transferring
-  // focus away from the composer. The optional calls keep this host compatible
-  // with turn implementations that have not gained detail expansion yet.
+  // focus away from the composer.
   renderer.keyInput.on?.("keypress", (key) => {
     if (!key?.ctrl || key?.name !== "o" || overlayLayer.visible) return;
     transcriptScroller.restore(() => {
-      if (toggleFlowDetails(flow)) renderer.requestRender?.();
+      flow.toggleDetails();
+      renderer.requestRender?.();
     });
   });
   // Scrollback + notice lines live outside any turn view; register each with

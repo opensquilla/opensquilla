@@ -10,7 +10,6 @@ import {
 
 import {
   createWelcomeView,
-  welcomeContextLine,
   welcomeLogoMode,
 } from "./welcomeView.mjs";
 import { THEME } from "./theme.mjs";
@@ -69,25 +68,9 @@ test("logo typography responds to realistic terminal geometry", () => {
   expect(welcomeLogoMode(132, 40, 102)).toBe("block");
 });
 
-test("welcome context is concise, canonical, and terminal-safe", () => {
-  expect(welcomeContextLine({
-    agent: "Mira\u001b[31m",
-    agentEmoji: "🦐",
-    model: "openai/gpt-5.4",
-    workspace: "/workspace/opensquilla/",
-    gateway: "connected",
-  })).toBe("🦐 Mira  ·  gpt-5.4  ·  opensquilla  ·  Gateway connected");
-});
-
 test("115-column empty session matches the approved brand-anchor composition", async () => {
   const { renderer, renderOnce, captureSpans, welcome } = await harness(115, 42);
   try {
-    welcome.updateContext({
-      agent: { name: "Mira", emoji: "🦐" },
-      model: "openai/gpt-5.4",
-      workspace: "/workspace/opensquilla",
-      gateway: "connected",
-    });
     await renderOnce();
     const text = frameText(captureSpans());
     expect(welcome.snapshot()).toMatchObject({ mounted: true, eligible: true, mode: "block" });

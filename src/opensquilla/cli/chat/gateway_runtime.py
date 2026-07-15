@@ -287,6 +287,8 @@ class _ExternalTurnClient:
                 self._turn_id,
                 self._client_message_id,
             )
+        from opensquilla.cli.gateway_client import _advance_gateway_turn_event
+
         active_groups: set[str] = set()
         first: dict[str, Any] | None = self._first_frame
         while True:
@@ -303,24 +305,14 @@ class _ExternalTurnClient:
             ):
                 continue
             event_name = str(event.get("event") or "")
-            group_id = event.get("group_id")
-            if event_name in {
-                "session.event.task_group.waiting",
-                "session.event.task_group.synthesizing",
-            } and isinstance(group_id, str):
-                active_groups.add(group_id)
-            elif event_name in {
-                "session.event.task_group.done",
-                "session.event.task_group.failed",
-            } and isinstance(group_id, str):
-                active_groups.discard(group_id)
-            yield event
-            if event_name in {"session.event.done", "session.event.error"} and not active_groups:
-                return
-            if (
-                event_name in {"session.event.task_group.done", "session.event.task_group.failed"}
-                and not active_groups
-            ):
+            payload = {key: value for key, value in event.items() if key != "event"}
+            normalized, terminal = _advance_gateway_turn_event(
+                event_name,
+                payload,
+                active_groups,
+            )
+            yield normalized
+            if terminal:
                 return
 
     async def resolve_approval(

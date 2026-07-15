@@ -1,6 +1,5 @@
 import { THEME } from "./theme.mjs";
-import { contextAgentLabel, emptyContextState, normalizeContextUpdate } from "./contextView.mjs";
-import { clipToCells, stripTerminalControls } from "./primitives.mjs";
+import { clipToCells } from "./primitives.mjs";
 import { destroyRenderable } from "./renderableLifecycle.mjs";
 
 // The approved filled/shadowed block wordmark is 98 cells wide. Its font owns
@@ -10,31 +9,6 @@ import { destroyRenderable } from "./renderableLifecycle.mjs";
 export const WELCOME_BLOCK_MIN_COLUMNS = 100;
 export const WELCOME_TINY_MIN_COLUMNS = 46;
 export const WELCOME_DISPLAY_MIN_ROWS = 18;
-
-function clean(value) {
-  return stripTerminalControls(String(value ?? "")).replace(/\s+/gu, " ").trim();
-}
-
-function shortModel(value) {
-  const model = clean(value);
-  return model ? model.split("/").pop() : "";
-}
-
-function shortWorkspace(value) {
-  const workspace = clean(value).replace(/[\\/]+$/u, "");
-  if (!workspace) return "";
-  return workspace.split(/[\\/]/u).filter(Boolean).at(-1) ?? workspace;
-}
-
-function gatewayStatus(value) {
-  const gateway = clean(value);
-  if (!gateway) return "";
-  if (/connected|ready|healthy|^ok$/iu.test(gateway)) return "Gateway connected";
-  if (/connecting|starting|pending/iu.test(gateway)) return "Gateway connecting";
-  if (/disconnected|failed|error|offline/iu.test(gateway)) return "Gateway offline";
-  if (/isolated|standalone/iu.test(gateway)) return "Standalone";
-  return `Gateway ${gateway}`;
-}
 
 export function welcomeLogoMode(terminalWidth, terminalHeight, contentWidth = terminalWidth) {
   const width = Math.max(1, Number(contentWidth) || Number(terminalWidth) || 80);
@@ -46,20 +20,6 @@ export function welcomeLogoMode(terminalWidth, terminalHeight, contentWidth = te
   if (height >= WELCOME_DISPLAY_MIN_ROWS && width >= WELCOME_BLOCK_MIN_COLUMNS) return "block";
   if (height >= WELCOME_DISPLAY_MIN_ROWS && width >= WELCOME_TINY_MIN_COLUMNS) return "tiny";
   return "plain";
-}
-
-export function welcomeContextLine(context) {
-  const value = { ...emptyContextState(), ...(context ?? {}) };
-  const bits = [];
-  const agent = contextAgentLabel(value);
-  if (agent && agent !== "squilla") bits.push(agent);
-  const model = shortModel(value.model);
-  if (model) bits.push(model);
-  const workspace = shortWorkspace(value.workspace);
-  if (workspace) bits.push(workspace);
-  const gateway = gatewayStatus(value.gateway);
-  if (gateway) bits.push(gateway);
-  return bits.join("  ·  ") || "Shared session  ·  Web control available";
 }
 
 function hasHistory(message) {
@@ -82,7 +42,6 @@ export function createWelcomeView({
   conversationBox,
   contentWidth = () => renderer?.terminalWidth ?? 80,
 }) {
-  let context = emptyContextState();
   let eligible = true;
   let node = null;
   let logo = null;
@@ -180,11 +139,6 @@ export function createWelcomeView({
       if (eligible) mount();
       else unmount();
     },
-    updateContext(message) {
-      context = normalizeContextUpdate(message, context);
-      refreshText();
-      renderer.requestRender?.();
-    },
     relayout() {
       if (!eligible) return;
       const nextMode = welcomeLogoMode(
@@ -219,6 +173,6 @@ export function createWelcomeView({
       tagline.fg = THEME.text;
       renderer.requestRender?.();
     },
-    snapshot: () => ({ eligible, mounted: mounted(), mode, context: { ...context } }),
+    snapshot: () => ({ eligible, mounted: mounted(), mode }),
   };
 }

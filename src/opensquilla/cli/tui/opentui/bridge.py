@@ -34,10 +34,7 @@ from opensquilla.cli.tui.opentui.messages import (
     host_message_from_json,
     python_message_to_json,
 )
-from opensquilla.cli.tui.opentui.terminal import (
-    TERMINAL_RESET_SEQUENCE,
-    create_terminal_guardian,
-)
+from opensquilla.cli.tui.opentui.terminal import create_terminal_guardian
 from opensquilla.cli.tui.opentui.transport import HostConnection
 from opensquilla.cli.tui.renderers.selection import (
     RendererBackendAvailability,
@@ -64,11 +61,6 @@ REQUIRED_INTERACTIVE_HOST_CAPABILITIES = frozenset(
         "model.routing.control.v1",
     }
 )
-# Best-effort tty sanity reset for an abnormally dead host: leave the alternate
-# screen, disable mouse tracking (incl. SGR mode) and bracketed paste, show the
-# cursor, and clear attributes. Every sequence is a no-op when already off.
-_TERMINAL_RESET_SEQUENCE = TERMINAL_RESET_SEQUENCE
-
 log = structlog.get_logger(__name__)
 
 
@@ -88,10 +80,6 @@ class OpenTuiBridgeError(HostRuntimeError):
 class OpenTuiHostPaths:
     package_dir: Path = DEFAULT_HOST_PACKAGE_DIR
     main_script: Path = DEFAULT_HOST_PACKAGE_DIR / "src" / "main.mjs"
-
-    @property
-    def opentui_core_dir(self) -> Path:
-        return self.package_dir / "node_modules" / "@opentui" / "core"
 
 
 def _host_handshake_mismatches(
@@ -174,17 +162,12 @@ class OpenTuiBridge:
         self._terminal_guardian = create_terminal_guardian()
         self._host_artifact: HostArtifact | None = None
         self._process: asyncio.subprocess.Process | None = None
-        self._to_host_file: Any | None = None
-        self._from_host_file: Any | None = None
         self._stderr_lines: deque[str] = deque(maxlen=50)
         self._stderr_task: asyncio.Task[None] | None = None
         self._closing = False
         self._write_queue: asyncio.Queue[str | None] | None = None
         self._writer_task: asyncio.Task[None] | None = None
         self._write_error: OpenTuiBridgeError | None = None
-        self._tty_fd: int | None = None
-        self._saved_termios: list[Any] | None = None
-        self._terminal_restored = False
 
     async def start(self) -> None:
         resolver = self._artifact_resolver or HostArtifactResolver(
@@ -333,7 +316,7 @@ class OpenTuiBridge:
         self.send_nowait(message_type, payload)
 
     def send_nowait(self, message_type: str, payload: object | None = None) -> None:
-        if self._connection is None and self._to_host_file is None:
+        if self._connection is None:
             raise OpenTuiBridgeError(
                 "OpenTUI bridge is not started",
                 reason=HostFailureReason.TRANSPORT,
@@ -347,10 +330,10 @@ class OpenTuiBridge:
         queue = self._write_queue
         writer = self._writer_task
         if queue is None or writer is None or writer.done():
-            # No writer task (bridge wired up without start(), or already
-            # draining down): fall back to a direct synchronous write.
-            self._write_frame_blocking(frame)
-            return
+            raise OpenTuiBridgeError(
+                "OpenTUI bridge writer is not running",
+                reason=HostFailureReason.TRANSPORT,
+            )
         # Enqueueing synchronously (no await point) keeps frame order exactly
         # equal to call order, even for fire-and-forget sender tasks.
         try:
@@ -360,24 +343,6 @@ class OpenTuiBridge:
                 "OpenTUI host stopped reading IPC frames (write queue overflow)",
                 reason=HostFailureReason.TRANSPORT,
             ) from None
-
-    def _write_frame_blocking(self, frame: str) -> None:
-        file = self._to_host_file
-        if file is None:
-            raise OpenTuiBridgeError(
-                "OpenTUI bridge is not started",
-                reason=HostFailureReason.TRANSPORT,
-            )
-        try:
-            file.write(frame)
-            file.flush()
-        except (OSError, ValueError) as exc:
-            # ValueError covers writes on a closed file and any residual
-            # UnicodeError the backslashreplace pipe encoding does not absorb.
-            raise OpenTuiBridgeError(
-                "OpenTUI host IPC write failed",
-                reason=HostFailureReason.TRANSPORT,
-            ) from exc
 
     async def _drain_writes(self) -> None:
         """Writer task: drain queued frames to the host off the event loop."""
@@ -391,10 +356,12 @@ class OpenTuiBridge:
                     return
                 try:
                     connection = self._connection
-                    if connection is not None:
-                        await connection.send_frame(frame)
-                    else:
-                        await asyncio.to_thread(self._write_frame_blocking, frame)
+                    if connection is None:
+                        raise OpenTuiBridgeError(
+                            "OpenTUI bridge is not started",
+                            reason=HostFailureReason.TRANSPORT,
+                        )
+                    await connection.send_frame(frame)
                 except (OpenTuiBridgeError, HostRuntimeError) as exc:
                     # Remember the failure so the next send raises it; frames
                     # still queued are undeliverable and dropped with the socket.
@@ -417,7 +384,8 @@ class OpenTuiBridge:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
 
     async def next_message(self) -> HostToPythonMessage | None:
-        if self._connection is None and self._from_host_file is None:
+        connection = self._connection
+        if connection is None:
             raise OpenTuiBridgeError(
                 "OpenTUI bridge is not started",
                 reason=HostFailureReason.TRANSPORT,
@@ -425,11 +393,7 @@ class OpenTuiBridge:
         malformed = 0
         while True:
             try:
-                if self._connection is not None:
-                    line = await self._connection.readline()
-                else:
-                    assert self._from_host_file is not None
-                    line = await asyncio.to_thread(self._from_host_file.readline)
+                line = await connection.readline()
             except HostRuntimeError as exc:
                 raise OpenTuiBridgeError(str(exc), reason=exc.reason) from exc
             if line == "":
@@ -498,7 +462,7 @@ class OpenTuiBridge:
     async def close(self) -> None:
         self._closing = True
         process = self._process
-        if self._connection is not None or self._to_host_file is not None:
+        if self._connection is not None:
             with suppress(Exception):
                 self.send_nowait("shutdown")
             # Deliver everything still queued (including the shutdown frame) so
@@ -507,9 +471,6 @@ class OpenTuiBridge:
         if process is not None and process.returncode is None:
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(process.wait(), timeout=0.5)
-        # Terminate the child before closing the compatibility file handles. A
-        # blocked test reader thread may hold a file lock while parked in a
-        # syscall; reaping the child releases it.
         if process is not None and process.returncode is None:
             await self._process_controller.stop(process)
         writer_task = self._writer_task
@@ -520,14 +481,6 @@ class OpenTuiBridge:
                 await writer_task
             self._writer_task = None
         self._write_queue = None
-        if self._to_host_file is not None:
-            with suppress(Exception):
-                self._to_host_file.close()
-            self._to_host_file = None
-        if self._from_host_file is not None:
-            with suppress(Exception):
-                self._from_host_file.close()
-            self._from_host_file = None
         connection = self._connection
         if connection is not None:
             await connection.close()
@@ -547,19 +500,10 @@ class OpenTuiBridge:
 
     def _save_terminal_state(self) -> None:
         self._terminal_guardian.capture()
-        self._terminal_restored = self._terminal_guardian.restored
-        self._tty_fd = getattr(self._terminal_guardian, "tty_fd", None)
-        self._saved_termios = getattr(self._terminal_guardian, "saved_termios", None)
 
     def _restore_terminal(self) -> None:
         """Best-effort tty reset after the host died without its own teardown."""
-        if self._terminal_restored:
-            return
-        if hasattr(self._terminal_guardian, "tty_fd"):
-            self._terminal_guardian.tty_fd = self._tty_fd  # type: ignore[attr-defined]
-            self._terminal_guardian.saved_termios = self._saved_termios  # type: ignore[attr-defined]
         self._terminal_guardian.restore()
-        self._terminal_restored = True
 
     async def write_scrollback(self, payload: str) -> None:
         await self.send("scrollback.write", ScrollbackWrite(text=payload))

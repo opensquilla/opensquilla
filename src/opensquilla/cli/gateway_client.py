@@ -903,51 +903,13 @@ class GatewayClient:
                     continue
                 event_name: str = frame.get("event", "")
                 payload: dict = frame.get("payload") or {}
-                if event_name == "session.event.error":
-                    payload = _normalize_session_error_payload(payload)
-                if task_terminal := _task_terminal_as_session_event(event_name, payload):
-                    yield task_terminal
-                    if active_task_groups:
-                        continue
-                    break
-                group_id = payload.get("group_id")
-                if (
-                    event_name
-                    in (
-                        "session.event.task_group.waiting",
-                        "session.event.task_group.synthesizing",
-                    )
-                    and isinstance(group_id, str)
-                    and group_id
-                ):
-                    active_task_groups.add(group_id)
-                elif (
-                    event_name
-                    in (
-                        "session.event.task_group.done",
-                        "session.event.task_group.failed",
-                    )
-                    and isinstance(group_id, str)
-                    and group_id
-                ):
-                    was_active_group = group_id in active_task_groups
-                    active_task_groups.discard(group_id)
-                else:
-                    was_active_group = False
-                yield {"event": event_name, **payload}
-                if (
-                    event_name
-                    in (
-                        "session.event.task_group.done",
-                        "session.event.task_group.failed",
-                    )
-                    and was_active_group
-                    and not active_task_groups
-                ):
-                    break
-                if event_name in ("session.event.done", "session.event.error"):
-                    if active_task_groups:
-                        continue
+                event, terminal = _advance_gateway_turn_event(
+                    event_name,
+                    payload,
+                    active_task_groups,
+                )
+                yield event
+                if terminal:
                     break
         finally:
             await subscription.close()
@@ -1029,6 +991,45 @@ def _task_terminal_as_session_event(event_name: str, payload: dict) -> dict[str,
         "code": status,
         **payload,
     }
+
+
+def _advance_gateway_turn_event(
+    event_name: str,
+    payload: dict[str, Any],
+    active_task_groups: set[str],
+) -> tuple[dict[str, Any], bool]:
+    """Normalize one frame, mutate active groups, and report turn completion."""
+
+    if event_name == "session.event.error":
+        payload = _normalize_session_error_payload(payload)
+    if task_terminal := _task_terminal_as_session_event(event_name, payload):
+        return task_terminal, not active_task_groups
+
+    group_id = payload.get("group_id")
+    active_group_event = event_name in {
+        "session.event.task_group.waiting",
+        "session.event.task_group.synthesizing",
+    }
+    terminal_group_event = event_name in {
+        "session.event.task_group.done",
+        "session.event.task_group.failed",
+    }
+    was_active_group = False
+    if active_group_event and isinstance(group_id, str) and group_id:
+        active_task_groups.add(group_id)
+    elif terminal_group_event and isinstance(group_id, str) and group_id:
+        was_active_group = group_id in active_task_groups
+        active_task_groups.discard(group_id)
+
+    event = {"event": event_name, **payload}
+    terminal = bool(
+        (terminal_group_event and was_active_group and not active_task_groups)
+        or (
+            event_name in {"session.event.done", "session.event.error"}
+            and not active_task_groups
+        )
+    )
+    return event, terminal
 
 
 def _normalize_session_error_payload(payload: dict) -> dict[str, Any]:

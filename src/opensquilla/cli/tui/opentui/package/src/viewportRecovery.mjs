@@ -10,12 +10,8 @@ import process from "node:process";
 // direct getWindowSize() result applied by this controller.
 export const VIEWPORT_RECOVERY_SETTLE_MS = 150;
 
-// A periodic full-screen watchdog writes complete frames into terminal
-// scrollback if alternate-screen mode was lost. Recovery is event-driven and
-// the transcript scroller also calls recover on the first wheel after blur.
-// Keep an explicit diagnostic override for testing unusual embedded hosts, but
-// never enable it implicitly in production.
-export const VIEWPORT_RECOVERY_WATCHDOG_MS = 750;
+// Recovery is event-driven; a periodic watchdog is available only as an
+// explicit diagnostic override for unusual embedded hosts.
 const VIEWPORT_RECOVERY_MIN_WATCHDOG_MS = 250;
 const VIEWPORT_RECOVERY_WATCHDOG_ENV = "OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS";
 

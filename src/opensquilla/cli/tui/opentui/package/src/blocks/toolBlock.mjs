@@ -1,5 +1,5 @@
 import { STATUS, STATUS_PULSE_FRAMES, THEME } from "../theme.mjs";
-import { DURATION_SEP, TOOL_INDENT, cellWidth, clipToCells, stripTerminalControls, textWidth, timelineAvailCells } from "../primitives.mjs";
+import { DURATION_SEP, TOOL_INDENT, clipToCells, stripTerminalControls, textWidth, timelineAvailCells, wrapToCells } from "../primitives.mjs";
 import { destroyRenderable } from "../renderableLifecycle.mjs";
 
 // Tool output is a stream, not a one-shot preview. Every append delta is
@@ -18,33 +18,6 @@ function payloadText(value) {
   } catch {
     return String(value);
   }
-}
-
-function wrapToCells(line, cells) {
-  const budget = Math.max(1, cells);
-  const rows = [];
-  let rest = Array.from(line);
-  while (rest.length) {
-    let used = 0;
-    let cut = 0;
-    let lastSpace = -1;
-    while (cut < rest.length) {
-      const width = cellWidth(rest[cut], rest[cut + 1]);
-      if (used + width > budget) break;
-      used += width;
-      cut += 1;
-      if (rest[cut - 1] === " ") lastSpace = cut;
-    }
-    if (cut >= rest.length) {
-      rows.push(rest.join(""));
-      break;
-    }
-    const breakAt = lastSpace > 0 ? lastSpace : Math.max(1, cut);
-    rows.push(rest.slice(0, breakAt).join("").trimEnd());
-    rest = rest.slice(breakAt);
-    while (rest.length && rest[0] === " ") rest.shift();
-  }
-  return rows.length ? rows : [""];
 }
 
 function normalizedDisplayText(raw) {

@@ -881,9 +881,9 @@ export function createComposer(deps) {
     renderer.setBackgroundColor?.(THEME.appBg);
     if (conversationBox) conversationBox.backgroundColor = THEME.appBg;
     if (inputBox) inputBox.backgroundColor = THEME.footerBg;
-    rerenderInputRegion(); // repaints the footer (and clears the overlay)…
-    renderThemePicker(); // …so remount the picker (no-op when closed) in new colors
-    renderer.requestRender?.();
+    // Repaint the footer and remount any active overlay once. The shared
+    // rerender path also reasserts the hardware caret for IME anchoring.
+    rerenderInputRegion();
   }
 
   function renderThemePicker() {
@@ -1323,7 +1323,6 @@ export function createComposer(deps) {
     if (String(id ?? "") !== approvalOverlay.id) return;
     closeApprovalOverlay();
     rerenderInputRegion();
-    renderer.requestRender?.();
   }
 
   function sendApprovalDecision(approved, choice) {

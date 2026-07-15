@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import time
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 from itertools import count
 from typing import Any, Literal
 
@@ -237,7 +237,7 @@ class OpenTuiStreamRenderer:
             )
         await self._emit("block.append", BlockAppend(id=self._open_reasoning_id, delta=delta))
 
-    async def aensemble_progress(self, payload: object) -> None:
+    async def aensemble_progress(self, payload: dict[str, Any]) -> None:
         """Project a real provider ensemble lifecycle event into one live block.
 
         The Gateway/provider event intentionally carries member metadata and
@@ -246,8 +246,7 @@ class OpenTuiStreamRenderer:
         includes those fields in ``payload``.
         """
 
-        event = _ensemble_payload(payload)
-        event_type = _ensemble_text(event.get("event_type") or event.get("eventType"))
+        event_type = _ensemble_text(payload.get("event_type"))
         if not event_type:
             return
         await self._ensure_begin()
@@ -257,7 +256,7 @@ class OpenTuiStreamRenderer:
             # remains retained in its completed disclosure block.
             await self._close_reasoning()
 
-        member = _ensemble_progress_member(event, event_type=event_type)
+        member = _ensemble_progress_member(payload, event_type=event_type)
         member_id = member["id"]
         previous = self._ensemble_members.get(member_id, {})
         self._ensemble_members[member_id] = {**previous, **member}
@@ -642,19 +641,6 @@ _ENSEMBLE_MEMBER_FIELDS = (
 )
 
 
-def _ensemble_payload(payload: object) -> dict[str, Any]:
-    if isinstance(payload, dict):
-        return dict(payload)
-    if is_dataclass(payload) and not isinstance(payload, type):
-        try:
-            value = asdict(payload)
-        except (TypeError, ValueError):
-            value = {}
-    else:
-        value = vars(payload) if hasattr(payload, "__dict__") else {}
-    return dict(value) if isinstance(value, dict) else {}
-
-
 def _ensemble_text(value: object) -> str:
     return sanitize_terminal_text(str(value or "")).strip()
 
@@ -694,42 +680,41 @@ def _ensemble_optional_float(row: dict[str, Any], *keys: str) -> float | None:
 def _ensemble_progress_member(
     event: dict[str, Any], *, event_type: str
 ) -> dict[str, Any]:
-    index = _ensemble_int(event.get("proposer_index") or event.get("proposerIndex"))
-    sample_index = _ensemble_int(event.get("sample_index") or event.get("sampleIndex"))
+    role = "aggregator" if event_type.startswith("aggregator_") else "proposer"
+    index = _ensemble_int(event.get("proposer_index"))
+    sample_index = _ensemble_int(event.get("sample_index"))
     error = _ensemble_text(event.get("error"))
     finished = event_type.endswith("finish") or event_type.endswith("finished")
     status = "error" if error else "done" if finished else "running"
     return {
-        "id": f"proposer:{index}:{sample_index}",
-        "role": "proposer",
+        # Aggregator progress uses proposer_index=-1 on the provider contract.
+        # Give it a separate stable identity instead of clamping -1 to zero and
+        # overwriting the first proposer while the final model is running.
+        "id": f"{role}:{0 if role == 'aggregator' else index}:{sample_index}",
+        "role": role,
         "_sample_index": sample_index,
-        "label": _ensemble_text(
-            event.get("proposer_label") or event.get("proposerLabel")
-        ) or f"proposer {index + 1}",
-        "model": _ensemble_text(
-            event.get("proposer_model") or event.get("proposerModel")
-        ),
-        "provider": _ensemble_text(
-            event.get("proposer_provider") or event.get("proposerProvider")
-        ),
+        "label": _ensemble_text(event.get("proposer_label"))
+        or ("aggregator" if role == "aggregator" else f"proposer {index + 1}"),
+        "model": _ensemble_text(event.get("proposer_model")),
+        "provider": _ensemble_text(event.get("proposer_provider")),
         "status": status,
         "elapsed_ms": (
-            _ensemble_int(event.get("elapsed_ms") or event.get("elapsedMs"))
+            _ensemble_int(event.get("elapsed_ms"))
             if finished
             else None
         ),
         "input_tokens": (
-            _ensemble_int(event.get("input_tokens") or event.get("inputTokens"))
+            _ensemble_int(event.get("input_tokens"))
             if finished
             else None
         ),
         "output_tokens": (
-            _ensemble_int(event.get("output_tokens") or event.get("outputTokens"))
+            _ensemble_int(event.get("output_tokens"))
             if finished
             else None
         ),
         "cost_usd": (
-            _ensemble_float(event.get("cost_usd") or event.get("costUsd"))
+            _ensemble_float(event.get("cost_usd"))
             if finished
             else None
         ),

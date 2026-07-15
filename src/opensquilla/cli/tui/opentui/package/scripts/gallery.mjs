@@ -111,10 +111,7 @@ const composer = createComposer({
   inputBox,
   overlayLayer,
   footerHeight: FOOTER_HEIGHT,
-  onContextUpdate: (snapshot) => {
-    contextRail.updateContext(snapshot);
-    welcome.updateContext(snapshot);
-  },
+  onContextUpdate: (snapshot) => contextRail.updateContext(snapshot),
   onRouterUpdate: (snapshot) => contextRail.updateRouter(snapshot),
   sendHostMessage: (m) => sent.push(m),
 });

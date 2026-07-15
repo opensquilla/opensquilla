@@ -1,5 +1,5 @@
 import { THEME } from "../theme.mjs";
-import { TOOL_INDENT, cellWidth, clipToCells, stripTerminalControls, timelineAvailCells } from "../primitives.mjs";
+import { TOOL_INDENT, clipToCells, stripTerminalControls, timelineAvailCells, wrapToCells } from "../primitives.mjs";
 import { destroyRenderable } from "../renderableLifecycle.mjs";
 
 // Intermediate assistant narration is useful context, but it should not turn a
@@ -8,36 +8,6 @@ import { destroyRenderable } from "../renderableLifecycle.mjs";
 // deterministic expansion API. While the block is live, all narration remains
 // visible so the UI never appears to swallow an in-flight update.
 const COMPLETED_PREVIEW_ROWS = 6;
-
-// Greedy soft-wrap a logical line into rows of at most `cells` columns,
-// breaking after the last space that fits so words stay whole; a single
-// overwide word hard-breaks at the budget so wrapping always makes progress.
-function wrapToCells(line, cells) {
-  const budget = Math.max(1, cells);
-  const rows = [];
-  let rest = Array.from(line);
-  while (rest.length) {
-    let used = 0;
-    let cut = 0;
-    let lastSpace = -1;
-    while (cut < rest.length) {
-      const w = cellWidth(rest[cut], rest[cut + 1]);
-      if (used + w > budget) break;
-      used += w;
-      cut += 1;
-      if (rest[cut - 1] === " ") lastSpace = cut;
-    }
-    if (cut >= rest.length) {
-      rows.push(rest.join(""));
-      break;
-    }
-    const breakAt = lastSpace > 0 ? lastSpace : Math.max(1, cut);
-    rows.push(rest.slice(0, breakAt).join("").trimEnd());
-    rest = rest.slice(breakAt);
-    while (rest.length && rest[0] === " ") rest.shift();
-  }
-  return rows.length ? rows : [""];
-}
 
 export function createThinkingBlock(ctx) {
   const { renderer, TextRenderable, box, idPrefix } = ctx;

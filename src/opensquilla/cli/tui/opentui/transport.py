@@ -156,8 +156,10 @@ class HostConnection:
             if not raw or len(raw) > _AUTH_MAX_BYTES:
                 raise ValueError("invalid auth frame")
             payload = json.loads(raw)
-            token = payload.get("token") if isinstance(payload, dict) else None
-            protocol = payload.get("protocol") if isinstance(payload, dict) else None
+            if not isinstance(payload, dict):
+                raise ValueError("invalid auth frame")
+            token = payload.get("token")
+            protocol = payload.get("protocol")
             if payload.get("type") != "auth" or not isinstance(token, str):
                 raise ValueError("invalid auth frame")
             if not secrets.compare_digest(token, self._token):

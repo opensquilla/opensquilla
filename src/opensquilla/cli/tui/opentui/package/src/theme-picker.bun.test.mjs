@@ -70,7 +70,7 @@ test("openThemePicker renders a titled panel listing every theme, active one mar
   renderer.destroy?.();
 });
 
-test("picker survives ordinary footer re-renders instead of flashing away", async () => {
+test("picker survives footer/theme re-renders without a duplicate remount", async () => {
   // Regression: a footer re-render (router update or keystroke) ran
   // renderCompletionMenu -> clearOverlay, wiping the
   // picker while it stayed modally active — picker flashed once then the TUI
@@ -101,8 +101,17 @@ test("picker survives ordinary footer re-renders instead of flashing away", asyn
   }
 
   composer.openThemePicker();
-  // Simulate footer re-renders that previously wiped the picker.
-  composer.rerender();
+  let pickerRemovals = 0;
+  const remove = overlayLayer.remove.bind(overlayLayer);
+  overlayLayer.remove = (node) => {
+    if (node?.id === "theme-picker") pickerRemovals += 1;
+    return remove(node);
+  };
+  // Theme application uses the same footer path: one overlay remount is
+  // sufficient to recolor the picker and reassert the caret.
+  composer.applyHostTheme("midnight");
+  expect(pickerRemovals).toBe(1);
+  // An ordinary later footer update still preserves the active picker.
   composer.rerender();
   await renderOnce();
   const text = captureSpans()

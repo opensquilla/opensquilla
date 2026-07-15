@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +13,6 @@ from opensquilla.cli.tui.backend.render_summary import (
 )
 from opensquilla.cli.tui.opentui.renderer import (
     OpenTuiStreamRenderer,
-    _ensemble_float,
-    _ensemble_int,
-    _ensemble_payload,
     _format_tokens,
 )
 from opensquilla.engine.usage import SessionTotalsSnapshot
@@ -55,24 +51,6 @@ class _ToolbarRecordingHandle(_RecordingHandle):
 
     def invalidate(self) -> None:
         self.invalidated += 1
-
-
-@dataclass
-class _EnsemblePayload:
-    proposer_index: int
-    elapsed_ms: str
-
-
-def test_ensemble_payload_normalizes_supported_boundary_values() -> None:
-    assert _ensemble_payload(_EnsemblePayload(proposer_index=2, elapsed_ms="125")) == {
-        "proposer_index": 2,
-        "elapsed_ms": "125",
-    }
-    assert _ensemble_payload(object()) == {}
-    assert _ensemble_int("12") == 12
-    assert _ensemble_int(object()) == 0
-    assert _ensemble_float("0.25") == 0.25
-    assert _ensemble_float(object()) == 0.0
 
 
 @pytest.mark.asyncio
@@ -542,6 +520,58 @@ async def test_ensemble_progress_reuses_one_live_block_and_never_forwards_candid
     # the live lifecycle measurement.
     assert updates[-1]["members"][0]["elapsed_ms"] == 1250
     assert "PRIVATE CANDIDATE" not in repr(handle.sent)
+
+
+@pytest.mark.asyncio
+async def test_live_aggregator_progress_does_not_replace_first_proposer() -> None:
+    handle = _RecordingHandle()
+    renderer = OpenTuiStreamRenderer(output_handle=handle)
+
+    await renderer.aensemble_progress(
+        {
+            "event_type": "proposer_start",
+            "proposer_index": 0,
+            "sample_index": 0,
+            "proposer_label": "fast",
+            "proposer_provider": "openrouter",
+            "proposer_model": "candidate-model",
+        }
+    )
+    await renderer.aensemble_progress(
+        {
+            "event_type": "aggregator_start",
+            "proposer_index": -1,
+            "sample_index": 0,
+            "proposer_label": "aggregator",
+            "proposer_provider": "openrouter",
+            "proposer_model": "answer-model",
+        }
+    )
+    await renderer.aensemble_progress(
+        {
+            "event_type": "aggregator_finish",
+            "proposer_index": -1,
+            "sample_index": 0,
+            "proposer_label": "aggregator",
+            "proposer_provider": "openrouter",
+            "proposer_model": "answer-model",
+            "elapsed_ms": 900,
+            "input_tokens": 80,
+            "output_tokens": 24,
+        }
+    )
+
+    final_patch = [
+        payload["patch"]
+        for kind, payload in handle.sent
+        if kind == "block.update" and "patch" in payload
+    ][-1]
+    members = {member["role"]: member for member in final_patch["members"]}
+    assert final_patch["total"] == 1
+    assert members["proposer"]["id"] == "proposer:0:0"
+    assert members["proposer"]["label"] == "fast"
+    assert members["aggregator"]["id"] == "aggregator:0:0"
+    assert members["aggregator"]["status"] == "done"
 
 
 @pytest.mark.asyncio

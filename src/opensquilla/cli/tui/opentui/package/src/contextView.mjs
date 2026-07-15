@@ -489,6 +489,5 @@ export function createContextRail({
       (Number(renderer?.terminalWidth) || 80) - currentRightInset,
     ),
     agentLabel: () => contextAgentLabel(context),
-    snapshot: () => ({ context: { ...context }, router: { ...router } }),
   };
 }

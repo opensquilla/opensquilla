@@ -90,6 +90,7 @@
       </section>
 
       <section
+        ref="reader"
         class="rag-reader control-panel"
         :class="{ 'is-mobile-open': props.mobileReaderOpen }"
         :aria-label="t('rag.reader.title')"
@@ -124,7 +125,7 @@
           <p v-if="props.getResponse.legacyLimitedGet" class="rag-reader__warning">
             {{ t('rag.reader.legacyLimited') }}
           </p>
-          <article ref="readerContent" class="rag-reader__content">
+          <article class="rag-reader__content">
             {{ props.getResponse.content }}
           </article>
           <footer class="rag-reader__pager">
@@ -189,7 +190,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const readerContent = ref<HTMLElement | null>(null)
+const reader = ref<HTMLElement | null>(null)
 
 function onQueryKeydown(event: KeyboardEvent) {
   if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) return
@@ -199,7 +200,7 @@ function onQueryKeydown(event: KeyboardEvent) {
 
 watch(() => props.getResponse?.content, async () => {
   await nextTick()
-  if (readerContent.value) readerContent.value.scrollTop = 0
+  if (reader.value) reader.value.scrollTop = 0
 })
 </script>
 

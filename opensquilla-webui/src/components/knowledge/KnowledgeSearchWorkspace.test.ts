@@ -241,12 +241,13 @@ describe('KnowledgeSearchWorkspace', () => {
 
   it('returns reader content to the top when a page changes', async () => {
     const { root, props } = await mountWorkspace({ getResponse: GET_RESPONSE })
+    const reader = root.querySelector<HTMLElement>('.rag-reader')!
     const content = root.querySelector<HTMLElement>('.rag-reader__content')!
-    content.scrollTop = 80
+    reader.scrollTop = 80
     props.getResponse = { ...GET_RESPONSE, content: 'Second page' }
     await nextTick()
     await nextTick()
-    expect(content.scrollTop).toBe(0)
+    expect(reader.scrollTop).toBe(0)
     expect(content.textContent).toContain('Second page')
   })
 

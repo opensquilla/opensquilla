@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 import structlog.testing
 
+import opensquilla.provider.ranking_router as ranking_router
 from opensquilla.provider.ranking_router import (
     CAPABILITIES,
     DOMAINS,
@@ -184,11 +185,13 @@ def test_packaged_ranking_config_is_versioned_validated_and_isolated() -> None:
     first = load_ranking_config()
     second = load_ranking_config()
 
-    assert first["schema_version"] == "step2-ranking-config-v2"
+    assert first["schema_version"] == "step2-ranking-config-v3"
     assert first["config_version"].startswith("step2-ranking-")
     assert first["task_analyzer"]["max_output_tokens"] == 1_200
     assert first["routing_tiers"]["mapping"] == {"c0": 1, "c1": 2, "c2": 3, "c3": 4}
     assert first["context"]["bucket_min_tokens"]["extra_long"] == 128_000
+    assert first["context"]["token_estimation"]["dense_chars_per_token"] == 1
+    assert first["validation"]["task_profile_sum_tolerance"] == pytest.approx(0.02)
     assert first["fallback_task_profile"]["capability_dist"]["reasoning"] == 0.50
     assert first["synthetic_model"]["context_window"] == 128_000
     assert first["hard_filter"]["eligible_statuses"] == ["enabled", "canary"]
@@ -320,6 +323,59 @@ def test_normalize_task_profile_falls_back_on_missing_required_distributions() -
     assert profile["session_intent"] == {"type": "new_task", "confidence": 0.0}
 
 
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda profile: profile.update(
+                capability_dist={"reasoning": 0.5, "code_generation": 0.3}
+            ),
+            "invalid_capability_dist",
+        ),
+        (
+            lambda profile: profile.update(
+                capability_dist={"reasoning": "0.6", "code_generation": 0.4}
+            ),
+            "invalid_capability_dist",
+        ),
+        (
+            lambda profile: profile["session_intent"].update(confidence=True),
+            "invalid_session_intent_confidence",
+        ),
+    ],
+)
+def test_normalize_task_profile_rejects_invalid_required_numeric_fields(
+    mutate: Any,
+    expected_error: str,
+) -> None:
+    raw_profile = _task_profile(tier=2)
+    mutate(raw_profile)
+
+    _, valid, issues = normalize_task_profile(
+        raw_profile,
+        routed_tier="c1",
+        request_context=_context(),
+    )
+
+    assert valid is False
+    assert expected_error in issues
+
+
+def test_normalize_task_profile_accepts_configured_distribution_rounding() -> None:
+    raw_profile = _task_profile(tier=2)
+    raw_profile["capability_dist"] = {"reasoning": 0.60, "code_generation": 0.39}
+
+    profile, valid, issues = normalize_task_profile(
+        raw_profile,
+        routed_tier="c1",
+        request_context=_context(),
+    )
+
+    assert valid is True
+    assert issues == []
+    assert sum(profile["capability_dist"].values()) == pytest.approx(1.0)
+
+
 def test_request_context_uses_bounded_history_and_attachment_facts() -> None:
     context = build_request_context(
         message="current request",
@@ -395,6 +451,27 @@ def test_request_context_limits_and_token_estimation_are_config_driven() -> None
 
     assert context["conversation"]["recent_turns"] == ["second-long-", "third-long-t"]
     assert context["routing_budget"]["estimated_input_tokens"] >= 10
+
+
+def test_request_context_uses_a_conservative_dense_script_token_estimate() -> None:
+    ascii_context = build_request_context(
+        message="a" * 400,
+        turn_metadata={},
+        attachments=[],
+        candidate_output_tokens=10,
+        aggregator_output_tokens=10,
+    )
+    dense_context = build_request_context(
+        message="中" * 400,
+        turn_metadata={},
+        attachments=[],
+        candidate_output_tokens=10,
+        aggregator_output_tokens=10,
+    )
+
+    ascii_tokens = ascii_context["routing_budget"]["estimated_input_tokens"]
+    dense_tokens = dense_context["routing_budget"]["estimated_input_tokens"]
+    assert dense_tokens >= ascii_tokens + 250
 
 
 def test_dynamic_output_token_budgets_do_not_assume_ascii_density() -> None:
@@ -670,6 +747,31 @@ def test_registry_builder_rejects_malformed_or_duplicate_profile_rows() -> None:
             )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("price", -1.0, "negative price"),
+        ("latency", -1, "invalid latency bounds"),
+        ("strength", 1.1, "out-of-range capability_dist_prior.reasoning"),
+    ],
+)
+def test_ranking_rejects_malformed_numeric_model_profiles(
+    field: str,
+    value: float,
+    message: str,
+) -> None:
+    model = _model("malformed")
+    if field == "price":
+        model["registry_facts"]["price"]["output_per_million"] = value
+    elif field == "latency":
+        model["registry_facts"]["latency_p95_ms"] = value
+    else:
+        model["static_profile"]["capability_dist_prior"]["reasoning"] = value
+
+    with pytest.raises(DynamicRankingError, match=message):
+        _decision(model, analysis=_analysis(tier=1))
+
+
 class _AnalyzerProvider:
     provider_name = "analyzer-test"
 
@@ -868,6 +970,35 @@ async def test_task_analyzer_invalid_required_constraint_uses_fallback() -> None
 
 
 @pytest.mark.asyncio
+async def test_task_analyzer_drops_invalid_optional_fields_without_full_fallback() -> None:
+    profile = _task_profile(tier=2)
+    profile["optional_constraints"] = {"format": "unsupported-format"}
+    profile["analysis_confidence"] = "high"
+
+    result = await analyze_task_with_provider(
+        provider=_AnalyzerProvider(json.dumps(profile)),
+        message="hello",
+        user_profile=mock_user_profile(),
+        request_context=_context(),
+        routed_tier="c1",
+        routing_confidence=0.77,
+    )
+
+    assert result.source == "llm_provider"
+    assert result.schema_valid is True
+    assert result.profile["optional_constraints"] == {}
+    assert result.confidence == pytest.approx(0.80)
+    assert result.normalization_warnings == (
+        "invalid_optional_format",
+        "invalid_analysis_confidence",
+    )
+    assert result.trace()["normalization_warnings"] == [
+        "invalid_optional_format",
+        "invalid_analysis_confidence",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_task_analyzer_cannot_drop_an_actual_input_modality() -> None:
     incomplete = _task_profile(tier=2, modalities=["text"])
     request_context = _context()
@@ -1063,6 +1194,57 @@ def test_greedy_selection_prefers_cross_family_complement_over_duplicate_family(
     assert decision.trace["N_max"] == 2
     assert [model.model_id for model in decision.proposers] == ["primary", "complement"]
     assert decision.trace["selection_steps"][1]["max_similarity"] < 0.75
+    assert [row["proposer_count"] for row in decision.trace["aggregator_feasibility"]] == [1, 2]
+    assert all(row["eligible_aggregator_ids"] for row in decision.trace["aggregator_feasibility"])
+    assert decision.trace["selection_steps"][0]["eligible_aggregator_count"] == 3
+
+
+def test_rerank_trace_records_quality_floor_exclusions_and_stop_detail() -> None:
+    strong = _model("strong", capability=0.90)
+    weak = _model("weak", provider="provider-b", capability=0.10)
+
+    decision = _decision(
+        strong,
+        weak,
+        analysis=_analysis(tier=2, risk="low"),
+    )
+
+    assert [model.model_id for model in decision.proposers] == ["strong"]
+    assert decision.trace["quality_floor_excluded_ids"] == ["provider-b:weak"]
+    assert decision.trace["stop_reason"] == "quality_floor_or_pool_exhausted"
+    assert decision.trace["stop_detail"] == {
+        "quality_floor_excluded_count": 1,
+        "remaining_candidate_count": 0,
+    }
+
+
+def test_aggregator_feasibility_filters_once_per_prospective_set_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models = tuple(
+        _model(
+            f"model-{index}",
+            provider=f"provider-{index}",
+            family=f"family-{index}",
+        )
+        for index in range(4)
+    )
+    original = ranking_router._hard_filter_reasons
+    aggregator_filter_calls = 0
+
+    def counted_hard_filter(*args: Any, **kwargs: Any):
+        nonlocal aggregator_filter_calls
+        if kwargs.get("role") == "aggregator":
+            aggregator_filter_calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ranking_router, "_hard_filter_reasons", counted_hard_filter)
+
+    decision = _decision(*models, analysis=_analysis(tier=3))
+
+    prospective_counts = len(decision.trace["aggregator_feasibility"])
+    assert prospective_counts == len(decision.proposers)
+    assert aggregator_filter_calls == len(models) * (prospective_counts + 1)
 
 
 def test_rerank_weights_from_json_change_the_selected_proposer_set() -> None:

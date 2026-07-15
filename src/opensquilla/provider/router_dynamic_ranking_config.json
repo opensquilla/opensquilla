@@ -1,8 +1,9 @@
 {
-  "schema_version": "step2-ranking-config-v2",
-  "config_version": "step2-ranking-2026-07-14.2",
+  "schema_version": "step2-ranking-config-v3",
+  "config_version": "step2-ranking-2026-07-15.3",
   "validation": {
-    "weight_sum_tolerance": 1e-9
+    "weight_sum_tolerance": 1e-9,
+    "task_profile_sum_tolerance": 0.02
   },
   "trace": {
     "profile_decimal_places": 5,
@@ -44,6 +45,7 @@
     },
     "token_estimation": {
       "utf8_bytes_per_token": 4,
+      "dense_chars_per_token": 1,
       "candidate_chars_per_token": 1
     },
     "output_budget": {

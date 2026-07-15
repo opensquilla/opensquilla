@@ -391,7 +391,7 @@ def test_router_dynamic_ensemble_uses_step2_tier1_single_proposer_bound(
     assert [member.label for member in provider.proposers] == ["proposer_1"]
     assert len(provider.proposers) == 1
     assert provider.min_successful_proposers == 1
-    assert provider.selection_plan["ranking_version"] == "step2-ranking-v1"
+    assert provider.selection_plan["ranking_version"] == "step2-ranking-v2"
     assert provider.selection_plan["N_min"] == 1
     assert provider.selection_plan["N_max"] == 1
     assert provider.selection_plan["selected_P"] == [

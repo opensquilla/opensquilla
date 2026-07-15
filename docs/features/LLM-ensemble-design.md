@@ -466,11 +466,15 @@ Before ranking, runtime builds four replaceable inputs:
 2. **Task profile** — a dedicated OpenRouter deployment of
    `anthropic/claude-opus-4.8` is called once as the JSON classifier. It never
    reuses the model selected by the single-model route. The result must contain
-   normalized capability, domain, and tier distributions plus cost, latency,
-   context, modality, risk, and session-intent constraints. Invalid JSON,
+   capability, domain, and tier distributions that sum to one within the
+   configured tolerance, plus cost, latency, context, modality, risk, and
+   session-intent constraints. Required numeric fields accept finite JSON
+   numbers only; booleans and numeric strings are rejected. Invalid JSON,
    timeout, provider errors, an omitted real input modality, an invalid schema,
    or an unavailable OpenRouter credential falls back to a conservative profile
-   derived from SquillaRouter's `c0`-`c3` result.
+   derived from SquillaRouter's `c0`-`c3` result. Invalid optional format or
+   analyzer-confidence fields are dropped, recorded as normalization warnings,
+   and do not discard an otherwise valid task profile.
 3. **User profile** — controlled by
    `llm_ensemble.ranking_user_profile_enabled` (default `true`). When enabled,
    the current implementation uses a versioned global mock with permissions,
@@ -482,7 +486,9 @@ Before ranking, runtime builds four replaceable inputs:
    deployments receive deterministic synthesized priors. Credential presence
    is added as an availability fact before ranking. Malformed profile rows and
    duplicate case-normalized deployment identities are rejected before pool
-   composition; they are never silently dropped or merged.
+   composition. Numeric facts used by ranking must also be finite and in range,
+   so a negative price, inverted latency bound, or invalid strength cannot be
+   silently interpreted as a favorable zero-cost/default score.
 
 The analyzer defaults to a 20-second outer timeout, bounded input/output sizes,
 and `temperature=0`; those values and its thinking mode are read from the
@@ -510,13 +516,19 @@ C_aggregator = C_input + C_tools + |P| * C_candidate + C_aggregator_output
 ```
 
 `C_tools` is derived from the bounded tool state when no larger caller token
-estimate is available. Candidate text caps use a conservative one-token-per-
-retained-character bound; they do not assume four characters per token or
-reduce that bound using the routed anchor's model-specific generation cap.
+estimate is available. Input estimation treats ASCII text with the configured
+bytes-per-token ratio and dense non-ASCII scripts with a separate configured
+characters-per-token ratio. Candidate text caps use their own conservative
+one-token-per-retained-character bound; they do not assume four characters per
+token or reduce that bound using the routed anchor's model-specific generation
+cap.
 
-Aggregator feasibility is checked during every proposer-selection step, so the
-greedy selector cannot build a proposer set that no remaining aggregator can
-consume.
+Aggregator feasibility is checked once for each prospective proposer count.
+The hard-filter result depends on the count and context budget, not on which
+candidate fills that slot, so every candidate in a greedy step shares the same
+check. The trace records eligible aggregators and filter-reason counts for each
+prospective set size, and the final full aggregator ranking still runs after
+`P` is fixed.
 
 ## 3.3 Base scoring
 
@@ -576,10 +588,10 @@ medium risk, and `0.12` for high risk:
 quality_floor = max(S_base_clean in top-L) - risk_margin
 ```
 
-Candidates below that floor cannot enter `P`. For every remaining candidate at
-every step, the selector first checks that at least one aggregator could still
-consume the complete proposed set. It then recomputes the candidate's marginal
-gain against the already selected models:
+Candidates below that floor cannot enter `P`. At every step, the selector first
+checks once that at least one aggregator could consume the complete prospective
+set size. It then recomputes each remaining candidate's marginal gain against
+the already selected models:
 
 ```text
 marginal = 0.55 * quality
@@ -600,9 +612,8 @@ candidate has no error signal.
 Marginal rows sort by marginal gain, clean base score, quality, then lexical
 deployment identity. Once `N_min` is satisfied, selection stops if the best
 marginal gain is below the configured threshold (`0.0` by default). The trace
-records each component and the top three alternatives for every step, plus
-whether selection reached `N_max`, exhausted the pool/quality floor, or could
-not preserve aggregator feasibility.
+records the top-L floor decision, each selected component and configured number
+of alternatives, per-size aggregator feasibility, and structured stop details.
 
 ## 3.6 Aggregator selection
 
@@ -720,9 +731,10 @@ tunable Step2 behavior lives in
 | `aggregator` | task/role blend and overlap penalties |
 
 Runtime loads one versioned snapshot and passes it through context construction,
-task analysis, registry synthesis, and final ranking. The loader validates
-the exact key set at every fixed object, distributions, normalized weight
-groups, numeric ranges, protocol-valued maps, and count bounds before selection.
+task analysis, registry synthesis, and final ranking. The loader validates the
+exact key set at every fixed object, config and task distribution tolerances,
+normalized weight groups, numeric ranges, protocol-valued maps, and count bounds
+before selection.
 Unknown, misspelled, missing, or currently inactive settings therefore fail
 explicitly instead of appearing to take effect. A malformed config raises
 `DynamicRankingError`, so runtime follows the existing single-model fail-open

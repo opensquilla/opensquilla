@@ -9,9 +9,12 @@
         data-profile-id="provider-default"
         class="rag-profile-card"
         :class="{ 'is-selected': checked(null) }"
+        :tabindex="tabIndex(null)"
         :aria-checked="checked(null)"
         :disabled="disabled || saving"
         @click="emit('change', null)"
+        @focus="setRovingProfile(null)"
+        @keydown="onRadioKeydown(null, $event)"
       >
         <strong>{{ t('rag.profile.followProvider') }}</strong>
         <span>{{ providerDefault || t('rag.profile.notDeclared') }}</span>
@@ -25,9 +28,12 @@
         class="rag-profile-card"
         :class="{ 'is-selected': checked(profile.id) }"
         :data-profile-id="profile.id"
+        :tabindex="tabIndex(profile.id)"
         :aria-checked="checked(profile.id)"
         :disabled="disabled || saving"
         @click="emit('change', profile.id)"
+        @focus="setRovingProfile(profile.id)"
+        @keydown="onRadioKeydown(profile.id, $event)"
       >
         <strong>{{ profile.label }}</strong>
         <code>{{ profile.id }}</code>
@@ -67,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 const props = defineProps<{
@@ -86,6 +92,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const profileValues = computed<Array<string | null>>(() => [
+  null,
+  ...props.profiles.map(profile => profile.id),
+])
+const rovingProfile = ref<string | null | undefined>(undefined)
+const tabbableProfile = computed<string | null>(() => {
+  if (
+    rovingProfile.value !== undefined
+    && profileValues.value.includes(rovingProfile.value)
+  ) return rovingProfile.value
+  return profileValues.value.includes(props.draft) ? props.draft : null
+})
 const dirty = computed(() => props.draft !== props.savedOverride)
 const availableIds = computed(() => new Set(props.profiles.map(item => item.id)))
 const savedUnavailable = computed(
@@ -95,6 +113,41 @@ const effective = computed(() => props.savedOverride || props.providerDefault)
 
 function checked(profile: string | null): boolean {
   return props.draft === profile
+}
+
+function tabIndex(profile: string | null): number {
+  return profile === tabbableProfile.value ? 0 : -1
+}
+
+function setRovingProfile(profile: string | null) {
+  rovingProfile.value = profile
+}
+
+function onRadioKeydown(profile: string | null, event: KeyboardEvent) {
+  let step: -1 | 1
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') step = 1
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') step = -1
+  else return
+
+  if (props.disabled || props.saving) return
+  const values = profileValues.value
+  const currentIndex = values.indexOf(profile)
+  if (currentIndex < 0) return
+
+  const currentButton = event.currentTarget
+  if (!(currentButton instanceof HTMLElement)) return
+  const radios = currentButton
+    .closest('[role="radiogroup"]')
+    ?.querySelectorAll<HTMLButtonElement>('[role="radio"]')
+  const nextIndex = (currentIndex + step + values.length) % values.length
+  const nextButton = radios?.item(nextIndex)
+  if (!nextButton || nextButton.disabled) return
+
+  event.preventDefault()
+  const nextProfile = values[nextIndex]
+  rovingProfile.value = nextProfile
+  nextButton.focus()
+  emit('change', nextProfile)
 }
 </script>
 

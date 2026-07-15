@@ -91,6 +91,61 @@ describe('KnowledgeProfileSelector', () => {
     expect(onSave).not.toHaveBeenCalled()
   })
 
+  it('keeps exactly one selected profile in the tab order', async () => {
+    const { root } = await mountSelector({ draft: 'vector' })
+    const radios = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+    expect(radios.filter(radio => radio.tabIndex === 0)).toHaveLength(1)
+    expect(root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!.tabIndex).toBe(0)
+  })
+
+  it('moves right and down with wrapping without waiting for controlled writeback', async () => {
+    const { root, onChange, onSave } = await mountSelector({ draft: 'vector' })
+    const provider = root.querySelector<HTMLButtonElement>('[data-profile-id="provider-default"]')!
+    const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+    const hybrid = root.querySelector<HTMLButtonElement>('[data-profile-id="hybrid"]')!
+
+    vector.focus()
+    vector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    await nextTick()
+    expect(document.activeElement).toBe(hybrid)
+    expect(hybrid.tabIndex).toBe(0)
+
+    // Deliberately do not write the emitted value back to draft before the next key.
+    hybrid.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await nextTick()
+    expect(document.activeElement).toBe(provider)
+    expect(provider.tabIndex).toBe(0)
+    expect(onChange.mock.calls).toEqual([['hybrid'], [null]])
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('moves left and up with wrapping without saving', async () => {
+    const { root, onChange, onSave } = await mountSelector({ draft: 'vector' })
+    const provider = root.querySelector<HTMLButtonElement>('[data-profile-id="provider-default"]')!
+    const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!
+    const hybrid = root.querySelector<HTMLButtonElement>('[data-profile-id="hybrid"]')!
+
+    vector.focus()
+    vector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))
+    await nextTick()
+    expect(document.activeElement).toBe(provider)
+
+    provider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }))
+    await nextTick()
+    expect(document.activeElement).toBe(hybrid)
+    expect(hybrid.tabIndex).toBe(0)
+    expect(onChange.mock.calls).toEqual([[null], ['hybrid']])
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('keeps a fallback tab stop when the draft profile is unavailable', async () => {
+    const { root } = await mountSelector({ savedOverride: 'removed', draft: 'removed' })
+    const tabbable = Array.from(root.querySelectorAll<HTMLButtonElement>('[role="radio"]'))
+      .filter(radio => radio.tabIndex === 0)
+    expect(tabbable).toHaveLength(1)
+    expect(tabbable[0].dataset.profileId).toBe('provider-default')
+  })
+
   it('marks a saved profile that is no longer advertised as unavailable', async () => {
     const { root } = await mountSelector({ savedOverride: 'removed', draft: 'removed' })
     expect(root.querySelector('[data-testid="rag-profile-unavailable"]')).not.toBeNull()

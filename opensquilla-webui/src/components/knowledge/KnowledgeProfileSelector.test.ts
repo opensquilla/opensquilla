@@ -237,4 +237,12 @@ describe('KnowledgeProfileSelector', () => {
     const { root } = await mountSelector({ savedOverride: 'removed', draft: 'removed' })
     expect(root.querySelector('[data-testid="rag-profile-unavailable"]')).not.toBeNull()
   })
+
+  it('keeps an explicit empty saved profile unavailable without marking a provider profile active', async () => {
+    const { root } = await mountSelector({ savedOverride: '', draft: '' })
+    expect(root.querySelector('[data-testid="rag-profile-unavailable"]')).not.toBeNull()
+    expect(root.querySelectorAll('.control-pill--ok')).toHaveLength(0)
+    expect(Array.from(root.querySelectorAll('[role="radio"]'))
+      .every(radio => radio.getAttribute('aria-checked') === 'false')).toBe(true)
+  })
 })

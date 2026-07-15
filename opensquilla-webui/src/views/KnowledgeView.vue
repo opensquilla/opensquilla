@@ -134,12 +134,16 @@ const readError = ref('')
 const mobileReaderOpen = ref(false)
 
 let statusRequestId = 0
+let activationRequestId = 0
+let readerRequestId = 0
+let pageActive = false
 
 const profileDirty = computed(() => profileDraft.value !== savedOverride.value)
 const profileDisabled = computed(() => status.value?.searchOptions === null || !status.value)
 const canSearch = computed(
   () => status.value?.connectionState === 'READY' || status.value?.connectionState === 'LEGACY',
 )
+const canRead = computed(() => status.value?.capabilities?.get === true)
 const managementUrl = computed(
   () => browserManagementLink(status.value?.links.management),
 )
@@ -195,18 +199,32 @@ function consumeMobileReaderMarker() {
 }
 
 function syncMobileReader(state: unknown) {
-  mobileReaderOpen.value = isMobileViewport() && readerMarker(state) !== null
+  const evidenceId = isMobileViewport() ? readerMarker(state) : null
+  mobileReaderOpen.value = evidenceId !== null
+  if (!evidenceId) return
+  selectedEvidenceId.value = evidenceId
+  if (getResponse.value?.evidenceId !== evidenceId) void readEvidence(evidenceId, null)
 }
 
 async function loadStatus({ preserveDraft = true }: LoadStatusOptions = {}) {
   const requestId = ++statusRequestId
+  const activationId = activationRequestId
   loadingStatus.value = true
   statusError.value = ''
   try {
     await rpc.waitForConnection()
+    if (
+      !pageActive
+      || activationId !== activationRequestId
+      || requestId !== statusRequestId
+    ) return
     const normalized = normalizeRagProviderStatus(await rpc.call('knowledge.status', {}))
     if (!normalized) throw new Error(t('rag.errors.invalidStatusResponse'))
-    if (requestId !== statusRequestId) return
+    if (
+      !pageActive
+      || activationId !== activationRequestId
+      || requestId !== statusRequestId
+    ) return
 
     const keepDirtyDraft = preserveDraft && profileDirty.value
     status.value = normalized
@@ -237,7 +255,7 @@ async function saveProfile() {
     if (!normalized) throw new Error(t('rag.errors.invalidProfileResponse'))
     savedOverride.value = normalized.retrievalProfileOverride
     profileDraft.value = normalized.retrievalProfileOverride
-    await loadStatus({ preserveDraft: false })
+    if (pageActive) await loadStatus({ preserveDraft: false })
   } catch (value) {
     profileError.value = message(value)
   } finally {
@@ -256,6 +274,9 @@ async function search() {
       await rpc.call('knowledge.search', { query: clean, limit: boundedLimit }),
     )
     if (!normalized) throw new Error(t('rag.errors.invalidSearchResponse'))
+    readerRequestId += 1
+    reading.value = false
+    readError.value = ''
     searchResponse.value = normalized
     selectedEvidenceId.value = null
     getResponse.value = null
@@ -274,6 +295,8 @@ async function selectEvidence(evidenceId: string) {
 }
 
 async function readEvidence(evidenceId: string, cursor: string | null) {
+  if (!canRead.value) return
+  const requestId = ++readerRequestId
   reading.value = true
   readError.value = ''
   try {
@@ -281,11 +304,13 @@ async function readEvidence(evidenceId: string, cursor: string | null) {
     if (cursor) params.cursor = cursor
     const normalized = normalizeRagGetResponse(await rpc.call('knowledge.get', params))
     if (!normalized) throw new Error(t('rag.errors.invalidGetResponse'))
+    if (requestId !== readerRequestId) return
     getResponse.value = normalized
   } catch (value) {
+    if (requestId !== readerRequestId) return
     readError.value = message(value)
   } finally {
-    reading.value = false
+    if (requestId === readerRequestId) reading.value = false
   }
 }
 
@@ -308,6 +333,8 @@ function teardownPage() {
 }
 
 onActivated(() => {
+  pageActive = true
+  activationRequestId += 1
   teardownPage()
   window.addEventListener('popstate', onPopState)
   syncMobileReader(window.history.state)
@@ -315,15 +342,22 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
+  pageActive = false
+  activationRequestId += 1
   teardownPage()
   statusRequestId += 1
+  readerRequestId += 1
   loadingStatus.value = false
+  reading.value = false
   mobileReaderOpen.value = false
 })
 
 onUnmounted(() => {
+  pageActive = false
+  activationRequestId += 1
   teardownPage()
   statusRequestId += 1
+  readerRequestId += 1
 })
 </script>
 

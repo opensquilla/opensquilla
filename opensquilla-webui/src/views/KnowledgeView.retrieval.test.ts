@@ -122,10 +122,12 @@ async function submitQuery(root: HTMLElement, value: string) {
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
     resolve = done
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 type JsonObject = Record<string, unknown>
@@ -410,6 +412,51 @@ describe('KnowledgeView workbench', () => {
     ).toBeGreaterThan(removesBeforeUnmount)
   })
 
+  it('does not call status when a pending connection wait resolves after deactivation', async () => {
+    const connection = deferred<void>()
+    rpcMock.waitForConnection.mockReturnValue(connection.promise)
+    mountView()
+    await settle()
+    expect(rpcMock.waitForConnection).toHaveBeenCalledTimes(1)
+    expect(statusCallCount()).toBe(0)
+
+    await deactivate()
+    connection.resolve(undefined)
+    await settle()
+    expect(statusCallCount()).toBe(0)
+
+    rpcMock.waitForConnection.mockResolvedValue(undefined)
+    await reactivate()
+    await settle()
+    expect(statusCallCount()).toBe(1)
+  })
+
+  it('defers the status refresh after saving until the page is active again', async () => {
+    const profileSet = deferred<typeof PROFILE_SET_RESPONSE>()
+    rpcMock.call.mockImplementation((method: string) => {
+      if (method === 'knowledge.status') return structuredClone(currentStatus)
+      if (method === 'knowledge.profile.set') return profileSet.promise
+      throw new Error(`unexpected method ${method}`)
+    })
+    mountView()
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!.click()
+    await nextTick()
+    root.querySelector<HTMLButtonElement>('[data-testid="rag-profile-save"]')!.click()
+    await settle()
+    expect(statusCallCount()).toBe(1)
+
+    await deactivate()
+    profileSet.resolve(PROFILE_SET_RESPONSE)
+    await settle()
+    expect(statusCallCount()).toBe(1)
+
+    currentStatus = { ...currentStatus, retrievalProfileOverride: 'vector' }
+    await reactivate()
+    await settle()
+    expect(statusCallCount()).toBe(2)
+  })
+
   it('ignores a stale status response after a newer activation response', async () => {
     const slowStatus = deferred<RagProviderStatus>()
     let request = 0
@@ -521,6 +568,109 @@ describe('KnowledgeView workbench', () => {
       cursor: 'next-page',
     })
   })
+
+  it('does not read selections or cursor pages when Get capability is unavailable', async () => {
+    mountView()
+    await settle()
+    await submitQuery(root, 'NAND capacity')
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_a"]')!.click()
+    await settle()
+    expect(rpcMock.call.mock.calls.filter(([method]) => method === 'knowledge.get')).toHaveLength(1)
+
+    currentStatus = {
+      ...currentStatus,
+      capabilities: { search: true, get: false },
+    }
+    root.querySelector<HTMLButtonElement>('[data-testid="rag-refresh"]')!.click()
+    await settle()
+
+    root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_a"]')!.click()
+    root.querySelector<HTMLButtonElement>('[data-testid="rag-next-segment"]')!.click()
+    await settle()
+    expect(rpcMock.call.mock.calls.filter(([method]) => method === 'knowledge.get')).toHaveLength(1)
+  })
+
+  it('keeps the latest reader response when an earlier Get resolves later', async () => {
+    const getA = deferred<typeof GET_RESPONSE>()
+    const getB = deferred<typeof GET_RESPONSE>()
+    const searchResponse = {
+      ...structuredClone(SEARCH_RESPONSE),
+      returnedCount: 2,
+      results: [
+        ...structuredClone(SEARCH_RESPONSE.results),
+        {
+          evidenceId: 'ev_b',
+          snippet: 'Second evidence',
+          snippetTruncated: false,
+          citation: { title: 'Document B', locator: 'page 2' },
+        },
+      ],
+    }
+    rpcMock.call.mockImplementation((method: string, params?: Record<string, unknown>) => {
+      if (method === 'knowledge.status') return structuredClone(currentStatus)
+      if (method === 'knowledge.search') return structuredClone(searchResponse)
+      if (method === 'knowledge.get') {
+        return params?.evidenceId === 'ev_b' ? getB.promise : getA.promise
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+    mountView()
+    await settle()
+    await submitQuery(root, 'NAND capacity')
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_a"]')!.click()
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_b"]')!.click()
+    await settle()
+
+    getB.resolve({
+      ...structuredClone(GET_RESPONSE),
+      evidenceId: 'ev_b',
+      document: { title: 'Document B', source: 'datasets' },
+      content: 'Latest reader B',
+    })
+    await settle()
+    expect(root.textContent).toContain('Latest reader B')
+
+    getA.resolve({ ...structuredClone(GET_RESPONSE), content: 'Stale reader A' })
+    await settle()
+    expect(root.textContent).toContain('Latest reader B')
+    expect(root.textContent).not.toContain('Stale reader A')
+  })
+
+  it.each(['resolve', 'reject'] as const)(
+    'does not restore an in-flight Get %s after a successful new search',
+    async (outcome) => {
+      const pendingGet = deferred<typeof GET_RESPONSE>()
+      rpcMock.call.mockImplementation((method: string) => {
+        if (method === 'knowledge.status') return structuredClone(currentStatus)
+        if (method === 'knowledge.search') return structuredClone(SEARCH_RESPONSE)
+        if (method === 'knowledge.get') return pendingGet.promise
+        throw new Error(`unexpected method ${method}`)
+      })
+      mountView()
+      await settle()
+      await submitQuery(root, 'NAND capacity')
+      await settle()
+      root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_a"]')!.click()
+      await settle()
+
+      await submitQuery(root, 'fresh search')
+      await settle()
+      expect(root.textContent).not.toContain('Loading source text')
+
+      if (outcome === 'resolve') {
+        pendingGet.resolve({ ...structuredClone(GET_RESPONSE), content: 'Stale reader content' })
+      } else {
+        pendingGet.reject(new Error('stale reader failed'))
+      }
+      await settle()
+      expect(root.textContent).not.toContain('Stale reader content')
+      expect(root.textContent).not.toContain('stale reader failed')
+      expect(root.querySelector('[data-testid="rag-reader-error"]')).toBeNull()
+    },
+  )
 
   it('keeps profile, search, and reader errors in independent domains', async () => {
     let searchFails = false
@@ -672,6 +822,61 @@ describe('KnowledgeView workbench', () => {
     await settle()
     expect(backSpy).toHaveBeenCalledTimes(1)
     expect(root.querySelector('.rag-workspace')?.classList.contains('is-reader-open')).toBe(false)
+  })
+
+  it('syncs a changed mobile marker on activation and only reads when cache differs', async () => {
+    mockMobile(true)
+    const searchResponse = {
+      ...structuredClone(SEARCH_RESPONSE),
+      returnedCount: 2,
+      results: [
+        ...structuredClone(SEARCH_RESPONSE.results),
+        {
+          evidenceId: 'ev_b',
+          snippet: 'Second evidence',
+          snippetTruncated: false,
+          citation: { title: 'Document B', locator: 'page 2' },
+        },
+      ],
+    }
+    rpcMock.call.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'knowledge.status') return structuredClone(currentStatus)
+      if (method === 'knowledge.search') return structuredClone(searchResponse)
+      if (method === 'knowledge.get') {
+        const evidenceId = String(params?.evidenceId)
+        return {
+          ...structuredClone(GET_RESPONSE),
+          evidenceId,
+          document: { title: evidenceId === 'ev_b' ? 'Document B' : 'Document A', source: 'datasets' },
+        }
+      }
+      throw new Error(`unexpected method ${method}`)
+    })
+    mountView()
+    await settle()
+    await submitQuery(root, 'NAND capacity')
+    await settle()
+    root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_a"]')!.click()
+    await settle()
+    expect(root.querySelector('[data-evidence-id="ev_a"]')?.classList
+      .contains('control-card--selected')).toBe(true)
+
+    await deactivate()
+    window.history.replaceState({ ragReader: 'ev_b' }, '')
+    await reactivate()
+    await settle()
+    expect(root.querySelector('[data-evidence-id="ev_b"]')?.classList
+      .contains('control-card--selected')).toBe(true)
+    expect(rpcMock.call.mock.calls.filter(
+      ([method, params]) => method === 'knowledge.get' && params?.evidenceId === 'ev_b',
+    )).toHaveLength(1)
+
+    await deactivate()
+    await reactivate()
+    await settle()
+    expect(rpcMock.call.mock.calls.filter(
+      ([method, params]) => method === 'knowledge.get' && params?.evidenceId === 'ev_b',
+    )).toHaveLength(1)
   })
 
   it('clears cached mobile state on deactivation and re-syncs it on activation', async () => {

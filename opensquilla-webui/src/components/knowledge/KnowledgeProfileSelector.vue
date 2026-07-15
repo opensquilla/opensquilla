@@ -113,7 +113,7 @@ const availableIds = computed(() => new Set(props.profiles.map(item => item.id))
 const savedUnavailable = computed(
   () => props.savedOverride !== null && !availableIds.value.has(props.savedOverride),
 )
-const effective = computed(() => props.savedOverride || props.providerDefault)
+const effective = computed(() => props.savedOverride ?? props.providerDefault)
 
 function checked(profile: string | null): boolean {
   const selectedProfile = pendingProfile.value === undefined

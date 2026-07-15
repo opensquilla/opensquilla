@@ -3903,23 +3903,9 @@ def _shell_elevation_hard_block(
     tool_name: str,
     command: str,
     cwd: str | None,
-    profile: OperationProfile,
     *,
     stdin: str | None = None,
 ) -> dict[str, object] | None:
-    # Codex-compatible protected-metadata writes are an elevation boundary on
-    # Linux.  Keep the existing terminal block on the other platform paths,
-    # including tests that exercise the Windows backend from a Linux host.
-    if not sys.platform.startswith("linux") or _windows_sandbox_backend_active():
-        protected = _protected_metadata_write_block(
-            tool_name,
-            command,
-            cwd,
-            profile,
-            stdin=stdin,
-        )
-        if protected is not None:
-            return protected
     lockdown = _workspace_lockdown_shell_block(tool_name, command, cwd, stdin=stdin)
     if lockdown is not None:
         return lockdown
@@ -4535,7 +4521,6 @@ async def exec_command(
             "exec_command",
             command,
             cwd,
-            profile,
             stdin=stdin,
         )
         if hard_block is not None:
@@ -4876,7 +4861,6 @@ async def background_process(
             "background_process",
             command,
             cwd,
-            profile,
         )
         if hard_block is not None:
             return json.dumps(hard_block, ensure_ascii=False)

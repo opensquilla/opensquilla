@@ -1525,6 +1525,13 @@ async def test_shell_write_to_protected_metadata_requires_elevation_before_backe
 
     monkeypatch.setattr(shell, "run_under_backend", fake_backend)
     monkeypatch.setattr(
+        shell, "_windows_sandbox_backend_active", lambda runtime=None: True
+    )
+    monkeypatch.setattr(
+        shell, "_windows_translate_posix_tmp_references", lambda command: command
+    )
+    monkeypatch.setattr(shell, "_windows_translate_posix_tmp_path", lambda path: path)
+    monkeypatch.setattr(
         shell,
         "check_safe_bin",
         lambda command: SimpleNamespace(allowed=True, needs_approval=False, reason=""),

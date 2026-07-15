@@ -1289,7 +1289,7 @@ async def test_host_effect_exec_batch_requires_one_exact_elevation(
 
 
 @pytest.mark.asyncio
-async def test_auto_host_exec_batch_blocks_protected_metadata_write_before_host(
+async def test_auto_host_exec_batch_routes_protected_metadata_write_to_approval(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -1328,6 +1328,7 @@ async def test_auto_host_exec_batch_blocks_protected_metadata_write_before_host(
         )
     )
     try:
+        default_result = await shell.exec_command(command, workdir=str(workspace))
         result = await shell.exec_command(
             command,
             workdir=str(workspace),
@@ -1338,10 +1339,12 @@ async def test_auto_host_exec_batch_blocks_protected_metadata_write_before_host(
         current_tool_context.reset(token)
         reset_approval_queue()
 
-    payload = json.loads(result)
-    assert payload["status"] == "blocked"
-    assert payload["reason"] == "protected_metadata"
-    assert payload["resolved_path"] == str(target.resolve(strict=False))
+    default_payload = json.loads(default_result)
+    approval_payload = json.loads(result)
+    assert default_payload["status"] == "elevation_required"
+    assert default_payload["reason"] == "host_probe"
+    assert approval_payload["status"] == "approval_required"
+    assert approval_payload["approval_id"]
     assert host_calls == []
 
 

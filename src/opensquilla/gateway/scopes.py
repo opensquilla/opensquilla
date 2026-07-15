@@ -199,6 +199,7 @@ METHOD_SCOPES: dict[str, str] = {
     "sandbox.path.pick": WRITE_SCOPE,  # OpenSquilla-only; owner-guarded host directory picker.
     # OpenSquilla-only; explicit override of `config.` admin prefix.
     "config.patch.safe": WRITE_SCOPE,
+    "knowledge.profile.set": WRITE_SCOPE,
     # OpenSquilla-only; manual ``/meta`` command launch stamp.
     "meta.run": WRITE_SCOPE,
     # ----- approvals -----

@@ -8,6 +8,8 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
+import structlog
+
 from opensquilla.channels.contract import (
     channel_capability_evidence,
     channel_capability_profile,
@@ -18,6 +20,8 @@ from opensquilla.redaction import redact_error_text
 
 if TYPE_CHECKING:
     from opensquilla.gateway.config import GatewayConfig
+
+log = structlog.get_logger(__name__)
 
 _d = get_dispatcher()
 
@@ -481,17 +485,75 @@ def _pairing_mutation_params(params: dict | None) -> tuple[str, str]:
     return channel_name, pairing_id
 
 
+def _channel_entry(ctx: RpcContext, channel_name: str) -> dict[str, Any] | None:
+    for entry in _configured_channel_entries(ctx):
+        if str(entry.get("name") or "") == channel_name:
+            return entry
+    return None
+
+
+def _pairing_status_of(store: Any, channel_name: str, pairing_id: str) -> str:
+    for record in store.list_pairings(channel_name=channel_name):
+        if str(getattr(record, "pairing_id", "")) == pairing_id:
+            return str(getattr(record, "status", ""))
+    return ""
+
+
+async def _send_pairing_approved_notice(ctx: RpcContext, record: Any) -> None:
+    """Tell an approved sender they can start — best effort, never fatal.
+
+    Approval is otherwise silent: the request that triggered it is not
+    retained, so without this the sender is never told to send another
+    message and the conversation never begins.
+    """
+    channel_name = str(getattr(record, "channel_name", "") or "")
+    reply_to = str(getattr(record, "reply_to", "") or "")
+    if not channel_name or not reply_to:
+        return
+    entry = _channel_entry(ctx, channel_name)
+    if entry is not None and not bool(entry.get("pairing_approved_notice", True)):
+        return
+    manager = getattr(ctx, "channel_manager", None)
+    adapter = manager.get(channel_name) if manager is not None else None
+    send = getattr(adapter, "send", None)
+    if not callable(send):
+        return
+    from opensquilla.channels.types import OutgoingMessage
+
+    try:
+        await send(
+            OutgoingMessage(
+                content=(
+                    "Access approved. Send a message to start chatting."
+                ),
+                reply_to=reply_to,
+                metadata={"pairing_approved": True},
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - the approval already succeeded
+        log.warning(
+            "channel.pairing_approved_notice_failed",
+            channel=channel_name,
+            error_type=type(exc).__name__,
+        )
+
+
 @_d.method("channels.pairing.approve", scope="operator.pairing")
 async def _handle_channels_pairing_approve(
     params: dict | None,
     ctx: RpcContext,
 ) -> dict[str, Any]:
     channel_name, pairing_id = _pairing_mutation_params(params)
-    record = _pairing_store(ctx).set_pairing_status(
+    store = _pairing_store(ctx)
+    # Re-approving an already-approved pairing must not re-notify the sender.
+    was_approved = _pairing_status_of(store, channel_name, pairing_id) == "approved"
+    record = store.set_pairing_status(
         channel_name=channel_name,
         pairing_id=pairing_id,
         status="approved",
     )
+    if not was_approved:
+        await _send_pairing_approved_notice(ctx, record)
     return {"pairing": _pairing_payload(record)}
 
 

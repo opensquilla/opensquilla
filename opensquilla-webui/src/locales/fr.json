@@ -514,7 +514,7 @@
       "advancedGroup": "Avancé : accès et comportement",
       "fieldRequired": "Ce champ est obligatoire",
       "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
-      "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Elle n'est pas notifiée de l'approbation et doit écrire à nouveau au bot."
+      "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Le bot lui indique ensuite qu'elle peut commencer (désactivable ci-dessous)."
     },
     "search": {
       "title": "Recherche web",
@@ -1400,7 +1400,7 @@
         "approveLabel": "Approuver l’accès de {sender}",
         "revokeLabel": "Révoquer l’accès de {sender}",
         "approveConfirmTitle": "Approuver la demande d’association ?",
-        "approveConfirmBody": "Accorder à {sender} l'accès à {channel} ? La personne ne sera pas notifiée — demandez-lui d'écrire à nouveau au bot après votre approbation.",
+        "approveConfirmBody": "Accorder à {sender} l'accès à {channel} ? Le bot lui indiquera qu'elle peut commencer à discuter.",
         "revokeConfirmTitle": "Révoquer l’accès associé ?",
         "revokeConfirmBody": "Retirer l’accès de {sender} à {channel} ? Une nouvelle approbation sera nécessaire avant une autre conversation.",
         "loadFailed": "Impossible de charger les accès associés : {error}",

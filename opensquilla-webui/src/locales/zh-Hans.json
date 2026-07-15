@@ -514,7 +514,7 @@
       "advancedGroup": "高级：访问与行为",
       "fieldRequired": "此字段必填",
       "fixRequired": "请先填写高亮的必填字段",
-      "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 频道 › 配对 中批准。批准后对方不会收到通知，需要再给 bot 发一条消息。"
+      "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 频道 › 配对 中批准。批准后 bot 会主动告诉对方可以开始了（可在下方关闭该通知）。"
     },
     "search": {
       "title": "网页搜索",
@@ -1400,7 +1400,7 @@
         "approveLabel": "批准 {sender} 的访问权限",
         "revokeLabel": "撤销 {sender} 的访问权限",
         "approveConfirmTitle": "批准配对申请？",
-        "approveConfirmBody": "授予 {sender} 访问 {channel} 的权限？对方不会收到通知——请在你批准后让 TA 再给 bot 发一条消息。",
+        "approveConfirmBody": "授予 {sender} 访问 {channel} 的权限？bot 会通知对方可以开始对话了。",
         "revokeConfirmTitle": "撤销配对访问权限？",
         "revokeConfirmBody": "移除 {sender} 对 {channel} 的访问权限吗？对方再次发起对话前需要重新获得批准。",
         "loadFailed": "无法加载配对访问权限：{error}",

@@ -370,3 +370,89 @@ async def test_pairing_rpc_contract_and_scope(tmp_path: Path) -> None:
     assert denied.error is not None
     assert denied.error.code == "UNAUTHORIZED"
     store.close()
+
+
+def test_pairing_store_adds_reply_to_column_to_a_preexisting_database(tmp_path):
+    """A store created before reply_to existed must not break on upgrade.
+
+    CREATE TABLE IF NOT EXISTS is a no-op on an existing table, so without an
+    explicit column migration every pairing read would raise "no such column".
+    """
+    path = tmp_path / "legacy.sqlite"
+    legacy = sqlite3.connect(path)
+    legacy.executescript(
+        """
+        CREATE TABLE channel_pairings (
+            pairing_id  TEXT PRIMARY KEY,
+            channel_name TEXT NOT NULL,
+            provider     TEXT NOT NULL,
+            account_id   TEXT NOT NULL,
+            sender_id    TEXT NOT NULL,
+            sender_name  TEXT,
+            status       TEXT NOT NULL,
+            created_at   REAL NOT NULL,
+            last_seen_at REAL NOT NULL,
+            approved_at  REAL,
+            revoked_at   REAL,
+            request_count INTEGER NOT NULL DEFAULT 1,
+            UNIQUE (channel_name, account_id, sender_id)
+        );
+        INSERT INTO channel_pairings
+        (pairing_id, channel_name, provider, account_id, sender_id, sender_name,
+         status, created_at, last_seen_at, request_count)
+        VALUES ('old', 'work', 'slack', 'acct', 'U-1', 'Ada', 'approved', 1.0, 1.0, 1);
+        """
+    )
+    legacy.commit()
+    legacy.close()
+
+    store = ChannelDeliveryStore(path)
+    try:
+        rows = store.list_pairings(channel_name="work")
+        assert [row.pairing_id for row in rows] == ["old"]
+        assert rows[0].reply_to is None  # legacy row predates the captured address
+
+        fresh = store.request_pairing(
+            channel_name="work",
+            provider="slack",
+            account_id="acct",
+            sender_id="U-2",
+            reply_to="dm-2",
+        )
+        assert fresh.reply_to == "dm-2"
+    finally:
+        store.close()
+
+
+def test_pairing_request_captures_and_refreshes_the_reply_address(tmp_path):
+    store = ChannelDeliveryStore(tmp_path / "delivery.sqlite")
+    try:
+        first = store.request_pairing(
+            channel_name="work",
+            provider="slack",
+            account_id="acct",
+            sender_id="U-1",
+            reply_to="dm-1",
+        )
+        assert first.reply_to == "dm-1"
+
+        # A later request from the same sender refreshes the address...
+        moved = store.request_pairing(
+            channel_name="work",
+            provider="slack",
+            account_id="acct",
+            sender_id="U-1",
+            reply_to="dm-2",
+        )
+        assert moved.reply_to == "dm-2"
+
+        # ...but a request without one keeps the last known address.
+        kept = store.request_pairing(
+            channel_name="work",
+            provider="slack",
+            account_id="acct",
+            sender_id="U-1",
+        )
+        assert kept.reply_to == "dm-2"
+    finally:
+        store.close()

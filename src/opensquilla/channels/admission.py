@@ -188,6 +188,9 @@ def decide_channel_admission(
                     account_id=provenance.account_id or channel_name,
                     sender_id=principal.subject_id,
                     sender_name=principal.display_name,
+                    # Route only — lets an approval reach a sender who has no
+                    # session yet. No inbound content is retained.
+                    reply_to=msg.channel_id,
                 )
                 status = str(getattr(record, "status", "pending"))
                 pairing_id = str(getattr(record, "pairing_id", "") or "") or None

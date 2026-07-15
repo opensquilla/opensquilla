@@ -514,7 +514,7 @@
       "advancedGroup": "Erweitert: Zugriff & Verhalten",
       "fieldRequired": "Dieses Feld ist erforderlich",
       "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
-      "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Die Person wird nicht benachrichtigt und muss dem Bot erneut schreiben."
+      "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Der Bot teilt ihr dann mit, dass sie loslegen kann (unten abschaltbar)."
     },
     "search": {
       "title": "Websuche",
@@ -1400,7 +1400,7 @@
         "approveLabel": "Zugriff für {sender} genehmigen",
         "revokeLabel": "Zugriff für {sender} widerrufen",
         "approveConfirmTitle": "Kopplungsanfrage genehmigen?",
-        "approveConfirmBody": "{sender} Zugriff auf {channel} gewähren? Die Person wird nicht benachrichtigt — bitten Sie sie, dem Bot nach Ihrer Genehmigung erneut zu schreiben.",
+        "approveConfirmBody": "{sender} Zugriff auf {channel} gewähren? Der Bot teilt der Person mit, dass sie loslegen kann.",
         "revokeConfirmTitle": "Kopplungszugriff widerrufen?",
         "revokeConfirmBody": "Zugriff von {sender} auf {channel} entfernen? Vor einer neuen Unterhaltung ist eine erneute Genehmigung erforderlich.",
         "loadFailed": "Kopplungszugriff konnte nicht geladen werden: {error}",

@@ -242,7 +242,7 @@ async def test_router_dynamic_wrap_is_not_credential_gated(
     assert turn.metadata["router_dynamic_task_analyzer"]["fallback_reason"] == (
         "provider_unavailable"
     )
-    assert turn.metadata["router_dynamic_decision"]["ranking_version"] == "step2-ranking-v1"
+    assert turn.metadata["router_dynamic_decision"]["ranking_version"] == "step2-ranking-v2"
     assert len(turn.metadata["router_dynamic_decision"]["registry_snapshot_hash"]) == 64
     assert turn.metadata["router_dynamic_decision"]["selected_P"]
     assert turn.metadata["router_dynamic_decision"]["selected_A"]

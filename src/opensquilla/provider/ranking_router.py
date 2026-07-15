@@ -28,8 +28,8 @@ from .types import ChatConfig, DoneEvent, ErrorEvent, Message, TextDeltaEvent
 
 log = structlog.get_logger(__name__)
 
-RANKING_VERSION = "step2-ranking-v1"
-RANKING_CONFIG_SCHEMA_VERSION = "step2-ranking-config-v2"
+RANKING_VERSION = "step2-ranking-v2"
+RANKING_CONFIG_SCHEMA_VERSION = "step2-ranking-config-v3"
 TASK_ANALYZER_PROVIDER_ID = "openrouter"
 TASK_ANALYZER_MODEL_ID = "anthropic/claude-opus-4.8"
 TASK_ANALYZER_VERSION = "opus-4.8-json-v1"
@@ -93,6 +93,8 @@ _CONTEXT_BUCKETS = set(_CONTEXT_BUCKET_ORDER)
 _ROUTER_TIERS = {"c0", "c1", "c2", "c3"}
 _USER_COST_SENSITIVITIES = {"low", "medium", "high", "hard_limit"}
 _USER_TRADEOFFS = {"balanced", "latency_first", "quality_first"}
+_MODEL_ROLES = {"proposer", "aggregator"}
+
 
 class DynamicRankingError(ValueError):
     """Raised when no feasible Step2 ``(P, A)`` decision can be built."""
@@ -115,10 +117,9 @@ class TaskAnalysisResult:
     usage: dict[str, Any] = field(default_factory=dict)
     provider_id: str = ""
     model_id: str = ""
+    normalization_warnings: tuple[str, ...] = ()
 
-    def trace(
-        self, ranking_config: Mapping[str, Any] | None = None
-    ) -> dict[str, Any]:
+    def trace(self, ranking_config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         decimal_places = _ranking_int(
             _resolve_ranking_config(ranking_config),
             "trace",
@@ -133,6 +134,7 @@ class TaskAnalysisResult:
             "model": self.model_id,
             "fallback_reason": self.fallback_reason,
             "usage": copy.deepcopy(self.usage),
+            "normalization_warnings": list(self.normalization_warnings),
         }
 
 
@@ -204,6 +206,15 @@ def _as_float(value: Any, default: float = 0.0) -> float:
     except (TypeError, ValueError):
         return default
     return result if math.isfinite(result) else default
+
+
+def _json_number(value: Any) -> float | None:
+    """Return a finite JSON number without accepting booleans or numeric strings."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -373,7 +384,10 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
             "router_dynamic ranking config has unknown or missing top-level keys"
         )
     fixed_object_keys = {
-        ("validation",): {"weight_sum_tolerance"},
+        ("validation",): {
+            "weight_sum_tolerance",
+            "task_profile_sum_tolerance",
+        },
         ("trace",): {
             "profile_decimal_places",
             "score_decimal_places",
@@ -405,6 +419,7 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
         },
         ("context", "token_estimation"): {
             "utf8_bytes_per_token",
+            "dense_chars_per_token",
             "candidate_chars_per_token",
         },
         ("context", "output_budget"): {"default_tokens", "minimum_tokens"},
@@ -587,6 +602,11 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
         raise DynamicRankingError(
             "router_dynamic validation.weight_sum_tolerance must be between 0 and 1"
         )
+    task_profile_sum_tolerance = _ranking_number(config, "validation", "task_profile_sum_tolerance")
+    if not 0.0 < task_profile_sum_tolerance < 1.0:
+        raise DynamicRankingError(
+            "router_dynamic validation.task_profile_sum_tolerance must be between 0 and 1"
+        )
 
     weight_groups = (
         (
@@ -703,7 +723,11 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
             raise DynamicRankingError(
                 f"router_dynamic context.request_limits.{key} must be positive"
             )
-    for key in ("utf8_bytes_per_token", "candidate_chars_per_token"):
+    for key in (
+        "utf8_bytes_per_token",
+        "dense_chars_per_token",
+        "candidate_chars_per_token",
+    ):
         if _ranking_number(config, "context", "token_estimation", key) <= 0.0:
             raise DynamicRankingError(
                 f"router_dynamic context.token_estimation.{key} must be positive"
@@ -1213,6 +1237,8 @@ def _normalize_distribution(
     raw: Any,
     allowed: Sequence[str],
     fallback: Mapping[str, float],
+    *,
+    sum_tolerance: float,
 ) -> tuple[dict[str, float], bool]:
     if not isinstance(raw, Mapping):
         return dict(fallback), False
@@ -1223,8 +1249,8 @@ def _normalize_distribution(
         if key not in allowed:
             valid = False
             continue
-        number = _as_float(value, -1.0)
-        if number < 0.0:
+        number = _json_number(value)
+        if number is None or number < 0.0:
             valid = False
             continue
         if number > 0.0:
@@ -1232,6 +1258,12 @@ def _normalize_distribution(
     total = sum(values.values())
     if total <= 0.0:
         return dict(fallback), False
+    valid = valid and math.isclose(
+        total,
+        1.0,
+        rel_tol=0.0,
+        abs_tol=sum_tolerance,
+    )
     return {key: value / total for key, value in values.items()}, valid
 
 
@@ -1406,7 +1438,12 @@ def _estimated_tokens_from_text(
     bytes_per_token = _ranking_number(
         ranking_config, "context", "token_estimation", "utf8_bytes_per_token"
     )
-    return math.ceil(len(value.encode("utf-8")) / bytes_per_token)
+    dense_chars_per_token = _ranking_number(
+        ranking_config, "context", "token_estimation", "dense_chars_per_token"
+    )
+    ascii_chars = sum(character.isascii() for character in value)
+    dense_chars = len(value) - ascii_chars
+    return math.ceil(ascii_chars / bytes_per_token + dense_chars / dense_chars_per_token)
 
 
 def mock_user_profile(
@@ -1741,27 +1778,40 @@ def normalize_task_profile(
     if not isinstance(raw_profile, Mapping):
         return fallback, False, ["profile_not_object"]
 
-    errors: list[str] = []
+    fatal_errors: list[str] = []
+    warnings: list[str] = []
+    distribution_tolerance = _ranking_number(
+        effective_config, "validation", "task_profile_sum_tolerance"
+    )
     capability, valid_capability = _normalize_distribution(
-        raw_profile.get("capability_dist"), CAPABILITIES, fallback["capability_dist"]
+        raw_profile.get("capability_dist"),
+        CAPABILITIES,
+        fallback["capability_dist"],
+        sum_tolerance=distribution_tolerance,
     )
     domain, valid_domain = _normalize_distribution(
-        raw_profile.get("domain_dist"), DOMAINS, fallback["domain_dist"]
+        raw_profile.get("domain_dist"),
+        DOMAINS,
+        fallback["domain_dist"],
+        sum_tolerance=distribution_tolerance,
     )
     tier, valid_tier = _normalize_distribution(
-        raw_profile.get("tier_dist"), TIERS, fallback["tier_dist"]
+        raw_profile.get("tier_dist"),
+        TIERS,
+        fallback["tier_dist"],
+        sum_tolerance=distribution_tolerance,
     )
     if not valid_capability:
-        errors.append("invalid_capability_dist")
+        fatal_errors.append("invalid_capability_dist")
     if not valid_domain:
-        errors.append("invalid_domain_dist")
+        fatal_errors.append("invalid_domain_dist")
     if not valid_tier:
-        errors.append("invalid_tier_dist")
+        fatal_errors.append("invalid_tier_dist")
 
     constraints_raw = raw_profile.get("constraints")
     if not isinstance(constraints_raw, Mapping):
         constraints_raw = {}
-        errors.append("invalid_constraints")
+        fatal_errors.append("invalid_constraints")
     configured_constraint_values = _ranking_mapping(
         effective_config, "task_profile_schema", "constraint_values"
     )
@@ -1775,17 +1825,23 @@ def normalize_task_profile(
         value = str(constraints_raw.get(key) or "").strip().lower()
         if value not in allowed:
             value = str(fallback["constraints"][key])
-            errors.append(f"invalid_constraint_{key}")
+            fatal_errors.append(f"invalid_constraint_{key}")
         constraints[key] = value
     raw_modalities = constraints_raw.get("modality")
     if isinstance(raw_modalities, Sequence) and not isinstance(raw_modalities, str):
-        modalities = list(dict.fromkeys(str(item).lower() for item in raw_modalities))
-        modalities = [item for item in modalities if item in MODALITIES]
+        normalized_modalities = [
+            item.strip().lower() if isinstance(item, str) else "" for item in raw_modalities
+        ]
+        modalities = list(
+            dict.fromkeys(item for item in normalized_modalities if item in MODALITIES)
+        )
+        if any(item not in MODALITIES for item in normalized_modalities):
+            fatal_errors.append("invalid_constraint_modality")
     else:
         modalities = []
     if not modalities:
         modalities = list(fallback["constraints"]["modality"])
-        errors.append("invalid_constraint_modality")
+        fatal_errors.append("invalid_constraint_modality")
     context_modalities_raw = request_context.get("input_modalities")
     default_modalities = _ranking_string_list(
         effective_config, "hard_filter", "default_required_modalities"
@@ -1805,22 +1861,31 @@ def normalize_task_profile(
     ]
     if missing_context_modalities:
         modalities.extend(missing_context_modalities)
-        errors.append("missing_request_modality")
+        fatal_errors.append("missing_request_modality")
     constraints["modality"] = modalities
 
     optional: dict[str, Any] = {}
     optional_raw = raw_profile.get("optional_constraints")
-    if isinstance(optional_raw, Mapping) and optional_raw.get("format") is not None:
+    if optional_raw is not None and not isinstance(optional_raw, Mapping):
+        warnings.append("invalid_optional_constraints")
+    elif isinstance(optional_raw, Mapping) and optional_raw.get("format") is not None:
         output_format = str(optional_raw.get("format") or "").strip().lower()
         if output_format in FORMATS:
             optional["format"] = output_format
         else:
-            errors.append("invalid_optional_format")
+            warnings.append("invalid_optional_format")
+
+    raw_analysis_confidence = raw_profile.get("analysis_confidence")
+    analysis_confidence = _json_number(raw_analysis_confidence)
+    if raw_analysis_confidence is not None and (
+        analysis_confidence is None or not 0.0 <= analysis_confidence <= 1.0
+    ):
+        warnings.append("invalid_analysis_confidence")
 
     intent_raw = raw_profile.get("session_intent")
     if not isinstance(intent_raw, Mapping):
         intent_raw = {}
-        errors.append("invalid_session_intent")
+        fatal_errors.append("invalid_session_intent")
     default_intent = _ranking_string(
         effective_config, "task_profile_schema", "default_session_intent"
     )
@@ -1830,8 +1895,14 @@ def normalize_task_profile(
     intent_type = str(intent_raw.get("type") or default_intent).strip().lower()
     if intent_type not in allowed_intents:
         intent_type = default_intent
-        errors.append("invalid_session_intent_type")
-    intent_confidence = _clamp(_as_float(intent_raw.get("confidence"), 0.0))
+        fatal_errors.append("invalid_session_intent_type")
+    raw_intent_confidence = intent_raw.get("confidence")
+    parsed_intent_confidence = _json_number(raw_intent_confidence)
+    if parsed_intent_confidence is None or not 0.0 <= parsed_intent_confidence <= 1.0:
+        intent_confidence = _as_float(fallback["session_intent"].get("confidence"), 0.0)
+        fatal_errors.append("invalid_session_intent_confidence")
+    else:
+        intent_confidence = parsed_intent_confidence
     last_route = request_context.get("last_route")
     if intent_type != default_intent and not isinstance(last_route, Mapping):
         intent_type = default_intent
@@ -1848,8 +1919,8 @@ def normalize_task_profile(
         "optional_constraints": optional,
         "session_intent": {"type": intent_type, "confidence": intent_confidence},
     }
-    required_valid = not errors
-    return profile, required_valid, errors
+    required_valid = not fatal_errors
+    return profile, required_valid, list(dict.fromkeys([*fatal_errors, *warnings]))
 
 
 def _extract_json_object(text: str) -> Any:
@@ -2059,14 +2130,14 @@ async def analyze_task_with_provider(
         if not got_done:
             raise RuntimeError("task analyzer stream ended before DoneEvent")
         payload = _extract_json_object("".join(text_parts))
-        profile, schema_valid, errors = normalize_task_profile(
+        profile, schema_valid, normalization_issues = normalize_task_profile(
             payload,
             routed_tier=routed_tier,
             request_context=request_context,
             ranking_config=effective_config,
         )
         if not schema_valid:
-            raise ValueError(";".join(errors) or "invalid task profile")
+            raise ValueError(";".join(normalization_issues) or "invalid task profile")
     except Exception as exc:  # noqa: BLE001 - analysis must fail open to a safe profile
         reason = type(exc).__name__
         log.warning(
@@ -2091,11 +2162,13 @@ async def analyze_task_with_provider(
         )
 
     payload_map = payload if isinstance(payload, Mapping) else {}
-    default_confidence = _ranking_number(
-        effective_config, "task_analyzer", "default_confidence"
-    )
-    confidence = _clamp(
-        _as_float(payload_map.get("analysis_confidence"), default_confidence)
+    default_confidence = _ranking_number(effective_config, "task_analyzer", "default_confidence")
+    raw_confidence = payload_map.get("analysis_confidence")
+    parsed_confidence = _json_number(raw_confidence)
+    confidence = (
+        parsed_confidence
+        if parsed_confidence is not None and 0.0 <= parsed_confidence <= 1.0
+        else default_confidence
     )
     log.info(
         "llm_ensemble.router_dynamic.task_analyzer_completed",
@@ -2110,6 +2183,7 @@ async def analyze_task_with_provider(
         output_tokens=usage.get("output_tokens", 0),
         billed_cost=usage.get("billed_cost", 0.0),
         user_profile_enabled=user_profile is not None,
+        normalization_warnings=normalization_issues,
     )
     return TaskAnalysisResult(
         profile=profile,
@@ -2119,10 +2193,14 @@ async def analyze_task_with_provider(
         usage=usage,
         provider_id=provider_id,
         model_id=model_id,
+        normalization_warnings=tuple(normalization_issues),
     )
 
 
-def _validate_registry_snapshot(raw: Any) -> dict[str, Any]:
+def _validate_registry_snapshot(
+    raw: Any,
+    ranking_config: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         raise DynamicRankingError("router_dynamic model registry snapshot must be an object")
     snapshot = copy.deepcopy(dict(raw))
@@ -2164,9 +2242,11 @@ def _validate_registry_snapshot(raw: Any) -> dict[str, Any]:
             value = row.get(optional_object)
             if value is not None and not isinstance(value, Mapping):
                 raise DynamicRankingError(
-                    "router_dynamic model registry row "
-                    f"{index} has invalid {optional_object}"
+                    f"router_dynamic model registry row {index} has invalid {optional_object}"
                 )
+    effective_config = _resolve_ranking_config(ranking_config)
+    for row in models:
+        _normalize_model(row, effective_config)
     return snapshot
 
 
@@ -2338,7 +2418,7 @@ def build_model_registry_snapshot(
 
     effective_config = _resolve_ranking_config(ranking_config)
     base = (
-        _validate_registry_snapshot(packaged_snapshot)
+        _validate_registry_snapshot(packaged_snapshot, effective_config)
         if packaged_snapshot is not None
         else load_model_registry_snapshot()
     )
@@ -2446,9 +2526,167 @@ def build_model_registry_snapshot(
     }
 
 
-def _normalize_model(
-    row: Mapping[str, Any], ranking_config: Mapping[str, Any]
-) -> RankedModel:
+def _registry_number(value: Any, *, identity: str, field_name: str) -> float:
+    number = _json_number(value)
+    if number is None:
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid {field_name}"
+        )
+    return number
+
+
+def _registry_string_list(
+    value: Any,
+    *,
+    identity: str,
+    field_name: str,
+    allowed: set[str],
+) -> list[str]:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid {field_name}"
+        )
+    normalized = [item.strip().lower() if isinstance(item, str) else "" for item in value]
+    if not normalized or any(not item or item not in allowed for item in normalized):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid {field_name}"
+        )
+    return list(dict.fromkeys(normalized))
+
+
+def _validate_registry_profile(
+    profile: Mapping[str, Any],
+    *,
+    identity: str,
+    profile_key: str,
+    allowed_dimensions: set[str],
+) -> None:
+    values = profile.get(profile_key)
+    if not isinstance(values, Mapping) or not set(values).issubset(allowed_dimensions):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid {profile_key}"
+        )
+    for dimension, value in values.items():
+        number = _registry_number(
+            value,
+            identity=identity,
+            field_name=f"{profile_key}.{dimension}",
+        )
+        if not 0.0 <= number <= 1.0:
+            raise DynamicRankingError(
+                "router_dynamic model registry "
+                f"{identity} has out-of-range {profile_key}.{dimension}"
+            )
+
+
+def _validate_registry_model(
+    *,
+    identity: str,
+    facts: Mapping[str, Any],
+    static_profile: Mapping[str, Any],
+    online_profile: Mapping[str, Any],
+    ranking_config: Mapping[str, Any],
+) -> None:
+    context_window = _registry_number(
+        facts.get("context_window"),
+        identity=identity,
+        field_name="context_window",
+    )
+    if context_window <= 0.0 or not context_window.is_integer():
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid context_window"
+        )
+
+    _registry_string_list(
+        facts.get("roles"),
+        identity=identity,
+        field_name="roles",
+        allowed=_MODEL_ROLES,
+    )
+    _registry_string_list(
+        facts.get("modalities"),
+        identity=identity,
+        field_name="modalities",
+        allowed=set(MODALITIES),
+    )
+    context_bucket = facts.get("effective_context_bucket")
+    if not isinstance(context_bucket, str) or context_bucket not in _context_bucket_min_tokens(
+        ranking_config
+    ):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid effective_context_bucket"
+        )
+    credential_available = facts.get("credential_available")
+    if credential_available is not None and not isinstance(credential_available, bool):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid credential_available"
+        )
+
+    price = facts.get("price")
+    if isinstance(price, Mapping):
+        price_values = {
+            "input": price.get("input_per_million", price.get("input", price.get("prompt"))),
+            "output": price.get("output_per_million", price.get("output", price.get("completion"))),
+        }
+    else:
+        price_values = {"combined": price}
+    for price_name, price_value in price_values.items():
+        number = _registry_number(
+            price_value,
+            identity=identity,
+            field_name=f"price.{price_name}",
+        )
+        if number < 0.0:
+            raise DynamicRankingError(
+                f"router_dynamic model registry {identity} has negative price.{price_name}"
+            )
+
+    latency_p50 = _registry_number(
+        facts.get("latency_p50_ms", facts.get("latency_p50")),
+        identity=identity,
+        field_name="latency_p50_ms",
+    )
+    latency_p95 = _registry_number(
+        facts.get("latency_p95_ms", facts.get("latency_p95")),
+        identity=identity,
+        field_name="latency_p95_ms",
+    )
+    if latency_p50 < 0.0 or latency_p95 < latency_p50:
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid latency bounds"
+        )
+
+    for profile_key, allowed_dimensions in (
+        ("capability_dist_prior", set(CAPABILITIES)),
+        ("domain_dist_prior", set(DOMAINS)),
+        ("tier_dist_prior", set(TIERS)),
+        ("role_fit_prior", _MODEL_ROLES),
+    ):
+        _validate_registry_profile(
+            static_profile,
+            identity=identity,
+            profile_key=profile_key,
+            allowed_dimensions=allowed_dimensions,
+        )
+
+    error_rates = online_profile.get("error_rates", {})
+    if not isinstance(error_rates, Mapping):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {identity} has invalid error_rates"
+        )
+    for dimension, value in error_rates.items():
+        number = _registry_number(
+            value,
+            identity=identity,
+            field_name=f"error_rates.{dimension}",
+        )
+        if not 0.0 <= number <= 1.0:
+            raise DynamicRankingError(
+                f"router_dynamic model registry {identity} has out-of-range error_rates.{dimension}"
+            )
+
+
+def _normalize_model(row: Mapping[str, Any], ranking_config: Mapping[str, Any]) -> RankedModel:
     facts_raw = row.get("registry_facts")
     profile_raw = row.get("static_profile")
     if not isinstance(facts_raw, Mapping) or not isinstance(profile_raw, Mapping):
@@ -2460,23 +2698,34 @@ def _normalize_model(
         raise DynamicRankingError("model registry row lacks provider/model_id")
     online = row.get("online_profile")
     runtime = row.get("runtime")
-    default_thinking = _ranking_string(
-        ranking_config, "synthetic_model", "thinking"
+    if online is not None and not isinstance(online, Mapping):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {provider}:{model_id} has invalid online_profile"
+        )
+    if runtime is not None and not isinstance(runtime, Mapping):
+        raise DynamicRankingError(
+            f"router_dynamic model registry {provider}:{model_id} has invalid runtime"
+        )
+    online_profile = copy.deepcopy(dict(online)) if isinstance(online, Mapping) else {}
+    _validate_registry_model(
+        identity=f"{provider}:{model_id}",
+        facts=facts,
+        static_profile=profile_raw,
+        online_profile=online_profile,
+        ranking_config=ranking_config,
     )
-    thinking_value = (
-        runtime.get("thinking") if isinstance(runtime, Mapping) else default_thinking
-    )
+    default_thinking = _ranking_string(ranking_config, "synthetic_model", "thinking")
+    thinking_value = runtime.get("thinking") if isinstance(runtime, Mapping) else default_thinking
     return RankedModel(
         provider=provider,
         model_id=model_id,
         version=str(
-            facts.get("version")
-            or _ranking_string(ranking_config, "synthetic_model", "version")
+            facts.get("version") or _ranking_string(ranking_config, "synthetic_model", "version")
         ),
         source=str(row.get("source") or "registry"),
         registry_facts=facts,
         static_profile=copy.deepcopy(dict(profile_raw)),
-        online_profile=copy.deepcopy(dict(online)) if isinstance(online, Mapping) else {},
+        online_profile=online_profile,
         thinking=None if thinking_value is None else str(thinking_value),
     )
 
@@ -3263,36 +3512,17 @@ def _error_complementarity(
     return 1.0 - max(similarities, default=1.0)
 
 
-def _aggregator_rows(
+def _aggregator_filter_rows(
     models: Sequence[RankedModel],
     *,
-    proposers: Sequence[RankedModel],
+    proposer_count: int,
     task_profile: Mapping[str, Any],
     user_profile: Mapping[str, Any] | None,
     request_context: Mapping[str, Any],
     ranking_config: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    scored: list[dict[str, Any]] = []
+) -> tuple[list[RankedModel], list[dict[str, Any]]]:
+    eligible: list[RankedModel] = []
     filters: list[dict[str, Any]] = []
-    cost_weight, latency_weight = _cost_latency_weights(
-        task_profile, user_profile, ranking_config
-    )
-    task_weight = _ranking_number(
-        ranking_config, "aggregator", "task_match_weight"
-    )
-    role_weight = _ranking_number(ranking_config, "aggregator", "role_fit_weight")
-    same_model_penalty = _ranking_number(
-        ranking_config, "aggregator", "same_model_penalty"
-    )
-    related_penalty = _ranking_number(
-        ranking_config, "aggregator", "same_family_or_vendor_penalty"
-    )
-    price_reference = _ranking_number(
-        ranking_config, "normalization", "price_reference_usd_per_million"
-    )
-    latency_reference = _ranking_number(
-        ranking_config, "normalization", "latency_reference_ms"
-    )
     effective_user_profile = user_profile if user_profile is not None else {}
     for model in models:
         reasons, context_need = _hard_filter_reasons(
@@ -3301,7 +3531,7 @@ def _aggregator_rows(
             task_profile=task_profile,
             user_profile=effective_user_profile,
             request_context=request_context,
-            proposer_count=len(proposers),
+            proposer_count=proposer_count,
             ranking_config=ranking_config,
         )
         filters.append(
@@ -3314,23 +3544,50 @@ def _aggregator_rows(
                 "context_need_tokens": context_need,
             }
         )
-        if reasons:
-            continue
-        task_match = _task_match(
-            model, task_profile, ranking_config, role=None
-        )
+        if not reasons:
+            eligible.append(model)
+    return eligible, filters
+
+
+def _aggregator_rows(
+    models: Sequence[RankedModel],
+    *,
+    proposers: Sequence[RankedModel],
+    task_profile: Mapping[str, Any],
+    user_profile: Mapping[str, Any] | None,
+    request_context: Mapping[str, Any],
+    ranking_config: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    scored: list[dict[str, Any]] = []
+    eligible, filters = _aggregator_filter_rows(
+        models,
+        proposer_count=len(proposers),
+        task_profile=task_profile,
+        user_profile=user_profile,
+        request_context=request_context,
+        ranking_config=ranking_config,
+    )
+    cost_weight, latency_weight = _cost_latency_weights(task_profile, user_profile, ranking_config)
+    task_weight = _ranking_number(ranking_config, "aggregator", "task_match_weight")
+    role_weight = _ranking_number(ranking_config, "aggregator", "role_fit_weight")
+    same_model_penalty = _ranking_number(ranking_config, "aggregator", "same_model_penalty")
+    related_penalty = _ranking_number(ranking_config, "aggregator", "same_family_or_vendor_penalty")
+    price_reference = _ranking_number(
+        ranking_config, "normalization", "price_reference_usd_per_million"
+    )
+    latency_reference = _ranking_number(ranking_config, "normalization", "latency_reference_ms")
+    context_need_by_identity = {row["identity"]: row["context_need_tokens"] for row in filters}
+    for model in eligible:
+        context_need = context_need_by_identity[model.identity]
+        task_match = _task_match(model, task_profile, ranking_config, role=None)
         role_fit = _role_fit(model, "aggregator", ranking_config)
         quality = task_weight * task_match + role_weight * role_fit
-        session_score = _session_score(
-            model, task_profile, request_context, ranking_config
-        )
+        session_score = _session_score(model, task_profile, request_context, ranking_config)
         self_overlap = any(model.identity == proposer.identity for proposer in proposers)
         family_overlap = any(model.family == proposer.family for proposer in proposers)
         vendor_overlap = any(model.vendor == proposer.vendor for proposer in proposers)
         related_overlap = family_overlap or vendor_overlap
-        bias = same_model_penalty * int(self_overlap) + related_penalty * int(
-            related_overlap
-        )
+        bias = same_model_penalty * int(self_overlap) + related_penalty * int(related_overlap)
         cost = _clamp(_model_price(model, ranking_config) / price_reference)
         latency = _clamp(
             _as_float(
@@ -3425,13 +3682,8 @@ def rank_models(
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
         raise DynamicRankingError("router_dynamic registry snapshot contains no models")
     if any(not isinstance(row, Mapping) for row in rows):
-        raise DynamicRankingError(
-            "router_dynamic registry snapshot contains a malformed model row"
-        )
-    models = [
-        _normalize_model(row, effective_ranking_config)
-        for row in rows
-    ]
+        raise DynamicRankingError("router_dynamic registry snapshot contains a malformed model row")
+    models = [_normalize_model(row, effective_ranking_config) for row in rows]
     if not models:
         raise DynamicRankingError("router_dynamic registry snapshot is empty")
     model_identities = [model.identity.lower() for model in models]
@@ -3540,43 +3792,69 @@ def rank_models(
     rerank_similarity_penalty = _ranking_number(
         effective_ranking_config, "rerank", "similarity_penalty_weight"
     )
-    stop_threshold = _ranking_number(
-        effective_ranking_config, "rerank", "stop_threshold"
-    )
-    trace_top_candidates = _ranking_int(
-        effective_ranking_config, "rerank", "trace_top_candidates"
-    )
+    stop_threshold = _ranking_number(effective_ranking_config, "rerank", "stop_threshold")
+    trace_top_candidates = _ranking_int(effective_ranking_config, "rerank", "trace_top_candidates")
+    rerank_candidate_pool: list[dict[str, Any]] = []
+    quality_candidate_rows: list[dict[str, Any]] = []
+    for base_rank, row in enumerate(candidate_rows, start=1):
+        passes_quality_floor = _as_float(row["base_clean"]) >= quality_floor
+        rerank_candidate_pool.append(
+            {
+                "base_rank": base_rank,
+                "identity": row["model"].identity,
+                "base_clean": round(_as_float(row["base_clean"]), score_decimal_places),
+                "passes_quality_floor": passes_quality_floor,
+            }
+        )
+        if passes_quality_floor:
+            quality_candidate_rows.append(row)
 
     selected: list[RankedModel] = []
     selection_steps: list[dict[str, Any]] = []
+    aggregator_feasibility: list[dict[str, Any]] = []
     stop_reason = "n_max_reached"
+    stop_detail: dict[str, Any] = {}
     while len(selected) < min(maximum, len(candidate_rows)):
+        remaining_rows = [row for row in quality_candidate_rows if row["model"] not in selected]
+        if not remaining_rows:
+            stop_reason = "quality_floor_or_pool_exhausted"
+            stop_detail = {
+                "quality_floor_excluded_count": len(candidate_rows) - len(quality_candidate_rows),
+                "remaining_candidate_count": 0,
+            }
+            break
+
+        target_proposer_count = len(selected) + 1
+        feasible_aggregators, feasibility_filters = _aggregator_filter_rows(
+            models,
+            proposer_count=target_proposer_count,
+            task_profile=task_profile,
+            user_profile=user_profile,
+            request_context=request_context,
+            ranking_config=effective_ranking_config,
+        )
+        feasibility_reason_counts: dict[str, int] = {}
+        for filter_row in feasibility_filters:
+            for reason in filter_row["reasons"]:
+                feasibility_reason_counts[reason] = feasibility_reason_counts.get(reason, 0) + 1
+        aggregator_feasibility.append(
+            {
+                "proposer_count": target_proposer_count,
+                "eligible_aggregator_ids": [model.identity for model in feasible_aggregators],
+                "filter_reason_counts": feasibility_reason_counts,
+            }
+        )
+        if not feasible_aggregators:
+            stop_reason = "aggregator_infeasible"
+            stop_detail = {"proposer_count": target_proposer_count}
+            break
+
         marginal_rows: list[dict[str, Any]] = []
-        rejected_for_aggregator = 0
-        for row in candidate_rows:
+        for row in remaining_rows:
             model = row["model"]
-            if model in selected or _as_float(row["base_clean"]) < quality_floor:
-                continue
-            proposed = [*selected, model]
-            feasible_aggregators, _ = _aggregator_rows(
-                models,
-                proposers=proposed,
-                task_profile=task_profile,
-                user_profile=user_profile,
-                request_context=request_context,
-                ranking_config=effective_ranking_config,
-            )
-            if not feasible_aggregators:
-                rejected_for_aggregator += 1
-                continue
-            coverage = _coverage_gain(
-                model, selected, task_profile, effective_ranking_config
-            )
+            coverage = _coverage_gain(model, selected, task_profile, effective_ranking_config)
             similarity = max(
-                (
-                    _similarity(model, other, effective_ranking_config)
-                    for other in selected
-                ),
+                (_similarity(model, other, effective_ranking_config) for other in selected),
                 default=0.0,
             )
             error_complementarity = _error_complementarity(
@@ -3599,13 +3877,6 @@ def rank_models(
                     "base_clean": row["base_clean"],
                 }
             )
-        if not marginal_rows:
-            stop_reason = (
-                "aggregator_infeasible"
-                if rejected_for_aggregator
-                else "quality_floor_or_pool_exhausted"
-            )
-            break
         marginal_rows.sort(
             key=lambda row: (
                 -_as_float(row["marginal"]),
@@ -3615,11 +3886,13 @@ def rank_models(
             )
         )
         best = marginal_rows[0]
-        if (
-            len(selected) >= minimum
-            and _as_float(best["marginal"]) < stop_threshold
-        ):
+        if len(selected) >= minimum and _as_float(best["marginal"]) < stop_threshold:
             stop_reason = "marginal_below_threshold"
+            stop_detail = {
+                "identity": best["model"].identity,
+                "marginal_gain": round(_as_float(best["marginal"]), score_decimal_places),
+                "threshold": round(stop_threshold, score_decimal_places),
+            }
             break
         selected.append(best["model"])
         selection_steps.append(
@@ -3639,11 +3912,26 @@ def rank_models(
                 "error_complementarity": round(
                     _as_float(best["error_complementarity"]), score_decimal_places
                 ),
+                "candidate_count": len(marginal_rows),
+                "eligible_aggregator_count": len(feasible_aggregators),
                 "top_candidates": [
                     {
                         "identity": candidate["model"].identity,
                         "marginal_gain": round(
                             _as_float(candidate["marginal"]), score_decimal_places
+                        ),
+                        "quality": round(
+                            _as_float(candidate["quality"]), score_decimal_places
+                        ),
+                        "coverage_gain": round(
+                            _as_float(candidate["coverage_gain"]), score_decimal_places
+                        ),
+                        "max_similarity": round(
+                            _as_float(candidate["max_similarity"]), score_decimal_places
+                        ),
+                        "error_complementarity": round(
+                            _as_float(candidate["error_complementarity"]),
+                            score_decimal_places,
                         ),
                     }
                     for candidate in marginal_rows[:trace_top_candidates]
@@ -3653,6 +3941,15 @@ def rank_models(
 
     if stop_reason == "n_max_reached" and len(selected) < maximum:
         stop_reason = "candidate_pool_exhausted"
+        stop_detail = {
+            "selected_count": len(selected),
+            "candidate_pool_count": len(candidate_rows),
+        }
+    elif stop_reason == "n_max_reached":
+        stop_detail = {
+            "selected_count": len(selected),
+            "N_max": maximum,
+        }
 
     if not selected:
         raise DynamicRankingError(
@@ -3736,15 +4033,18 @@ def rank_models(
             "eligible_aggregator_ids": [row["model"].identity for row in aggregator_rows],
             "filter_reason_counts": reason_counts,
         },
-        "model_scores": [
-            _score_trace(row, effective_ranking_config) for row in score_rows
-        ],
+        "model_scores": [_score_trace(row, effective_ranking_config) for row in score_rows],
         "top_l": top_l,
         "quality_floor": round(quality_floor, score_decimal_places),
+        "rerank_candidate_pool": rerank_candidate_pool,
+        "quality_floor_excluded_ids": [
+            row["identity"] for row in rerank_candidate_pool if not row["passes_quality_floor"]
+        ],
         "N_min": minimum,
         "N_max": maximum,
         "bound_reasons": bound_reasons,
         "selection_steps": selection_steps,
+        "aggregator_feasibility": aggregator_feasibility,
         "selected_P": selected_ids,
         "selected_A": aggregator.identity,
         "exploration": copy.deepcopy(
@@ -3753,13 +4053,11 @@ def rank_models(
         "proposer_count": len(selected),
         "coverage_shortfall": coverage_shortfall,
         "stop_reason": stop_reason,
+        "stop_detail": stop_detail,
         "aggregator": {
-            "selected": _aggregator_score_trace(
-                aggregator_row, effective_ranking_config
-            ),
+            "selected": _aggregator_score_trace(aggregator_row, effective_ranking_config),
             "scores": [
-                _aggregator_score_trace(row, effective_ranking_config)
-                for row in aggregator_rows
+                _aggregator_score_trace(row, effective_ranking_config) for row in aggregator_rows
             ],
             "overlap_flag": overlap,
             "candidate_anonymization": True,

@@ -178,6 +178,35 @@ def test_ensemble_status_reports_candidate_provider_credentials(cfg, monkeypatch
     )
 
 
+def test_tree_baseline_status_reports_legacy_openrouter_pool_credentials(
+    monkeypatch,
+):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+            "base_url": "https://api.deepseek.com",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_tree_baseline",
+        },
+    )
+
+    status = get_onboarding_status(cfg)
+
+    assert [row["provider"] for row in status.ensemble_credential_status] == [
+        "deepseek",
+        "openrouter",
+    ]
+    assert status.ensemble_credential_status[1]["available"] is False
+    assert status.section_details["ensemble"]["detail"] == (
+        "selection mode: router_tree_baseline (8 models)"
+    )
+
+
 def test_llm_credential_status_reports_explicit_key(cfg):
     cfg.llm = LlmProviderConfig(
         provider="deepseek",

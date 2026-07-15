@@ -14,6 +14,7 @@ from pathlib import Path
 
 from opensquilla.gateway.config import (
     LEGACY_OPENROUTER_MODEL_OPTIONS,
+    ROUTER_TREE_BASELINE_SELECTION_MODE,
     STATIC_B5_SELECTION_MODE_PROVIDERS,
     GatewayConfig,
 )
@@ -156,6 +157,8 @@ def _ensemble_detail(cfg: GatewayConfig) -> str:
         return "disabled"
     mode = str(getattr(ensemble, "selection_mode", "") or "")
     options = list(getattr(ensemble, "model_options", []) or [])
+    if mode == ROUTER_TREE_BASELINE_SELECTION_MODE and not options:
+        options = list(LEGACY_OPENROUTER_MODEL_OPTIONS)
     return f"selection mode: {mode} ({len(options)} models)"
 
 
@@ -187,7 +190,10 @@ def _ensemble_candidate_provider_ids(cfg: GatewayConfig) -> list[str]:
 
     router = getattr(cfg, "squilla_router", None)
     tiers = getattr(router, "tiers", {}) or {}
-    if selection_mode == "router_dynamic" and isinstance(tiers, dict):
+    if selection_mode in {
+        "router_dynamic",
+        ROUTER_TREE_BASELINE_SELECTION_MODE,
+    } and isinstance(tiers, dict):
         for tier_cfg in tiers.values():
             if isinstance(tier_cfg, dict):
                 add(tier_cfg.get("provider") or getattr(llm, "provider", ""))
@@ -198,7 +204,14 @@ def _ensemble_candidate_provider_ids(cfg: GatewayConfig) -> list[str]:
         add(_candidate_field(candidate, "provider"))
 
     model_options = list(getattr(ensemble, "model_options", []) or [])
-    if tuple(model_options) == tuple(LEGACY_OPENROUTER_MODEL_OPTIONS):
+    if (
+        selection_mode == ROUTER_TREE_BASELINE_SELECTION_MODE
+        and not model_options
+    ):
+        model_options = list(LEGACY_OPENROUTER_MODEL_OPTIONS)
+    if selection_mode == "router_dynamic" and tuple(model_options) == tuple(
+        LEGACY_OPENROUTER_MODEL_OPTIONS
+    ):
         model_options = []
     for model in model_options:
         model_s = str(model or "").strip()

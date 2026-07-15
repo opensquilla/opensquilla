@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from opensquilla.gateway.config import GatewayConfig
@@ -141,6 +143,7 @@ def test_static_b5_mode_tables_agree_across_gateway_and_provider() -> None:
     )
     assert literal_modes == {
         "router_dynamic",
+        "router_tree_baseline",
         "custom_b5",
         *STATIC_B5_SELECTION_MODE_PROVIDERS,
     }
@@ -337,7 +340,13 @@ def test_build_ensemble_provider_inherits_current_openrouter_credentials() -> No
 @pytest.mark.parametrize("routed_tier", ["c0", "t1"])
 def test_router_dynamic_ensemble_uses_step2_tier1_single_proposer_bound(
     routed_tier: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "opensquilla.provider.tree_baseline_router",
+        None,
+    )
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
@@ -420,6 +429,88 @@ def test_router_dynamic_ensemble_uses_step2_greedy_c2_selection() -> None:
     assert "Score_agg" in provider.selection_plan["aggregator"]["selected"]
     assert provider.selection_plan["hard_filter"]["eligible_proposer_ids"]
     assert provider.selection_plan["candidate_pool_size"] >= 5
+
+
+@pytest.mark.parametrize(
+    (
+        "routed_tier",
+        "expected_tier",
+        "expected_slots",
+        "aggregator_slot",
+    ),
+    [
+        ("c0", "c0", ["anchor", "cheap_contrast"], "aggregator_fast"),
+        ("t1", "c1", ["anchor", "balanced_contrast"], "aggregator_balanced"),
+        (
+            "c2",
+            "c2",
+            ["anchor", "adjacent_tier_check", "orthogonal_family"],
+            "aggregator_strong",
+        ),
+        (
+            "c3",
+            "c3",
+            ["anchor", "strong_critic", "orthogonal_family", "fast_sanity"],
+            "aggregator_strong",
+        ),
+    ],
+)
+def test_router_tree_baseline_restores_legacy_local_tree_templates(
+    routed_tier: str,
+    expected_tier: str,
+    expected_slots: list[str],
+    aggregator_slot: str,
+) -> None:
+    cfg = GatewayConfig(
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_tree_baseline",
+            "min_successful_proposers": 9,
+            "model_options": [
+                "deepseek/deepseek-v4-flash",
+                "deepseek/deepseek-v4-pro",
+                "z-ai/glm-5.2",
+                "qwen/qwen3.7-max",
+                "anthropic/claude-opus-4.8",
+            ],
+        }
+    )
+    inherited = ProviderConfig(
+        provider="openrouter",
+        model={
+            "c0": "deepseek/deepseek-v4-flash",
+            "c1": "deepseek/deepseek-v4-pro",
+            "c2": "z-ai/glm-5.2",
+            "c3": "anthropic/claude-opus-4.8",
+        }[expected_tier],
+        api_key="fake",
+        base_url="https://openrouter.example/api/v1",
+    )
+
+    provider = build_ensemble_provider_from_config(
+        config=cfg,
+        inherited_provider_config=inherited,
+        fallback_provider=None,
+        turn_metadata={"routed_tier": routed_tier, "routing_confidence": 0.91},
+    )
+
+    assert provider.profile_name == f"router_tree_baseline/{expected_tier}"
+    assert [member.label for member in provider.proposers] == expected_slots
+    assert provider.selection_plan["strategy"] == "router_tree_baseline"
+    assert provider.selection_plan["router_source"] == "squilla_router_local_tree"
+    assert provider.selection_plan["uses_remote_task_analyzer"] is False
+    assert provider.selection_plan["aggregator_slot"] == aggregator_slot
+    assert provider.selection_plan["algorithm_version"] == "legacy-router-dynamic-v1"
+    assert len(provider.selection_plan["config_hash"]) == 64
+    assert provider.min_successful_proposers == len(expected_slots)
+    assert provider.selection_plan["selected_P"] == [
+        f"{member.provider_config.provider}:{member.provider_config.model}"
+        for member in provider.proposers
+    ]
+    assert provider.selection_plan["selected_A"] == (
+        f"{provider.aggregator.provider_config.provider}:"
+        f"{provider.aggregator.provider_config.model}"
+    )
 
 
 def test_static_openrouter_b5_ensemble_locks_members_across_routed_tiers() -> None:

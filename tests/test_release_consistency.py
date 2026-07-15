@@ -72,6 +72,11 @@ def test_desktop_electron_release_config_matches_current_release() -> None:
 
 def test_release_workflow_builds_desktop_installers() -> None:
     workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
+    release_jobs = yaml.safe_load(workflow)["jobs"]
+    macos_steps = {
+        step["name"]: step for step in release_jobs["build-tui-host-macos"]["steps"]
+    }
+    macos_gate = macos_steps["Run packaged-host real-terminal release gate"]["run"]
 
     assert "name: Release Assets" in workflow
     assert "build-desktop-macos:" in workflow
@@ -103,6 +108,12 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "brew install tmux" in workflow
     assert "OPENSQUILLA_TUI_PACKAGED_GATE=1" in workflow
     assert "--tui-require-capabilities" in workflow
+    for terminal_gate in (
+        "test_mouse_scroll_stability.py",
+        "test_framebuffer_recovery.py",
+        "test_idle_resize_round_trip.py",
+    ):
+        assert terminal_gate in macos_gate
     assert "test_exit_restoration.py" in workflow
     assert "test_packaged_gateway_e2e.py" in workflow
     assert "env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in workflow
@@ -208,6 +219,12 @@ def test_release_workflow_builds_and_gates_native_linux_tui_hosts() -> None:
     assert '"${core_wheel}[dev]"' in gate
     assert "OPENSQUILLA_TUI_PACKAGED_GATE=1" in gate
     assert "--tui-require-capabilities" in gate
+    for terminal_gate in (
+        "test_mouse_scroll_stability.py",
+        "test_framebuffer_recovery.py",
+        "test_idle_resize_round_trip.py",
+    ):
+        assert terminal_gate in gate
     assert "test_exit_restoration.py" in gate
     assert "test_packaged_gateway_e2e.py" in gate
     assert "env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in gate

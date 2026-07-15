@@ -327,19 +327,23 @@ async def run_tui_runtime(
                             hooks.notice(
                                 f"[red]Steer failed: {_escape(str(exc))}[/red]"
                             )
-                        # A failed rollback means the Gateway still owns a
-                        # durable transcript row for this input.  Enqueuing the
-                        # same text locally would create a duplicate/orphan
-                        # pair, so fail closed and let the explicit Gateway
-                        # error guide recovery.  Ordinary transport/method
-                        # failures remain safe to fall back to the local queue.
+                        # Once the request crossed the transport boundary, a
+                        # missing response is ambiguous: the Gateway may have
+                        # durably accepted the steer already.  Re-sending it as
+                        # a queued message could repeat a tool effect, so fail
+                        # closed unless the server explicitly declares the
+                        # failure safe.  METHOD_NOT_FOUND is the one legacy
+                        # exception because an older Gateway cannot have run a
+                        # handler that it does not expose.
                         error_data = getattr(exc, "data", None)
-                        fallback_safe = (
-                            error_data.get("fallback_safe", True)
-                            if isinstance(error_data, dict)
-                            else True
+                        fallback_safe = bool(
+                            isinstance(error_data, dict)
+                            and error_data.get("fallback_safe") is True
                         )
-                        if fallback_safe is False:
+                        error_code = str(getattr(exc, "code", "") or "").upper()
+                        if error_code == "METHOD_NOT_FOUND":
+                            fallback_safe = True
+                        if not fallback_safe:
                             continue
                         steered = False
                     if steered:

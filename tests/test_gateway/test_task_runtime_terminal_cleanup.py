@@ -427,6 +427,86 @@ async def test_cancel_clears_dicts() -> None:
     assert sk not in rt._last_envelope_by_session
 
 
+@pytest.mark.asyncio
+async def test_cancel_closes_steer_window_before_disposition_persistence() -> None:
+    """A steer cannot enter after cancellation reclaimed the accepted inputs."""
+
+    started = asyncio.Event()
+    blocker = asyncio.Event()
+    cleanup_persisting = asyncio.Event()
+    release_cleanup = asyncio.Event()
+
+    async def _blocking_handler(_run: Any) -> None:
+        started.set()
+        await blocker.wait()
+
+    storage = _make_storage()
+    update_turn_context = storage.update_transcript_turn_context
+
+    async def _blocking_turn_context_update(
+        session_key: str,
+        message_id: str,
+        context: dict[str, Any],
+    ) -> bool:
+        if message_id == "msg-before-cancel":
+            cleanup_persisting.set()
+            await release_cleanup.wait()
+        return await update_turn_context(session_key, message_id, context)
+
+    storage.update_transcript_turn_context = _blocking_turn_context_update
+    rt = TaskRuntime(storage=storage, turn_handler=_blocking_handler)
+    env = _make_envelope("agent-1::cancel-steer-race")
+    handle = await rt.enqueue(env, "first")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    assert await rt.steer(
+        env.session_key,
+        "accepted before cancellation",
+        persisted_user_message_id="msg-before-cancel",
+    ) == handle.task_id
+    runtime_task = rt._tasks[handle.task_id]
+
+    assert await rt.cancel(task_id=handle.task_id) == 1
+    # cancel() is the acknowledgement boundary. Even before the cancelled
+    # task gets another event-loop slice, steer must already reject input.
+    assert await rt.steer(
+        env.session_key,
+        "racing immediately after cancel acknowledgement",
+        persisted_user_message_id="msg-after-cancel-ack",
+    ) is None
+    await asyncio.wait_for(cleanup_persisting.wait(), timeout=2.0)
+
+    # Cancellation has reclaimed the earlier input and is waiting on storage.
+    # The acceptance window must already be closed, so this cannot become an
+    # orphaned pending item after the task is marked terminal.
+    assert await rt.steer(
+        env.session_key,
+        "racing during cancellation cleanup",
+        persisted_user_message_id="msg-during-cancel",
+    ) is None
+
+    release_cleanup.set()
+    await rt.wait(handle.task_id, timeout=2.0)
+
+    cancelled = [
+        context
+        for _session, message_id, context in storage.turn_context_updates
+        if message_id == "msg-before-cancel"
+    ]
+    assert cancelled == [
+        {
+            "turn_id": handle.task_id,
+            "client_message_id": None,
+            "surface_id": None,
+            "intent": "steer",
+            "disposition": "cancelled",
+            "target_turn_id": handle.task_id,
+            "revision": 2,
+        }
+    ]
+    assert runtime_task.pending_input_provider.reclaim_all() == []
+
+
 # ---------------------------------------------------------------------------
 # session_lock_kept_during_pending
 # ---------------------------------------------------------------------------

@@ -104,9 +104,10 @@ class _FakeResponse:
 
 
 class _Resolver:
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, result: Any = None) -> None:
         self.calls: list[tuple[str, bool, str | None]] = []
         self._error = error
+        self._result = result
 
     async def __call__(
         self,
@@ -114,10 +115,11 @@ class _Resolver:
         approved: bool,
         *,
         choice: str | None = None,
-    ) -> None:
+    ) -> Any:
         self.calls.append((approval_id, approved, choice))
         if self._error is not None:
             raise self._error
+        return self._result
 
 
 def _sandbox_envelope_payload() -> dict[str, Any]:
@@ -371,6 +373,40 @@ async def test_handler_survives_resolver_failure() -> None:
 
     assert resolver.calls == [("appr-2", True, None)]
     assert any("failed to resolve" in message for message, _style in renderer.statuses)
+
+
+async def test_handler_uses_canonical_cross_surface_resolution() -> None:
+    handler = tui_approval_handler(output_console=_FakeConsole())
+    resolver = _Resolver(result={"resolved": True, "pending": False, "approved": True})
+    renderer = _RecordingRenderer(_HostOutputHandle(_FakeResponse(False)))
+
+    await handler(_exec_envelope_payload(), renderer, resolver)
+
+    assert resolver.calls == [("appr-2", False, None)]
+    assert renderer.statuses[-1] == (
+        "approval approved by another surface — shell",
+        "green",
+    )
+
+
+async def test_handler_renders_inflight_cross_surface_resolution_neutrally() -> None:
+    handler = tui_approval_handler(output_console=_FakeConsole())
+    resolver = _Resolver(
+        result={
+            "resolved": False,
+            "pending": True,
+            "approved": False,
+            "resolutionInProgress": True,
+        }
+    )
+    renderer = _RecordingRenderer(_HostOutputHandle(_FakeResponse(True)))
+
+    await handler(_exec_envelope_payload(), renderer, resolver)
+
+    assert renderer.statuses[-1] == (
+        "approval is being resolved on another surface — shell",
+        "yellow",
+    )
 
 
 async def test_handler_ignores_wrapped_handle_without_host_capability() -> None:

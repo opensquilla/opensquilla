@@ -827,6 +827,106 @@ async def test_runtime_dirty_steer_failure_does_not_duplicate_into_local_queue()
 
 
 @pytest.mark.asyncio
+async def test_runtime_ambiguous_steer_transport_failure_fails_closed() -> None:
+    inputs: asyncio.Queue[Any] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    first_started = asyncio.Event()
+    notices: list[str] = []
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    async def _ambiguous(_text: str) -> bool:
+        raise ConnectionError("reply lost after request write")
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(
+                notice=notices.append,
+                on_steer_active_turn=_ambiguous,
+            ),
+        )
+    )
+    await inputs.put("first")
+    await first_started.wait()
+    await inputs.put(
+        TuiSubmittedInput(
+            "maybe already accepted",
+            intent="steer",
+            client_message_id="client-ambiguous",
+        )
+    )
+    await _wait_until(lambda: any("Steer failed" in notice for notice in notices))
+
+    assert state.pending_items == ()
+    assert "echo:maybe already accepted" not in surface.writes
+    assert not any("queued" in notice.lower() for notice in notices)
+
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_runtime_legacy_method_missing_steer_uses_visible_queue() -> None:
+    inputs: asyncio.Queue[Any] = asyncio.Queue()
+    surface = _FakeSurface(inputs)
+    state = TuiRuntimeState()
+    first_started = asyncio.Event()
+    notices: list[str] = []
+
+    class MethodMissingError(RuntimeError):
+        code = "METHOD_NOT_FOUND"
+
+    async def _dispatch(user_input: str) -> bool:
+        if user_input == "first":
+            first_started.set()
+            await asyncio.sleep(5)
+        return True
+
+    async def _missing(_text: str) -> bool:
+        raise MethodMissingError("sessions.steer is unavailable")
+
+    task = asyncio.create_task(
+        run_tui_runtime(
+            dispatch=_dispatch,
+            surface_factory=_surface_factory(surface),
+            config=_runtime_config(state=state),
+            hooks=_runtime_hooks(
+                notice=notices.append,
+                on_steer_active_turn=_missing,
+            ),
+        )
+    )
+    await inputs.put("first")
+    await first_started.wait()
+    await inputs.put(
+        TuiSubmittedInput(
+            "queue on old gateway",
+            intent="steer",
+            client_message_id="client-old-gateway",
+        )
+    )
+    await _wait_until(lambda: state.pending_items == ("queue on old gateway",))
+
+    assert "echo:queue on old gateway" in surface.writes
+    assert any("Steer unavailable; queued (#1)" in notice for notice in notices)
+
+    active_cb = next(cb for cb in reversed(surface.cancel_callbacks) if cb is not None)
+    active_cb()
+    await inputs.put(None)
+    await asyncio.wait_for(task, timeout=2.0)
+
+
+@pytest.mark.asyncio
 async def test_runtime_full_queue_rejects_message_without_echoing_it() -> None:
     inputs: asyncio.Queue[str | None] = asyncio.Queue()
     surface = _FakeSurface(inputs)

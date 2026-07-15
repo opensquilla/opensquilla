@@ -626,6 +626,7 @@ class TaskRuntime:
             if (
                 task is None
                 or task.terminal_emitted
+                or task.cancel_requested
                 or task.status is not AgentTaskStatus.RUNNING
             ):
                 return None
@@ -667,6 +668,7 @@ class TaskRuntime:
             if (
                 task is None
                 or task.terminal_emitted
+                or task.cancel_requested
                 or task.status is not AgentTaskStatus.RUNNING
             ):
                 return None
@@ -1097,6 +1099,13 @@ class TaskRuntime:
                 reason=reason,
                 session_key=task.envelope.session_key,
             )
+            # Close steer acceptance atomically before reclaiming inputs or
+            # awaiting their durable disposition writes. Otherwise a steer can
+            # land after reclaim_all() and remain permanently ``steering`` once
+            # _mark_terminal() removes the task.
+            async with self._state_lock:
+                if not task.terminal_emitted:
+                    task.status = AgentTaskStatus.CANCELLED
             await self._record_cancelled_steers(task)
             await self._mark_terminal(
                 task,

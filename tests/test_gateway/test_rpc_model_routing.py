@@ -8,6 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from opensquilla.gateway import websocket as gateway_websocket
+from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.model_routing import (
     capture_model_routing_config,
@@ -15,18 +17,113 @@ from opensquilla.gateway.model_routing import (
     model_routing_snapshot,
 )
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
-from opensquilla.gateway.rpc import RpcContext
+from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc_config import (
+    _handle_config_apply,
+    _handle_config_patch,
+    _handle_config_patch_safe,
+    _handle_config_set,
+)
 from opensquilla.gateway.rpc_models import (
     _handle_models_routing_get,
     _handle_models_routing_set,
 )
-from opensquilla.gateway.scopes import METHOD_SCOPES, READ_SCOPE, WRITE_SCOPE
+from opensquilla.gateway.rpc_onboarding import (
+    _ensemble_configure,
+    _router_configure,
+)
+from opensquilla.gateway.scopes import ADMIN_SCOPE, METHOD_SCOPES, READ_SCOPE, WRITE_SCOPE
 from opensquilla.gateway.task_runtime import TaskRuntime
 from opensquilla.session.models import AgentTaskRecord
 
 
 def _ctx(config: GatewayConfig) -> RpcContext:
     return RpcContext(conn_id="routing-test", config=config)
+
+
+def _routing_event_ctx(
+    config: GatewayConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[RpcContext, list[tuple[str, dict[str, Any]]]]:
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def send_event(event: str, payload: dict[str, Any]) -> None:
+        events.append((event, payload))
+
+    subscriber = SimpleNamespace(
+        principal=Principal(
+            role="operator",
+            scopes=frozenset({READ_SCOPE}),
+            is_owner=False,
+            authenticated=True,
+        ),
+        send_event=send_event,
+    )
+    registry = SimpleNamespace(all=lambda: [subscriber])
+    monkeypatch.setattr(gateway_websocket, "get_registry", lambda: registry)
+    return (
+        RpcContext(
+            conn_id="routing-events",
+            config=config,
+            subscription_manager=object(),
+            principal=Principal(
+                role="operator",
+                scopes=frozenset({ADMIN_SCOPE}),
+                is_owner=True,
+                authenticated=True,
+            ),
+        ),
+        events,
+    )
+
+
+async def _apply_admin_routing_write(
+    case: str,
+    *,
+    enabled: bool,
+    config: GatewayConfig,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    if case == "config.set":
+        return await _handle_config_set(
+            {"path": "llm_ensemble.enabled", "value": enabled},
+            ctx,
+        )
+    if case == "config.patch":
+        return await _handle_config_patch(
+            {"patches": {"llm_ensemble.enabled": enabled}},
+            ctx,
+        )
+    if case == "config.apply":
+        payload = config.model_dump(mode="python")
+        payload["llm_ensemble"]["enabled"] = enabled
+        return await _handle_config_apply({"config": payload}, ctx)
+    if case == "config.reload":
+        assert config.config_path is not None
+        with open(config.config_path, "w", encoding="utf-8") as config_file:
+            config_file.write(
+                "\n".join(
+                    [
+                        "[llm_ensemble]",
+                        f"enabled = {'true' if enabled else 'false'}",
+                        "",
+                        "[squilla_router]",
+                        "enabled = false",
+                        'rollout_phase = "observe"',
+                    ]
+                )
+                + "\n"
+            )
+        result = await get_dispatcher().dispatch(
+            "routing-reload",
+            "config.reload",
+            {},
+            ctx,
+        )
+        assert result.error is None, result.error
+        assert isinstance(result.payload, dict)
+        return result.payload
+    raise AssertionError(f"unknown config write case: {case}")
 
 
 @pytest.mark.parametrize(
@@ -110,6 +207,151 @@ async def test_models_routing_set_rejects_unknown_mode(tmp_path) -> None:
 def test_models_routing_rpc_scopes_are_explicit() -> None:
     assert METHOD_SCOPES["models.routing.get"] == READ_SCOPE
     assert METHOD_SCOPES["models.routing.set"] == WRITE_SCOPE
+
+
+async def test_onboarding_router_configure_broadcasts_one_canonical_change(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "router.toml"),
+        llm={"provider": "deepseek", "model": "deepseek-chat"},
+        squilla_router={"enabled": False},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    await _router_configure({"mode": "recommended"}, ctx)
+
+    assert events == [
+        (
+            "models.routing.changed",
+            {
+                **model_routing_snapshot(config),
+                "source": "onboarding.router.configure",
+            },
+        )
+    ]
+
+
+async def test_onboarding_ensemble_configure_broadcasts_one_canonical_change(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "ensemble.toml"),
+        llm_ensemble={"enabled": False, "selection_mode": "router_dynamic"},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    await _ensemble_configure({"enabled": True}, ctx)
+
+    assert events == [
+        (
+            "models.routing.changed",
+            {
+                **model_routing_snapshot(config),
+                "source": "onboarding.ensemble.configure",
+            },
+        )
+    ]
+
+
+async def test_models_routing_set_reuses_safe_patch_broadcast_exactly_once(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(config_path=str(tmp_path / "routing-set.toml"))
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    await _handle_models_routing_set({"mode": "direct"}, ctx)
+
+    assert events == [
+        (
+            "models.routing.changed",
+            {
+                **model_routing_snapshot(config),
+                "source": "config.patch.safe",
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["config.set", "config.patch", "config.apply", "config.reload"],
+)
+async def test_admin_config_hot_apply_broadcasts_one_canonical_routing_change(
+    case: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / f"{case}.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    response = await _apply_admin_routing_write(
+        case,
+        enabled=True,
+        config=config,
+        ctx=ctx,
+    )
+
+    expected = {
+        **model_routing_snapshot(config),
+        "source": case,
+    }
+    assert events == [("models.routing.changed", expected)]
+    assert response["model_routing"] == expected
+
+
+@pytest.mark.parametrize(
+    "case",
+    ["config.set", "config.patch", "config.apply", "config.reload"],
+)
+async def test_admin_config_hot_apply_does_not_broadcast_unchanged_routing(
+    case: str,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / f"noop-{case}.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    response = await _apply_admin_routing_write(
+        case,
+        enabled=False,
+        config=config,
+        ctx=ctx,
+    )
+
+    assert events == []
+    assert "model_routing" not in response
+
+
+async def test_safe_patch_noop_does_not_broadcast_model_routing_change(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "safe-noop.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": False, "rollout_phase": "observe"},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    response = await _handle_config_patch_safe(
+        {"patches": {"llm_ensemble.enabled": False}},
+        ctx,
+    )
+
+    assert events == []
+    assert "model_routing" not in response
 
 
 def test_capture_model_routing_config_isolated_from_live_control_writes() -> None:

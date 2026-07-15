@@ -110,10 +110,16 @@ def capture_model_routing_config(config: Any) -> Any:
     return snapshot
 
 
-async def broadcast_model_routing_changed(ctx: Any, *, source: str) -> dict[str, Any]:
+async def broadcast_model_routing_changed(
+    ctx: Any,
+    *,
+    source: str,
+    config: Any | None = None,
+) -> dict[str, Any]:
     """Broadcast the canonical snapshot to every readable operator surface."""
 
-    snapshot = model_routing_snapshot(getattr(ctx, "config", None))
+    active_config = config if config is not None else getattr(ctx, "config", None)
+    snapshot = model_routing_snapshot(active_config)
     payload = {**snapshot, "source": source}
     subscription_manager = getattr(ctx, "subscription_manager", None)
     if subscription_manager is None:
@@ -132,9 +138,37 @@ async def broadcast_model_routing_changed(ctx: Any, *, source: str) -> dict[str,
     return payload
 
 
+async def broadcast_model_routing_changed_if_needed(
+    ctx: Any,
+    *,
+    previous: dict[str, Any],
+    source: str,
+    config: Any | None = None,
+) -> dict[str, Any] | None:
+    """Broadcast only when the canonical routing snapshot actually changed.
+
+    Config hot-apply handlers mutate the long-lived Gateway config object in
+    place.  Callers therefore capture ``previous`` before the write and pass
+    the successfully applied config here afterwards.  Comparing the complete
+    public snapshot keeps every config entry point aligned without guessing
+    which individual fields might affect the routing state machine.
+    """
+
+    active_config = config if config is not None else getattr(ctx, "config", None)
+    current = model_routing_snapshot(active_config)
+    if current == previous:
+        return None
+    return await broadcast_model_routing_changed(
+        ctx,
+        source=source,
+        config=active_config,
+    )
+
+
 __all__ = [
     "ModelRoutingMode",
     "broadcast_model_routing_changed",
+    "broadcast_model_routing_changed_if_needed",
     "capture_model_routing_config",
     "model_routing_patches",
     "model_routing_snapshot",

@@ -219,7 +219,7 @@ async def _resolve_decision(
 ) -> None:
     approved, choice = decision
     try:
-        await resolve_approval(envelope.approval_id, approved, choice=choice)
+        result = await resolve_approval(envelope.approval_id, approved, choice=choice)
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -232,18 +232,30 @@ async def _resolve_decision(
         )
         await _render_notice(renderer, f"failed to resolve approval: {exc}", style="red")
         return
+    canonical_approved = approved
+    if isinstance(result, dict):
+        if bool(result.get("pending")) and not bool(result.get("resolved")):
+            await _render_notice(
+                renderer,
+                f"approval is being resolved on another surface — {envelope.tool}",
+                style="yellow",
+            )
+            return
+        if bool(result.get("resolved")) and "approved" in result:
+            canonical_approved = bool(result["approved"])
     log.info(
         "tui.approval.resolved",
         approval_id=envelope.approval_id,
         tool=envelope.tool,
-        approved=approved,
+        approved=canonical_approved,
         choice=choice,
     )
-    label = "approved" if approved else "denied"
+    label = "approved" if canonical_approved else "denied"
+    external = " by another surface" if canonical_approved != approved else ""
     await _render_notice(
         renderer,
-        f"approval {label} — {envelope.tool}",
-        style="green" if approved else "yellow",
+        f"approval {label}{external} — {envelope.tool}",
+        style="green" if canonical_approved else "yellow",
     )
 
 

@@ -224,6 +224,68 @@ async def test_gateway_approval_resolution_reuses_and_dismisses_pushed_overlay()
 
 
 @pytest.mark.asyncio
+async def test_canonical_approval_refreshes_push_first_overlay_choices() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+    preview = {
+        "id": "appr-richer",
+        "tool": "shell",
+        "summary": "echo hello",
+        "choices": [],
+    }
+    canonical = {
+        **preview,
+        "choices": ["allow_once", "allow_same_type"],
+    }
+
+    assert await output.present_gateway_approval(preview) is True
+    waiter = asyncio.create_task(output.request_approval(canonical))
+    await asyncio.sleep(0)
+
+    requests = [payload for kind, payload in bridge.sent if kind == "approval.request"]
+    assert requests == [preview, canonical]
+
+    await output.resolve_gateway_approval(
+        "appr-richer",
+        approved=True,
+        resolution="allow_same_type",
+    )
+    response = await waiter
+    assert response is not None
+    assert response.approved is True
+    assert response.resolution == "allow_same_type"
+
+
+@pytest.mark.asyncio
+async def test_late_push_preview_does_not_downgrade_canonical_approval() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+    canonical = {
+        "id": "appr-canonical-first",
+        "tool": "shell",
+        "summary": "echo hello",
+        "choices": ["allow_once", "allow_same_type"],
+    }
+    preview = {**canonical, "choices": []}
+
+    waiter = asyncio.create_task(output.request_approval(canonical))
+    await asyncio.sleep(0)
+    assert await output.present_gateway_approval(preview) is True
+
+    requests = [payload for kind, payload in bridge.sent if kind == "approval.request"]
+    assert requests == [canonical]
+
+    await output.resolve_gateway_approval(
+        "appr-canonical-first",
+        approved=False,
+        resolution="denied",
+    )
+    response = await waiter
+    assert response is not None
+    assert response.approved is False
+
+
+@pytest.mark.asyncio
 async def test_gateway_resolution_wins_race_with_uncommitted_local_keypress() -> None:
     bridge = FakeOpenTuiBridge()
     output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
@@ -244,6 +306,36 @@ async def test_gateway_resolution_wins_race_with_uncommitted_local_keypress() ->
     assert response is not None
     assert response.approved is True
     assert response.resolved_externally is True
+
+
+@pytest.mark.asyncio
+async def test_late_preview_cannot_reopen_locally_resolved_overlay() -> None:
+    bridge = FakeOpenTuiBridge()
+    output = OpenTuiOutputHandle(bridge, approval_surface=Surface.CLI_GATEWAY)
+    canonical = {
+        "id": "appr-local-race",
+        "tool": "shell",
+        "summary": "echo hello",
+        "choices": ["allow_once", "deny"],
+    }
+    preview = {**canonical, "choices": []}
+    waiter = asyncio.create_task(output.request_approval(canonical))
+    await asyncio.sleep(0)
+
+    assert output.deliver_approval_response(
+        HostApprovalResponse(id="appr-local-race", approved=True, choice="allow_once")
+    )
+    # Reproduce the exact interleaving: the local future is complete, but its
+    # coroutine has not resumed when a delayed pushed preview arrives.
+    assert await output.present_gateway_approval(preview) is True
+
+    response = await waiter
+    assert response is not None
+    assert response.approved is True
+    requests = [payload for kind, payload in bridge.sent if kind == "approval.request"]
+    assert requests == [canonical]
+    assert output._approval_waiters == {}
+    assert output._approval_requests == {}
 
 
 @pytest.mark.asyncio

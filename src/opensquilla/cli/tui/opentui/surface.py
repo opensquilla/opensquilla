@@ -105,6 +105,12 @@ class OpenTuiOutputHandle:
             str,
             asyncio.Future[HostApprovalResponse | ExternalApprovalResolution | None],
         ] = {}
+        # Last payload shown for each approval. Gateway push events can arrive
+        # before the canonical tool request and may intentionally contain only
+        # a summary. Keep the rendered payload so the richer request can
+        # replace the existing overlay instead of silently losing choices such
+        # as ``allow_same_type``.
+        self._approval_requests: dict[str, dict[str, object]] = {}
         self._resolved_gateway_approvals: dict[str, ExternalApprovalResolution] = {}
         self._attachment_states: dict[str, AttachmentState] = {}
         self._attachment_seq = 0
@@ -254,7 +260,7 @@ class OpenTuiOutputHandle:
         approval_id = str(request.get("id") or "")
         if not approval_id:
             return None
-        resolved = self._resolved_gateway_approvals.pop(approval_id, None)
+        resolved = self._resolved_gateway_approvals.get(approval_id)
         if resolved is not None:
             return resolved
         wait_seconds = _APPROVAL_RESPONSE_TIMEOUT_SECONDS if timeout is None else timeout
@@ -263,15 +269,21 @@ class OpenTuiOutputHandle:
         if future is None:
             future = asyncio.get_running_loop().create_future()
             self._approval_waiters[approval_id] = future
+        assert future is not None
+        payload = dict(request)
         try:
-            if created:
-                await self._bridge.send("approval.request", dict(request))
+            # A push-first overlay may be a deliberately small preview. The
+            # canonical request owns the choices, so refresh only when its
+            # payload is actually different; identical re-entry stays quiet.
+            if created or self._approval_requests.get(approval_id) != payload:
+                await self._bridge.send("approval.request", payload)
+                self._approval_requests[approval_id] = payload
             response = await asyncio.wait_for(asyncio.shield(future), wait_seconds)
             # A gateway resolved push can race a keypress that completed the
             # local future. If the push landed before this waiter resumed, the
             # gateway decision is authoritative and suppresses a stale second
             # resolve RPC from this client.
-            return self._resolved_gateway_approvals.pop(approval_id, None) or response
+            return self._resolved_gateway_approvals.get(approval_id) or response
         except TimeoutError:
             log.warning("opentui.approval.timeout", approval_id=approval_id)
             if not future.done():
@@ -293,10 +305,18 @@ class OpenTuiOutputHandle:
                 approval_id=approval_id,
                 error=str(exc),
             )
+            if not future.done():
+                future.set_result(None)
+            if self._approval_waiters.get(approval_id) is future:
+                self._approval_waiters.pop(approval_id, None)
+            self._approval_requests.pop(approval_id, None)
+            await self._dismiss_host_approval(approval_id)
             return None
         finally:
             if future.done() and self._approval_waiters.get(approval_id) is future:
                 self._approval_waiters.pop(approval_id, None)
+            if future.done():
+                self._approval_requests.pop(approval_id, None)
 
     async def present_gateway_approval(self, request: dict[str, object]) -> bool:
         """Pre-present a pushed approval without claiming its resolution RPC."""
@@ -306,14 +326,20 @@ class OpenTuiOutputHandle:
             return False
         if approval_id in self._resolved_gateway_approvals:
             return False
+        # Push events are previews. They may arrive after the canonical tool
+        # request and intentionally omit choices, so they must never replace
+        # an overlay that already exists. ``request_approval`` is the only path
+        # allowed to upgrade a preview with canonical details.
         if approval_id in self._approval_waiters:
             return True
+        payload = dict(request)
         future: asyncio.Future[HostApprovalResponse | ExternalApprovalResolution | None] = (
             asyncio.get_running_loop().create_future()
         )
         self._approval_waiters[approval_id] = future
         try:
-            await self._bridge.send("approval.request", dict(request))
+            await self._bridge.send("approval.request", payload)
+            self._approval_requests[approval_id] = payload
         except Exception:
             self._approval_waiters.pop(approval_id, None)
             if not future.done():
@@ -339,6 +365,7 @@ class OpenTuiOutputHandle:
         while len(self._resolved_gateway_approvals) > 256:
             self._resolved_gateway_approvals.pop(next(iter(self._resolved_gateway_approvals)))
         future = self._approval_waiters.pop(approval_id, None)
+        self._approval_requests.pop(approval_id, None)
         if future is not None and not future.done():
             future.set_result(decision)
         await self._dismiss_host_approval(approval_id)
@@ -361,7 +388,11 @@ class OpenTuiOutputHandle:
 
     def deliver_approval_response(self, response: HostApprovalResponse) -> bool:
         """Resolve the waiter for one host approval decision, if still pending."""
-        future = self._approval_waiters.pop(response.id, None)
+        # Keep the completed waiter registered until the owning
+        # ``request_approval`` coroutine reaches its ``finally`` block. A late
+        # pushed preview can otherwise observe a transiently empty registry,
+        # reopen the overlay, and leave an orphan waiter behind.
+        future = self._approval_waiters.get(response.id)
         if future is None or future.done():
             log.warning("opentui.approval.unmatched_response", approval_id=response.id)
             return False
@@ -374,6 +405,7 @@ class OpenTuiOutputHandle:
             _, future = self._approval_waiters.popitem()
             if not future.done():
                 future.set_result(None)
+        self._approval_requests.clear()
 
     async def fail_pending_gateway_approvals(self) -> None:
         """Fail closed and dismiss every overlay after gateway disconnect."""

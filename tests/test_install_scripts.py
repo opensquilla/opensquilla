@@ -23,6 +23,7 @@ def _run_posix_release_installer(
     machine: str,
     release_tag: str = CURRENT_RELEASE_TAG,
     dry_run: bool = True,
+    linux_libc: str | None = "glibc 2.28",
 ) -> subprocess.CompletedProcess[str]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -37,6 +38,21 @@ def _run_posix_release_installer(
         encoding="utf-8",
     )
     uname.chmod(0o755)
+    if system == "Linux":
+        getconf = fake_bin / "getconf"
+        if linux_libc is None:
+            getconf.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        else:
+            getconf.write_text(
+                "#!/bin/sh\n"
+                'if [ "$1" = "GNU_LIBC_VERSION" ]; then\n'
+                f"  echo '{linux_libc}'\n"
+                "  exit 0\n"
+                "fi\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+        getconf.chmod(0o755)
     if not dry_run:
         uv = fake_bin / "uv"
         uv.write_text(
@@ -349,7 +365,7 @@ def test_release_sh_rolls_back_before_linux_companion_as_core_only(
     assert "opensquilla-tui-host" not in result.stdout
 
 
-def test_release_sh_rejects_unsupported_linux_arch_for_paired_release(tmp_path: Path) -> None:
+def test_release_sh_keeps_core_install_on_unsupported_linux_arch(tmp_path: Path) -> None:
     result = _run_posix_release_installer(
         tmp_path,
         system="Linux",
@@ -357,9 +373,48 @@ def test_release_sh_rejects_unsupported_linux_arch_for_paired_release(tmp_path: 
         release_tag=FIRST_TUI_HOST_RELEASE_TAG,
     )
 
-    assert result.returncode != 0
+    assert result.returncode == 0, result.stderr
     assert "this Linux architecture does not have a TUI host release asset" in result.stderr
-    assert "supported Linux architectures: aarch64, x86_64" in result.stderr
+    assert "supported Linux TUI architectures: aarch64, x86_64" in result.stderr
+    assert "installing core only" in result.stderr
+    assert "--with" not in result.stdout
+    assert "opensquilla_tui_host" not in result.stdout
+
+
+def test_release_sh_keeps_core_install_on_unsupported_macos_arch(tmp_path: Path) -> None:
+    result = _run_posix_release_installer(
+        tmp_path,
+        system="Darwin",
+        machine="powerpc",
+        release_tag=FIRST_TUI_HOST_RELEASE_TAG,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "this macOS architecture does not have a TUI host release asset" in result.stderr
+    assert "supported macOS TUI architectures: arm64, x86_64" in result.stderr
+    assert "installing core only" in result.stderr
+    assert "--with" not in result.stdout
+    assert "opensquilla_tui_host" not in result.stdout
+
+
+@pytest.mark.parametrize("linux_libc", ["musl 1.2.5", "glibc 2.27", None])
+def test_release_sh_keeps_core_install_on_incompatible_linux_libc(
+    tmp_path: Path,
+    linux_libc: str | None,
+) -> None:
+    result = _run_posix_release_installer(
+        tmp_path,
+        system="Linux",
+        machine="x86_64",
+        release_tag=FIRST_TUI_HOST_RELEASE_TAG,
+        linux_libc=linux_libc,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "cannot run the manylinux_2_28 TUI host" in result.stderr
+    assert "glibc 2.28 or newer is required" in result.stderr
+    assert "--with" not in result.stdout
+    assert "opensquilla_tui_host" not in result.stdout
 
 
 def test_release_sh_allows_unsupported_linux_arch_for_core_only_rollback(tmp_path: Path) -> None:

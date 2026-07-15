@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from opensquilla.gateway.config_secrets import inherit_runtime_secrets
+from opensquilla.gateway.model_routing import broadcast_model_routing_changed
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
@@ -515,6 +516,11 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
+    await broadcast_model_routing_changed(
+        ctx,
+        source="onboarding.router.configure",
+        config=res.config,
+    )
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -549,6 +555,11 @@ async def _ensemble_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
+    await broadcast_model_routing_changed(
+        ctx,
+        source="onboarding.ensemble.configure",
+        config=res.config,
+    )
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,

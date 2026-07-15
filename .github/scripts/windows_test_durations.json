@@ -702,6 +702,7 @@
     "tests/test_public_release_golden_static.py": 0.033,
     "tests/test_public_release_hygiene.py": 6.159,
     "tests/test_public_tool_surface.py": 1.053,
+    "tests/test_ranking_router.py": 0.02,
     "tests/test_readme_links.py": 0.01,
     "tests/test_recovery/test_atomic_and_locking.py": 11.945,
     "tests/test_recovery/test_cleanup.py": 6.66,

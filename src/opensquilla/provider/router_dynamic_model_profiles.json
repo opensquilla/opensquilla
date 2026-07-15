@@ -1,0 +1,970 @@
+{
+  "schema_version": "step2-model-registry-v1",
+  "snapshot_version": "mock-step2-2026-07-14.2",
+  "models": [
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "off"},
+      "registry_facts": {
+        "model_id": "deepseek/deepseek-v4-flash",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "deepseek",
+        "family": "deepseek-v4",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 128000,
+        "effective_context_bucket": "long",
+        "modalities": ["text"],
+        "tools": ["code_execution", "file_system", "api_call"],
+        "price": {"input_per_million": 0.14, "output_per_million": 0.28},
+        "latency_p50_ms": 900,
+        "latency_p95_ms": 2500,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.64,
+          "code_generation": 0.71,
+          "code_review": 0.62,
+          "tool_use": 0.62,
+          "planning": 0.58,
+          "retrieval": 0.52,
+          "summarization": 0.68,
+          "writing": 0.62,
+          "math": 0.65,
+          "data_analysis": 0.60,
+          "visual_understanding": 0.05,
+          "audio_understanding": 0.05,
+          "long_context": 0.56,
+          "format_following": 0.69,
+          "safety_judgment": 0.54
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.70,
+          "data_science": 0.60,
+          "document_processing": 0.61,
+          "business_analysis": 0.55,
+          "creative_writing": 0.55,
+          "education": 0.60,
+          "research": 0.55,
+          "customer_support": 0.62,
+          "legal": 0.43,
+          "finance": 0.50,
+          "medical": 0.42,
+          "technical_writing": 0.66,
+          "general": 0.66
+        },
+        "tier_dist_prior": {"1": 0.92, "2": 0.78, "3": 0.58, "4": 0.38},
+        "role_fit_prior": {"proposer": 0.72, "aggregator": 0.60}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.13,
+          "omission": 0.15,
+          "format_error": 0.07,
+          "tool_error": 0.10,
+          "timeout": 0.02
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "deepseek/deepseek-v4-pro",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "deepseek",
+        "family": "deepseek-v4",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 128000,
+        "effective_context_bucket": "long",
+        "modalities": ["text"],
+        "tools": ["code_execution", "file_system", "api_call"],
+        "price": {"input_per_million": 0.50, "output_per_million": 1.50},
+        "latency_p50_ms": 1800,
+        "latency_p95_ms": 5200,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.84,
+          "code_generation": 0.88,
+          "code_review": 0.84,
+          "tool_use": 0.78,
+          "planning": 0.80,
+          "retrieval": 0.64,
+          "summarization": 0.76,
+          "writing": 0.72,
+          "math": 0.82,
+          "data_analysis": 0.78,
+          "visual_understanding": 0.05,
+          "audio_understanding": 0.05,
+          "long_context": 0.70,
+          "format_following": 0.82,
+          "safety_judgment": 0.69
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.89,
+          "data_science": 0.79,
+          "document_processing": 0.71,
+          "business_analysis": 0.70,
+          "creative_writing": 0.61,
+          "education": 0.73,
+          "research": 0.72,
+          "customer_support": 0.66,
+          "legal": 0.58,
+          "finance": 0.67,
+          "medical": 0.55,
+          "technical_writing": 0.82,
+          "general": 0.78
+        },
+        "tier_dist_prior": {"1": 0.95, "2": 0.90, "3": 0.82, "4": 0.70},
+        "role_fit_prior": {"proposer": 0.89, "aggregator": 0.78}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.07,
+          "omission": 0.08,
+          "format_error": 0.04,
+          "tool_error": 0.06,
+          "timeout": 0.05
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "medium"},
+      "registry_facts": {
+        "model_id": "google/gemini-3-flash-preview",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "google",
+        "family": "gemini-3",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 1000000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "audio", "video", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.50, "output_per_million": 3.00},
+        "latency_p50_ms": 950,
+        "latency_p95_ms": 3000,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.76,
+          "code_generation": 0.72,
+          "code_review": 0.69,
+          "tool_use": 0.82,
+          "planning": 0.71,
+          "retrieval": 0.82,
+          "summarization": 0.83,
+          "writing": 0.77,
+          "math": 0.71,
+          "data_analysis": 0.79,
+          "visual_understanding": 0.91,
+          "audio_understanding": 0.87,
+          "long_context": 0.94,
+          "format_following": 0.78,
+          "safety_judgment": 0.70
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.73,
+          "data_science": 0.81,
+          "document_processing": 0.90,
+          "business_analysis": 0.78,
+          "creative_writing": 0.73,
+          "education": 0.82,
+          "research": 0.87,
+          "customer_support": 0.72,
+          "legal": 0.61,
+          "finance": 0.68,
+          "medical": 0.63,
+          "technical_writing": 0.77,
+          "general": 0.82
+        },
+        "tier_dist_prior": {"1": 0.94, "2": 0.87, "3": 0.77, "4": 0.61},
+        "role_fit_prior": {"proposer": 0.81, "aggregator": 0.79}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.09,
+          "omission": 0.06,
+          "format_error": 0.08,
+          "tool_error": 0.04,
+          "timeout": 0.03
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "z-ai/glm-5.2",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "z-ai",
+        "family": "glm-5",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 200000,
+        "effective_context_bucket": "long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.70, "output_per_million": 2.50},
+        "latency_p50_ms": 1700,
+        "latency_p95_ms": 4800,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.87,
+          "code_generation": 0.84,
+          "code_review": 0.86,
+          "tool_use": 0.83,
+          "planning": 0.84,
+          "retrieval": 0.76,
+          "summarization": 0.84,
+          "writing": 0.83,
+          "math": 0.80,
+          "data_analysis": 0.82,
+          "visual_understanding": 0.77,
+          "audio_understanding": 0.08,
+          "long_context": 0.84,
+          "format_following": 0.88,
+          "safety_judgment": 0.80
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.86,
+          "data_science": 0.82,
+          "document_processing": 0.84,
+          "business_analysis": 0.85,
+          "creative_writing": 0.76,
+          "education": 0.82,
+          "research": 0.82,
+          "customer_support": 0.80,
+          "legal": 0.71,
+          "finance": 0.76,
+          "medical": 0.67,
+          "technical_writing": 0.87,
+          "general": 0.86
+        },
+        "tier_dist_prior": {"1": 0.96, "2": 0.92, "3": 0.86, "4": 0.77},
+        "role_fit_prior": {"proposer": 0.87, "aggregator": 0.93}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.05,
+          "omission": 0.05,
+          "format_error": 0.03,
+          "tool_error": 0.05,
+          "timeout": 0.04
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "medium"},
+      "registry_facts": {
+        "model_id": "qwen/qwen3.7-plus",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "qwen",
+        "family": "qwen3",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 128000,
+        "effective_context_bucket": "long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.40, "output_per_million": 1.20},
+        "latency_p50_ms": 1300,
+        "latency_p95_ms": 3900,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.79,
+          "code_generation": 0.80,
+          "code_review": 0.76,
+          "tool_use": 0.74,
+          "planning": 0.75,
+          "retrieval": 0.70,
+          "summarization": 0.78,
+          "writing": 0.78,
+          "math": 0.76,
+          "data_analysis": 0.76,
+          "visual_understanding": 0.69,
+          "audio_understanding": 0.07,
+          "long_context": 0.73,
+          "format_following": 0.81,
+          "safety_judgment": 0.69
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.81,
+          "data_science": 0.78,
+          "document_processing": 0.78,
+          "business_analysis": 0.76,
+          "creative_writing": 0.73,
+          "education": 0.77,
+          "research": 0.75,
+          "customer_support": 0.75,
+          "legal": 0.61,
+          "finance": 0.68,
+          "medical": 0.58,
+          "technical_writing": 0.81,
+          "general": 0.80
+        },
+        "tier_dist_prior": {"1": 0.95, "2": 0.88, "3": 0.78, "4": 0.64},
+        "role_fit_prior": {"proposer": 0.82, "aggregator": 0.76}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.08,
+          "omission": 0.10,
+          "format_error": 0.04,
+          "tool_error": 0.07,
+          "timeout": 0.03
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "moonshotai/kimi-k2.7-code",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "moonshotai",
+        "family": "kimi-k2-code",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 256000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.60, "output_per_million": 2.00},
+        "latency_p50_ms": 1600,
+        "latency_p95_ms": 4600,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.82,
+          "code_generation": 0.92,
+          "code_review": 0.89,
+          "tool_use": 0.87,
+          "planning": 0.83,
+          "retrieval": 0.72,
+          "summarization": 0.74,
+          "writing": 0.68,
+          "math": 0.77,
+          "data_analysis": 0.76,
+          "visual_understanding": 0.74,
+          "audio_understanding": 0.06,
+          "long_context": 0.87,
+          "format_following": 0.91,
+          "safety_judgment": 0.67
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.94,
+          "data_science": 0.78,
+          "document_processing": 0.73,
+          "business_analysis": 0.68,
+          "creative_writing": 0.60,
+          "education": 0.72,
+          "research": 0.73,
+          "customer_support": 0.61,
+          "legal": 0.54,
+          "finance": 0.62,
+          "medical": 0.50,
+          "technical_writing": 0.90,
+          "general": 0.75
+        },
+        "tier_dist_prior": {"1": 0.96, "2": 0.92, "3": 0.87, "4": 0.75},
+        "role_fit_prior": {"proposer": 0.94, "aggregator": 0.80}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.06,
+          "omission": 0.07,
+          "format_error": 0.02,
+          "tool_error": 0.04,
+          "timeout": 0.06
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "qwen/qwen3.7-max",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "qwen",
+        "family": "qwen3",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 256000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 1.20, "output_per_million": 4.00},
+        "latency_p50_ms": 2200,
+        "latency_p95_ms": 6200,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.89,
+          "code_generation": 0.88,
+          "code_review": 0.87,
+          "tool_use": 0.84,
+          "planning": 0.86,
+          "retrieval": 0.78,
+          "summarization": 0.84,
+          "writing": 0.85,
+          "math": 0.86,
+          "data_analysis": 0.85,
+          "visual_understanding": 0.79,
+          "audio_understanding": 0.08,
+          "long_context": 0.89,
+          "format_following": 0.89,
+          "safety_judgment": 0.79
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.90,
+          "data_science": 0.86,
+          "document_processing": 0.85,
+          "business_analysis": 0.84,
+          "creative_writing": 0.80,
+          "education": 0.84,
+          "research": 0.84,
+          "customer_support": 0.79,
+          "legal": 0.70,
+          "finance": 0.78,
+          "medical": 0.67,
+          "technical_writing": 0.90,
+          "general": 0.89
+        },
+        "tier_dist_prior": {"1": 0.97, "2": 0.94, "3": 0.89, "4": 0.82},
+        "role_fit_prior": {"proposer": 0.91, "aggregator": 0.89}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.04,
+          "omission": 0.06,
+          "format_error": 0.03,
+          "tool_error": 0.05,
+          "timeout": 0.07
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "xhigh"},
+      "registry_facts": {
+        "model_id": "anthropic/claude-opus-4.8",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "anthropic",
+        "family": "claude-4",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 200000,
+        "effective_context_bucket": "long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 15.00, "output_per_million": 75.00},
+        "latency_p50_ms": 4800,
+        "latency_p95_ms": 14000,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.97,
+          "code_generation": 0.93,
+          "code_review": 0.96,
+          "tool_use": 0.90,
+          "planning": 0.96,
+          "retrieval": 0.85,
+          "summarization": 0.94,
+          "writing": 0.97,
+          "math": 0.91,
+          "data_analysis": 0.91,
+          "visual_understanding": 0.89,
+          "audio_understanding": 0.08,
+          "long_context": 0.93,
+          "format_following": 0.94,
+          "safety_judgment": 0.96
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.95,
+          "data_science": 0.90,
+          "document_processing": 0.96,
+          "business_analysis": 0.95,
+          "creative_writing": 0.97,
+          "education": 0.95,
+          "research": 0.96,
+          "customer_support": 0.89,
+          "legal": 0.91,
+          "finance": 0.90,
+          "medical": 0.87,
+          "technical_writing": 0.97,
+          "general": 0.97
+        },
+        "tier_dist_prior": {"1": 0.99, "2": 0.98, "3": 0.96, "4": 0.94},
+        "role_fit_prior": {"proposer": 0.97, "aggregator": 0.98}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.02,
+          "omission": 0.02,
+          "format_error": 0.02,
+          "tool_error": 0.03,
+          "timeout": 0.10
+        }
+      }
+    },
+    {
+      "source": "mock_registry",
+      "runtime": {"thinking": "xhigh"},
+      "registry_facts": {
+        "model_id": "openai/gpt-5.5",
+        "version": "mock-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "openai",
+        "family": "gpt-5",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 400000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 10.00, "output_per_million": 60.00},
+        "latency_p50_ms": 4300,
+        "latency_p95_ms": 13000,
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {
+          "reasoning": 0.98,
+          "code_generation": 0.96,
+          "code_review": 0.97,
+          "tool_use": 0.95,
+          "planning": 0.97,
+          "retrieval": 0.89,
+          "summarization": 0.94,
+          "writing": 0.94,
+          "math": 0.96,
+          "data_analysis": 0.96,
+          "visual_understanding": 0.91,
+          "audio_understanding": 0.09,
+          "long_context": 0.96,
+          "format_following": 0.97,
+          "safety_judgment": 0.95
+        },
+        "domain_dist_prior": {
+          "software_engineering": 0.98,
+          "data_science": 0.96,
+          "document_processing": 0.94,
+          "business_analysis": 0.95,
+          "creative_writing": 0.91,
+          "education": 0.94,
+          "research": 0.95,
+          "customer_support": 0.90,
+          "legal": 0.90,
+          "finance": 0.93,
+          "medical": 0.88,
+          "technical_writing": 0.97,
+          "general": 0.97
+        },
+        "tier_dist_prior": {"1": 0.99, "2": 0.98, "3": 0.97, "4": 0.95},
+        "role_fit_prior": {"proposer": 0.98, "aggregator": 0.97}
+      },
+      "online_profile": {
+        "error_rates": {
+          "hallucination": 0.02,
+          "omission": 0.03,
+          "format_error": 0.01,
+          "tool_error": 0.02,
+          "timeout": 0.09
+        }
+      }
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "off"},
+      "registry_facts": {
+        "model_id": "poolside/laguna-xs-2.1",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "poolside",
+        "family": "laguna-xs",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 262144,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text"],
+        "tools": ["code_execution", "file_system", "api_call"],
+        "price": {"input_per_million": 0.06, "output_per_million": 0.12},
+        "latency_p50_ms": 600,
+        "latency_p95_ms": 1800,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.68, "code_generation": 0.78, "code_review": 0.72, "tool_use": 0.70, "planning": 0.65, "retrieval": 0.48, "summarization": 0.60, "writing": 0.54, "math": 0.61, "data_analysis": 0.59, "visual_understanding": 0.05, "audio_understanding": 0.05, "long_context": 0.76, "format_following": 0.73, "safety_judgment": 0.50},
+        "domain_dist_prior": {"software_engineering": 0.82, "data_science": 0.61, "document_processing": 0.55, "business_analysis": 0.50, "creative_writing": 0.45, "education": 0.55, "research": 0.52, "customer_support": 0.50, "legal": 0.38, "finance": 0.43, "medical": 0.36, "technical_writing": 0.70, "general": 0.60},
+        "tier_dist_prior": {"1": 0.95, "2": 0.78, "3": 0.55, "4": 0.35},
+        "role_fit_prior": {"proposer": 0.78, "aggregator": 0.55}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.12, "omission": 0.10, "format_error": 0.07, "tool_error": 0.08, "timeout": 0.03}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "low"},
+      "registry_facts": {
+        "model_id": "tencent/hy3",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "tencent",
+        "family": "hy3",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 262144,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text"],
+        "tools": ["code_execution", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.14, "output_per_million": 0.58},
+        "latency_p50_ms": 900,
+        "latency_p95_ms": 2600,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.74, "code_generation": 0.72, "code_review": 0.68, "tool_use": 0.71, "planning": 0.70, "retrieval": 0.57, "summarization": 0.66, "writing": 0.61, "math": 0.72, "data_analysis": 0.67, "visual_understanding": 0.05, "audio_understanding": 0.05, "long_context": 0.78, "format_following": 0.70, "safety_judgment": 0.57},
+        "domain_dist_prior": {"software_engineering": 0.73, "data_science": 0.69, "document_processing": 0.62, "business_analysis": 0.61, "creative_writing": 0.54, "education": 0.64, "research": 0.64, "customer_support": 0.58, "legal": 0.45, "finance": 0.54, "medical": 0.43, "technical_writing": 0.69, "general": 0.70},
+        "tier_dist_prior": {"1": 0.94, "2": 0.82, "3": 0.64, "4": 0.44},
+        "role_fit_prior": {"proposer": 0.76, "aggregator": 0.66}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.10, "omission": 0.12, "format_error": 0.05, "tool_error": 0.06, "timeout": 0.04}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "medium"},
+      "registry_facts": {
+        "model_id": "kwaipilot/kat-coder-air-v2.5",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "kwaipilot",
+        "family": "kat-coder-v2.5",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 256000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text"],
+        "tools": ["code_execution", "file_system", "api_call"],
+        "price": {"input_per_million": 0.15, "output_per_million": 0.60},
+        "latency_p50_ms": 800,
+        "latency_p95_ms": 2200,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.72, "code_generation": 0.83, "code_review": 0.79, "tool_use": 0.78, "planning": 0.72, "retrieval": 0.52, "summarization": 0.59, "writing": 0.51, "math": 0.66, "data_analysis": 0.63, "visual_understanding": 0.05, "audio_understanding": 0.05, "long_context": 0.75, "format_following": 0.80, "safety_judgment": 0.50},
+        "domain_dist_prior": {"software_engineering": 0.86, "data_science": 0.66, "document_processing": 0.56, "business_analysis": 0.49, "creative_writing": 0.42, "education": 0.55, "research": 0.54, "customer_support": 0.46, "legal": 0.36, "finance": 0.42, "medical": 0.34, "technical_writing": 0.75, "general": 0.60},
+        "tier_dist_prior": {"1": 0.95, "2": 0.84, "3": 0.66, "4": 0.43},
+        "role_fit_prior": {"proposer": 0.85, "aggregator": 0.58}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.11, "omission": 0.08, "format_error": 0.05, "tool_error": 0.05, "timeout": 0.03}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "off"},
+      "registry_facts": {
+        "model_id": "meta-llama/llama-4-scout",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "meta-llama",
+        "family": "llama-4",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 10000000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image"],
+        "tools": ["code_execution", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.10, "output_per_million": 0.30},
+        "latency_p50_ms": 950,
+        "latency_p95_ms": 3000,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.74, "code_generation": 0.70, "code_review": 0.66, "tool_use": 0.69, "planning": 0.67, "retrieval": 0.73, "summarization": 0.79, "writing": 0.72, "math": 0.64, "data_analysis": 0.70, "visual_understanding": 0.75, "audio_understanding": 0.05, "long_context": 0.96, "format_following": 0.70, "safety_judgment": 0.62},
+        "domain_dist_prior": {"software_engineering": 0.71, "data_science": 0.72, "document_processing": 0.82, "business_analysis": 0.68, "creative_writing": 0.70, "education": 0.73, "research": 0.78, "customer_support": 0.67, "legal": 0.52, "finance": 0.57, "medical": 0.50, "technical_writing": 0.72, "general": 0.76},
+        "tier_dist_prior": {"1": 0.95, "2": 0.84, "3": 0.69, "4": 0.49},
+        "role_fit_prior": {"proposer": 0.76, "aggregator": 0.69}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.12, "omission": 0.09, "format_error": 0.07, "tool_error": 0.08, "timeout": 0.03}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "kwaipilot/kat-coder-pro-v2.5",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "kwaipilot",
+        "family": "kat-coder-v2.5",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 256000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text"],
+        "tools": ["code_execution", "file_system", "api_call"],
+        "price": {"input_per_million": 0.74, "output_per_million": 2.96},
+        "latency_p50_ms": 1300,
+        "latency_p95_ms": 3800,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.84, "code_generation": 0.92, "code_review": 0.90, "tool_use": 0.87, "planning": 0.84, "retrieval": 0.62, "summarization": 0.68, "writing": 0.60, "math": 0.78, "data_analysis": 0.73, "visual_understanding": 0.05, "audio_understanding": 0.05, "long_context": 0.84, "format_following": 0.89, "safety_judgment": 0.62},
+        "domain_dist_prior": {"software_engineering": 0.95, "data_science": 0.77, "document_processing": 0.65, "business_analysis": 0.58, "creative_writing": 0.48, "education": 0.65, "research": 0.66, "customer_support": 0.54, "legal": 0.45, "finance": 0.52, "medical": 0.42, "technical_writing": 0.87, "general": 0.72},
+        "tier_dist_prior": {"1": 0.97, "2": 0.92, "3": 0.85, "4": 0.72},
+        "role_fit_prior": {"proposer": 0.93, "aggregator": 0.72}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.06, "omission": 0.06, "format_error": 0.03, "tool_error": 0.03, "timeout": 0.05}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "medium"},
+      "registry_facts": {
+        "model_id": "minimax/minimax-m3",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "minimax",
+        "family": "minimax-m3",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 1048576,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "video"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 0.30, "output_per_million": 1.20},
+        "latency_p50_ms": 1100,
+        "latency_p95_ms": 3600,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.82, "code_generation": 0.79, "code_review": 0.75, "tool_use": 0.82, "planning": 0.78, "retrieval": 0.78, "summarization": 0.82, "writing": 0.82, "math": 0.75, "data_analysis": 0.79, "visual_understanding": 0.82, "audio_understanding": 0.08, "long_context": 0.93, "format_following": 0.80, "safety_judgment": 0.70},
+        "domain_dist_prior": {"software_engineering": 0.80, "data_science": 0.80, "document_processing": 0.84, "business_analysis": 0.79, "creative_writing": 0.82, "education": 0.81, "research": 0.82, "customer_support": 0.77, "legal": 0.62, "finance": 0.68, "medical": 0.59, "technical_writing": 0.80, "general": 0.83},
+        "tier_dist_prior": {"1": 0.96, "2": 0.90, "3": 0.80, "4": 0.66},
+        "role_fit_prior": {"proposer": 0.84, "aggregator": 0.81}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.07, "omission": 0.08, "format_error": 0.05, "tool_error": 0.04, "timeout": 0.04}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "medium"},
+      "registry_facts": {
+        "model_id": "mistralai/mistral-medium-3-5",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "mistralai",
+        "family": "mistral-medium",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 262144,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 1.50, "output_per_million": 7.50},
+        "latency_p50_ms": 1400,
+        "latency_p95_ms": 4300,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.86, "code_generation": 0.84, "code_review": 0.84, "tool_use": 0.85, "planning": 0.84, "retrieval": 0.77, "summarization": 0.85, "writing": 0.85, "math": 0.79, "data_analysis": 0.82, "visual_understanding": 0.79, "audio_understanding": 0.06, "long_context": 0.85, "format_following": 0.88, "safety_judgment": 0.79},
+        "domain_dist_prior": {"software_engineering": 0.86, "data_science": 0.83, "document_processing": 0.86, "business_analysis": 0.84, "creative_writing": 0.81, "education": 0.84, "research": 0.84, "customer_support": 0.80, "legal": 0.71, "finance": 0.76, "medical": 0.67, "technical_writing": 0.87, "general": 0.86},
+        "tier_dist_prior": {"1": 0.97, "2": 0.93, "3": 0.86, "4": 0.77},
+        "role_fit_prior": {"proposer": 0.87, "aggregator": 0.86}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.06, "omission": 0.07, "format_error": 0.03, "tool_error": 0.04, "timeout": 0.04}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "medium"},
+      "registry_facts": {
+        "model_id": "openai/gpt-5.6-luna",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "openai",
+        "family": "gpt-5.6",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 1050000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 1.00, "output_per_million": 6.00},
+        "latency_p50_ms": 1200,
+        "latency_p95_ms": 3500,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.85, "code_generation": 0.87, "code_review": 0.84, "tool_use": 0.88, "planning": 0.83, "retrieval": 0.80, "summarization": 0.84, "writing": 0.81, "math": 0.82, "data_analysis": 0.84, "visual_understanding": 0.84, "audio_understanding": 0.07, "long_context": 0.98, "format_following": 0.88, "safety_judgment": 0.82},
+        "domain_dist_prior": {"software_engineering": 0.88, "data_science": 0.85, "document_processing": 0.86, "business_analysis": 0.84, "creative_writing": 0.77, "education": 0.83, "research": 0.85, "customer_support": 0.80, "legal": 0.73, "finance": 0.79, "medical": 0.70, "technical_writing": 0.87, "general": 0.87},
+        "tier_dist_prior": {"1": 0.98, "2": 0.94, "3": 0.87, "4": 0.76},
+        "role_fit_prior": {"proposer": 0.86, "aggregator": 0.84}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.05, "omission": 0.05, "format_error": 0.02, "tool_error": 0.03, "timeout": 0.04}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "anthropic/claude-sonnet-5",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "anthropic",
+        "family": "claude-5",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 1000000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 2.00, "output_per_million": 10.00},
+        "latency_p50_ms": 2200,
+        "latency_p95_ms": 6800,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.94, "code_generation": 0.95, "code_review": 0.95, "tool_use": 0.93, "planning": 0.94, "retrieval": 0.85, "summarization": 0.92, "writing": 0.94, "math": 0.89, "data_analysis": 0.90, "visual_understanding": 0.90, "audio_understanding": 0.08, "long_context": 0.97, "format_following": 0.95, "safety_judgment": 0.94},
+        "domain_dist_prior": {"software_engineering": 0.96, "data_science": 0.91, "document_processing": 0.94, "business_analysis": 0.93, "creative_writing": 0.94, "education": 0.93, "research": 0.94, "customer_support": 0.88, "legal": 0.87, "finance": 0.88, "medical": 0.84, "technical_writing": 0.96, "general": 0.95},
+        "tier_dist_prior": {"1": 0.99, "2": 0.98, "3": 0.95, "4": 0.91},
+        "role_fit_prior": {"proposer": 0.96, "aggregator": 0.95}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.025, "omission": 0.03, "format_error": 0.02, "tool_error": 0.025, "timeout": 0.06}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "x-ai/grok-4.5",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "x-ai",
+        "family": "grok-4.5",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 500000,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 2.00, "output_per_million": 6.00},
+        "latency_p50_ms": 2100,
+        "latency_p95_ms": 6500,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.93, "code_generation": 0.94, "code_review": 0.91, "tool_use": 0.92, "planning": 0.92, "retrieval": 0.87, "summarization": 0.88, "writing": 0.86, "math": 0.91, "data_analysis": 0.91, "visual_understanding": 0.88, "audio_understanding": 0.07, "long_context": 0.94, "format_following": 0.91, "safety_judgment": 0.84},
+        "domain_dist_prior": {"software_engineering": 0.95, "data_science": 0.91, "document_processing": 0.89, "business_analysis": 0.90, "creative_writing": 0.82, "education": 0.88, "research": 0.92, "customer_support": 0.82, "legal": 0.78, "finance": 0.86, "medical": 0.75, "technical_writing": 0.93, "general": 0.92},
+        "tier_dist_prior": {"1": 0.99, "2": 0.97, "3": 0.94, "4": 0.89},
+        "role_fit_prior": {"proposer": 0.95, "aggregator": 0.88}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.035, "omission": 0.04, "format_error": 0.03, "tool_error": 0.035, "timeout": 0.07}}
+    },
+    {
+      "source": "openrouter_catalog_mock_profile",
+      "runtime": {"thinking": "high"},
+      "registry_facts": {
+        "model_id": "google/gemini-3.1-pro-preview",
+        "version": "openrouter-catalog-2026-07-14",
+        "provider": "openrouter",
+        "vendor": "google",
+        "family": "gemini-3.1",
+        "status": "enabled",
+        "roles": ["proposer", "aggregator"],
+        "context_window": 1048576,
+        "effective_context_bucket": "extra_long",
+        "modalities": ["text", "image", "audio", "video", "file"],
+        "tools": ["code_execution", "web_search", "retrieval", "file_system", "api_call"],
+        "price": {"input_per_million": 2.00, "output_per_million": 12.00},
+        "latency_p50_ms": 2400,
+        "latency_p95_ms": 7200,
+        "catalog_verified_at": "2026-07-14",
+        "latency_source": "mock",
+        "quota": "available",
+        "rate_limit": "available",
+        "health": "healthy"
+      },
+      "static_profile": {
+        "capability_dist_prior": {"reasoning": 0.94, "code_generation": 0.92, "code_review": 0.92, "tool_use": 0.94, "planning": 0.93, "retrieval": 0.94, "summarization": 0.95, "writing": 0.91, "math": 0.93, "data_analysis": 0.94, "visual_understanding": 0.97, "audio_understanding": 0.95, "long_context": 0.99, "format_following": 0.94, "safety_judgment": 0.91},
+        "domain_dist_prior": {"software_engineering": 0.93, "data_science": 0.95, "document_processing": 0.97, "business_analysis": 0.93, "creative_writing": 0.88, "education": 0.94, "research": 0.97, "customer_support": 0.87, "legal": 0.83, "finance": 0.89, "medical": 0.82, "technical_writing": 0.94, "general": 0.95},
+        "tier_dist_prior": {"1": 0.99, "2": 0.98, "3": 0.95, "4": 0.92},
+        "role_fit_prior": {"proposer": 0.94, "aggregator": 0.96}
+      },
+      "online_profile": {"error_rates": {"hallucination": 0.03, "omission": 0.025, "format_error": 0.035, "tool_error": 0.025, "timeout": 0.06}}
+    }
+  ]
+}

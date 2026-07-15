@@ -1137,6 +1137,81 @@ describe('KnowledgeView workbench', () => {
     )).toHaveLength(1)
   })
 
+  it.each(['resolve', 'reject'] as const)(
+    'clears mismatched reader content and error before reactivation status can %s',
+    async (statusOutcome) => {
+      mockMobile(true)
+      const statusResponse = deferred<RagProviderStatus>()
+      let statusCalls = 0
+      const searchResponse = {
+        ...structuredClone(SEARCH_RESPONSE),
+        returnedCount: 2,
+        results: [
+          ...structuredClone(SEARCH_RESPONSE.results),
+          {
+            evidenceId: 'ev_b',
+            snippet: 'Second evidence',
+            snippetTruncated: false,
+            citation: { title: 'Document B', locator: 'page 2' },
+          },
+        ],
+      }
+      rpcMock.call.mockImplementation((method: string, params?: Record<string, unknown>) => {
+        if (method === 'knowledge.status') {
+          statusCalls += 1
+          return statusCalls === 1 ? structuredClone(currentStatus) : statusResponse.promise
+        }
+        if (method === 'knowledge.search') return structuredClone(searchResponse)
+        if (method === 'knowledge.get' && params?.evidenceId === 'ev_b') {
+          return {
+            ...structuredClone(GET_RESPONSE),
+            evidenceId: 'ev_b',
+            content: 'Reader B',
+          }
+        }
+        if (method === 'knowledge.get' && params?.cursor) throw new Error('Reader A failed')
+        if (method === 'knowledge.get') {
+          return { ...structuredClone(GET_RESPONSE), content: 'Cached reader A' }
+        }
+        throw new Error(`unexpected method ${method}`)
+      })
+      mountView()
+      await settle()
+      await submitQuery(root, 'NAND capacity')
+      await settle()
+      root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_a"]')!.click()
+      await settle()
+      root.querySelector<HTMLButtonElement>('[data-testid="rag-next-segment"]')!.click()
+      await settle()
+      expect(root.textContent).toContain('Cached reader A')
+      expect(root.textContent).toContain('Reader A failed')
+
+      await deactivate()
+      window.history.replaceState({ ragReader: 'ev_b' }, '')
+      await reactivate()
+      await settle()
+      expect(root.querySelector('[data-evidence-id="ev_b"]')?.classList
+        .contains('control-card--selected')).toBe(true)
+      expect(root.querySelector('.rag-workspace')?.classList.contains('is-reader-open')).toBe(true)
+      expect(root.textContent).not.toContain('Cached reader A')
+      expect(root.textContent).not.toContain('Reader A failed')
+      expect(rpcMock.call.mock.calls.filter(
+        ([method, params]) => method === 'knowledge.get' && params?.evidenceId === 'ev_b',
+      )).toHaveLength(0)
+
+      if (statusOutcome === 'resolve') statusResponse.resolve(structuredClone(currentStatus))
+      else statusResponse.reject(new Error('status refresh failed'))
+      await settle()
+      expect(root.textContent).not.toContain('Cached reader A')
+      expect(root.textContent).not.toContain('Reader A failed')
+      expect(rpcMock.call.mock.calls.filter(
+        ([method, params]) => method === 'knowledge.get' && params?.evidenceId === 'ev_b',
+      )).toHaveLength(statusOutcome === 'resolve' ? 1 : 0)
+      if (statusOutcome === 'resolve') expect(root.textContent).toContain('Reader B')
+      else expect(root.textContent).not.toContain('Reader B')
+    },
+  )
+
   it('clears cached mobile state on deactivation and re-syncs it on activation', async () => {
     mockMobile(true)
     mountView()

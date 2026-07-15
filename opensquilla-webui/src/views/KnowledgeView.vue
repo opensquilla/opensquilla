@@ -207,6 +207,10 @@ function syncMobileReaderUi(state: unknown) {
   }
   mobileReaderOpen.value = true
   selectedEvidenceId.value = evidenceId
+  if (getResponse.value?.evidenceId !== evidenceId) {
+    getResponse.value = null
+    readError.value = ''
+  }
   return evidenceId
 }
 

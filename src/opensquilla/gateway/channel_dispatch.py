@@ -25,6 +25,11 @@ import structlog
 
 from opensquilla.agents.scope import resolve_agent_model
 from opensquilla.artifacts import artifact_payload
+from opensquilla.channels._util import (
+    measured_len,
+    split_text_for_channel,
+    truncate_to_limit,
+)
 from opensquilla.channels.admission import (
     ChannelAdmissionDecision,
     decide_channel_admission,
@@ -2295,6 +2300,56 @@ async def _notify_channel_reply_lost(
         )
 
 
+def _plan_outbound_pieces(channel: Any, message: OutgoingMessage) -> list[OutgoingMessage]:
+    """Split a reply to fit the channel's declared length cap.
+
+    A reply over a platform's per-message cap is rejected wholesale, and six
+    adapters declare no cap and pass content straight through. This is the one
+    place that enforces the capability contract's length budget centrally, in
+    the unit the platform counts in. Adapters that split inside their own
+    ``send()`` opt out via ``splits_natively`` and are returned unchanged.
+
+    Chunking is preferred; a single unsplittable unit that still overflows is
+    truncated with a footer — delivered-but-clipped beats platform-rejected.
+    """
+    profile = channel_capability_profile(channel)
+    if profile is None or profile.max_message_len <= 0 or profile.splits_natively:
+        return [message]
+    unit = profile.length_unit
+    limit = profile.max_message_len
+    content = message.content or ""
+    if measured_len(content, unit) <= limit:
+        return [message]
+
+    pieces: list[OutgoingMessage] = []
+    for idx, chunk in enumerate(split_text_for_channel(content, limit, unit=unit)):
+        if measured_len(chunk, unit) > limit:
+            chunk = truncate_to_limit(chunk, limit, unit=unit)
+        pieces.append(_as_chunk_message(message, chunk, first=idx == 0))
+    return pieces
+
+
+def _as_chunk_message(
+    message: OutgoingMessage, chunk: str, *, first: bool
+) -> OutgoingMessage:
+    """A one-chunk copy of ``message`` with a fresh outbox identity.
+
+    The delivery id is dropped so the outbox mints a distinct one per chunk —
+    otherwise ``begin_send``'s INSERT-OR-IGNORE collapses every chunk into a
+    single row and the last receipt wins. Attachments ride only the first
+    chunk so a long reply's files are not re-sent per piece.
+    """
+    metadata = dict(message.metadata or {})
+    metadata.pop("delivery_id", None)
+    return message.model_copy(
+        update={
+            "content": chunk,
+            "metadata": metadata,
+            "attachments": message.attachments if first else [],
+        }
+    )
+
+
 async def _deliver_reply_or_notify(
     channel: Any,
     message: OutgoingMessage,
@@ -2303,9 +2358,13 @@ async def _deliver_reply_or_notify(
     session_key: str,
 ) -> bool:
     """Send a reply; on final failure tell the user rather than going silent."""
-    error_class = await _send_channel_reply_guarded(
-        channel, message, session_key=session_key
-    )
+    error_class: str | None = None
+    for piece in _plan_outbound_pieces(channel, message):
+        error_class = await _send_channel_reply_guarded(
+            channel, piece, session_key=session_key
+        )
+        if error_class is not None:
+            break
     if error_class is None:
         return True
     log.error(

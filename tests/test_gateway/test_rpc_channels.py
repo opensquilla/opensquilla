@@ -219,6 +219,20 @@ async def test_channels_status_explains_admission_policy_and_denials():
     assert "user-ok" not in str(admission)
 
 
+def test_admit_reason_set_tracks_the_admission_vocabulary():
+    # _ADMISSION_ADMIT_REASONS decides what counts as a denial for lastDenial;
+    # a new admit-outcome reason added to AdmissionReason but not here would be
+    # reported as the channel's most recent denial.
+    from typing import get_args
+
+    from opensquilla.channels.admission import AdmissionReason
+    from opensquilla.gateway.rpc_channels import _ADMISSION_ADMIT_REASONS
+
+    vocabulary = set(get_args(AdmissionReason))
+    assert _ADMISSION_ADMIT_REASONS <= vocabulary
+    assert _ADMISSION_ADMIT_REASONS == {r for r in vocabulary if r.endswith("_admitted")}
+
+
 @pytest.mark.asyncio
 async def test_channels_status_admission_block_absent_without_adapter_or_history():
     # No running adapter and no recorded decisions: nothing to explain, so the

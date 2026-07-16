@@ -7463,6 +7463,7 @@ class Agent:
                         is_error=projected_result.is_error,
                         arguments=tc.arguments,
                         execution_status=projected_result.execution_status,
+                        sources=list(result.sources),
                     )
                     replay_event = router_control_replay_event_from_payload(result.content)
                     if replay_event is not None:
@@ -7497,6 +7498,7 @@ class Agent:
                             is_error=projected_result.is_error,
                             arguments=retry_arguments,
                             execution_status=projected_result.execution_status,
+                            sources=list(result.sources),
                         )
                         replay_event = router_control_replay_event_from_payload(result.content)
                         if replay_event is not None:

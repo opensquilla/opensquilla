@@ -15,7 +15,10 @@ from opensquilla.engine.tool_result_store import ToolResultStore
 from opensquilla.engine.types import ToolResultEvent, ToolUseDeltaEvent
 from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
 from opensquilla.provider import (
+    ContentBlockToolResult,
     ContentBlockThinking,
+    ContentBlockToolUse,
+    Message,
     TextDeltaEvent,
     ToolDefinition,
     ToolInputSchema,
@@ -270,6 +273,31 @@ def _first_tool_result_handle(messages: list[Any]) -> str:
             if line.startswith("tool_result_handle:"):
                 return line.split(":", 1)[1].strip()
     raise AssertionError("expected projected tool result handle in provider messages")
+
+
+def _protocol_v11_projection(content_chars: int = 11_000) -> str:
+    content = "x" * content_chars
+    projected = json.dumps(
+        {
+            "protocolVersion": "1.1",
+            "requestId": "req-1",
+            "results": [
+                {
+                    "rank": 1,
+                    "citationUri": "https://example.com/evidence-1",
+                    "chunk": {
+                        "evidenceId": "evidence-1",
+                        "content": content,
+                        "contentChars": len(content),
+                        "complete": True,
+                    },
+                }
+            ],
+        },
+        separators=(",", ":"),
+    )
+    assert len(projected) <= 12_000
+    return projected
 
 
 @pytest.mark.asyncio
@@ -843,6 +871,116 @@ async def test_run_turn_feeds_tokenjuice_reduced_tool_result_to_next_provider_ca
     assert projected_event.result == second_call_tool_result
     assert projected_event.result != output
     assert "rootdir:" not in projected_event.result
+
+
+@pytest.mark.asyncio
+async def test_current_v11_projection_under_12000_chars_reaches_next_call_intact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        agent_mod,
+        "reduce_tool_result_with_tokenjuice",
+        lambda **_kwargs: None,
+        raising=False,
+    )
+    projection = _protocol_v11_projection()
+
+    async def handler(tool_call: ToolCall) -> ToolResult:
+        return ToolResult(
+            tool_use_id=tool_call.tool_use_id,
+            tool_name=tool_call.tool_name,
+            content=projection,
+        )
+
+    provider = _ToolCallingProvider()
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            context_window_tokens=64_000,
+            max_iterations=2,
+            tool_result_provider_request_max_chars=12_000,
+        ),
+        tool_definitions=[_tool_def("exec_command")],
+        tool_handler=handler,
+    )
+
+    events = [event async for event in agent.run_turn("search knowledge")]
+
+    second_call_tool_result = _last_tool_result_content(provider.calls[1])
+    assert second_call_tool_result == projection
+    payload = json.loads(second_call_tool_result)
+    chunk = payload["results"][0]["chunk"]
+    assert chunk["complete"] is True
+    assert chunk["contentChars"] == len(chunk["content"])
+    result_event = next(event for event in events if isinstance(event, ToolResultEvent))
+    assert result_event.result == projection
+
+
+def test_historical_v11_projection_uses_marker_and_handle_instead_of_partial_json(
+    tmp_path,
+) -> None:
+    agent = Agent(
+        provider=_Provider(),
+        config=AgentConfig(
+            context_window_tokens=1_200,
+            tool_result_provider_request_max_chars=12_000,
+            tool_result_store_dir=str(tmp_path / "tool-results"),
+            tool_result_store_session_id="session-1",
+            tool_result_store_session_key="agent:main:session-1",
+            tool_result_store_agent_id="main",
+        ),
+    )
+    messages: list[Message] = []
+    projections: list[str] = []
+    for index in range(5):
+        tool_id = f"tool-{index}"
+        projection = _protocol_v11_projection().replace(
+            '"requestId":"req-1"',
+            f'"requestId":"req-{index}"',
+            1,
+        )
+        projections.append(projection)
+        messages.extend(
+            [
+                Message(
+                    role="assistant",
+                    content=[
+                        ContentBlockToolUse(id=tool_id, name="local_tool", input={}),
+                    ],
+                ),
+                Message(
+                    role="user",
+                    content=[
+                        ContentBlockToolResult(
+                            tool_use_id=tool_id,
+                            content=projection,
+                        )
+                    ],
+                ),
+            ]
+        )
+
+    compacted = agent._compact_aggregate_tool_results_for_provider(messages)
+    result_contents = [
+        block.content
+        for message in compacted
+        if isinstance(message.content, list)
+        for block in message.content
+        if isinstance(block, ContentBlockToolResult)
+    ]
+
+    historical = result_contents[0]
+    assert historical.startswith(
+        ("[aggregate_tool_result_compacted]\n", "[tool_result_projection]\n")
+    )
+    assert "tool_result_handle:" in historical
+    assert "preview_complete: false" in historical
+    assert "retrieve_tool_result" in historical
+    assert historical != projections[0]
+    assert result_contents[-1] == projections[-1]
+    recent_payload = json.loads(result_contents[-1])
+    recent_chunk = recent_payload["results"][0]["chunk"]
+    assert recent_chunk["contentChars"] == len(recent_chunk["content"])
 
 
 @pytest.mark.asyncio

@@ -1302,6 +1302,11 @@
       "truncated": "Results truncated",
       "budgetTrimmed": "Trimmed to the OpenSquilla budget",
       "snippetTruncated": "Snippet truncated",
+      "completeChunk": "Complete knowledge chunk",
+      "chunkCharacters": "{count} characters",
+      "providerExecutedProfile": "Provider executed",
+      "fileName": "File",
+      "sourcePath": "Source path",
       "empty": "Search the knowledge base to see citable evidence."
     },
     "reader": {

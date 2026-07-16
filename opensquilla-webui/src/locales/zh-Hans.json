@@ -1302,6 +1302,11 @@
       "truncated": "结果已截断",
       "budgetTrimmed": "OpenSquilla 已按预算裁剪",
       "snippetTruncated": "片段已截断",
+      "completeChunk": "完整知识块",
+      "chunkCharacters": "{count} 个字符",
+      "providerExecutedProfile": "Provider 实际执行",
+      "fileName": "文件",
+      "sourcePath": "来源路径",
       "empty": "检索知识库以查看可引用证据。"
     },
     "reader": {

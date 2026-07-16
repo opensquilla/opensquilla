@@ -1302,6 +1302,11 @@
       "truncated": "Résultats tronqués",
       "budgetTrimmed": "Réduits pour respecter le budget OpenSquilla",
       "snippetTruncated": "Extrait tronqué",
+      "completeChunk": "Bloc de connaissances complet",
+      "chunkCharacters": "{count} caractères",
+      "providerExecutedProfile": "Exécuté par le fournisseur",
+      "fileName": "Fichier",
+      "sourcePath": "Chemin source",
       "empty": "Recherchez dans la base de connaissances pour afficher des éléments citables."
     },
     "reader": {

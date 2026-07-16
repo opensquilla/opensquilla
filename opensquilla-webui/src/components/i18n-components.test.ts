@@ -6,6 +6,7 @@ import i18n from '@/i18n'
 import { useAppStore } from '@/stores/app'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
+import knowledgeSearchWorkspaceSource from '@/components/knowledge/KnowledgeSearchWorkspace.vue?raw'
 
 // Mount a component with the real i18n + a fresh pinia into a happy-dom node, so
 // the switcher surfaces can be exercised without the SettingsDialog `loaded`
@@ -90,5 +91,21 @@ describe('LanguageSwitcher — topbar dropdown', () => {
     expect(store.locale).toBe('zh-Hans')
     expect(trigger.textContent).toContain('中文')
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+})
+
+describe('KnowledgeSearchWorkspace — RAG locale coverage', () => {
+  it('uses every reviewed source metadata locale key', () => {
+    const keys = [
+      'rag.results.completeChunk',
+      'rag.results.chunkCharacters',
+      'rag.results.providerExecutedProfile',
+      'rag.results.fileName',
+      'rag.results.sourcePath',
+    ]
+
+    for (const key of keys) {
+      expect(knowledgeSearchWorkspaceSource).toContain(`t('${key}'`)
+    }
   })
 })

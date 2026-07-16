@@ -186,6 +186,64 @@ describe('catalog parity', () => {
     })
   })
 
+  it('ships the reviewed RAG source metadata labels with stable count placeholders', () => {
+    expect({
+      en: en.rag.results,
+      zhHans: zhHans.rag.results,
+      de: de.rag.results,
+      es: es.rag.results,
+      fr: fr.rag.results,
+      ja: ja.rag.results,
+    }).toMatchObject({
+      en: {
+        completeChunk: 'Complete knowledge chunk',
+        chunkCharacters: '{count} characters',
+        providerExecutedProfile: 'Provider executed',
+        fileName: 'File',
+        sourcePath: 'Source path',
+      },
+      zhHans: {
+        completeChunk: '完整知识块',
+        chunkCharacters: '{count} 个字符',
+        providerExecutedProfile: 'Provider 实际执行',
+        fileName: '文件',
+        sourcePath: '来源路径',
+      },
+      de: {
+        completeChunk: 'Vollständiger Wissensblock',
+        chunkCharacters: '{count} Zeichen',
+        providerExecutedProfile: 'Vom Provider ausgeführt',
+        fileName: 'Datei',
+        sourcePath: 'Quellpfad',
+      },
+      es: {
+        completeChunk: 'Fragmento de conocimiento completo',
+        chunkCharacters: '{count} caracteres',
+        providerExecutedProfile: 'Ejecutado por el proveedor',
+        fileName: 'Archivo',
+        sourcePath: 'Ruta de origen',
+      },
+      fr: {
+        completeChunk: 'Bloc de connaissances complet',
+        chunkCharacters: '{count} caractères',
+        providerExecutedProfile: 'Exécuté par le fournisseur',
+        fileName: 'Fichier',
+        sourcePath: 'Chemin source',
+      },
+      ja: {
+        completeChunk: '完全なナレッジチャンク',
+        chunkCharacters: '{count} 文字',
+        providerExecutedProfile: 'プロバイダーによる実行',
+        fileName: 'ファイル',
+        sourcePath: 'ソースパス',
+      },
+    })
+
+    for (const messages of [en, zhHans, de, es, fr, ja]) {
+      expect(messages.rag.results.chunkCharacters.match(/\{count\}/g)).toHaveLength(1)
+    }
+  })
+
   it('ships localized TokenRhythm recommendation copy with exact English and zh-Hans wording', () => {
     expect(en.setup.provider.recommendation).toEqual({
       title: 'Recommended: TokenRhythm',

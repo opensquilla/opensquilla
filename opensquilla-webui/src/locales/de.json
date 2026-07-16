@@ -1302,6 +1302,11 @@
       "truncated": "Ergebnisse gekürzt",
       "budgetTrimmed": "Auf das OpenSquilla-Budget gekürzt",
       "snippetTruncated": "Textauszug gekürzt",
+      "completeChunk": "Vollständiger Wissensblock",
+      "chunkCharacters": "{count} Zeichen",
+      "providerExecutedProfile": "Vom Provider ausgeführt",
+      "fileName": "Datei",
+      "sourcePath": "Quellpfad",
       "empty": "Die Wissensdatenbank durchsuchen, um zitierfähige Belege anzuzeigen."
     },
     "reader": {

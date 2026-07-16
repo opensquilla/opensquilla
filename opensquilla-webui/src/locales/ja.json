@@ -1302,6 +1302,11 @@
       "truncated": "結果は切り詰められました",
       "budgetTrimmed": "OpenSquilla の上限に合わせて短縮",
       "snippetTruncated": "スニペットは切り詰められました",
+      "completeChunk": "完全なナレッジチャンク",
+      "chunkCharacters": "{count} 文字",
+      "providerExecutedProfile": "プロバイダーによる実行",
+      "fileName": "ファイル",
+      "sourcePath": "ソースパス",
       "empty": "ナレッジベースを検索すると、引用可能な根拠が表示されます。"
     },
     "reader": {

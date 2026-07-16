@@ -48,6 +48,7 @@ from opensquilla.channels._util import EventDedupeCache
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -141,6 +142,9 @@ class MatrixChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="matrix",
+            max_message_len=20000,
+            length_unit=ChannelLengthUnit.UTF8_BYTES,
+            splits_natively=False,
             group_chat=True,
             mentions=True,
             native_file_upload=True,

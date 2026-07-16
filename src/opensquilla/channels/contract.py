@@ -283,6 +283,20 @@ class ChannelSendResult:
         return self.status == ChannelSendStatus.SENT
 
 
+class ChannelLengthUnit(StrEnum):
+    """The unit a platform counts a message's length in.
+
+    A code-point cap measured in the wrong unit silently drops replies: an
+    emoji is two UTF-16 units and up to four UTF-8 bytes, so a reply that
+    looks in-budget by ``len()`` is rejected wholesale by a byte- or
+    UTF-16-counting provider.
+    """
+
+    CODE_POINTS = "code_points"  # Python len()
+    UTF8_BYTES = "utf8_bytes"  # len(s.encode("utf-8"))
+    UTF16_UNITS = "utf16_units"  # len(s.encode("utf-16-le")) // 2
+
+
 @dataclass(frozen=True)
 class ChannelCapabilityProfile:
     """Minimal typed capability declaration for channel adapters."""
@@ -313,6 +327,17 @@ class ChannelCapabilityProfile:
     artifact_delivery: bool = False
     transports: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    #: Per-message outbound length cap in ``length_unit``. 0 (default) means no
+    #: central cap is declared, so central chunk-or-truncate is skipped for this
+    #: channel — the safe passthrough for local transports with no platform cap.
+    max_message_len: int = 0
+    #: Unit ``max_message_len`` is measured in.
+    length_unit: ChannelLengthUnit = ChannelLengthUnit.CODE_POINTS
+    #: True when the adapter already splits over-length text inside its own
+    #: ``send()``; central dispatch must skip it to avoid double-processing.
+    #: Defaults False so an adapter that declares a cap but forgets to split
+    #: degrades to central handling rather than shipping over-cap messages.
+    splits_natively: bool = False
 
     def capability_tags(self) -> frozenset[str]:
         tags: set[str] = set()

@@ -42,6 +42,7 @@ from opensquilla.channels._util import (
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformManifest,
     ChannelSendResult,
 )
@@ -768,6 +769,9 @@ class FeishuChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="feishu",
+            max_message_len=4000,
+            length_unit=ChannelLengthUnit.UTF8_BYTES,
+            splits_natively=False,
             group_chat=True,
             mentions=True,
             native_file_upload=True,

@@ -31,6 +31,7 @@ from opensquilla.channels._util import (
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -138,6 +139,9 @@ class SlackChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="slack",
+            max_message_len=40000,
+            length_unit=ChannelLengthUnit.CODE_POINTS,
+            splits_natively=True,
             group_chat=True,
             mentions=True,
             native_file_upload=True,

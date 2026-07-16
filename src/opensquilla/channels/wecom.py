@@ -37,6 +37,7 @@ from opensquilla.channels._wecom_crypto import WeComCrypto
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -195,6 +196,9 @@ class WeComChannel:
         if self.config.connection_mode == "websocket":
             return ChannelCapabilityProfile(
                 channel_type="wecom",
+                max_message_len=2048,
+                length_unit=ChannelLengthUnit.UTF8_BYTES,
+                splits_natively=False,
                 group_chat=True,
                 mentions=True,
                 reply=True,
@@ -206,6 +210,9 @@ class WeComChannel:
             )
         return ChannelCapabilityProfile(
             channel_type="wecom",
+            max_message_len=2048,
+            length_unit=ChannelLengthUnit.UTF8_BYTES,
+            splits_natively=False,
             group_chat=True,
             mentions=True,
             native_file_upload=True,

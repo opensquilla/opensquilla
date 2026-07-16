@@ -35,6 +35,7 @@ from opensquilla.channels._util import (
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -166,6 +167,9 @@ class DiscordChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="discord",
+            max_message_len=2000,
+            length_unit=ChannelLengthUnit.CODE_POINTS,
+            splits_natively=True,
             group_chat=True,
             mentions=True,
             typing_indicator=True,

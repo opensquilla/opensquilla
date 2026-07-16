@@ -20,6 +20,7 @@ from typing import Any, Literal
 import httpx
 import structlog
 
+from opensquilla.channels.contract import ChannelLengthUnit
 from opensquilla.http_retry import parse_retry_after
 
 log = structlog.get_logger(__name__)
@@ -344,36 +345,108 @@ async def retry_request(
     raise last_exc or RuntimeError("retry_request exhausted")
 
 
-def split_text_for_channel(text: str, limit: int) -> list[str]:
-    """Split ``text`` into chunks no longer than ``limit`` characters.
+def _measure_for(unit: ChannelLengthUnit) -> Callable[[str], int]:
+    if unit is ChannelLengthUnit.UTF8_BYTES:
+        return lambda s: len(s.encode("utf-8"))
+    if unit is ChannelLengthUnit.UTF16_UNITS:
+        return lambda s: len(s.encode("utf-16-le")) // 2
+    return len
+
+
+def measured_len(text: str, unit: ChannelLengthUnit = ChannelLengthUnit.CODE_POINTS) -> int:
+    """Length of ``text`` in the unit the platform counts in."""
+    return _measure_for(unit)(text)
+
+
+def _fit_cut(text: str, limit: int, measure: Callable[[str], int]) -> int:
+    """Largest code-point index whose measured prefix length is ``<= limit``.
+
+    Bisection over the code-point index — O(log n) measures. The index is a
+    Python string index, so an astral code point (emoji) is atomic: a prefix
+    either includes it whole or not at all, never a half surrogate.
+    """
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if measure(text[:mid]) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    # Always make progress even if a single leading code point exceeds limit.
+    return max(lo, 1)
+
+
+def _boundary_before(text: str, cut: int) -> int:
+    """Preferred split index in ``[0, cut)``: paragraph, then line, then word.
+
+    Returns the index just past the chosen separator so it stays with the
+    preceding chunk, or 0 when no boundary exists (caller hard-splits at cut).
+    """
+    paragraph_at = text.rfind("\n\n", 0, cut)
+    if paragraph_at >= 0:
+        return paragraph_at + 2
+    line_at = text.rfind("\n", 0, cut)
+    if line_at >= 0:
+        return line_at + 1
+    word_at = text.rfind(" ", 0, cut)
+    return word_at + 1 if word_at >= 0 else 0
+
+
+def split_text_for_channel(
+    text: str,
+    limit: int,
+    *,
+    unit: ChannelLengthUnit = ChannelLengthUnit.CODE_POINTS,
+) -> list[str]:
+    """Split ``text`` into chunks no longer than ``limit`` in ``unit``.
 
     Splitting prefers paragraph (blank-line) then line then word boundaries,
     hard-splitting only as a last resort for a single token longer than
     ``limit``. Used to keep outbound replies under a platform's per-message
-    length cap (Telegram 4096, Discord 2000, ...) instead of letting the API
-    reject the whole message. An empty ``text`` yields ``[""]`` so callers
-    always make at least one send; a non-positive ``limit`` disables splitting.
+    length cap (Telegram 4096 UTF-16 units, Discord 2000 code points, ...)
+    instead of letting the API reject the whole message. An empty ``text``
+    yields ``[""]`` so callers always make at least one send; a non-positive
+    ``limit`` disables splitting.
+
+    ``unit`` measures the fit test only; boundary search stays at code-point
+    granularity, so an astral character is never split mid-surrogate.
     """
-    if limit <= 0 or len(text) <= limit:
+    measure = _measure_for(unit)
+    if limit <= 0 or measure(text) <= limit:
         return [text]
 
     chunks: list[str] = []
     remaining = text
-    while len(remaining) > limit:
-        # Include the chosen separator in the preceding chunk. Splitting via
-        # ``str.split`` and reconstructing later loses blank lines/spaces when
-        # a boundary itself triggers a flush.
-        paragraph_at = remaining.rfind("\n\n", 0, limit)
-        if paragraph_at >= 0:
-            end = paragraph_at + 2
-        else:
-            line_at = remaining.rfind("\n", 0, limit)
-            if line_at >= 0:
-                end = line_at + 1
-            else:
-                word_at = remaining.rfind(" ", 0, limit)
-                end = word_at + 1 if word_at >= 0 else limit
+    while measure(remaining) > limit:
+        cut = _fit_cut(remaining, limit, measure)
+        end = _boundary_before(remaining, cut) or cut
         chunks.append(remaining[:end])
         remaining = remaining[end:]
     chunks.append(remaining)
     return chunks
+
+
+_TRUNCATE_FOOTER = "\n\n[message truncated to fit this channel's length limit]"
+
+
+def truncate_to_limit(
+    text: str,
+    limit: int,
+    *,
+    unit: ChannelLengthUnit = ChannelLengthUnit.CODE_POINTS,
+    footer: str = _TRUNCATE_FOOTER,
+) -> str:
+    """Cut ``text`` to ``limit`` in ``unit``, appending a footer when it fits.
+
+    The last resort for a single unsplittable unit that still overflows: a
+    delivered-but-truncated message beats a platform-rejected one.
+    """
+    measure = _measure_for(unit)
+    if measure(text) <= limit:
+        return text
+    budget = limit - measure(footer)
+    if budget <= 0:
+        return text[: _fit_cut(text, limit, measure)]
+    cut = _fit_cut(text, budget, measure)
+    end = _boundary_before(text, cut) or cut
+    return text[:end] + footer

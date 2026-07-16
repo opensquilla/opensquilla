@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from opensquilla.channels._util import EventDedupeCache
 from opensquilla.channels.contract import (
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -162,6 +163,9 @@ class DingTalkChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="dingtalk",
+            max_message_len=16000,
+            length_unit=ChannelLengthUnit.UTF8_BYTES,
+            splits_natively=False,
             group_chat=True,
             mentions=True,
             reply=True,

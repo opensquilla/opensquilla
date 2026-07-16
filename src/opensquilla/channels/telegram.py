@@ -29,6 +29,7 @@ from opensquilla.channels._util import (
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -154,6 +155,9 @@ class TelegramChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="telegram",
+            max_message_len=4096,
+            length_unit=ChannelLengthUnit.UTF16_UNITS,
+            splits_natively=True,
             group_chat=True,
             mentions=True,
             native_file_upload=True,
@@ -635,7 +639,14 @@ class TelegramChannel:
         # Telegram hard-rejects sendMessage when text exceeds 4096 chars, which
         # would otherwise drop the entire reply. Split long content into
         # sequential messages so the full answer is delivered.
-        chunks = split_text_for_channel(message.content, _TELEGRAM_MAX_MESSAGE_CHARS)
+        # Telegram counts the 4096 cap in UTF-16 code units, not code points:
+        # an astral char (emoji, some CJK) is two units, so a code-point split
+        # can still overflow and be rejected. Measure in the unit Telegram uses.
+        chunks = split_text_for_channel(
+            message.content,
+            _TELEGRAM_MAX_MESSAGE_CHARS,
+            unit=ChannelLengthUnit.UTF16_UNITS,
+        )
         result: Any = None
         for chunk in chunks:
             payload = self._build_send_payload(message)

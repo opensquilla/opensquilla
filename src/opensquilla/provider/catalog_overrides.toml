@@ -686,7 +686,7 @@ output_cost_per_mtok = 0.86
 
 [tokenrhythm."qwen3.7-max"]
 context_window = 1000000
-max_output_tokens = 256000
+max_output_tokens = 131072
 supports_reasoning = true
 supports_tools = true
 supports_vision = false

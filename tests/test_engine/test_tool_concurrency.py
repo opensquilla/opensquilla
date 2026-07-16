@@ -229,6 +229,41 @@ async def test_feishu_read_only_tools_have_independent_inflight_cap() -> None:
 
 
 @pytest.mark.asyncio
+async def test_image_analysis_calls_have_dedicated_inflight_cap() -> None:
+    """Vision requests should not fan out at the generic safe-tool limit."""
+    tool_calls = [("image", {"path": f"slide-{i}.png"}) for i in range(6)]
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        in_flight -= 1
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    provider = _FixedToolCallArgsProvider(tool_calls)
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=2, max_safe_tool_concurrency=6),
+        tool_definitions=[_tool_def("image")],
+        tool_handler=_handler,
+    )
+
+    t0 = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - t0
+
+    assert max_in_flight == 2
+    assert 3 * _TOOL_SLEEP_S - _SCHEDULER_TOLERANCE_S <= elapsed < 4 * _TOOL_SLEEP_S
+
+
+@pytest.mark.asyncio
 async def test_feishu_mutating_tools_remain_serial() -> None:
     """Feishu writes must remain mutex even when read-only Feishu tools batch."""
     tool_calls = [

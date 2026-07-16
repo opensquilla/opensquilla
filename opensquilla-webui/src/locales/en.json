@@ -354,6 +354,11 @@
       "modelOptionsToggle": "Model catalog · {count}",
       "modelListReadout": "Available · {count}",
       "modelLiveSource": "Live",
+      "modelMaxOutput": "Max output {tokens}",
+      "effectiveMaxTokens": "Effective output limit: {tokens} tokens · Source: {source}",
+      "effectiveSourceConfig": "user configuration",
+      "effectiveSourceCatalog": "model catalog",
+      "effectiveSourceDefault": "built-in default",
       "modelSearchOrCustom": "Search models or enter a custom ID",
       "modelSelected": "Selected",
       "modelUseTyped": "Use \"{value}\"",
@@ -1153,7 +1158,7 @@
       "copyDiagnostics": "Copy diagnostics JSON",
       "copiedDiagnostics": "Diagnostics JSON copied",
       "diagnoseWithAgent": "Diagnose with agent",
-      "diagnosePrompt": "Please troubleshoot this OpenSquilla configuration using the doctor report below; propose the root cause and minimal fix steps; do not run destructive commands.",
+      "diagnosePrompt": "Please troubleshoot this OpenSquilla configuration using the client context and doctor report below. Prefer applicable in-app Settings. When hasTerminalWorkflow is false, do not suggest bare opensquilla commands; an owned Desktop gateway is managed by the app. Data transfer means backup followed by whole-data replacement, never a merge. An optional migration item is not a fault and may remain visible after transfer. Explain and guide only: do not migrate data, restart the gateway, write settings, or claim changes were performed.",
       "environment": "Environment",
       "latency": "Latency"
     }
@@ -1994,6 +1999,9 @@
     "identityReady": "{label} · ready",
     "loadEarlier": "Load earlier messages",
     "loadingEllipsis": "Loading...",
+    "loadingEarlier": "Loading earlier messages…",
+    "loadEarlierFailedRetry": "Earlier messages failed to load · Retry",
+    "legacyHistoryUnavailable": "Earlier original messages were not saved by the older version.",
     "scopeCompacted": "Older content is represented by session summaries.",
     "scopeLatestWindow": "Showing the latest message window.",
     "status": {

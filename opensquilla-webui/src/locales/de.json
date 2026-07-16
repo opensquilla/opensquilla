@@ -354,6 +354,11 @@
       "modelOptionsToggle": "Modellkatalog · {count}",
       "modelListReadout": "Verfügbar · {count}",
       "modelLiveSource": "Live",
+      "modelMaxOutput": "Max. Ausgabe {tokens}",
+      "effectiveMaxTokens": "Effektives Ausgabelimit: {tokens} Tokens · Quelle: {source}",
+      "effectiveSourceConfig": "Benutzerkonfiguration",
+      "effectiveSourceCatalog": "Modellkatalog",
+      "effectiveSourceDefault": "integrierter Standard",
       "modelSearchOrCustom": "Modelle suchen oder benutzerdefinierte ID eingeben",
       "modelSelected": "Ausgewählt",
       "modelUseTyped": "\"{value}\" verwenden",
@@ -1153,7 +1158,7 @@
       "copyDiagnostics": "Diagnose-JSON kopieren",
       "copiedDiagnostics": "Diagnose-JSON kopiert",
       "diagnoseWithAgent": "Mit dem Agenten diagnostizieren",
-      "diagnosePrompt": "Bitte analysieren Sie diese OpenSquilla-Konfiguration anhand des folgenden doctor-Berichts; nennen Sie die Grundursache und minimale Korrekturschritte; führen Sie keine destruktiven Befehle aus.",
+      "diagnosePrompt": "Bitte analysieren Sie diese OpenSquilla-Konfiguration anhand des folgenden Client-Kontexts und doctor-Berichts. Bevorzugen Sie passende Einstellungen in der App. Wenn hasTerminalWorkflow false ist, schlagen Sie keine bloßen opensquilla-Befehle vor; ein eigener Desktop-Gateway wird von der App verwaltet. Eine Datenübertragung bedeutet Sicherung und anschließenden vollständigen Ersatz, niemals Zusammenführung. Ein optionaler Migrationseintrag ist kein Fehler und kann nach der Übertragung sichtbar bleiben. Erklären und leiten Sie nur an: Migrieren Sie keine Daten, starten Sie den Gateway nicht neu, schreiben Sie keine Einstellungen und behaupten Sie nicht, Änderungen ausgeführt zu haben.",
       "environment": "Umgebung",
       "latency": "Latenz"
     }
@@ -1994,6 +1999,9 @@
     "identityReady": "{label} · bereit",
     "loadEarlier": "Frühere Nachrichten laden",
     "loadingEllipsis": "Wird geladen...",
+    "loadingEarlier": "Frühere Nachrichten werden geladen…",
+    "loadEarlierFailedRetry": "Frühere Nachrichten konnten nicht geladen werden · Erneut versuchen",
+    "legacyHistoryUnavailable": "Frühere Originalnachrichten wurden von der älteren Version nicht gespeichert.",
     "scopeCompacted": "Älterer Inhalt wird durch Sitzungszusammenfassungen dargestellt.",
     "scopeLatestWindow": "Es wird das neueste Nachrichtenfenster angezeigt.",
     "status": {

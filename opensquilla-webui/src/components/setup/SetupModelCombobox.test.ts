@@ -115,7 +115,7 @@ describe('SetupModelCombobox', () => {
     expect(input?.placeholder).toBe('Search models or enter a custom ID')
   })
 
-  it('opens on focus and lists models with compact context window and capability hints', async () => {
+  it('lists compact context, maximum output, and capability hints', async () => {
     const { el } = await mountCombobox()
     await openList(el)
 
@@ -124,9 +124,11 @@ describe('SetupModelCombobox', () => {
     expect(rows[0].textContent).toContain('test-vendor/alpha')
     expect(rows[0].textContent).toContain('Alpha')
     expect(rows[0].textContent).toContain('262k')
+    expect(rows[0].textContent).toContain('Max output 16k')
     expect(rows[0].textContent).toContain('tools')
     expect(rows[0].textContent).not.toContain('chat') // baseline capability is noise
     expect(rows[1].textContent).toContain('128k')
+    expect(rows[1].textContent).not.toContain('Max output')
     expect(rows[1].textContent).toContain('vision')
   })
 

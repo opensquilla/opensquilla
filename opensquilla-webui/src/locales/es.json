@@ -354,6 +354,11 @@
       "modelOptionsToggle": "Catálogo de modelos · {count}",
       "modelListReadout": "Disponibles · {count}",
       "modelLiveSource": "En vivo",
+      "modelMaxOutput": "Salida máx. {tokens}",
+      "effectiveMaxTokens": "Límite de salida efectivo: {tokens} tokens · Fuente: {source}",
+      "effectiveSourceConfig": "configuración del usuario",
+      "effectiveSourceCatalog": "catálogo de modelos",
+      "effectiveSourceDefault": "valor predeterminado integrado",
       "modelSearchOrCustom": "Buscar modelos o introducir un ID personalizado",
       "modelSelected": "Seleccionado",
       "modelUseTyped": "Usar \"{value}\"",
@@ -1153,7 +1158,7 @@
       "copyDiagnostics": "Copiar el JSON de diagnóstico",
       "copiedDiagnostics": "JSON de diagnóstico copiado",
       "diagnoseWithAgent": "Diagnosticar con el agente",
-      "diagnosePrompt": "Diagnostica esta configuración de OpenSquilla usando el informe de doctor a continuación; propón la causa raíz y los pasos mínimos de corrección; no ejecutes comandos destructivos.",
+      "diagnosePrompt": "Diagnostica esta configuración de OpenSquilla usando el contexto del cliente y el informe de doctor siguientes. Da prioridad a los ajustes aplicables dentro de la app. Cuando hasTerminalWorkflow sea false, no sugieras comandos opensquilla sin adaptar; un gateway propio de Desktop lo gestiona la app. La transferencia de datos implica copia de seguridad y sustitución completa, nunca fusión. Una migración opcional no es un fallo y puede seguir visible después. Limítate a explicar y orientar: no migres datos, reinicies el gateway, escribas ajustes ni afirmes haber realizado cambios.",
       "environment": "Entorno",
       "latency": "Latencia"
     }
@@ -1994,6 +1999,9 @@
     "identityReady": "{label} · listo",
     "loadEarlier": "Cargar mensajes anteriores",
     "loadingEllipsis": "Cargando...",
+    "loadingEarlier": "Cargando mensajes anteriores…",
+    "loadEarlierFailedRetry": "No se pudieron cargar los mensajes anteriores · Reintentar",
+    "legacyHistoryUnavailable": "La versión anterior no guardó los mensajes originales previos.",
     "scopeCompacted": "El contenido más antiguo se representa mediante resúmenes de la sesión.",
     "scopeLatestWindow": "Mostrando la ventana de mensajes más reciente.",
     "status": {

@@ -242,7 +242,7 @@ class TranscriptAppendPort(Protocol):
         reasoning_content: str | None,
         turn_usage: dict[str, Any] | None,
         token_count: int | None,
-    ) -> bool: ...
+    ) -> TranscriptAppendResult | bool: ...
 
 @runtime_checkable
 class TurnMemoryCapturePort(Protocol):
@@ -400,8 +400,16 @@ class TurnErrorPersistPort(Protocol):
     ) -> None: ...
 
 # ---------------------------------------------------------------------------
-# Cost-rollup result -- exposed for equivalence-harness pinning
+# Finalizer result values
 # ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TranscriptAppendResult:
+    """Assistant transcript persistence result from the concrete adapter."""
+
+    appended: bool
+    message_id: str | None = None
+
 
 @dataclass(frozen=True)
 class CostRollupResult:
@@ -494,6 +502,11 @@ class TurnFinalizerStageOutput:
     cost_rollup: CostRollupResult | None
     # Did the assistant turn actually persist?
     transcript_appended: bool
+    # Exact assistant row and payload persisted for this turn. The gateway
+    # stores these on channel tasks so delivery never has to infer ownership
+    # from whichever assistant row happens to be newest.
+    assistant_message_id: str | None
+    assistant_message_content: str | None
     # Did the memory capture fire?
     memory_captured: bool
 
@@ -583,6 +596,8 @@ class TurnFinalizerStage:
         final_text = _with_unconfirmed_action_notice(final_text, turn_segments)
 
         transcript_appended = False
+        assistant_message_id: str | None = None
+        assistant_message_content: str | None = None
         memory_captured = False
 
         # 2. Transcript append + 3. memory capture (paired -- memory
@@ -608,7 +623,7 @@ class TurnFinalizerStage:
             token_count = (
                 inp.done_event.output_tokens if inp.done_event is not None else None
             )
-            transcript_appended = await self._transcript_append.append_message(
+            append_result = await self._transcript_append.append_message(
                 inp.session_key,
                 role="assistant",
                 content=persisted_content,
@@ -620,6 +635,15 @@ class TurnFinalizerStage:
                 ),
                 token_count=token_count,
             )
+            if isinstance(append_result, TranscriptAppendResult):
+                transcript_appended = append_result.appended
+                assistant_message_id = append_result.message_id
+            else:
+                # Backward compatibility for third-party/direct stage adapters
+                # that implement the original boolean port contract.
+                transcript_appended = bool(append_result)
+            if transcript_appended:
+                assistant_message_content = persisted_content
             if transcript_appended:
                 try:
                     await self._turn_memory_capture.capture_turn(
@@ -679,6 +703,8 @@ class TurnFinalizerStage:
                 done_event=inp.done_event,
                 cost_rollup=cost_rollup,
                 transcript_appended=transcript_appended,
+                assistant_message_id=assistant_message_id,
+                assistant_message_content=assistant_message_content,
                 memory_captured=memory_captured,
             )
         )

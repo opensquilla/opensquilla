@@ -90,7 +90,6 @@ from opensquilla.engine.tool_result_store import (
     ToolResultStore,
     ToolResultStoreBudgetError,
 )
-from opensquilla.engine.tool_text_compat import strip_synthetic_tool_call_suffix
 from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
 from opensquilla.engine.usage import model_usage_cost_fields
 from opensquilla.execution_status import (
@@ -121,6 +120,9 @@ from opensquilla.provider import (
 )
 from opensquilla.provider import (
     TextDeltaEvent as ProviderTextDelta,
+)
+from opensquilla.provider import (
+    ToolUseDeltaEvent as ProviderToolUseDelta,
 )
 from opensquilla.provider import (
     ToolUseStartEvent as ProviderToolUseStart,
@@ -1128,10 +1130,7 @@ def _append_length_capped_continuation(
     response_text: str,
     tool_calls: list[ToolCall],
 ) -> str:
-    visible_text = strip_synthetic_tool_call_suffix(
-        response_text,
-        [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
-    )
+    visible_text = response_text
     if visible_text:
         turn_messages.append(
             Message(role="assistant", content=[ContentBlockText(text=visible_text)])
@@ -1414,22 +1413,20 @@ def _strip_historical_image_blocks(
 
 @dataclass
 class _StreamAccumulator:
-    """Accumulates streaming fragments for a single tool call."""
+    """Tracks streamed tool-argument progress until the provider closes it.
+
+    Argument semantics belong to the provider adapter.  The accumulated raw
+    fragments are useful for progress heartbeats and diagnostics, but must not
+    override the canonical object carried by ``ToolUseEndEvent``: adapters may
+    repair provider-specific wire formats or replace provisional deltas with an
+    authoritative terminal payload.
+    """
 
     tool_use_id: str
     tool_name: str
     synthetic_from_text: bool = False
     json_buf: list[str] = field(default_factory=list)
     json_chars: int = 0
-
-    def finish(self) -> dict[str, Any]:
-        raw = "".join(self.json_buf)
-        if not raw.strip():
-            return {}
-        try:
-            return json.loads(raw)  # type: ignore[no-any-return]
-        except json.JSONDecodeError:
-            return {"_raw": raw}
 
 
 class Agent:
@@ -4468,6 +4465,7 @@ class Agent:
                     assistant_text_parts = []
                     tool_calls = []
                     pending_tools = {}
+                    seen_tool_use_ids: set[str] = set()
                     # Plain assistant text streams live as the answer the moment it
                     # arrives. text_presentation_decided flips to True once a tool
                     # appears this call, after which later text is tagged as
@@ -4928,6 +4926,27 @@ class Agent:
                                     ):
                                         ignored_post_delivery_tool_use = True
                                     continue
+                                if (
+                                    not isinstance(raw_ev.tool_use_id, str)
+                                    or not raw_ev.tool_use_id.strip()
+                                    or not isinstance(raw_ev.tool_name, str)
+                                    or not raw_ev.tool_name.strip()
+                                    or raw_ev.tool_use_id in seen_tool_use_ids
+                                ):
+                                    provider_error = ProviderErrorEvent(
+                                        message=(
+                                            "Provider emitted a duplicate or invalid "
+                                            "tool identity in one response"
+                                        ),
+                                        code="provider_protocol_error",
+                                    )
+                                    provider_error_for_log = provider_error
+                                    _got_error = True
+                                    pending_tools.clear()
+                                    tool_calls.clear()
+                                    tool_argument_heartbeat_chars.clear()
+                                    break
+                                seen_tool_use_ids.add(raw_ev.tool_use_id)
                                 # A tool follows, so any further text this call is
                                 # intermediate narration between tools, not the answer.
                                 text_presentation_decided = True
@@ -4945,37 +4964,56 @@ class Agent:
                                     started_at=int(time.time() * 1000),
                                 )
 
-                            elif raw_ev.kind == "tool_use_delta":
+                            elif isinstance(raw_ev, ProviderToolUseDelta):
                                 if not tools_supported_for_call:
                                     continue
-                                acc = pending_tools.get(raw_ev.tool_use_id)  # type: ignore[union-attr]
-                                if acc:
-                                    json_fragment = raw_ev.json_fragment  # type: ignore[union-attr]
-                                    acc.json_buf.append(json_fragment)
-                                    acc.json_chars += len(json_fragment)
-                                    if json_fragment:
-                                        yield ToolUseDeltaEvent(
-                                            tool_use_id=raw_ev.tool_use_id,
-                                            json_fragment=json_fragment,
-                                        )
-                                    last_heartbeat_chars = tool_argument_heartbeat_chars.get(
-                                        raw_ev.tool_use_id, 0
+                                delta_tool_use_id = raw_ev.tool_use_id
+                                acc = (
+                                    pending_tools.get(delta_tool_use_id)
+                                    if isinstance(delta_tool_use_id, str)
+                                    and delta_tool_use_id.strip()
+                                    else None
+                                )
+                                if acc is None or not isinstance(raw_ev.json_fragment, str):
+                                    provider_error = ProviderErrorEvent(
+                                        message=(
+                                            "Provider emitted a tool argument delta without "
+                                            "a matching active tool call"
+                                        ),
+                                        code="provider_protocol_error",
                                     )
-                                    if (
-                                        acc.json_chars - last_heartbeat_chars
-                                        >= _TOOL_ARGUMENT_HEARTBEAT_CHARS
-                                    ):
-                                        tool_argument_heartbeat_chars[raw_ev.tool_use_id] = (
-                                            acc.json_chars
-                                        )
-                                        yield RunHeartbeatEvent(
-                                            phase="llm_tool_arguments",
-                                            elapsed_ms=int(
-                                                (time.monotonic() - call_started_at) * 1000
-                                            ),
-                                            idle_ms=0,
-                                            message=(f"Receiving {acc.tool_name} arguments"),
-                                        )
+                                    provider_error_for_log = provider_error
+                                    _got_error = True
+                                    pending_tools.clear()
+                                    tool_calls.clear()
+                                    tool_argument_heartbeat_chars.clear()
+                                    break
+                                json_fragment = raw_ev.json_fragment
+                                acc.json_buf.append(json_fragment)
+                                acc.json_chars += len(json_fragment)
+                                if json_fragment:
+                                    yield ToolUseDeltaEvent(
+                                        tool_use_id=raw_ev.tool_use_id,
+                                        json_fragment=json_fragment,
+                                    )
+                                last_heartbeat_chars = tool_argument_heartbeat_chars.get(
+                                    raw_ev.tool_use_id, 0
+                                )
+                                if (
+                                    acc.json_chars - last_heartbeat_chars
+                                    >= _TOOL_ARGUMENT_HEARTBEAT_CHARS
+                                ):
+                                    tool_argument_heartbeat_chars[raw_ev.tool_use_id] = (
+                                        acc.json_chars
+                                    )
+                                    yield RunHeartbeatEvent(
+                                        phase="llm_tool_arguments",
+                                        elapsed_ms=int(
+                                            (time.monotonic() - call_started_at) * 1000
+                                        ),
+                                        idle_ms=0,
+                                        message=(f"Receiving {acc.tool_name} arguments"),
+                                    )
 
                             elif isinstance(raw_ev, ToolUseEndEvent):
                                 if not tools_supported_for_call:
@@ -4986,12 +5024,61 @@ class Agent:
                                     ):
                                         ignored_post_delivery_tool_use = True
                                     continue
-                                acc = pending_tools.pop(raw_ev.tool_use_id, None)
-                                tool_argument_heartbeat_chars.pop(raw_ev.tool_use_id, None)
-                                if acc and acc.json_buf:
-                                    arguments = acc.finish()
+                                end_tool_use_id = raw_ev.tool_use_id
+                                if (
+                                    isinstance(end_tool_use_id, str)
+                                    and end_tool_use_id.strip()
+                                ):
+                                    acc = pending_tools.pop(end_tool_use_id, None)
+                                    tool_argument_heartbeat_chars.pop(end_tool_use_id, None)
                                 else:
-                                    arguments = raw_ev.arguments
+                                    acc = None
+                                if acc is None:
+                                    provider_error = ProviderErrorEvent(
+                                        message=(
+                                            "Provider ended a tool call without one "
+                                            "matching start event"
+                                        ),
+                                        code="provider_protocol_error",
+                                    )
+                                    provider_error_for_log = provider_error
+                                    _got_error = True
+                                    pending_tools.clear()
+                                    tool_calls.clear()
+                                    tool_argument_heartbeat_chars.clear()
+                                    break
+                                invalid_arguments = not isinstance(raw_ev.arguments, dict)
+                                if not invalid_arguments:
+                                    try:
+                                        json.dumps(raw_ev.arguments, allow_nan=False)
+                                    except (OverflowError, RecursionError, TypeError, ValueError):
+                                        invalid_arguments = True
+                                if (
+                                    not isinstance(raw_ev.tool_name, str)
+                                    or not raw_ev.tool_name.strip()
+                                    or raw_ev.tool_name != acc.tool_name
+                                    or invalid_arguments
+                                ):
+                                    provider_error = ProviderErrorEvent(
+                                        message=(
+                                            "Provider ended a tool call with inconsistent "
+                                            "identity or invalid arguments"
+                                        ),
+                                        code="provider_protocol_error",
+                                    )
+                                    provider_error_for_log = provider_error
+                                    _got_error = True
+                                    pending_tools.clear()
+                                    tool_calls.clear()
+                                    tool_argument_heartbeat_chars.clear()
+                                    break
+                                # ToolUseEndEvent is the provider boundary's
+                                # canonical, validated argument object.  Do not
+                                # reparse provisional deltas here: that would
+                                # undo provider-specific repair and can replace
+                                # authoritative terminal arguments with a
+                                # malformed ``_raw`` fallback.
+                                arguments = raw_ev.arguments
                                 synthetic_from_text = (
                                     acc.synthetic_from_text
                                     if acc is not None
@@ -5821,10 +5908,7 @@ class Agent:
                             yield terminal_error
                             break
                         if attempt_classification.kind == _ProviderAttemptKind.LENGTH_CAPPED:
-                            visible_text = strip_synthetic_tool_call_suffix(
-                                response_text,
-                                [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
-                            )
+                            visible_text = response_text
                             logger.warning(
                                 "provider.output_truncated_exhausted",
                                 session_key=self._session_key,
@@ -6478,10 +6562,7 @@ class Agent:
                     )
 
                 assembled_text = "".join(assistant_text_parts)
-                visible_text = strip_synthetic_tool_call_suffix(
-                    assembled_text,
-                    [tc.tool_name for tc in tool_calls if tc.synthetic_from_text],
-                )
+                visible_text = assembled_text
                 if text_only_tool_recovery_pending:
                     text_only_mode = getattr(
                         self.config,
@@ -8285,6 +8366,7 @@ class Agent:
                 model_usage_breakdown=summarized_model_usage_breakdown,
                 ensemble_trace=final_ensemble_trace,
                 estimate_basis=estimate_basis,
+                text_snapshot="".join(final_text_parts),
             )
         # Reset for next turn
         self._state = AgentState.IDLE
@@ -12349,13 +12431,19 @@ class Agent:
                 final_text = render_paused_outcome(result)
             else:
                 final_text = result.final_text or "".join(final_text_parts)
-            # Emit one synthetic TextDelta for any text not already streamed
-            # (re-pause path) so the transcript / surface sees it.
+            # Emit only a strict suffix that was not already streamed
+            # (for example, the re-pause rendering).  A conflicting terminal
+            # snapshot must be reconciled by DoneEvent instead of briefly
+            # broadcasting an invalid concatenation to streaming surfaces.
             already_streamed = "".join(final_text_parts)
-            if final_text and final_text != already_streamed:
+            if final_text.startswith(already_streamed):
+                suffix = final_text[len(already_streamed) :]
+            else:
+                suffix = ""
+            if suffix:
                 from opensquilla.engine.types import TextDeltaEvent
 
-                yield TextDeltaEvent(text=final_text)
+                yield TextDeltaEvent(text=suffix)
         else:
             final_text = "".join(final_text_parts)
 
@@ -12367,6 +12455,7 @@ class Agent:
             cost_usd=0.0,
             cost_source="none",
             model=self.config.model_id or "",
+            text_snapshot=final_text,
         )
 
     async def _run_meta_launch(self, name: str) -> AsyncIterator[Any]:
@@ -12553,8 +12642,12 @@ class Agent:
             final_text = "".join(final_text_parts)
 
         already_streamed = "".join(final_text_parts)
-        if final_text and final_text != already_streamed:
-            yield TextDeltaEvent(text=final_text)
+        if final_text.startswith(already_streamed):
+            suffix = final_text[len(already_streamed) :]
+        else:
+            suffix = ""
+        if suffix:
+            yield TextDeltaEvent(text=suffix)
 
         yield DoneEvent(
             text=final_text,
@@ -12564,6 +12657,7 @@ class Agent:
             cost_usd=0.0,
             cost_source="none",
             model=self.config.model_id or "",
+            text_snapshot=final_text,
         )
 
     def _read_clarify_outcome(
@@ -12785,6 +12879,7 @@ class Agent:
             cost_usd=0.0,
             cost_source="none",
             model=self.config.model_id or "",
+            text_snapshot=text,
         )
 
     def _format_meta_invoke_failure(

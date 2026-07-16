@@ -473,6 +473,26 @@ def _sync_model_catalog_overrides(config: Any) -> None:
     apply_model_catalog_overrides(shared_catalog(), config)
 
 
+def _live_catalog_fingerprint(config: Any) -> tuple[str, bool, str]:
+    """Connection identity for deciding whether a config write should refresh."""
+
+    from opensquilla.gateway.model_catalog_refresh import live_catalog_refresh_fingerprint
+
+    return live_catalog_refresh_fingerprint(config)
+
+
+async def _refresh_live_catalog_after_change(
+    previous: tuple[str, bool, str], config: Any
+) -> None:
+    """Refresh public model metadata when its runtime connection changed."""
+
+    from opensquilla.gateway.model_catalog_refresh import (
+        refresh_live_model_catalog_if_changed,
+    )
+
+    await refresh_live_model_catalog_if_changed(previous, config)
+
+
 # Read-only paths that cannot be modified via config.set/patch/apply.
 # config_version is the migration stamp owned by migrate_config_payload;
 # client writes to it could re-run or skip one-time migrations.
@@ -647,6 +667,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
         raise ValueError("No config available")
 
     old_model_routing = model_routing_snapshot(ctx.config)
+    old_live_catalog_fingerprint = _live_catalog_fingerprint(ctx.config)
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
@@ -703,6 +724,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     _sync_resolved_provider_selector(ctx, provider_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
+    await _refresh_live_catalog_after_change(old_live_catalog_fingerprint, new_config)
     response = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,
@@ -745,6 +767,7 @@ async def _handle_config_patch(
         raise ValueError("No config available")
 
     old_model_routing = model_routing_snapshot(ctx.config)
+    old_live_catalog_fingerprint = _live_catalog_fingerprint(ctx.config)
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
@@ -828,6 +851,7 @@ async def _handle_config_patch(
     _sync_resolved_provider_selector(ctx, provider_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
+    await _refresh_live_catalog_after_change(old_live_catalog_fingerprint, new_config)
 
     change_meta = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
@@ -900,6 +924,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     if ctx.config is not None and not config_payload.get("config_path"):
         config_payload["config_path"] = getattr(ctx.config, "config_path", None)
 
+    old_live_catalog_fingerprint = _live_catalog_fingerprint(ctx.config)
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
     old_sandbox_posture_fingerprint = _sandbox_posture_restart_fingerprint(ctx.config)
@@ -931,6 +956,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     _sync_resolved_provider_selector(ctx, provider_config)
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
+    await _refresh_live_catalog_after_change(old_live_catalog_fingerprint, new_config)
     response = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,
@@ -1059,6 +1085,13 @@ async def _handle_config_reload(params: dict | None, ctx: RpcContext) -> dict[st
     _update_config_in_place(ctx.config, candidate)
     _sync_image_generation(candidate)
     _sync_model_catalog_overrides(candidate)
+
+    # Reload is the operator's explicit retry path: if the active provider has
+    # a configured registry-backed live catalog, refresh even when its
+    # connection fingerprint is unchanged.
+    from opensquilla.gateway.model_catalog_refresh import refresh_live_model_catalog
+
+    await refresh_live_model_catalog(candidate)
 
     response = {"ok": True, "path": str(target), **change_meta}
     model_routing = await broadcast_model_routing_changed_if_needed(

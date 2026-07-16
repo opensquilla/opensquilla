@@ -371,7 +371,7 @@ def test_response_failed_yields_error_event(tmp_path: Path, monkeypatch) -> None
     assert not any(isinstance(e, DoneEvent) for e in events)
 
 
-def test_truncated_stream_still_terminates_with_done(tmp_path: Path, monkeypatch) -> None:
+def test_truncated_stream_does_not_commit_tool_or_done(tmp_path: Path, monkeypatch) -> None:
     auth = _write_auth(tmp_path / "auth.json")
     body = _sse(
         [
@@ -396,8 +396,12 @@ def test_truncated_stream_still_terminates_with_done(tmp_path: Path, monkeypatch
     )
     provider = OpenAICodexProvider(auth_path=str(auth))
     events = _collect(provider, tools=[_SEARCH_TOOL])
-    assert any(isinstance(e, ToolUseEndEvent) for e in events)
-    assert any(isinstance(e, DoneEvent) for e in events)
+    assert not any(isinstance(e, ToolUseEndEvent) for e in events)
+    assert not any(isinstance(e, DoneEvent) for e in events)
+    assert any(
+        isinstance(e, ErrorEvent) and e.code == "incomplete_stream"
+        for e in events
+    )
 
 
 def test_missing_credentials_is_auth_error_event(tmp_path: Path) -> None:

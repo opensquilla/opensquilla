@@ -67,6 +67,10 @@ class OpenTuiStreamRenderer:
         self._block_seq = 0
         self._open_text_id: str | None = None
         self._open_text_presentation: str = "answer"
+        # Every assistant-text block remains addressable after block.end so a
+        # terminal snapshot can clear stale preview blocks without touching tool
+        # rows in the same turn card.
+        self._text_block_ids: list[str] = []
         self._open_reasoning_id: str | None = None
         self._ensemble_block_id: str | None = None
         self._ensemble_members: dict[str, dict[str, Any]] = {}
@@ -215,8 +219,42 @@ class OpenTuiStreamRenderer:
         if self._open_text_id is None:
             self._open_text_id = self._next_block_id()
             self._open_text_presentation = kind
-            await self._emit("block.begin", BlockBegin(id=self._open_text_id, kind=kind, meta={}))
+            self._text_block_ids.append(self._open_text_id)
+            await self._emit(
+                "block.begin", BlockBegin(id=self._open_text_id, kind=kind, meta={})
+            )
         await self._emit("block.append", BlockAppend(id=self._open_text_id, delta=visible))
+
+    async def areconcile_final_text(self, text: str) -> None:
+        """Replace stale text blocks while preserving the turn's tool timeline."""
+
+        previous = self.buffer
+        if text == previous:
+            return
+        if text.startswith(previous):
+            await self.aappend_text(text[len(previous) :], presentation="answer")
+            return
+
+        # End the current text block without releasing a held directive prefix
+        # from the superseded preview.  Closed blocks remain updateable by id.
+        self._directive_filter = StreamDirectiveFilter()
+        await self._close_text()
+        await self._close_reasoning()
+        for block_id in self._text_block_ids:
+            await self._emit("block.update", BlockUpdate(id=block_id, patch={"text": ""}))
+        self._text_block_ids.clear()
+        self.buffer = ""
+
+        notice = (
+            "Final answer corrected; an earlier streamed preview was superseded."
+            if text
+            else "Streamed preview withdrawn; the final answer is empty."
+        )
+        await self.astatus(notice, style="warning")
+        if text:
+            # A fresh answer block is appended after any preserved tool rows.
+            # aappend_text also applies the routing-directive visibility policy.
+            await self.aappend_text(text, presentation="answer")
 
     async def aappend_reasoning(self, delta: str) -> None:
         # Reasoning is the model's extended-thinking PROCESS. aturn_started has
@@ -410,6 +448,7 @@ class OpenTuiStreamRenderer:
         self._directive_filter = StreamDirectiveFilter()
         if self._open_text_id is None and tail:
             self._open_text_id = self._next_block_id()
+            self._text_block_ids.append(self._open_text_id)
             await self._emit(
                 "block.begin",
                 BlockBegin(id=self._open_text_id, kind=self._open_text_presentation, meta={}),

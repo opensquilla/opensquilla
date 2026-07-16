@@ -361,6 +361,11 @@
   scrollbar-gutter: stable;
 }
 
+.chat-thread:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--border-focus);
+  outline: none;
+}
+
 /* The thread scrollbar now sits at the true screen edge — give it a hit area
    worth flinging a cursor at (the global default is a 6px sliver). */
 .chat-thread::-webkit-scrollbar {

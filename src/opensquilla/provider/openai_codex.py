@@ -36,7 +36,7 @@ from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .stream_assembly import (
     ReasoningAccumulator,
     ToolStreamAccumulator,
-    parse_tool_arguments,
+    ToolStreamProtocolError,
 )
 from .types import (
     ChatConfig,
@@ -64,6 +64,16 @@ _KNOWN_CODEX_MODELS: tuple[tuple[str, str], ...] = (
     ("gpt-5.4-mini", "GPT-5.4 Mini"),
     ("gpt-5", "GPT-5"),
 )
+
+
+def _is_finite_json_object(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    try:
+        json.dumps(value, allow_nan=False)
+    except (OverflowError, RecursionError, TypeError, ValueError):
+        return False
+    return True
 
 
 def _codex_tool(tool: ToolDefinition) -> dict[str, Any]:
@@ -279,6 +289,34 @@ class OpenAICodexProvider:
         reasoning_tokens = 0
         cached_tokens = 0
         stop_reason: str | None = None
+        response_completed = False
+        deferred_tool_ends: list[StreamEvent] = []
+        invalid_tool_call_keys: set[Any] = set()
+
+        def _function_call_identity(item: Any) -> tuple[str, str] | None:
+            if not isinstance(item, dict):
+                return None
+            raw_item_id = item.get("id")
+            raw_call_id = item.get("call_id")
+            if (
+                raw_item_id is not None
+                and (
+                    not isinstance(raw_item_id, str)
+                    or not raw_item_id.strip()
+                )
+            ) or (
+                raw_call_id is not None
+                and (
+                    not isinstance(raw_call_id, str)
+                    or not raw_call_id.strip()
+                )
+            ):
+                return None
+            public_id = raw_call_id or raw_item_id
+            key = raw_item_id or raw_call_id
+            if not isinstance(public_id, str) or not isinstance(key, str):
+                return None
+            return key, public_id
 
         async for line in response.aiter_lines():
             if not line.startswith("data:"):
@@ -289,8 +327,33 @@ class OpenAICodexProvider:
             try:
                 event = json.loads(data_str)
             except json.JSONDecodeError:
-                continue
+                yield ErrorEvent(
+                    message="ChatGPT Codex stream contained an invalid data frame",
+                    code="invalid_stream_frame",
+                )
+                return
+            if not isinstance(event, dict):
+                yield ErrorEvent(
+                    message="ChatGPT Codex stream contained a non-object data frame",
+                    code="invalid_stream_frame",
+                )
+                return
             etype = str(event.get("type") or "")
+
+            if etype == "error":
+                error = event.get("error")
+                message = (
+                    str(error.get("message") or "ChatGPT Codex stream error")
+                    if isinstance(error, dict)
+                    else str(error or event.get("message") or "ChatGPT Codex stream error")
+                )
+                code = (
+                    str(error.get("code") or error.get("type") or "stream_error")
+                    if isinstance(error, dict)
+                    else str(event.get("code") or "stream_error")
+                )
+                yield ErrorEvent(message=message, code=code)
+                return
 
             if etype == "response.output_text.delta":
                 delta = str(event.get("delta") or "")
@@ -307,41 +370,142 @@ class OpenAICodexProvider:
 
             elif etype == "response.output_item.added":
                 item = event.get("item") or {}
-                if item.get("type") == "function_call":
-                    key = item.get("id") or item.get("call_id")
-                    for tool_event in tools_acc.start(
-                        key,
-                        tool_use_id=str(item.get("call_id") or item.get("id") or ""),
-                        tool_name=str(item.get("name") or ""),
-                    ):
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    identity = _function_call_identity(item)
+                    raw_tool_name = item.get("name")
+                    tool_name = raw_tool_name if isinstance(raw_tool_name, str) else ""
+                    if identity is None:
+                        invalid_tool_call_keys.add(f"invalid-{len(invalid_tool_call_keys)}")
+                        continue
+                    key, tool_use_id = identity
+                    try:
+                        tool_events = tools_acc.start(
+                            key,
+                            tool_use_id=tool_use_id,
+                            tool_name=tool_name,
+                        )
+                    except ToolStreamProtocolError as exc:
+                        invalid_tool_call_keys.add(exc.key)
+                        log.warning(
+                            "provider.tool_stream_protocol_error",
+                            provider=self.provider_name,
+                            model=self._model,
+                            operation=exc.operation,
+                            reason=exc.reason,
+                        )
+                        continue
+                    for tool_event in tool_events:
                         yield tool_event
 
             elif etype == "response.function_call_arguments.delta":
-                key = event.get("item_id")
+                delta_key = event.get("item_id")
                 fragment = str(event.get("delta") or "")
                 if fragment:
-                    for tool_event in tools_acc.append(key, fragment):
+                    try:
+                        tool_events = tools_acc.append(delta_key, fragment)
+                    except ToolStreamProtocolError as exc:
+                        invalid_tool_call_keys.add(exc.key)
+                        log.warning(
+                            "provider.tool_stream_protocol_error",
+                            provider=self.provider_name,
+                            model=self._model,
+                            operation=exc.operation,
+                            reason=exc.reason,
+                        )
+                        continue
+                    for tool_event in tool_events:
                         yield tool_event
 
             elif etype == "response.output_item.done":
                 item = event.get("item") or {}
-                if item.get("type") == "function_call":
-                    key = item.get("id") or item.get("call_id")
-                    for tool_event in tools_acc.start(
-                        key,
-                        tool_use_id=str(item.get("call_id") or item.get("id") or ""),
-                        tool_name=str(item.get("name") or ""),
-                    ):
+                if isinstance(item, dict) and item.get("type") == "function_call":
+                    identity = _function_call_identity(item)
+                    raw_tool_name = item.get("name")
+                    tool_name = raw_tool_name if isinstance(raw_tool_name, str) else ""
+                    if identity is None or not tool_name.strip():
+                        invalid_tool_call_keys.add(f"invalid-{len(invalid_tool_call_keys)}")
+                        continue
+                    key, tool_use_id = identity
+                    try:
+                        tool_events = tools_acc.start(
+                            key,
+                            tool_use_id=tool_use_id,
+                            tool_name=tool_name,
+                        )
+                    except ToolStreamProtocolError as exc:
+                        invalid_tool_call_keys.add(exc.key)
+                        log.warning(
+                            "provider.tool_stream_protocol_error",
+                            provider=self.provider_name,
+                            model=self._model,
+                            operation=exc.operation,
+                            reason=exc.reason,
+                        )
+                        continue
+                    for tool_event in tool_events:
                         yield tool_event
                     # The done item carries the authoritative full arguments.
-                    for tool_event in tools_acc.finish_with_arguments(
-                        key,
-                        parse_tool_arguments(str(item.get("arguments") or "")),
+                    raw_arguments_value = item.get("arguments")
+                    if not isinstance(raw_arguments_value, str):
+                        invalid_tool_call_keys.add(key)
+                        continue
+                    raw_arguments = raw_arguments_value
+                    try:
+                        arguments = (
+                            json.loads(
+                                raw_arguments,
+                                parse_constant=lambda value: (_ for _ in ()).throw(
+                                    ValueError(value)
+                                ),
+                            )
+                            if raw_arguments.strip()
+                            else {}
+                        )
+                        arguments_valid = _is_finite_json_object(arguments)
+                    except (
+                        json.JSONDecodeError,
+                        RecursionError,
+                        TypeError,
+                        ValueError,
                     ):
-                        yield tool_event
+                        arguments = {}
+                        arguments_valid = False
+                    identity_valid = bool(tool_name.strip())
+                    if arguments_valid and identity_valid:
+                        try:
+                            deferred_tool_ends.extend(
+                                tools_acc.finish_with_arguments(key, arguments)
+                            )
+                        except ToolStreamProtocolError as exc:
+                            invalid_tool_call_keys.add(exc.key)
+                            log.warning(
+                                "provider.tool_stream_protocol_error",
+                                provider=self.provider_name,
+                                model=self._model,
+                                operation=exc.operation,
+                                reason=exc.reason,
+                            )
+                    else:
+                        invalid_tool_call_keys.add(key)
 
             elif etype == "response.completed":
-                body = event.get("response") or {}
+                body = event.get("response")
+                if not isinstance(body, dict):
+                    yield ErrorEvent(
+                        message="ChatGPT Codex completed event was malformed",
+                        code="invalid_response",
+                    )
+                    return
+                completed_status = body.get("status")
+                if completed_status is not None and completed_status != "completed":
+                    yield ErrorEvent(
+                        message=(
+                            "ChatGPT Codex completed event carried non-completed "
+                            f"status {completed_status!r}"
+                        ),
+                        code="invalid_response_status",
+                    )
+                    return
                 actual_model = str(body.get("model") or self._model)
                 usage = body.get("usage") or {}
                 input_tokens = int(usage.get("input_tokens") or 0)
@@ -351,6 +515,7 @@ class OpenAICodexProvider:
                 output_details = usage.get("output_tokens_details") or {}
                 reasoning_tokens = int(output_details.get("reasoning_tokens") or 0)
                 stop_reason = "end_turn"
+                response_completed = True
                 break
 
             elif etype == "response.failed":
@@ -362,14 +527,37 @@ class OpenAICodexProvider:
                 )
                 return
 
-        # Termination contract: close any open tool calls and always emit
-        # DoneEvent, including for streams truncated before response.completed.
-        emitted_tool = False
-        for tool_event in tools_acc.finish_all():
-            emitted_tool = True
+            elif etype in {"response.incomplete", "response.cancelled"}:
+                body = event.get("response") or {}
+                details = body.get("incomplete_details") or {}
+                message = (
+                    str(details.get("reason") or f"ChatGPT Codex {etype}")
+                    if isinstance(details, dict)
+                    else f"ChatGPT Codex {etype}"
+                )
+                yield ErrorEvent(message=message, code=etype.replace("response.", "response_"))
+                return
+
+        if not response_completed:
+            yield ErrorEvent(
+                message="ChatGPT Codex stream ended before response.completed",
+                code="incomplete_stream",
+            )
+            return
+
+        if tools_acc.pending_raw_arguments() or invalid_tool_call_keys:
+            yield ErrorEvent(
+                message="ChatGPT Codex response ended with an incomplete tool call",
+                code="incomplete_tool_call",
+            )
+            return
+
+        # ``output_item.done`` confirms an item but does not commit the
+        # response.  Release tool ends only after ``response.completed`` so a
+        # later failure or transport drop cannot expose executable partials.
+        for tool_event in deferred_tool_ends:
             yield tool_event
-        if tools_acc.has_calls:
-            emitted_tool = True
+        emitted_tool = tools_acc.has_calls
         yield DoneEvent(
             stop_reason="tool_use" if emitted_tool else (stop_reason or "end_turn"),
             input_tokens=input_tokens,

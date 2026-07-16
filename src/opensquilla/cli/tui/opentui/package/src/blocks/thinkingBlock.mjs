@@ -116,13 +116,30 @@ export function createThinkingBlock(ctx) {
       render();
     },
     update(patch = {}) {
-      if (typeof patch.expanded === "boolean") toggleExpanded(patch.expanded);
+      let changed = false;
+      if (Object.prototype.hasOwnProperty.call(patch ?? {}, "text")) {
+        // A terminal snapshot is authoritative, including an explicit empty
+        // string used to withdraw a stale streamed preview.
+        rawText = String(patch.text ?? "");
+        changed = true;
+      }
+      if (typeof patch.expanded === "boolean" && patch.expanded !== expanded) {
+        expanded = patch.expanded;
+        changed = true;
+      }
+      // Text and disclosure state can arrive in one protocol patch. Reconcile
+      // them in a single render transaction so row destruction/creation never
+      // exposes an intermediate stale frame.
+      if (changed) render();
     },
     end() {
       done = true;
       render();
     },
     toggleExpanded,
+    // Re-wrap every row from the raw text at the current terminal width, so a
+    // resize re-flows narration instead of leaving rows wrapped or clipped to
+    // the old width.
     relayout() { render(); },
     recolor() {
       for (const node of rowNodes) node.fg = done ? THEME.detailText : THEME.thinkingAccent;

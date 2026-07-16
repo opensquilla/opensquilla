@@ -415,6 +415,12 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     _sync_image_generation(res.config)
+    # Provider saves are an explicit retry boundary for registry-declared
+    # public model listings. Await the bounded best-effort refresh so the next
+    # turn observes the new catalog without requiring a gateway restart.
+    from opensquilla.gateway.model_catalog_refresh import refresh_live_model_catalog
+
+    await refresh_live_model_catalog(ctx.config if ctx.config is not None else res.config)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,

@@ -13,6 +13,7 @@ from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.rpc_doctor import _legacy_home_payload
 from opensquilla.gateway.scopes import METHOD_SCOPES, READ_SCOPE
 from opensquilla.health.evaluator import evaluate_legacy_home
+from opensquilla.health.model import build_report
 from opensquilla.migration import legacy_detect
 from opensquilla.migration.legacy_detect import LegacyHomeCandidate
 
@@ -1281,7 +1282,46 @@ def test_evaluate_legacy_home_emits_migration_finding() -> None:
         ("Preview the import", preview),
         ("Apply the import", f"{preview} --apply"),
     ]
-    assert finding.restart_required is False
+    assert finding.readiness_impact == "degrades"
+    assert "replaces the target data rather than merging" in finding.detail
+    assert finding.restart_required is True
+
+
+def test_evaluate_legacy_home_is_optional_when_target_has_data() -> None:
+    findings = evaluate_legacy_home(
+        {
+            "detected": True,
+            "targetFresh": False,
+            "path": "/tmp/legacy-home",
+            "kind": "cli-home",
+        }
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.id == "migration.legacy_home_detected"
+    assert finding.severity == "info"
+    assert finding.readiness_impact == "optional"
+    assert finding.evidence == {
+        "path": "/tmp/legacy-home",
+        "kind": "cli-home",
+        "target_fresh": False,
+    }
+    assert "already holds session data and needs no action" in finding.detail
+    assert "replace the current data" in finding.detail
+    assert "not merged" in finding.detail
+    assert "can appear again" in finding.detail
+    preview = "opensquilla migrate opensquilla --kind cli-home --source /tmp/legacy-home"
+    assert [(step.label, step.command) for step in finding.fix_steps] == [
+        ("Preview the import", preview),
+        ("Apply the import", f"{preview} --apply"),
+    ]
+    assert finding.restart_required is True
+
+    report = build_report(findings)
+    assert report["status"] == "ready"
+    assert report["ready"] is True
+    assert report["impactCounts"]["optional"] == 1
 
 
 def test_evaluate_legacy_home_is_silent_without_candidate() -> None:
@@ -1361,6 +1401,8 @@ async def test_doctor_status_reports_detected_legacy_home(monkeypatch) -> None:
     )
 
     assert response.ok is True
+    assert response.payload["status"] == "degraded"
+    assert response.payload["ready"] is True
     finding = next(
         finding
         for finding in response.payload["findings"]
@@ -1368,7 +1410,8 @@ async def test_doctor_status_reports_detected_legacy_home(monkeypatch) -> None:
     )
     assert finding["surface"] == "migration"
     assert finding["severity"] == "warn"
-    assert finding["restartRequired"] is False
+    assert finding["readinessImpact"] == "degrades"
+    assert finding["restartRequired"] is True
     assert finding["evidence"] == {
         "path": "/tmp/legacy-home",
         "kind": "cli-home",
@@ -1381,6 +1424,58 @@ async def test_doctor_status_reports_detected_legacy_home(monkeypatch) -> None:
         preview,
         f"{preview} --apply",
     ]
+
+
+@pytest.mark.asyncio
+async def test_doctor_status_keeps_existing_target_ready_when_legacy_source_remains(
+    monkeypatch,
+) -> None:
+    import opensquilla.gateway.rpc_doctor as rpc_doctor
+
+    async def provider_status(params: dict[str, Any], ctx: RpcContext) -> dict[str, Any]:
+        return {
+            "activeProvider": "openrouter",
+            "providers": [
+                {
+                    "providerId": "openrouter",
+                    "active": True,
+                    "configured": True,
+                    "buildable": True,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(rpc_doctor, "_handle_providers_status", provider_status)
+    _patch_ready_support_surfaces(monkeypatch, rpc_doctor)
+    monkeypatch.setattr(
+        rpc_doctor,
+        "_legacy_home_payload",
+        lambda ctx: {
+            "detected": True,
+            "targetFresh": False,
+            "path": "/tmp/legacy-home",
+            "kind": "cli-home",
+        },
+    )
+
+    response = await get_dispatcher().dispatch(
+        "req-1",
+        "doctor.status",
+        {},
+        RpcContext(conn_id="test", config=GatewayConfig()),
+    )
+
+    assert response.ok is True
+    assert response.payload["status"] == "ready"
+    assert response.payload["ready"] is True
+    finding = next(
+        finding
+        for finding in response.payload["findings"]
+        if finding["id"] == "migration.legacy_home_detected"
+    )
+    assert finding["severity"] == "info"
+    assert finding["readinessImpact"] == "optional"
+    assert finding["restartRequired"] is True
 
 
 @pytest.mark.asyncio

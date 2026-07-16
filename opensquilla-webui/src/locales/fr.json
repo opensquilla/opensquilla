@@ -354,6 +354,11 @@
       "modelOptionsToggle": "Catalogue de modèles · {count}",
       "modelListReadout": "Disponibles · {count}",
       "modelLiveSource": "En direct",
+      "modelMaxOutput": "Sortie max. {tokens}",
+      "effectiveMaxTokens": "Limite de sortie effective : {tokens} tokens · Source : {source}",
+      "effectiveSourceConfig": "configuration utilisateur",
+      "effectiveSourceCatalog": "catalogue de modèles",
+      "effectiveSourceDefault": "valeur intégrée par défaut",
       "modelSearchOrCustom": "Rechercher des modèles ou saisir un ID personnalisé",
       "modelSelected": "Sélectionné",
       "modelUseTyped": "Utiliser « {value} »",
@@ -1153,7 +1158,7 @@
       "copyDiagnostics": "Copier le JSON de diagnostic",
       "copiedDiagnostics": "JSON de diagnostic copié",
       "diagnoseWithAgent": "Diagnostiquer avec l'agent",
-      "diagnosePrompt": "Veuillez diagnostiquer cette configuration OpenSquilla à l'aide du rapport doctor ci-dessous ; proposez la cause racine et des étapes de correction minimales ; n'exécutez pas de commandes destructrices.",
+      "diagnosePrompt": "Veuillez diagnostiquer cette configuration OpenSquilla à l'aide du contexte client et du rapport doctor ci-dessous. Privilégiez les réglages applicables dans l'app. Lorsque hasTerminalWorkflow vaut false, ne proposez pas de commandes opensquilla brutes ; un gateway Desktop détenu est géré par l'app. Un transfert de données signifie une sauvegarde suivie d'un remplacement complet, jamais une fusion. Une migration facultative n'est pas une panne et peut rester visible après le transfert. Contentez-vous d'expliquer et de guider : ne migrez pas les données, ne redémarrez pas le gateway, n'écrivez pas de réglages et ne prétendez pas avoir effectué des changements.",
       "environment": "Environnement",
       "latency": "Latence"
     }
@@ -1994,6 +1999,9 @@
     "identityReady": "{label} · prêt",
     "loadEarlier": "Charger les messages précédents",
     "loadingEllipsis": "Chargement...",
+    "loadingEarlier": "Chargement des messages précédents…",
+    "loadEarlierFailedRetry": "Échec du chargement des messages précédents · Réessayer",
+    "legacyHistoryUnavailable": "Les messages originaux précédents n’ont pas été enregistrés par l’ancienne version.",
     "scopeCompacted": "Le contenu plus ancien est représenté par des résumés de session.",
     "scopeLatestWindow": "Affichage de la fenêtre de messages la plus récente.",
     "status": {

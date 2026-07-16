@@ -7,6 +7,8 @@ All fixture data is synthetic.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -126,6 +128,33 @@ async def test_decisions_list_empty_without_writer() -> None:
     finally:
         set_decision_writer(previous)
     assert payload == {"decisions": []}
+
+
+async def test_decisions_list_writer_wait_does_not_block_event_loop() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    class _BlockingWriter:
+        def list_decisions(self, **kwargs):
+            started.set()
+            release.wait(timeout=1.0)
+            return []
+
+    previous = get_decision_writer()
+    set_decision_writer(_BlockingWriter())
+    task = asyncio.create_task(
+        _handle_router_decisions_list({}, RpcContext(conn_id="test"))
+    )
+    try:
+        assert await asyncio.to_thread(started.wait, 0.5)
+        loop = asyncio.get_running_loop()
+        before = loop.time()
+        await asyncio.sleep(0.05)
+        assert loop.time() - before < 0.2
+    finally:
+        release.set()
+        await task
+        set_decision_writer(previous)
 
 
 async def test_decisions_list_returns_camelcase_envelope(

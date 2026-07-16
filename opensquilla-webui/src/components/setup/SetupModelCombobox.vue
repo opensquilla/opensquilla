@@ -133,6 +133,10 @@ function rowMeta(model: DiscoveredModel): string {
   const parts: string[] = []
   const ctx = compactTokens(model.contextWindow)
   if (ctx) parts.push(ctx)
+  const maxOutput = compactTokens(model.maxOutputTokens)
+  if (maxOutput) {
+    parts.push(t('setup.provider.modelMaxOutput', { tokens: maxOutput }))
+  }
   parts.push(...model.capabilities.filter(cap => cap !== 'chat').slice(0, 3))
   return parts.join(' · ')
 }

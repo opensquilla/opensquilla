@@ -354,6 +354,11 @@
       "modelOptionsToggle": "モデルカタログ · {count}",
       "modelListReadout": "利用可能 · {count}",
       "modelLiveSource": "リアルタイム",
+      "modelMaxOutput": "最大出力 {tokens}",
+      "effectiveMaxTokens": "有効な出力上限：{tokens} tokens · ソース：{source}",
+      "effectiveSourceConfig": "ユーザー設定",
+      "effectiveSourceCatalog": "モデルカタログ",
+      "effectiveSourceDefault": "組み込み既定値",
       "modelSearchOrCustom": "モデルを検索するかカスタム ID を入力",
       "modelSelected": "選択中",
       "modelUseTyped": "「{value}」を使用",
@@ -1153,7 +1158,7 @@
       "copyDiagnostics": "診断 JSON をコピー",
       "copiedDiagnostics": "診断 JSON をコピーしました",
       "diagnoseWithAgent": "エージェントで診断",
-      "diagnosePrompt": "以下の doctor レポートをもとに、この OpenSquilla 設定の問題を調査してください。根本原因と最小限の修正手順を提案し、破壊的なコマンドは実行しないでください。",
+      "diagnosePrompt": "以下のクライアントコンテキストと doctor レポートをもとに、この OpenSquilla 設定を診断してください。利用可能なアプリ内 Settings を優先し、hasTerminalWorkflow が false の場合は裸の opensquilla コマンドを提案しないでください。Desktop が所有する gateway はアプリが管理します。データ転送はバックアップ後の全体置換であり、マージではありません。任意の移行項目は障害ではなく、転送後も表示される場合があります。説明と案内だけを行い、移行、gateway の再起動、設定の書き込み、変更を実行したとの主張はしないでください。",
       "environment": "環境",
       "latency": "レイテンシ"
     }
@@ -1994,6 +1999,9 @@
     "identityReady": "{label} · 準備完了",
     "loadEarlier": "以前のメッセージを読み込む",
     "loadingEllipsis": "読み込み中...",
+    "loadingEarlier": "以前のメッセージを読み込んでいます…",
+    "loadEarlierFailedRetry": "以前のメッセージを読み込めませんでした · 再試行",
+    "legacyHistoryUnavailable": "以前のバージョンでは古い元メッセージが保存されていません。",
     "scopeCompacted": "古い内容はセッションの要約で表されています。",
     "scopeLatestWindow": "最新のメッセージウィンドウを表示しています。",
     "status": {

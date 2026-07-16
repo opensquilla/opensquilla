@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   mergeLiveOnlyFields,
   reconcileHistoryMessages,
+  reconcileHistoryWindow,
   reconcileRunningHistoryMessages,
 } from './historyMerge'
 import type { ChatMessage, ChatReasoning } from '@/types/chat'
@@ -70,6 +71,39 @@ describe('reconcileHistoryMessages', () => {
     const prev = [msg({ messageId: 'm1', reasoning: reasoning(9) })]
     const out = reconcileHistoryMessages(prev, [msg({ messageId: undefined, reasoning: undefined })])
     expect(out[0].reasoning).toBeUndefined()
+  })
+})
+
+describe('reconcileHistoryWindow', () => {
+  it('keeps canonical pages older than the refreshed server window', () => {
+    const previous = Array.from({ length: 250 }, (_, index) => msg({
+      messageId: `m-${index}`,
+      text: `previous ${index}`,
+      restoredFromHistory: true,
+    }))
+    const latestWindow = Array.from({ length: 200 }, (_, index) => msg({
+      messageId: `m-${index + 50}`,
+      text: `server ${index + 50}`,
+      restoredFromHistory: true,
+    }))
+
+    const merged = reconcileHistoryWindow(previous, latestWindow)
+
+    expect(merged).toHaveLength(250)
+    expect(merged[0].messageId).toBe('m-0')
+    expect(merged[49].messageId).toBe('m-49')
+    expect(merged[50].text).toBe('server 50')
+    expect(merged[249].messageId).toBe('m-249')
+  })
+
+  it('does not concatenate canonical rows when the refreshed window has no overlap', () => {
+    const previous = [
+      msg({ messageId: 'old', restoredFromHistory: true }),
+      msg({ role: 'user', text: 'optimistic', restoredFromHistory: false }),
+    ]
+    const incoming = [msg({ messageId: 'new', restoredFromHistory: true })]
+
+    expect(reconcileHistoryWindow(previous, incoming).map(message => message.messageId)).toEqual(['new'])
   })
 })
 

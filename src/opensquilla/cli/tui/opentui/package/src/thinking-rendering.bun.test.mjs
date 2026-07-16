@@ -194,6 +194,49 @@ test("completed long narration keeps a preview and deterministically expands eve
   }
 });
 
+test("a terminal snapshot replaces completed narration and can withdraw it without stale rows", async () => {
+  const { renderer, renderOnce, captureSpans, block } = await mountThinking({
+    width: 70,
+    height: 24,
+  });
+  const stale = Array.from({ length: 10 }, (_, i) => `stale narration ${i + 1}`).join("\n");
+  try {
+    block.append(stale);
+    block.end();
+    await renderOnce();
+    expect(flatText(captureSpans())).toContain("4 more lines");
+
+    block.update({
+      text: "canonical narration line 1\ncanonical narration line 2",
+      expanded: true,
+    });
+    await renderOnce();
+    const replaced = flatText(captureSpans());
+    expect(replaced).toContain("canonical narration line 1");
+    expect(replaced).toContain("canonical narration line 2");
+    expect(replaced).not.toContain("stale narration");
+    expect(replaced).not.toContain("more lines");
+    expect(block.rawText).toBe("canonical narration line 1\ncanonical narration line 2");
+    expect(block.isExpanded).toBe(true);
+
+    block.update({ text: "" });
+    await renderOnce();
+    const cleared = flatText(captureSpans());
+    expect(cleared).not.toContain("canonical narration");
+    expect(cleared).not.toContain("stale narration");
+    expect(cleared).not.toContain("more lines");
+    expect(block.rawText).toBe("");
+    expect(block.hiddenLineCount).toBe(0);
+
+    block.relayout();
+    block.toggleExpanded(false);
+    await renderOnce();
+    expect(visibleLines(flatText(captureSpans()))).toEqual([]);
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
 test("a resize re-wraps narration from the raw text at the new width", async () => {
   const { renderer, renderOnce, captureSpans, resize, block } = await mountThinking({
     width: 90,

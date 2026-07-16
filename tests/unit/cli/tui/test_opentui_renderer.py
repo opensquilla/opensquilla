@@ -111,6 +111,92 @@ async def test_final_answer_is_a_card_from_the_first_delta() -> None:
 
 
 @pytest.mark.asyncio
+async def test_conflicting_final_snapshot_clears_text_blocks_but_preserves_tool_blocks() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("stale narration", presentation="intermediate")
+    await r.atool_start("lookup", {"query": "x"}, "tool-1")
+    await r.atool_finished("tool-1", success=True, result="found")
+    await r.aappend_text("stale answer", presentation="answer")
+
+    stale_text_ids = {
+        p["id"]
+        for t, p in handle.sent
+        if t == "block.begin" and p.get("kind") in {"answer", "thinking"}
+    }
+    await r.areconcile_final_text("canonical answer")
+
+    cleared = {
+        p["id"]
+        for t, p in handle.sent
+        if t == "block.update" and p.get("patch", {}).get("text") == ""
+    }
+    assert cleared == stale_text_ids
+    assert "tool-1" not in cleared
+    assert r.buffer == "canonical answer"
+    assert any(
+        t == "block.begin"
+        and p.get("kind") == "status"
+        and "superseded" in p.get("meta", {}).get("text", "")
+        for t, p in handle.sent
+    )
+    canonical_appends = [
+        p
+        for t, p in handle.sent
+        if t == "block.append" and p.get("delta") == "canonical answer"
+    ]
+    assert len(canonical_appends) == 1
+    assert canonical_appends[0]["id"] not in stale_text_ids
+    assert any(
+        t == "block.update"
+        and p.get("id") == "tool-1"
+        and p.get("patch", {}).get("status") == "ok"
+        for t, p in handle.sent
+    )
+
+
+@pytest.mark.asyncio
+async def test_explicit_empty_snapshot_clears_preview_and_emits_visible_status() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("preview to withdraw")
+
+    await r.areconcile_final_text("")
+
+    assert r.buffer == ""
+    assert any(
+        t == "block.update" and p.get("patch", {}).get("text") == ""
+        for t, p in handle.sent
+    )
+    assert any(
+        t == "block.begin"
+        and p.get("kind") == "status"
+        and p.get("meta", {}).get("text")
+        == "Streamed preview withdrawn; the final answer is empty."
+        for t, p in handle.sent
+    )
+
+
+@pytest.mark.asyncio
+async def test_strict_snapshot_extension_uses_normal_answer_append_without_correction() -> None:
+    handle = _RecordingHandle()
+    r = OpenTuiStreamRenderer(output_handle=handle)
+    r.__enter__()
+    await r.aappend_text("prefix")
+    before = len(handle.sent)
+
+    await r.areconcile_final_text("prefix suffix")
+
+    assert r.buffer == "prefix suffix"
+    new_messages = handle.sent[before:]
+    assert any(t == "block.append" and p.get("delta") == " suffix" for t, p in new_messages)
+    assert not any(t == "block.update" and "text" in p.get("patch", {}) for t, p in new_messages)
+    assert not any(t == "block.begin" and p.get("kind") == "status" for t, p in new_messages)
+
+
+@pytest.mark.asyncio
 async def test_reasoning_streams_into_its_own_block_and_closes_before_text() -> None:
     """Reasoning (the model's extended-thinking process) streams live into a
     dedicated 'reasoning' block — the host shows a dim rolling peek and

@@ -339,6 +339,9 @@ class AgentRegistry:
             raise ValueError("workspace agent file must not be a symlink")
         self._validate_safe_file_stat(file_stat)
         try:
+            # O_NOFOLLOW on the WRONLY branch mirrors the read-side hardening:
+            # an attacker who races the lstat()/open() pair cannot redirect the
+            # write to a symlinked target.
             return os.open(path, os.O_WRONLY | nofollow)
         except OSError as exc:
             raise ValueError("workspace agent file must not be a symlink") from exc

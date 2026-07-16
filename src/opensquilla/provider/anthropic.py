@@ -19,7 +19,11 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
-from .stream_assembly import ReasoningAccumulator, ToolStreamAccumulator
+from .stream_assembly import (
+    ReasoningAccumulator,
+    ToolStreamAccumulator,
+    ToolStreamProtocolError,
+)
 from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
@@ -228,6 +232,16 @@ def _coerce_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _is_finite_json_object(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    try:
+        json.dumps(value, allow_nan=False)
+    except (OverflowError, RecursionError, TypeError, ValueError):
+        return False
+    return True
 
 
 def _cache_creation_input_tokens(usage: dict[str, Any]) -> int:
@@ -459,6 +473,11 @@ class AnthropicProvider:
         reasoning = ReasoningAccumulator()
         thinking_signature: str | None = None
         stop_reason = "end_turn"
+        message_stopped = False
+        message_started = False
+        message_terminal_seen = False
+        deferred_tool_ends: list[tuple[ToolUseEndEvent, str]] = []
+        invalid_tool_call_ids: set[str] = set()
 
         try:
             async with httpx.AsyncClient(
@@ -504,17 +523,68 @@ class AnthropicProvider:
                         data_str = line[5:]
                         if data_str.startswith(" "):
                             data_str = data_str[1:]
-                        if data_str == "[DONE]":
+                        normalized_data = data_str.strip()
+                        if not normalized_data:
+                            continue
+                        if normalized_data == "[DONE]":
+                            # Anthropic Messages defines ``message_stop`` as
+                            # the response terminal.  A proxy-added sentinel
+                            # is only a transport delimiter and cannot make a
+                            # partially received tool call executable.
                             break
                         try:
                             event = json.loads(data_str)
                         except json.JSONDecodeError:
-                            continue
+                            message = "Anthropic stream contained an invalid data frame"
+                            trace.record_error(
+                                code="invalid_stream_frame",
+                                message=message,
+                                metadata={
+                                    "phase": "stream",
+                                    "frame_chars": len(data_str),
+                                },
+                            )
+                            yield ErrorEvent(
+                                message=message,
+                                code="invalid_stream_frame",
+                            )
+                            return
 
+                        if not isinstance(event, dict):
+                            message = "Anthropic stream contained a non-object data frame"
+                            trace.record_error(code="invalid_stream_frame", message=message)
+                            yield ErrorEvent(message=message, code="invalid_stream_frame")
+                            return
                         trace.record_chunk(event)
                         etype = event.get("type", "")
 
+                        if message_terminal_seen and etype not in {
+                            "message_stop",
+                            "ping",
+                            "error",
+                        }:
+                            message = "Anthropic stream mutated content after message_delta"
+                            trace.record_error(code="invalid_stream_order", message=message)
+                            yield ErrorEvent(message=message, code="invalid_stream_order")
+                            return
+                        if etype in {
+                            "content_block_start",
+                            "content_block_delta",
+                            "content_block_stop",
+                            "message_delta",
+                        } and not message_started:
+                            message = "Anthropic stream emitted content before message_start"
+                            trace.record_error(code="invalid_stream_order", message=message)
+                            yield ErrorEvent(message=message, code="invalid_stream_order")
+                            return
+
                         if etype == "message_start":
+                            if message_started:
+                                message = "Anthropic stream repeated message_start"
+                                trace.record_error(code="invalid_stream_order", message=message)
+                                yield ErrorEvent(message=message, code="invalid_stream_order")
+                                return
+                            message_started = True
                             message_id = event.get("message", {}).get("id")
                             if isinstance(message_id, str) and message_id:
                                 response_ids.add(message_id)
@@ -531,11 +601,27 @@ class AnthropicProvider:
                             block = event.get("content_block", {})
                             btype = block.get("type")
                             if btype == "tool_use":
-                                for tool_event in tools_acc.start(
-                                    index,
-                                    tool_use_id=block["id"],
-                                    tool_name=block["name"],
-                                ):
+                                raw_tool_name = block.get("name")
+                                tool_name = (
+                                    raw_tool_name if isinstance(raw_tool_name, str) else ""
+                                )
+                                try:
+                                    tool_events = tools_acc.start(
+                                        index,
+                                        tool_use_id=block["id"],
+                                        tool_name=tool_name,
+                                    )
+                                except ToolStreamProtocolError as exc:
+                                    invalid_tool_call_ids.add(exc.tool_use_id)
+                                    log.warning(
+                                        "provider.tool_stream_protocol_error",
+                                        provider=self.provider_name,
+                                        model=self._model,
+                                        operation=exc.operation,
+                                        reason=exc.reason,
+                                    )
+                                    continue
+                                for tool_event in tool_events:
                                     yield tool_event
 
                         elif etype == "content_block_delta":
@@ -548,7 +634,18 @@ class AnthropicProvider:
                             elif dtype == "input_json_delta":
                                 index = event.get("index", 0)
                                 fragment = delta.get("partial_json", "")
-                                tool_events = tools_acc.append(index, fragment)
+                                try:
+                                    tool_events = tools_acc.append(index, fragment)
+                                except ToolStreamProtocolError as exc:
+                                    invalid_tool_call_ids.add(exc.tool_use_id)
+                                    log.warning(
+                                        "provider.tool_stream_protocol_error",
+                                        provider=self.provider_name,
+                                        model=self._model,
+                                        operation=exc.operation,
+                                        reason=exc.reason,
+                                    )
+                                    continue
                                 if not tool_events:
                                     # Not a tool block at this index (e.g. a
                                     # server-tool result) — never a tool call.
@@ -564,20 +661,60 @@ class AnthropicProvider:
 
                         elif etype == "content_block_stop":
                             index = event.get("index", -1)
-                            raw = next(
+                            pending_call = next(
                                 (
-                                    text
-                                    for key, _tid, _name, text in (
+                                    (tool_use_id, tool_name, text)
+                                    for key, tool_use_id, tool_name, text in (
                                         tools_acc.pending_raw_arguments()
                                     )
                                     if key == index
                                 ),
-                                "",
+                                None,
                             )
-                            for tool_event in tools_acc.finish(index):
-                                if isinstance(tool_event, ToolUseEndEvent):
-                                    _trace_tool_call(tool_event, raw)
-                                yield tool_event
+                            if pending_call is None:
+                                continue
+                            tool_use_id, tool_name, raw = pending_call
+                            try:
+                                arguments = (
+                                    json.loads(
+                                        raw,
+                                        parse_constant=lambda value: (_ for _ in ()).throw(
+                                            ValueError(value)
+                                        ),
+                                    )
+                                    if raw.strip()
+                                    else {}
+                                )
+                                arguments_valid = _is_finite_json_object(arguments)
+                            except (
+                                json.JSONDecodeError,
+                                RecursionError,
+                                TypeError,
+                                ValueError,
+                            ):
+                                arguments = {}
+                                arguments_valid = False
+                            identity_valid = bool(tool_name.strip())
+                            if arguments_valid and identity_valid:
+                                try:
+                                    tool_events = tools_acc.finish_with_arguments(
+                                        index, arguments
+                                    )
+                                except ToolStreamProtocolError as exc:
+                                    invalid_tool_call_ids.add(exc.tool_use_id)
+                                    log.warning(
+                                        "provider.tool_stream_protocol_error",
+                                        provider=self.provider_name,
+                                        model=self._model,
+                                        operation=exc.operation,
+                                        reason=exc.reason,
+                                    )
+                                    continue
+                                for tool_event in tool_events:
+                                    if isinstance(tool_event, ToolUseEndEvent):
+                                        deferred_tool_ends.append((tool_event, raw))
+                            else:
+                                invalid_tool_call_ids.add(tool_use_id)
 
                         elif etype == "message_delta":
                             usage = event.get("usage", {})
@@ -603,24 +740,51 @@ class AnthropicProvider:
                                     base_input_tokens + cached_tokens + cache_creation_tokens
                                 )
                             stop_reason = event.get("delta", {}).get("stop_reason", "end_turn")
+                            message_terminal_seen = True
 
                         elif etype == "message_stop":
+                            if not message_started:
+                                message = "Anthropic stream ended before message_start"
+                                trace.record_error(code="invalid_stream_order", message=message)
+                                yield ErrorEvent(message=message, code="invalid_stream_order")
+                                return
+                            message_stopped = True
                             break
 
-                    # Termination contract: a stream that ends without
-                    # message_stop (upstream close, gateway drop) must still
-                    # close open tool calls and yield DoneEvent — the
-                    # generator never falls off the end silently.
-                    pending_raw = {
-                        tool_use_id: text
-                        for _key, tool_use_id, _name, text in tools_acc.pending_raw_arguments()
-                    }
-                    for tool_event in tools_acc.finish_all():
-                        if isinstance(tool_event, ToolUseEndEvent):
-                            _trace_tool_call(
-                                tool_event,
-                                pending_raw.get(tool_event.tool_use_id, ""),
+                        elif etype == "error":
+                            error = event.get("error") or {}
+                            error_message = (
+                                str(error.get("message") or "Anthropic stream error")
+                                if isinstance(error, dict)
+                                else "Anthropic stream error"
                             )
+                            error_code = (
+                                str(error.get("type") or "stream_error")
+                                if isinstance(error, dict)
+                                else "stream_error"
+                            )
+                            trace.record_error(code=error_code, message=error_message)
+                            yield ErrorEvent(message=error_message, code=error_code)
+                            return
+
+                    if not message_stopped:
+                        message = "Anthropic stream ended before message_stop"
+                        trace.record_error(code="incomplete_stream", message=message)
+                        yield ErrorEvent(message=message, code="incomplete_stream")
+                        return
+
+                    pending_tool_calls = tools_acc.pending_raw_arguments()
+                    if pending_tool_calls or invalid_tool_call_ids:
+                        message = "Anthropic response ended with an incomplete tool call"
+                        trace.record_error(code="incomplete_tool_call", message=message)
+                        yield ErrorEvent(message=message, code="incomplete_tool_call")
+                        return
+
+                    # Tool block completion is provisional until the response
+                    # itself reaches ``message_stop``.  Release complete calls
+                    # atomically immediately before the terminal DoneEvent.
+                    for tool_event, raw in deferred_tool_ends:
+                        _trace_tool_call(tool_event, raw)
                         yield tool_event
                     reasoning_content = reasoning.finalize()
                     trace.record_response(

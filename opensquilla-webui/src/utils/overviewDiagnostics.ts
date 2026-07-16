@@ -4,15 +4,44 @@
 // surface→settings map stay unit-testable without mounting the view.
 
 export interface DiagnosticFindingLike {
+  id?: string
   surface?: string
   severity?: string
   readinessImpact?: string
+  title?: string
+  detail?: string
   evidence?: Record<string, unknown>
+  fixSteps?: Array<{
+    label?: string
+    command?: string
+    detail?: string
+  }>
 }
 
 export interface FindingSettingsLink {
   path: string
   hash?: string
+}
+
+export interface FindingSettingsContext {
+  isDesktop: boolean
+  ownsGatewayConnection: boolean
+}
+
+export interface AgentDiagnosisContextInput {
+  platform: 'web' | 'desktop'
+  hasTerminalWorkflow: boolean
+  ownsGateway: boolean
+  ownsGatewayConnection: boolean
+}
+
+export interface DiagnosticReportLike {
+  status?: string
+  ready?: boolean
+  summary?: string
+  counts?: Record<string, number>
+  impactCounts?: Record<string, number>
+  findings?: DiagnosticFindingLike[]
 }
 
 // A home directory embedded in serialized diagnostics leaks the local account
@@ -53,6 +82,7 @@ const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // settings section get a deep link; everything else renders no link at all.
 export function settingsLinkForFinding(
   finding: DiagnosticFindingLike | undefined | null,
+  context?: FindingSettingsContext,
 ): FindingSettingsLink | null {
   const surface = String(finding?.surface || '')
   if (surface === 'provider') {
@@ -66,7 +96,96 @@ export function settingsLinkForFinding(
   if (surface === 'router' || surface === 'squilla_router') {
     return { path: '/settings/modelStrategy' }
   }
+  if (surface === 'image_generation' || surface === 'search' || surface === 'memory_embedding') {
+    return { path: '/settings/capabilities' }
+  }
+  if (
+    surface === 'migration'
+    && context?.isDesktop
+    && context.ownsGatewayConnection
+  ) {
+    return { path: '/settings/runtime' }
+  }
   return null
+}
+
+function settingsRoute(link: FindingSettingsLink): string {
+  return `${link.path}${link.hash || ''}`
+}
+
+// The Desktop agent hand-off is explanatory only. Recursively remove every
+// command field from its model-visible report copy while leaving the original
+// Doctor report untouched and marking where the folded Doctor page retains an
+// advanced CLI fallback.
+function stripCommandFields(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripCommandFields)
+  if (!value || typeof value !== 'object') return value
+
+  const output: Record<string, unknown> = {}
+  let strippedCommand = false
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === 'command') {
+      strippedCommand = true
+      continue
+    }
+    output[key] = stripCommandFields(entry)
+  }
+  if (strippedCommand) output.advancedCliAvailable = true
+  return output
+}
+
+/**
+ * Build the privacy-safe, surface-aware payload passed to a diagnostic agent.
+ * It does not mutate the public doctor report or add any execution capability.
+ */
+export function buildAgentDiagnosisHandoff(
+  report: DiagnosticReportLike,
+  input: AgentDiagnosisContextInput,
+) {
+  const ownsCurrentGateway = input.ownsGateway && input.ownsGatewayConnection
+  const settingsContext: FindingSettingsContext = {
+    isDesktop: input.platform === 'desktop',
+    ownsGatewayConnection: ownsCurrentGateway,
+  }
+  const settingsRemediations = (report.findings || []).flatMap((finding) => {
+    const link = settingsLinkForFinding(finding, settingsContext)
+    if (!link) return []
+    return [{
+      findingId: String(finding.id || finding.surface || 'unknown'),
+      route: settingsRoute(link),
+    }]
+  })
+  const applicableSettingsRoutes = Array.from(new Set(
+    settingsRemediations.map(item => item.route),
+  ))
+
+  return {
+    clientContext: {
+      platform: input.platform,
+      hasTerminalWorkflow: input.hasTerminalWorkflow,
+      ownsGateway: ownsCurrentGateway,
+      connectionScope: ownsCurrentGateway
+        ? 'local_owned'
+        : input.platform === 'desktop' ? 'remote' : 'external',
+      applicableSettingsRoutes,
+      settingsRemediations,
+      guidance: {
+        preferInAppSettings: !input.hasTerminalWorkflow,
+        allowBareCliCommands: input.hasTerminalWorkflow,
+        gatewayLifecycle: ownsCurrentGateway ? 'managed_by_desktop_app' : 'operator_managed',
+        remoteGatewayActions: ownsCurrentGateway ? 'not_applicable' : 'handle_on_gateway_host',
+        migrationMode: 'backup_then_replace_no_merge',
+        optionalMigrationIsFailure: false,
+        migrationFindingGuaranteedToClear: false,
+        advancedCliFallback: input.hasTerminalWorkflow
+          ? 'included_in_report'
+          : 'available_on_doctor_page',
+      },
+    },
+    report: input.hasTerminalWorkflow
+      ? report
+      : stripCommandFields(report) as DiagnosticReportLike,
+  }
 }
 
 function finiteNonNegative(value: unknown): number | null {

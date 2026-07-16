@@ -19,8 +19,9 @@ booleans/numbers. :func:`sanitize_flags` / :func:`sanitize_trail` /
 :func:`sanitize_probs` are applied on every insert.
 
 Retention: every ``prune_every`` (default 64) inserts the writer runs one
-opportunistic ``DELETE WHERE ts_ms < now - retention_days`` so the table
-stays bounded without a background job.
+opportunistic, bounded delete of at most ``prune_batch`` (default 1000) rows
+older than ``retention_days`` so the table stays bounded without a background
+job or a long foreground write lock.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_RETENTION_DAYS = 30
 _DEFAULT_PRUNE_EVERY = 64
+_DEFAULT_PRUNE_BATCH = 1_000
 _DAY_MS = 24 * 60 * 60 * 1000
 
 # Enum-like token: identifiers such as tier names ("c2"), route classes
@@ -209,12 +211,14 @@ class RouterDecisionWriter:
         *,
         retention_days: int = _DEFAULT_RETENTION_DAYS,
         prune_every: int = _DEFAULT_PRUNE_EVERY,
+        prune_batch: int = _DEFAULT_PRUNE_BATCH,
         clock: Callable[[], int] = lambda: int(time.time() * 1000),
     ) -> None:
         self._conn = connection
         self._lock = threading.Lock()
         self._retention_days = max(1, int(retention_days))
         self._prune_every = max(1, int(prune_every))
+        self._prune_batch = max(1, int(prune_batch))
         self._clock = clock
         self._insert_count = 0
 
@@ -287,8 +291,17 @@ class RouterDecisionWriter:
         try:
             with self._lock:
                 cur = self._conn.execute(
-                    "DELETE FROM router_decisions WHERE ts_ms < ?",
-                    (cutoff,),
+                    """
+                    DELETE FROM router_decisions
+                    WHERE rowid IN (
+                        SELECT rowid
+                        FROM router_decisions
+                        WHERE ts_ms < ?
+                        ORDER BY ts_ms, decision_id
+                        LIMIT ?
+                    )
+                    """,
+                    (cutoff, self._prune_batch),
                 )
                 self._conn.commit()
             if cur.rowcount:

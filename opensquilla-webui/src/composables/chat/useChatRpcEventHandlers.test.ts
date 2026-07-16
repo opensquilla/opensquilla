@@ -73,6 +73,60 @@ function createHarness(options: {
 }
 
 describe('useChatRpcEventHandlers done usage attachment', () => {
+  it('distinguishes authoritative snapshots from legacy text fallback', () => {
+    const { api, stream, stop } = createHarness()
+
+    try {
+      api.handlers.onAny('session.event.done', {
+        session_key: 'agent:main:test',
+        stream_seq: 1,
+        text: 'legacy canonical',
+      })
+      expect(stream.reconcileFinalText).toHaveBeenLastCalledWith('legacy canonical')
+
+      api.handlers.onAny('session.event.done', {
+        session_key: 'agent:main:test',
+        stream_seq: 2,
+        text: 'legacy canonical with serialized null',
+        text_snapshot: null,
+      })
+      expect(stream.reconcileFinalText).toHaveBeenLastCalledWith('legacy canonical with serialized null')
+
+      api.handlers.onAny('session.event.done', {
+        session_key: 'agent:main:test',
+        stream_seq: 3,
+        text: 'stale legacy aggregate',
+        text_snapshot: '',
+      })
+      expect(stream.reconcileFinalText).toHaveBeenLastCalledWith('')
+
+      api.handlers.onAny('session.event.done', {
+        session_key: 'agent:main:test',
+        stream_seq: 4,
+        text: '',
+      })
+      expect(stream.reconcileFinalText).toHaveBeenLastCalledWith(null)
+
+      api.handlers.onAny('session.event.done', {
+        session_key: 'agent:main:test',
+        stream_seq: 5,
+        text_snapshot: 'outer canonical',
+        usage: { text_snapshot: null },
+      })
+      expect(stream.reconcileFinalText).toHaveBeenLastCalledWith('outer canonical')
+
+      api.handlers.onAny('session.event.done', {
+        session_key: 'agent:main:test',
+        stream_seq: 6,
+        text: 'outer legacy canonical',
+        usage: { text: '' },
+      })
+      expect(stream.reconcileFinalText).toHaveBeenLastCalledWith('outer legacy canonical')
+    } finally {
+      stop()
+    }
+  })
+
   it('does not attach done usage to the previous assistant when no new bubble was pushed', () => {
     const previous: ChatMessage = { role: 'assistant', text: 'previous', ts: 'before' }
     const { api, messages, stop } = createHarness({ messages: [previous] })

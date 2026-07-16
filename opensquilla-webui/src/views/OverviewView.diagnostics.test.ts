@@ -11,6 +11,8 @@ interface MountOptions {
   report?: Record<string, unknown> | null
   providers?: unknown
   failProviders?: boolean
+  desktop?: boolean
+  connectionUrl?: string
 }
 
 interface PushArg {
@@ -47,6 +49,13 @@ function baseReport(): Record<string, unknown> {
 
 async function mountOverview(options: MountOptions = {}) {
   vi.resetModules()
+  ;(window as unknown as { opensquillaDesktop?: unknown }).opensquillaDesktop = options.desktop
+    ? {}
+    : undefined
+  window.localStorage.clear()
+  if (options.connectionUrl) {
+    window.localStorage.setItem('opensquilla.wsUrl', options.connectionUrl)
+  }
 
   const { createApp, defineComponent, h, nextTick } = await import('vue')
   const { createPinia, setActivePinia } = await import('pinia')
@@ -139,6 +148,8 @@ async function mountOverview(options: MountOptions = {}) {
 
 beforeEach(() => {
   document.body.innerHTML = ''
+  window.localStorage.clear()
+  ;(window as unknown as { opensquillaDesktop?: unknown }).opensquillaDesktop = undefined
 })
 
 afterEach(() => {
@@ -154,6 +165,8 @@ afterEach(() => {
   vi.doUnmock('@/utils/browser')
   vi.doUnmock('@/components/Icon.vue')
   vi.doUnmock('@/components/ErrorState.vue')
+  window.localStorage.clear()
+  ;(window as unknown as { opensquillaDesktop?: unknown }).opensquillaDesktop = undefined
   vi.restoreAllMocks()
 })
 
@@ -179,6 +192,9 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
 
     const prefill = String(arg.state?.prefill)
     expect(prefill).toContain('Please troubleshoot this OpenSquilla configuration')
+    expect(prefill).toContain('<context source="client:diagnostic-context">')
+    expect(prefill).toContain('"platform":"web"')
+    expect(prefill).toContain('"hasTerminalWorkflow":true')
     expect(prefill).toContain('<untrusted source="doctor:report">')
     expect(prefill).toContain('</untrusted>')
     // Home paths are normalized and the report body is XML-escaped.
@@ -202,6 +218,85 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
     ]
     const { el } = await mountOverview({ report })
     expect(el.querySelector(DIAGNOSE_SELECTOR)).toBeNull()
+  })
+
+  it('removes commands from a local Desktop hand-off and supplies in-app remediations', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'migration.legacy_home_detected',
+        surface: 'migration',
+        severity: 'info',
+        readinessImpact: 'optional',
+        title: 'Legacy data found',
+        fixSteps: [
+          {
+            label: 'Preview the import',
+            command: 'opensquilla migrate opensquilla --source /Users/dummyuser/.opensquilla',
+          },
+        ],
+      },
+    ]
+    const { el, push, flush } = await mountOverview({ report, desktop: true })
+
+    el.querySelector<HTMLButtonElement>(DIAGNOSE_SELECTOR)!.click()
+    await flush()
+
+    const prefill = String(push.mock.calls[0][0].state?.prefill)
+    expect(prefill).toContain('"platform":"desktop"')
+    expect(prefill).toContain('"hasTerminalWorkflow":false')
+    expect(prefill).toContain('"ownsGateway":true')
+    expect(prefill).toContain('"connectionScope":"local_owned"')
+    expect(prefill).toContain('"route":"/settings/runtime"')
+    expect(prefill).toContain('"advancedCliAvailable":true')
+    expect(prefill).not.toContain('"command":"opensquilla migrate')
+    expect(prefill).not.toContain('dummyuser')
+  })
+
+  it('marks a remote Desktop gateway and omits the local Runtime remediation', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'migration.legacy_home_detected',
+        surface: 'migration',
+        severity: 'info',
+        readinessImpact: 'optional',
+        title: 'Legacy data found',
+      },
+    ]
+    const { el, push, flush } = await mountOverview({
+      report,
+      desktop: true,
+      connectionUrl: 'ws://remote.example:18791/ws',
+    })
+
+    expect(el.querySelector('.health-settings-link')).toBeNull()
+    el.querySelector<HTMLButtonElement>(DIAGNOSE_SELECTOR)!.click()
+    await flush()
+
+    const prefill = String(push.mock.calls[0][0].state?.prefill)
+    expect(prefill).toContain('"ownsGateway":false')
+    expect(prefill).toContain('"connectionScope":"remote"')
+    expect(prefill).toContain('"remoteGatewayActions":"handle_on_gateway_host"')
+    expect(prefill).not.toContain('/settings/runtime')
+  })
+
+  it('keeps commands in a Web hand-off with a terminal workflow', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'migration.legacy_home_detected',
+        surface: 'migration',
+        fixSteps: [{ label: 'Preview', command: 'opensquilla migrate opensquilla --source /tmp/old' }],
+      },
+    ]
+    const { el, push, flush } = await mountOverview({ report })
+
+    el.querySelector<HTMLButtonElement>(DIAGNOSE_SELECTOR)!.click()
+    await flush()
+
+    expect(String(push.mock.calls[0][0].state?.prefill))
+      .toContain('"command":"opensquilla migrate opensquilla --source /tmp/old"')
   })
 })
 
@@ -269,6 +364,36 @@ describe('OverviewView finding settings links', () => {
     links[0].click()
     await flush()
     expect(push).toHaveBeenCalledWith({ path: '/settings/provider', hash: '#provider-openrouter' })
+  })
+
+  it('links local Desktop migration to Runtime and capability findings to Capabilities', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'migration.legacy_home_detected',
+        surface: 'migration',
+        severity: 'info',
+        readinessImpact: 'optional',
+        title: 'Legacy data found',
+      },
+      {
+        id: 'image_generation.credentials.missing',
+        surface: 'image_generation',
+        severity: 'info',
+        readinessImpact: 'optional',
+        title: 'Image generation key missing',
+      },
+    ]
+    const { el, push, flush } = await mountOverview({ report, desktop: true })
+
+    const links = el.querySelectorAll<HTMLButtonElement>('.health-settings-link')
+    expect(links.length).toBe(2)
+    links[0].click()
+    await flush()
+    expect(push).toHaveBeenCalledWith({ path: '/settings/runtime' })
+    links[1].click()
+    await flush()
+    expect(push).toHaveBeenCalledWith({ path: '/settings/capabilities' })
   })
 })
 

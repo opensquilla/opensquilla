@@ -41,7 +41,12 @@ export function createThinkingBlock(ctx) {
 
   function render() {
     const trimmed = stripTerminalControls(text).replace(/^\n+/, "");
-    if (!trimmed) return;
+    if (!trimmed) {
+      for (const [id] of nodes) box.remove?.(id);
+      nodes.clear();
+      renderer.requestRender?.();
+      return;
+    }
     // The turn card's left border supplies the gutter; the first visual row
     // carries the ✻ marker and every other row — a wrapped continuation or a
     // later logical line — indents to align under it. Long lines soft-wrap
@@ -89,7 +94,11 @@ export function createThinkingBlock(ctx) {
   return {
     begin() {},
     append(delta) { text += String(delta); render(); },
-    update() {},
+    update(patch) {
+      if (!Object.prototype.hasOwnProperty.call(patch ?? {}, "text")) return;
+      text = String(patch.text ?? "");
+      render();
+    },
     end() {},
     // Re-wrap every row from the raw text at the current terminal width, so a
     // resize re-flows narration instead of leaving rows wrapped or clipped to

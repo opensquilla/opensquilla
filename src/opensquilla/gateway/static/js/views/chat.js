@@ -414,32 +414,11 @@ const ChatView = (() => {
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
-  const _PROTOCOL_TEXT_MARKER_RE = /<\s*(?:minimax:tool_call|tool_calls?|tvoe_calls|invoke\b|parameter\b|effect_calls\b|details\b|angle\s+brackets\b)/i;
-  const _PROTOCOL_TEXT_PARAMETER_RE = /<\s*parameter\s+name\s*=\s*["'](?:path|content|command|code|patch)["']/i;
-  const _PROTOCOL_TEXT_INVOKE_RE = /<\s*invoke\s+name\s*=\s*["'][A-Za-z_][A-Za-z0-9_.:-]*["']/i;
-  const _PROTOCOL_TEXT_HTML_RE = /<!doctype\s+html\b|<html\b|<\/html\s*>/i;
-  const _PROTOCOL_TEXT_CLOSE_RE = /<\/\s*invoke\s*>|<\/\s*(?:tool_calls?|tvoe_calls)\s*>/i;
-  const _PROTOCOL_TEXT_STANDALONE_RE = /<\s*(?:parameter|effect_calls|tool_calls?|tvoe_calls|angle\s+brackets)\s*>/i;
-  const _PROTOCOL_TEXT_DETAILS_RE = /<\s*details\s*>\s*<\s*summary\s*>\s*View areas around line\b/i;
-
-  function _looksLikeProtocolTextSuffix(suffix) {
-    if (/<\s*minimax:tool_call\s*>/i.test(suffix)) return true;
-    if (_PROTOCOL_TEXT_STANDALONE_RE.test(suffix)) return true;
-    if (_PROTOCOL_TEXT_DETAILS_RE.test(suffix)) return true;
-    if (_PROTOCOL_TEXT_PARAMETER_RE.test(suffix)) return true;
-    if (_PROTOCOL_TEXT_INVOKE_RE.test(suffix) && _PROTOCOL_TEXT_CLOSE_RE.test(suffix)) return true;
-    if (_PROTOCOL_TEXT_HTML_RE.test(suffix) && _PROTOCOL_TEXT_INVOKE_RE.test(suffix)) return true;
-    return false;
-  }
-
   function _stripProtocolTextLeak(text) {
-    text = String(text || '');
-    if (!text) return text;
-    const match = _PROTOCOL_TEXT_MARKER_RE.exec(text);
-    if (!match) return text;
-    const suffix = text.slice(match.index);
-    if (!_looksLikeProtocolTextSuffix(suffix)) return text;
-    return text.slice(0, match.index).trimEnd();
+    // Compatibility shim for existing call sites. Protocol-text normalization
+    // belongs to the shared backend stream; the legacy UI must not truncate
+    // Markdown/XML documentation based on marker-shaped user-visible text.
+    return String(text || '');
   }
 
   // Server-side per-turn time prefix: [YYYY-MM-DDTHH:MM±HH:MM Day TZ_NAME]\n{body}
@@ -5765,9 +5744,9 @@ const ChatView = (() => {
         } else {
           _loadCurrentSessionUsage();
         }
-        const finalText = typeof u.text === 'string' ? u.text : '';
-        if (finalText && finalText !== _streamRaw) {
-          _reconcileFinalStreamText(finalText);
+        const finalTextSnapshot = _doneTextSnapshot(payload, u);
+        if (finalTextSnapshot !== null) {
+          _reconcileFinalStreamText(finalTextSnapshot);
         }
         // Capture stream bubble before _endStreaming() clears the reference.
         // Final-text reconciliation can create the bubble when a refresh only
@@ -6800,33 +6779,64 @@ const ChatView = (() => {
       _streamRaw = finalText;
       return;
     }
-    const body = _streamBubble.querySelector('.msg-body');
-    if (body) body.innerHTML = '';
+
+    // A conflicting terminal snapshot supersedes streamed text, not tool
+    // lifecycle history. Remove only text segments and keep tool DOM nodes in
+    // their original order; the one canonical text segment is appended after
+    // them (empty intentionally leaves tools with no text).
+    const preservedSegments = [];
+    for (const seg of _segments) {
+      if (seg.type === 'text') {
+        if (seg.el) seg.el.remove();
+      } else {
+        preservedSegments.push(seg);
+      }
+    }
     _streamRaw = finalText;
-    _segments = [];
+    _segments = preservedSegments;
     _activeTextSeg = null;
     _activeTextRaw = '';
-    _newTextSegment();
-    _activeTextRaw = finalText;
-    const lastSeg = _segments[_segments.length - 1];
-    if (lastSeg && lastSeg.type === 'text') lastSeg.raw = finalText;
-    _renderDirty = true;
-    _flushRender();
+    if (finalText) {
+      _newTextSegment();
+      _activeTextRaw = finalText;
+      const lastSeg = _segments[_segments.length - 1];
+      if (lastSeg && lastSeg.type === 'text') lastSeg.raw = finalText;
+      _renderDirty = true;
+      _flushRender();
+    }
     _renderStreamArtifacts();
   }
 
+  function _doneTextSnapshot(donePayload, usagePayload) {
+    // String snapshot fields are authoritative, including ''. Dataclass
+    // serialization writes an unset optional field as null, so null means
+    // absent and must still permit the legacy nonempty `text` fallback.
+    for (const source of [donePayload, usagePayload]) {
+      if (!source || typeof source !== 'object') continue;
+      for (const key of ['text_snapshot', 'textSnapshot']) {
+        if (Object.prototype.hasOwnProperty.call(source, key)) {
+          if (typeof source[key] === 'string') return source[key];
+        }
+      }
+    }
+
+    // Compatibility with gateways predating text_snapshot: only their
+    // nonempty `text` field was an authoritative replacement.
+    const legacyText = typeof usagePayload?.text === 'string'
+      ? usagePayload.text
+      : typeof donePayload?.text === 'string'
+        ? donePayload.text
+        : '';
+    return legacyText || null;
+  }
+
   function _reconcileFinalStreamText(finalText) {
-    if (!finalText || finalText === _streamRaw) return;
-    if (_streamRaw && finalText.startsWith(_streamRaw)) {
+    if (typeof finalText !== 'string' || finalText === _streamRaw) return;
+    if (finalText && _streamRaw && finalText.startsWith(_streamRaw)) {
       _appendDelta(finalText.slice(_streamRaw.length));
       return;
     }
-    const textOnly = _segments.every((seg) => seg.type === 'text');
-    if (!_streamRaw || textOnly) {
-      _replaceStreamText(finalText);
-      return;
-    }
-    _streamRaw = finalText;
+    _replaceStreamText(finalText);
   }
 
   /* ── Send Message ───────────────────────────────────────────────────── */
@@ -7569,10 +7579,13 @@ const ChatView = (() => {
         return;
       }
 
-      // Aborted with no partial output: drop the empty bubble entirely so
-      // the transcript doesn't grow stub assistant messages every ESC.
-      if (wasAborted && !cleanedText) {
-        _chatDiag('stream.end.remove.aborted_empty', {});
+      // An authoritative empty snapshot must not leave a ghost assistant
+      // message. Keep the turn only when it still has a tool lifecycle or an
+      // artifact; those are user-visible content even without answer text.
+      const hasToolSegments = _segments.some(seg => seg.type === 'tool');
+      const emptyStream = !cleanedText && !hasToolSegments && _streamArtifacts.length === 0;
+      if (emptyStream) {
+        _chatDiag('stream.end.remove.empty', { wasAborted });
         _streamBubble.remove();
         _streamBubble = null;
         _isStreaming = false;

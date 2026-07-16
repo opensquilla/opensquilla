@@ -191,6 +191,30 @@ def test_write_time_opportunistic_pruning(tmp_path: Path) -> None:
     writer.close()
 
 
+def test_write_time_pruning_is_bounded(tmp_path: Path) -> None:
+    now_ms = 10_000_000_000_000
+    writer, db = _make_writer(
+        tmp_path,
+        retention_days=30,
+        prune_every=6,
+        prune_batch=2,
+        clock=lambda: now_ms,
+    )
+    stale_ts = now_ms - 31 * 24 * 60 * 60 * 1000
+    for index in range(5):
+        writer.record_decision(
+            _base_record(decision_id=f"old{index}", ts_ms=stale_ts + index)
+        )
+
+    # The sixth insert triggers retention, but one foreground write may delete
+    # only the configured batch instead of monopolizing SQLite for the backlog.
+    writer.record_decision(_base_record(decision_id="new1", ts_ms=now_ms))
+
+    remaining = {row["decision_id"] for row in _rows(db)}
+    assert remaining == {"old2", "old3", "old4", "new1"}
+    writer.close()
+
+
 def test_purge_for_session(tmp_path: Path) -> None:
     writer, db = _make_writer(tmp_path)
     writer.record_decision(_base_record(decision_id="d1", session_key="agent:a"))

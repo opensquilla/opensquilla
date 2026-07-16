@@ -1,6 +1,7 @@
 import type { Ref } from 'vue'
 import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
+import type { RpcClientError } from '@/lib/rpc'
 import type { Attachment, ChatMessage } from '@/types/chat'
 import type { SandboxRunMode } from '@/types/sandbox'
 import { normalizeSandboxRunMode } from '@/types/sandbox'
@@ -12,14 +13,31 @@ import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandler
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
-import { createClientMessageId } from '@/utils/chat/messageIdentity'
-import { PENDING_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
+import { createClientMessageId, createClientRequestId } from '@/utils/chat/messageIdentity'
+import {
+  FINISHED_STREAM_TASK_ID,
+  PENDING_STREAM_TASK_ID,
+  STOPPED_STREAM_TASK_ID,
+  taskTerminalMessage,
+} from '@/utils/chat/streamEvents'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
 type PersistSessionOptions = { updateRoute?: boolean; source?: string }
+
+interface SendAttempt {
+  clientRequestId: string
+  composerText: string
+  requestSessionKey: string
+  queueMode?: 'steer'
+  text: string
+  attachments: SendableAttachment[]
+  intent: string | null
+  forkBeforeMessageId: string | null
+  params: ChatSendParams
+}
 
 export type SendResponseSessionDecision =
   | { action: 'ignore'; reason: 'missing_response_session' | 'current_session_changed' | 'same_session' }
@@ -43,6 +61,73 @@ export function decideSendResponseSession(input: {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function shouldRestoreSendAttempt(err: unknown): boolean {
+  // Unknown acceptance (for example a lost response) is safe to retry because
+  // the exact attempt keeps its durable clientRequestId. Only a positive
+  // accepted signal proves that restoring the composer would be misleading.
+  return (err as RpcClientError | null | undefined)?.accepted !== true
+}
+
+const TERMINAL_TASK_STATUSES = new Set([
+  'succeeded',
+  'failed',
+  'cancelled',
+  'timeout',
+  'abandoned',
+])
+
+function terminalResponseStatus(response: ChatSendResponse | null | undefined): string {
+  const status = String(response?.task_status || response?.taskStatus || '').toLowerCase()
+  return TERMINAL_TASK_STATUSES.has(status) ? status : ''
+}
+
+function terminalReplayMessage(response: ChatSendResponse, status: string): string {
+  const supplied = response.terminal_message || response.terminalMessage ||
+    response.terminal_reason || response.terminalReason || response.reason
+  if (typeof supplied === 'string' && supplied.trim()) return supplied.trim()
+  return taskTerminalMessage(status, {})
+}
+
+function terminalReplayErrorCode(response: ChatSendResponse, status: string): string {
+  const reason = response.terminal_reason || response.terminalReason || response.reason
+  const normalized = typeof reason === 'string' ? reason.trim().toLowerCase() : ''
+  return /^[a-z][a-z0-9_.-]*$/.test(normalized) ? normalized : status
+}
+
+function sameSendableAttachments(
+  attachments: SendableAttachment[],
+  attempt: SendAttempt,
+): boolean {
+  if (attachments.length !== attempt.attachments.length) return false
+  return attachments.every((attachment, index) => {
+    const prior = attempt.attachments[index]
+    return (
+      prior?.local_id === attachment.local_id &&
+      JSON.stringify(serializeSendableAttachment(prior)) ===
+        JSON.stringify(serializeSendableAttachment(attachment))
+    )
+  })
+}
+
+function matchesRecoveredDraft(
+  attempt: SendAttempt,
+  input: {
+    requestSessionKey: string
+    text: string
+    attachments: SendableAttachment[]
+    intent: string | null
+    forkBeforeMessageId: string | null
+  },
+): boolean {
+  return (
+    attempt.requestSessionKey === input.requestSessionKey &&
+    attempt.text === input.text &&
+    attempt.intent === input.intent &&
+    attempt.forkBeforeMessageId === input.forkBeforeMessageId &&
+    sameSendableAttachments(input.attachments, attempt)
+  )
 }
 
 function chatSourceMetadata(options: UseChatSendOptions): ChatSendParams['_source'] {
@@ -73,6 +158,10 @@ export interface UseChatSendOptions {
   stream: ChatRpcStreamApi
   normalizeElevatedMode: (mode: string) => string
   persistSession: (key: string, options?: PersistSessionOptions) => void
+  scheduleHistorySync: () => void
+  // Event frames can beat the chat.send response. The event handler owns the
+  // pending-terminal buffer and consumes only the task id accepted here.
+  bindActiveStreamTask?: (taskId: string) => void
   isCompactInFlightForCurrentSession: () => boolean
   hasPendingAttachmentWork: () => boolean
   prepareAttachmentsForSend?: (options?: { isCurrent?: () => boolean }) => Promise<boolean>
@@ -88,6 +177,7 @@ export interface UseChatSendOptions {
 export function useChatSend(options: UseChatSendOptions) {
   const { pushToast } = useToasts()
   let activeFreshSendToken: symbol | null = null
+  let recoveredAttempt: SendAttempt | null = null
 
   function beginFreshStream(requestSessionKey: string): symbol {
     const token = Symbol('fresh-send')
@@ -109,6 +199,40 @@ export function useChatSend(options: UseChatSendOptions) {
 
   function acceptedTaskId(response: ChatSendResponse | null | undefined): string {
     return response?.task_id || response?.taskId || ''
+  }
+
+  function bindAcceptedTask(taskId: string) {
+    if (options.bindActiveStreamTask) {
+      options.bindActiveStreamTask(taskId)
+      return
+    }
+    options.activeStreamTaskId.value = taskId
+  }
+
+  function handleTerminalResponse(
+    response: ChatSendResponse,
+    freshSendToken: symbol | null,
+    optionsForResponse: { finishFreshStream: boolean },
+  ): boolean {
+    const status = terminalResponseStatus(response)
+    if (!status) return false
+    if (optionsForResponse.finishFreshStream) {
+      if (activeFreshSendToken === freshSendToken) activeFreshSendToken = null
+      options.activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
+      options.activeStreamSessionKey.value = ''
+      options.stream.endStreaming(status === 'cancelled' ? { reason: 'aborted' } : undefined)
+    }
+    if (status !== 'succeeded') {
+      options.messages.value.push({
+        role: 'error',
+        text: terminalReplayMessage(response, status),
+        errorCode: terminalReplayErrorCode(response, status),
+        terminalNotice: true,
+        ts: new Date().toISOString(),
+      })
+    }
+    options.scheduleHistorySync()
+    return true
   }
 
   function abortStaleAcceptedTask(response: ChatSendResponse | null | undefined, requestSessionKey: string) {
@@ -140,6 +264,27 @@ export function useChatSend(options: UseChatSendOptions) {
       hasPayload = text || sendableAttachments.length > 0
     }
 
+    // Retry an ambiguous prior send with its exact original queue semantics,
+    // even if the ambient stream state changed while the error was visible.
+    // Deriving steer/followup again here would create a new fingerprint and
+    // could duplicate a turn that the gateway already accepted.
+    if (
+      recoveredAttempt &&
+      matchesRecoveredDraft(recoveredAttempt, {
+        requestSessionKey: options.sessionKey.value,
+        text,
+        attachments: sendableAttachments,
+        intent: options.pendingSessionIntent.value,
+        forkBeforeMessageId: options.pendingForkBeforeMessageId.value,
+      })
+    ) {
+      await dispatchSend(text, {
+        composerText: options.inputText.value,
+        queueMode: recoveredAttempt.queueMode,
+      })
+      return
+    }
+
     const compactInFlight = options.isCompactInFlightForCurrentSession()
     if (options.stream.isStreaming.value || compactInFlight) {
       if (!isLiteralSlash && text.startsWith('/')) {
@@ -153,7 +298,10 @@ export function useChatSend(options: UseChatSendOptions) {
       // Steer injects into the active run right away; compaction cannot be
       // steered, so those sends still queue until it finishes.
       if (options.busySendMode.value === 'steer' && !compactInFlight) {
-        await dispatchSend(text, { queueMode: 'steer' })
+        await dispatchSend(text, {
+          composerText: options.inputText.value,
+          queueMode: 'steer',
+        })
         return
       }
       // Surface a full queue instead of silently dropping the send: the draft is
@@ -171,25 +319,43 @@ export function useChatSend(options: UseChatSendOptions) {
 
     if (!hasPayload || !options.sessionKey.value) return
 
-    await dispatchSend(text)
+    await dispatchSend(text, { composerText: options.inputText.value })
   }
 
-  async function dispatchSend(text: string, sendOpts?: { queueMode?: 'steer' }) {
+  async function dispatchSend(
+    text: string,
+    sendOpts?: { composerText?: string; queueMode?: 'steer' },
+  ) {
     const requestSessionKey = options.sessionKey.value
     if (!requestSessionKey) return
+    const initialSendableAttachments = options.pendingAttachments.value.filter(isSendableAttachment)
+    const retryCandidate = recoveredAttempt
+    const isRecoveredRetry = Boolean(
+      retryCandidate &&
+      matchesRecoveredDraft(retryCandidate, {
+        requestSessionKey,
+        text,
+        attachments: initialSendableAttachments,
+        intent: options.pendingSessionIntent.value,
+        forkBeforeMessageId: options.pendingForkBeforeMessageId.value,
+      }) &&
+      retryCandidate.queueMode === sendOpts?.queueMode,
+    )
+    const retryAttempt = isRecoveredRetry ? retryCandidate : null
     const sendAttachmentIds = new Set(
-      options.pendingAttachments.value
-        .filter(isSendableAttachment)
+      (retryAttempt?.attachments || initialSendableAttachments)
         .map(attachment => attachment.local_id),
     )
-    if (options.prepareAttachmentsForSend) {
+    // A recovered attempt must keep the exact serialized attachment tokens and
+    // metadata that were fingerprinted with its idempotency key.
+    if (!retryAttempt && options.prepareAttachmentsForSend) {
       const ready = await options.prepareAttachmentsForSend({
         isCurrent: () => options.sessionKey.value === requestSessionKey,
       })
       if (!ready) return
       if (options.sessionKey.value !== requestSessionKey) return
     }
-    const attachmentsToSend = options.pendingAttachments.value.filter((a): a is SendableAttachment => sendAttachmentIds.has(a.local_id) && isSendableAttachment(a))
+    const attachmentsToSend = retryAttempt?.attachments || options.pendingAttachments.value.filter((a): a is SendableAttachment => sendAttachmentIds.has(a.local_id) && isSendableAttachment(a))
     const attachmentsToKeep = options.pendingAttachments.value.filter(a => !sendAttachmentIds.has(a.local_id) || !isSendableAttachment(a))
     if (!text && attachmentsToSend.length === 0) return
 
@@ -200,36 +366,57 @@ export function useChatSend(options: UseChatSendOptions) {
       current: requestSessionKey,
     })
 
-    const now = new Date().toISOString()
     const userText = text
-    const displayAttachments = attachmentsToSend.map(serializeDisplayAttachment)
-    options.messages.value.push({
-      role: 'user',
-      text: userText,
-      ts: now,
-      clientId: createClientMessageId(),
-      ...(displayAttachments.length > 0 ? { attachments: displayAttachments } : {}),
-    })
-    options.autoScroll.value = true
-    options.scrollToBottom()
-
-    const params: ChatSendParams = { message: text || 'Describe these attachments', sessionKey: requestSessionKey }
-    if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
-    params._source = chatSourceMetadata(options)
-    if (options.pendingSessionIntent.value) {
-      params.intent = options.pendingSessionIntent.value
-      options.pendingSessionIntent.value = null
-    }
+    const intent = options.pendingSessionIntent.value
     const forkBeforeMessageId = options.pendingForkBeforeMessageId.value
-    if (forkBeforeMessageId) params.forkBeforeMessageId = forkBeforeMessageId
-    if (attachmentsToSend.length > 0) {
-      params.displayText = userText
-      params.attachments = attachmentsToSend.map(serializeSendableAttachment)
+    let attempt = retryAttempt
+    if (!attempt) {
+      const clientMessageId = createClientMessageId()
+      const params: ChatSendParams = {
+        clientRequestId: createClientRequestId(),
+        message: text || 'Describe these attachments',
+        sessionKey: requestSessionKey,
+      }
+      if (sendOpts?.queueMode) params.queueMode = sendOpts.queueMode
+      params._source = chatSourceMetadata(options)
+      if (intent) params.intent = intent
+      if (forkBeforeMessageId) params.forkBeforeMessageId = forkBeforeMessageId
+      if (attachmentsToSend.length > 0) {
+        params.displayText = userText
+        params.attachments = attachmentsToSend.map(serializeSendableAttachment)
+      }
+      attempt = {
+        clientRequestId: params.clientRequestId!,
+        composerText: sendOpts?.composerText ?? text,
+        requestSessionKey,
+        queueMode: sendOpts?.queueMode,
+        text,
+        attachments: attachmentsToSend.map(attachment => ({ ...attachment })),
+        intent,
+        forkBeforeMessageId,
+        params,
+      }
+      const now = new Date().toISOString()
+      const displayAttachments = attachmentsToSend.map(serializeDisplayAttachment)
+      options.messages.value.push({
+        role: 'user',
+        text: userText,
+        ts: now,
+        clientId: clientMessageId,
+        ...(displayAttachments.length > 0 ? { attachments: displayAttachments } : {}),
+      })
+      options.autoScroll.value = true
+      options.scrollToBottom()
     }
+    recoveredAttempt = null
 
     options.inputText.value = ''
     options.autoResizeTextarea()
     options.pendingAttachments.value = attachmentsToKeep
+    if (options.pendingSessionIntent.value === intent) options.pendingSessionIntent.value = null
+    if (options.pendingForkBeforeMessageId.value === forkBeforeMessageId) {
+      options.pendingForkBeforeMessageId.value = null
+    }
 
     // A steer send rides an already-active stream; restarting it would wipe
     // the partial output of the run being steered.
@@ -237,22 +424,28 @@ export function useChatSend(options: UseChatSendOptions) {
     const freshSendToken = wasStreaming ? null : beginFreshStream(requestSessionKey)
 
     try {
-      const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      const res = await options.rpc.call<ChatSendResponse>('chat.send', attempt.params)
       if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
         abortStaleAcceptedTask(res, requestSessionKey)
         return
-      }
-      if (forkBeforeMessageId && options.pendingForkBeforeMessageId.value === forkBeforeMessageId) {
-        options.pendingForkBeforeMessageId.value = null
       }
       // Bind the live stream to this turn's task so a prior task's late events
       // can't bleed into it (issue #344). Only a fresh turn takes over rendering
       // — a steer/queue send rides the in-flight stream and must not rebind —
       // and only while this session is still the one on screen.
       const taskId = acceptedTaskId(res)
-      if (!wasStreaming && options.sessionKey.value === requestSessionKey) {
+      const terminalStatus = terminalResponseStatus(res)
+      const responseIsCurrent = options.sessionKey.value === requestSessionKey
+      if (terminalStatus && responseIsCurrent) {
+        handleTerminalResponse(res, freshSendToken, {
+          finishFreshStream: !wasStreaming,
+        })
+        // A terminal task response (including first-attempt activation failure)
+        // may have no future live event. Fresh turns close their spinner;
+        // steer responses only surface the result without ending the older run.
+      } else if (!terminalStatus && !wasStreaming && responseIsCurrent) {
         options.activeStreamSessionKey.value = res?.sessionKey || requestSessionKey
-        if (taskId) options.activeStreamTaskId.value = taskId
+        if (taskId) bindAcceptedTask(taskId)
       }
       const decision = decideSendResponseSession({
         requestSessionKey,
@@ -292,10 +485,26 @@ export function useChatSend(options: UseChatSendOptions) {
         options.activeStreamSessionKey.value = ''
         options.stream.endStreaming()
       }
-      restoreSendableAttachments(attachmentsToSend)
+      if (shouldRestoreSendAttempt(err)) restoreSendAttempt(attempt)
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
     }
+  }
+
+  function restoreSendAttempt(attempt: SendAttempt) {
+    const currentText = options.inputText.value
+    if (!currentText) {
+      options.inputText.value = attempt.composerText
+    } else if (currentText !== attempt.composerText) {
+      options.inputText.value = [attempt.composerText, currentText].filter(Boolean).join('\n')
+    }
+    restoreSendableAttachments(attempt.attachments)
+    if (!options.pendingSessionIntent.value) options.pendingSessionIntent.value = attempt.intent
+    if (!options.pendingForkBeforeMessageId.value) {
+      options.pendingForkBeforeMessageId.value = attempt.forkBeforeMessageId
+    }
+    recoveredAttempt = attempt
+    options.autoResizeTextarea()
   }
 
   function restoreSendableAttachments(attachments: SendableAttachment[]) {
@@ -361,7 +570,11 @@ export function useChatSend(options: UseChatSendOptions) {
       options.scrollToBottom()
     }
 
-    const params: ChatSendParams = { message: providerText, sessionKey: requestSessionKey }
+    const params: ChatSendParams = {
+      clientRequestId: createClientRequestId(),
+      message: providerText,
+      sessionKey: requestSessionKey,
+    }
     if (displayText && displayText !== providerText) params.displayText = displayText
     params._source = chatSourceMetadata(options)
 
@@ -379,9 +592,11 @@ export function useChatSend(options: UseChatSendOptions) {
       // — a steer/queue send rides the in-flight stream and must not rebind —
       // and only while this session is still the one on screen.
       const taskId = acceptedTaskId(res)
-      if (!wasStreaming && options.sessionKey.value === requestSessionKey) {
+      if (handleTerminalResponse(res, freshSendToken, { finishFreshStream: !wasStreaming })) {
+        // See dispatchSend: a terminal response has no future lifecycle event.
+      } else if (!wasStreaming && options.sessionKey.value === requestSessionKey) {
         options.activeStreamSessionKey.value = res?.sessionKey || requestSessionKey
-        if (taskId) options.activeStreamTaskId.value = taskId
+        if (taskId) bindAcceptedTask(taskId)
       }
       const decision = decideSendResponseSession({
         requestSessionKey,

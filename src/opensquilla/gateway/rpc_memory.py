@@ -86,25 +86,14 @@ def _is_safety_error_receipt(row: Any) -> bool:
 
 async def _recent_durable_receipts(storage: Any, *, agent_id: str) -> list[Any]:
     agent_prefix = _agent_session_key_prefix(agent_id)
-    conn = getattr(storage, "conn", None)
-    if conn is not None:
-        agent_clause = ""
-        params: list[Any] = []
-        if agent_prefix is not None:
-            agent_clause = "WHERE substr(session_key, 1, ?) = ?"
-            params.extend((len(agent_prefix), agent_prefix))
-        params.append(_HEALTH_SCAN_LIMIT)
-        async with conn.execute(
-            f"""
-            SELECT * FROM memory_durable_receipts
-            {agent_clause}
-            ORDER BY created_at DESC, rowid DESC
-            LIMIT ?
-            """,
-            params,
-        ) as cur:
-            sql_rows = await cur.fetchall()
-        return list(sql_rows)
+    list_recent = getattr(storage, "list_recent_memory_durable_receipts", None)
+    if callable(list_recent):
+        return list(
+            await list_recent(
+                limit=_HEALTH_SCAN_LIMIT,
+                session_key_prefix=agent_prefix,
+            )
+        )
 
     list_receipts = getattr(storage, "list_memory_durable_receipts", None)
     if not callable(list_receipts):

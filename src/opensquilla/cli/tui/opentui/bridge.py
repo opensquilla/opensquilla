@@ -510,6 +510,10 @@ class OpenTuiReplayRenderer:
             self.buffer += delta
         self.flush_count += 1
 
+    async def areconcile_final_text(self, text: str) -> None:
+        self.buffer = text
+        self.intermediate_buffer = ""
+
     async def aappend_reasoning(self, delta: str) -> None:
         self.reasoning_buffer += delta
 

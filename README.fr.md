@@ -131,7 +131,7 @@ Pour des téléchargements plus rapides depuis la Chine continentale, utilisez l
 - macOS Apple Silicon : <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
 - Windows x64 : <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
 
-Ces liens fixes sont mis à jour après chaque miroir de release réussi. Utilisez les liens GitHub Release versionnés ci-dessus si vous avez besoin d'une version précise.
+Ces liens fixes n'avancent qu'après qu'une release éligible plus récente a réussi la vérification du miroir. Utilisez les liens GitHub Release versionnés ci-dessus si vous avez besoin d'une version précise.
 
 Quittez toute application de bureau OpenSquilla en cours d'exécution avant la mise à
 niveau. Le profil Desktop existant dans le répertoire de données d'application de la

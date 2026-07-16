@@ -9,6 +9,8 @@ function panel(overrides: Record<string, unknown> = {}) {
   return {
     providerLabel: 'DeepSeek',
     providerSelected: true,
+    acceptsApiKey: true,
+    requiresApiKey: true,
     available: true,
     source: 'env',
     envKey: 'DEEPSEEK_API_KEY',
@@ -19,6 +21,8 @@ function panel(overrides: Record<string, unknown> = {}) {
     replacing: false,
     apiKeyValue: '',
     apiKeyEnvValue: 'DEEPSEEK_API_KEY',
+    probeReady: true,
+    probeDisabledReason: '',
     connection: { phase: 'unverified' },
     ...overrides,
   }
@@ -100,11 +104,13 @@ describe('SetupProviderCredentialCard', () => {
     expect(source).toContain('width: auto;')
   })
 
-  it('shows env-connected state without rendering env input while advanced details are closed', async () => {
+  it('separates credential readiness from the unverified connection state', async () => {
     const { app, el } = await mountCard()
 
-    expect(el.textContent).toContain('DeepSeek credential')
-    expect(el.textContent).toContain('Connected')
+    expect(el.textContent).toContain('DeepSeek authentication')
+    expect(el.textContent).toContain('Credential ready')
+    expect(el.textContent).toContain('Not tested')
+    expect(el.textContent).not.toContain('✓ Connected')
     expect(el.textContent).toContain('Current source: environment variable DEEPSEEK_API_KEY')
     expect(el.querySelector('input[name="setup_provider_api_key_env"]')).toBeNull()
 
@@ -208,11 +214,51 @@ describe('SetupProviderCredentialCard', () => {
     app.unmount()
   })
 
-  it('renders no key input at all when the provider requires no key', async () => {
-    const { app, el } = await mountCard({ masked: '', source: 'not_required' })
+  it('keeps an optional key directly editable when the provider accepts one', async () => {
+    const { app, el } = await mountCard({
+      masked: '',
+      source: 'not_required',
+      requiresApiKey: false,
+    })
 
-    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeNull()
+    expect(el.textContent).toContain('API key optional')
+    expect(el.textContent).toContain('Current source: no API key configured (optional)')
+    expect(el.textContent).toContain('API key (optional)')
+    expect(el.textContent).toContain(
+      'Enter a key only if this endpoint requires authentication; otherwise leave it blank.',
+    )
+    expect(el.textContent).not.toContain('Credential ready')
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeTruthy()
     expect(el.querySelector('input[name="setup_provider_api_key_display"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('does not render an API key control for an OAuth provider', async () => {
+    const { app, el } = await mountCard({
+      providerLabel: 'OpenAI Codex',
+      acceptsApiKey: false,
+      requiresApiKey: false,
+      masked: '',
+      source: 'not_required',
+    })
+
+    expect(el.textContent).toContain('No key required')
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeNull()
+    expect(el.querySelector('details.setup-provider-credential__details')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('disables probing with a localized missing-field reason', async () => {
+    const reason = '请先填写必填项：模型、基础 URL。'
+    const { app, el } = await mountCard({ probeReady: false, probeDisabledReason: reason })
+
+    const button = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .find(candidate => candidate.textContent?.includes('Test connection'))
+    expect(button?.disabled).toBe(true)
+    expect(button?.title).toBe(reason)
+    expect(el.textContent).toContain(reason)
 
     app.unmount()
   })

@@ -94,7 +94,7 @@ Para descargas más rápidas desde China continental, usa los alias de descarga 
 - macOS Apple Silicon: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-mac-arm64.dmg>
 - Windows x64: <https://opensquilla-releases.oss-cn-beijing.aliyuncs.com/releases/latest/OpenSquilla-win-x64.exe>
 
-Estos enlaces fijos se actualizan tras cada réplica de release correcta. Usa los enlaces versionados de GitHub Release indicados arriba si necesitas una versión concreta.
+Estos enlaces fijos solo avanzan cuando una release elegible más reciente supera la verificación de la réplica. Usa los enlaces versionados de GitHub Release indicados arriba si necesitas una versión concreta.
 
 Cierra cualquier aplicación de escritorio de OpenSquilla en ejecución antes de actualizar. Se reutiliza el perfil Desktop existente en el directorio de datos de aplicaciones de la plataforma. El `~/.opensquilla` de la instalación de terminal es un perfil distinto; transfiérelo explícitamente desde Ajustes si es necesario.
 

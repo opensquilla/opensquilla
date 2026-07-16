@@ -9,6 +9,8 @@ const { t } = useI18n()
 interface ProviderCredentialPanelContract {
   providerLabel: string
   providerSelected: boolean
+  acceptsApiKey: boolean
+  requiresApiKey: boolean
   source: string
   available: boolean
   envKey: string
@@ -19,6 +21,8 @@ interface ProviderCredentialPanelContract {
   replacing: boolean
   apiKeyValue: string
   apiKeyEnvValue: string
+  probeReady: boolean
+  probeDisabledReason: string
   connection: ConnectionState
 }
 
@@ -38,12 +42,20 @@ const showApiKey = ref(false)
 const detailsOpen = ref(false)
 
 const title = computed(() => t('setup.provider.credentialTitle', { provider: props.panel.providerLabel }))
-const statusText = computed(() => (
-  props.panel.available
-    ? t('setup.provider.credentialConnected')
+const statusText = computed(() => {
+  if (props.panel.source === 'not_required') {
+    return props.panel.acceptsApiKey
+      ? t('setup.provider.credentialOptional')
+      : t('setup.provider.credentialNotRequired')
+  }
+  return props.panel.available
+    ? t('setup.provider.credentialReady')
     : t('setup.provider.credentialNeedsKey')
-))
-const statusTone = computed(() => (props.panel.available ? 'control-pill--ok' : 'control-pill--warn'))
+})
+const statusTone = computed(() => {
+  if (props.panel.source === 'not_required') return ''
+  return props.panel.available ? 'control-pill--ok' : 'control-pill--warn'
+})
 const sourceText = computed(() => {
   switch (props.panel.source) {
     case 'explicit':
@@ -53,7 +65,9 @@ const sourceText = computed(() => {
     case 'missing_env':
       return t('setup.provider.credentialSourceMissingEnv', { envKey: props.panel.envKey })
     case 'not_required':
-      return t('setup.provider.credentialSourceNotRequired')
+      return props.panel.acceptsApiKey
+        ? t('setup.provider.credentialSourceOptional')
+        : t('setup.provider.credentialSourceNotRequired')
     default:
       return t('setup.provider.credentialSourceNone')
   }
@@ -61,7 +75,17 @@ const sourceText = computed(() => {
 const displayValue = computed(() => props.panel.revealed || props.panel.masked || '')
 const showRevealButton = computed(() => props.panel.revealAllowed && Boolean(props.panel.masked))
 const showPublicHint = computed(() => !props.panel.revealAllowed && Boolean(props.panel.masked))
-const showCredentialControls = computed(() => props.panel.providerSelected && props.panel.source !== 'not_required')
+const showCredentialControls = computed(() => props.panel.providerSelected && props.panel.acceptsApiKey)
+const apiKeyLabel = computed(() => (
+  props.panel.requiresApiKey
+    ? t('setup.common.apiKey')
+    : t('setup.provider.optionalApiKeyLabel')
+))
+const apiKeyHelper = computed(() => (
+  props.panel.requiresApiKey
+    ? ''
+    : t('setup.provider.optionalApiKeyHelper')
+))
 // The masked/readonly display plus the "Replace key" guard only make sense
 // when a saved secret actually exists; an empty credential must be directly
 // typable (first-run setup would otherwise dead-end on a locked input).
@@ -98,6 +122,9 @@ function failureSentence(connection: ConnectionState): string {
 
 const connectionPill = computed(() => {
   const connection = props.panel.connection
+  if (connection.phase === 'unverified') {
+    return { tone: '', text: t('setup.provider.connectionNotTested'), title: '' }
+  }
   if (connection.phase === 'verified') {
     return { tone: 'control-pill--ok', text: t('setup.provider.connected'), title: '' }
   }
@@ -156,7 +183,8 @@ const verdictModelsText = computed(() => {
       <template v-if="!editingCredential">
         <label v-if="showCredentialControls" class="control-row control-row--stack setup-provider-credential__field">
           <div class="control-row__label-block">
-            <span class="control-row__label">{{ t('setup.common.apiKey') }}</span>
+            <span class="control-row__label">{{ apiKeyLabel }}</span>
+            <span v-if="apiKeyHelper" class="control-row__desc">{{ apiKeyHelper }}</span>
           </div>
           <div class="control-row__control setup-provider-credential__field-row">
             <div class="setup-provider-credential__input-shell">
@@ -189,7 +217,8 @@ const verdictModelsText = computed(() => {
       <template v-else>
         <label v-if="showCredentialControls" class="control-row control-row--stack setup-provider-credential__field">
           <div class="control-row__label-block">
-            <span class="control-row__label">{{ t('setup.common.apiKey') }}</span>
+            <span class="control-row__label">{{ apiKeyLabel }}</span>
+            <span v-if="apiKeyHelper" class="control-row__desc">{{ apiKeyHelper }}</span>
           </div>
           <div class="control-row__control setup-provider-credential__field-row">
             <div class="setup-provider-credential__input-shell">
@@ -230,7 +259,13 @@ const verdictModelsText = computed(() => {
       </div>
       <div class="control-row__control control-row__control--stack">
         <div class="setup-connection__actions">
-          <button type="button" class="btn" :disabled="!panel.providerSelected || probing" @click="emit('testConnection')">
+          <button
+            type="button"
+            class="btn"
+            :disabled="!panel.providerSelected || !panel.probeReady || probing"
+            :title="!panel.probeReady ? panel.probeDisabledReason : undefined"
+            @click="emit('testConnection')"
+          >
             <span v-if="probing" class="setup-connection__spinner" aria-hidden="true"></span>
             {{ probing ? t('setup.provider.testing') : t('setup.provider.testConnection') }}
           </button>
@@ -242,6 +277,7 @@ const verdictModelsText = computed(() => {
           >{{ connectionPill.text }}</strong>
           <span v-if="failureLatencyText" class="setup-connection__latency">· {{ failureLatencyText }}</span>
         </div>
+        <span v-if="panel.probeDisabledReason" class="setup-connection__hint">{{ panel.probeDisabledReason }}</span>
         <div class="setup-connection__verdict" aria-live="polite">
           <template v-if="panel.connection.phase === 'verified'">
             <span v-if="latencyText" class="setup-connection__latency">· {{ latencyText }}</span>

@@ -44,6 +44,56 @@ export function reconcileHistoryMessages(prev: ChatMessage[], incoming: ChatMess
   })
 }
 
+// A background history sync returns only the newest server window. Keep any
+// canonical pages the reader already loaded before that window, then replace
+// the overlapping suffix with the fresh server rows. This keeps a 200-message
+// sync from collapsing a longer transcript back to 200 rows while retaining
+// the server-authoritative behavior inside the refreshed window.
+export function historyWindowsOverlap(prev: ChatMessage[], incoming: ChatMessage[]): boolean {
+  const previousIds = new Set(
+    prev
+      .filter(message => message.restoredFromHistory === true)
+      .map(message => message.messageId)
+      .filter(Boolean),
+  )
+  return incoming.some(message => Boolean(message.messageId && previousIds.has(message.messageId)))
+}
+
+export function reconcileHistoryWindow(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  if (prev.length === 0) return incoming
+  if (incoming.length === 0) return prev.filter(message => message.restoredFromHistory === true)
+
+  const previousIndexById = new Map<string, number>()
+  prev.forEach((message, index) => {
+    if (message.restoredFromHistory === true && message.messageId) {
+      previousIndexById.set(message.messageId, index)
+    }
+  })
+
+  let overlapIndex = -1
+  for (const message of incoming) {
+    if (!message.messageId) continue
+    const index = previousIndexById.get(message.messageId)
+    if (index !== undefined) {
+      overlapIndex = index
+      break
+    }
+  }
+
+  if (overlapIndex >= 0) {
+    return [
+      ...prev.slice(0, overlapIndex),
+      ...reconcileHistoryMessages(prev.slice(overlapIndex), incoming),
+    ]
+  }
+
+  // With no shared message id there is no proof that these windows are
+  // adjacent. Reset to the authoritative latest window instead of silently
+  // rendering an omitted middle range as one continuous transcript. Callers
+  // can page backwards again from the latest window's oldest cursor.
+  return incoming
+}
+
 function fallbackMessageKey(msg: ChatMessage): string {
   return `${msg.role}:${msg.ts || ''}:${msg.text || ''}`
 }
@@ -98,7 +148,7 @@ function findUserByOrdinal(messages: ChatMessage[], ordinal: number): number {
   return -1
 }
 
-function findIncomingUserForPreviousStopNotice(
+function findIncomingUserForPreviousNotice(
   previousMessages: ChatMessage[],
   incomingMessages: ChatMessage[],
   previousUserIndex: number,
@@ -163,11 +213,48 @@ export function reconcileClientStopNotices(prev: ChatMessage[], incoming: ChatMe
       return -1
     })()
     if (priorUserIndex < 0) continue
-    const userIndex = findIncomingUserForPreviousStopNotice(prev, merged, priorUserIndex)
+    const userIndex = findIncomingUserForPreviousNotice(prev, merged, priorUserIndex)
     if (userIndex < 0) continue
     if (turnHasServerOutputAfterUser(merged, userIndex)) continue
 
     merged.splice(stopNoticeInsertionIndex(merged, userIndex), 0, notice)
+  }
+
+  return merged
+}
+
+// A terminal replay has no future stream event to re-materialize its failure.
+// Keep the client error beside its user turn until server history contains an
+// error row for that turn; otherwise the required post-replay history sync
+// would erase the only actionable explanation after ~50ms.
+export function reconcileClientTerminalNotices(
+  prev: ChatMessage[],
+  incoming: ChatMessage[],
+): ChatMessage[] {
+  if (!prev.some(msg => msg.terminalNotice)) return incoming
+  const merged = incoming.slice()
+
+  for (let i = 0; i < prev.length; i++) {
+    const notice = prev[i]
+    if (!notice?.terminalNotice || notice.role !== 'error') continue
+
+    const priorUserIndex = (() => {
+      for (let j = i - 1; j >= 0; j--) {
+        if (prev[j]?.role === 'user') return j
+      }
+      return -1
+    })()
+    if (priorUserIndex < 0) continue
+    const userIndex = findIncomingUserForPreviousNotice(prev, merged, priorUserIndex)
+    if (userIndex < 0) continue
+
+    let turnEnd = userIndex + 1
+    while (turnEnd < merged.length && merged[turnEnd]?.role !== 'user') turnEnd++
+    const durableErrorExists = merged
+      .slice(userIndex + 1, turnEnd)
+      .some(message => message.role === 'error')
+    if (durableErrorExists) continue
+    merged.splice(turnEnd, 0, notice)
   }
 
   return merged

@@ -77,6 +77,7 @@ class _PostPublishToolLoopProvider:
 
     async def _stream(self, call_number: int) -> AsyncIterator[Any]:
         if call_number == 1:
+            yield ProviderText(text="Preparing your presentation.")
             yield ProviderToolUseStart(
                 tool_use_id="publish-1",
                 tool_name="publish_artifact",
@@ -772,6 +773,9 @@ async def test_turn_runner_suppresses_tools_after_successful_publish_artifact(
         assert [event.tool_name for event in tool_starts] == ["publish_artifact"]
         assert artifact_events[0].id == "art-published"
         assert artifact_events[0].session_id == session.session_id
+        text_deltas = [event.text for event in events if isinstance(event, TextDeltaEvent)]
+        assert "".join(text_deltas) == done.text
+        assert done.text.startswith("Preparing your presentation.")
         assert "The generated file is ready" in done.text
 
         transcript = await manager.get_transcript(session_key)

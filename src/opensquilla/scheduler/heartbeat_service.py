@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from opensquilla.engine.types import done_text_snapshot
 from opensquilla.scheduler.delivery import infer_delivery
 
 
@@ -193,7 +194,8 @@ class HeartbeatService:
         heartbeat_light_context: bool,
     ) -> str:
         parts: list[str] = []
-        done_text: str | None = None
+        done_text_present = False
+        done_text = ""
         async for event in self._turn_runner.run(
             message=prompt,
             session_key=session_key,
@@ -209,13 +211,13 @@ class HeartbeatService:
         ):
             kind = getattr(event, "kind", "")
             if kind == "done":
-                done_text = getattr(event, "text", "")
+                done_text_present, done_text = done_text_snapshot(event)
                 continue
             if kind not in {"state_change", "tool_use_start", "tool_result"}:
                 text = getattr(event, "text", "")
                 if text:
                     parts.append(text)
-        if done_text is not None:
+        if done_text_present:
             return done_text
         return "".join(parts)
 

@@ -165,6 +165,102 @@ async def test_provider_probe_rpc_reuses_stored_api_key_env_when_blank(
     assert seen[0].headers["authorization"] == "Bearer sk-from-stored-env"
 
 
+async def test_provider_probe_rpc_reuses_stored_key_for_same_origin_path_change(
+    tmp_path, monkeypatch: Any
+) -> None:
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
+    seen, _ = _patch_openai_response(monkeypatch)
+    ctx = _ctx(
+        tmp_path,
+        is_owner=True,
+        llm=LlmProviderConfig(
+            provider="custom",
+            model="test-model",
+            api_key="sk-origin-a",
+            base_url="https://a.example.test/v1",
+        ),
+    )
+
+    payload = await rpc_onboarding._provider_probe(
+        {
+            "providerId": "custom",
+            "model": "test-model",
+            "baseUrl": "https://A.example.test:443/alternate/v2",
+        },
+        ctx,
+    )
+
+    assert payload["ok"] is True
+    assert seen[0].url.host == "a.example.test"
+    assert seen[0].headers["authorization"] == "Bearer sk-origin-a"
+
+
+async def test_provider_probe_rpc_never_reuses_key_for_cross_origin_endpoint(
+    tmp_path, monkeypatch: Any
+) -> None:
+    # Even the provider's default env fallback holds A's key; changing to B
+    # must suppress both the stored explicit key and that implicit fallback.
+    monkeypatch.setenv("CUSTOM_LLM_API_KEY", "sk-default-origin-a")
+    seen, _ = _patch_openai_response(monkeypatch)
+    ctx = _ctx(
+        tmp_path,
+        is_owner=True,
+        llm=LlmProviderConfig(
+            provider="custom",
+            model="test-model",
+            api_key="sk-explicit-origin-a",
+            base_url="https://a.example.test/v1",
+        ),
+    )
+
+    payload = await rpc_onboarding._provider_probe(
+        {
+            "providerId": "custom",
+            "model": "test-model",
+            "baseUrl": "https://b.example.test/v1",
+        },
+        ctx,
+    )
+
+    assert payload["ok"] is True
+    assert seen[0].url.host == "b.example.test"
+    authorization = seen[0].headers.get("authorization", "")
+    assert "sk-explicit-origin-a" not in authorization
+    assert "sk-default-origin-a" not in authorization
+
+
+async def test_provider_probe_rpc_never_reuses_stored_env_for_cross_origin_endpoint(
+    tmp_path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("CUSTOM_ORIGIN_A_KEY", "sk-env-origin-a")
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
+    seen, _ = _patch_openai_response(monkeypatch)
+    ctx = _ctx(
+        tmp_path,
+        is_owner=True,
+        llm=LlmProviderConfig(
+            provider="custom",
+            model="test-model",
+            api_key="",
+            api_key_env="CUSTOM_ORIGIN_A_KEY",
+            base_url="https://a.example.test/v1",
+        ),
+    )
+
+    payload = await rpc_onboarding._provider_probe(
+        {
+            "providerId": "custom",
+            "model": "test-model",
+            "baseUrl": "https://b.example.test/v1",
+        },
+        ctx,
+    )
+
+    assert payload["ok"] is True
+    assert seen[0].url.host == "b.example.test"
+    assert "sk-env-origin-a" not in seen[0].headers.get("authorization", "")
+
+
 async def test_provider_probe_rpc_does_not_leak_stored_credentials_across_providers(
     tmp_path, monkeypatch: Any
 ) -> None:
@@ -289,6 +385,38 @@ async def test_provider_credential_reveal_returns_explicit_saved_key(tmp_path) -
         "source": "explicit",
         "envKey": "DEEPSEEK_API_KEY",
         "apiKey": "sk-deepseek-secret-123456",
+    }
+
+
+@pytest.mark.asyncio
+async def test_optional_custom_credential_status_and_reveal_use_saved_key(tmp_path) -> None:
+    ctx = _ctx(
+        tmp_path,
+        is_owner=True,
+        llm=LlmProviderConfig(
+            provider="custom",
+            model="test-model",
+            api_key="sk-custom-secret-123456",
+            base_url="https://custom.example.test/v1",
+        ),
+    )
+
+    status = rpc_onboarding._status_payload(ctx)["llmCredentialStatus"]
+    payload = await rpc_onboarding._provider_credential_reveal(
+        {"providerId": "custom"},
+        ctx,
+    )
+
+    assert status["available"] is True
+    assert status["source"] == "explicit"
+    assert status["masked"].endswith("3456")
+    assert status["revealAllowed"] is True
+    assert payload == {
+        "ok": True,
+        "provider": "custom",
+        "source": "explicit",
+        "envKey": "CUSTOM_LLM_API_KEY",
+        "apiKey": "sk-custom-secret-123456",
     }
 
 

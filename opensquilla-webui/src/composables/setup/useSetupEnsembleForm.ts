@@ -528,6 +528,81 @@ export function useSetupEnsembleForm() {
     clampQuorumToLineup()
   }
 
+  function replaceCandidate(
+    candidate: { provider: string; model: string; source?: string; role?: string },
+    model: string,
+  ) {
+    const provider = normalizeProvider(candidate.provider)
+    const currentModel = normalizeModel(candidate.model)
+    const nextModel = normalizeModel(model)
+    const source = normalizeCandidateSource(candidate.source)
+    const slot = normalizeCandidateRole(candidate.role) === 'aggregator' ? 'aggregator' : 'proposer'
+    if (!provider || !currentModel || !nextModel || currentModel === nextModel || slot === 'aggregator') {
+      return
+    }
+
+    const duplicate = candidates.value.some(entry => (
+      entry.enabled !== false
+      && normalizeCandidateRole(entry.role) !== 'aggregator'
+      && normalizeProvider(entry.provider) === provider
+      && normalizeModel(entry.model) === nextModel
+    ))
+    if (duplicate) return
+
+    let replaced = false
+    const next = candidates.value.map((entry) => {
+      const matches = (
+        !replaced
+        && normalizeProvider(entry.provider) === provider
+        && normalizeModel(entry.model) === currentModel
+        && normalizeCandidateSource(entry.source) === source
+        && normalizeCandidateRole(entry.role) !== 'aggregator'
+      )
+      if (!matches) return entry
+      replaced = true
+      return { ...entry, model: nextModel }
+    })
+    if (!replaced) return
+
+    ensureCustomMode()
+    // Replace in one assignment so an unchanged proposer count cannot
+    // transiently clamp an explicit quorum or collapse a duplicate row.
+    candidates.value = normalizeCandidates(next)
+    clampQuorumToLineup()
+  }
+
+  function setAggregator(provider: string, model: string) {
+    const cleanProvider = normalizeProvider(provider)
+    const cleanModel = normalizeModel(model)
+    if (!cleanProvider || !cleanModel) return
+    ensureCustomMode()
+
+    const currentAggregator = candidates.value.find(candidate => (
+      candidate.enabled !== false
+      && normalizeCandidateRole(candidate.role) === 'aggregator'
+    ))
+    if (
+      currentAggregator
+      && normalizeProvider(currentAggregator.provider) === cleanProvider
+      && normalizeModel(currentAggregator.model) === cleanModel
+    ) return
+
+    // The same model may draft and aggregate in separate slots. Replacing the
+    // aggregator must not consume the selected proposer or demote the previous
+    // aggregator into the proposer lineup.
+    const next = candidates.value.filter(candidate => (
+      normalizeCandidateRole(candidate.role) !== 'aggregator'
+    ))
+    next.push({
+      provider: cleanProvider,
+      model: cleanModel,
+      source: 'custom',
+      enabled: true,
+      role: 'aggregator',
+    })
+    candidates.value = normalizeCandidates(next)
+  }
+
   function setCandidateRole(
     candidate: { provider: string; model: string; source?: string; role?: string },
     role: EnsembleCandidateRole,
@@ -557,8 +632,12 @@ export function useSetupEnsembleForm() {
     clampQuorumToLineup()
   }
 
-  function importTierCandidates(tierCandidates: readonly EnsembleTierCandidate[]) {
+  function importTierCandidates(
+    tierCandidates: readonly EnsembleTierCandidate[],
+    providerRestriction?: unknown,
+  ) {
     ensureCustomMode()
+    const allowedProvider = normalizeProvider(providerRestriction)
     const existing = new Set(
       enabledProposerConfigs.value.map(entry => `${entry.provider}\n${entry.model}`),
     )
@@ -569,6 +648,7 @@ export function useSetupEnsembleForm() {
       const provider = normalizeProvider(row.provider)
       const model = normalizeModel(row.model)
       if (!provider || !model) continue
+      if (allowedProvider && provider !== allowedProvider) continue
       const key = `${provider}\n${model}`
       if (existing.has(key)) continue
       existing.add(key)
@@ -632,7 +712,7 @@ export function useSetupEnsembleForm() {
     }
     selectionMode.value = CUSTOM_B5_SELECTION_MODE
     if (!candidates.value.some(candidate => candidate.enabled !== false)) {
-      importTierCandidates(tierCandidates)
+      importTierCandidates(tierCandidates, provider)
     }
   }
 
@@ -864,6 +944,8 @@ export function useSetupEnsembleForm() {
     removeModelOption,
     addCandidate,
     removeCandidate,
+    replaceCandidate,
+    setAggregator,
     setCandidateRole,
     importTierCandidates,
     resetModelOptions,

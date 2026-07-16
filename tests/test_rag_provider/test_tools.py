@@ -304,14 +304,29 @@ async def test_search_v10_dispatch_retains_legacy_snippet() -> None:
         ],
     }
 
-    result = await _dispatch(Runtime(search_payload=raw))(
+    result = await _dispatch(
+        Runtime(search_payload=raw, provider_budget_violation=True)
+    )(
         ToolCall("tc-search-v10", "knowledge_search", {"query": "NAND"})
     )
 
     assert json.loads(result.content) == {
-        **raw,
-        "providerBudgetViolation": False,
+        "returnedCount": 1,
+        "resultsTruncated": False,
+        "results": [
+            {
+                "evidenceId": "legacy-ev",
+                "snippet": "legacy evidence",
+                "snippetTruncated": False,
+                "citation": {
+                    "title": "Legacy",
+                    "locator": "page 1",
+                },
+            }
+        ],
     }
+    assert "totalMatched" not in json.loads(result.content)
+    assert "providerBudgetViolation" not in json.loads(result.content)
     assert json.loads(result.content)["results"][0]["snippet"] == "legacy evidence"
     assert result.sources == [
         {
@@ -351,6 +366,29 @@ async def test_get_dispatch_projects_full_content_and_isolated_source() -> None:
             "citation": _citation(),
             "snippet": "🙂" * SOURCE_SNIPPET_MAX_CHARS,
             "snippetTruncated": True,
+        }
+    ]
+    _assert_source_isolated(result.sources)
+
+
+@pytest.mark.asyncio
+async def test_get_dispatch_preserves_multiline_model_content_with_safe_source_preview() -> None:
+    content = "# Heading\r\n\nParagraph one\twith detail.\n- item one\n- item two"
+
+    result = await _dispatch(Runtime(get_payload=_get_v11(content=content)))(
+        ToolCall("tc-get-v11-multiline", "knowledge_get", {"evidence_id": "ev_1"})
+    )
+
+    assert result.is_error is False
+    assert json.loads(result.content)["content"] == content
+    assert result.sources == [
+        {
+            "kind": "knowledge",
+            "evidenceId": "ev_1",
+            "document": _document(),
+            "citation": _citation(),
+            "snippet": "# Heading Paragraph one with detail. - item one - item two",
+            "snippetTruncated": False,
         }
     ]
     _assert_source_isolated(result.sources)

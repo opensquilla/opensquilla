@@ -160,7 +160,11 @@ def test_empty_search_discriminates_version_from_top_level_retrieval() -> None:
         "retrieval": {"profile": "opaque-provider-profile"},
         "results": [],
     }
-    assert projected_v10 == v10
+    assert projected_v10 == {
+        "returnedCount": 0,
+        "resultsTruncated": False,
+        "results": [],
+    }
     assert projections.project_search_response_for_sources(_compact(v11)) == []
     assert projections.project_search_response_for_sources(_compact(v10)) == []
 
@@ -180,7 +184,12 @@ def test_search_v10_keeps_snippet_evidence_without_fabricating_v11_fields() -> N
                     "title": "Legacy",
                     "source": "legacy-source",
                     "locator": "page 1",
+                    "uri": "knowledge://documents/legacy#page=1",
+                    "internalScore": 0.8,
                 },
+                "document": _document(),
+                "retrieval": {"profile": "must-not-escape"},
+                "chunk": {"content": "must-not-escape"},
             }
         ],
         "providerBudgetViolation": True,
@@ -190,9 +199,24 @@ def test_search_v10_keeps_snippet_evidence_without_fabricating_v11_fields() -> N
         projections.project_search_response_for_model(_compact(raw))
     )
 
-    assert projected == raw
-    assert "document" not in projected["results"][0]
-    assert "chunk" not in projected["results"][0]
+    assert projected == {
+        "returnedCount": 1,
+        "resultsTruncated": True,
+        "results": [
+            {
+                "evidenceId": "legacy-ev",
+                "snippet": "legacy evidence",
+                "snippetTruncated": False,
+                "citation": {
+                    "title": "Legacy",
+                    "locator": "page 1",
+                    "uri": "knowledge://documents/legacy#page=1",
+                },
+            }
+        ],
+    }
+    assert "totalMatched" not in projected
+    assert "providerBudgetViolation" not in projected
 
 
 def test_search_v10_sources_assign_rank_without_fabricating_document() -> None:
@@ -319,6 +343,22 @@ def test_get_sources_derive_unicode_snippet_without_full_content_or_scores() -> 
         }
     ]
     assert len(sources[0]["snippet"]) == 400
+    _assert_sidecar_is_isolated(sources)
+
+
+def test_get_sources_normalize_text_whitespace_before_bounding_snippet() -> None:
+    projections = _projectors()
+    content = ("line one\r\nline two\tline three\n" * 20).rstrip()
+    normalized = " ".join(content.split())
+
+    sources = projections.project_get_response_for_sources(
+        _compact(_get_v11(content=content))
+    )
+
+    assert sources[0]["snippet"] == normalized[:400]
+    assert sources[0]["snippetTruncated"] is True
+    assert len(sources[0]["snippet"]) == 400
+    assert not any(character in sources[0]["snippet"] for character in "\n\r\t")
     _assert_sidecar_is_isolated(sources)
 
 

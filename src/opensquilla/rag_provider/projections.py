@@ -51,10 +51,28 @@ def _project_search_result_for_model(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _project_search_result_for_model_v10(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "evidenceId": item["evidenceId"],
+        "snippet": item["snippet"],
+        "snippetTruncated": item["snippetTruncated"],
+        "citation": _citation(item["citation"]),
+    }
+
+
 def project_search_response_for_model(raw_json: str) -> str:
     payload: dict[str, Any] = json.loads(raw_json)
     if "retrieval" not in payload:
-        return _compact(payload)
+        return _compact(
+            {
+                "returnedCount": payload["returnedCount"],
+                "resultsTruncated": payload["resultsTruncated"],
+                "results": [
+                    _project_search_result_for_model_v10(item)
+                    for item in payload["results"]
+                ],
+            }
+        )
 
     projected = {
         "returnedCount": payload["returnedCount"],
@@ -131,12 +149,13 @@ def project_get_response_for_model(raw_json: str) -> str:
 def project_get_response_for_sources(raw_json: str) -> list[dict[str, Any]]:
     payload: dict[str, Any] = json.loads(raw_json)
     content = payload["content"]
+    normalized_content = " ".join(content.split())
     projected = {
         "kind": "knowledge",
         "evidenceId": payload["evidenceId"],
         "document": _source_document(payload["document"]),
         "citation": _citation(payload["citation"]),
-        "snippet": content[:SOURCE_SNIPPET_MAX_CHARS],
-        "snippetTruncated": len(content) > SOURCE_SNIPPET_MAX_CHARS,
+        "snippet": normalized_content[:SOURCE_SNIPPET_MAX_CHARS],
+        "snippetTruncated": len(normalized_content) > SOURCE_SNIPPET_MAX_CHARS,
     }
     return [projected]

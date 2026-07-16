@@ -8,12 +8,40 @@ import pytest
 from opensquilla.rag_provider.client import RagProviderClient
 from opensquilla.rag_provider.protocol import (
     ProviderAuthenticationError,
+    ProviderIncompatible,
     ProviderNotFound,
     ProviderProtocolViolation,
     ProviderUnavailable,
+    SearchBudget,
 )
 
-from .test_protocol import capabilities, result
+from .test_protocol import capabilities, result, result_v11, search_v11
+
+
+async def _validated_v11_search(*, requested_profile: str):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=capabilities(version="1.1"))
+        return httpx.Response(200, json=search_v11([result_v11(1)]))
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = RagProviderClient(
+        base_url="https://knowledge.example.com/provider",
+        token_env=None,
+        connect_timeout_seconds=2,
+        request_timeout_seconds=5,
+        http_client=http,
+    )
+    snapshot = await client.capabilities()
+    validated = await client.search(
+        query="NAND",
+        limit=8,
+        budget=snapshot.effective_search_budget,
+        retrieval_profile=requested_profile,
+        protocol_version=snapshot.protocol_version,
+    )
+    await http.aclose()
+    return validated
 
 
 @pytest.mark.asyncio
@@ -50,6 +78,7 @@ async def test_client_sends_bearer_and_standard_search_request(monkeypatch) -> N
         budget=snapshot.effective_search_budget,
         collection_ids=("datasets",),
         retrieval_profile="lexical",
+        protocol_version=snapshot.protocol_version,
     )
 
     assert requests[0].headers["authorization"] == "Bearer secret"
@@ -57,10 +86,98 @@ async def test_client_sends_bearer_and_standard_search_request(monkeypatch) -> N
     assert body == {
         "query": "NAND",
         "limit": 8,
-        "budget": {"maxSnippetChars": 800, "maxTotalChars": 12000},
+        "budget": {
+            "maxSnippetChars": 800,
+            "maxTotalChars": 12000,
+            "maxChunkChars": 8000,
+        },
         "scope": {"collectionIds": ["datasets"]},
         "retrievalProfile": "lexical",
     }
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_validates_search_with_exact_snapshot_protocol_version() -> None:
+    validated = await _validated_v11_search(requested_profile="vector")
+
+    assert validated.payload["results"][0]["chunk"] == {
+        "id": "chunk_1",
+        "content": "complete evidence",
+        "contentChars": 17,
+    }
+
+
+@pytest.mark.asyncio
+async def test_client_preserves_provider_returned_retrieval_profile() -> None:
+    validated = await _validated_v11_search(requested_profile="vector")
+
+    assert validated.payload["retrieval"]["profile"] == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_client_validates_get_with_exact_snapshot_protocol_version() -> None:
+    search_result = result_v11(1)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/capabilities"):
+            return httpx.Response(200, json=capabilities(version="1.1"))
+        return httpx.Response(
+            200,
+            json={
+                "evidenceId": search_result["evidenceId"],
+                "document": search_result["document"],
+                "content": search_result["chunk"]["content"],
+                "contentChars": search_result["chunk"]["contentChars"],
+                "previousCursor": None,
+                "nextCursor": None,
+                "citation": search_result["citation"],
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = RagProviderClient(
+        base_url="https://knowledge.example.com/provider",
+        token_env=None,
+        connect_timeout_seconds=2,
+        request_timeout_seconds=5,
+        http_client=http,
+    )
+    snapshot = await client.capabilities()
+
+    validated = await client.get(
+        evidence_id="ev_1",
+        cursor=None,
+        max_content_chars=snapshot.limits.max_get_content_chars,
+        protocol_version=snapshot.protocol_version,
+    )
+
+    assert validated["document"]["id"] == "doc_1"
+    assert validated["contentChars"] == 17
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_does_not_infer_future_compatible_protocol_version() -> None:
+    async def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=search_v11([result_v11(1)]))
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = RagProviderClient(
+        base_url="https://knowledge.example.com/provider",
+        token_env=None,
+        connect_timeout_seconds=2,
+        request_timeout_seconds=5,
+        http_client=http,
+    )
+
+    with pytest.raises(ProviderIncompatible):
+        await client.search(
+            query="NAND",
+            limit=8,
+            budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
+            protocol_version="1.2",
+        )
     await http.aclose()
 
 

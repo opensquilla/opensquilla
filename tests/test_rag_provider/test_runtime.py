@@ -7,6 +7,7 @@ import pytest
 from opensquilla.gateway.rag_provider_runtime import RagProviderRuntime, RagProviderState
 from opensquilla.rag_provider.protocol import (
     ProviderIncompatible,
+    SearchBudget,
     ValidatedSearchResponse,
     validate_capabilities,
 )
@@ -33,11 +34,18 @@ class Config:
 class FakeClient:
     def __init__(self) -> None:
         self.fail = False
-        self.get = True
+        self.supports_get = True
         self.closed = False
         self.capability_calls = 0
         self.incompatible = False
+        self.max_chunk_chars = 4_096
+        self.retrieval_profiles = [
+            ("vector", "Vector"),
+            ("hybrid", "Hybrid"),
+        ]
+        self.default_retrieval_profile: str | None = "hybrid"
         self.search_calls: list[dict[str, object]] = []
+        self.get_calls: list[dict[str, object]] = []
 
     async def capabilities(self):
         self.capability_calls += 1
@@ -45,14 +53,15 @@ class FakeClient:
             raise ProviderIncompatible("unsupported major")
         if self.fail:
             raise RuntimeError("offline")
-        payload = capabilities(get=self.get)
+        payload = capabilities(version="1.1", get=self.supports_get)
+        payload["limits"]["maxChunkChars"] = self.max_chunk_chars
         payload["searchOptions"] = {
             "supportsCollectionScope": False,
             "retrievalProfiles": [
-                {"id": "vector", "label": "Vector"},
-                {"id": "hybrid", "label": "Hybrid"},
+                {"id": profile_id, "label": label}
+                for profile_id, label in self.retrieval_profiles
             ],
-            "defaultRetrievalProfile": "hybrid",
+            "defaultRetrievalProfile": self.default_retrieval_profile,
         }
         return validate_capabilities(payload)
 
@@ -68,6 +77,10 @@ class FakeClient:
             provider_budget_violation=False,
         )
 
+    async def get(self, **kwargs):
+        self.get_calls.append(dict(kwargs))
+        return {"evidenceId": kwargs["evidence_id"]}
+
     async def close(self) -> None:
         self.closed = True
 
@@ -80,7 +93,45 @@ async def test_disabled_runtime_never_probes_or_registers() -> None:
     await runtime.start(start_probe_loop=False)
     assert runtime.snapshot().state is RagProviderState.DISABLED
     assert client.capability_calls == 0
-    assert "knowledge_search" not in registry.list_names()
+    assert client.search_calls == []
+    assert client.get_calls == []
+    assert registry.list_names() == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_includes_effective_max_chunk_chars() -> None:
+    client = FakeClient()
+    runtime = RagProviderRuntime(Config(), client, ToolRegistry())
+
+    await runtime.start(start_probe_loop=False)
+
+    assert runtime.snapshot().to_wire()["effectiveLimits"]["maxChunkChars"] == 4_096
+
+
+@pytest.mark.asyncio
+async def test_runtime_search_uses_negotiated_chunk_budget_and_protocol_version() -> None:
+    client = FakeClient()
+    runtime = RagProviderRuntime(Config(), client, ToolRegistry())
+    await runtime.start(start_probe_loop=False)
+
+    await runtime.search(query="NAND", limit=8)
+
+    call = client.search_calls[0]
+    budget = call["budget"]
+    assert isinstance(budget, SearchBudget)
+    assert budget.max_chunk_chars == 4_096
+    assert call["protocol_version"] == "1.1"
+
+
+@pytest.mark.asyncio
+async def test_runtime_get_uses_snapshot_protocol_version() -> None:
+    client = FakeClient()
+    runtime = RagProviderRuntime(Config(), client, ToolRegistry())
+    await runtime.start(start_probe_loop=False)
+
+    await runtime.get(evidence_id="ev_1", cursor=None)
+
+    assert client.get_calls[0]["protocol_version"] == "1.1"
 
 
 @pytest.mark.asyncio
@@ -102,7 +153,7 @@ async def test_runtime_registers_by_capability_and_unavailable_threshold() -> No
     assert "knowledge_search" not in registry.list_names()
 
     client.fail = False
-    client.get = False
+    client.supports_get = False
     await runtime.refresh()
     assert runtime.snapshot().state is RagProviderState.READY
     assert "knowledge_search" in registry.list_names()
@@ -178,7 +229,7 @@ async def test_configured_collection_scope_is_never_silently_dropped() -> None:
 
 
 @pytest.mark.asyncio
-async def test_profile_override_hot_apply_changes_only_future_searches() -> None:
+async def test_valid_profile_override_then_provider_default_apply_to_future_searches() -> None:
     client = FakeClient()
     runtime = RagProviderRuntime(Config(), client, ToolRegistry())
     await runtime.start(start_probe_loop=False)
@@ -189,4 +240,54 @@ async def test_profile_override_hot_apply_changes_only_future_searches() -> None
     await runtime.search(query="DRAM", limit=8)
 
     assert client.search_calls[0]["retrieval_profile"] == "vector"
-    assert client.search_calls[1]["retrieval_profile"] is None
+    assert client.search_calls[1]["retrieval_profile"] == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_invalid_profile_override_falls_back_to_provider_default() -> None:
+    client = FakeClient()
+    runtime = RagProviderRuntime(
+        Config(retrieval_profile_override="retired-profile"),
+        client,
+        ToolRegistry(),
+    )
+    await runtime.start(start_probe_loop=False)
+
+    await runtime.search(query="NAND", limit=8)
+
+    assert client.search_calls[0]["retrieval_profile"] == "hybrid"
+
+
+@pytest.mark.asyncio
+async def test_null_profile_is_used_when_no_valid_override_or_provider_default() -> None:
+    client = FakeClient()
+    client.default_retrieval_profile = None
+    runtime = RagProviderRuntime(Config(), client, ToolRegistry())
+    await runtime.start(start_probe_loop=False)
+
+    await runtime.search(query="NAND", limit=8)
+
+    assert client.search_calls[0]["retrieval_profile"] is None
+
+
+@pytest.mark.asyncio
+async def test_refreshed_provider_profiles_and_default_remain_authoritative() -> None:
+    client = FakeClient()
+    runtime = RagProviderRuntime(
+        Config(retrieval_profile_override="vector"),
+        client,
+        ToolRegistry(),
+    )
+    await runtime.start(start_probe_loop=False)
+    await runtime.search(query="NAND", limit=8)
+
+    client.retrieval_profiles = [("provider-new-default", "Provider new default")]
+    client.default_retrieval_profile = "provider-new-default"
+    await runtime.refresh()
+    await runtime.search(query="DRAM", limit=8)
+
+    assert client.search_calls[0]["retrieval_profile"] == "vector"
+    assert (
+        client.search_calls[1]["retrieval_profile"]
+        == "provider-new-default"
+    )

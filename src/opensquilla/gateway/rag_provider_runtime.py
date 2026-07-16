@@ -66,6 +66,7 @@ class RuntimeSnapshot:
                     "maxSnippetChars": capabilities.limits.max_snippet_chars,
                     "maxSearchResponseChars": capabilities.limits.max_search_response_chars,
                     "maxGetContentChars": capabilities.limits.max_get_content_chars,
+                    "maxChunkChars": capabilities.limits.max_chunk_chars,
                 }
                 if capabilities
                 else None
@@ -221,21 +222,28 @@ class RagProviderRuntime:
         collections = tuple(self.config.collection_scope)
         if collections and not capabilities.supports_collection_scope:
             raise RuntimeError("collection_scope_unsupported")
-        profile = self.config.retrieval_profile_override
         available = {item[0] for item in capabilities.retrieval_profiles}
-        if profile and profile not in available:
-            raise RuntimeError("retrieval_profile_unavailable")
-        return await self.client.search(
-            query=query,
-            limit=effective_limit,
-            budget=SearchBudget(
+        configured_profile = self.config.retrieval_profile_override
+        profile = (
+            configured_profile
+            if configured_profile in available
+            else capabilities.default_retrieval_profile
+        )
+        search_kwargs: dict[str, Any] = {
+            "query": query,
+            "limit": effective_limit,
+            "budget": SearchBudget(
                 max_snippet_chars=capabilities.limits.max_snippet_chars,
                 max_total_chars=capabilities.limits.max_search_response_chars,
                 max_results=effective_limit,
+                max_chunk_chars=capabilities.limits.max_chunk_chars,
             ),
-            collection_ids=collections,
-            retrieval_profile=profile,
-        )
+            "collection_ids": collections,
+            "retrieval_profile": profile,
+        }
+        if capabilities.protocol_version != "legacy":
+            search_kwargs["protocol_version"] = capabilities.protocol_version
+        return await self.client.search(**search_kwargs)
 
     async def get(self, *, evidence_id: str, cursor: str | None):
         snapshot = self._snapshot
@@ -246,11 +254,14 @@ class RagProviderRuntime:
             or not capabilities.supports_get
         ):
             raise RuntimeError("knowledge_get_unavailable")
-        return await self.client.get(
-            evidence_id=evidence_id,
-            cursor=cursor,
-            max_content_chars=capabilities.limits.max_get_content_chars,
-        )
+        get_kwargs: dict[str, Any] = {
+            "evidence_id": evidence_id,
+            "cursor": cursor,
+            "max_content_chars": capabilities.limits.max_get_content_chars,
+        }
+        if capabilities.protocol_version != "legacy":
+            get_kwargs["protocol_version"] = capabilities.protocol_version
+        return await self.client.get(**get_kwargs)
 
     async def stop(self) -> None:
         if self._probe_task is not None:

@@ -114,6 +114,7 @@ class RagProviderClient:
         query: str,
         limit: int,
         budget: SearchBudget,
+        protocol_version: str,
         collection_ids: tuple[str, ...] = (),
         retrieval_profile: str | None = None,
     ) -> ValidatedSearchResponse:
@@ -123,6 +124,7 @@ class RagProviderClient:
             "budget": {
                 "maxSnippetChars": budget.max_snippet_chars,
                 "maxTotalChars": budget.max_total_chars,
+                "maxChunkChars": budget.max_chunk_chars,
             },
         }
         if collection_ids:
@@ -130,7 +132,9 @@ class RagProviderClient:
         if retrieval_profile:
             body["retrievalProfile"] = retrieval_profile
         return validate_search_response(
-            await self._json("POST", "/v1/search", body), budget=budget
+            await self._json("POST", "/v1/search", body),
+            budget=budget,
+            protocol_version=protocol_version,
         )
 
     async def get(
@@ -139,6 +143,7 @@ class RagProviderClient:
         evidence_id: str,
         cursor: str | None,
         max_content_chars: int,
+        protocol_version: str,
     ) -> dict[str, Any]:
         body = {
             "evidenceId": evidence_id,
@@ -149,6 +154,7 @@ class RagProviderClient:
             await self._json("POST", "/v1/get", body),
             evidence_id=evidence_id,
             max_content_chars=max_content_chars,
+            protocol_version=protocol_version,
         )
 
     async def close(self) -> None:

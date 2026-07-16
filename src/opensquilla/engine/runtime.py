@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Hashable, Mapping, Sequence
@@ -705,6 +706,9 @@ _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
 _MAX_PERSISTED_TOOL_SOURCES = 12
 _MAX_PERSISTED_SOURCE_SNIPPET_CHARS = 400
+_PERSISTED_SOURCE_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_PERSISTED_SOURCE_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
+_PERSISTED_UNSAFE_RESOURCE_SCHEMES = frozenset({"data", "file", "javascript", "vbscript"})
 _PERSISTED_KNOWLEDGE_DOCUMENT_KEYS: Final[tuple[str, ...]] = (
     "id",
     "title",
@@ -980,10 +984,7 @@ def _persisted_knowledge_source(candidate: Mapping[str, Any]) -> dict[str, Any] 
     if isinstance(rank, int) and not isinstance(rank, bool):
         source["rank"] = rank
 
-    document = _persisted_source_mapping(
-        candidate.get("document"),
-        _PERSISTED_KNOWLEDGE_DOCUMENT_KEYS,
-    )
+    document = _persisted_knowledge_document(candidate.get("document"))
     if document:
         source["document"] = document
 
@@ -998,9 +999,9 @@ def _persisted_knowledge_source(candidate: Mapping[str, Any]) -> dict[str, Any] 
     elif snippet_was_truncated:
         source["snippetTruncated"] = True
 
-    citation = _persisted_source_mapping(
+    citation = _persisted_knowledge_citation(
         candidate.get("citation"),
-        _PERSISTED_KNOWLEDGE_CITATION_KEYS,
+        document_uri=document.get("uri"),
     )
     if citation:
         source["citation"] = citation
@@ -1015,6 +1016,138 @@ def _persisted_source_mapping(value: Any, keys: Sequence[str]) -> dict[str, str]
         for key in keys
         if isinstance((item := value.get(key)), str) and item
     }
+
+
+def _persisted_knowledge_document(value: Any) -> dict[str, str]:
+    document = _persisted_source_mapping(
+        value,
+        _PERSISTED_KNOWLEDGE_DOCUMENT_KEYS,
+    )
+    source_path = _persisted_knowledge_source_path(document.get("sourcePath"))
+    if source_path is None:
+        document.pop("sourcePath", None)
+    else:
+        document["sourcePath"] = source_path
+
+    uri = _persisted_knowledge_resource_uri(document.get("uri"))
+    if uri is None:
+        document.pop("uri", None)
+    else:
+        document["uri"] = uri
+
+    open_url = _persisted_knowledge_open_url(document.get("openUrl"))
+    if open_url is None:
+        document.pop("openUrl", None)
+    else:
+        document["openUrl"] = open_url
+    return document
+
+
+def _persisted_knowledge_citation(
+    value: Any,
+    *,
+    document_uri: str | None,
+) -> dict[str, str]:
+    citation = _persisted_source_mapping(
+        value,
+        _PERSISTED_KNOWLEDGE_CITATION_KEYS,
+    )
+    uri = _persisted_knowledge_citation_uri(
+        citation.get("uri"),
+        document_uri=document_uri,
+    )
+    if uri is None:
+        citation.pop("uri", None)
+    else:
+        citation["uri"] = uri
+    return citation
+
+
+def _persisted_source_field_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or _PERSISTED_SOURCE_CONTROL_CHAR_RE.search(text):
+        return None
+    return text
+
+
+def _persisted_knowledge_source_path(value: Any) -> str | None:
+    path = _persisted_source_field_text(value)
+    if path is None:
+        return None
+    if (
+        path.startswith(("/", "\\"))
+        or "\\" in path
+        or any(part in {"", ".", ".."} for part in path.split("/"))
+    ):
+        return None
+    try:
+        if urlsplit(path).scheme:
+            return None
+    except ValueError:
+        return None
+    return path
+
+
+def _persisted_knowledge_resource_uri(value: Any) -> str | None:
+    uri = _persisted_source_field_text(value)
+    if uri is None or "\\" in uri or any(character.isspace() for character in uri):
+        return None
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return None
+    scheme = parsed.scheme.lower()
+    if (
+        not scheme
+        or not _PERSISTED_SOURCE_URI_SCHEME_RE.fullmatch(parsed.scheme)
+        or scheme in _PERSISTED_UNSAFE_RESOURCE_SCHEMES
+        or (not parsed.netloc and not parsed.path)
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    return uri
+
+
+def _persisted_knowledge_open_url(value: Any) -> str | None:
+    url = _persisted_source_field_text(value)
+    if url is None or "\\" in url or any(character.isspace() for character in url):
+        return None
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if url.startswith("/") and not url.startswith("//"):
+        if parsed.scheme or parsed.netloc:
+            return None
+        return url
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    return url
+
+
+def _persisted_knowledge_citation_uri(
+    value: Any,
+    *,
+    document_uri: str | None,
+) -> str | None:
+    uri = _persisted_knowledge_resource_uri(value)
+    if uri is None:
+        return None
+    try:
+        parsed = urlsplit(uri)
+    except ValueError:
+        return None
+    if (not parsed.query and not parsed.fragment) or uri == document_uri:
+        return None
+    return uri
 
 
 def _persisted_source_url(value: Any) -> str | None:

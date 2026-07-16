@@ -1,6 +1,8 @@
 import copy
 import json
 
+import pytest
+
 from opensquilla.engine.runtime import _persisted_tool_result_segment
 from opensquilla.engine.types import ToolResultEvent
 
@@ -19,6 +21,32 @@ def _assert_source_sidecar_is_isolated(value: object) -> None:
     elif isinstance(value, list):
         for nested in value:
             _assert_source_sidecar_is_isolated(nested)
+
+
+def _live_knowledge_source() -> dict:
+    return {
+        "kind": "knowledge",
+        "evidenceId": "ev_safe_boundary",
+        "rank": 1,
+        "document": {
+            "id": "doc_safe_boundary",
+            "title": "Safe boundary document",
+            "source": "datasets",
+            "fileName": "report.md",
+            "sourcePath": "datasets/team docs/report.md",
+            "mediaType": "text/markdown",
+            "revision": "sha256:abc",
+            "uri": "knowledge://documents/doc_safe_boundary",
+            "openUrl": "/knowledge/files/doc_safe_boundary",
+        },
+        "snippet": "safe evidence",
+        "snippetTruncated": False,
+        "citation": {
+            "title": "Safe boundary document",
+            "locator": "chunk 1",
+            "uri": "knowledge://documents/doc_safe_boundary#chunk=chunk_1",
+        },
+    }
 
 
 def test_persisted_tool_result_keeps_oversized_json_parseable_with_provider() -> None:
@@ -527,6 +555,162 @@ def test_live_knowledge_sources_are_allowlisted_and_bounded_without_mutation() -
         },
     }
     _assert_source_sidecar_is_isolated(segment["sources"])
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    [
+        "/root/private.md",
+        "datasets/../private.md",
+        r"datasets\private.md",
+        "datasets/private\x00.md",
+        "file:private.md",
+    ],
+)
+def test_live_knowledge_source_omits_unsafe_source_paths(unsafe_path: str) -> None:
+    live_source = _live_knowledge_source()
+    live_source["document"]["sourcePath"] = unsafe_path
+    original_source = copy.deepcopy(live_source)
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_unsafe_source_path",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    persisted_document = segment["sources"][0]["document"]
+    assert "sourcePath" not in persisted_document
+    assert persisted_document["id"] == "doc_safe_boundary"
+    assert live_source == original_source
+
+
+@pytest.mark.parametrize(
+    ("container_key", "field_name", "unsafe_value"),
+    [
+        ("document", "uri", "file:///root/private.md"),
+        ("document", "uri", "http://[::1"),
+        ("document", "uri", "javascript:alert(1)"),
+        ("document", "openUrl", "file:///root/private.md"),
+        ("document", "openUrl", "http://[::1"),
+        ("document", "openUrl", "knowledge://documents/doc_safe_boundary"),
+        ("citation", "uri", "file:///root/private.md#chunk=chunk_1"),
+        ("citation", "uri", "http://[::1#chunk=chunk_1"),
+        ("citation", "uri", "javascript:alert(1)#chunk=chunk_1"),
+        ("citation", "uri", "knowledge://documents/doc_safe_boundary"),
+    ],
+)
+def test_live_knowledge_source_omits_unsafe_resource_fields(
+    container_key: str,
+    field_name: str,
+    unsafe_value: str,
+) -> None:
+    live_source = _live_knowledge_source()
+    live_source[container_key][field_name] = unsafe_value
+    original_source = copy.deepcopy(live_source)
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_unsafe_resource_field",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    persisted_source = segment["sources"][0]
+    assert field_name not in persisted_source[container_key]
+    assert persisted_source["document"]["sourcePath"] == "datasets/team docs/report.md"
+    assert live_source == original_source
+
+
+@pytest.mark.parametrize(
+    ("document_uri", "open_url", "citation_uri"),
+    [
+        (
+            "knowledge://documents/doc_safe_boundary",
+            "/knowledge/files/doc_safe_boundary",
+            "knowledge://documents/doc_safe_boundary#chunk=chunk_1",
+        ),
+        (
+            "https://knowledge.example/documents/doc_safe_boundary",
+            "https://knowledge.example/files/doc_safe_boundary",
+            "https://knowledge.example/documents/doc_safe_boundary#chunk=chunk_1",
+        ),
+        (
+            "http://knowledge.example/documents/doc_safe_boundary",
+            "http://knowledge.example/files/doc_safe_boundary",
+            "http://knowledge.example/documents/doc_safe_boundary?chunk=chunk_1",
+        ),
+    ],
+)
+def test_live_knowledge_source_keeps_safe_paths_and_resource_urls(
+    document_uri: str,
+    open_url: str,
+    citation_uri: str,
+) -> None:
+    live_source = _live_knowledge_source()
+    live_source["document"]["uri"] = document_uri
+    live_source["document"]["openUrl"] = open_url
+    live_source["citation"]["uri"] = citation_uri
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_safe_resource_fields",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    persisted_source = segment["sources"][0]
+    assert persisted_source["document"]["sourcePath"] == "datasets/team docs/report.md"
+    assert persisted_source["document"]["uri"] == document_uri
+    assert persisted_source["document"]["openUrl"] == open_url
+    assert persisted_source["citation"]["uri"] == citation_uri
+
+
+def test_live_non_knowledge_source_keeps_existing_web_schema() -> None:
+    live_source = {
+        "kind": "web",
+        "rank": 2,
+        "title": "Live web source",
+        "url": "https://example.com/live",
+        "canonical_url": "https://example.com/live",
+        "domain": "example.com",
+        "provider": "brave",
+        "fetched": True,
+        "fetch_status": "ok",
+        "document": {"sourcePath": "/root/private.md"},
+    }
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_live_web_source",
+            tool_name="custom_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    assert segment["sources"] == [
+        {
+            "url": "https://example.com/live",
+            "canonical_url": "https://example.com/live",
+            "title": "Live web source",
+            "domain": "example.com",
+            "provider": "brave",
+            "rank": 2,
+            "fetched": True,
+            "fetch_status": "ok",
+        }
+    ]
 
 
 def test_live_sources_survive_result_preview_truncation_without_affecting_accounting() -> None:

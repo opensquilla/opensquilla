@@ -204,6 +204,11 @@ export function foldTurn(
         tc.isError = frame.isError
         tc.result = frame.result
         tc.resultPreview = truncateToolPreview(frame.result, 200)
+        if (frame.sources === undefined) {
+          delete tc.sources
+        } else {
+          tc.sources = frame.sources
+        }
         const timing = toolTimes.get(tc.toolId)
         if (timing && !timing.endedAt) timing.endedAt = frame.at
         break

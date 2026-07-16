@@ -78,7 +78,7 @@ export interface ChatToolCall {
   isError: boolean
   result: string
   resultPreview: string
-  sources?: unknown
+  sources?: unknown[]
   deliverySummary?: ToolResultDeliverySummary
   previewSummary?: ToolResultPreviewSummary
   isOpen: boolean

@@ -74,6 +74,10 @@ export interface UseChatRenderedMessagesOptions {
 
 type ChatRouterRequestKind = 'text' | 'image'
 
+function normalizeToolSources(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined
+}
+
 const ROUTER_LEGACY_GRID_CELLS = 15
 const ROUTER_LEGACY_REAL_ANCHORS = [1, 6, 8, 13, 11, 3, 5, 9, 12, 14, 0, 4, 7, 10, 2]
 const ROUTER_LEGACY_DECOY_MODELS = [
@@ -667,7 +671,12 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         )
         call.deliverySummary = summaries.delivery
         call.previewSummary = summaries.preview
-        if (segment.sources !== undefined) call.sources = segment.sources
+        const sources = normalizeToolSources(segment.sources)
+        if (sources === undefined) {
+          delete call.sources
+        } else {
+          call.sources = sources
+        }
       }
     })
 
@@ -921,7 +930,6 @@ function normalizeToolCalls(raw: RawToolCallPayload[] | undefined): ChatToolCall
         isError: false,
         result: '',
         resultPreview: '',
-        sources: undefined,
         isOpen: false,
       }
       byId.set(toolId, item)
@@ -937,7 +945,15 @@ function normalizeToolCalls(raw: RawToolCallPayload[] | undefined): ChatToolCall
       item.resultPreview = truncate(resultStr, 200)
       item.status = isError ? 'error' : 'success'
     }
-    if (tc.sources !== undefined) item.sources = tc.sources
+    const isResultSegment = String(tc.type || '') === 'tool_result'
+    if (tc.sources !== undefined || isResultSegment) {
+      const sources = normalizeToolSources(tc.sources)
+      if (sources === undefined) {
+        delete item.sources
+      } else {
+        item.sources = sources
+      }
+    }
     if (isError) {
       item.isError = true
       item.status = 'error'
@@ -956,7 +972,7 @@ function normalizeToolCalls(raw: RawToolCallPayload[] | undefined): ChatToolCall
     isError: item.isError,
     result: item.result,
     resultPreview: item.resultPreview,
-    sources: item.sources,
+    ...(item.sources === undefined ? {} : { sources: item.sources }),
     isOpen: false,
   }))
 }

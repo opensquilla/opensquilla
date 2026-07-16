@@ -164,6 +164,74 @@ describe('useChatStream render coalescing', () => {
     api.cleanup()
   })
 
+  it('carries opaque tool source sidecars through live, folded, and finished state without changing result accounting', () => {
+    const { api, messages } = makeStream()
+    const sources: unknown[] = [
+      { source_id: 'doc-1', score: 0.91, metadata: { shard: 3 } },
+      'opaque-token',
+      null,
+      17,
+    ]
+
+    api.appendDelta('model answer')
+    api.appendToolCall({ tool_use_id: 'tool-sources', tool_name: 'knowledge_lookup' })
+    api.appendToolResult({
+      tool_use_id: 'tool-sources',
+      tool_name: 'knowledge_lookup',
+      result: 'ok',
+      sources,
+    })
+
+    const live = api.streamTimelineItems.value
+      .flatMap(item => item.type === 'tool-group' ? item.group.calls : [])[0]
+    expect(live.sources).toEqual(sources)
+    expect(live.result).toBe('ok')
+    expect(live.deliverySummary?.resultChars).toBe(2)
+    expect(live.previewSummary?.previewChars).toBe(2)
+
+    const folded = api.foldedTurn.value.toolCalls[0]
+    expect(folded.sources).toEqual(sources)
+    expect(folded.result).toBe('ok')
+    expect(api.foldedTurn.value.rawText).toBe('model answer')
+
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe('model answer')
+    expect(messages.value[0]?.tool_calls?.[0]?.result).toBe('ok')
+    expect(messages.value[0]?.tool_calls?.[0]?.sources).toEqual(sources)
+    api.cleanup()
+  })
+
+  it('preserves empty source arrays and ignores missing or invalid top-level source payloads', () => {
+    const { api } = makeStream()
+
+    api.appendToolResult({
+      tool_use_id: 'tool-empty',
+      tool_name: 'knowledge_lookup',
+      result: 'empty',
+      sources: [],
+    })
+    api.appendToolResult({
+      tool_use_id: 'tool-missing',
+      tool_name: 'knowledge_lookup',
+      result: 'missing',
+    })
+    api.appendToolResult({
+      tool_use_id: 'tool-invalid',
+      tool_name: 'knowledge_lookup',
+      result: 'invalid',
+      sources: { source_id: 'not-an-array' },
+    })
+
+    const calls = api.streamTimelineItems.value
+      .flatMap(item => item.type === 'tool-group' ? item.group.calls : [])
+    expect(calls[0].sources).toEqual([])
+    expect(calls[1]).not.toHaveProperty('sources')
+    expect(calls[2]).not.toHaveProperty('sources')
+    expect(calls.map(call => call.result)).toEqual(['empty', 'missing', 'invalid'])
+    api.cleanup()
+  })
+
   it('keeps cumulative-looking text before a tool boundary unchanged', () => {
     const { api, messages } = makeStream()
 

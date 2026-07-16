@@ -63,6 +63,11 @@ function localizeStreamLabel(label: string): string {
   const key = STREAM_LABEL_KEYS[label]
   return key ? i18n.global.t(key) : label
 }
+
+function normalizeToolSources(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined
+}
+
 const SQUILLA_DWELL_MS = 2500
 const STALE_SIGNAL_MS = 20000
 
@@ -653,6 +658,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     if (!isStreaming.value) startStreaming()
     const raw = payload.result || payload.content || payload.output || ''
     const content = typeof raw === 'string' ? raw : JSON.stringify(raw, null, 2)
+    const sources = normalizeToolSources(payload.sources)
     const toolId = payload.tool_use_id || payload.toolUseId || payload.id || ''
 
     const tc = streamToolCalls.value.find(t => t.toolId === toolId) || ensureStreamToolCall(payload, { running: false })
@@ -668,6 +674,11 @@ export function useChatStream(options: UseChatStreamOptions) {
       tc.isError = toolResultIsError(payload)
       tc.result = content
       tc.resultPreview = truncateToolPreview(content, 200)
+      if (sources === undefined) {
+        delete tc.sources
+      } else {
+        tc.sources = sources
+      }
       const summaries = normalizeToolResultSummaries(
         payload,
         content,
@@ -683,7 +694,16 @@ export function useChatStream(options: UseChatStreamOptions) {
       // created by the fold here without a clock; the result frame carries the
       // same payload input legacy used so a result-only fold call seeds it.
       if (useReducer.value) {
-        appendFrame({ kind: 'tool-result', toolId: tc.toolId, name: tc.name, result: content, isError: tc.isError, input, at: Date.now() })
+        appendFrame({
+          kind: 'tool-result',
+          toolId: tc.toolId,
+          name: tc.name,
+          result: content,
+          ...(sources === undefined ? {} : { sources }),
+          isError: tc.isError,
+          input,
+          at: Date.now(),
+        })
       }
 
       const stillRunning = streamToolCalls.value.find(t => t.isRunning)
@@ -721,6 +741,7 @@ export function useChatStream(options: UseChatStreamOptions) {
       input: tc.inputRaw || tc.inputPreview,
       groupId: tc.groupId,
       result: tc.result,
+      ...(tc.sources === undefined ? {} : { sources: tc.sources }),
       is_error: tc.isError,
       isError: tc.isError,
       execution_status: tc.status ? { status: tc.status } : undefined,

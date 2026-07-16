@@ -55,6 +55,42 @@ describe('foldTurn — tool result preservation', () => {
     expect(toolCalls[0].toolId).toBe('orphan')
     expect(toolCalls[0].result).toBe('hit')
   })
+
+  it('replaces opaque source sidecars together with completed result updates', () => {
+    const firstSources: unknown[] = [{ source_id: 'first' }]
+    const finalSources: unknown[] = [{ source_id: 'final', payload: { any: ['shape'] } }, 5]
+    const { toolCalls } = fold([
+      { kind: 'tool-start', seq: 0, toolId: 'replace', name: 'knowledge_lookup', input: '{}', at: 1 },
+      {
+        kind: 'tool-result',
+        seq: 1,
+        toolId: 'replace',
+        name: 'knowledge_lookup',
+        result: 'first',
+        sources: firstSources,
+        isError: false,
+        input: '{}',
+        at: 2,
+      },
+      {
+        kind: 'tool-result',
+        seq: 2,
+        toolId: 'replace',
+        name: 'knowledge_lookup',
+        result: 'final',
+        sources: finalSources,
+        isError: false,
+        input: '{}',
+        at: 3,
+      },
+    ])
+
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0].result).toBe('final')
+    expect(toolCalls[0].resultPreview).toBe('final')
+    expect(toolCalls[0].sources).toBe(finalSources)
+  })
+
 })
 
 describe('foldTurn — text, thinking, status, artifacts', () => {

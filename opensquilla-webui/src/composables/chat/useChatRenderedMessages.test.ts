@@ -434,6 +434,106 @@ describe('useChatRenderedMessages router visual mode', () => {
   })
 })
 
+describe('useChatRenderedMessages tool source sidecars', () => {
+  it('restores persisted result-segment sources into both refreshed tool render surfaces', () => {
+    const sources: unknown[] = [
+      { source_id: 'doc-2', rank: 1, nested: { labels: ['a', 'b'] } },
+      'opaque',
+      null,
+    ]
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'historical answer',
+        ts: 0,
+        messageId: 'm-sources',
+        tool_calls: [
+          {
+            type: 'tool_use',
+            tool_use_id: 'tool-sources',
+            name: 'knowledge_lookup',
+            input: { query: 'history' },
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-sources',
+            name: 'knowledge_lookup',
+            result: 'persisted result',
+            sources,
+            delivery_summary: {
+              returned_count: 1,
+              result_chars: 16,
+              provider_budget_violation: false,
+            },
+            preview_summary: {
+              displayed_count: 1,
+              preview_chars: 16,
+              preview_truncated: false,
+            },
+          },
+        ],
+      },
+    ])
+
+    const [message] = api.renderedMessages.value
+    const timelineCall = message.timelineItems
+      ?.flatMap(item => item.type === 'tool-group' ? item.group.calls : [])
+      .find(call => call.toolId === 'tool-sources')
+
+    expect(message.text).toBe('historical answer')
+    expect(message.toolCalls?.[0].sources).toEqual(sources)
+    expect(message.toolCalls?.[0].result).toBe('persisted result')
+    expect(timelineCall?.sources).toEqual(sources)
+    expect(timelineCall?.result).toBe('persisted result')
+    expect(timelineCall?.deliverySummary?.resultChars).toBe(16)
+  })
+
+  it('keeps empty persisted sources and ignores missing or invalid top-level values', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: '',
+        ts: 0,
+        messageId: 'm-source-boundaries',
+        tool_calls: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-empty',
+            name: 'knowledge_lookup',
+            result: 'empty',
+            sources: [],
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-missing',
+            name: 'knowledge_lookup',
+            result: 'missing',
+          },
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-invalid',
+            name: 'knowledge_lookup',
+            result: 'invalid',
+            sources: 'not-an-array',
+          },
+        ],
+      },
+    ])
+
+    const [message] = api.renderedMessages.value
+    expect(message.toolCalls?.map(call => call.result)).toEqual(['empty', 'missing', 'invalid'])
+    expect(message.toolCalls?.[0].sources).toEqual([])
+    expect(message.toolCalls?.[1]).not.toHaveProperty('sources')
+    expect(message.toolCalls?.[2]).not.toHaveProperty('sources')
+
+    const timelineCalls = message.timelineItems
+      ?.flatMap(item => item.type === 'tool-group' ? item.group.calls : []) ?? []
+    expect(timelineCalls[0].sources).toEqual([])
+    expect(timelineCalls[1]).not.toHaveProperty('sources')
+    expect(timelineCalls[2]).not.toHaveProperty('sources')
+  })
+})
+
 describe('useChatRenderedMessages clarify history recovery', () => {
   it('restores a clarify interrupt from persisted meta-step tool input', () => {
     const api = renderedMessagesFor([

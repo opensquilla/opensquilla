@@ -211,6 +211,7 @@ export interface ToolDeltaPayload extends ToolUsePayload {
 
 export interface ToolResultPayload extends ToolUsePayload {
   result?: unknown
+  sources?: unknown
   content?: unknown
   output?: unknown
   error?: unknown

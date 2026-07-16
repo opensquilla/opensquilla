@@ -6,6 +6,12 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from opensquilla.rag_provider.projections import (
+    project_get_response_for_model,
+    project_get_response_for_sources,
+    project_search_response_for_model,
+    project_search_response_for_sources,
+)
 from opensquilla.rag_provider.protocol import (
     ProviderNotFound,
     ProviderProtocolViolation,
@@ -71,6 +77,8 @@ def rag_provider_tool_bindings(runtime: Any) -> dict[str, ToolBinding]:
         required=["query"],
         result_budget_class="external",
         sandbox=_network_descriptor("knowledge.search"),
+        model_result_projector=project_search_response_for_model,
+        result_sources_projector=project_search_response_for_sources,
     )
     get_spec = ToolSpec(
         name="knowledge_get",
@@ -82,6 +90,8 @@ def rag_provider_tool_bindings(runtime: Any) -> dict[str, ToolBinding]:
         required=["evidence_id"],
         result_budget_class="external",
         sandbox=_network_descriptor("knowledge.get"),
+        model_result_projector=project_get_response_for_model,
+        result_sources_projector=project_get_response_for_sources,
     )
     return {
         search_spec.name: ToolBinding(search_spec, knowledge_search),

@@ -5,13 +5,15 @@ import hashlib
 from typing import Any
 
 from opensquilla.rag_provider.protocol import (
+    PROTOCOL_NAME,
     CapabilitiesSnapshot,
-    EffectiveLimits,
     ProviderNotFound,
     ProviderProtocolViolation,
     ProviderUnavailable,
     SearchBudget,
     ValidatedSearchResponse,
+    validate_capabilities,
+    validate_get_response,
     validate_search_response,
 )
 
@@ -35,17 +37,22 @@ class LegacyKnowledgeAdapter:
         self._evidence: dict[str, tuple[str | None, str | None]] = {}
 
     async def capabilities(self) -> CapabilitiesSnapshot:
-        return CapabilitiesSnapshot(
-            protocol_version="legacy",
-            provider_name="OpenSquilla legacy Knowledge adapter",
-            provider_version="legacy",
-            instance_id="legacy-process-local",
-            supports_get=True,
-            limits=EffectiveLimits(20, 800, 12_000, 8_000),
-            supports_collection_scope=False,
-            retrieval_profiles=(),
-            default_retrieval_profile=None,
-            management_url=None,
+        return validate_capabilities(
+            {
+                "protocol": {"name": PROTOCOL_NAME, "version": "1.0"},
+                "provider": {
+                    "name": "OpenSquilla legacy Knowledge adapter",
+                    "version": "legacy",
+                    "instanceId": "legacy-process-local",
+                },
+                "capabilities": {"search": True, "get": True},
+                "limits": {
+                    "maxSearchResults": 20,
+                    "maxSnippetChars": 800,
+                    "maxSearchResponseChars": 12_000,
+                    "maxGetContentChars": 8_000,
+                },
+            }
         )
 
     async def search(
@@ -56,7 +63,9 @@ class LegacyKnowledgeAdapter:
         budget: SearchBudget,
         collection_ids: tuple[str, ...] = (),
         retrieval_profile: str | None = None,
+        protocol_version: str = "1.0",
     ) -> ValidatedSearchResponse:
+        _require_protocol_1_0(protocol_version)
         filters = {"retrievalProfile": retrieval_profile} if retrieval_profile else None
         try:
             raw = await asyncio.to_thread(
@@ -113,6 +122,7 @@ class LegacyKnowledgeAdapter:
                 "results": results,
             },
             budget=budget,
+            protocol_version="1.0",
         )
 
     async def get(
@@ -121,7 +131,9 @@ class LegacyKnowledgeAdapter:
         evidence_id: str,
         cursor: str | None,
         max_content_chars: int,
+        protocol_version: str = "1.0",
     ) -> dict[str, Any]:
+        _require_protocol_1_0(protocol_version)
         if cursor is not None:
             raise ProviderProtocolViolation("legacy get does not support cursors")
         identity = self._evidence.get(evidence_id)
@@ -147,15 +159,21 @@ class LegacyKnowledgeAdapter:
             citation["source"] = source
         if locator:
             citation["locator"] = locator
-        return {
-            "evidenceId": evidence_id,
-            "document": {"title": title, "source": source},
-            "content": content[:max_content_chars],
-            "previousCursor": None,
-            "nextCursor": None,
-            "citation": citation,
-            "legacyLimitedGet": True,
-        }
+        payload = validate_get_response(
+            {
+                "evidenceId": evidence_id,
+                "document": {"title": title, "source": source},
+                "content": content[:max_content_chars],
+                "previousCursor": None,
+                "nextCursor": None,
+                "citation": citation,
+            },
+            evidence_id=evidence_id,
+            max_content_chars=max_content_chars,
+            protocol_version="1.0",
+        )
+        payload["legacyLimitedGet"] = True
+        return payload
 
     async def close(self) -> None:
         close = getattr(self._backend, "close", None)
@@ -163,6 +181,11 @@ class LegacyKnowledgeAdapter:
             result = close()
             if hasattr(result, "__await__"):
                 await result
+
+
+def _require_protocol_1_0(protocol_version: str) -> None:
+    if protocol_version != "1.0":
+        raise ProviderProtocolViolation("legacy adapter only supports protocol 1.0")
 
 
 def _legacy_evidence_id(chunk_id: str | None, document_id: str | None) -> str:

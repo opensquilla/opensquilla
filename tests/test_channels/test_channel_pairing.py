@@ -282,9 +282,11 @@ async def test_pending_pairing_notice_precedes_all_session_and_tool_side_effects
     assert len(notice.metadata["pairing_code"]) == 8
     with sqlite3.connect(store.path) as connection:
         persisted = connection.execute(
-            "SELECT state, disposition, message_json FROM channel_ingress"
+            "SELECT state, disposition, reason, message_json FROM channel_ingress"
         ).fetchone()
-    assert persisted == ("completed", "admission_denied", "{}")
+    # The payload is scrubbed but the WHY survives: the specific admission
+    # reason is kept as a code so operators can explain the silence later.
+    assert persisted == ("completed", "admission_denied", "pairing_required", "{}")
     store.close()
 
 

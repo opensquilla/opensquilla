@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from opensquilla.channels._util import ChannelAccessPolicy
 from opensquilla.channels.contract import (
     channel_capability_evidence,
     channel_capability_profile,
@@ -126,6 +127,7 @@ def _diagnostics_payload(
     extra: dict[str, Any] | None = None,
     start_error: Any = None,
     delivery: dict[str, Any] | None = None,
+    admission: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {"network_probe": "not_run"}
     last_error = _diagnostic_from_start_error(start_error)
@@ -137,6 +139,8 @@ def _diagnostics_payload(
         payload["transport_lease"] = dict(extra["transport_lease"])
     if delivery is not None:
         payload["delivery"] = delivery
+    if admission is not None:
+        payload["admission"] = admission
     return payload
 
 
@@ -150,6 +154,72 @@ def _delivery_diagnostics(manager: Any | None, name: str) -> dict[str, Any] | No
     except Exception:
         return None
     return result if isinstance(result, dict) else None
+
+
+# The admission vocabulary's admit outcomes; every other reason is a denial.
+_ADMISSION_ADMIT_REASONS = frozenset({"dm_admitted", "group_admitted"})
+
+
+def _admission_diagnostics(manager: Any | None, name: str, adapter: Any) -> dict[str, Any] | None:
+    """Explain-why facts for a channel: policy mode + per-reason tallies.
+
+    Answers the operator question "why did that message not create a session?"
+    with the effective access mode and denial reason codes/counts — never a
+    sender identity. Absent entirely when there is nothing to explain (no
+    running adapter and no recorded decisions).
+    """
+    payload: dict[str, Any] = {}
+    if adapter is not None:
+        policy = getattr(adapter, "policy", None)
+        if not isinstance(policy, ChannelAccessPolicy):
+            # Admission treats a missing/foreign policy as the default policy,
+            # so the effective mode shown here must do the same.
+            policy = ChannelAccessPolicy()
+        payload["dmAccess"] = str(policy.dm_access)
+        payload["allowlist"] = {
+            "configured": bool(policy.allowlist),
+            "entryCount": len(policy.allowlist),
+            "blankEntryCount": sum(1 for e in policy.allowlist if not str(e).strip()),
+        }
+    store = getattr(manager, "_delivery_store", None)
+    counts_fn = getattr(store, "admission_reason_counts", None)
+    if callable(counts_fn):
+        try:
+            tallies = counts_fn(name)
+        except Exception:
+            tallies = None
+        if isinstance(tallies, dict) and tallies:
+            payload["reasons"] = {
+                reason: {
+                    "count": int(entry.get("count", 0)),
+                    "lastAt": _iso_timestamp(entry.get("last_at")),
+                }
+                for reason, entry in tallies.items()
+                if isinstance(entry, dict)
+            }
+            # Tallies are lifetime, not current-policy: label the horizon so a
+            # months-old denial under a since-changed policy reads as history.
+            first_ats = [
+                float(entry["first_at"])
+                for entry in tallies.values()
+                if isinstance(entry, dict) and isinstance(entry.get("first_at"), int | float)
+            ]
+            if first_ats:
+                payload["since"] = _iso_timestamp(min(first_ats))
+            denials: list[tuple[str, float]] = []
+            for reason, entry in tallies.items():
+                if not isinstance(entry, dict) or reason in _ADMISSION_ADMIT_REASONS:
+                    continue
+                last_at = entry.get("last_at")
+                if isinstance(last_at, int | float):
+                    denials.append((reason, float(last_at)))
+            if denials:
+                last_reason, last_denied_at = max(denials, key=lambda item: item[1])
+                payload["lastDenial"] = {
+                    "reason": last_reason,
+                    "at": _iso_timestamp(last_denied_at),
+                }
+    return payload or None
 
 
 def _pairing_store(ctx: RpcContext) -> Any:
@@ -289,6 +359,7 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                     extra=extra,
                     start_error=start_errors.get(name),
                     delivery=_delivery_diagnostics(ctx.channel_manager, name),
+                    admission=_admission_diagnostics(ctx.channel_manager, name, adapter),
                 ),
             }
         )
@@ -325,6 +396,7 @@ async def _handle_channels_status(params: dict | None, ctx: RpcContext) -> dict[
                     extra=extra,
                     start_error=start_errors.get(name),
                     delivery=_delivery_diagnostics(ctx.channel_manager, name),
+                    admission=_admission_diagnostics(ctx.channel_manager, name, adapter),
                 ),
             }
         )

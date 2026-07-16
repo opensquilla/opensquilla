@@ -1,7 +1,24 @@
+import copy
 import json
 
 from opensquilla.engine.runtime import _persisted_tool_result_segment
 from opensquilla.engine.types import ToolResultEvent
+
+
+def _assert_source_sidecar_is_isolated(value: object) -> None:
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            folded = "".join(character for character in key.lower() if character.isalnum())
+            assert folded not in {"chunk", "content"}
+            assert "score" not in folded
+            assert not any(
+                diagnostic in folded
+                for diagnostic in ("bm25", "vector", "rrf", "fusion", "pair")
+            )
+            _assert_source_sidecar_is_isolated(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            _assert_source_sidecar_is_isolated(nested)
 
 
 def test_persisted_tool_result_keeps_oversized_json_parseable_with_provider() -> None:
@@ -383,3 +400,213 @@ def test_provider_budget_violation_requires_a_real_boolean() -> None:
 
     assert true_segment["delivery_summary"]["provider_budget_violation"] is True
     assert string_segment["delivery_summary"]["provider_budget_violation"] is False
+
+
+def test_live_event_sources_take_priority_over_web_search_fallback() -> None:
+    result = json.dumps(
+        {
+            "sources": [
+                {
+                    "rank": 1,
+                    "title": "Fallback web source",
+                    "url": "https://example.com/fallback",
+                    "provider": "brave",
+                }
+            ]
+        }
+    )
+    live_source = {
+        "kind": "knowledge",
+        "evidenceId": "ev_live",
+        "rank": 7,
+        "document": {
+            "id": "doc_live",
+            "title": "Live document",
+            "source": "workspace",
+        },
+        "snippet": "live evidence",
+        "snippetTruncated": False,
+        "citation": {
+            "title": "Live document",
+            "locator": "section 7",
+        },
+    }
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_live_priority",
+            tool_name="web_search",
+            result=result,
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    assert segment["sources"] == [live_source]
+    assert "fallback" not in json.dumps(segment["sources"])
+    assert segment["result"] == result
+    assert "ev_live" not in segment["result"]
+
+
+def test_live_knowledge_sources_are_allowlisted_and_bounded_without_mutation() -> None:
+    source_template = {
+        "kind": "knowledge",
+        "evidenceId": "ev_1",
+        "rank": 1,
+        "document": {
+            "id": "doc_1",
+            "title": "Knowledge document",
+            "source": "datasets",
+            "fileName": "doc.md",
+            "sourcePath": "datasets/doc.md",
+            "mediaType": "text/markdown",
+            "revision": "sha256:abc",
+            "uri": "knowledge://documents/doc_1",
+            "openUrl": "/knowledge/files/doc_1",
+            "internalDiagnostics": {"content": "private", "vectorScore": 0.8},
+        },
+        "snippet": "证" * 401,
+        "snippetTruncated": False,
+        "citation": {
+            "title": "Knowledge document",
+            "locator": "chunk 1",
+            "uri": "knowledge://documents/doc_1#chunk=chunk_1",
+            "content": "private citation body",
+            "rrfScore": 0.9,
+        },
+        "chunk": {"content": "full private chunk"},
+        "content": "full private content",
+        "bm25Score": 9.1,
+        "fusionDiagnostics": {"pairId": "private-pair"},
+    }
+    valid_sources = []
+    for index in range(1, 14):
+        source = copy.deepcopy(source_template)
+        source["evidenceId"] = f"ev_{index}"
+        source["rank"] = index
+        valid_sources.append(source)
+    event_sources = [None, {"kind": "knowledge", "evidenceId": 17}, *valid_sources]
+    original_sources = copy.deepcopy(event_sources)
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_live_bounds",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=event_sources,
+        )
+    )
+
+    assert event_sources == original_sources
+    assert len(segment["sources"]) == 12
+    assert [source["evidenceId"] for source in segment["sources"]] == [
+        f"ev_{index}" for index in range(1, 13)
+    ]
+    assert segment["sources"][0] == {
+        "kind": "knowledge",
+        "evidenceId": "ev_1",
+        "rank": 1,
+        "document": {
+            "id": "doc_1",
+            "title": "Knowledge document",
+            "source": "datasets",
+            "fileName": "doc.md",
+            "sourcePath": "datasets/doc.md",
+            "mediaType": "text/markdown",
+            "revision": "sha256:abc",
+            "uri": "knowledge://documents/doc_1",
+            "openUrl": "/knowledge/files/doc_1",
+        },
+        "snippet": "证" * 400,
+        "snippetTruncated": True,
+        "citation": {
+            "title": "Knowledge document",
+            "locator": "chunk 1",
+            "uri": "knowledge://documents/doc_1#chunk=chunk_1",
+        },
+    }
+    _assert_source_sidecar_is_isolated(segment["sources"])
+
+
+def test_live_sources_survive_result_preview_truncation_without_affecting_accounting() -> None:
+    result = json.dumps(
+        {
+            "returnedCount": 20,
+            "results": [
+                {"id": index, "content": "model-visible-result " * 40}
+                for index in range(20)
+            ],
+        }
+    )
+    assert len(result) > 2_000
+    live_source = {
+        "kind": "knowledge",
+        "evidenceId": "ev_preview_independent",
+        "rank": 1,
+        "document": {"id": "doc_1", "title": "Complete source metadata"},
+        "snippet": "source-only evidence",
+        "snippetTruncated": False,
+        "citation": {"title": "Complete source metadata"},
+    }
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_preview_independent",
+            tool_name="knowledge_search",
+            result=result,
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    assert segment["result_truncated"] is True
+    assert len(segment["result"]) <= 2_000
+    assert segment["sources"] == [live_source]
+    assert "ev_preview_independent" not in segment["result"]
+    assert segment["delivery_summary"]["result_chars"] == len(result)
+    assert segment["preview_summary"]["preview_chars"] == len(segment["result"])
+
+
+def test_empty_event_sources_keep_default_and_web_fallback_conventions() -> None:
+    ordinary = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_no_sources",
+            tool_name="ordinary_tool",
+            result="ok",
+            is_error=False,
+            sources=[],
+        )
+    )
+    web_result = json.dumps(
+        {
+            "results": [
+                {
+                    "rank": 1,
+                    "title": "Historical fallback",
+                    "url": "https://example.com/historical",
+                    "provider": "brave",
+                }
+            ]
+        }
+    )
+    historical_web = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_historical_web",
+            tool_name="web_search",
+            result=web_result,
+            is_error=False,
+            sources=[],
+        )
+    )
+
+    assert "sources" not in ordinary
+    assert historical_web["sources"] == [
+        {
+            "url": "https://example.com/historical",
+            "title": "Historical fallback",
+            "domain": "example.com",
+            "provider": "brave",
+            "rank": 1,
+        }
+    ]

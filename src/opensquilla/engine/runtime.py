@@ -704,6 +704,23 @@ def _prepend_request_context_prompt(
 _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
 _MAX_PERSISTED_TOOL_SOURCES = 12
+_MAX_PERSISTED_SOURCE_SNIPPET_CHARS = 400
+_PERSISTED_KNOWLEDGE_DOCUMENT_KEYS: Final[tuple[str, ...]] = (
+    "id",
+    "title",
+    "source",
+    "fileName",
+    "sourcePath",
+    "mediaType",
+    "revision",
+    "uri",
+    "openUrl",
+)
+_PERSISTED_KNOWLEDGE_CITATION_KEYS: Final[tuple[str, ...]] = (
+    "title",
+    "locator",
+    "uri",
+)
 _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
 _PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS = 512
 _PERSISTED_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
@@ -933,6 +950,73 @@ def _persisted_web_search_source(candidate: Any) -> dict[str, Any] | None:
     return source
 
 
+def _persisted_event_sources(candidates: Sequence[Any]) -> list[dict[str, Any]]:
+    sources: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        if candidate.get("kind") == "knowledge":
+            source = _persisted_knowledge_source(candidate)
+        else:
+            source = _persisted_web_search_source(candidate)
+        if source is None:
+            continue
+        sources.append(source)
+        if len(sources) >= _MAX_PERSISTED_TOOL_SOURCES:
+            break
+    return sources
+
+
+def _persisted_knowledge_source(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    evidence_id = candidate.get("evidenceId")
+    if not isinstance(evidence_id, str) or not evidence_id.strip():
+        return None
+
+    source: dict[str, Any] = {
+        "kind": "knowledge",
+        "evidenceId": evidence_id,
+    }
+    rank = candidate.get("rank")
+    if isinstance(rank, int) and not isinstance(rank, bool):
+        source["rank"] = rank
+
+    document = _persisted_source_mapping(
+        candidate.get("document"),
+        _PERSISTED_KNOWLEDGE_DOCUMENT_KEYS,
+    )
+    if document:
+        source["document"] = document
+
+    snippet = candidate.get("snippet")
+    snippet_was_truncated = False
+    if isinstance(snippet, str):
+        source["snippet"] = snippet[:_MAX_PERSISTED_SOURCE_SNIPPET_CHARS]
+        snippet_was_truncated = len(snippet) > _MAX_PERSISTED_SOURCE_SNIPPET_CHARS
+    snippet_truncated = candidate.get("snippetTruncated")
+    if isinstance(snippet_truncated, bool):
+        source["snippetTruncated"] = snippet_truncated or snippet_was_truncated
+    elif snippet_was_truncated:
+        source["snippetTruncated"] = True
+
+    citation = _persisted_source_mapping(
+        candidate.get("citation"),
+        _PERSISTED_KNOWLEDGE_CITATION_KEYS,
+    )
+    if citation:
+        source["citation"] = citation
+    return source
+
+
+def _persisted_source_mapping(value: Any, keys: Sequence[str]) -> dict[str, str]:
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: item
+        for key in keys
+        if isinstance((item := value.get(key)), str) and item
+    }
+
+
 def _persisted_source_url(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -1065,10 +1149,14 @@ def _persisted_tool_result_segment(
             else False
         ),
     }
-    if event.tool_name == "web_search" and parsed_result_available:
+    if event.sources:
+        sources = _persisted_event_sources(event.sources)
+    elif event.tool_name == "web_search" and parsed_result_available:
         sources = _persisted_web_search_sources(parsed_result)
-        if sources:
-            segment["sources"] = sources
+    else:
+        sources = []
+    if sources:
+        segment["sources"] = sources
     if len(result) <= max_chars:
         _add_tool_result_preview_summary(segment, delivered_count)
         return segment
@@ -1085,9 +1173,6 @@ def _persisted_tool_result_segment(
     parsed = parsed_result
     if isinstance(parsed, dict):
         segment.update(_bounded_tool_result_metadata(parsed))
-        sources = _persisted_web_search_sources(parsed)
-        if sources:
-            segment["sources"] = sources
     segment["result"] = _json_tool_result_preview(parsed, len(result), max_chars)
     _add_tool_result_preview_summary(segment, delivered_count)
     return segment

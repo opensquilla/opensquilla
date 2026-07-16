@@ -393,6 +393,16 @@ _FEISHU_READ_TOOL_POLICY = _ToolConcurrencyPolicy(
     max_inflight=4,
     limit_key=("feishu", "read"),
 )
+_KNOWLEDGE_SEARCH_TOOL_POLICY = _ToolConcurrencyPolicy(
+    mode="concurrent",
+    max_inflight=2,
+    limit_key=("knowledge", "search"),
+)
+_KNOWLEDGE_GET_TOOL_POLICY = _ToolConcurrencyPolicy(
+    mode="concurrent",
+    max_inflight=4,
+    limit_key=("knowledge", "get"),
+)
 
 
 def _get_tool_concurrency_policy(
@@ -405,6 +415,10 @@ def _get_tool_concurrency_policy(
         return _CONCURRENT_TOOL_POLICY
     if tool_name in _FEISHU_READ_ONLY_TOOL_NAMES:
         return _FEISHU_READ_TOOL_POLICY
+    if tool_name == "knowledge_search":
+        return _KNOWLEDGE_SEARCH_TOOL_POLICY
+    if tool_name == "knowledge_get":
+        return _KNOWLEDGE_GET_TOOL_POLICY
     if tool_name == "sessions_send":
         session_key = (arguments or {}).get("session_key")
         if isinstance(session_key, str) and session_key.strip():

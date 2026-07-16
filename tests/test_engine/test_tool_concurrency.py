@@ -140,6 +140,134 @@ def test_web_search_is_safe_for_same_turn_concurrency() -> None:
     assert "web_search" in _SAFE_TOOL_NAMES
 
 
+def test_knowledge_search_has_bounded_concurrent_policy() -> None:
+    policy = _get_tool_concurrency_policy("knowledge_search", {"query": "alpha"})
+
+    assert policy.mode == "concurrent"
+    assert policy.max_inflight == 2
+    assert policy.limit_key == ("knowledge", "search")
+
+
+def test_knowledge_get_has_bounded_concurrent_policy() -> None:
+    policy = _get_tool_concurrency_policy(
+        "knowledge_get",
+        {"evidence_id": "ev-alpha"},
+    )
+
+    assert policy.mode == "concurrent"
+    assert policy.max_inflight == 4
+    assert policy.limit_key == ("knowledge", "get")
+
+
+@pytest.mark.asyncio
+async def test_same_turn_knowledge_search_and_get_overlap() -> None:
+    tool_calls = [
+        ("knowledge_search", {"query": "alpha"}),
+        ("knowledge_get", {"evidence_id": "ev-alpha"}),
+    ]
+    intervals: list[tuple[str, float, float]] = []
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        started = time.monotonic()
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        intervals.append((tc.tool_name, started, time.monotonic()))
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    agent = Agent(
+        provider=_FixedToolCallArgsProvider(tool_calls),
+        config=AgentConfig(max_iterations=2),
+        tool_definitions=[_tool_def(name) for name, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    started = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.35
+    assert len(intervals) == 2
+    intervals.sort(key=lambda item: item[1])
+    assert intervals[1][1] < intervals[0][2]
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_concurrency_is_capped_at_two() -> None:
+    tool_calls = [
+        ("knowledge_search", {"query": f"query-{index}"})
+        for index in range(4)
+    ]
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        in_flight -= 1
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    agent = Agent(
+        provider=_FixedToolCallArgsProvider(tool_calls),
+        config=AgentConfig(max_iterations=2, max_safe_tool_concurrency=6),
+        tool_definitions=[_tool_def(name) for name, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    started = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - started
+
+    assert max_in_flight == 2
+    assert 2 * _TOOL_SLEEP_S - _SCHEDULER_TOLERANCE_S <= elapsed
+    assert elapsed < 3 * _TOOL_SLEEP_S
+
+
+@pytest.mark.asyncio
+async def test_knowledge_get_concurrency_is_capped_at_four() -> None:
+    tool_calls = [
+        ("knowledge_get", {"evidence_id": f"ev-{index}"})
+        for index in range(6)
+    ]
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        in_flight -= 1
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    agent = Agent(
+        provider=_FixedToolCallArgsProvider(tool_calls),
+        config=AgentConfig(max_iterations=2, max_safe_tool_concurrency=6),
+        tool_definitions=[_tool_def(name) for name, _ in tool_calls],
+        tool_handler=_handler,
+    )
+
+    started = time.monotonic()
+    await _collect(agent)
+    elapsed = time.monotonic() - started
+
+    assert max_in_flight == 4
+    assert 2 * _TOOL_SLEEP_S - _SCHEDULER_TOLERANCE_S <= elapsed
+    assert elapsed < 3 * _TOOL_SLEEP_S
+
+
 def test_sessions_spawn_policy_keys_by_parent_session() -> None:
     """Spawn policy is scoped to the parent session rather than global state."""
     policy = _get_tool_concurrency_policy(

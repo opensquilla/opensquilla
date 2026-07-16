@@ -286,12 +286,12 @@ def _read_patch_text_from_file(path: str, root: Path) -> str:
 
 
 def _validate_path(path: str, root: Path | None = None) -> Path:
-    """Resolve path and ensure it stays within the active patch root."""
+    """Resolve a patch path, enforcing the active root outside Full Host mode."""
     root = root if root is not None else _default_patch_root()
     reject_foreign_host_path(path, platform=os.name, workspace=root)
     raw = Path(path).expanduser()
     resolved = (root / raw).resolve() if not raw.is_absolute() else raw.resolve()
-    if not resolved.is_relative_to(root):
+    if not resolved.is_relative_to(root) and not full_host_access_active():
         raise ValueError(f"Path traversal detected: {path!r} resolves outside patch root")
     return resolved
 

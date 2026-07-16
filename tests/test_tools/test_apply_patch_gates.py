@@ -480,6 +480,41 @@ async def test_apply_patch_elevated_full_skips_outside_workspace_approval(
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_full_host_accepts_absolute_path_outside_patch_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("old\n", encoding="utf-8")
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(workspace),
+            run_mode="full",
+            elevated="full",
+            session_key="agent:main:test",
+        )
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            f"""*** Begin Patch
+*** Update File: {outside.as_posix()}
+@@ -1,1 +1,1 @@
+-old
++new
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.startswith("Applied patch: 1 file(s) modified")
+    assert outside.read_text(encoding="utf-8") == "new\n"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_run_mode_full_skips_sandbox_wrapper_gate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

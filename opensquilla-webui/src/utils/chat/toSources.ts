@@ -161,6 +161,15 @@ function positiveRank(value: unknown): number | undefined {
     : undefined
 }
 
+function preferredKnowledgeTitle(
+  fileName: string | undefined,
+  documentTitle: string | undefined,
+  citationTitle: string | undefined,
+  fallback = 'Knowledge source',
+): string {
+  return fileName || documentTitle || citationTitle || fallback
+}
+
 function parseKnowledgeSource(value: unknown): KnowledgeSourceDraft | null {
   const entry = asRecord(value)
   if (!entry || entry.kind !== 'knowledge') return null
@@ -182,7 +191,7 @@ function parseKnowledgeSource(value: unknown): KnowledgeSourceDraft | null {
   const url = safeKnowledgeSourceUrl(document?.openUrl)
   const domain = url ? domainFor(url) || undefined : undefined
   const bounded = boundedSnippet(entry.snippet)
-  const title = fileName || documentTitle || citationTitle || 'Knowledge source'
+  const title = preferredKnowledgeTitle(fileName, documentTitle, citationTitle)
   const sourcePart: KnowledgeSourceDraft = {
     kind: 'knowledge',
     title,
@@ -231,6 +240,12 @@ function mergeKnowledgeSource(
       Object.assign(existing, { [field]: value })
     }
   }
+  existing.title = preferredKnowledgeTitle(
+    existing.fileName,
+    existing.documentTitle,
+    existing.citationTitle,
+    existing.title,
+  )
   if (incoming.snippetTruncated === true) existing.snippetTruncated = true
 }
 

@@ -303,6 +303,63 @@ describe('toSources', () => {
     expect(sources[1]).not.toHaveProperty('documentTitle')
   })
 
+  it('upgrades a duplicate Knowledge title from citation fallback to later document metadata', () => {
+    const sources = toSources(message([
+      baseCall({
+        toolId: 'search',
+        name: 'knowledge_search',
+        sources: [{
+          kind: 'knowledge',
+          evidenceId: 'ev_upgrade',
+          rank: 2,
+          citation: {
+            title: 'Early citation title',
+            locator: 'page 4',
+            uri: 'knowledge://documents/doc_upgrade#chunk=chunk_4',
+          },
+          snippet: 'early bounded evidence',
+          snippetTruncated: false,
+        }],
+      }),
+      baseCall({
+        toolId: 'get',
+        name: 'knowledge_get',
+        sources: [{
+          kind: 'knowledge',
+          evidenceId: 'ev_upgrade',
+          document: {
+            id: 'doc_upgrade',
+            title: 'Later document title',
+            fileName: 'later-report.pdf',
+            sourcePath: 'reports/later-report.pdf',
+          },
+          citation: { title: 'Later citation title' },
+          snippet: 'later evidence must not replace the first occurrence',
+          snippetTruncated: true,
+        }],
+      }),
+    ]))
+
+    expect(sources).toHaveLength(1)
+    expect(sources[0]).toEqual({
+      kind: 'knowledge',
+      sourceId: 1,
+      evidenceId: 'ev_upgrade',
+      rank: 2,
+      title: 'later-report.pdf',
+      documentTitle: 'Later document title',
+      documentId: 'doc_upgrade',
+      fileName: 'later-report.pdf',
+      sourcePath: 'reports/later-report.pdf',
+      citationTitle: 'Early citation title',
+      citationUri: 'knowledge://documents/doc_upgrade#chunk=chunk_4',
+      locator: 'page 4',
+      snippet: 'early bounded evidence',
+      snippetTruncated: true,
+    })
+    expect(sourceStableKey(sources[0])).toBe('knowledge:evidence:ev_upgrade')
+  })
+
   it('bounds Knowledge snippets to 400 Unicode characters and preserves truncation state', () => {
     const snippet = '🙂'.repeat(401)
     const [source] = toSources(message([

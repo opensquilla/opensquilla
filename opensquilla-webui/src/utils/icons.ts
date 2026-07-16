@@ -5,7 +5,7 @@ export type IconName =
   | 'config' | 'logs' | 'skills' | 'agents'
   | 'sun' | 'moon' | 'monitor' | 'x' | 'copy' | 'check'
   | 'send' | 'stop' | 'paperclip' | 'plus' | 'share' | 'trash'
-  | 'refresh' | 'download' | 'save' | 'menu' | 'user' | 'search' | 'eye' | 'eye-off'
+  | 'refresh' | 'download' | 'save' | 'menu' | 'moreHorizontal' | 'user' | 'search' | 'eye' | 'eye-off'
   | 'edit' | 'info' | 'settings' | 'gear' | 'gauge' | 'router' | 'regenerate'
   | 'pencil' | 'fork' | 'listChecks' | 'chevronDown' | 'chevronRight' | 'arrowUp'
   | 'panel-left-open' | 'panel-left-close' | 'clock' | 'microphone'
@@ -50,6 +50,7 @@ const ICONS: Record<IconName, IconDef> = {
   download:   { path: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>' },
   save:       { path: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>' },
   menu:       { path: '<line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/>' },
+  moreHorizontal: { path: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>', strokeWidth: 2 },
   user:       { path: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>' },
   search:     { path: '<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>' },
   eye:        { path: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>' },

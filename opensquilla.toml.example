@@ -208,8 +208,10 @@ enabled = true
 # "custom_b5": an explicit user-authored lineup from [[llm_ensemble.candidates]]
 #   — 2-6 enabled proposer rows plus at most one role = "aggregator" row (the
 #   member that fuses drafts into the final answer; omitted = the current chat
-#   model fuses). Proposer roles ("primary", "contrast", "fast_check",
-#   "critic") are advisory labels shown in the UI and decision trace.
+#   model fuses). The Web UI presents only Proposer and Aggregator. Released
+#   proposer role values ("primary", "contrast", "fast_check", "critic")
+#   remain accepted and preserved as advisory decision-trace labels; they all
+#   run and appear in the settings panel as Proposer.
 # "router_dynamic": legacy automatic selection; kept readable for existing
 #   configs but no longer offered in the Web UI.
 selection_mode = "static_openrouter_b5"
@@ -217,7 +219,7 @@ selection_mode = "static_openrouter_b5"
 # [[llm_ensemble.candidates]]
 # provider = "volcengine"
 # model = "doubao-2.0-pro"
-# role = "primary"
+# No role is needed for a proposer.
 # [[llm_ensemble.candidates]]
 # provider = "volcengine"
 # model = "deepseek-v4-pro"

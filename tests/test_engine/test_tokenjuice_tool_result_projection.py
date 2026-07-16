@@ -15,8 +15,8 @@ from opensquilla.engine.tool_result_store import ToolResultStore
 from opensquilla.engine.types import ToolResultEvent, ToolUseDeltaEvent
 from opensquilla.plugins.tokenjuice import reduce_tool_result as backend_reduce_tool_result
 from opensquilla.provider import (
-    ContentBlockToolResult,
     ContentBlockThinking,
+    ContentBlockToolResult,
     ContentBlockToolUse,
     Message,
     TextDeltaEvent,

@@ -10,7 +10,6 @@ from typing import Any
 
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 
-
 ModelResultProjector = Callable[[str], str]
 ResultSourcesProjector = Callable[[str], list[dict[str, Any]]]
 

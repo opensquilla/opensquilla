@@ -9,8 +9,8 @@ import pytest
 import opensquilla.engine.agent as agent_mod
 from opensquilla.engine import Agent, AgentConfig, ToolCall, ToolResult
 from opensquilla.engine.types import ToolResultEvent
-from opensquilla.provider import TextDeltaEvent, ToolDefinition, ToolInputSchema
 from opensquilla.provider import DoneEvent as ProviderDoneEvent
+from opensquilla.provider import TextDeltaEvent, ToolDefinition, ToolInputSchema
 from opensquilla.provider import ToolUseEndEvent as ProviderToolUseEndEvent
 from opensquilla.provider import ToolUseStartEvent as ProviderToolUseStartEvent
 

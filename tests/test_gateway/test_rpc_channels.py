@@ -146,7 +146,99 @@ async def test_channels_status_reports_adapter_capabilities_without_network_prob
     assert row["platform_manifest"]["capabilities"][ChannelPlatformCategories.DOCS][
         "status"
     ] == ChannelPlatformCapabilityStatus.UNSUPPORTED
-    assert row["diagnostics"] == {"network_probe": "not_run"}
+    assert row["diagnostics"] == {
+        "network_probe": "not_run",
+        # A running adapter without an explicit policy is governed by the
+        # default access policy; explain-why must show that, not hide it.
+        "admission": {
+            "dmAccess": "pairing",
+            "allowlist": {"configured": False, "entryCount": 0, "blankEntryCount": 0},
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_channels_status_explains_admission_policy_and_denials():
+    from opensquilla.channels._util import ChannelAccessPolicy, ChannelDmAccess
+
+    class FakeHealth:
+        connected = True
+        bot_user_id = "bot-1"
+        extra: dict = {}
+
+    class FakeAdapter:
+        policy = ChannelAccessPolicy(
+            dm_access=ChannelDmAccess.ALLOWLIST,
+            allowlist=frozenset({"user-ok", "  "}),
+        )
+
+    class FakeStore:
+        def admission_reason_counts(self, name: str) -> dict:
+            assert name == "telegram-main"
+            return {
+                "dm_admitted": {"count": 9, "first_at": 1700000000.0, "last_at": 1700000300.0},
+                "not_in_allowlist": {"count": 4, "first_at": 1699999000.0, "last_at": 1700000100.0},
+                "pairing_required": {"count": 2, "first_at": 1700000150.0, "last_at": 1700000200.0},
+            }
+
+    class FakeManager:
+        _channel_types = {"telegram-main": "telegram"}
+        _delivery_store = FakeStore()
+
+        async def health(self):
+            return {"telegram-main": FakeHealth()}
+
+        def get(self, name: str):
+            assert name == "telegram-main"
+            return FakeAdapter()
+
+    ctx = _read_ctx()
+    ctx.channel_manager = FakeManager()
+
+    rpc_res = await get_dispatcher().dispatch("r1", "channels.status", {}, ctx)
+
+    assert rpc_res.error is None, rpc_res.error
+    admission = rpc_res.payload["channels"][0]["diagnostics"]["admission"]
+    assert admission["dmAccess"] == "allowlist"
+    # entryCount + blankEntryCount is the honest typo detector: entries are
+    # opaque strings, so "invalid" can only mean blank/whitespace.
+    assert admission["allowlist"] == {
+        "configured": True,
+        "entryCount": 2,
+        "blankEntryCount": 1,
+    }
+    assert admission["reasons"]["not_in_allowlist"]["count"] == 4
+    assert admission["reasons"]["dm_admitted"]["count"] == 9
+    assert admission["reasons"]["pairing_required"]["lastAt"].startswith("2023-11-1")
+    # Tallies are lifetime; the horizon label keeps months-old denials under a
+    # since-changed policy from reading as a live condition.
+    assert admission["since"].startswith("2023-11-1")
+    # The newest DENIAL wins, not the newer admitted decision.
+    assert admission["lastDenial"]["reason"] == "pairing_required"
+    # Reason codes and counts only — no sender identity anywhere in the block.
+    assert "user-ok" not in str(admission)
+
+
+@pytest.mark.asyncio
+async def test_channels_status_admission_block_absent_without_adapter_or_history():
+    # No running adapter and no recorded decisions: nothing to explain, so the
+    # key stays absent instead of implying a policy that is not in force.
+    ctx = _read_ctx()
+    res = upsert_channel(
+        GatewayConfig(),
+        entry_payload={
+            "type": "slack",
+            "name": "work",
+            "token": "xoxb-secret",
+            "signing_secret": "ss",
+        },
+    )
+    ctx.config = res.config
+
+    rpc_res = await get_dispatcher().dispatch("r1", "channels.status", {}, ctx)
+
+    assert rpc_res.error is None, rpc_res.error
+    assert "admission" not in rpc_res.payload["channels"][0]["diagnostics"]
 
 
 @pytest.mark.asyncio

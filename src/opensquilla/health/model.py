@@ -81,7 +81,7 @@ def _readiness_impact(finding: HealthFinding) -> ReadinessImpact:
     return finding.readiness_impact or _DEFAULT_IMPACT_BY_SEVERITY[finding.severity]
 
 
-def _summary(impact_counts: dict[ReadinessImpact, int]) -> str:
+def _summary(impact_counts: dict[ReadinessImpact, int], *, attention_count: int = 0) -> str:
     parts: list[str] = []
     if impact_counts["blocks_ready"]:
         label = "action" if impact_counts["blocks_ready"] == 1 else "actions"
@@ -95,8 +95,18 @@ def _summary(impact_counts: dict[ReadinessImpact, int]) -> str:
     if parts:
         return ", ".join(parts)
     if impact_counts["optional"]:
-        label = "item" if impact_counts["optional"] == 1 else "items"
-        return f"Ready, {impact_counts['optional']} optional setup {label}"
+        # An optional-impact warn is an operator action item (senders waiting
+        # on approval, sends needing confirmation) — calling it a "setup item"
+        # would mislabel work someone is actively blocked on.
+        setup_count = impact_counts["optional"] - attention_count
+        segments: list[str] = []
+        if attention_count:
+            label = "item" if attention_count == 1 else "items"
+            segments.append(f"{attention_count} {label} awaiting operator action")
+        if setup_count:
+            label = "item" if setup_count == 1 else "items"
+            segments.append(f"{setup_count} optional setup {label}")
+        return "Ready, " + ", ".join(segments)
     return "Ready"
 
 
@@ -112,9 +122,12 @@ def _status(impact_counts: dict[ReadinessImpact, int]) -> HealthStatus:
 def build_report(findings: list[HealthFinding]) -> dict[str, Any]:
     counts: dict[HealthSeverity, int] = {key: 0 for key in _COUNT_KEYS}
     impact_counts: dict[ReadinessImpact, int] = {key: 0 for key in _IMPACT_KEYS}
+    attention_count = 0
     for finding in findings:
         counts[finding.severity] += 1
         impact_counts[_readiness_impact(finding)] += 1
+        if finding.severity == "warn" and _readiness_impact(finding) == "optional":
+            attention_count += 1
     status = _status(impact_counts)
     ordered_findings = sorted(
         enumerate(findings),
@@ -127,7 +140,7 @@ def build_report(findings: list[HealthFinding]) -> dict[str, Any]:
     return {
         "status": status,
         "ready": impact_counts["blocks_ready"] == 0,
-        "summary": _summary(impact_counts),
+        "summary": _summary(impact_counts, attention_count=attention_count),
         "counts": counts,
         "impactCounts": impact_counts,
         "findings": [finding.to_dict() for _, finding in ordered_findings],

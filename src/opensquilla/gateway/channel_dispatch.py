@@ -457,6 +457,7 @@ async def run_channel_dispatch(
                 delivery_store.complete_inbound(
                     ingress_claim,
                     "admission_denied",
+                    reason=admission.reason,
                     scrub_payload=True,
                 )
             continue
@@ -472,7 +473,9 @@ async def run_channel_dispatch(
         if approval_reply is not None:
             await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
             if delivery_store is not None:
-                delivery_store.complete_inbound(ingress_claim, "approval_resolved")
+                delivery_store.complete_inbound(
+                    ingress_claim, "approval_resolved", reason=admission.reason
+                )
             continue
         # fmt: off
         if getattr(channel, "supports_slash_commands", False) and rpc_dispatcher is not None and channel_rpc_context_factory is not None:  # noqa: E501
@@ -490,7 +493,9 @@ async def run_channel_dispatch(
                 emit(event, command=command_reply.metadata.get("command"), method=command_reply.metadata.get("method"), session_key=session_key)  # noqa: E501
                 await channel.send(command_reply)
                 if delivery_store is not None:
-                    delivery_store.complete_inbound(ingress_claim, "command_dispatched")
+                    delivery_store.complete_inbound(
+                        ingress_claim, "command_dispatched", reason=admission.reason
+                    )
                 continue
         # fmt: on
 
@@ -578,7 +583,9 @@ async def run_channel_dispatch(
                 )
                 await status_reactor.completed(msg)
                 if delivery_store is not None:
-                    delivery_store.complete_inbound(ingress_claim, "capacity_rejected")
+                    delivery_store.complete_inbound(
+                        ingress_claim, "capacity_rejected", reason=admission.reason
+                    )
                 continue
 
             transcript_watermark = await _transcript_watermark(session_manager, session_key)
@@ -645,7 +652,9 @@ async def run_channel_dispatch(
                     )
                 )
                 if delivery_store is not None:
-                    delivery_store.complete_inbound(ingress_claim, "queue_rejected")
+                    delivery_store.complete_inbound(
+                        ingress_claim, "queue_rejected", reason=admission.reason
+                    )
             else:
                 await status_reactor.running(msg)
 
@@ -715,7 +724,9 @@ async def run_channel_dispatch(
 
                 reply_task.add_done_callback(_reply_done)
                 if delivery_store is not None:
-                    delivery_store.complete_inbound(ingress_claim, "turn_dispatched")
+                    delivery_store.complete_inbound(
+                        ingress_claim, "turn_dispatched", reason=admission.reason
+                    )
             continue
 
         # Gap 3: Start typing indicator (background task)
@@ -749,7 +760,9 @@ async def run_channel_dispatch(
                 "turn_complete",
             )
         if delivery_store is not None:
-            delivery_store.complete_inbound(ingress_claim, "turn_completed")
+            delivery_store.complete_inbound(
+                ingress_claim, "turn_completed", reason=admission.reason
+            )
 
 
 def _slash_command_head(content: str) -> str | None:

@@ -150,6 +150,7 @@ class ChannelDeliveryStore:
                     message_json    TEXT NOT NULL,
                     state           TEXT NOT NULL,
                     disposition     TEXT NOT NULL DEFAULT '',
+                    reason          TEXT NOT NULL DEFAULT '',
                     claim_token     TEXT,
                     claim_started_at REAL,
                     attempts        INTEGER NOT NULL DEFAULT 0,
@@ -210,6 +211,7 @@ class ChannelDeliveryStore:
                 """
             )
             self._migrate_pairing_columns()
+            self._migrate_ingress_columns()
             self._conn.commit()
 
     def _migrate_pairing_columns(self) -> None:
@@ -223,7 +225,29 @@ class ChannelDeliveryStore:
             str(row["name"]) for row in self._conn.execute("PRAGMA table_info(channel_pairings)")
         }
         if "reply_to" not in existing:
-            self._conn.execute("ALTER TABLE channel_pairings ADD COLUMN reply_to TEXT")
+            self._add_column("channel_pairings", "reply_to TEXT")
+
+    def _migrate_ingress_columns(self) -> None:
+        """Add ingress columns introduced after the table shipped."""
+        existing = {
+            str(row["name"]) for row in self._conn.execute("PRAGMA table_info(channel_ingress)")
+        }
+        if "reason" not in existing:
+            self._add_column("channel_ingress", "reason TEXT NOT NULL DEFAULT ''")
+
+    def _add_column(self, table: str, column_ddl: str) -> None:
+        """ALTER-in a column, tolerating a concurrent opener winning the race.
+
+        The PRAGMA check and the ALTER are separate autocommit statements, so
+        two processes first-opening an un-migrated database can both see the
+        column missing; the loser's ALTER must read as "already migrated", not
+        crash its startup.
+        """
+        try:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column_ddl}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column" not in str(exc).lower():
+                raise
 
     @staticmethod
     def _pairing_from_row(row: sqlite3.Row) -> ChannelPairing:
@@ -434,18 +458,26 @@ class ChannelDeliveryStore:
         claim: IngressClaim | None,
         disposition: str,
         *,
+        reason: str = "",
         scrub_payload: bool = False,
     ) -> None:
+        """Finalize a claimed inbound event.
+
+        ``reason`` carries the admission reason code so operators can later ask
+        *why* a message was denied (or on what basis it was admitted) — a
+        reason code only, never a sender identity.
+        """
         if claim is None or not claim.event_key:
             return
         with self._lock:
             self._conn.execute(
-                "UPDATE channel_ingress SET state = 'completed', disposition = ?, "
+                "UPDATE channel_ingress SET state = 'completed', disposition = ?, reason = ?, "
                 "message_json = CASE WHEN ? THEN '{}' ELSE message_json END, "
                 "claim_token = NULL, claim_started_at = NULL, updated_at = ? "
                 "WHERE event_key = ? AND claim_token = ?",
                 (
                     disposition,
+                    reason,
                     1 if scrub_payload else 0,
                     time.time(),
                     claim.event_key,
@@ -626,6 +658,32 @@ class ChannelDeliveryStore:
                 }
                 for row in leases
             ],
+        }
+
+    def admission_reason_counts(self, channel_name: str) -> dict[str, dict[str, Any]]:
+        """Per-reason admission tallies: ``{reason: {count, first_at, last_at}}``.
+
+        Tallies span the store's whole lifetime; ``first_at`` lets consumers
+        label that horizon so old denials are not mistaken for a live condition
+        under the current policy. Aggregate counts and timestamps only — reason
+        codes carry no sender identity, so this is safe to surface in operator
+        diagnostics verbatim.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT reason, COUNT(*) AS count, "
+                "MIN(updated_at) AS first_at, MAX(updated_at) AS last_at "
+                "FROM channel_ingress WHERE channel_name = ? AND reason != '' "
+                "GROUP BY reason",
+                (channel_name,),
+            ).fetchall()
+        return {
+            str(row["reason"]): {
+                "count": int(row["count"]),
+                "first_at": float(row["first_at"]),
+                "last_at": float(row["last_at"]),
+            }
+            for row in rows
         }
 
     def acquire_transport_lease(

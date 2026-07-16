@@ -31,6 +31,7 @@
           <div><dt>maxSnippetChars</dt><dd>{{ value(props.status?.effectiveLimits?.maxSnippetChars) }}</dd></div>
           <div><dt>maxSearchResponseChars</dt><dd>{{ value(props.status?.effectiveLimits?.maxSearchResponseChars) }}</dd></div>
           <div><dt>maxGetContentChars</dt><dd>{{ value(props.status?.effectiveLimits?.maxGetContentChars) }}</dd></div>
+          <div><dt>maxChunkChars</dt><dd>{{ value(props.status?.effectiveLimits?.maxChunkChars) }}</dd></div>
         </dl>
       </section>
     </div>

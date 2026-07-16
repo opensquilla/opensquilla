@@ -71,6 +71,7 @@
       :reading="reading"
       :read-error="readError"
       :mobile-reader-open="mobileReaderOpen"
+      :expected-retrieval-profile="expectedRetrievalProfile"
       @search="search"
       @select="selectEvidence"
       @page="readEvidence"
@@ -96,6 +97,7 @@ import KnowledgeSearchWorkspace from '@/components/knowledge/KnowledgeSearchWork
 import { useRpcStore } from '@/stores/rpc'
 import {
   browserManagementLink,
+  effectiveRetrievalProfile,
   normalizeRagGetResponse,
   normalizeRagProfileSetResponse,
   normalizeRagProviderStatus,
@@ -140,6 +142,7 @@ let readerInflightKey: string | null = null
 let pageActive = false
 
 const profileDirty = computed(() => profileDraft.value !== savedOverride.value)
+const expectedRetrievalProfile = computed(() => effectiveRetrievalProfile(status.value))
 const profileDisabled = computed(() => status.value?.searchOptions === null || !status.value)
 const canSearch = computed(
   () => status.value?.connectionState === 'READY' || status.value?.connectionState === 'LEGACY',

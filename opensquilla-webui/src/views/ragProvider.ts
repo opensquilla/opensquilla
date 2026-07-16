@@ -7,6 +7,24 @@ export type RagProviderState =
   | 'INCOMPATIBLE'
   | 'LEGACY'
 
+export interface RagDocument {
+  id?: string
+  title: string
+  source?: string
+  fileName?: string
+  sourcePath?: string
+  mediaType?: string
+  revision?: string
+  uri?: string
+  openUrl?: string
+}
+
+export interface RagChunk {
+  id: string
+  content: string
+  contentChars: number
+}
+
 export interface RagCitation {
   title: string
   source?: string
@@ -16,6 +34,9 @@ export interface RagCitation {
 
 export interface RagSearchResult {
   evidenceId: string
+  rank: number | null
+  document: RagDocument | null
+  chunk: RagChunk | null
   snippet: string
   snippetTruncated: boolean
   citation: RagCitation
@@ -26,13 +47,15 @@ export interface RagSearchResponse {
   totalMatched: number | null
   resultsTruncated: boolean
   providerBudgetViolation: boolean
+  retrievalProfile: string | null
   results: RagSearchResult[]
 }
 
 export interface RagGetResponse {
   evidenceId: string
-  document: { title: string; source: string }
+  document: RagDocument
   content: string
+  contentChars: number | null
   previousCursor: string | null
   nextCursor: string | null
   citation: RagCitation
@@ -57,6 +80,7 @@ export interface RagProviderStatus {
     maxSnippetChars: number
     maxSearchResponseChars: number
     maxGetContentChars: number
+    maxChunkChars: number | null
   } | null
   searchOptions: {
     supportsCollectionScope: boolean
@@ -122,18 +146,107 @@ export function browserManagementLink(value: string | undefined): string | null 
   }
 }
 
-function citation(value: unknown): RagCitation | null {
-  const raw = record(value)
-  if (!raw || typeof raw.title !== 'string' || !raw.title.trim()) return null
-  const result: RagCitation = { title: raw.title }
-  for (const key of ['source', 'locator', 'uri'] as const) {
-    const item = raw[key]
-    if (item !== undefined) {
-      if (typeof item !== 'string') return null
-      result[key] = item
-    }
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && Boolean(value.trim())
+}
+
+function characterCount(value: string): number {
+  return Array.from(value).length
+}
+
+function safeSourcePath(value: string): boolean {
+  if (!value || value.startsWith('/') || value.startsWith('\\')) return false
+  if (value.includes('\\') || /^[A-Za-z]:/.test(value)) return false
+  return value.split('/').every(part => part !== '' && part !== '.' && part !== '..')
+}
+
+function parsedUrl(value: string): URL | null {
+  try {
+    return new URL(value)
+  } catch {
+    return null
   }
+}
+
+function safeResourceUri(value: string): boolean {
+  if (!value || value.includes('\\') || /\s/.test(value)) return false
+  const url = parsedUrl(value)
+  if (!url || !/^[A-Za-z][A-Za-z0-9+.-]*:$/.test(url.protocol)) return false
+  if (['javascript:', 'data:', 'file:', 'vbscript:'].includes(url.protocol.toLowerCase())) {
+    return false
+  }
+  if (url.username || url.password) return false
+  return Boolean(url.host || url.pathname)
+}
+
+function safeOpenUrl(value: string): boolean {
+  if (!value || value.includes('\\') || /\s/.test(value)) return false
+  if (value.startsWith('/') && !value.startsWith('//')) return true
+  const url = parsedUrl(value)
+  if (!url || !['http:', 'https:'].includes(url.protocol.toLowerCase())) return false
+  return Boolean(url.host) && !url.username && !url.password
+}
+
+function optionalText(raw: Record<string, unknown>, key: string): string | undefined {
+  const value = raw[key]
+  return nonEmptyString(value) ? value : undefined
+}
+
+function normalizedDocument(value: unknown): RagDocument | null {
+  const raw = record(value)
+  if (!raw || !nonEmptyString(raw.id) || !nonEmptyString(raw.title)) return null
+  const result: RagDocument = { id: raw.id, title: raw.title }
+  for (const key of ['source', 'fileName', 'mediaType', 'revision'] as const) {
+    const item = optionalText(raw, key)
+    if (item !== undefined) result[key] = item
+  }
+  if (nonEmptyString(raw.sourcePath) && safeSourcePath(raw.sourcePath)) {
+    result.sourcePath = raw.sourcePath
+  }
+  if (nonEmptyString(raw.uri) && safeResourceUri(raw.uri)) result.uri = raw.uri
+  if (nonEmptyString(raw.openUrl) && safeOpenUrl(raw.openUrl)) result.openUrl = raw.openUrl
   return result
+}
+
+function legacyDocument(value: unknown): RagDocument | null {
+  const raw = record(value)
+  if (!raw || typeof raw.title !== 'string' || typeof raw.source !== 'string') return null
+  return { title: raw.title, source: raw.source }
+}
+
+interface CitationOptions {
+  requireLocator?: boolean
+  requireUri?: boolean
+  documentUri?: string
+}
+
+function citation(value: unknown, options: CitationOptions = {}): RagCitation | null {
+  const raw = record(value)
+  if (!raw || !nonEmptyString(raw.title)) return null
+  const locator = optionalText(raw, 'locator')
+  if (options.requireLocator && locator === undefined) return null
+  const rawUri = optionalText(raw, 'uri')
+  let uri: string | undefined
+  if (rawUri !== undefined && safeResourceUri(rawUri)) {
+    const url = parsedUrl(rawUri)
+    if (
+      (!options.requireUri || Boolean(url?.search || url?.hash))
+      && rawUri !== options.documentUri
+    ) uri = rawUri
+  }
+  if (options.requireUri && uri === undefined) return null
+
+  const result: RagCitation = { title: raw.title }
+  const source = optionalText(raw, 'source')
+  if (source !== undefined) result.source = source
+  if (locator !== undefined) result.locator = locator
+  if (uri !== undefined) result.uri = uri
+  return result
+}
+
+function normalizedCursor(value: unknown): string | null | undefined {
+  if (value === null) return null
+  return nonEmptyString(value) ? value : undefined
 }
 
 export function normalizeRagProviderStatus(value: unknown): RagProviderStatus | null {
@@ -170,11 +283,19 @@ export function normalizeRagProviderStatus(value: unknown): RagProviderStatus | 
     const item = record(raw.effectiveLimits)
     const keys = ['maxSearchResults', 'maxSnippetChars', 'maxSearchResponseChars', 'maxGetContentChars'] as const
     if (!item || !keys.every(key => positiveInteger(item[key]))) return null
+    let maxChunkChars: number | null = null
+    if (item.maxChunkChars !== undefined && item.maxChunkChars !== null) {
+      if (!positiveInteger(item.maxChunkChars)) return null
+      maxChunkChars = item.maxChunkChars
+    } else if (raw.protocolVersion === '1.1') {
+      return null
+    }
     effectiveLimits = {
       maxSearchResults: item.maxSearchResults as number,
       maxSnippetChars: item.maxSnippetChars as number,
       maxSearchResponseChars: item.maxSearchResponseChars as number,
       maxGetContentChars: item.maxGetContentChars as number,
+      maxChunkChars,
     }
   }
 
@@ -184,15 +305,23 @@ export function normalizeRagProviderStatus(value: unknown): RagProviderStatus | 
     if (!item || typeof item.supportsCollectionScope !== 'boolean' || !nullableString(item.defaultRetrievalProfile)) return null
     if (!Array.isArray(item.retrievalProfiles)) return null
     const profiles: { id: string; label: string }[] = []
+    const profileIds = new Set<string>()
     for (const candidate of item.retrievalProfiles) {
       const profile = record(candidate)
-      if (!profile || typeof profile.id !== 'string' || !profile.id || typeof profile.label !== 'string' || !profile.label) return null
+      if (!profile || !nonEmptyString(profile.id) || !nonEmptyString(profile.label)) return null
+      if (profileIds.has(profile.id)) return null
+      profileIds.add(profile.id)
       profiles.push({ id: profile.id, label: profile.label })
+    }
+    let defaultRetrievalProfile = item.defaultRetrievalProfile
+    if (defaultRetrievalProfile !== null && !profileIds.has(defaultRetrievalProfile)) {
+      if (raw.protocolVersion === '1.0') defaultRetrievalProfile = null
+      else return null
     }
     searchOptions = {
       supportsCollectionScope: item.supportsCollectionScope,
       retrievalProfiles: profiles,
-      defaultRetrievalProfile: item.defaultRetrievalProfile,
+      defaultRetrievalProfile,
     }
   }
 
@@ -251,44 +380,137 @@ export function normalizeRagSearchResponse(value: unknown): RagSearchResponse | 
   const raw = record(value)
   if (!raw || !Array.isArray(raw.results) || !nonNegativeInteger(raw.returnedCount)) return null
   if (raw.returnedCount !== raw.results.length) return null
-  if (!(raw.totalMatched === null || nonNegativeInteger(raw.totalMatched))) return null
   if (typeof raw.resultsTruncated !== 'boolean' || typeof raw.providerBudgetViolation !== 'boolean') return null
-  const results: RagSearchResult[] = []
-  for (const candidate of raw.results) {
+  const totalMatched = raw.totalMatched === undefined || raw.totalMatched === null
+    ? null
+    : nonNegativeInteger(raw.totalMatched) ? raw.totalMatched : undefined
+  if (totalMatched === undefined) return null
+
+  const hasRetrieval = raw.retrieval !== undefined
+  const hasV11ResultFields = raw.results.some((candidate) => {
     const item = record(candidate)
-    const itemCitation = citation(item?.citation)
-    if (!item || typeof item.evidenceId !== 'string' || !item.evidenceId || typeof item.snippet !== 'string' || typeof item.snippetTruncated !== 'boolean' || !itemCitation) return null
+    return item !== null && ['rank', 'document', 'chunk'].some(key => key in item)
+  })
+  if (!hasRetrieval && hasV11ResultFields) return null
+
+  let retrievalProfile: string | null = null
+  if (hasRetrieval) {
+    const retrieval = record(raw.retrieval)
+    if (!retrieval) return null
+    if (retrieval.profile === null) retrievalProfile = null
+    else if (nonEmptyString(retrieval.profile)) retrievalProfile = retrieval.profile
+    else return null
+  }
+
+  const results: RagSearchResult[] = []
+  for (const [index, candidate] of raw.results.entries()) {
+    const item = record(candidate)
+    if (
+      !item
+      || !nonEmptyString(item.evidenceId)
+      || typeof item.snippet !== 'string'
+      || typeof item.snippetTruncated !== 'boolean'
+    ) return null
+
+    if (!hasRetrieval) {
+      const itemCitation = citation(item.citation)
+      if (!itemCitation) return null
+      results.push({
+        evidenceId: item.evidenceId,
+        rank: null,
+        document: null,
+        chunk: null,
+        snippet: item.snippet,
+        snippetTruncated: item.snippetTruncated,
+        citation: itemCitation,
+      })
+      continue
+    }
+
+    if (!positiveInteger(item.rank) || item.rank !== index + 1) return null
+    const document = normalizedDocument(item.document)
+    const chunk = record(item.chunk)
+    if (!document || !chunk || !nonEmptyString(chunk.id) || typeof chunk.content !== 'string') {
+      return null
+    }
+    if (
+      !nonNegativeInteger(chunk.contentChars)
+      || chunk.contentChars !== characterCount(chunk.content)
+    ) return null
+    const itemCitation = citation(item.citation, {
+      requireLocator: true,
+      requireUri: true,
+      documentUri: document.uri,
+    })
+    if (!itemCitation) return null
     results.push({
       evidenceId: item.evidenceId,
+      rank: item.rank,
+      document,
+      chunk: {
+        id: chunk.id,
+        content: chunk.content,
+        contentChars: chunk.contentChars,
+      },
       snippet: item.snippet,
       snippetTruncated: item.snippetTruncated,
       citation: itemCitation,
     })
   }
   return {
-    returnedCount: raw.returnedCount,
-    totalMatched: raw.totalMatched,
+    returnedCount: results.length,
+    totalMatched,
     resultsTruncated: raw.resultsTruncated,
     providerBudgetViolation: raw.providerBudgetViolation,
+    retrievalProfile,
     results,
   }
 }
 
 export function normalizeRagGetResponse(value: unknown): RagGetResponse | null {
   const raw = record(value)
-  const document = record(raw?.document)
-  const itemCitation = citation(raw?.citation)
-  if (!raw || !document || !itemCitation) return null
-  if (typeof raw.evidenceId !== 'string' || !raw.evidenceId || typeof raw.content !== 'string') return null
-  if (typeof document.title !== 'string' || typeof document.source !== 'string') return null
-  if (!nullableString(raw.previousCursor) || !nullableString(raw.nextCursor)) return null
+  const rawDocument = record(raw?.document)
+  if (!raw || !rawDocument) return null
+  if (!nonEmptyString(raw.evidenceId) || typeof raw.content !== 'string') return null
+  const previousCursor = normalizedCursor(raw.previousCursor)
+  const nextCursor = normalizedCursor(raw.nextCursor)
+  if (previousCursor === undefined || nextCursor === undefined) return null
   if (!(raw.legacyLimitedGet === undefined || typeof raw.legacyLimitedGet === 'boolean')) return null
+
+  const hasV11Fields = raw.contentChars !== undefined
+    || ['id', 'fileName', 'sourcePath', 'mediaType', 'revision', 'uri', 'openUrl']
+      .some(key => key in rawDocument)
+
+  let document: RagDocument | null
+  let contentChars: number | null
+  let itemCitation: RagCitation | null
+  if (hasV11Fields) {
+    document = normalizedDocument(rawDocument)
+    if (
+      !document
+      || !nonNegativeInteger(raw.contentChars)
+      || raw.contentChars !== characterCount(raw.content)
+    ) return null
+    contentChars = raw.contentChars
+    itemCitation = citation(raw.citation, {
+      requireLocator: true,
+      requireUri: true,
+      documentUri: document.uri,
+    })
+  } else {
+    document = legacyDocument(rawDocument)
+    contentChars = null
+    itemCitation = citation(raw.citation)
+  }
+  if (!document || !itemCitation) return null
+
   return {
     evidenceId: raw.evidenceId,
-    document: { title: document.title, source: document.source },
+    document,
     content: raw.content,
-    previousCursor: raw.previousCursor,
-    nextCursor: raw.nextCursor,
+    contentChars,
+    previousCursor,
+    nextCursor,
     citation: itemCitation,
     legacyLimitedGet: raw.legacyLimitedGet === true,
   }

@@ -93,6 +93,25 @@ describe('KnowledgeProfileSelector', () => {
     expect(root.textContent).toContain('vector')
   })
 
+  it('renders exactly the arbitrary profiles advertised by capabilities', async () => {
+    const { root } = await mountSelector({
+      profiles: [
+        { id: 'provider-semantic-v7', label: 'Semantic v7' },
+        { id: 'provider-keyword-v2', label: 'Keyword v2' },
+      ],
+      providerDefault: 'provider-semantic-v7',
+    })
+
+    expect(Array.from(
+      root.querySelectorAll<HTMLElement>('[role="radio"]'),
+      item => item.dataset.profileId,
+    )).toEqual([
+      'provider-default',
+      'provider-semantic-v7',
+      'provider-keyword-v2',
+    ])
+  })
+
   it('emits a draft change without saving immediately', async () => {
     const { root, onChange, onSave } = await mountSelector()
     const vector = root.querySelector<HTMLButtonElement>('[data-profile-id="vector"]')!

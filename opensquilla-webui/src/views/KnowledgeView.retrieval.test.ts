@@ -49,6 +49,7 @@ const READY_STATUS: RagProviderStatus = {
     maxSnippetChars: 800,
     maxSearchResponseChars: 12000,
     maxGetContentChars: 8000,
+    maxChunkChars: null,
   },
   searchOptions: {
     supportsCollectionScope: true,
@@ -95,6 +96,58 @@ const SEARCH_RESPONSE = {
     citation: { title: 'Document A', locator: 'page 1' },
   }],
 }
+
+const V11_SEARCH_RESPONSE = (() => {
+  const content = 'Complete normalized NAND evidence.'
+  return {
+    returnedCount: 1,
+    totalMatched: 7,
+    resultsTruncated: false,
+    retrieval: { profile: 'provider-profile' },
+    providerBudgetViolation: false,
+    results: [{
+      evidenceId: 'ev_full',
+      rank: 1,
+      document: {
+        id: 'doc_a',
+        title: 'NAND architecture',
+        source: 'datasets',
+        fileName: 'nand.md',
+        sourcePath: 'datasets/nand.md',
+        mediaType: 'text/markdown',
+        revision: 'sha256:abc',
+        uri: 'knowledge://documents/doc_a',
+        openUrl: '/knowledge/files/doc_a?chunkId=chunk_a',
+      },
+      chunk: {
+        id: 'chunk_a',
+        content,
+        contentChars: content.length,
+      },
+      snippet: 'Complete normalized',
+      snippetTruncated: true,
+      citation: {
+        title: 'NAND architecture',
+        source: 'datasets',
+        locator: 'section 2',
+        uri: 'knowledge://documents/doc_a#chunk=chunk_a',
+      },
+    }],
+  }
+})()
+
+const V11_GET_RESPONSE = (() => {
+  const content = 'Complete paged NAND evidence.'
+  return {
+    evidenceId: 'ev_full',
+    document: structuredClone(V11_SEARCH_RESPONSE.results[0].document),
+    content,
+    contentChars: content.length,
+    previousCursor: 'previous-page',
+    nextCursor: 'next-page',
+    citation: structuredClone(V11_SEARCH_RESPONSE.results[0].citation),
+  }
+})()
 
 const GET_RESPONSE = {
   evidenceId: 'ev_a',
@@ -160,14 +213,29 @@ const EXPECTED_RAG_KEYS = [
   'errors.invalidSearchResponse', 'errors.invalidGetResponse',
 ].sort()
 
+const P14_RAG_KEYS = [
+  'results.completeChunk',
+  'results.chunkCharacters',
+  'results.providerExecutedProfile',
+  'results.fileName',
+  'results.sourcePath',
+].sort()
+
 function ragMessages(locale: unknown): JsonObject {
   return ((locale as JsonObject).rag ?? {}) as JsonObject
 }
 
 describe('RAG production locale messages', () => {
-  it('ships the exact 53-key rag namespace in all six locales', () => {
-    for (const locale of [en, zhHans, ja, fr, de, es]) {
-      expect(leafPaths(ragMessages(locale)).sort()).toEqual(EXPECTED_RAG_KEYS)
+  it('ships the baseline namespace and keeps P14-owned additions aligned', () => {
+    const localeKeys = [en, zhHans, ja, fr, de, es]
+      .map(locale => leafPaths(ragMessages(locale)).sort())
+    const allowed = new Set([...EXPECTED_RAG_KEYS, ...P14_RAG_KEYS])
+    for (const keys of localeKeys) {
+      expect(keys).toEqual(expect.arrayContaining(EXPECTED_RAG_KEYS))
+      expect(keys.every(key => allowed.has(key))).toBe(true)
+    }
+    for (const key of P14_RAG_KEYS) {
+      expect(new Set(localeKeys.map(keys => keys.includes(key))).size).toBe(1)
     }
   })
 
@@ -232,16 +300,160 @@ describe('RAG Provider response normalization', () => {
     })).toBeNull()
   })
 
+  it('normalizes maxChunkChars for Protocol 1.1 while preserving Protocol 1.0', () => {
+    expect(normalizeRagProviderStatus(READY_STATUS)?.effectiveLimits?.maxChunkChars).toBeNull()
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      protocolVersion: '1.1',
+      effectiveLimits: {
+        ...READY_STATUS.effectiveLimits!,
+        maxChunkChars: 4096,
+      },
+    })?.effectiveLimits?.maxChunkChars).toBe(4096)
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      protocolVersion: '1.1',
+      effectiveLimits: {
+        ...READY_STATUS.effectiveLimits!,
+        maxChunkChars: 0,
+      },
+    })).toBeNull()
+  })
+
   it('requires returnedCount to match the actual search array', () => {
     expect(normalizeRagSearchResponse(SEARCH_RESPONSE)?.results).toHaveLength(1)
     expect(normalizeRagSearchResponse({ ...SEARCH_RESPONSE, returnedCount: 20 })).toBeNull()
     expect(normalizeRagSearchResponse({ ...SEARCH_RESPONSE, providerBudgetViolation: 'false' })).toBeNull()
   })
 
+  it('keeps Protocol 1.0 search snippet-based when Protocol 1.1 fields are absent', () => {
+    const normalized = normalizeRagSearchResponse(SEARCH_RESPONSE)
+    expect(normalized).toMatchObject({
+      returnedCount: 1,
+      totalMatched: 9,
+      retrievalProfile: null,
+      results: [{
+        evidenceId: 'ev_a',
+        rank: null,
+        document: null,
+        chunk: null,
+        snippet: 'NAND evidence',
+      }],
+    })
+  })
+
+  it('normalizes complete Protocol 1.1 search results without requiring a response query', () => {
+    const normalized = normalizeRagSearchResponse({
+      ...structuredClone(V11_SEARCH_RESPONSE),
+      query: 'must be ignored',
+    })
+    expect(normalized).toMatchObject({
+      returnedCount: 1,
+      totalMatched: 7,
+      retrievalProfile: 'provider-profile',
+      results: [{
+        evidenceId: 'ev_full',
+        rank: 1,
+        document: {
+          id: 'doc_a',
+          fileName: 'nand.md',
+          sourcePath: 'datasets/nand.md',
+          openUrl: '/knowledge/files/doc_a?chunkId=chunk_a',
+        },
+        chunk: {
+          id: 'chunk_a',
+          content: 'Complete normalized NAND evidence.',
+          contentChars: 34,
+        },
+      }],
+    })
+    expect(normalized).not.toHaveProperty('query')
+    const withoutTotalMatched: Partial<typeof V11_SEARCH_RESPONSE> = structuredClone(V11_SEARCH_RESPONSE)
+    delete withoutTotalMatched.totalMatched
+    expect(normalizeRagSearchResponse(withoutTotalMatched)?.totalMatched).toBeNull()
+  })
+
+  it('rejects misleading counts and invalid Protocol 1.1 core fields', () => {
+    expect(normalizeRagSearchResponse({
+      ...structuredClone(V11_SEARCH_RESPONSE),
+      returnedCount: 20,
+    })).toBeNull()
+    for (const rank of [0, 2, -1, true]) {
+      const payload = structuredClone(V11_SEARCH_RESPONSE)
+      payload.results[0].rank = rank as unknown as number
+      expect(normalizeRagSearchResponse(payload)).toBeNull()
+    }
+    for (const contentChars of [-1, 999, true]) {
+      const payload = structuredClone(V11_SEARCH_RESPONSE)
+      payload.results[0].chunk.contentChars = contentChars as unknown as number
+      expect(normalizeRagSearchResponse(payload)).toBeNull()
+    }
+    expect(normalizeRagSearchResponse({
+      ...structuredClone(V11_SEARCH_RESPONSE),
+      retrieval: { profile: 7 },
+    })).toBeNull()
+    const unsafeCitation = structuredClone(V11_SEARCH_RESPONSE)
+    unsafeCitation.results[0].citation.uri = 'javascript:alert(1)'
+    expect(normalizeRagSearchResponse(unsafeCitation)).toBeNull()
+  })
+
+  it('safely drops unsafe paths, URLs, URIs, and malformed optional document metadata', () => {
+    const payload = structuredClone(V11_SEARCH_RESPONSE)
+    Object.assign(payload.results[0].document, {
+      source: 7,
+      mediaType: false,
+      sourcePath: '/etc/passwd',
+      uri: 'javascript:alert(1)',
+      openUrl: 'javascript:alert(1)',
+    })
+    const document = normalizeRagSearchResponse(payload)?.results[0].document
+    expect(document).toMatchObject({ id: 'doc_a', title: 'NAND architecture', fileName: 'nand.md' })
+    expect(document).not.toHaveProperty('source')
+    expect(document).not.toHaveProperty('mediaType')
+    expect(document).not.toHaveProperty('sourcePath')
+    expect(document).not.toHaveProperty('uri')
+    expect(document).not.toHaveProperty('openUrl')
+  })
+
   it('validates get cursors and normalized document content', () => {
     expect(normalizeRagGetResponse(GET_RESPONSE)?.nextCursor).toBe('next-page')
     expect(normalizeRagGetResponse({ ...GET_RESPONSE, nextCursor: 1 })).toBeNull()
     expect(normalizeRagGetResponse({ ...GET_RESPONSE, content: null })).toBeNull()
+  })
+
+  it('normalizes Protocol 1.1 Get metadata, content characters, and cursors', () => {
+    expect(normalizeRagGetResponse(V11_GET_RESPONSE)).toMatchObject({
+      evidenceId: 'ev_full',
+      document: {
+        id: 'doc_a',
+        title: 'NAND architecture',
+        fileName: 'nand.md',
+        sourcePath: 'datasets/nand.md',
+      },
+      content: 'Complete paged NAND evidence.',
+      contentChars: 29,
+      previousCursor: 'previous-page',
+      nextCursor: 'next-page',
+    })
+    expect(normalizeRagGetResponse({
+      ...structuredClone(V11_GET_RESPONSE),
+      contentChars: 999,
+    })).toBeNull()
+    expect(normalizeRagGetResponse({
+      ...structuredClone(V11_GET_RESPONSE),
+      previousCursor: '',
+    })).toBeNull()
+  })
+
+  it('safely omits unsafe optional Get document metadata', () => {
+    const payload = structuredClone(V11_GET_RESPONSE)
+    payload.document.sourcePath = '../secrets.txt'
+    payload.document.uri = 'file:///etc/passwd'
+    payload.document.openUrl = 'https://user:pass@example.com/private'
+    const document = normalizeRagGetResponse(payload)?.document
+    expect(document).not.toHaveProperty('sourcePath')
+    expect(document).not.toHaveProperty('uri')
+    expect(document).not.toHaveProperty('openUrl')
   })
 
   it('derives the effective profile from override before provider default', () => {
@@ -567,6 +779,62 @@ describe('KnowledgeView workbench', () => {
       evidenceId: 'ev_a',
       cursor: 'next-page',
     })
+  })
+
+  it('renders the Provider-executed Protocol 1.1 profile and complete Get window', async () => {
+    currentStatus = {
+      ...structuredClone(READY_STATUS),
+      protocolVersion: '1.1',
+      effectiveLimits: {
+        ...structuredClone(READY_STATUS.effectiveLimits!),
+        maxChunkChars: 4096,
+      },
+      searchOptions: {
+        supportsCollectionScope: true,
+        retrievalProfiles: [
+          { id: 'selected-profile', label: 'Selected profile' },
+          { id: 'provider-profile', label: 'Provider profile' },
+        ],
+        defaultRetrievalProfile: 'selected-profile',
+      },
+    }
+    rpcMock.call.mockImplementation(async (method: string) => {
+      if (method === 'knowledge.status') return structuredClone(currentStatus)
+      if (method === 'knowledge.search') return structuredClone(V11_SEARCH_RESPONSE)
+      if (method === 'knowledge.get') return structuredClone(V11_GET_RESPONSE)
+      throw new Error(`unexpected method ${method}`)
+    })
+    i18n.global.mergeLocaleMessage('en', {
+      rag: {
+        results: {
+          completeChunk: 'Complete chunk',
+          chunkCharacters: '{count} characters',
+          providerExecutedProfile: 'Provider executed profile: {profile}',
+          fileName: 'File name',
+          sourcePath: 'Source path',
+        },
+      },
+    })
+
+    mountView()
+    await settle()
+    await submitQuery(root, 'NAND capacity')
+    await settle()
+
+    expect(root.querySelector('.rag-result-card__title')?.textContent).toContain('nand.md')
+    expect(root.textContent).toContain('NAND architecture')
+    expect(root.textContent).toContain('Provider executed profile: provider-profile')
+    expect(root.textContent).toContain('Complete chunk')
+    expect(root.textContent).toContain('34 characters')
+
+    root.querySelector<HTMLButtonElement>('[data-evidence-id="ev_full"]')!.click()
+    await settle()
+    expect(rpcMock.call).toHaveBeenCalledWith('knowledge.get', { evidenceId: 'ev_full' })
+    expect(root.querySelector('.rag-reader .control-panel__title')?.textContent)
+      .toContain('nand.md')
+    expect(root.textContent).toContain('29 characters')
+    expect(root.textContent).toContain('previous-page')
+    expect(root.textContent).toContain('next-page')
   })
 
   it('does not read selections or cursor pages when Get capability is unavailable', async () => {

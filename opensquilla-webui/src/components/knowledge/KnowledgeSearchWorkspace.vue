@@ -65,27 +65,67 @@
           >
             {{ t('rag.results.budgetTrimmed') }}
           </span>
+          <span
+            v-if="props.searchResponse.retrievalProfile !== null"
+            class="control-pill"
+            :class="{ 'control-pill--warn': profileDiffers }"
+          >
+            {{ t('rag.results.providerExecutedProfile', {
+              profile: props.searchResponse.retrievalProfile,
+            }) }}
+          </span>
         </p>
         <div v-if="!props.searchResponse" class="state">
           {{ t('rag.results.empty') }}
         </div>
         <div class="rag-results__list">
-          <button
+          <article
             v-for="item in props.searchResponse?.results || []"
             :key="item.evidenceId"
-            type="button"
-            class="control-card control-card--interactive rag-result-card"
-            :class="{ 'control-card--selected': item.evidenceId === props.selectedEvidenceId }"
-            :data-evidence-id="item.evidenceId"
-            @click="emit('select', item.evidenceId)"
+            class="rag-result"
+            :data-result-id="item.evidenceId"
           >
-            <strong>{{ item.citation.title }}</strong>
-            <small>{{ item.citation.source || item.citation.locator || item.evidenceId }}</small>
-            <span>{{ item.snippet }}</span>
-            <span v-if="item.snippetTruncated" class="control-pill">
-              {{ t('rag.results.snippetTruncated') }}
-            </span>
-          </button>
+            <button
+              type="button"
+              class="control-card control-card--interactive rag-result-card"
+              :class="{ 'control-card--selected': item.evidenceId === props.selectedEvidenceId }"
+              :data-evidence-id="item.evidenceId"
+              @click="emit('select', item.evidenceId)"
+            >
+              <strong class="rag-result-card__title">{{ resultTitle(item) }}</strong>
+              <small
+                v-if="secondaryDocumentTitle(item)"
+                class="rag-result-card__document-title"
+              >
+                {{ secondaryDocumentTitle(item) }}
+              </small>
+              <small class="rag-result-card__metadata">
+                <span v-if="item.rank !== null">#{{ item.rank }}</span>
+                <span v-if="item.document?.sourcePath">
+                  {{ t('rag.results.sourcePath') }}: {{ item.document.sourcePath }}
+                </span>
+                <span v-if="item.document?.source || item.citation.source">
+                  {{ item.document?.source || item.citation.source }}
+                </span>
+                <span v-if="item.citation.locator">{{ item.citation.locator }}</span>
+              </small>
+              <span class="rag-result-card__snippet">{{ item.snippet }}</span>
+              <span v-if="item.snippetTruncated" class="control-pill">
+                {{ t('rag.results.snippetTruncated') }}
+              </span>
+            </button>
+            <details
+              v-if="item.chunk"
+              data-testid="rag-complete-chunk"
+              class="rag-result__complete"
+            >
+              <summary>{{ t('rag.results.completeChunk') }}</summary>
+              <small>{{ t('rag.results.chunkCharacters', {
+                count: item.chunk.contentChars,
+              }) }}</small>
+              <article>{{ item.chunk.content }}</article>
+            </details>
+          </article>
         </div>
       </section>
 
@@ -119,8 +159,42 @@
         </div>
         <template v-if="props.getResponse">
           <header>
-            <h2 class="control-panel__title">{{ props.getResponse.document.title }}</h2>
-            <p>{{ props.getResponse.citation.locator || props.getResponse.document.source }}</p>
+            <h2 class="control-panel__title">{{ readerTitle }}</h2>
+            <p v-if="readerSecondaryTitle">{{ readerSecondaryTitle }}</p>
+            <dl class="rag-reader__metadata">
+              <div v-if="props.getResponse.document.fileName">
+                <dt>{{ t('rag.results.fileName') }}</dt>
+                <dd>{{ props.getResponse.document.fileName }}</dd>
+              </div>
+              <div v-if="props.getResponse.document.sourcePath">
+                <dt>{{ t('rag.results.sourcePath') }}</dt>
+                <dd>{{ props.getResponse.document.sourcePath }}</dd>
+              </div>
+              <div v-if="props.getResponse.document.source">
+                <dt>source</dt>
+                <dd>{{ props.getResponse.document.source }}</dd>
+              </div>
+              <div v-if="props.getResponse.document.mediaType">
+                <dt>mediaType</dt>
+                <dd>{{ props.getResponse.document.mediaType }}</dd>
+              </div>
+              <div v-if="props.getResponse.document.revision">
+                <dt>revision</dt>
+                <dd>{{ props.getResponse.document.revision }}</dd>
+              </div>
+              <div v-if="props.getResponse.citation.locator">
+                <dt>locator</dt>
+                <dd>{{ props.getResponse.citation.locator }}</dd>
+              </div>
+              <div v-if="props.getResponse.contentChars !== null">
+                <dt>contentChars</dt>
+                <dd>{{ t('rag.results.chunkCharacters', {
+                  count: props.getResponse.contentChars,
+                }) }}</dd>
+              </div>
+              <div><dt>{{ t('rag.reader.previous') }}</dt><dd>{{ props.getResponse.previousCursor || '—' }}</dd></div>
+              <div><dt>{{ t('rag.reader.next') }}</dt><dd>{{ props.getResponse.nextCursor || '—' }}</dd></div>
+            </dl>
           </header>
           <p v-if="props.getResponse.legacyLimitedGet" class="rag-reader__warning">
             {{ t('rag.reader.legacyLimited') }}
@@ -162,9 +236,13 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { RagGetResponse, RagSearchResponse } from '@/views/ragProvider'
+import type {
+  RagGetResponse,
+  RagSearchResponse,
+  RagSearchResult,
+} from '@/views/ragProvider'
 
 const props = defineProps<{
   query: string
@@ -178,6 +256,7 @@ const props = defineProps<{
   reading: boolean
   readError: string
   mobileReaderOpen: boolean
+  expectedRetrievalProfile: string | null
 }>()
 
 const emit = defineEmits<{
@@ -191,6 +270,29 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const reader = ref<HTMLElement | null>(null)
+const profileDiffers = computed(() => (
+  props.searchResponse?.retrievalProfile !== null
+  && props.searchResponse?.retrievalProfile !== props.expectedRetrievalProfile
+))
+const readerTitle = computed(() => (
+  props.getResponse?.document.fileName
+  ?? props.getResponse?.document.title
+  ?? ''
+))
+const readerSecondaryTitle = computed(() => {
+  const document = props.getResponse?.document
+  if (!document?.fileName || document.fileName === document.title) return ''
+  return document.title
+})
+
+function resultTitle(item: RagSearchResult): string {
+  return item.document?.fileName ?? item.document?.title ?? item.citation.title
+}
+
+function secondaryDocumentTitle(item: RagSearchResult): string {
+  if (!item.document?.fileName || item.document.fileName === item.document.title) return ''
+  return item.document.title
+}
 
 function onQueryKeydown(event: KeyboardEvent) {
   if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) return
@@ -268,6 +370,12 @@ watch(() => props.getResponse?.content, async () => {
   gap: var(--sp-3);
 }
 
+.rag-result {
+  display: grid;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+
 .rag-result-card {
   width: 100%;
 }
@@ -275,6 +383,64 @@ watch(() => props.getResponse?.content, async () => {
 .rag-result-card small,
 .rag-reader header p {
   color: var(--text-muted);
+}
+
+.rag-result-card__metadata {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.rag-result-card__snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.rag-result__complete {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.rag-result__complete summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.rag-result__complete small {
+  color: var(--text-muted);
+  display: block;
+  margin-top: var(--sp-2);
+}
+
+.rag-result__complete article {
+  line-height: 1.6;
+  margin-top: var(--sp-2);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.rag-reader__metadata {
+  display: grid;
+  gap: var(--sp-2);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: var(--sp-3) 0;
+}
+
+.rag-reader__metadata div {
+  min-width: 0;
+}
+
+.rag-reader__metadata dt {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.rag-reader__metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .rag-reader__content {

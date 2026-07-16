@@ -15,8 +15,12 @@ const SEARCH_RESPONSE: RagSearchResponse = {
   totalMatched: 9,
   resultsTruncated: true,
   providerBudgetViolation: true,
+  retrievalProfile: null,
   results: [{
     evidenceId: 'ev_a',
+    rank: null,
+    document: null,
+    chunk: null,
     snippet: 'NAND evidence',
     snippetTruncated: true,
     citation: { title: 'Document A', locator: 'page 1' },
@@ -27,6 +31,7 @@ const GET_RESPONSE: RagGetResponse = {
   evidenceId: 'ev_a',
   document: { title: 'Document A', source: 'datasets' },
   content: 'Normalized source text',
+  contentChars: null,
   previousCursor: null,
   nextCursor: 'next-page',
   citation: { title: 'Document A', locator: 'page 1' },
@@ -44,6 +49,7 @@ const READY_STATUS: RagProviderStatus = {
     maxSnippetChars: 800,
     maxSearchResponseChars: 12000,
     maxGetContentChars: 8000,
+    maxChunkChars: null,
   },
   searchOptions: {
     supportsCollectionScope: true,
@@ -73,6 +79,7 @@ interface WorkspaceProps {
   reading: boolean
   readError: string
   mobileReaderOpen: boolean
+  expectedRetrievalProfile: string | null
 }
 
 const mountedApps: App[] = []
@@ -92,6 +99,7 @@ async function mountWorkspace(overrides: Partial<WorkspaceProps> = {}) {
     reading: false,
     readError: '',
     mobileReaderOpen: false,
+    expectedRetrievalProfile: null,
     ...overrides,
   })
   const onUpdateQuery = vi.fn()
@@ -157,6 +165,11 @@ beforeEach(() => {
         truncated: 'Results truncated',
         budgetTrimmed: 'Trimmed to the OpenSquilla budget',
         snippetTruncated: 'Snippet truncated',
+        completeChunk: 'Complete chunk',
+        chunkCharacters: '{count} characters',
+        providerExecutedProfile: 'Provider executed profile: {profile}',
+        fileName: 'File name',
+        sourcePath: 'Source path',
         empty: 'Search the knowledge base to see citable evidence.',
       },
       reader: {
@@ -261,6 +274,108 @@ describe('KnowledgeSearchWorkspace', () => {
     expect(onCloseReader).toHaveBeenCalledTimes(1)
     expect(onSearch).not.toHaveBeenCalled()
   })
+
+  it('renders Protocol 1.1 identity compactly and expands the complete chunk explicitly', async () => {
+    const content = 'Complete normalized NAND evidence.'
+    const response: RagSearchResponse = {
+      returnedCount: 1,
+      totalMatched: null,
+      resultsTruncated: false,
+      providerBudgetViolation: false,
+      retrievalProfile: 'provider-actual',
+      results: [{
+        evidenceId: 'ev_full',
+        rank: 1,
+        document: {
+          id: 'doc_a',
+          title: 'NAND architecture',
+          source: 'datasets',
+          fileName: 'nand.md',
+          sourcePath: 'datasets/nand.md',
+          mediaType: 'text/markdown',
+          revision: 'sha256:abc',
+          uri: 'knowledge://documents/doc_a',
+          openUrl: '/knowledge/files/doc_a?chunkId=chunk_a',
+        },
+        chunk: {
+          id: 'chunk_a',
+          content,
+          contentChars: content.length,
+        },
+        snippet: 'Complete normalized',
+        snippetTruncated: true,
+        citation: {
+          title: 'NAND architecture',
+          source: 'datasets',
+          locator: 'section 2',
+          uri: 'knowledge://documents/doc_a#chunk=chunk_a',
+        },
+      }],
+    }
+    const { root } = await mountWorkspace({
+      searchResponse: response,
+      expectedRetrievalProfile: 'selected-profile',
+    })
+
+    const result = root.querySelector<HTMLElement>('[data-result-id="ev_full"]')!
+    expect(result.querySelector('.rag-result-card__title')?.textContent).toContain('nand.md')
+    expect(result.querySelector('.rag-result-card__document-title')?.textContent)
+      .toContain('NAND architecture')
+    expect(result.textContent).toContain('datasets/nand.md')
+    expect(result.textContent).toContain('datasets')
+    expect(result.textContent).toContain('#1')
+    expect(result.textContent).toContain('section 2')
+    expect(root.textContent).toContain('Provider executed profile: provider-actual')
+    expect(root.querySelector('a[href="javascript:alert(1)"]')).toBeNull()
+
+    const complete = result.querySelector<HTMLDetailsElement>('[data-testid="rag-complete-chunk"]')!
+    expect(complete.open).toBe(false)
+    expect(complete.querySelector('summary')?.textContent).toContain('Complete chunk')
+    expect(complete.textContent).toContain(`${content.length} characters`)
+    complete.querySelector<HTMLElement>('summary')!.click()
+    await nextTick()
+    expect(complete.open).toBe(true)
+    expect(complete.textContent).toContain(content)
+  })
+
+  it('renders full Get document metadata, character count, and cursor values', async () => {
+    const content = 'Complete paged NAND evidence.'
+    const response: RagGetResponse = {
+      evidenceId: 'ev_full',
+      document: {
+        id: 'doc_a',
+        title: 'NAND architecture',
+        source: 'datasets',
+        fileName: 'nand.md',
+        sourcePath: 'datasets/nand.md',
+        mediaType: 'text/markdown',
+        revision: 'sha256:abc',
+        uri: 'knowledge://documents/doc_a',
+        openUrl: '/knowledge/files/doc_a?chunkId=chunk_a',
+      },
+      content,
+      contentChars: content.length,
+      previousCursor: 'previous-page',
+      nextCursor: 'next-page',
+      citation: {
+        title: 'NAND architecture',
+        source: 'datasets',
+        locator: 'section 2',
+        uri: 'knowledge://documents/doc_a#chunk=chunk_a',
+      },
+      legacyLimitedGet: false,
+    }
+    const { root } = await mountWorkspace({ getResponse: response })
+
+    expect(root.querySelector('.rag-reader .control-panel__title')?.textContent)
+      .toContain('nand.md')
+    expect(root.textContent).toContain('NAND architecture')
+    expect(root.textContent).toContain('File name')
+    expect(root.textContent).toContain('datasets/nand.md')
+    expect(root.textContent).toContain(`${content.length} characters`)
+    expect(root.textContent).toContain('previous-page')
+    expect(root.textContent).toContain('next-page')
+  })
 })
 
 describe('KnowledgeProviderDetails', () => {
@@ -273,13 +388,14 @@ describe('KnowledgeProviderDetails', () => {
     expect(root.textContent).toContain('preview')
     expect(root.textContent).toContain('datasets, manuals')
     expect(root.textContent).toContain('12000')
+    expect(root.textContent).toContain('maxChunkChars')
   })
 
   it('uses only placeholder values when no provider status is available', async () => {
     const root = await mountDetails(null)
     expect(root.querySelector('details')).not.toBeNull()
     const values = Array.from(root.querySelectorAll('dd'), item => item.textContent?.trim())
-    expect(values.length).toBe(14)
+    expect(values.length).toBe(15)
     expect(values.every(value => value === '—')).toBe(true)
   })
 })

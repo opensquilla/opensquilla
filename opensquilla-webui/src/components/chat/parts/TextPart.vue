@@ -34,7 +34,7 @@ const missingCitationLabel = computed(() =>
 
 function labelFor(sourceId: number): string {
   const source = props.sources[sourceId - 1]
-  return source ? source.title || source.domain : ''
+  return source ? source.title || source.domain || '' : ''
 }
 
 function codeText(pre: HTMLPreElement): string {

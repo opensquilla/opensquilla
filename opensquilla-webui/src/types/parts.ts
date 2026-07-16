@@ -69,6 +69,49 @@ export interface InterruptViewState {
   error: string
 }
 
+export interface WebSourcePart {
+  // Legacy persisted Web sources omit kind; new folds always stamp `web`.
+  kind?: 'web'
+  sourceId: number
+  url: string
+  title: string
+  domain: string
+  canonicalUrl?: string
+  provider?: string
+  fetched?: boolean
+  fetchStatus?: string
+}
+
+export interface KnowledgeSourcePart {
+  kind: 'knowledge'
+  sourceId: number
+  title: string
+  url?: string
+  domain?: string
+  evidenceId?: string
+  rank?: number
+  documentTitle?: string
+  documentId?: string
+  fileName?: string
+  sourcePath?: string
+  source?: string
+  mediaType?: string
+  revision?: string
+  documentUri?: string
+  citationTitle?: string
+  citationUri?: string
+  locator?: string
+  snippet?: string
+  snippetTruncated?: boolean
+}
+
+/**
+ * Web history is backward-compatible (`kind` may be absent); Knowledge
+ * sidecars are explicitly discriminated and intentionally expose no full
+ * chunk/content field.
+ */
+export type SourcePart = WebSourcePart | KnowledgeSourcePart
+
 export type Part =
   | { type: 'reasoning'; text: string; seconds: number }
   | { type: 'text'; html: string; rawText: string }
@@ -94,17 +137,7 @@ export type Part =
       error?: string            // == output when isError, else undefined
     }
   | { type: 'artifact'; artifact: ArtifactPayload }
-  | {
-      type: 'source'
-      sourceId: number
-      url: string
-      title: string
-      domain: string
-      canonicalUrl?: string
-      provider?: string
-      fetched?: boolean
-      fetchStatus?: string
-    }
+  | ({ type: 'source' } & SourcePart)
   | {
       type: 'interrupt'
       interruptKind: 'approval' | 'clarify'
@@ -124,17 +157,6 @@ export type ChatPart = Part & { key: string }
  * `statusHistory` is declared now (frozen shape) but stays `[]` because no status
  * frames exist outside the live stream yet.
  */
-export interface SourcePart {
-  sourceId: number
-  url: string
-  title: string
-  domain: string
-  canonicalUrl?: string
-  provider?: string
-  fetched?: boolean
-  fetchStatus?: string
-}
-
 export interface StatusPart {
   action: string
   label: string

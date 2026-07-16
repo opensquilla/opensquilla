@@ -88,6 +88,8 @@ export function toolIconName(name: string): IconName {
 
 export function toolOperationKey(name: string): string {
   const n = String(name || '').toLowerCase()
+  if (n === 'knowledge_search') return 'knowledge.search'
+  if (n === 'knowledge_get') return 'knowledge.get'
   if (n.includes('web_discover')) return 'web.discover'
   if (n.includes('web_search') || n === 'search' || n.includes('google') || n.includes('bing')) return 'web.search'
   if (n.includes('web_fetch') || n.includes('http') || n.includes('fetch') || n.includes('curl') || n.includes('wget')) return 'web.read'
@@ -104,6 +106,8 @@ export function toolOperationKey(name: string): string {
 export function toolActionLabel(name: string): string {
   const key = toolOperationKey(name)
   const t = i18n.global.t
+  if (key === 'knowledge.search') return 'Search knowledge'
+  if (key === 'knowledge.get') return 'Read knowledge source'
   if (key === 'web.discover') return t('chat.tool.discoverLinks')
   if (key === 'web.search') return t('chat.tool.searchWeb')
   if (key === 'web.read') return t('chat.tool.readWebPage')

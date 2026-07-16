@@ -118,7 +118,10 @@ function buildPill(n: number, opts: CitationDecorateOptions): HTMLButtonElement 
   pill.className = 'citation-pill'
   pill.textContent = `[${n}]`
   pill.setAttribute('data-citation', String(n))
-  pill.setAttribute('aria-label', `Jump to source ${n}: ${opts.labelFor(n)}`)
+  const label = opts.labelFor(n).trim()
+  pill.setAttribute('aria-label', label
+    ? `Jump to source ${n}: ${label}`
+    : `Jump to source ${n}`)
   pill.addEventListener('click', () => opts.onActivate(n))
   return pill
 }

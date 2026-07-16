@@ -51,4 +51,33 @@ describe('decorateCitations', () => {
     expect(root.querySelector('button.citation-pill')).toBeNull()
     expect(onMissingCitations).not.toHaveBeenCalled()
   })
+
+  it('decorates citations for Knowledge sources without URL or domain fields', () => {
+    const knowledgeSources: SourcePart[] = [
+      {
+        kind: 'knowledge',
+        sourceId: 1,
+        evidenceId: 'ev_1',
+        title: 'Local handbook.pdf',
+        documentTitle: 'Local handbook',
+        locator: 'page 3',
+      },
+    ]
+    const root = document.createElement('div')
+    root.textContent = 'Knowledge-backed answer [1].'
+    const onActivate = vi.fn()
+
+    const created = decorateCitations(root, knowledgeSources, {
+      onActivate,
+      labelFor: sourceId => knowledgeSources[sourceId - 1]?.title || '',
+    })
+
+    const pill = root.querySelector<HTMLButtonElement>('button.citation-pill')
+    expect(created).toBe(1)
+    expect(pill?.getAttribute('aria-label')).toBe(
+      'Jump to source 1: Local handbook.pdf',
+    )
+    pill?.click()
+    expect(onActivate).toHaveBeenCalledWith(1)
+  })
 })

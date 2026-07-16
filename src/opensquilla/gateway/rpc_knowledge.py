@@ -68,10 +68,13 @@ async def _handle_knowledge_status(
         _require_only(params, set())
     settings = ctx.config.knowledge
     runtime = ctx.rag_provider_runtime
-    result = (
-        runtime.snapshot().to_wire()
-        if runtime is not None
-        else {
+    capabilities = None
+    if runtime is not None:
+        snapshot = runtime.snapshot()
+        capabilities = snapshot.capabilities
+        result = snapshot.to_wire()
+    else:
+        result = {
             "connectionState": "DISABLED",
             "provider": None,
             "protocolVersion": None,
@@ -84,11 +87,22 @@ async def _handle_knowledge_status(
             "consecutiveFailures": 0,
             "warning": None,
         }
-    )
+    effective_profile = None
+    if capabilities is not None:
+        advertised_profiles = {
+            profile_id for profile_id, _label in capabilities.retrieval_profiles
+        }
+        configured_profile = settings.retrieval_profile_override
+        effective_profile = (
+            configured_profile
+            if configured_profile in advertised_profiles
+            else capabilities.default_retrieval_profile
+        )
     return {
         **result,
         "enabled": bool(settings.enabled),
         "retrievalProfileOverride": settings.retrieval_profile_override,
+        "effectiveRetrievalProfile": effective_profile,
         "collectionScope": list(settings.collection_scope),
         "legacyConfigPresent": bool(settings.legacy_config_present),
         "legacyAdapterEnabled": bool(settings.legacy_knowledge_adapter),

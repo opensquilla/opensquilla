@@ -11,7 +11,12 @@ from opensquilla.gateway.config import GatewayConfig
 from opensquilla.tools.registry import ToolRegistry
 
 
-def _config(tmp_path: Path, *, enabled: bool) -> GatewayConfig:
+def _config(
+    tmp_path: Path,
+    *,
+    enabled: bool,
+    legacy_adapter: bool = False,
+) -> GatewayConfig:
     return GatewayConfig(
         state_dir=str(tmp_path / "state"),
         workspace_dir=str(tmp_path / "workspace"),
@@ -20,7 +25,10 @@ def _config(tmp_path: Path, *, enabled: bool) -> GatewayConfig:
         mcp={"enabled": False},
         memory={"flush_enabled": False},
         sandbox={"auto_setup": False},
-        knowledge={"enabled": enabled},
+        knowledge={
+            "enabled": enabled,
+            "legacy_knowledge_adapter": legacy_adapter,
+        },
     )
 
 
@@ -60,15 +68,18 @@ async def test_disabled_config_does_not_construct_rag_provider_runtime(
         raise AssertionError("disabled provider must not be constructed")
 
     monkeypatch.setattr(runtime_module, "create_rag_provider_runtime", factory)
+    registry = ToolRegistry()
     services = await build_services(
         config=_config(tmp_path, enabled=False),
-        tool_registry=ToolRegistry(),
+        tool_registry=registry,
         session_db_path=str(tmp_path / "sessions.sqlite"),
         seed_agent_workspaces=False,
     )
     try:
         assert calls == []
         assert services.rag_provider_runtime is None
+        assert "knowledge_search" not in registry.list_names()
+        assert "knowledge_get" not in registry.list_names()
     finally:
         await services.close()
 
@@ -112,6 +123,56 @@ async def test_enabled_config_owns_one_started_rag_provider_runtime(
         await services.close()
 
     assert instances[0].stop_count == 1
+
+
+@pytest.mark.asyncio
+async def test_legacy_adapter_uses_the_same_single_runtime_wiring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.gateway import rag_provider_runtime as runtime_module
+
+    calls: list[tuple[Any, Any]] = []
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.start_count = 0
+            self.stop_count = 0
+
+        async def start(self) -> None:
+            self.start_count += 1
+
+        async def stop(self) -> None:
+            self.stop_count += 1
+
+        def snapshot(self) -> Any:
+            return SimpleNamespace(state=SimpleNamespace(value="LEGACY"))
+
+    runtime = Runtime()
+
+    def factory(config: Any, registry: Any) -> Runtime:
+        calls.append((config, registry))
+        return runtime
+
+    monkeypatch.setattr(runtime_module, "create_rag_provider_runtime", factory)
+    registry = ToolRegistry()
+    config = _config(tmp_path, enabled=True, legacy_adapter=True)
+
+    services = await build_services(
+        config=config,
+        tool_registry=registry,
+        session_db_path=str(tmp_path / "sessions.sqlite"),
+        seed_agent_workspaces=False,
+    )
+    try:
+        assert calls == [(config, registry)]
+        assert config.knowledge.legacy_knowledge_adapter is True
+        assert services.rag_provider_runtime is runtime
+        assert runtime.start_count == 1
+    finally:
+        await services.close()
+
+    assert runtime.stop_count == 1
 
 
 @pytest.mark.asyncio

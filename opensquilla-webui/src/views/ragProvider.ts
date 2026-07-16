@@ -146,8 +146,10 @@ export function browserManagementLink(value: string | undefined): string | null 
   }
 }
 
+const PROTOCOL_CONTROL_CHARACTER_RE = /[\u0000-\u001f\u007f-\u009f]/
+
 function nonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && Boolean(value.trim())
+  return typeof value === 'string' && Boolean(value.trim()) && !PROTOCOL_CONTROL_CHARACTER_RE.test(value)
 }
 
 function characterCount(value: string): number {

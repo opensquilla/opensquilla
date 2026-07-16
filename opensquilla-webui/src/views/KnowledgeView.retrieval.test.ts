@@ -149,6 +149,14 @@ const V11_GET_RESPONSE = (() => {
   }
 })()
 
+const PROTOCOL_CONTROL_CHARACTERS = [
+  ['C0 U+0000', '\u0000'],
+  ['C0 U+001F', '\u001f'],
+  ['DEL U+007F', '\u007f'],
+  ['C1 NEL U+0085', '\u0085'],
+  ['C1 U+009F', '\u009f'],
+] as const
+
 const GET_RESPONSE = {
   evidenceId: 'ev_a',
   document: { title: 'Document A', source: 'datasets' },
@@ -413,6 +421,77 @@ describe('RAG Provider response normalization', () => {
     expect(document).not.toHaveProperty('sourcePath')
     expect(document).not.toHaveProperty('uri')
     expect(document).not.toHaveProperty('openUrl')
+  })
+
+  it.each(PROTOCOL_CONTROL_CHARACTERS)(
+    'omits %s from optional Protocol 1.1 document and citation metadata',
+    (_label, control) => {
+      const payload = structuredClone(V11_SEARCH_RESPONSE)
+      Object.assign(payload.results[0].document, {
+        source: `datasets${control}private`,
+        fileName: `nand${control}.md`,
+        sourcePath: `datasets/${control}private.md`,
+        mediaType: `text/${control}markdown`,
+        revision: `sha256:${control}private`,
+        uri: `knowledge://documents/doc${control}private`,
+        openUrl: `https://knowledge.example.com/files/${control}private`,
+      })
+      payload.results[0].citation.source = `datasets${control}private`
+
+      const normalized = normalizeRagSearchResponse(payload)
+      expect(normalized).not.toBeNull()
+      expect(normalized?.results[0].document).toEqual({
+        id: 'doc_a',
+        title: 'NAND architecture',
+      })
+      expect(normalized?.results[0].citation).not.toHaveProperty('source')
+    },
+  )
+
+  it.each(PROTOCOL_CONTROL_CHARACTERS)(
+    'rejects %s in required Protocol 1.1 text and citation URIs',
+    (_label, control) => {
+      for (const mutate of [
+        (payload: typeof V11_SEARCH_RESPONSE) => {
+          payload.results[0].document.title = `NAND${control}architecture`
+        },
+        (payload: typeof V11_SEARCH_RESPONSE) => {
+          payload.results[0].citation.locator = `section${control}2`
+        },
+        (payload: typeof V11_SEARCH_RESPONSE) => {
+          payload.results[0].citation.uri = `knowledge://documents/doc_a#chunk=${control}private`
+        },
+      ]) {
+        const payload = structuredClone(V11_SEARCH_RESPONSE)
+        mutate(payload)
+        expect(normalizeRagSearchResponse(payload)).toBeNull()
+      }
+    },
+  )
+
+  it('preserves valid non-control Unicode in Protocol 1.1 metadata and locations', () => {
+    const payload = structuredClone(V11_SEARCH_RESPONSE)
+    Object.assign(payload.results[0].document, {
+      title: '与非门架构',
+      source: '资料库',
+      fileName: '芯片.md',
+      sourcePath: '资料/芯片.md',
+      mediaType: 'text/markdown; 描述=文档',
+      revision: '版本-一',
+      uri: 'knowledge://documents/文档',
+      openUrl: '/知识/文档',
+    })
+    Object.assign(payload.results[0].citation, {
+      title: '与非门证据',
+      source: '资料库',
+      locator: '章节二',
+      uri: 'knowledge://documents/文档#片段=一',
+    })
+
+    expect(normalizeRagSearchResponse(payload)?.results[0]).toMatchObject({
+      document: payload.results[0].document,
+      citation: payload.results[0].citation,
+    })
   })
 
   it('validates get cursors and normalized document content', () => {

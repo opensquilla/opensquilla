@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import random
@@ -43,6 +44,7 @@ REQUEST_TRACE_MESSAGE_MAX_CHARS = _env_int(
     "OPENSQUILLA_ENSEMBLE_TRACE_MESSAGE_MAX_CHARS",
     12000,
 )
+PROPOSER_TOOL_ERROR_MAX_ITEMS = 32
 
 
 @dataclass(frozen=True)
@@ -65,6 +67,11 @@ class _CandidateResult:
     provider: str
     model: str
     text: str = ""
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    prompt_tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    tool_calls_truncated: bool = False
+    tool_call_errors: list[str] = field(default_factory=list)
+    tool_call_error_total: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
@@ -82,7 +89,7 @@ class _CandidateResult:
 
     @property
     def ok(self) -> bool:
-        return not self.error and bool(self.text.strip())
+        return not self.error and (bool(self.text.strip()) or bool(self.prompt_tool_calls))
 
     def usage_row(self, *, role: str, profile: str) -> dict[str, Any]:
         row = {
@@ -123,8 +130,20 @@ class _CandidateResult:
         if self.error:
             row["error"] = self.error
             row["error_code"] = self.error_code
+        row["tool_call_count"] = len(self.tool_calls)
+        if self.tool_call_error_total:
+            row["tool_call_error_count"] = self.tool_call_error_total
+            row["tool_call_errors"] = list(self.tool_call_errors)
+            if self.tool_call_error_total > len(self.tool_call_errors):
+                row["tool_call_errors_truncated"] = True
+        if self.tool_calls_truncated:
+            row["tool_calls_truncated"] = True
         if include_text:
             row["text"] = self.text
+            if self.prompt_tool_calls:
+                row["tool_calls"] = _jsonable(self.prompt_tool_calls)
+            elif self.tool_calls:
+                row["tool_calls_omitted"] = True
         return row
 
 
@@ -196,6 +215,14 @@ class _CandidateTaskMeta:
     config: ChatConfig | None
 
 
+@dataclass
+class _PendingProposerToolCall:
+    tool_use_id: str
+    tool_name: str
+    synthetic_from_text: bool = False
+    json_parts: list[str] = field(default_factory=list)
+
+
 def _normalize_thinking(value: str | None) -> tuple[bool | None, Any | None]:
     if value is None:
         return None, None
@@ -227,11 +254,63 @@ def _build_provider(cfg: ProviderConfig) -> LLMProvider:
     return selector.resolve()
 
 
-def _truncate_text(text: str, max_chars: int) -> str:
+def _truncate_text(
+    text: str,
+    max_chars: int,
+    *,
+    strict_budget: bool = False,
+) -> str:
     if max_chars <= 0 or len(text) <= max_chars:
         return text
     marker = "\n\n[truncated]"
+    if strict_budget and max_chars <= len(marker):
+        return text[:max_chars]
     return text[: max(0, max_chars - len(marker))] + marker
+
+
+def _tool_calls_json(tool_calls: Sequence[dict[str, Any]]) -> str:
+    return json.dumps(_jsonable(list(tool_calls)), ensure_ascii=False, sort_keys=True)
+
+
+def _bounded_candidate_tool_calls(
+    tool_calls: Sequence[dict[str, Any]],
+    max_chars: int,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    normalized = _jsonable(list(tool_calls))
+    if not isinstance(normalized, list):
+        normalized = []
+    if not normalized:
+        return [], 0, False
+    serialized = _tool_calls_json(normalized)
+    if max_chars <= 0 or len(serialized) <= max_chars:
+        return normalized, len(serialized), False
+
+    summaries: list[dict[str, Any]] = []
+    for call in normalized:
+        if not isinstance(call, dict):
+            continue
+        arguments = call.get("arguments")
+        arguments_json = json.dumps(
+            _jsonable(arguments),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        summary = {
+            "tool_use_id": str(call.get("tool_use_id") or ""),
+            "name": str(call.get("name") or ""),
+            "arguments": {
+                "_truncated": True,
+                "_original_chars": len(arguments_json),
+            },
+            "synthetic_from_text": bool(call.get("synthetic_from_text")),
+        }
+        candidate = [*summaries, summary]
+        if len(_tool_calls_json(candidate)) > max_chars:
+            break
+        summaries.append(summary)
+    if not summaries:
+        return [], 0, True
+    return summaries, len(_tool_calls_json(summaries)), True
 
 
 def _trace_text(text: str, max_chars: int = REQUEST_TRACE_MESSAGE_MAX_CHARS) -> dict[str, Any]:
@@ -688,19 +767,55 @@ class EnsembleProvider:
                 provider=provider,
                 config=aggregator_cfg,
             )
+            selected_has_tools = bool(selection.selected.tool_calls)
+            final_request_role = (
+                "candidate_tool_reissuer" if selected_has_tools else "candidate_selector"
+            )
             trace = self._trace_payload(
                 candidates,
                 successful_count=len(successful),
                 fallback_used=False,
                 fallback_reason="",
-                final_request_role="candidate_selector",
+                final_request_role=final_request_role,
                 selected_candidates=[selection.selected],
                 prefilter_trace=prefilter.trace or None,
                 prefilter_request_count=prefilter.request_count,
-                final_request_count=selection.request_count,
+                final_request_count=(
+                    selection.request_count + 1 if selected_has_tools else selection.request_count
+                ),
                 output_strategy=self.output_strategy,
                 selection_trace=selection.trace,
             )
+            if selected_has_tools:
+                trace["candidate_tool_reissue"] = {
+                    "required": True,
+                    "source_candidate_index": selection.selected.index,
+                    "proposed_call_count": len(selection.selected.tool_calls),
+                    "prompt_truncated": selection.selected.tool_calls_truncated,
+                }
+                yield ProviderHeartbeatEvent(
+                    phase="ensemble_aggregator",
+                    message="Authorizing the selected candidate's proposed tool call(s)",
+                )
+                aggregator_messages = self._build_aggregator_messages(
+                    messages,
+                    [selection.selected],
+                )
+                async for event in self._stream_final_aggregator(
+                    provider=provider,
+                    messages=aggregator_messages,
+                    tools=tools,
+                    config=aggregator_cfg,
+                    prior_rows=[
+                        *proposer_rows,
+                        *prefilter_rows,
+                        *selection.usage_rows,
+                    ],
+                    trace=trace,
+                    label="candidate_tool_reissuer",
+                ):
+                    yield event
+                return
             async for event in self._stream_selected_candidate(
                 selection,
                 prior_rows=[*proposer_rows, *prefilter_rows],
@@ -749,17 +864,18 @@ class EnsembleProvider:
         error_code = ""
         got_done = False
         selector_messages = self._build_selector_messages(messages, candidates)
+        selector_config = config.model_copy(update={"tool_choice": None})
         request_trace = _request_trace(
             role="candidate_selector",
             profile=self.profile_name,
             member=self.aggregator,
             messages=selector_messages,
             tools=None,
-            config=config,
+            config=selector_config,
             label="candidate_selector",
         )
         try:
-            stream = provider.chat(selector_messages, tools=None, config=config)
+            stream = provider.chat(selector_messages, tools=None, config=selector_config)
             if self.aggregator_timeout_seconds > 0:
                 async with asyncio.timeout(self.aggregator_timeout_seconds):
                     async for event in stream:
@@ -798,8 +914,8 @@ class EnsembleProvider:
             include_single=True,
         )
         by_index = {candidate.index: candidate for candidate in candidates}
-        selected = by_index.get(ranked[0], fallback) if ranked else fallback
-        applied = bool(ranked) and selected.index in ranked
+        applied = bool(ranked) and got_done and not error and ranked[0] in by_index
+        selected = by_index[ranked[0]] if applied else fallback
         trace: dict[str, Any] = {
             "enabled": True,
             "applied": applied,
@@ -868,6 +984,14 @@ class EnsembleProvider:
         trace: dict[str, Any],
     ) -> AsyncIterator[StreamEvent]:
         selected = selection.selected
+        if selected.tool_calls:
+            yield ErrorEvent(
+                message=(
+                    "selected proposer tool calls require a fresh aggregator authorization request"
+                ),
+                code="ensemble_candidate_tool_reissue_required",
+            )
+            return
         text = selected.text
         if text:
             yield TextDeltaEvent(text=text)
@@ -1601,8 +1725,47 @@ class EnsembleProvider:
         )
         text_parts: list[str] = []
         tool_parts: list[str] = []
+        allowed_tool_names = {str(getattr(tool, "name", "") or "") for tool in (tools or [])}
+        allowed_tool_names.discard("")
+        pending_tool_calls: dict[str, _PendingProposerToolCall] = {}
+        completed_tool_calls: dict[str, dict[str, Any]] = {}
+        completed_tool_call_ids: set[str] = set()
+        tool_call_order: list[str] = []
+        pending_reported = False
         got_done = False
+
+        def record_tool_error(code: str, tool_use_id: str = "") -> None:
+            result.tool_call_error_total += 1
+            if len(result.tool_call_errors) >= PROPOSER_TOOL_ERROR_MAX_ITEMS:
+                return
+            if tool_use_id:
+                tool_id_digest = hashlib.sha256(
+                    tool_use_id.encode("utf-8", errors="replace")
+                ).hexdigest()[:16]
+                diagnostic = f"{code}:id_sha256={tool_id_digest}"
+            else:
+                diagnostic = code
+            if diagnostic not in result.tool_call_errors:
+                result.tool_call_errors.append(diagnostic)
+
         async for event in provider.chat(messages, tools=tools, config=chat_cfg):
+            if (
+                self.proposer_tools
+                and got_done
+                and isinstance(
+                    event,
+                    (
+                        TextDeltaEvent,
+                        ReasoningDeltaEvent,
+                        ToolUseStartEvent,
+                        ToolUseDeltaEvent,
+                        ToolUseEndEvent,
+                        DoneEvent,
+                    ),
+                )
+            ):
+                record_tool_error(f"event_after_done:{event.kind}")
+                continue
             if isinstance(event, TextDeltaEvent):
                 if result.ttft_ms is None and event.text:
                     result.ttft_ms = int((time.monotonic() - started) * 1000)
@@ -1610,15 +1773,115 @@ class EnsembleProvider:
             elif isinstance(event, ReasoningDeltaEvent):
                 continue
             elif isinstance(event, ToolUseStartEvent):
-                tool_parts.append(f"\n[tool_use:{event.tool_name}]")
+                if not self.proposer_tools:
+                    tool_parts.append(f"\n[tool_use:{event.tool_name}]")
+                    continue
+                if result.ttft_ms is None:
+                    result.ttft_ms = int((time.monotonic() - started) * 1000)
+                tool_use_id = str(event.tool_use_id or "")
+                if not tool_use_id:
+                    record_tool_error("empty_tool_use_id")
+                elif tool_use_id in pending_tool_calls or tool_use_id in completed_tool_call_ids:
+                    record_tool_error("duplicate_tool_start", tool_use_id)
+                else:
+                    pending_tool_calls[tool_use_id] = _PendingProposerToolCall(
+                        tool_use_id=tool_use_id,
+                        tool_name=str(event.tool_name or ""),
+                        synthetic_from_text=bool(event.synthetic_from_text),
+                    )
+                    tool_call_order.append(tool_use_id)
             elif isinstance(event, ToolUseDeltaEvent):
-                if event.json_fragment:
-                    tool_parts.append(event.json_fragment)
+                if not self.proposer_tools:
+                    if event.json_fragment:
+                        tool_parts.append(event.json_fragment)
+                    continue
+                tool_use_id = str(event.tool_use_id or "")
+                pending = pending_tool_calls.get(tool_use_id)
+                if pending is None:
+                    record_tool_error("orphan_tool_delta", tool_use_id)
+                elif event.json_fragment:
+                    pending.json_parts.append(str(event.json_fragment))
             elif isinstance(event, ToolUseEndEvent):
-                if event.arguments:
-                    tool_parts.append(f"\n[tool_args:{event.arguments}]")
+                if not self.proposer_tools:
+                    if event.arguments:
+                        tool_parts.append(f"\n[tool_args:{event.arguments}]")
+                    continue
+                if result.ttft_ms is None:
+                    result.ttft_ms = int((time.monotonic() - started) * 1000)
+                tool_use_id = str(event.tool_use_id or "")
+                pending = pending_tool_calls.pop(tool_use_id, None)
+                if pending is None:
+                    code = (
+                        "duplicate_tool_end"
+                        if tool_use_id in completed_tool_call_ids
+                        else "orphan_tool_end"
+                    )
+                    record_tool_error(code, tool_use_id)
+                    continue
+
+                completed_tool_call_ids.add(tool_use_id)
+                call_error_count = result.tool_call_error_total
+                end_name = str(event.tool_name or "")
+                if pending.tool_name and end_name and pending.tool_name != end_name:
+                    record_tool_error("tool_name_mismatch", tool_use_id)
+                tool_name = end_name or pending.tool_name
+                if not tool_name:
+                    record_tool_error("empty_tool_name", tool_use_id)
+                elif tool_name not in allowed_tool_names:
+                    record_tool_error("unoffered_tool_name", tool_use_id)
+
+                if not isinstance(event.arguments, dict):
+                    record_tool_error("non_object_tool_arguments", tool_use_id)
+                    arguments: dict[str, Any] = {}
+                else:
+                    try:
+                        serialized_arguments = json.dumps(
+                            event.arguments,
+                            ensure_ascii=False,
+                            allow_nan=False,
+                            sort_keys=True,
+                        )
+                        normalized_arguments = json.loads(serialized_arguments)
+                    except (TypeError, ValueError):
+                        record_tool_error("non_json_tool_arguments", tool_use_id)
+                        arguments = {}
+                    else:
+                        arguments = normalized_arguments
+
+                if pending.json_parts:
+                    try:
+                        parsed_arguments = json.loads("".join(pending.json_parts))
+                        json.dumps(parsed_arguments, allow_nan=False)
+                    except (TypeError, ValueError):
+                        record_tool_error("invalid_tool_argument_json", tool_use_id)
+                    else:
+                        if not isinstance(parsed_arguments, dict):
+                            record_tool_error("non_object_tool_argument_json", tool_use_id)
+                        elif arguments and parsed_arguments != arguments:
+                            record_tool_error("tool_arguments_mismatch", tool_use_id)
+                        elif not arguments:
+                            arguments = parsed_arguments
+
+                if set(arguments) == {"_raw"} and isinstance(
+                    arguments.get("_raw"), str
+                ):
+                    record_tool_error("unparsed_raw_tool_arguments", tool_use_id)
+
+                if result.tool_call_error_total == call_error_count:
+                    completed_tool_calls[tool_use_id] = {
+                        "tool_use_id": tool_use_id,
+                        "name": tool_name,
+                        "arguments": arguments,
+                        "synthetic_from_text": bool(
+                            event.synthetic_from_text or pending.synthetic_from_text
+                        ),
+                    }
             elif isinstance(event, DoneEvent):
                 got_done = True
+                if self.proposer_tools and pending_tool_calls:
+                    for tool_use_id in pending_tool_calls:
+                        record_tool_error("incomplete_tool_call", tool_use_id)
+                    pending_reported = True
                 result.input_tokens = event.input_tokens
                 result.output_tokens = event.output_tokens
                 result.reasoning_tokens = event.reasoning_tokens
@@ -1633,11 +1896,96 @@ class EnsembleProvider:
                 result.error = event.message
                 result.error_code = event.code
                 break
-        result.text = _truncate_text("".join(text_parts + tool_parts), self.candidate_max_chars)
+        if not self.proposer_tools:
+            result.text = _truncate_text(
+                "".join(text_parts + tool_parts),
+                self.candidate_max_chars,
+            )
+            if not got_done and not result.error:
+                result.error = "proposer stream ended before DoneEvent"
+                result.error_code = "stream_incomplete"
+            return result
+
+        if pending_tool_calls and not pending_reported:
+            for tool_use_id in pending_tool_calls:
+                record_tool_error("incomplete_tool_call", tool_use_id)
+        if result.tool_call_errors:
+            result.tool_calls.clear()
+            if not result.error:
+                result.error = "malformed proposer tool stream: " + ", ".join(
+                    result.tool_call_errors
+                )
+                result.error_code = "malformed_tool_stream"
+        else:
+            result.tool_calls = [
+                completed_tool_calls[tool_use_id]
+                for tool_use_id in tool_call_order
+                if tool_use_id in completed_tool_calls
+            ]
+
+        raw_text = "".join(text_parts)
+        synthetic_tool_names = [
+            str(tool_call.get("name") or "")
+            for tool_call in result.tool_calls
+            if tool_call.get("synthetic_from_text")
+        ]
+        if synthetic_tool_names:
+            # Import lazily: importing opensquilla.engine while the provider package
+            # is initializing creates a provider -> engine -> provider cycle.
+            from opensquilla.engine.tool_text_compat import (
+                strip_synthetic_tool_call_suffix,
+            )
+
+            raw_text = strip_synthetic_tool_call_suffix(
+                raw_text,
+                synthetic_tool_names,
+            )
+        (
+            result.prompt_tool_calls,
+            tool_call_chars,
+            result.tool_calls_truncated,
+        ) = _bounded_candidate_tool_calls(result.tool_calls, self.candidate_max_chars)
+        if self.candidate_max_chars > 0:
+            remaining_text_chars = max(0, self.candidate_max_chars - tool_call_chars)
+            result.text = (
+                _truncate_text(
+                    raw_text,
+                    remaining_text_chars,
+                    strict_budget=True,
+                )
+                if remaining_text_chars > 0
+                else ""
+            )
+        else:
+            result.text = raw_text
         if not got_done and not result.error:
             result.error = "proposer stream ended before DoneEvent"
             result.error_code = "stream_incomplete"
         return result
+
+    @staticmethod
+    def _candidate_prompt_content(candidate: _CandidateResult) -> str:
+        text = candidate.text.strip()
+        if not candidate.tool_calls:
+            return text or "[empty]"
+        proposed_calls = (
+            _tool_calls_json(candidate.prompt_tool_calls) if candidate.prompt_tool_calls else ""
+        )
+        sections = [text] if text else []
+        sections.extend(
+            [
+                (
+                    '<PROPOSED_TOOL_CALLS status="not_executed"'
+                    f' truncated="{str(candidate.tool_calls_truncated).lower()}"'
+                    + (' omitted="true"' if not candidate.prompt_tool_calls else "")
+                    + ">"
+                ),
+            ]
+        )
+        if proposed_calls:
+            sections.append(proposed_calls)
+        sections.append("</PROPOSED_TOOL_CALLS>")
+        return "\n".join(sections)
 
     def _build_prefilter_messages(
         self,
@@ -1657,7 +2005,7 @@ class EnsembleProvider:
         ]
         for candidate in ordered:
             lines.append(f'\n<CANDIDATE index="{candidate.index}">')
-            lines.append(candidate.text.strip() or "[empty]")
+            lines.append(self._candidate_prompt_content(candidate))
             lines.append(f"</CANDIDATE {candidate.index}>")
         return [*messages, Message(role="user", content="\n".join(lines))]
 
@@ -1678,7 +2026,7 @@ class EnsembleProvider:
         ]
         for candidate in ordered:
             lines.append(f'\n<CANDIDATE index="{candidate.index}">')
-            lines.append(candidate.text.strip() or "[empty]")
+            lines.append(self._candidate_prompt_content(candidate))
             lines.append(f"</CANDIDATE {candidate.index}>")
         return [*messages, Message(role="user", content="\n".join(lines))]
 
@@ -1702,9 +2050,19 @@ class EnsembleProvider:
             "",
             "Candidate drafts:",
         ]
+        if any(candidate.tool_calls for candidate in ordered):
+            lines.extend(
+                [
+                    "Candidate PROPOSED_TOOL_CALLS are structured suggestions that have "
+                    "not been executed.",
+                    "If one should run, issue a fresh structured call through the tools "
+                    "available to you; never present the serialized tool-call JSON as "
+                    "the final answer.",
+                ]
+            )
         for display_index, candidate in enumerate(ordered, start=1):
             lines.append(f"\n<CANDIDATE {display_index}>")
-            lines.append(candidate.text.strip() or "[empty]")
+            lines.append(self._candidate_prompt_content(candidate))
             lines.append(f"</CANDIDATE {display_index}>")
         return [*messages, Message(role="user", content="\n".join(lines))]
 
@@ -1760,6 +2118,7 @@ class EnsembleProvider:
             "fallback_used": fallback_used,
             "fallback_reason": fallback_reason,
             "shuffle_candidates": self.shuffle_candidates,
+            "proposer_tools_enabled": self.proposer_tools,
             "final_request_role": final_request_role,
             "llm_request_count": (
                 len(candidates)

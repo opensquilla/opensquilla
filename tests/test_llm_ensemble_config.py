@@ -23,6 +23,7 @@ def test_llm_ensemble_config_defaults_disabled_with_profiles() -> None:
     cfg = GatewayConfig()
 
     assert cfg.llm_ensemble.enabled is False
+    assert cfg.llm_ensemble.proposer_tools is False
     assert cfg.llm_ensemble.active_profile == "g3_standard"
     assert "g3_standard" in cfg.llm_ensemble.profiles
     assert "g1_code" in cfg.llm_ensemble.profiles
@@ -241,6 +242,7 @@ def test_build_ensemble_provider_from_gateway_config() -> None:
     cfg = GatewayConfig(
         llm_ensemble={
             "enabled": True,
+            "proposer_tools": True,
             "active_profile": "custom",
             "profiles": {
                 "custom": {
@@ -271,6 +273,7 @@ def test_build_ensemble_provider_from_gateway_config() -> None:
     )
 
     assert isinstance(provider, EnsembleProvider)
+    assert provider.proposer_tools is True
     assert provider.profile_name == "custom"
     assert [member.provider_config.model for member in provider.proposers] == ["p1", "p2"]
     assert provider.proposers[1].k == 2

@@ -322,6 +322,9 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert g3["final_text_sha256"]
     assert g3["runner_mode"] == "provider"
     assert g3["tools_enabled"] is False
+    assert g3["proposer_tools_enabled"] is False
+    assert g3["execution"]["proposer_tools_enabled"] is False
+    assert g3["ensemble_trace"]["proposer_tools_enabled"] is False
     assert g3["stream_tool_call_count"] == 0
     assert g3["server_tool_call_count"] == 0
     assert g3["total_tool_call_count"] == 0
@@ -373,6 +376,70 @@ async def test_draco_runner_dry_run_writes_jsonl_and_summary(tmp_path: Path) -> 
     assert manifest["agent_max_iterations"] == 12
     assert manifest["generation_policy"]["generation_thinking"] == "model_max"
     assert "huggingface.co" in manifest["tool_policy"]["contamination_blocked_domains"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_draco_runner_cli_to_dry_result_preserves_proposer_tools_flag(
+    tmp_path: Path,
+    enabled: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    providers: list[_ToolCaptureProvider] = []
+
+    def fake_profile_provider(**kwargs):  # noqa: ANN003, ANN202
+        provider = _ToolCaptureProvider()
+        provider.proposer_tools = bool(kwargs["enable_proposer_tools"])
+        providers.append(provider)
+        return provider
+
+    monkeypatch.setattr(
+        "scripts.run_draco_ensemble.build_profile_provider",
+        fake_profile_provider,
+    )
+    input_path = tmp_path / "draco.jsonl"
+    input_path.write_text(
+        json.dumps({"id": "task-1", "prompt": "Research this."}) + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "reports"
+    argv = [
+        "--input",
+        str(input_path),
+        "--output-dir",
+        str(output_dir),
+        "--groups",
+        "G8",
+        "--runner-mode",
+        "provider",
+        "--tool-mode",
+        "openrouter_server_tools",
+        "--max-tasks",
+        "1",
+        "--concurrency",
+        "1",
+        "--dry-run",
+    ]
+    if enabled:
+        argv.append("--enable-proposer-tools")
+    args = build_parser().parse_args(argv)
+    args.command_argv = ["scripts/run_draco_ensemble.py", *argv]
+
+    assert await amain(args) == 0
+
+    [jsonl_path] = output_dir.glob("draco_ensemble_*.jsonl")
+    row = json.loads(jsonl_path.read_text(encoding="utf-8").strip())
+    assert row["tools_enabled"] is True
+    assert row["proposer_tools_enabled"] is enabled
+    assert row["execution"]["proposer_tools_enabled"] is enabled
+    assert providers[0].proposer_tools is enabled
+    assert {tool.name for tool in providers[0].seen_tools} == {
+        "openrouter:web_fetch",
+        "openrouter:web_search",
+    }
+    [manifest_path] = output_dir.glob("draco_run_*.manifest.json")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["args"]["enable_proposer_tools"] is enabled
 
 
 def test_draco_runner_requires_explicit_groups() -> None:
@@ -436,6 +503,7 @@ def test_draco_runner_explicit_groups_preserve_runtime_defaults() -> None:
     assert args.runner_mode == "agent_loop"
     assert args.agent_max_iterations == 12
     assert args.tool_mode == "provider_only"
+    assert args.enable_proposer_tools is False
     assert args.local_web_search_provider == "duckduckgo"
     assert args.local_web_search_api_key_env == ""
     assert args.openrouter_web_search_engine == "exa"
@@ -446,6 +514,26 @@ def test_draco_runner_explicit_groups_preserve_runtime_defaults() -> None:
     assert "hf.co" in parse_domain_list(args.contamination_blocked_domains)
     assert "huggingface.co" in parse_domain_list(args.contamination_blocked_domains)
     assert "arxiv.org" not in parse_domain_list(args.contamination_blocked_domains)
+
+
+def test_draco_runner_proposer_tools_flag_is_recorded_in_command() -> None:
+    args = build_parser().parse_args(
+        [
+            "--input",
+            "draco.jsonl",
+            "--groups",
+            "G8",
+            "--tool-mode",
+            "local_web_tools",
+            "--enable-proposer-tools",
+        ]
+    )
+
+    payload = command_payload(args)
+
+    assert args.enable_proposer_tools is True
+    assert payload["parsed_args"]["enable_proposer_tools"] is True
+    assert "--enable-proposer-tools" in payload["argv"]
 
 
 def test_draco_runner_generation_thinking_flag_is_removed() -> None:
@@ -1073,6 +1161,7 @@ def test_draco_runner_agent_trace_preserves_moa_layer_metrics() -> None:
                         "moa_layers": 2,
                         "moa_refine_count": 1,
                         "moa_intermediate_layers": 1,
+                        "proposer_tools_enabled": True,
                     },
                 },
             }
@@ -1084,6 +1173,7 @@ def test_draco_runner_agent_trace_preserves_moa_layer_metrics() -> None:
     assert trace["moa_layers"] == 2
     assert trace["moa_refine_count"] == 1
     assert trace["moa_intermediate_layers"] == 1
+    assert trace["proposer_tools_enabled"] is True
     assert trace["calls"][0]["agent_call_id"] == "1.0"
     assert trace["calls"][0]["agent_iteration"] == 1
     assert trace["calls"][0]["agent_call_attempt"] == 2
@@ -1181,6 +1271,7 @@ def test_draco_runner_profile_provider_records_candidates_for_results() -> None:
 
     assert provider.record_candidates is True
     assert provider.shuffle_candidates is False
+    assert provider.proposer_tools is False
 
 
 def test_draco_runner_profile_provider_enables_proposer_tools_when_requested() -> None:
@@ -1202,6 +1293,33 @@ def test_draco_runner_profile_provider_enables_proposer_tools_when_requested() -
     )
 
     assert provider.proposer_tools is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_draco_runner_dry_profile_preserves_proposer_tools_flag(
+    enabled: bool,
+) -> None:
+    provider = build_profile_provider(
+        config=GatewayConfig(),
+        inherited=ProviderConfig(
+            provider="openrouter",
+            model="z-ai/glm-5.2",
+            api_key="sk-test",
+            base_url="https://openrouter.ai/api",
+        ),
+        group="G8",
+        profile="g8_four_proposers",
+        dry_run=True,
+        enable_proposer_tools=enabled,
+    )
+
+    events = [event async for event in provider.chat([Message(role="user", content="research")])]
+
+    assert provider.proposer_tools is enabled
+    done = events[-1]
+    assert isinstance(done, DoneEvent)
+    assert done.ensemble_trace["proposer_tools_enabled"] is enabled
 
 
 def test_draco_runner_generation_thinking_policy_uses_model_specific_max_members() -> None:
@@ -1339,6 +1457,30 @@ def test_draco_runner_g17_timeouts_split_aggregator_budget_by_moa_layer() -> Non
     assert (
         provider.proposer_timeout_seconds
         + provider.aggregator_timeout_seconds * provider.moa_layers
+    ) == pytest.approx(870.0)
+
+
+def test_draco_runner_g18_timeouts_reserve_selector_and_reissuer_budget() -> None:
+    provider = build_profile_provider(
+        config=GatewayConfig(),
+        inherited=ProviderConfig(
+            provider="openrouter",
+            model="z-ai/glm-5.2",
+            api_key="sk-test",
+            base_url="https://openrouter.ai/api",
+        ),
+        group="G18",
+        profile="g18_select_best_candidate",
+        dry_run=False,
+        requested_timeout=900.0,
+        expand_ensemble_timeouts_to_task_timeout=True,
+    )
+
+    assert provider.proposer_timeout_seconds == pytest.approx(157.5)
+    assert provider.aggregator_timeout_seconds == pytest.approx(356.25)
+    assert (
+        provider.proposer_timeout_seconds
+        + provider.aggregator_timeout_seconds * 2
     ) == pytest.approx(870.0)
 
 
@@ -1858,7 +2000,9 @@ def test_draco_runner_expands_outer_timeout_for_profile_budget() -> None:
 
     assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G3") == 450.0
     assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G6") == 450.0
+    assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G15") == 750.0
     assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G17") == 750.0
+    assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="G18") == 750.0
     assert group_timeout_seconds(requested_timeout=600.0, config=cfg, group="G6") == 600.0
     assert group_timeout_seconds(requested_timeout=900.0, config=cfg, group="G3") == 900.0
     assert group_timeout_seconds(requested_timeout=360.0, config=cfg, group="B2") == 360.0
@@ -2403,6 +2547,92 @@ def test_quality_total_normalizes_legacy_dimension_scores() -> None:
         )
         == 70.0
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_mode", "requested", "tools_enabled", "expected"),
+    [
+        ("local_web_tools", False, True, False),
+        ("local_web_tools", True, True, True),
+        ("local_web_tools", True, False, False),
+        ("openrouter_server_tools", False, True, False),
+        ("openrouter_server_tools", True, True, True),
+        ("openrouter_server_tools", True, False, False),
+        ("provider_only", False, True, False),
+        ("provider_only", True, True, True),
+        ("provider_only", True, False, False),
+    ],
+)
+async def test_run_one_controls_proposer_tools_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_mode: str,
+    requested: bool,
+    tools_enabled: bool,
+    expected: bool,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _profile_provider(**kwargs):  # noqa: ANN003, ANN202
+        captured.update(kwargs)
+        provider = _ToolCaptureProvider()
+        provider.proposer_tools = bool(kwargs["enable_proposer_tools"])
+        return provider
+
+    async def _generation(*args, **kwargs):  # noqa: ANN002, ANN003
+        return (
+            RunResult(
+                final_text="answer",
+                done=DoneEvent(model="ensemble/test", ensemble_trace={}),
+            ),
+            [],
+            1,
+        )
+
+    monkeypatch.setattr(
+        "scripts.run_draco_ensemble.build_profile_provider",
+        _profile_provider,
+    )
+    monkeypatch.setattr(
+        "scripts.run_draco_ensemble.collect_generation_with_retries",
+        _generation,
+    )
+
+    row = await run_one(
+        task={"id": "task-1", "prompt": "Research this."},
+        group="G8",
+        config=GatewayConfig(),
+        inherited=ProviderConfig(
+            provider="openrouter",
+            model="z-ai/glm-5.2",
+            api_key="sk-test",
+            base_url="https://openrouter.ai/api",
+        ),
+        dry_run=False,
+        judge_provider=None,
+        judge_candidates=False,
+        judge_repeats=1,
+        judge_concurrency=1,
+        judge_max_attempts=3,
+        timeout=10.0,
+        ensemble_proposer_timeout=None,
+        ensemble_aggregator_timeout=None,
+        ensemble_proposer_early_stop_success_count=None,
+        ensemble_proposer_early_stop_after=None,
+        expand_ensemble_timeouts_to_task_timeout=False,
+        tool_policy={
+            "tool_mode": tool_mode,
+            "tools_enabled": tools_enabled,
+        },
+        generation_policy=generation_thinking_policy(),
+        generation_max_attempts=1,
+        generation_retry_backoff=0.0,
+        enable_proposer_tools=requested,
+    )
+
+    assert captured["enable_proposer_tools"] is expected
+    assert row["proposer_tools_enabled"] is expected
+    assert row["execution"]["proposer_tools_enabled"] is expected
 
 
 @pytest.mark.asyncio

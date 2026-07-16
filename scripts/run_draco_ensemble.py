@@ -232,10 +232,18 @@ class DryProvider:
 class DryEnsembleProvider:
     provider_name = "dry_ensemble"
 
-    def __init__(self, *, group: str, profile: str, model: str = "dry-aggregator") -> None:
+    def __init__(
+        self,
+        *,
+        group: str,
+        profile: str,
+        model: str = "dry-aggregator",
+        proposer_tools: bool = False,
+    ) -> None:
         self.group = group
         self.profile = profile
         self.model = model
+        self.proposer_tools = bool(proposer_tools)
 
     async def chat(self, messages: list[Message], tools=None, config=None):  # noqa: ANN001
         prompt = str(messages[-1].content if messages else "")
@@ -313,6 +321,7 @@ class DryEnsembleProvider:
                 "fallback_used": False,
                 "candidates": candidates,
                 "shuffle_candidates": False,
+                "proposer_tools_enabled": self.proposer_tools,
                 "final_request_role": "aggregator",
                 "llm_request_count": 3,
             },
@@ -1281,6 +1290,23 @@ def compact_chat_config(
     }
 
 
+def profile_aggregator_request_count(profile: Any) -> int:
+    """Maximum sequential scorer/selector/aggregator calls for one profile turn."""
+
+    moa_layers = max(1, int(getattr(profile, "moa_layers", 1) or 1))
+    final_request_count = moa_layers
+    if str(getattr(profile, "output_strategy", "fusion") or "fusion") == (
+        "select_best_candidate"
+    ):
+        # Tool candidates need a selector call plus a fresh authorization call.
+        final_request_count = 2
+    prefilter_request_count = int(
+        int(getattr(profile, "candidate_prefilter_top_k", 0) or 0) > 0
+        and getattr(profile, "candidate_scorer", None) is not None
+    )
+    return final_request_count + prefilter_request_count
+
+
 def profile_timeout_seconds(
     profile: Any,
     *,
@@ -1289,7 +1315,7 @@ def profile_timeout_seconds(
     aggregator_timeout_override: float | None = None,
     expand_to_requested_timeout: bool = False,
 ) -> tuple[float, float]:
-    moa_layers = max(1, int(getattr(profile, "moa_layers", 1) or 1))
+    aggregator_request_count = profile_aggregator_request_count(profile)
     proposer_timeout = max(
         DEFAULT_PROFILE_PROPOSER_TIMEOUT_SECONDS,
         float(getattr(profile, "proposer_timeout_seconds", 0) or 0),
@@ -1309,13 +1335,13 @@ def profile_timeout_seconds(
     ):
         return proposer_timeout, aggregator_timeout
     available = max(0.0, float(requested_timeout) - PROFILE_TIMEOUT_MARGIN_SECONDS)
-    base_budget = proposer_timeout + aggregator_timeout * moa_layers
+    base_budget = proposer_timeout + aggregator_timeout * aggregator_request_count
     if available <= base_budget:
         return proposer_timeout, aggregator_timeout
     extra = available - base_budget
     return (
         proposer_timeout + extra * 0.25,
-        aggregator_timeout + (extra * 0.75 / moa_layers),
+        aggregator_timeout + (extra * 0.75 / aggregator_request_count),
     )
 
 
@@ -1528,7 +1554,11 @@ def build_profile_provider(
     expand_ensemble_timeouts_to_task_timeout: bool = False,
 ):
     if dry_run:
-        return DryEnsembleProvider(group=group, profile=profile)
+        return DryEnsembleProvider(
+            group=group,
+            profile=profile,
+            proposer_tools=enable_proposer_tools,
+        )
     if profile not in config.llm_ensemble.profiles:
         raise ValueError(f"profile {profile!r} for group {group} is not configured")
     config.llm_ensemble.enabled = True
@@ -1877,6 +1907,7 @@ def aggregate_agent_ensemble_trace(records: list[dict[str, Any]]) -> dict[str, A
         "moa_refine_count",
         "moa_intermediate_layers",
         "output_strategy",
+        "proposer_tools_enabled",
     ):
         if key in first_trace:
             payload[key] = first_trace[key]
@@ -2858,6 +2889,7 @@ async def run_one(
     generation_max_attempts: int = GENERATION_MAX_ATTEMPTS,
     generation_retry_backoff: float = DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
     tools: list[ToolDefinition] | None = None,
+    enable_proposer_tools: bool = False,
 ) -> dict[str, Any]:
     spec = GROUP_SPECS[group]
     started = time.time()
@@ -2901,8 +2933,7 @@ async def run_one(
                 generation_policy=generation_policy,
                 requested_timeout=effective_timeout,
                 enable_proposer_tools=bool(
-                    tool_policy.get("tools_enabled")
-                    and tool_policy.get("tool_mode") != TOOL_MODE_LOCAL_WEB_TOOLS
+                    tool_policy.get("tools_enabled") and enable_proposer_tools
                 ),
                 ensemble_proposer_timeout=ensemble_proposer_timeout,
                 ensemble_aggregator_timeout=ensemble_aggregator_timeout,
@@ -2952,6 +2983,7 @@ async def run_one(
         "proposer_early_stop_after_seconds",
         None,
     )
+    profile_proposer_tools_enabled = bool(getattr(provider, "proposer_tools", False))
     should_judge = not terminal_generation_reason and run.done is not None
     judge = (
         await judge_text(
@@ -3058,6 +3090,7 @@ async def run_one(
         "provider_spec": dict(spec),
         "runner_mode": runner_mode,
         "tools_enabled": bool(tool_policy.get("tools_enabled")),
+        "proposer_tools_enabled": profile_proposer_tools_enabled,
         "tool_policy": tool_policy,
         "generation_policy": generation_policy,
         "generation_config": compact_chat_config(generation_config, generation_policy),
@@ -3100,6 +3133,7 @@ async def run_one(
             "profile_proposer_early_stop_after_s": profile_proposer_early_stop_after_s,
             "runner_mode": runner_mode,
             "agent_max_iterations": agent_max_iterations,
+            "proposer_tools_enabled": profile_proposer_tools_enabled,
             "latency_ms": latency_ms,
             "selected_generation_latency_ms": run.latency_ms,
             "ttft_ms": run.ttft_ms,
@@ -3158,10 +3192,10 @@ def group_timeout_seconds(
         proposer_timeout_override=ensemble_proposer_timeout,
         aggregator_timeout_override=ensemble_aggregator_timeout,
     )
-    moa_layers = max(1, int(getattr(profile, "moa_layers", 1) or 1))
+    aggregator_request_count = profile_aggregator_request_count(profile)
     profile_budget = (
         proposer_timeout_s
-        + aggregator_timeout_s * moa_layers
+        + aggregator_timeout_s * aggregator_request_count
         + PROFILE_TIMEOUT_MARGIN_SECONDS
     )
     return max(float(requested_timeout), profile_budget)
@@ -3191,6 +3225,7 @@ def trace_row(row: dict[str, Any]) -> dict[str, Any]:
         "domain": row.get("domain"),
         "runner_mode": row.get("runner_mode"),
         "tools_enabled": row.get("tools_enabled"),
+        "proposer_tools_enabled": row.get("proposer_tools_enabled"),
         "tool_policy": row.get("tool_policy") or {},
         "generation_policy": row.get("generation_policy") or {},
         "generation_config": row.get("generation_config") or {},
@@ -3716,6 +3751,7 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "generation_max_tokens",
         "generation_retry_backoff",
         "tool_mode",
+        "enable_proposer_tools",
         "contamination_blocked_domains",
         "local_web_search_provider",
         "local_web_search_api_key_env",
@@ -4028,6 +4064,11 @@ async def amain(args: argparse.Namespace) -> int:
                     DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
                 ),
                 tools=group_tools,
+                enable_proposer_tools=getattr(
+                    args,
+                    "enable_proposer_tools",
+                    False,
+                ),
             )
 
     pending = [_guarded(task, group) for task in tasks for group in groups]
@@ -4199,6 +4240,18 @@ def build_parser() -> argparse.ArgumentParser:
             "local_web_tools attaches executable web_search and web_fetch tools "
             "for the Agent loop; openrouter_server_tools attaches OpenRouter "
             "server tools for provider-level runs."
+        ),
+    )
+    parser.add_argument(
+        "--enable-proposer-tools",
+        action="store_true",
+        help=(
+            "For ensemble profile groups, pass the benchmark tool definitions to "
+            "proposers so they can return structured proposed tool calls. Local "
+            "executable calls remain internal candidates until the aggregator issues "
+            "a fresh call; provider-managed server tools retain their upstream "
+            "execution semantics. Disabled by default. To reproduce pre-flag "
+            "openrouter_server_tools ensemble runs, pass this flag."
         ),
     )
     parser.add_argument(

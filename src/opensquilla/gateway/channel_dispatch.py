@@ -17,6 +17,7 @@ import contextlib
 import inspect
 import json
 import re
+import uuid
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -46,7 +47,12 @@ from opensquilla.channels.artifact_delivery import (
 from opensquilla.channels.artifact_delivery import (
     strip_delivered_artifact_image_references as _strip_delivered_artifact_image_references,
 )
-from opensquilla.channels.contract import channel_capability_profile
+from opensquilla.channels.contract import (
+    REQUIRED_RETRYABLE_ERROR_CLASSES,
+    UNCLASSIFIED_ERROR_CLASS,
+    channel_capability_profile,
+    classify_channel_send_error,
+)
 from opensquilla.channels.stream_policy import resolve_channel_stream_policy
 from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.engine.start_turn import start_turn_via_runtime
@@ -2178,6 +2184,144 @@ def _build_runtime_reply_message(
     return _build_reply_message(channel, content, inbound)
 
 
+#: Attempts for a user-visible reply whose failure class can still succeed.
+#: Small on purpose: the answer is already computed, the user is waiting, and
+#: an unrecoverable channel should surface fast rather than stall the turn.
+_REPLY_SEND_ATTEMPTS: int = 3
+_REPLY_RETRY_BASE_DELAY_S: float = 1.0
+#: Same defensive ceiling the HTTP retry loop applies: a provider's pacing
+#: hint is honored, but cannot hold a finished answer hostage for hours.
+_REPLY_RETRY_MAX_DELAY_S: float = 60.0
+
+#: Failure classes where *any* send to this target fails, so a delivery-failure
+#: notice would fail identically — attempting one just burns another call.
+_REPLY_NOTICE_HOPELESS_CLASSES: frozenset[str] = frozenset(
+    {"auth_invalid", "target_missing"}
+)
+
+
+def _reply_retry_delay(error: BaseException, attempt: int) -> float:
+    """Backoff before re-sending a reply, honoring a provider pacing hint."""
+    hint = getattr(error, "retry_after", None)
+    if isinstance(hint, int | float) and not isinstance(hint, bool) and hint >= 0:
+        return min(float(hint), _REPLY_RETRY_MAX_DELAY_S)
+    backoff: float = _REPLY_RETRY_BASE_DELAY_S * (2**attempt)
+    return min(backoff, _REPLY_RETRY_MAX_DELAY_S)
+
+
+async def _send_channel_reply_guarded(
+    channel: Any,
+    message: OutgoingMessage,
+    *,
+    session_key: str,
+) -> str | None:
+    """Deliver a user-visible reply, surviving a provider send failure.
+
+    An unguarded send loses a fully-computed, already-paid-for answer: the
+    reply task dies, the outbox parks the row, and the user is left unable to
+    tell "still thinking" from "gone" — so they re-ask and buy the turn twice.
+
+    Retries are bounded and only for classes that can plausibly succeed later.
+    All attempts share one durable ``delivery_id`` so the outbox keeps a single
+    row per reply whose final state is the true outcome, rather than one row
+    per attempt.
+
+    Returns ``None`` on delivery, else the taxonomy class of the last failure.
+    """
+    metadata = dict(message.metadata or {})
+    metadata.setdefault("delivery_id", uuid.uuid4().hex)
+    message = message.model_copy(update={"metadata": metadata})
+
+    last_class = UNCLASSIFIED_ERROR_CLASS
+    for attempt in range(_REPLY_SEND_ATTEMPTS):
+        try:
+            await channel.send(message)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 - provider boundary
+            last_class = classify_channel_send_error(exc)
+            retryable = last_class in REQUIRED_RETRYABLE_ERROR_CLASSES
+            final = attempt == _REPLY_SEND_ATTEMPTS - 1
+            log.warning(
+                "channel_dispatch.reply_send_failed",
+                session_key=session_key,
+                error_class=last_class,
+                error_type=type(exc).__name__,
+                attempt=attempt,
+                will_retry=retryable and not final,
+            )
+            if not retryable or final:
+                return last_class
+            await asyncio.sleep(_reply_retry_delay(exc, attempt))
+            continue
+        else:
+            return None
+    return last_class
+
+
+async def _notify_channel_reply_lost(
+    channel: Any,
+    *,
+    route_envelope: Any,
+    session_key: str,
+    error_class: str,
+) -> None:
+    """Tell the user their answer exists but could not be delivered.
+
+    Best-effort by construction: this is itself a send on a channel that just
+    failed. It is skipped where every send to the target fails anyway, and it
+    never raises — a failed notice must not replace the failure it reports.
+    """
+    if error_class in _REPLY_NOTICE_HOPELESS_CLASSES:
+        return
+    try:
+        await channel.send(
+            _route_envelope_reply_message(
+                "I finished this reply but could not deliver it to this chat. "
+                "Ask again to have it re-sent, or check the gateway's channel "
+                "diagnostics if it keeps happening.",
+                route_envelope,
+                metadata={"delivery_failure_notice": True, "error_class": error_class},
+            )
+        )
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - best effort by design
+        log.warning(
+            "channel_dispatch.reply_failure_notice_failed",
+            session_key=session_key,
+            error_class=error_class,
+            error_type=type(exc).__name__,
+        )
+
+
+async def _deliver_reply_or_notify(
+    channel: Any,
+    message: OutgoingMessage,
+    *,
+    route_envelope: Any,
+    session_key: str,
+) -> bool:
+    """Send a reply; on final failure tell the user rather than going silent."""
+    error_class = await _send_channel_reply_guarded(
+        channel, message, session_key=session_key
+    )
+    if error_class is None:
+        return True
+    log.error(
+        "channel_dispatch.reply_undelivered",
+        session_key=session_key,
+        error_class=error_class,
+    )
+    await _notify_channel_reply_lost(
+        channel,
+        route_envelope=route_envelope,
+        session_key=session_key,
+        error_class=error_class,
+    )
+    return False
+
+
 async def _deliver_runtime_channel_reply(
     *,
     channel: Any,
@@ -2257,13 +2401,16 @@ async def _deliver_runtime_channel_reply(
         content = _strip_delivered_artifact_image_references(content, artifacts)
         if _can_deliver_channel_files(channel):
             if content:
-                await channel.send(
+                await _deliver_reply_or_notify(
+                    channel,
                     _build_runtime_reply_message(
                         channel,
                         content,
                         inbound,
                         route_envelope,
-                    )
+                    ),
+                    route_envelope=route_envelope,
+                    session_key=session_key,
                 )
             undelivered = await _deliver_artifacts_as_channel_files(
                 channel,
@@ -2273,26 +2420,32 @@ async def _deliver_runtime_channel_reply(
             )
             fallback_lines = _artifact_fallback_lines(undelivered)
             if fallback_lines:
-                await channel.send(
+                await _deliver_reply_or_notify(
+                    channel,
                     _build_runtime_reply_message(
                         channel,
                         "\n".join(fallback_lines),
                         inbound,
                         route_envelope,
-                    )
+                    ),
+                    route_envelope=route_envelope,
+                    session_key=session_key,
                 )
         else:
             fallback_lines = _artifact_fallback_lines(artifacts)
             if fallback_lines:
                 content = "\n\n".join(part for part in (content, "\n".join(fallback_lines)) if part)
             if content:
-                await channel.send(
+                await _deliver_reply_or_notify(
+                    channel,
                     _build_runtime_reply_message(
                         channel,
                         content,
                         inbound,
                         route_envelope,
-                    )
+                    ),
+                    route_envelope=route_envelope,
+                    session_key=session_key,
                 )
 
 

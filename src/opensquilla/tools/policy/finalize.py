@@ -7,8 +7,8 @@ denial payload, and success — and always routes through
 :func:`normalize_execution_status` exactly once.
 
 The function preserves the budget-bypass behaviour: when
-artifacts were published the raw content is returned unchanged; otherwise
-the result is normalised through the budget tracker.
+artifacts were published the model-facing content is returned unbudgeted;
+otherwise the result is normalised through the budget tracker.
 """
 
 from __future__ import annotations
@@ -43,6 +43,31 @@ _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
 )
 
 
+_TOOL_RESULT_PROJECTION_FAILED = "tool_result_projection_failed"
+
+
+_NON_SUCCESS_RESULT_STATUSES: frozenset[str] = frozenset(
+    {
+        "approval_denied",
+        "approval_pending",
+        "approval_required",
+        "blocked",
+        "cancelled",
+        "canceled",
+        "control",
+        "denied",
+        "error",
+        "failed",
+        "failure",
+        "pending",
+        "rejected",
+        "running",
+        "timed_out",
+        "timeout",
+    }
+)
+
+
 _DISPATCH_TRUNCATION_RETRIEVE_HINT = (
     "This tool result was truncated before entering model context. "
     "Use retrieve_tool_result with tool_result_handle to inspect the original raw output."
@@ -55,7 +80,7 @@ def _store_dispatch_truncated_snapshot(
     call: ToolCall,
     content: str,
 ) -> dict[str, Any] | None:
-    """Persist raw output that dispatch-level result budgets truncated."""
+    """Persist model-facing output before dispatch-level budget truncation."""
     if ctx is None or not ctx.tool_result_store_dir:
         return None
 
@@ -149,6 +174,103 @@ def _denial_reason(content: Any) -> str:
 
 def _has_live_approval_surface(ctx: ToolContext | None) -> bool:
     return ctx is None or ctx.interaction_mode is InteractionMode.INTERACTIVE
+
+
+def _result_status(content: Any) -> str | None:
+    payload: Any = content
+    if isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    status = payload.get("status")
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().lower()
+    return normalized or None
+
+
+def _is_successful_projection_result(
+    *,
+    result: Any,
+    denial: bool,
+    execution_status: Any,
+) -> bool:
+    if denial or _extract_pending_approval(result) is not None:
+        return False
+    if execution_status is not None and execution_status.get("status") != "success":
+        return False
+    return _result_status(result) not in _NON_SUCCESS_RESULT_STATUSES
+
+
+def _projection_failure_result(
+    *,
+    call: ToolCall,
+    artifacts: list[dict[str, Any]],
+) -> ToolResult:
+    envelope = build_tool_failure_envelope(
+        RuntimeError(_TOOL_RESULT_PROJECTION_FAILED),
+        call.tool_name,
+        error_class_override=_TOOL_RESULT_PROJECTION_FAILED,
+        user_message_override="The tool result could not be safely projected.",
+    )
+    status = {
+        "version": 1,
+        "status": "error",
+        "exit_code": None,
+        "timed_out": False,
+        "truncated": False,
+        "reason": _TOOL_RESULT_PROJECTION_FAILED,
+        "source": "tool_runtime",
+        "preservation_class": "diagnostic",
+    }
+    return ToolResult(
+        tool_use_id=call.tool_use_id,
+        tool_name=call.tool_name,
+        content=json.dumps(envelope),
+        is_error=True,
+        artifacts=artifacts,
+        execution_status=normalize_execution_status(status),
+    )
+
+
+def _project_successful_result(
+    *,
+    call: ToolCall,
+    result: Any,
+    artifacts: list[dict[str, Any]],
+    registered: Any,
+) -> tuple[Any, list[dict[str, Any]], bool] | ToolResult:
+    model_projector = registered.spec.model_result_projector
+    sources_projector = registered.spec.result_sources_projector
+    if model_projector is None and sources_projector is None:
+        return result, [], False
+
+    full_redacted_content = result if isinstance(result, str) else str(result)
+    sources: list[dict[str, Any]] = []
+    try:
+        if sources_projector is not None:
+            sources = sources_projector(full_redacted_content)
+            if not isinstance(sources, list) or any(
+                not isinstance(source, dict) for source in sources
+            ):
+                raise TypeError("result sources projector returned an invalid value")
+        if model_projector is not None:
+            model_content = model_projector(full_redacted_content)
+            if not isinstance(model_content, str):
+                raise TypeError("model result projector returned a non-string value")
+            return model_content, sources, True
+    except Exception as exc:
+        log.warning(
+            "dispatch.tool_result_projection_failed",
+            tool=call.tool_name,
+            error_type=type(exc).__name__,
+        )
+        return _projection_failure_result(call=call, artifacts=artifacts)
+    return result, sources, False
+
 
 async def finalize(
     call: ToolCall,
@@ -325,14 +447,36 @@ async def finalize(
     artifacts = (
         list(ctx.published_artifacts[artifact_start:]) if ctx is not None else []
     )
+    sources: list[dict[str, Any]] = []
+    model_result_projected = False
+    projected_result = result
+    if _is_successful_projection_result(
+        result=result,
+        denial=denial,
+        execution_status=execution_status,
+    ):
+        projection = _project_successful_result(
+            call=call,
+            result=result,
+            artifacts=artifacts,
+            registered=registered,
+        )
+        if isinstance(projection, ToolResult):
+            return projection
+        projected_result, sources, model_result_projected = projection
+
     if artifacts:
-        content = result
+        content = projected_result
     else:
         budget_class = resolve_budget_class(
             call.tool_name,
             registered.spec.result_budget_class,
         )
-        raw_budget_content = result if isinstance(result, str) else str(result)
+        raw_budget_content = (
+            projected_result
+            if isinstance(projected_result, str)
+            else str(projected_result)
+        )
         budgeted = await budget_tracker.normalize(
             tool_name=call.tool_name,
             content=raw_budget_content,
@@ -359,8 +503,11 @@ async def finalize(
         is_error=is_error,
         artifacts=artifacts,
         execution_status=execution_status,
+        sources=sources,
         terminates_turn=(
             call.tool_name == "router_control"
-            and router_control_payload_terminates_turn(content)
+            and router_control_payload_terminates_turn(
+                result if model_result_projected else content
+            )
         ),
     )

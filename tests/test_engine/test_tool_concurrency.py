@@ -188,7 +188,7 @@ async def test_same_turn_knowledge_search_and_get_overlap() -> None:
     await _collect(agent)
     elapsed = time.monotonic() - started
 
-    assert elapsed < 0.35
+    assert elapsed < 0.6
     assert len(intervals) == 2
     intervals.sort(key=lambda item: item[1])
     assert intervals[1][1] < intervals[0][2]

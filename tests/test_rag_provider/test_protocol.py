@@ -79,7 +79,6 @@ def result_v11(index: int, *, content: str = "complete evidence") -> dict:
 
 def search_v11(results: list[dict]) -> dict:
     return {
-        "query": "NAND capacity",
         "returnedCount": len(results),
         "totalMatched": 20,
         "resultsTruncated": False,
@@ -98,6 +97,14 @@ def test_capabilities_accept_only_exact_supported_versions() -> None:
     for version in ("1", "1.x", "1.2", "2.0", "latest", "1.1.0"):
         with pytest.raises(ProviderIncompatible):
             validate_capabilities(capabilities(version=version))
+
+
+def test_capabilities_reject_numeric_protocol_version() -> None:
+    payload = capabilities()
+    payload["protocol"]["version"] = 1
+
+    with pytest.raises(ProviderProtocolViolation):
+        validate_capabilities(payload)
 
 
 def test_capabilities_negotiate_chunk_limit_by_version() -> None:
@@ -215,6 +222,19 @@ def test_search_never_delivers_more_results_than_the_effective_request_limit() -
     assert validated.provider_budget_violation is True
 
 
+def test_search_v11_accepts_response_without_query_and_omits_normalized_query() -> None:
+    payload = search_v11([result_v11(1)])
+
+    validated = validate_search_response(
+        payload,
+        protocol_version="1.1",
+        budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
+    )
+
+    assert validated.provider_budget_violation is False
+    assert "query" not in validated.payload
+
+
 def test_search_v11_normalizes_full_response_and_filters_private_fields() -> None:
     payload = search_v11([result_v11(1)])
 
@@ -226,7 +246,6 @@ def test_search_v11_normalizes_full_response_and_filters_private_fields() -> Non
 
     assert validated.provider_budget_violation is False
     assert validated.payload == {
-        "query": "NAND capacity",
         "returnedCount": 1,
         "totalMatched": 20,
         "resultsTruncated": False,

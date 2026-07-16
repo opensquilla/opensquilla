@@ -482,17 +482,13 @@ def _validate_search_result_v1_1(
 
 def _search_payload_v1_1(
     *,
-    query: str,
     total_present: bool,
     total: int | None,
     results_truncated: bool,
     profile: str | None,
     results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "query": query,
-        "returnedCount": len(results),
-    }
+    payload: dict[str, Any] = {"returnedCount": len(results)}
     if total_present:
         payload["totalMatched"] = total
     payload.update(
@@ -513,7 +509,6 @@ def _validate_search_response_v1_1(
     payload, results, total_present, total, provider_truncated = (
         _validate_search_envelope(raw)
     )
-    query = _required_text(payload.get("query"), "query")
     retrieval = _dict(payload.get("retrieval"), "retrieval")
     raw_profile = retrieval.get("profile")
     if raw_profile is None:
@@ -544,7 +539,6 @@ def _validate_search_response_v1_1(
         candidate["rank"] = len(normalized) + 1
         proposed_results = [*normalized, candidate]
         proposed = _search_payload_v1_1(
-            query=query,
             total_present=total_present,
             total=total,
             results_truncated=provider_truncated,
@@ -558,7 +552,6 @@ def _validate_search_response_v1_1(
 
     truncated = provider_truncated or len(normalized) < len(results)
     normalized_payload = _search_payload_v1_1(
-        query=query,
         total_present=total_present,
         total=total,
         results_truncated=truncated,

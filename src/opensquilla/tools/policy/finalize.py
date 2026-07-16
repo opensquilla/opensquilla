@@ -381,6 +381,10 @@ def _validate_projected_source_value(
                     raise TypeError(
                         "result sources projector returned a non-string mapping key"
                     )
+                if len(key) > _MAX_PROJECTED_SOURCE_STRING_CHARS:
+                    raise ValueError(
+                        "result sources projector returned an oversized mapping key"
+                    )
                 if _PROJECTED_SOURCE_CONTROL_CHAR_RE.search(key):
                     raise ValueError(
                         "result sources projector returned a control character in a key"

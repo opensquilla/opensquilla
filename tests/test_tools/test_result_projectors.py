@@ -693,6 +693,50 @@ async def test_source_projector_rejects_oversized_generic_sources(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key_chars", "expected_error"),
+    [
+        (2048, False),
+        (2049, True),
+    ],
+)
+async def test_source_projector_bounds_generic_mapping_key_strings(
+    key_chars: int,
+    expected_error: bool,
+) -> None:
+    source = {
+        "kind": "future-provider",
+        "k" * key_chars: "safe value",
+    }
+
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "bounded_generic_source_key",
+            sources_projector=lambda _content: [source],
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id=f"tc-bounded-generic-source-key-{key_chars}",
+            tool_name="bounded_generic_source_key",
+            arguments={},
+        )
+    )
+
+    assert result.is_error is expected_error
+    if expected_error:
+        assert json.loads(result.content)["error_class"] == "tool_result_projection_failed"
+        assert result.sources == []
+    else:
+        assert result.sources == [source]
+
+
+@pytest.mark.asyncio
 async def test_source_projector_rejects_oversized_generic_source_collection() -> None:
     sources = [
         {

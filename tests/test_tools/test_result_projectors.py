@@ -598,6 +598,136 @@ async def test_source_projector_rejects_recursive_unsafe_values(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "forbidden_key",
+    [
+        "providerBudgetViolation",
+        "Provider_Budget-Violation",
+        "internalDiagnostics",
+        "INTERNAL-DIAGNOSTICS",
+        "debugTrace",
+        "debug.trace",
+        "rawBody",
+        "RAW-BODY",
+        "fullContent",
+        "full_payload",
+    ],
+)
+async def test_source_projector_rejects_diagnostic_and_body_aliases(
+    forbidden_key: str,
+) -> None:
+    calls: list[str] = []
+
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "forbidden_source_aliases",
+            sources_projector=lambda _content: calls.append("sources")
+            or [
+                {
+                    "kind": "future-provider",
+                    "metadata": {forbidden_key: "private projected data"},
+                }
+            ],
+            model_projector=lambda content: calls.append("model") or content,
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-forbidden-source-aliases",
+            tool_name="forbidden_source_aliases",
+            arguments={},
+        )
+    )
+
+    assert result.is_error is True
+    assert json.loads(result.content)["error_class"] == "tool_result_projection_failed"
+    assert result.sources == []
+    assert calls == ["sources"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_source",
+    [
+        {"kind": "future-provider", "summary": "x" * 2049},
+        {
+            "kind": "future-provider",
+            "fieldOne": "1" * 1800,
+            "fieldTwo": "2" * 1800,
+            "fieldThree": "3" * 1800,
+            "fieldFour": "4" * 1800,
+            "fieldFive": "5" * 1800,
+        },
+    ],
+)
+async def test_source_projector_rejects_oversized_generic_sources(
+    malformed_source: dict[str, Any],
+) -> None:
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "oversized_generic_sources",
+            sources_projector=lambda _content: [malformed_source],
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-oversized-generic-sources",
+            tool_name="oversized_generic_sources",
+            arguments={},
+        )
+    )
+
+    assert result.is_error is True
+    assert json.loads(result.content)["error_class"] == "tool_result_projection_failed"
+    assert result.sources == []
+
+
+@pytest.mark.asyncio
+async def test_source_projector_rejects_oversized_generic_source_collection() -> None:
+    sources = [
+        {
+            "kind": "future-provider",
+            "primary": "a" * 1500,
+            "secondary": "b" * 1500,
+        }
+        for _ in range(12)
+    ]
+
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "oversized_generic_source_collection",
+            sources_projector=lambda _content: sources,
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-oversized-generic-source-collection",
+            tool_name="oversized_generic_source_collection",
+            arguments={},
+        )
+    )
+
+    assert result.is_error is True
+    assert json.loads(result.content)["error_class"] == "tool_result_projection_failed"
+    assert result.sources == []
+
+
+@pytest.mark.asyncio
 async def test_source_projector_preserves_safe_generic_source_dictionaries() -> None:
     sources = [
         {

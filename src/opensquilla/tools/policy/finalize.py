@@ -48,10 +48,18 @@ _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
 _TOOL_RESULT_PROJECTION_FAILED = "tool_result_projection_failed"
 _MAX_PROJECTED_SOURCES = 12
 _MAX_PROJECTED_SOURCE_SNIPPET_CHARS = 400
+_MAX_PROJECTED_SOURCE_STRING_CHARS = 2048
+_MAX_PROJECTED_SOURCE_CHARS = 8192
+_MAX_PROJECTED_SOURCES_CHARS = 32768
 _PROJECTED_SOURCE_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _PROJECTED_SOURCE_FORBIDDEN_KEY_PARTS = frozenset(
-    {"bm25", "vector", "rrf", "fusion", "pair", "score"}
+    {
+        "bm25", "budget", "debug", "diagnostic", "fusion", "pair", "rrf",
+        "score", "trace", "vector", "violation",
+    }
 )
+_PROJECTED_SOURCE_BODY_SCOPES = frozenset({"full", "raw"})
+_PROJECTED_SOURCE_BODY_PARTS = frozenset({"body", "content", "payload", "text"})
 
 
 # Semantic non-success fragments shared by structured tool receipts. This keeps
@@ -305,10 +313,30 @@ def _projection_failure_result(
 
 
 def _projected_source_key_is_forbidden(key: str) -> bool:
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", key)
+    semantic_parts = {
+        part.casefold()
+        for part in re.findall(r"[A-Za-z0-9]+", separated)
+    }
     folded = "".join(character for character in key.casefold() if character.isalnum())
-    return folded in {"chunk", "content"} or any(
+    if folded in {"chunk", "content"} or any(
         part in folded for part in _PROJECTED_SOURCE_FORBIDDEN_KEY_PARTS
+    ):
+        return True
+    if (
+        semantic_parts & _PROJECTED_SOURCE_BODY_SCOPES
+        and semantic_parts & _PROJECTED_SOURCE_BODY_PARTS
+    ):
+        return True
+    return any(
+        folded.startswith(scope)
+        and any(part in folded[len(scope):] for part in _PROJECTED_SOURCE_BODY_PARTS)
+        for scope in _PROJECTED_SOURCE_BODY_SCOPES
     )
+
+
+def _projected_source_characters(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
 def _validate_projected_source_value(
@@ -319,6 +347,8 @@ def _validate_projected_source_value(
     if isinstance(value, str):
         if _PROJECTED_SOURCE_CONTROL_CHAR_RE.search(value):
             raise ValueError("result sources projector returned a control character")
+        if len(value) > _MAX_PROJECTED_SOURCE_STRING_CHARS:
+            raise ValueError("result sources projector returned an oversized string")
         return
     if value is None or isinstance(value, bool | int):
         return
@@ -388,6 +418,14 @@ def _validate_projected_sources(sources: Any) -> None:
         raise TypeError("result sources projector returned an invalid value")
     for source in sources:
         _validate_projected_source_value(source, active_containers=set())
+        if _projected_source_characters(source) > _MAX_PROJECTED_SOURCE_CHARS:
+            raise ValueError(
+                "result sources projector returned an oversized source"
+            )
+    if _projected_source_characters(sources) > _MAX_PROJECTED_SOURCES_CHARS:
+        raise ValueError(
+            "result sources projector returned an oversized source collection"
+        )
 
 
 def _project_successful_result(

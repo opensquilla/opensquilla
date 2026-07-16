@@ -403,10 +403,7 @@ export function normalizeRagProfileSetResponse(value: unknown): RagProfileSetRes
 }
 
 export function effectiveRetrievalProfile(status: RagProviderStatus | null): string | null {
-  return status?.effectiveRetrievalProfile
-    ?? status?.retrievalProfileOverride
-    ?? status?.searchOptions?.defaultRetrievalProfile
-    ?? null
+  return status ? status.effectiveRetrievalProfile : null
 }
 
 export function normalizeRagSearchResponse(value: unknown): RagSearchResponse | null {

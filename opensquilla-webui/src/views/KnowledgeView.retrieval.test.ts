@@ -565,7 +565,7 @@ describe('RAG Provider response normalization', () => {
     expect(document).not.toHaveProperty('openUrl')
   })
 
-  it('prefers the server-negotiated effective profile before saved fallbacks', () => {
+  it('treats the server-negotiated effective profile as authoritative including null', () => {
     expect(effectiveRetrievalProfile(READY_STATUS)).toBe('hybrid')
     expect(effectiveRetrievalProfile({
       ...READY_STATUS,
@@ -574,17 +574,26 @@ describe('RAG Provider response normalization', () => {
     })).toBe('provider/opaque:v2')
     expect(effectiveRetrievalProfile({
       ...READY_STATUS,
+      searchOptions: {
+        ...READY_STATUS.searchOptions!,
+        defaultRetrievalProfile: null,
+      },
+      retrievalProfileOverride: 'retired-profile',
+      effectiveRetrievalProfile: null,
+    })).toBeNull()
+    expect(effectiveRetrievalProfile({
+      ...READY_STATUS,
       retrievalProfileOverride: 'vector',
       effectiveRetrievalProfile: null,
-    })).toBe('vector')
+    })).toBeNull()
   })
 
-  it('does not fall back when an invalid explicit profile is present', () => {
+  it('does not use an invalid saved override when the negotiated profile is null', () => {
     expect(effectiveRetrievalProfile({
       ...READY_STATUS,
       retrievalProfileOverride: '',
       effectiveRetrievalProfile: null,
-    })).toBe('')
+    })).toBeNull()
   })
 
   it('normalizes profile set responses strictly', () => {

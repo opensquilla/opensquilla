@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # install.sh - OpenSquilla release installer for Linux and macOS.
 #
-# This script is safe to pipe from the public install URL. It installs uv if
-# needed, installs a release wheel with uv tool, then prints the explicit next
-# steps. It does not run onboarding or start the gateway.
+# It installs uv if needed, installs a release wheel with uv tool, then prints
+# the explicit next steps. It does not run onboarding or start the gateway.
 
 set -euo pipefail
 
@@ -74,37 +73,6 @@ is_release_version() {
     [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
 }
 
-release_has_tui_host() {
-    local value="${1#v}"
-    if [[ ! "${value}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)((a|b|rc)([0-9]+))?$ ]]; then
-        return 1
-    fi
-
-    local major=$((10#${BASH_REMATCH[1]}))
-    local minor=$((10#${BASH_REMATCH[2]}))
-    local patch=$((10#${BASH_REMATCH[3]}))
-    local prerelease_kind="${BASH_REMATCH[5]:-}"
-    local prerelease_number="${BASH_REMATCH[6]:-0}"
-
-    # v0.5.0rc4 was published before the companion wheels existed.  Never
-    # infer an asset from source support alone: requesting a non-existent host
-    # makes an otherwise valid core install fail.  The first release that may
-    # be paired with the macOS/Linux companions is v0.5.0rc5.
-    if (( major > 0 || minor > 5 || (minor == 5 && patch > 0) )); then
-        return 0
-    fi
-    if (( major < 0 || minor < 5 )); then
-        return 1
-    fi
-    if (( patch != 0 )); then
-        return 1
-    fi
-    if [[ -z "${prerelease_kind}" ]]; then
-        return 0
-    fi
-    [[ "${prerelease_kind}" == "rc" && $((10#${prerelease_number})) -ge 5 ]]
-}
-
 linux_supports_manylinux_2_28() {
     local libc_version=""
     libc_version="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
@@ -115,6 +83,19 @@ linux_supports_manylinux_2_28() {
     local libc_major=$((10#${BASH_REMATCH[1]}))
     local libc_minor=$((10#${BASH_REMATCH[2]}))
     (( libc_major > 2 || (libc_major == 2 && libc_minor >= 28) ))
+}
+
+release_asset_exists() {
+    local url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsIL --max-time 20 "${url}" >/dev/null 2>&1
+        return
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        wget -q --spider --timeout=20 "${url}" >/dev/null 2>&1
+        return
+    fi
+    return 1
 }
 
 valid_extras=" matrix matrix-e2e document-extras "
@@ -232,46 +213,46 @@ if [[ "${host_os}" == "Darwin" ]]; then
     host_label="macOS"
 fi
 if [[ "${host_os}" == "Darwin" || "${host_os}" == "Linux" ]]; then
-    if release_has_tui_host "${release_version}"; then
-        host_arch="$(uname -m 2>/dev/null || true)"
-        if [[ "${host_os}" == "Darwin" ]]; then
-            case "${host_arch}" in
-                arm64|aarch64)
-                    tui_host_wheel_tag="macosx_11_0_arm64"
-                    ;;
-                x86_64|amd64)
-                    tui_host_wheel_tag="macosx_11_0_x86_64"
-                    ;;
-                *)
-                    echo "install.sh: this macOS architecture does not have a TUI host release asset; installing core only." >&2
-                    echo "install.sh: supported macOS TUI architectures: arm64, x86_64. Use '--ui plain' here." >&2
-                    ;;
-            esac
-        else
-            case "${host_arch}" in
-                arm64|aarch64)
-                    tui_host_wheel_tag="manylinux_2_28_aarch64"
-                    ;;
-                x86_64|amd64)
-                    tui_host_wheel_tag="manylinux_2_28_x86_64"
-                    ;;
-                *)
-                    echo "install.sh: this Linux architecture does not have a TUI host release asset; installing core only." >&2
-                    echo "install.sh: supported Linux TUI architectures: aarch64, x86_64. Use '--ui plain' here." >&2
-                    ;;
-            esac
-            if [[ -n "${tui_host_wheel_tag:-}" ]] && ! linux_supports_manylinux_2_28; then
-                echo "install.sh: this Linux libc cannot run the manylinux_2_28 TUI host; installing core only." >&2
-                echo "install.sh: glibc 2.28 or newer is required for the TUI host. Use '--ui plain' here." >&2
-                tui_host_wheel_tag=""
-            fi
-        fi
-        if [[ -n "${tui_host_wheel_tag:-}" ]]; then
-            tui_host_url="https://github.com/${repo_slug}/releases/download/${release_tag}/opensquilla_tui_host-${release_version}-py3-none-${tui_host_wheel_tag}.whl"
-            tui_host_spec="opensquilla-tui-host @ ${tui_host_url}"
-        fi
+    host_arch="$(uname -m 2>/dev/null || true)"
+    if [[ "${host_os}" == "Darwin" ]]; then
+        case "${host_arch}" in
+            arm64|aarch64)
+                tui_host_wheel_tag="macosx_11_0_arm64"
+                ;;
+            x86_64|amd64)
+                tui_host_wheel_tag="macosx_11_0_x86_64"
+                ;;
+            *)
+                echo "install.sh: this macOS architecture does not have a TUI host release asset; installing core only." >&2
+                echo "install.sh: supported macOS TUI architectures: arm64, x86_64. Use '--ui plain' here." >&2
+                ;;
+        esac
     else
-        echo "install.sh: ${host_label} TUI companions start at v0.5.0rc5; ${display_version} installs core only."
+        case "${host_arch}" in
+            arm64|aarch64)
+                tui_host_wheel_tag="manylinux_2_28_aarch64"
+                ;;
+            x86_64|amd64)
+                tui_host_wheel_tag="manylinux_2_28_x86_64"
+                ;;
+            *)
+                echo "install.sh: this Linux architecture does not have a TUI host release asset; installing core only." >&2
+                echo "install.sh: supported Linux TUI architectures: aarch64, x86_64. Use '--ui plain' here." >&2
+                ;;
+        esac
+        if [[ -n "${tui_host_wheel_tag:-}" ]] && ! linux_supports_manylinux_2_28; then
+            echo "install.sh: this Linux libc cannot run the manylinux_2_28 TUI host; installing core only." >&2
+            echo "install.sh: glibc 2.28 or newer is required for the TUI host. Use '--ui plain' here." >&2
+            tui_host_wheel_tag=""
+        fi
+    fi
+    if [[ -n "${tui_host_wheel_tag:-}" ]]; then
+        tui_host_url="https://github.com/${repo_slug}/releases/download/${release_tag}/opensquilla_tui_host-${release_version}-py3-none-${tui_host_wheel_tag}.whl"
+        if release_asset_exists "${tui_host_url}"; then
+            tui_host_spec="opensquilla-tui-host @ ${tui_host_url}"
+        else
+            echo "install.sh: no matching ${host_label} TUI companion asset was found for ${display_version}; installing core only."
+        fi
     fi
 fi
 
@@ -385,10 +366,11 @@ Use 'opensquilla chat --ui plain' for the minimal rescue renderer.
 TUI_DONE
 else
     cat <<PLAIN_DONE
-  opensquilla chat --ui plain
+  opensquilla chat
 
-TUI companion: not included for ${display_version} on ${host_label}.
-Use '--ui plain' for the supported rescue renderer.
+TUI companion: no matching packaged host installed for ${display_version} on ${host_label}.
+Bare chat uses the plain renderer when the full-screen host is unavailable.
+Use 'opensquilla chat --ui tui' to require a compatible packaged host.
 PLAIN_DONE
 fi
 

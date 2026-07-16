@@ -62,10 +62,7 @@ Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
 Release install commands use published GitHub release assets.
 Python wheel installs use versioned wheel filenames because installers
-validate the version embedded in the wheel filename. Starting with Preview 5,
-the macOS/Linux installer also pairs a same-version, architecture-specific
-`opensquilla-tui-host` companion when that release contains one. Preview 4
-remains core-only.
+validate the version embedded in the wheel filename.
 
 For 0.5.0 Preview 4 desktop use, prefer the packaged desktop installers from
 the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
@@ -172,31 +169,14 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 ```
 
-**2. Install OpenSquilla.**
-
-On macOS and Linux, the release installer selects the platform assets and runs
-`uv tool install` for you:
+**2. Install OpenSquilla** — the same command on every platform.
 
 ```sh
-curl -LsSf https://opensquilla.ai/install.sh | bash
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
-The currently published Preview 4 release predates the packaged TUI companion,
-so its fully pinned terminal install remains core-only:
-
-```sh
-uv tool install --python 3.12 \
-  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
-
-Packaged arm64/x86_64 macOS and Linux hosts begin with the next Preview 5
-release. The installer only pairs a companion after resolving a release that
-actually contains it; Preview 4 therefore remains installable and uses the
-plain renderer. Native Windows TUI remains a separate platform release.
-
-When a release includes a companion, the installer places core and host in one
-isolated tool environment. `uv` then downloads the dependencies declared by
-the selected extras. The
+This installs the OpenSquilla wheel from the release URL, then lets
+`uv` download the dependencies declared by the selected extras. The
 default `recommended` extra includes SquillaRouter runtime dependencies
 such as ONNX Runtime, LightGBM, NumPy, and tokenizers, so a first install
 needs network access unless those wheels are already cached. `uv` does
@@ -215,11 +195,8 @@ opensquilla gateway run
 > If `opensquilla` is not found right after a fresh `uv` install, open
 > a new terminal, or re-run the PATH line from step 1.
 
-For a fully pinned Preview 4 install, use the versioned core-wheel command
-above. For a release that includes a macOS or Linux companion, keep the core
-and companion wheel URLs on the same release tag and version. Upgrade,
-reinstall, and rollback must replace them as a pair; a core/host version
-mismatch is rejected at TUI startup.
+For a fully pinned install, use the versioned wheel URL:
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`.
 
 ### Install from source
 
@@ -533,21 +510,18 @@ handling.
 ```sh
 opensquilla gateway run                # foreground, 127.0.0.1:18791
 opensquilla gateway start --json       # background + health wait
-opensquilla chat                       # full-screen terminal chat
+opensquilla chat                       # interactive terminal chat
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-> **Terminal UI.** On supported macOS and Linux installs, bare
-> `opensquilla chat` uses `auto`: it starts the packaged, full-screen OpenTUI
-> host and may fall back to `plain` only if startup fails before entering the
-> alternate screen. Use `--ui tui` when the full-screen host is required and
-> startup must fail rather than fall back; use `--ui plain` as the minimal
-> rescue renderer. Both renderers use the same Gateway session runtime. Release
-> installers pair the platform-neutral OpenSquilla package with the matching
-> macOS or Linux host, so normal use does not require Bun, Node, a source
-> checkout, or a first-run download. Native Windows TUI support remains an
-> independent follow-up and does not change these shared contracts.
-> Maintainers can explicitly run the source host with:
+> **Terminal UI.** Bare `opensquilla chat` uses `auto`: it starts the
+> full-screen OpenTUI host when a compatible same-version companion is
+> installed, and otherwise falls back to `plain` before entering the alternate
+> screen. Use `--ui tui` when the full-screen host is required and startup must
+> fail rather than fall back; use `--ui plain` as the minimal rescue renderer.
+> Both renderers use the same Gateway session runtime. The versioned core-wheel
+> install above does not install a companion. Maintainers can explicitly run
+> the source host with:
 >
 > ```sh
 > bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package

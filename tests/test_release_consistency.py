@@ -784,6 +784,7 @@ def test_changelog_has_current_release_section_and_unreleased() -> None:
 
 def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
+    normalized = " ".join(readme.split())
 
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in readme
@@ -795,7 +796,7 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in readme
     )
     assert "opensquilla-latest-py3-none-any.whl" not in readme
-    assert "Python wheel installs use versioned wheel filenames" in readme
+    assert "Python wheel installs use versioned wheel filenames" in normalized
     assert "Release install commands use published GitHub release assets" in readme
 
 
@@ -855,20 +856,26 @@ def test_user_facing_install_docs_use_current_release_wheel() -> None:
             assert match.group("file_version") == CURRENT_VERSION
 
 
-def test_published_rc4_docs_do_not_claim_unpublished_tui_companions() -> None:
+def test_install_contract_does_not_infer_or_advertise_unpublished_tui_assets() -> None:
     unpublished_prefix = f"opensquilla_tui_host-{CURRENT_VERSION}-"
 
     for path in [
         Path("README.md"),
+        Path("README.zh-Hans.md"),
         Path("README.product.md"),
         Path("docs/quickstart.md"),
         Path(f"docs/releases/{CURRENT_VERSION}.md"),
         Path("RELEASES.md"),
     ]:
-        assert unpublished_prefix not in path.read_text(encoding="utf-8"), path
+        text = path.read_text(encoding="utf-8")
+        assert unpublished_prefix not in text, path
+        assert "https://opensquilla.ai/install.sh" not in text, path
+        assert "https://opensquilla.ai/install.ps1" not in text, path
 
     installer = Path("install.sh").read_text(encoding="utf-8")
-    assert "TUI companions start at v0.5.0rc5" in installer
+    assert "release_asset_exists" in installer
+    assert "release_has_tui_host" not in installer
+    assert "v0.5.0rc5" not in installer
 
 
 def test_release_installers_default_to_current_tag() -> None:

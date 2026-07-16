@@ -13,32 +13,14 @@ UI, SquillaRouter, memory/search support, and safe local defaults.
 
 ## Recommended Install
 
-On macOS and Linux, install the current release with the release installer:
+Install the current release wheel with the recommended extras:
 
 ```sh
-curl -LsSf https://opensquilla.ai/install.sh | bash
-```
-
-Preview 4 predates the packaged TUI host, so its pinned install is core-only:
-
-```sh
-uv tool install --python 3.12 \
-  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
-
-Packaged macOS and Linux hosts begin with Preview 5. The installer resolves the
-release first and only requests a companion when that release contains one.
-Those hosts are self-contained; upgrade, reinstall, and rollback replace core
-and host as a pair.
-The `recommended` extra includes SquillaRouter dependencies and memory/search
-support used by the default product experience.
-
-Windows currently installs the core wheel; its native TUI host follows in the
-separate Windows platform release:
-
-```powershell
 uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
+
+The `recommended` extra includes SquillaRouter dependencies and memory/search
+support used by the default product experience.
 
 If `opensquilla` is not found after install, open a new shell or run:
 
@@ -123,12 +105,12 @@ Start terminal chat:
 opensquilla chat
 ```
 
-On supported macOS and Linux installs, bare `opensquilla chat` uses `auto`: it
-prefers the packaged full-screen TUI and may fall back to `plain` only if startup
-fails before the alternate screen begins. Use `--ui tui` to require the
-packaged host and fail clearly if it is missing or incompatible. Use `--ui
-plain` as the minimal rescue renderer. Native Windows TUI support remains a
-separate platform release.
+Bare `opensquilla chat` uses `auto`: it starts the full-screen OpenTUI host
+when a compatible same-version companion is installed and otherwise falls back
+to `plain` before the alternate screen begins. Use `--ui tui` to require the
+host and fail clearly if it is missing or incompatible. Use `--ui plain` as
+the minimal rescue renderer. The versioned core-wheel install above does not
+install a companion.
 
 Run one automation turn:
 
@@ -146,8 +128,8 @@ opensquilla agent \
 ```
 
 Use the Web UI for browser-based chat, approvals, setup, channels, usage, and
-logs. Use `opensquilla chat` for the full-screen terminal client on supported
-macOS or Linux installs. Use `opensquilla agent` for one-shot automation.
+logs. Use `opensquilla chat` when you want a terminal conversation. Use
+`opensquilla agent` for one-shot automation.
 
 ## Resume Work
 

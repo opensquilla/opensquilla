@@ -57,9 +57,7 @@ OpenSquilla 可运行于 Windows、macOS 和 Linux。请选择与你的使用场
 桌面安装包和终端快速安装会直接给你一个预构建的**发布版**，无需 Git。另外两种——从源码安装和从源码开发——则需要克隆 Git 仓库后再构建(`git clone` + Git LFS)。
 
 发布版安装命令使用 GitHub 上已发布的 release 资源。Python wheel 安装使用带版本号的 wheel
-文件名，因为安装器会校验嵌入在 wheel 文件名中的版本号。从 Preview 5 开始，当 release
-确实包含对应资源时，macOS/Linux 安装器会把 core wheel 与同版本、匹配当前架构的
-`opensquilla-tui-host` companion 成对安装；Preview 4 仍然只安装 core。
+文件名，因为安装器会校验嵌入在 wheel 文件名中的版本号。
 
 对于 0.5.0 Preview 4 的桌面使用，建议从 GitHub Release 下载打包桌面安装包:macOS 上为
 `OpenSquilla-0.5.0-rc4-mac-arm64.dmg`，Windows 上为 `OpenSquilla-0.5.0-rc4-win-x64.exe`。
@@ -143,28 +141,13 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 $env:Path = "$env:USERPROFILE\.local\bin;" + $env:Path
 ```
 
-**2. 安装 OpenSquilla。**
-
-在 macOS 和 Linux 上，release 安装器会选择匹配平台的资源，并为你执行
-`uv tool install`：
+**2. 安装 OpenSquilla**——所有平台命令相同。
 
 ```sh
-curl -LsSf https://opensquilla.ai/install.sh | bash
+uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
 ```
 
-已发布的 Preview 4 早于打包 TUI host，因此它的完全锁定版本命令仍然只安装 core：
-
-```sh
-uv tool install --python 3.12 \
-  "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-```
-
-macOS 与 Linux 的打包 companion 从 Preview 5 开始提供。安装器会先解析真实
-release，只有该 release 确实包含 companion 时才会成对安装；Preview 4 因而继续
-可安装并使用 plain renderer。原生 Windows TUI host 仍由后续独立平台 release 提供。
-
-当 release 包含 companion 时，安装器会把 core 和 companion 放进同一个隔离的工具环境，
-再由 `uv` 下载所选 extra 所声明的依赖。
+这会从 release URL 安装 OpenSquilla wheel，再由 `uv` 下载所选 extra 所声明的依赖。
 默认的 `recommended` extra 包含 SquillaRouter 运行时依赖，如 ONNX Runtime、LightGBM、
 NumPy 和 tokenizers，因此首次安装需要联网，除非这些 wheel 已经缓存好了。`uv` 不会安装
 系统原生运行库，如 macOS 的 `libomp` 或 Windows 的 Visual C++ Redistributable；若路由
@@ -178,19 +161,18 @@ opensquilla gateway run
 opensquilla chat
 ```
 
-在支持的 macOS 和 Linux 安装中，裸命令 `opensquilla chat` 使用 `auto`：它会启动
-打包好的全屏 TUI，只有在进入 alternate screen 之前启动失败时才允许回退到 `plain`。
-使用 `opensquilla chat --ui tui` 可以强制要求全屏 TUI，host 缺失或不兼容时会明确失败；
-`opensquilla chat --ui plain` 是最小化的救援 renderer。安装、升级、重装和回滚会让
-core 与 companion 始终保持同一版本。
+裸命令 `opensquilla chat` 使用 `auto`：安装了兼容且同版本的 companion 时启动全屏
+TUI，否则会在进入 alternate screen 前回退到 `plain`。使用
+`opensquilla chat --ui tui` 可以强制要求全屏 TUI，host 缺失或不兼容时会明确失败；
+`opensquilla chat --ui plain` 是最小化的救援 renderer。上面的版本化 core wheel 命令
+不会安装 companion。
 
 > [!NOTE]
 > 如果在全新 `uv` 安装后立即找不到 `opensquilla`，请打开一个新终端，或重新执行第 1 步中的
 > PATH 设置命令。
 
-如需完全锁定 Preview 4，请使用上面的带版本号 core wheel 命令。对于包含 macOS 或 Linux
-companion 的 release，请确保 core wheel 和 companion 的 URL 使用同一个 release tag。
-release 安装器会自动保证这一点，并拒绝不兼容的版本。
+如需完全锁定版本的安装，请使用带版本号的 wheel URL:
+`https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl`。
 
 <a id="install-from-source"></a>
 

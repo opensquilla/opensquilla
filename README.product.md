@@ -14,24 +14,6 @@ This guide is the product and usage entry point. The existing
 1. Install OpenSquilla:
 
    ```sh
-   curl -LsSf https://opensquilla.ai/install.sh | bash
-   ```
-
-   Preview 4 is core-only; its pinned command is:
-
-   ```sh
-   uv tool install --python 3.12 \
-     "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
-   ```
-
-   Packaged macOS and Linux companions begin in Preview 5. For releases that
-   contain one, the installer keeps core and host on the same release for
-   install, upgrade, reinstall, and rollback.
-
-   Windows currently uses the core wheel while its native TUI companion is
-   delivered in the separate Windows platform release:
-
-   ```powershell
    uv tool install --python 3.12 "opensquilla[recommended] @ https://github.com/opensquilla/opensquilla/releases/download/v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl"
    ```
 
@@ -53,11 +35,11 @@ This guide is the product and usage entry point. The existing
    opensquilla chat
    ```
 
-   Preview 4 has no packaged companion, so `auto` safely uses the minimal
-   `plain` renderer. Starting with Preview 5 on macOS/Linux, the same bare
-   command prefers the packaged full-screen TUI. Use `--ui tui` to require that
-   host and `--ui plain` as the explicit rescue path. Native Windows TUI
-   support follows separately.
+   Bare chat uses `auto`: it starts the full-screen TUI when a compatible
+   same-version companion is installed and otherwise uses the minimal `plain`
+   renderer. Use `--ui tui` to require the host and `--ui plain` as the
+   explicit rescue path. The versioned core-wheel install above does not
+   install a companion.
 
 5. Open the control UI:
 

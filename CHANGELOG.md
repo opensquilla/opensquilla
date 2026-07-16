@@ -20,9 +20,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `opensquilla chat` selects `auto`: it prefers the packaged TUI when a
   compatible host is installed and otherwise keeps the shared Gateway runtime
   on the plain rescue renderer. Explicit `--ui tui` remains strict.
-- Future packaged macOS/Linux releases pair core and host during install,
-  upgrade, reinstall, and rollback. The published v0.5.0rc4 remains core-only;
-  companion assets begin with v0.5.0rc5.
+- Core and host use one versioned compatibility contract. A missing or
+  mismatched companion is detected before the full-screen terminal surface
+  starts.
 
 ### Fixed
 

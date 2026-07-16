@@ -19,9 +19,10 @@ The TUI contracts are renderer-independent and built around two separate planes:
 - **Structured UI plane:** sends normalized TUI domain events to plugins. Plugin
   snapshots can be rendered by capable TUI backends and by future renderers.
 
-The core wheel remains platform-neutral. Release installers add a same-version
+The core wheel remains platform-neutral. A release may add a same-version
 `opensquilla-tui-host` companion containing a self-contained OpenTUI host; Bun,
-npm, node modules, and source files are not runtime requirements.
+npm, node modules, and source files are not runtime requirements for that
+packaged host. Core-only installs use the `plain` fallback.
 
 ## Plugin Slots
 
@@ -169,8 +170,9 @@ bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-The source backend is loaded only under an explicit developer override. Normal
-release installs resolve the companion package instead.
+The source backend is loaded only under an explicit developer override. A
+packaged host is resolved from an installed companion; core-only installs do
+not imply that the companion exists.
 
 Do not add parallel terminal/frontend implementations without fresh product
 direction and replay plus real-terminal evidence.

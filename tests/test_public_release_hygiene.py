@@ -229,15 +229,13 @@ def test_release_sop_documents_github_only_validation_boundary() -> None:
 
 def test_readme_documents_quick_and_manual_terminal_install_commands() -> None:
     text = Path("README.md").read_text(encoding="utf-8")
-    normalized = " ".join(text.split())
 
     assert "uv tool install --python 3.12" in text
     assert '"opensquilla[recommended] @ https://github.com' in text
-    assert "Starting with Preview 5" in text
-    assert "Preview 4" in text
-    assert "predates the packaged TUI companion" in text
-    assert "keep the core and companion wheel" in normalized
-    assert "same release tag and version" in normalized
+    assert "https://opensquilla.ai/install.sh" not in text
+    assert "https://opensquilla.ai/install.ps1" not in text
+    assert "Starting with Preview 5" not in text
+    assert "predates the packaged TUI companion" not in text
     assert "opensquilla_tui_host-0.5.0rc4" not in text
     assert "curl -LsSf https://astral.sh/uv/install.sh | sh" in text
     assert '. "$HOME/.local/bin/env"' in text

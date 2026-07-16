@@ -758,7 +758,15 @@ async def sessions_yield(
 async def session_status() -> str:
     try:
         mgr = _get_session_manager()
-        current = await mgr.get_current_session()
+        ctx = current_tool_context.get()
+        session_key = getattr(ctx, "session_key", None)
+        if session_key:
+            current = await mgr.get_session(session_key)
+        else:
+            get_current_session = getattr(mgr, "get_current_session", None)
+            if not callable(get_current_session):
+                raise ToolError("No active session")
+            current = await get_current_session()
         if current is None:
             raise ToolError("No active session")
         # Convert session object to dict
@@ -781,6 +789,10 @@ async def session_status() -> str:
             "started_at": getattr(current, "started_at", 0),
             "runtime_ms": getattr(current, "runtime_ms", 0),
         }
+        if ctx is not None:
+            run_mode = getattr(ctx, "run_mode", "trusted")
+            data["run_mode"] = run_mode
+            data["sandbox_enabled"] = run_mode != "full"
         return json.dumps(data)
     except ToolError:
         raise

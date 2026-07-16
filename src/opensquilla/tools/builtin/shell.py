@@ -4345,7 +4345,7 @@ async def _run_host_shell_command(
             deadline = loop.time() + effective_timeout
             timeout_result = f"[timeout after {effective_timeout}s]\ncommand: {command}"
 
-            proc = await asyncio.create_subprocess_shell(command, **subprocess_kwargs)
+            proc = await _create_host_shell_subprocess(command, **subprocess_kwargs)
             stdin_writer: asyncio.Task[None] | None = None
             remaining = deadline - loop.time()
             if remaining <= 0:
@@ -4377,6 +4377,15 @@ async def _run_host_shell_command(
             return f"exit_code={proc.returncode}\n{output}"
     except Exception as e:
         return f"[error] {e}"
+
+
+async def _create_host_shell_subprocess(command: str, **kwargs: Any) -> Any:
+    if os.name == "nt":
+        return await asyncio.create_subprocess_exec(
+            *_windows_direct_powershell_argv(command),
+            **kwargs,
+        )
+    return await asyncio.create_subprocess_shell(command, **kwargs)
 
 
 @tool(
@@ -5025,7 +5034,7 @@ async def background_process(
     host_env = _dedupe_windows_env_keys(host_env)
 
     if os.name == "posix":
-        proc = await asyncio.create_subprocess_shell(
+        proc = await _create_host_shell_subprocess(
             command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -5035,7 +5044,7 @@ async def background_process(
             start_new_session=True,
         )
     else:
-        proc = await asyncio.create_subprocess_shell(
+        proc = await _create_host_shell_subprocess(
             command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,

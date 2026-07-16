@@ -78,6 +78,37 @@ def test_windows_exec_command_uses_shell_host_wrapper(monkeypatch, tmp_path) -> 
     assert argv[6] == str(tmp_path / ".opensquilla-cache" / "shell-host")
 
 
+@pytest.mark.asyncio
+async def test_windows_host_shell_runs_powershell_syntax_directly(monkeypatch) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows host shell selection is Windows-only")
+
+    from opensquilla.tools.builtin import shell
+
+    calls: list[tuple[str, ...]] = []
+
+    class _Process:
+        returncode = 0
+
+    async def fake_create_subprocess_exec(*argv, **_kwargs):
+        calls.append(argv)
+        return _Process()
+
+    async def fail_create_subprocess_shell(*_args, **_kwargs):
+        raise AssertionError("Windows host execution must not use cmd.exe")
+
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fail_create_subprocess_shell)
+    monkeypatch.setattr(shell, "_trusted_windows_powershell_path", lambda: "powershell.exe")
+
+    await shell._create_host_shell_subprocess('Write-Output "ok"')
+
+    assert calls
+    assert calls[0][0] == "powershell.exe"
+    expected_command = shell._windows_with_powershell_proxy_defaults('Write-Output "ok"')
+    assert calls[0][-2:] == ("-Command", expected_command)
+
+
 def test_windows_exec_command_unwraps_nested_powershell_command(monkeypatch, tmp_path) -> None:
     from opensquilla.tools.builtin import shell
 
@@ -633,13 +664,13 @@ async def test_exact_elevation_background_process_runs_on_host_once(
     async def fail_gate_action(**kwargs):
         raise AssertionError("auto host escalation should not enter sandbox gate")
 
-    async def fake_create_subprocess_shell(command, **kwargs):
-        spawn_calls.append({"command": command, **kwargs})
+    async def fake_create_subprocess_exec(*argv, **kwargs):
+        spawn_calls.append({"argv": argv, **kwargs})
         return FakeProcess()
 
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
     monkeypatch.setattr(shell, "gate_action", fail_gate_action)
-    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
@@ -672,7 +703,9 @@ async def test_exact_elevation_background_process_runs_on_host_once(
         shell._bg_sessions.clear()
         reset_approval_queue()
 
-    assert [call["command"] for call in spawn_calls] == ["msiexec /i app.msi"]
+    assert [call["argv"] for call in spawn_calls] == [
+        shell._windows_direct_powershell_argv("msiexec /i app.msi")
+    ]
 
 
 @pytest.mark.asyncio
@@ -690,7 +723,7 @@ async def test_background_host_effect_batch_requires_one_exact_elevation(
 
     _configure_approval_queue(monkeypatch, tmp_path, "prompt")
     runtime = _windows_runtime()
-    spawn_calls: list[str] = []
+    spawn_calls: list[tuple[str, ...]] = []
 
     class FakeStdout:
         async def read(self, _size):
@@ -709,12 +742,12 @@ async def test_background_host_effect_batch_requires_one_exact_elevation(
         def kill(self):
             self.returncode = -9
 
-    async def fake_create_subprocess_shell(command, **_kwargs):
-        spawn_calls.append(command)
+    async def fake_create_subprocess_exec(*argv, **_kwargs):
+        spawn_calls.append(argv)
         return FakeProcess()
 
     monkeypatch.setattr(shell, "get_runtime", lambda: runtime)
-    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    monkeypatch.setattr(shell.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     actions = _allow_exact_elevation(monkeypatch, shell)
     monkeypatch.setattr(
         shell,
@@ -750,7 +783,7 @@ async def test_background_host_effect_batch_requires_one_exact_elevation(
 
     payload = json.loads(default_result)
     assert payload["status"] == "elevation_required"
-    assert spawn_calls == [command]
+    assert spawn_calls == [shell._windows_direct_powershell_argv(command)]
     assert len(actions) == 1
     assert (str(outside.resolve(strict=False)), "write") in actions[0].target_paths
 

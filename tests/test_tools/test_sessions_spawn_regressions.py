@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass
 
 import pytest
@@ -315,3 +316,29 @@ async def test_sessions_spawn_inherits_parent_full_host_run_mode() -> None:
     assert envelope.metadata["run_mode"] == "full"
     assert envelope.metadata["elevated"] == "full"
     assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"
+
+
+@pytest.mark.asyncio
+async def test_session_status_uses_current_tool_context_session_key() -> None:
+    expected = _StubRow(spawned_by=None)
+    expected.session_key = "agent:caller:main"
+    expected.session_id = "session-1"
+    expected.model = "test-model"
+
+    class _Manager:
+        async def get_session(self, session_key: str):
+            assert session_key == expected.session_key
+            return expected
+
+    sessions_tool.set_session_manager(_Manager())
+    token = current_tool_context.set(_full_host_ctx())
+    try:
+        payload = json.loads(await sessions_tool.session_status())
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload["session_key"] == expected.session_key
+    assert payload["session_id"] == expected.session_id
+    assert payload["model"] == expected.model
+    assert payload["run_mode"] == "full"
+    assert payload["sandbox_enabled"] is False

@@ -85,6 +85,7 @@ def test_openai_responses_provider_posts_responses_payload_and_usage(
             json={
                 "id": "resp_test",
                 "model": "gpt-5.4",
+                "status": "completed",
                 "output": [
                     {
                         "type": "message",
@@ -152,6 +153,7 @@ def test_openai_responses_provider_writes_llm_trace(monkeypatch: Any, tmp_path: 
             json={
                 "id": "resp_trace",
                 "model": "gpt-5.4",
+                "status": "completed",
                 "output": [
                     {
                         "type": "message",
@@ -238,6 +240,7 @@ def test_openai_responses_chat_items_sends_canonical_window_as_input(
             json={
                 "id": "resp_next",
                 "model": "gpt-5.5",
+                "status": "completed",
                 "output": [
                     {
                         "type": "message",
@@ -303,6 +306,7 @@ def test_openai_responses_chat_replays_tool_items(monkeypatch: Any) -> None:
             json={
                 "id": "resp_tool_followup",
                 "model": "gpt-5.5",
+                "status": "completed",
                 "output": [
                     {
                         "type": "message",
@@ -386,6 +390,7 @@ def test_openai_responses_chat_sends_image_blocks_as_input_image(monkeypatch: An
             json={
                 "id": "resp_image",
                 "model": "gpt-5.5",
+                "status": "completed",
                 "output": [
                     {
                         "type": "message",

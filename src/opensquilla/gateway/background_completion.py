@@ -11,6 +11,7 @@ from typing import Any
 import structlog
 
 from opensquilla.channels.types import OutgoingMessage
+from opensquilla.engine.types import done_text_snapshot
 from opensquilla.session.models import AgentTaskStatus
 from opensquilla.session.terminal_reply import sanitize_agent_error
 
@@ -39,7 +40,7 @@ class _SynthesisStreamCollector:
 
     def __init__(self) -> None:
         self._text_deltas: list[str] = []
-        self._done_text = ""
+        self._done_text: str | None = None
 
     async def __call__(self, event: Any) -> None:
         event_kind = _event_kind(event)
@@ -48,14 +49,14 @@ class _SynthesisStreamCollector:
             if text:
                 self._text_deltas.append(text)
         elif event_kind == "done":
-            text = _optional_str(_event_value(event, "text"))
-            if text:
+            snapshot_present, text = done_text_snapshot(event)
+            if snapshot_present:
                 self._done_text = text
 
     def text(self) -> str:
-        if self._text_deltas:
-            return "".join(self._text_deltas)
-        return self._done_text
+        if self._done_text is not None:
+            return self._done_text
+        return "".join(self._text_deltas)
 
 
 class BackgroundCompletionManager:

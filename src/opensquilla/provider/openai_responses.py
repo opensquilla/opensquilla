@@ -21,7 +21,7 @@ from opensquilla.secrets import clean_header_secret
 from .failures import retry_after_from_headers
 from .openai import _VERSIONED_BASE_URL_RE, _http_error_body_text, _resolve_llm_proxy
 from .protocol import ProviderConnectionConfig, ProviderMetadata
-from .stream_assembly import ToolStreamAccumulator
+from .stream_assembly import ToolStreamAccumulator, ToolStreamProtocolError
 from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
@@ -36,7 +36,6 @@ from .types import (
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
-    ToolUseEndEvent,
 )
 
 _OPENAI_RESPONSES_BASE = "https://api.openai.com/v1"
@@ -309,72 +308,276 @@ class OpenAIResponsesProvider:
             )
             return
 
-        emitted_tool = False
+        if not isinstance(data, dict):
+            message = "Invalid response object from OpenAI Responses API"
+            trace.record_error(
+                code="invalid_response",
+                message=message,
+                response_body=response.text,
+            )
+            yield ErrorEvent(message=message, code="invalid_response")
+            return
+
+        response_status = data.get("status")
+        incomplete_details = data.get("incomplete_details")
+        truncated_by_length = (
+            response_status == "incomplete"
+            and isinstance(incomplete_details, dict)
+            and incomplete_details.get("reason") == "max_output_tokens"
+        )
+        response_completed = response_status == "completed"
+
+        raw_output_items = data.get("output")
+        if response_completed and not isinstance(raw_output_items, list):
+            message = "OpenAI Responses API completed response has invalid output"
+            trace.record_error(
+                code="invalid_response",
+                message=message,
+                response_body=response.text,
+                metadata={"response_status": response_status},
+            )
+            yield ErrorEvent(message=message, code="invalid_response")
+            return
+        output_items = raw_output_items if isinstance(raw_output_items, list) else []
+        parsed_tool_arguments: dict[
+            int,
+            tuple[str, str, str, str, dict[str, Any]],
+        ] = {}
+        validated_message_text: dict[int, list[str]] = {}
+        invalid_tool_call_count = 0
+        invalid_output_shape = False
+        for item_index, item in enumerate(output_items):
+            if not isinstance(item, dict):
+                invalid_output_shape = True
+                continue
+            item_type = item.get("type")
+            if item_type == "message":
+                content = item.get("content")
+                if not isinstance(content, list):
+                    invalid_output_shape = True
+                    continue
+                rendered_parts: list[str] = []
+                for part in content:
+                    if not isinstance(part, dict):
+                        invalid_output_shape = True
+                        continue
+                    part_type = part.get("type")
+                    if part_type == "output_text":
+                        text = part.get("text")
+                        if not isinstance(text, str):
+                            invalid_output_shape = True
+                        elif text:
+                            rendered_parts.append(text)
+                    elif part_type == "refusal":
+                        refusal = part.get("refusal")
+                        if not isinstance(refusal, str):
+                            invalid_output_shape = True
+                        elif refusal:
+                            # Refusal is terminal assistant content, not a tool.
+                            rendered_parts.append(refusal)
+                    else:
+                        invalid_output_shape = True
+                validated_message_text[item_index] = rendered_parts
+                continue
+            if item_type != "function_call" or not response_completed:
+                # Unknown but well-shaped output item types are provider state
+                # that this adapter does not need to surface.
+                continue
+            if response_completed:
+                raw_call_id = item.get("call_id")
+                raw_item_id = item.get("id")
+                if (
+                    raw_call_id is not None
+                    and (not isinstance(raw_call_id, str) or not raw_call_id.strip())
+                ) or (
+                    raw_item_id is not None
+                    and (not isinstance(raw_item_id, str) or not raw_item_id.strip())
+                ):
+                    invalid_tool_call_count += 1
+                    continue
+                tool_name = item.get("name")
+                if not isinstance(tool_name, str) or not tool_name.strip():
+                    invalid_tool_call_count += 1
+                    continue
+                raw_arguments = item.get("arguments")
+                if raw_arguments is None:
+                    raw_arguments = ""
+                if not isinstance(raw_arguments, str):
+                    invalid_tool_call_count += 1
+                    continue
+                try:
+                    arguments = (
+                        json.loads(
+                            raw_arguments,
+                            parse_constant=lambda value: (_ for _ in ()).throw(
+                                ValueError(value)
+                            ),
+                        )
+                        if raw_arguments.strip()
+                        else {}
+                    )
+                except (
+                    json.JSONDecodeError,
+                    RecursionError,
+                    TypeError,
+                    ValueError,
+                ):
+                    invalid_tool_call_count += 1
+                    continue
+                if not isinstance(arguments, dict):
+                    invalid_tool_call_count += 1
+                    continue
+                try:
+                    json.dumps(arguments, allow_nan=False)
+                except (RecursionError, TypeError, ValueError):
+                    invalid_tool_call_count += 1
+                    continue
+                call_id = raw_call_id or raw_item_id or f"call_{uuid4().hex[:12]}"
+                key = raw_item_id or call_id
+                parsed_tool_arguments[item_index] = (
+                    call_id,
+                    key,
+                    tool_name,
+                    raw_arguments,
+                    arguments,
+                )
+
+        if invalid_output_shape:
+            message = "OpenAI Responses API response has malformed output items"
+            trace.record_error(
+                code="invalid_response",
+                message=message,
+                metadata={"response_status": response_status},
+            )
+            yield ErrorEvent(message=message, code="invalid_response")
+            return
+        if response_completed and "error" in data and data["error"] is not None:
+            message = "OpenAI Responses API completed response contains an error"
+            trace.record_error(code="invalid_response", message=message)
+            yield ErrorEvent(message=message, code="invalid_response")
+            return
+        if response_completed and invalid_tool_call_count:
+            message = "OpenAI Responses API response ended with an incomplete tool call"
+            trace.record_error(
+                code="incomplete_tool_call",
+                message=message,
+                metadata={"invalid_tool_calls": invalid_tool_call_count},
+            )
+            for item_index in range(len(output_items)):
+                for text in validated_message_text.get(item_index, []):
+                    yield TextDeltaEvent(text=text)
+            yield ErrorEvent(message=message, code="incomplete_tool_call")
+            return
+
         tools_acc = ToolStreamAccumulator()
+        prepared_tool_events: dict[int, list[StreamEvent]] = {}
         assistant_text_parts: list[str] = []
         trace_tool_calls: list[dict[str, Any]] = []
-        for item in data.get("output") or []:
-            if not isinstance(item, dict):
-                continue
-            if item.get("type") == "message":
-                for part in item.get("content") or []:
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        text = part.get("text")
-                        if isinstance(text, str) and text:
-                            assistant_text_parts.append(text)
-                            yield TextDeltaEvent(text=text)
-            elif item.get("type") == "function_call":
-                emitted_tool = True
-                call_id = item.get("call_id") or item.get("id") or f"call_{uuid4().hex[:12]}"
-                # Responses output items are keyed by their item id, the
-                # stream-local key the streaming variant of this API uses.
-                key = item.get("id") or call_id
-                for tool_event in tools_acc.start(
+        if response_completed:
+            try:
+                for item_index, (
+                    call_id,
                     key,
-                    tool_use_id=call_id,
-                    tool_name=item.get("name") or "",
-                ):
-                    yield tool_event
-                arguments_text = item.get("arguments") or ""
-                if arguments_text:
-                    for tool_event in tools_acc.append(key, arguments_text):
-                        yield tool_event
-                for tool_event in tools_acc.finish(key):
-                    yield tool_event
-                    if isinstance(tool_event, ToolUseEndEvent):
-                        try:
-                            if arguments_text:
-                                json.loads(arguments_text)
-                            arguments_valid = True
-                        except json.JSONDecodeError:
-                            arguments_valid = False
-                        trace_tool_calls.append(
-                            {
-                                "id": tool_event.tool_use_id,
-                                "name": tool_event.tool_name,
-                                "arguments_raw": arguments_text,
-                                "arguments_json_valid": arguments_valid,
-                                "arguments": tool_event.arguments,
-                            }
-                        )
+                    tool_name,
+                    arguments_text,
+                    arguments,
+                ) in parsed_tool_arguments.items():
+                    events = tools_acc.start(
+                        key,
+                        tool_use_id=call_id,
+                        tool_name=tool_name,
+                    )
+                    if arguments_text:
+                        events.extend(tools_acc.append(key, arguments_text))
+                    events.extend(tools_acc.finish_with_arguments(key, arguments))
+                    prepared_tool_events[item_index] = events
+                    trace_tool_calls.append(
+                        {
+                            "id": call_id,
+                            "name": tool_name,
+                            "arguments_raw": arguments_text,
+                            "arguments_json_valid": True,
+                            "arguments": arguments,
+                        }
+                    )
+            except ToolStreamProtocolError as exc:
+                message = "OpenAI Responses API returned an invalid tool lifecycle"
+                trace.record_error(
+                    code="incomplete_tool_call",
+                    message=message,
+                    metadata={"reason": exc.reason},
+                )
+                for item_index in range(len(output_items)):
+                    for text in validated_message_text.get(item_index, []):
+                        yield TextDeltaEvent(text=text)
+                yield ErrorEvent(message=message, code="incomplete_tool_call")
+                return
+
+        emitted_tool = bool(prepared_tool_events)
+        for item_index, item in enumerate(output_items):
+            for text in validated_message_text.get(item_index, []):
+                assistant_text_parts.append(text)
+                yield TextDeltaEvent(text=text)
+            for tool_event in prepared_tool_events.get(item_index, []):
+                yield tool_event
 
         input_tokens, output_tokens, reasoning_tokens, cached_tokens = _usage_fields(
             data.get("usage")
         )
         actual_model = data.get("model") or self._model
-        # Map an incomplete response truncated by the output-token cap to the
-        # "length" stop reason so the length-capped continuation logic (and
-        # telemetry) see the truncation, matching the chat-completions backend.
-        incomplete = data.get("incomplete_details") or {}
-        truncated_by_length = (
-            data.get("status") == "incomplete"
-            and isinstance(incomplete, dict)
-            and incomplete.get("reason") == "max_output_tokens"
-        )
-        if emitted_tool:
-            stop_reason = "tool_use"
-        elif truncated_by_length:
+
+        # A token-capped response is deliberately non-executable: keep partial
+        # text and the length stop reason so the turn loop can request a
+        # continuation, but never expose a partial function call as a tool.
+        if truncated_by_length:
             stop_reason = "length"
+        elif not response_completed:
+            error = data.get("error")
+            if response_status == "failed":
+                code = (
+                    str(error.get("code") or "response_failed")
+                    if isinstance(error, dict)
+                    else "response_failed"
+                )
+                message = (
+                    str(error.get("message") or "OpenAI Responses API response failed")
+                    if isinstance(error, dict)
+                    else "OpenAI Responses API response failed"
+                )
+            elif response_status == "cancelled":
+                code = "response_cancelled"
+                message = "OpenAI Responses API response was cancelled"
+            elif response_status == "incomplete":
+                code = "response_incomplete"
+                reason = (
+                    incomplete_details.get("reason")
+                    if isinstance(incomplete_details, dict)
+                    else None
+                )
+                message = f"OpenAI Responses API response was incomplete: {reason or 'unknown'}"
+            else:
+                code = "invalid_response_status"
+                status = response_status if isinstance(response_status, str) else "missing"
+                message = f"OpenAI Responses API returned invalid status: {status}"
+            trace.record_error(
+                code=code,
+                message=message,
+                response_body=response.text,
+                metadata={"response_status": response_status},
+            )
+            yield ErrorEvent(message=message, code=code)
+            return
+        elif invalid_tool_call_count:
+            message = "OpenAI Responses API response ended with an incomplete tool call"
+            trace.record_error(
+                code="incomplete_tool_call",
+                message=message,
+                metadata={"invalid_tool_calls": invalid_tool_call_count},
+            )
+            yield ErrorEvent(message=message, code="incomplete_tool_call")
+            return
+        elif emitted_tool:
+            stop_reason = "tool_use"
         else:
             stop_reason = "end_turn"
         trace.record_response(

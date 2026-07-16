@@ -44,6 +44,10 @@ OFFLINE_MARKER_EXCLUSIONS = {
 }
 RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_ci/test_session_storage_connection_contract.py",
+    "tests/test_channels/test_stream_terminal_routing.py",
+    "tests/test_engine/test_agent_canonical_text_contract.py",
+    "tests/test_engine/test_done_text_snapshot_consumers.py",
+    "tests/test_engine/turn_runner/test_canonical_text_contract.py",
     "tests/test_gateway/test_api_chat.py",
     "tests/test_gateway/test_channel_turn_ingress.py",
     "tests/test_gateway/test_config_profile_paths.py",
@@ -58,6 +62,10 @@ RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_migration/test_source_snapshot_windows.py",
     "tests/test_migrations/test_migrator_diagnostics.py",
     "tests/test_migrations/test_v020_turn_ingress_receipts.py",
+    "tests/test_provider_native_response_guards.py",
+    "tests/test_provider_terminal_evidence.py",
+    "tests/test_provider_terminal_evidence_anthropic_codex.py",
+    "tests/test_provider_text_tool_normalization.py",
     "tests/test_recovery/test_atomic_and_locking.py",
     "tests/test_recovery/test_cleanup.py",
     "tests/test_recovery/test_engine.py",

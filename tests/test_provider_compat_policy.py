@@ -40,6 +40,10 @@ def test_registry_attaches_kind_policy() -> None:
     specs = {spec.provider_id: spec for spec in list_provider_specs()}
     assert specs["openrouter"].compat.trust_billed_cost is True
     assert specs["openrouter"].compat.display_name == "OpenRouter"
+    assert specs["openrouter"].compat.allow_post_terminal_noop_choice is True
+    assert specs["openrouter"].compat.post_terminal_metadata_keys == frozenset(
+        {"provider"}
+    )
     assert specs["volcengine"].compat.tool_schema_unsupported_keywords
     assert specs["vllm"].compat.display_name == "OpenAI"  # kind-aliased to openai
 
@@ -74,6 +78,8 @@ def test_tokenrhythm_never_toggles_thinking_but_replays_v4_reasoning() -> None:
     assert policy.replay_reasoning_format == ""
     # cost_cny is CNY — booking it as USD would corrupt cost rollups.
     assert policy.trust_billed_cost is False
+    assert policy.allow_post_terminal_noop_choice is True
+    assert policy.post_terminal_metadata_keys == frozenset({"cost_cny", "trace_id"})
     assert _should_replay_reasoning_content(
         policy=policy, model="deepseek-v4-flash", caps=None
     )

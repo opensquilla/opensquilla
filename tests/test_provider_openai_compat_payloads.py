@@ -610,6 +610,22 @@ def _collect_events(
     return asyncio.run(_run())
 
 
+def _assert_invalid_native_arguments_fail_closed(
+    events: list[Any],
+    *,
+    raw_arguments: str,
+) -> None:
+    assert not any(isinstance(event, ToolUseEndEvent) for event in events)
+    assert not any(isinstance(event, DoneEvent) for event in events)
+    error = next(
+        event
+        for event in events
+        if isinstance(event, ErrorEvent) and event.code == "incomplete_tool_call"
+    )
+    assert raw_arguments not in error.message
+    assert "_raw" not in error.message
+
+
 def test_strict_source_edit_profile_provider_payload_exposes_exact_tool_surface(
     monkeypatch: Any,
 ) -> None:
@@ -2818,7 +2834,7 @@ def test_gemini_stream_tool_call_without_index_is_tolerated(monkeypatch: Any) ->
     assert done.model == "gemini-2.5-flash"
 
 
-def test_stream_malformed_tool_arguments_logs_and_preserves_raw(
+def test_stream_malformed_tool_arguments_fail_closed_without_raw_end(
     monkeypatch: Any,
 ) -> None:
     raw_arguments = '{"path":"demo.py","new_text":"unterminated'
@@ -2888,13 +2904,13 @@ def test_stream_malformed_tool_arguments_logs_and_preserves_raw(
     with structlog.testing.capture_logs() as captured:
         events = _collect_events(provider, ChatConfig(), tools=[tool])
 
-    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
     invalid_log = next(
         item for item in captured if item["event"] == "provider.tool_arguments_json_invalid"
     )
-    assert tool_end.tool_use_id == "call_edit"
-    assert tool_end.tool_name == "edit_file"
-    assert tool_end.arguments == {"_raw": raw_arguments}
+    _assert_invalid_native_arguments_fail_closed(
+        events,
+        raw_arguments=raw_arguments,
+    )
     assert invalid_log["provider"] == "dashscope"
     assert invalid_log["model"] == "qwen3.6-flash"
     assert invalid_log["tool"] == "edit_file"
@@ -2991,7 +3007,7 @@ def test_stream_dashscope_recovers_qwen_json_text_tool_call(
     monkeypatch: Any,
 ) -> None:
     text_tool_call = (
-        'thinking out loud<tool_call>{"name":"edit_file","arguments":'
+        'thinking out loud\n<tool_call>{"name":"edit_file","arguments":'
         '{"path":"demo.py","old_text":"old","new_text":"new"}}</tool_call>'
     )
 
@@ -3423,8 +3439,10 @@ def test_stream_dashscope_reports_repaired_edit_file_alias_conflicts(
     with structlog.testing.capture_logs() as captured:
         events = _collect_events(provider, ChatConfig(), tools=[tool])
 
-    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
-    assert tool_end.arguments == {"_raw": raw_arguments}
+    _assert_invalid_native_arguments_fail_closed(
+        events,
+        raw_arguments=raw_arguments,
+    )
     assert any(
         item["event"] == "provider.tool_arguments_alias_conflict" and item["tool"] == "edit_file"
         for item in captured
@@ -3506,8 +3524,10 @@ def test_stream_dashscope_rejects_repaired_tool_arguments_with_wrong_type(
     with structlog.testing.capture_logs() as captured:
         events = _collect_events(provider, ChatConfig(), tools=[tool])
 
-    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
-    assert tool_end.arguments == {"_raw": raw_arguments}
+    _assert_invalid_native_arguments_fail_closed(
+        events,
+        raw_arguments=raw_arguments,
+    )
     assert any(
         item["event"] == "provider.tool_arguments_json_invalid"
         and item["reason"] == "schema_validation_failed"
@@ -3841,8 +3861,10 @@ def test_stream_dashscope_keeps_unrepairable_tool_arguments_invalid(
     with structlog.testing.capture_logs() as captured:
         events = _collect_events(provider, ChatConfig(), tools=[tool])
 
-    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
-    assert tool_end.arguments == {"_raw": raw_arguments}
+    _assert_invalid_native_arguments_fail_closed(
+        events,
+        raw_arguments=raw_arguments,
+    )
     assert any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
     assert not any(item["event"] == "provider.tool_arguments_json_repaired" for item in captured)
 
@@ -4002,8 +4024,10 @@ def test_stream_openrouter_does_not_repair_dashscope_wrappers(
     with structlog.testing.capture_logs() as captured:
         events = _collect_events(provider, ChatConfig(), tools=[tool])
 
-    tool_end = next(event for event in events if isinstance(event, ToolUseEndEvent))
-    assert tool_end.arguments == {"_raw": raw_arguments}
+    _assert_invalid_native_arguments_fail_closed(
+        events,
+        raw_arguments=raw_arguments,
+    )
     assert any(item["event"] == "provider.tool_arguments_json_invalid" for item in captured)
     assert not any(item["event"] == "provider.tool_arguments_json_repaired" for item in captured)
 
@@ -4465,7 +4489,7 @@ def _patch_stream_transport(monkeypatch: Any, handler: Any) -> None:
     monkeypatch.setattr("opensquilla.provider.openai.httpx.AsyncClient", patched_async_client)
 
 
-def test_stream_error_frame_skipped_by_default(monkeypatch: Any) -> None:
+def test_stream_error_frame_is_unconditionally_terminal(monkeypatch: Any) -> None:
     monkeypatch.delenv("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", raising=False)
     _patch_stream_transport(monkeypatch, _stream_error_frame_handler)
     provider = OpenAIProvider(
@@ -4477,9 +4501,9 @@ def test_stream_error_frame_skipped_by_default(monkeypatch: Any) -> None:
 
     events = _collect_events(provider, ChatConfig())
 
-    assert not any(isinstance(event, ErrorEvent) for event in events)
-    done = next(event for event in events if isinstance(event, DoneEvent))
-    assert done.stop_reason == "stop"
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "502"
+    assert not any(isinstance(event, DoneEvent) for event in events)
 
 
 def test_stream_error_frame_env_surfaces_error_event(monkeypatch: Any) -> None:

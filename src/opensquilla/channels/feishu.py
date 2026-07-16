@@ -662,6 +662,8 @@ class FeishuChannel:
     Outbound messages use Feishu REST API via httpx.
     """
 
+    # ``send_streaming`` intentionally buffers and emits one final message; it
+    # does not expose a live preview that dispatch must later reconcile.
     STREAM_UPDATE_STRATEGY = "final_only"
     startup_timeout_s: ClassVar[float] = 90.0
 

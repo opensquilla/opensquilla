@@ -124,7 +124,7 @@ class _ActiveLongToolArgumentProvider:
         yield ProviderToolUseEnd(
             tool_use_id=tool_use_id,
             tool_name="write_file",
-            arguments={},
+            arguments={"path": "deck.py", "content": self.content},
         )
         yield ProviderDone(stop_reason="tool_calls", input_tokens=1, output_tokens=100)
 

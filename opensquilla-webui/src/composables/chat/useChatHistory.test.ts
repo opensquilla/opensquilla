@@ -683,6 +683,37 @@ describe('useChatHistory scroll anchoring', () => {
 
     expect(scrollToBottom).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps protocol-shaped assistant documentation canonical', async () => {
+    const text = [
+      'Document `<tool_calls>` inline.',
+      '```xml',
+      '<tool_calls><invoke name="demo"></invoke></tool_calls>',
+      '```',
+      'Keep `<｜DSML｜tool_calls>` too.',
+      '<details><summary>View areas around line 10</summary>Visible note.</details>',
+      'Final suffix.',
+    ].join('\n')
+    const { api, messages } = makeHistory(true, {
+      response: {
+        messages: [{
+          id: 'literal-1',
+          message_id: 'literal-1',
+          role: 'assistant',
+          text,
+          timestamp: '2026-07-06T00:00:00Z',
+        }],
+        has_more: false,
+        oldest_cursor: null,
+        newest_cursor: null,
+        history_scope: 'session',
+      },
+    })
+
+    await api.loadHistory()
+
+    expect(messages.value[0]?.text).toBe(text)
+  })
 })
 
 describe('useChatHistory optimistic local rows', () => {

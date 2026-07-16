@@ -7,7 +7,7 @@ import json
 import os
 import re
 import sys
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import asdict
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -22,10 +22,15 @@ from opensquilla.safety.secret_redaction import redact_secret_text
 from opensquilla.secrets import clean_header_secret
 
 from .app_attribution import is_provider_app_host, provider_app_headers
-from .compat_policy import OpenAICompatPolicy, compat_policy_for_kind
+from .compat_policy import (
+    TEXT_TOOL_DIALECT_MINIMAX_XML,
+    TEXT_TOOL_DIALECT_PLAIN_JSON,
+    TEXT_TOOL_DIALECT_QWEN_TAG,
+    OpenAICompatPolicy,
+    compat_policy_for_kind,
+)
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
 from .failures import retry_after_from_headers
-from .minimax_compat import contains_minimax_protocol, parse_minimax_tool_calls
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .reasoning_dialects import (
     ReasoningDisableArgs,
@@ -37,7 +42,18 @@ from .request_proof import (
     ProviderRequestBudgetExceededError,
     prove_provider_payload_from_env,
 )
-from .stream_assembly import ReasoningAccumulator, ToolStreamAccumulator
+from .stream_assembly import (
+    ReasoningAccumulator,
+    ToolStreamAccumulator,
+    ToolStreamProtocolError,
+)
+from .text_tool_normalizer import (
+    LiteralTextSegment,
+    TextToolSegment,
+    TextToolStreamNormalizer,
+    classify_text_tool_segments,
+    warn_for_unauthorized_plain_candidate,
+)
 from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
@@ -49,42 +65,17 @@ from .types import (
     ProviderHeartbeatEvent,
     ProviderMessageCountProjection,
     ProviderMessageLimitProof,
+    ReasoningDeltaEvent,
     StreamEvent,
     TextDeltaEvent,
     ToolDefinition,
+    ToolUseDeltaEvent,
     ToolUseEndEvent,
     ToolUseStartEvent,
 )
 
 _OPENAI_API_BASE = "https://api.openai.com"
 log = structlog.get_logger(__name__)
-_PLAIN_JSON_TOOL_CALL_RE = re.compile(
-    r"^\s*([A-Za-z_][A-Za-z0-9_.:-]*)\s*(\{.*\})\s*$",
-    re.DOTALL,
-)
-_PLAIN_JSON_TOOL_PREFIX_RE = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_.:-]*)\s*(?=\{)",
-)
-_QWEN_TOOL_CALL_RE = re.compile(
-    r"<tool_call>\s*(?P<body>[\s\S]*?)\s*</tool_call>",
-    re.IGNORECASE,
-)
-_QWEN_XML_FUNC_RE = re.compile(
-    r"<function=([^>]+)>(?P<body>[\s\S]*?)</function>",
-    re.IGNORECASE,
-)
-_QWEN_XML_FUNC_LENIENT_RE = re.compile(
-    r"<function=([^>]+)>(?P<body>[\s\S]*?)(?=<function=|</function>|\Z)",
-    re.IGNORECASE,
-)
-_QWEN_XML_PARAM_RE = re.compile(
-    r"<parameter=([^>]+)>(?P<body>[\s\S]*?)</parameter>",
-    re.IGNORECASE,
-)
-_QWEN_XML_PARAM_LENIENT_RE = re.compile(
-    r"<parameter=([^>]+)>(?P<body>[\s\S]*?)(?=<parameter=|</parameter>|<function=|</function>|\Z)",
-    re.IGNORECASE,
-)
 _DASHSCOPE_PARAMETER_RE = re.compile(
     r"<parameter(?:\s[^>]*)?>(?P<body>[\s\S]*?)</parameter>",
     re.IGNORECASE,
@@ -95,6 +86,22 @@ _MARKDOWN_JSON_FENCE_RE = re.compile(
 )
 
 _OPENAI_TOOL_STATUS_OUTPUT_MAX_CHARS = 4000
+_OPENAI_STREAM_USAGE_ONLY_KEYS = frozenset(
+    {
+        "id",
+        "object",
+        "created",
+        "model",
+        "system_fingerprint",
+        "service_tier",
+        "choices",
+        "usage",
+    }
+)
+_OPENAI_STREAM_NOOP_CHOICE_KEYS = frozenset(
+    {"index", "delta", "finish_reason", "native_finish_reason"}
+)
+_OPENAI_STREAM_NOOP_DELTA_KEYS = frozenset({"content", "role"})
 _VERSIONED_BASE_URL_RE = re.compile(r"/v\d+$")
 _EPHEMERAL_CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
 _DASHSCOPE_MAX_CACHE_MARKERS = 4
@@ -118,6 +125,85 @@ _DASHSCOPE_FAILURE_ANCHOR_MARKERS = (
     "exit code:",
     "exit_code=",
 )
+
+
+def _is_inert_post_terminal_stream_frame(
+    *,
+    chunk: Mapping[str, Any],
+    raw_choices: list[Any],
+    terminal_finish_reason: str,
+    terminal_native_finish_reason_present: bool,
+    terminal_native_finish_reason: Any,
+    policy: OpenAICompatPolicy,
+) -> bool:
+    """Accept only a provider-declared, state-free terminal epilogue.
+
+    OpenAI's usage trailer normally has ``choices: []``.  A small number of
+    compatible gateways instead repeat choice zero with a semantically empty
+    delta while attaching usage/cost metadata.  (Some spell that no-op as
+    ``{"content": "", "role": "assistant"}``.)  Routing the duplicate through
+    the ordinary choice parser would make a second terminal look like mutable
+    response state.  Keep the exception narrow and fail closed on any content,
+    tool, reasoning, index, role, or finish-reason change.
+    """
+
+    allowed_chunk_keys = _OPENAI_STREAM_USAGE_ONLY_KEYS.union(
+        policy.post_terminal_metadata_keys
+    )
+    if set(chunk).difference(allowed_chunk_keys):
+        return False
+
+    has_usage = "usage" in chunk
+    if has_usage and not isinstance(chunk["usage"], Mapping):
+        return False
+
+    if not raw_choices:
+        return has_usage
+    if not policy.allow_post_terminal_noop_choice or len(raw_choices) != 1:
+        return False
+
+    choice = raw_choices[0]
+    if not isinstance(choice, Mapping):
+        return False
+    if set(choice).difference(_OPENAI_STREAM_NOOP_CHOICE_KEYS):
+        return False
+
+    choice_index = choice.get("index", 0)
+    if (
+        not isinstance(choice_index, int)
+        or isinstance(choice_index, bool)
+        or choice_index != 0
+    ):
+        return False
+
+    if "delta" not in choice:
+        return False
+    delta = choice["delta"]
+    if not isinstance(delta, Mapping):
+        return False
+    if set(delta).difference(_OPENAI_STREAM_NOOP_DELTA_KEYS):
+        return False
+    if delta.get("content") not in (None, ""):
+        return False
+    if delta.get("role") not in (None, "assistant"):
+        return False
+
+    repeated_finish = choice.get("finish_reason")
+    if repeated_finish is not None and repeated_finish != terminal_finish_reason:
+        return False
+
+    repeated_native_present = "native_finish_reason" in choice
+    if repeated_native_present != terminal_native_finish_reason_present:
+        return False
+    if (
+        repeated_native_present
+        and choice["native_finish_reason"] != terminal_native_finish_reason
+    ):
+        return False
+
+    # A choice with neither usage nor a repeated finish is not a meaningful
+    # terminal epilogue, even if its delta happens to be empty.
+    return has_usage or repeated_finish == terminal_finish_reason
 
 
 def _openai_tool_result_content(block: Any) -> str:
@@ -482,131 +568,6 @@ def _resolve_llm_proxy(proxy: str | None) -> str | None:
     return proxy.strip() or None
 
 
-def _parse_exact_plain_json_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a bare ``tool_name{...}`` assistant text response."""
-    candidates = [text]
-    non_empty_lines = [line for line in text.splitlines() if line.strip()]
-    if non_empty_lines:
-        last_line = non_empty_lines[-1]
-        if last_line != text:
-            candidates.append(last_line)
-
-    match = None
-    for candidate in candidates:
-        match = _PLAIN_JSON_TOOL_CALL_RE.match(candidate)
-        if match:
-            break
-    if match is None:
-        return None
-
-    try:
-        arguments = json.loads(match.group(2))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(arguments, dict):
-        return None
-    return match.group(1), arguments
-
-
-def _parse_trailing_plain_json_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a trailing ``tool_name{...}``, allowing prose before it."""
-    decoder = json.JSONDecoder()
-    for match in reversed(list(_PLAIN_JSON_TOOL_PREFIX_RE.finditer(text))):
-        try:
-            arguments, end = decoder.raw_decode(text, match.end())
-        except json.JSONDecodeError:
-            continue
-        if text[end:].strip():
-            continue
-        if not isinstance(arguments, dict):
-            continue
-        return match.group(1), arguments
-    return None
-
-
-def _parse_plain_json_tool_call(text: str) -> tuple[str, dict[str, Any]] | None:
-    """Parse a text response ending in ``tool_name{...}``."""
-    exact_call = _parse_exact_plain_json_tool_call(text)
-    if exact_call is not None:
-        return exact_call
-    return _parse_trailing_plain_json_tool_call(text)
-
-
-def _parse_qwen_xml_parameters(body: str, *, lenient: bool = False) -> dict[str, str]:
-    pattern = _QWEN_XML_PARAM_LENIENT_RE if lenient else _QWEN_XML_PARAM_RE
-    arguments: dict[str, str] = {}
-    for match in pattern.finditer(body):
-        name = match.group(1).strip()
-        if name:
-            arguments[name] = match.group("body").strip()
-    return arguments
-
-
-def _parse_qwen_xml_tool_call(raw_text: str) -> tuple[str, dict[str, Any]] | None:
-    match = _QWEN_XML_FUNC_RE.search(raw_text)
-    if match:
-        name = match.group(1).strip()
-        if not name:
-            return None
-        arguments = _parse_qwen_xml_parameters(match.group("body"))
-        lenient_arguments = _parse_qwen_xml_parameters(match.group("body"), lenient=True)
-        if len(lenient_arguments) > len(arguments):
-            arguments = lenient_arguments
-        if not arguments and "<parameter=" in match.group("body"):
-            return None
-        return name, dict(arguments)
-
-    match = _QWEN_XML_FUNC_LENIENT_RE.search(raw_text)
-    if not match:
-        return None
-    name = match.group(1).strip()
-    if not name:
-        return None
-    arguments = _parse_qwen_xml_parameters(match.group("body"), lenient=True)
-    if not arguments:
-        return None
-    return name, dict(arguments)
-
-
-def _parse_qwen_tool_call_body(raw_text: str) -> tuple[str, dict[str, Any], str] | None:
-    stripped = raw_text.strip()
-    if not stripped:
-        return None
-    try:
-        parsed = json.loads(stripped)
-    except (json.JSONDecodeError, TypeError):
-        parsed = None
-
-    if isinstance(parsed, dict):
-        name = parsed.get("name")
-        arguments = parsed.get("arguments", {})
-        if not isinstance(name, str) or not name.strip():
-            return None
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments)
-            except (json.JSONDecodeError, TypeError):
-                return None
-        if not isinstance(arguments, dict):
-            return None
-        return name.strip(), arguments, "json"
-
-    xml_call = _parse_qwen_xml_tool_call(stripped)
-    if xml_call is None:
-        return None
-    name, arguments = xml_call
-    return name, arguments, "xml"
-
-
-def _parse_qwen_text_tool_calls(text: str) -> list[tuple[str, dict[str, Any], str]]:
-    calls: list[tuple[str, dict[str, Any], str]] = []
-    for match in _QWEN_TOOL_CALL_RE.finditer(text):
-        parsed = _parse_qwen_tool_call_body(match.group("body"))
-        if parsed is not None:
-            calls.append(parsed)
-    return calls
-
-
 def _tool_by_name(tools: list[ToolDefinition] | None) -> dict[str, ToolDefinition]:
     if not tools:
         return {}
@@ -787,17 +748,39 @@ def _escape_invalid_chars_in_json_strings(raw: str) -> str:
     return "".join(output)
 
 
+def _reject_nonstandard_json_constant(value: str) -> Any:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _strict_json_loads(value: str, *, strict: bool = True) -> Any:
+    return json.loads(
+        value,
+        strict=strict,
+        parse_constant=_reject_nonstandard_json_constant,
+    )
+
+
+def _strict_json_object(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError, OverflowError, RecursionError):
+        return None
+    return value
+
+
 def _repair_malformed_json_object_candidate(candidate: str) -> dict[str, Any] | None:
     text = candidate.strip()
     if not text:
         return None
 
     try:
-        parsed = json.loads(text, strict=False)
-    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = _strict_json_loads(text, strict=False)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         pass
     else:
-        return parsed if isinstance(parsed, dict) else None
+        return _strict_json_object(parsed)
 
     fixed = text
     open_curly = fixed.count("{") - fixed.count("}")
@@ -810,8 +793,8 @@ def _repair_malformed_json_object_candidate(candidate: str) -> dict[str, Any] | 
 
     for _ in range(50):
         try:
-            parsed = json.loads(fixed)
-        except json.JSONDecodeError:
+            parsed = _strict_json_loads(fixed)
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             if fixed.endswith("}") and fixed.count("}") > fixed.count("{"):
                 fixed = fixed[:-1]
                 continue
@@ -820,31 +803,32 @@ def _repair_malformed_json_object_candidate(candidate: str) -> dict[str, Any] | 
                 continue
             break
         else:
-            return parsed if isinstance(parsed, dict) else None
+            return _strict_json_object(parsed)
 
     escaped = _escape_invalid_chars_in_json_strings(fixed)
     if escaped != fixed:
         try:
-            parsed = json.loads(escaped)
-        except (json.JSONDecodeError, TypeError, ValueError):
+            parsed = _strict_json_loads(escaped)
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             return None
-        return parsed if isinstance(parsed, dict) else None
+        return _strict_json_object(parsed)
     return None
 
 
 def _parse_json_object_candidate(candidate: str) -> dict[str, Any] | None:
     try:
-        parsed = json.loads(candidate)
-    except json.JSONDecodeError:
+        parsed = _strict_json_loads(candidate)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
         return None
-    if isinstance(parsed, dict):
-        return parsed
+    parsed_object = _strict_json_object(parsed)
+    if parsed_object is not None:
+        return parsed_object
     if isinstance(parsed, str):
         try:
-            nested = json.loads(parsed)
-        except json.JSONDecodeError:
+            nested = _strict_json_loads(parsed)
+        except (json.JSONDecodeError, TypeError, ValueError, RecursionError):
             return None
-        return nested if isinstance(nested, dict) else None
+        return _strict_json_object(nested)
     return None
 
 
@@ -893,6 +877,10 @@ def _repair_dashscope_tool_arguments(
                 schema_errors.extend(conflict_messages)
             continue
         parsed = normalization.arguments
+        if _strict_json_object(parsed) is None:
+            if schema_errors is not None:
+                schema_errors.append("arguments are not strict finite JSON")
+            continue
         errors = _tool_schema_repair_validation_errors(tool, parsed)
         if not errors:
             return (
@@ -924,8 +912,8 @@ def _parse_openai_tool_arguments(
     if not raw_text:
         return {}, True, False
     try:
-        parsed = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
+        parsed = _strict_json_loads(raw_text)
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError) as exc:
         if provider_kind == "dashscope":
             schema_errors: list[str] = []
             alias_conflicts: list[str] = []
@@ -978,7 +966,7 @@ def _parse_openai_tool_arguments(
                     reason="schema_validation_failed",
                     errors=schema_errors[:5],
                 )
-                return {"_raw": raw_text}, False, False
+                return {}, False, False
         log.warning(
             "provider.tool_arguments_json_invalid",
             provider=provider_kind,
@@ -988,7 +976,19 @@ def _parse_openai_tool_arguments(
             raw_chars=len(raw_text),
             error=str(exc),
         )
-        return {"_raw": raw_text}, False, False
+        return {}, False, False
+
+    if isinstance(parsed, dict) and _strict_json_object(parsed) is None:
+        log.warning(
+            "provider.tool_arguments_json_invalid",
+            provider=provider_kind,
+            model=model,
+            tool=tool_name,
+            tool_use_id=tool_use_id,
+            raw_chars=len(raw_text),
+            reason="non_finite_or_unserializable_value",
+        )
+        return {}, False, False
 
     if isinstance(parsed, dict):
         if provider_kind == "dashscope":
@@ -1018,7 +1018,7 @@ def _parse_openai_tool_arguments(
         raw_chars=len(raw_text),
         error=f"tool arguments decoded to {type(parsed).__name__}, expected object",
     )
-    return {"_raw": raw_text}, False, False
+    return {}, False, False
 
 
 def _coerce_int(value: Any) -> int:
@@ -1115,7 +1115,7 @@ def _provider_billed_cost(provider_kind: str, raw_billed_cost: float) -> tuple[f
 def _resolve_tool_call_index(
     tc: Mapping[str, Any],
     tools_acc: ToolStreamAccumulator,
-) -> int:
+) -> tuple[int, bool]:
     """Resolve the accumulator slot for a streamed tool-call delta.
 
     Most upstreams send an explicit ``index``, but some (Gemini's
@@ -1123,18 +1123,25 @@ def _resolve_tool_call_index(
     matching the provider-supplied id against known calls, then to opening a
     new slot — a missing index must never fail the stream.
     """
-    if "index" in tc:
-        return _coerce_int(tc["index"])
     tool_call_id = tc.get("id")
+    if "index" in tc:
+        raw_index = tc["index"]
+        if isinstance(raw_index, int) and not isinstance(raw_index, bool) and raw_index >= 0:
+            return raw_index, True
+        if isinstance(tool_call_id, str) and tool_call_id:
+            key = tools_acc.find_key_for_tool_call_id(tool_call_id)
+            if key is not None:
+                return cast(int, key), False
+        return tools_acc.next_int_key(), False
     if isinstance(tool_call_id, str) and tool_call_id:
         key = tools_acc.find_key_for_tool_call_id(tool_call_id)
         if key is not None:
-            return cast(int, key)
-        return tools_acc.next_int_key()
+            return cast(int, key), True
+        return tools_acc.next_int_key(), True
     single = tools_acc.single_key()
     if single is not None:
-        return cast(int, single)
-    return tools_acc.next_int_key()
+        return cast(int, single), True
+    return tools_acc.next_int_key(), True
 
 
 def _dashscope_tool_call_chunk_is_empty(tc: Mapping[str, Any]) -> bool:
@@ -1159,6 +1166,183 @@ def _stream_timeout(timeout: float) -> httpx.Timeout:
     return httpx.Timeout(timeout, connect=connect, write=write, pool=10.0)
 
 
+_SUCCESSFUL_TEXT_TOOL_FINISH_REASONS = frozenset({"stop", "tool_calls"})
+_MAX_DEFERRED_NATIVE_EVENTS = 256
+_MAX_DEFERRED_NATIVE_ARGUMENT_CHARS = 256_000
+
+
+class _DeferredDeltaParts:
+    """Rope-like storage for adjacent deltas; materialized exactly once."""
+
+    __slots__ = ("kind", "parts", "tool_use_id")
+
+    def __init__(self, kind: str, part: str, tool_use_id: str = "") -> None:
+        self.kind = kind
+        self.parts = [part]
+        self.tool_use_id = tool_use_id
+
+    def accepts(self, kind: str, tool_use_id: str) -> bool:
+        return self.kind == kind and self.tool_use_id == tool_use_id
+
+    def materialize(self) -> StreamEvent:
+        value = "".join(self.parts)
+        if self.kind == "text":
+            return TextDeltaEvent(text=value)
+        if self.kind == "reasoning":
+            return ReasoningDeltaEvent(text=value)
+        return ToolUseDeltaEvent(
+            tool_use_id=self.tool_use_id,
+            json_fragment=value,
+        )
+
+
+class _DeferredStreamEventBuffer:
+    """Ordered event holdback with O(1) fragment append and exact accounting."""
+
+    __slots__ = ("_chars", "_entries")
+
+    def __init__(self) -> None:
+        self._entries: list[StreamEvent | _DeferredDeltaParts] = []
+        self._chars = 0
+
+    @property
+    def char_count(self) -> int:
+        return self._chars
+
+    @property
+    def event_count(self) -> int:
+        return len(self._entries)
+
+    def __len__(self) -> int:
+        return self.event_count
+
+    def __iter__(self) -> Iterator[StreamEvent]:
+        return iter(self.materialize())
+
+    def append(self, event: StreamEvent) -> int:
+        kind = ""
+        part = ""
+        tool_use_id = ""
+        if isinstance(event, TextDeltaEvent):
+            kind = "text"
+            part = event.text
+        elif isinstance(event, ReasoningDeltaEvent):
+            kind = "reasoning"
+            part = event.text
+        elif isinstance(event, ToolUseDeltaEvent):
+            kind = "tool"
+            part = event.json_fragment
+            tool_use_id = event.tool_use_id
+        if kind:
+            previous = self._entries[-1] if self._entries else None
+            if isinstance(previous, _DeferredDeltaParts) and previous.accepts(
+                kind,
+                tool_use_id,
+            ):
+                previous.parts.append(part)
+            else:
+                self._entries.append(_DeferredDeltaParts(kind, part, tool_use_id))
+            self._chars += len(part)
+            return len(part)
+        self._entries.append(event)
+        return 0
+
+    def patch_start_tool_name(self, tool_name: str) -> None:
+        for entry in self._entries:
+            if isinstance(entry, ToolUseStartEvent):
+                entry.tool_name = tool_name
+
+    def materialize(self) -> list[StreamEvent]:
+        return [
+            entry.materialize()
+            if isinstance(entry, _DeferredDeltaParts)
+            else entry
+            for entry in self._entries
+        ]
+
+    def clear(self) -> None:
+        self._entries.clear()
+        self._chars = 0
+
+    def drain(self) -> list[StreamEvent]:
+        events = self.materialize()
+        self.clear()
+        return events
+
+
+def _append_coalesced_stream_event(
+    events: _DeferredStreamEventBuffer,
+    event: StreamEvent,
+) -> int:
+    """Append one event to a fragment-list buffer without string copying."""
+
+    return events.append(event)
+
+
+def _successful_text_tool_terminal(
+    *,
+    saw_done_sentinel: bool,
+    finish_reasons: list[str],
+) -> bool:
+    """Whether a response is complete enough to authorize text execution."""
+
+    has_terminal_evidence = saw_done_sentinel or bool(finish_reasons)
+    return has_terminal_evidence and all(
+        reason in _SUCCESSFUL_TEXT_TOOL_FINISH_REASONS for reason in finish_reasons
+    )
+
+
+def _segment_text_tool_events(
+    segments: list[TextToolSegment],
+    *,
+    provider_kind: str,
+    model: str,
+) -> list[TextDeltaEvent | ToolUseStartEvent | ToolUseEndEvent]:
+    events: list[TextDeltaEvent | ToolUseStartEvent | ToolUseEndEvent] = []
+    for segment in segments:
+        if isinstance(segment, LiteralTextSegment):
+            if segment.text:
+                events.append(TextDeltaEvent(text=segment.text))
+            continue
+        for call in segment.calls:
+            id_prefix = {
+                TEXT_TOOL_DIALECT_QWEN_TAG: "qwen_text",
+                TEXT_TOOL_DIALECT_MINIMAX_XML: "minimax_compat",
+                TEXT_TOOL_DIALECT_PLAIN_JSON: "text_compat",
+            }[call.dialect]
+            tool_use_id = f"{id_prefix}_{uuid4().hex[:12]}"
+            event_name = (
+                "provider.qwen_text_tool_call_parsed"
+                if call.dialect == TEXT_TOOL_DIALECT_QWEN_TAG
+                else "provider.text_tool_call_parsed"
+            )
+            log.warning(
+                event_name,
+                provider=provider_kind,
+                model=model,
+                tool=call.tool_name,
+                tool_use_id=tool_use_id,
+                dialect=call.dialect,
+                parse_format=call.parse_format,
+            )
+            events.append(
+                ToolUseStartEvent(
+                    tool_use_id=tool_use_id,
+                    tool_name=call.tool_name,
+                    synthetic_from_text=True,
+                )
+            )
+            events.append(
+                ToolUseEndEvent(
+                    tool_use_id=tool_use_id,
+                    tool_name=call.tool_name,
+                    arguments=call.arguments,
+                    synthetic_from_text=True,
+                )
+            )
+    return events
+
+
 def _synthesize_text_tool_events(
     full_text: str,
     tools: list[ToolDefinition] | None,
@@ -1166,139 +1350,25 @@ def _synthesize_text_tool_events(
     provider_kind: str,
     model: str,
 ) -> list[ToolUseStartEvent | ToolUseEndEvent]:
-    from opensquilla.tools.argument_normalization import (
-        canonicalize_tool_arguments,
-        format_alias_conflicts,
+    """Compatibility helper backed by the scoped, atomic classifier."""
+
+    policy = compat_policy_for_kind(provider_kind)
+    segments = classify_text_tool_segments(
+        full_text,
+        tools,
+        dialects=policy.text_tool_profile.dialects_for_model(model),
+        provider_kind=provider_kind,
+        model=model,
     )
-
-    if not tools or not full_text:
-        return []
-
-    events: list[ToolUseStartEvent | ToolUseEndEvent] = []
-    allowed_tool_names = {tool.name for tool in tools}
-    tools_by_name = _tool_by_name(tools)
-
-    if provider_kind == "dashscope" and "<tool_call>" in full_text:
-        for tool_name, raw_arguments, parse_format in _parse_qwen_text_tool_calls(full_text):
-            if tool_name not in allowed_tool_names:
-                log.warning(
-                    "provider.qwen_text_tool_call_rejected_unknown_tool",
-                    provider=provider_kind,
-                    model=model,
-                    tool=tool_name,
-                )
-                continue
-            normalization = canonicalize_tool_arguments(tool_name, raw_arguments)
-            if normalization.conflicts:
-                conflicts = format_alias_conflicts(normalization.conflicts)
-                log.warning(
-                    "provider.tool_arguments_alias_conflict",
-                    provider=provider_kind,
-                    model=model,
-                    tool=tool_name,
-                    raw_chars=len(full_text),
-                    conflicts=conflicts[:5],
-                )
-                log.warning(
-                    "provider.qwen_text_tool_call_rejected_schema",
-                    provider=provider_kind,
-                    model=model,
-                    tool=tool_name,
-                    parse_format=parse_format,
-                    errors=conflicts[:5],
-                )
-                continue
-            arguments = normalization.arguments
-            schema_errors = _tool_schema_repair_validation_errors(
-                tools_by_name.get(tool_name),
-                arguments,
-            )
-            if schema_errors:
-                log.warning(
-                    "provider.qwen_text_tool_call_rejected_schema",
-                    provider=provider_kind,
-                    model=model,
-                    tool=tool_name,
-                    parse_format=parse_format,
-                    errors=schema_errors[:5],
-                )
-                continue
-            if normalization.aliases_applied:
-                log.warning(
-                    "provider.tool_arguments_aliases_applied",
-                    provider=provider_kind,
-                    model=model,
-                    tool=tool_name,
-                    aliases=normalization.aliases_applied,
-                )
-            tool_use_id = f"qwen_text_{uuid4().hex[:12]}"
-            log.warning(
-                "provider.qwen_text_tool_call_parsed",
-                provider=provider_kind,
-                model=model,
-                tool=tool_name,
-                tool_use_id=tool_use_id,
-                parse_format=parse_format,
-            )
-            events.append(
-                ToolUseStartEvent(
-                    tool_use_id=tool_use_id,
-                    tool_name=tool_name,
-                    synthetic_from_text=True,
-                )
-            )
-            events.append(
-                ToolUseEndEvent(
-                    tool_use_id=tool_use_id,
-                    tool_name=tool_name,
-                    arguments=arguments,
-                    synthetic_from_text=True,
-                )
-            )
-        return events
-
-    if contains_minimax_protocol(full_text):
-        for minimax_call in parse_minimax_tool_calls(full_text):
-            if minimax_call.name not in allowed_tool_names:
-                continue
-            tool_use_id = f"minimax_compat_{uuid4().hex[:12]}"
-            events.append(
-                ToolUseStartEvent(
-                    tool_use_id=tool_use_id,
-                    tool_name=minimax_call.name,
-                    synthetic_from_text=True,
-                )
-            )
-            events.append(
-                ToolUseEndEvent(
-                    tool_use_id=tool_use_id,
-                    tool_name=minimax_call.name,
-                    arguments=dict(minimax_call.arguments),
-                    synthetic_from_text=True,
-                )
-            )
-    else:
-        plain_call = _parse_plain_json_tool_call(full_text)
-        if plain_call is not None:
-            tool_name, arguments = plain_call
-            if tool_name in allowed_tool_names:
-                tool_use_id = f"text_compat_{uuid4().hex[:12]}"
-                events.append(
-                    ToolUseStartEvent(
-                        tool_use_id=tool_use_id,
-                        tool_name=tool_name,
-                        synthetic_from_text=True,
-                    )
-                )
-                events.append(
-                    ToolUseEndEvent(
-                        tool_use_id=tool_use_id,
-                        tool_name=tool_name,
-                        arguments=arguments,
-                        synthetic_from_text=True,
-                    )
-                )
-    return events
+    return [
+        event
+        for event in _segment_text_tool_events(
+            segments,
+            provider_kind=provider_kind,
+            model=model,
+        )
+        if isinstance(event, (ToolUseStartEvent, ToolUseEndEvent))
+    ]
 
 
 def _build_openai_tool(
@@ -2150,17 +2220,6 @@ class OpenAIProvider:
             os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
             in {"1", "true", "yes", "on", "enabled"}
         )
-        # Opt-in mid-stream error-frame surfacing: OpenAI-compatible
-        # streams can carry an {"error": {...}} SSE data frame when the
-        # upstream fails after the response has started. Without handling,
-        # the frame is skipped and the call degrades to an empty response
-        # with no error signal. When armed, such frames end the call with
-        # an ErrorEvent so callers see the real failure and can retry.
-        # Off by default.
-        self._stream_error_frames = (
-            os.environ.get("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "").strip().lower()
-            in {"1", "true", "yes", "on", "enabled"}
-        )
         # Opt-in reasoning-echo truncation: when a compat policy replays
         # assistant reasoning_content, every historical assistant message
         # carries its full reasoning bytes on every request. Limiting the
@@ -2476,7 +2535,15 @@ class OpenAIProvider:
         streamed_thought_signature: str | None = None
         reasoning = ReasoningAccumulator()
         tools_by_name = _tool_by_name(tools)
+        text_tool_dialects = self._compat.text_tool_profile.dialects_for_model(self._model)
+        text_tool_normalizer = TextToolStreamNormalizer(
+            tools=tools,
+            dialects=text_tool_dialects,
+            provider_kind=self._provider_kind,
+            model=self._model,
+        )
         assistant_text_parts: list[str] = []
+        visible_assistant_text_parts: list[str] = []
         input_tokens = 0
         output_tokens = 0
         reasoning_tokens = 0
@@ -2487,6 +2554,23 @@ class OpenAIProvider:
         actual_model = self._model
         stop_reason = "stop"
         emitted_stream_event = False
+        saw_done_sentinel = False
+        finish_reasons: list[str] = []
+        deferred_native_events = _DeferredStreamEventBuffer()
+        deferred_post_native_events = _DeferredStreamEventBuffer()
+        pending_native_identity_events: dict[Any, _DeferredStreamEventBuffer] = {}
+        native_key_order: list[Any] = []
+        native_flushed_keys: set[Any] = set()
+        native_identity_flush_index = 0
+        native_tool_names: dict[Any, str] = {}
+        native_wire_ids: dict[Any, str] = {}
+        invalid_native_structure = 0
+        malformed_stream_frames = 0
+        choice_terminal_seen = False
+        terminal_finish_reason: str | None = None
+        terminal_native_finish_reason_present = False
+        terminal_native_finish_reason: Any = None
+        active_choice_seen = False
 
         if os.environ.get("OPENSQUILLA_TRACE_ROUTING"):
             print(
@@ -2526,6 +2610,49 @@ class OpenAIProvider:
                 model=self._model,
                 **cache_shape,
             )
+
+        def deferred_queue_is_oversized() -> bool:
+            identity_event_count = sum(
+                buffer.event_count
+                for buffer in pending_native_identity_events.values()
+            )
+            identity_chars = sum(
+                buffer.char_count
+                for buffer in pending_native_identity_events.values()
+            )
+            return (
+                deferred_native_events.event_count
+                + deferred_post_native_events.event_count
+                + identity_event_count
+                + tools_acc.pending_unemitted_event_count
+                + text_tool_normalizer.held_event_count
+                > _MAX_DEFERRED_NATIVE_EVENTS
+                or deferred_native_events.char_count
+                + deferred_post_native_events.char_count
+                + identity_chars
+                + tools_acc.pending_unemitted_char_count
+                + text_tool_normalizer.held_chars
+                > _MAX_DEFERRED_NATIVE_ARGUMENT_CHARS
+            )
+
+        def release_deferred_queue() -> list[StreamEvent]:
+            log.warning(
+                "provider.deferred_native_queue_oversized",
+                provider=self._provider_kind,
+                model=self._model,
+                max_events=_MAX_DEFERRED_NATIVE_EVENTS,
+                max_argument_chars=_MAX_DEFERRED_NATIVE_ARGUMENT_CHARS,
+            )
+            released: list[StreamEvent] = list(
+                _segment_text_tool_events(
+                    text_tool_normalizer.abandon_native_lifecycle_defer(),
+                    provider_kind=self._provider_kind,
+                    model=self._model,
+                )
+            )
+            released.extend(deferred_native_events.drain())
+            released.extend(deferred_post_native_events.drain())
+            return released
 
         try:
             async with httpx.AsyncClient(
@@ -2652,52 +2779,82 @@ class OpenAIProvider:
                     response_ids: set[str] = set()
                     trace_tool_calls: list[dict[str, Any]] = []
                     async for line in response.aiter_lines():
-                        if not line.startswith("data: "):
+                        if not line.startswith("data:"):
                             continue
-                        data_str = line[6:]
+                        data_str = line[5:]
+                        if data_str.startswith(" "):
+                            data_str = data_str[1:]
                         if data_str == "[DONE]":
+                            saw_done_sentinel = True
                             break
                         try:
                             chunk = json.loads(data_str)
-                        except json.JSONDecodeError:
+                        except (json.JSONDecodeError, RecursionError):
+                            if data_str.strip():
+                                malformed_stream_frames += 1
+                                log.warning(
+                                    "provider.invalid_stream_frame",
+                                    provider=self._provider_kind,
+                                    model=self._model,
+                                    frame_chars=len(data_str),
+                                )
+                            continue
+                        if not isinstance(chunk, dict):
+                            malformed_stream_frames += 1
+                            log.warning(
+                                "provider.invalid_stream_frame",
+                                provider=self._provider_kind,
+                                model=self._model,
+                                frame_chars=len(data_str),
+                                reason="json_frame_not_object",
+                            )
                             continue
 
                         trace.record_chunk(chunk)
-                        if self._stream_error_frames and isinstance(chunk, dict):
-                            error_obj = chunk.get("error")
-                            if isinstance(error_obj, Mapping) and error_obj:
-                                err_message = str(
-                                    error_obj.get("message") or "stream error frame"
-                                )
-                                raw_code = error_obj.get("code")
-                                err_code = (
-                                    str(raw_code)
-                                    if raw_code not in (None, "")
-                                    else "stream_error"
-                                )
-                                log.warning(
-                                    "provider.stream_error_frame",
-                                    provider=self._provider_kind,
-                                    model=self._model,
-                                    code=err_code,
-                                    message=err_message,
-                                )
-                                trace.record_error(
-                                    code=err_code,
-                                    message=err_message,
-                                    metadata={
-                                        "phase": "stream",
-                                        "cache_shape": cache_shape,
-                                    },
-                                )
-                                yield ErrorEvent(
-                                    message=(
-                                        f"{self._compat.display_name} stream error: "
-                                        f"{err_message}"
-                                    ),
-                                    code=err_code,
-                                )
-                                return
+                        if "error" in chunk and chunk["error"] is not None:
+                            error_obj = chunk["error"]
+                            err_message = (
+                                str(error_obj.get("message") or "stream error frame")
+                                if isinstance(error_obj, Mapping)
+                                else str(error_obj).strip() or "stream error frame"
+                            )
+                            raw_code = (
+                                error_obj.get("code")
+                                if isinstance(error_obj, Mapping)
+                                else None
+                            )
+                            err_code = (
+                                str(raw_code)
+                                if raw_code not in (None, "")
+                                else "stream_error"
+                            )
+                            log.warning(
+                                "provider.stream_error_frame",
+                                provider=self._provider_kind,
+                                model=self._model,
+                                code=err_code,
+                                message=err_message,
+                            )
+                            trace.record_error(
+                                code=err_code,
+                                message=err_message,
+                                metadata={
+                                    "phase": "stream",
+                                    "cache_shape": cache_shape,
+                                },
+                            )
+                            # An explicit top-level error field poisons the response,
+                            # including malformed empty error envelopes.
+                            # Provisional text/tool events already delivered stay
+                            # diagnostic only; no deferred End or Done is released.
+                            yield ErrorEvent(
+                                message=(
+                                    f"{self._compat.display_name} stream error: "
+                                    f"{err_message}"
+                                ),
+                                code=err_code,
+                            )
+                            return
                         chunk_id = chunk.get("id")
                         if isinstance(chunk_id, str) and chunk_id:
                             response_ids.add(chunk_id)
@@ -2729,19 +2886,140 @@ class OpenAIProvider:
                                 cache_shape=cache_shape,
                             )
 
-                        for choice in chunk.get("choices", []):
+                        raw_choices = chunk.get("choices", [])
+                        if not isinstance(raw_choices, list) or len(raw_choices) > 1:
+                            trace.record_error(
+                                code="invalid_stream_frame",
+                                message="Provider stream returned an invalid choice batch",
+                                metadata={"phase": "stream", "cache_shape": cache_shape},
+                            )
+                            yield ErrorEvent(
+                                message=(
+                                    f"{self._compat.display_name} stream returned "
+                                    "multiple or malformed choices"
+                                ),
+                                code="invalid_stream_frame",
+                            )
+                            return
+                        if choice_terminal_seen:
+                            assert terminal_finish_reason is not None
+                            if not _is_inert_post_terminal_stream_frame(
+                                chunk=chunk,
+                                raw_choices=raw_choices,
+                                terminal_finish_reason=terminal_finish_reason,
+                                terminal_native_finish_reason_present=(
+                                    terminal_native_finish_reason_present
+                                ),
+                                terminal_native_finish_reason=(
+                                    terminal_native_finish_reason
+                                ),
+                                policy=self._compat,
+                            ):
+                                trace.record_error(
+                                    code="invalid_stream_order",
+                                    message="Provider mutated state after finish_reason",
+                                    metadata={
+                                        "phase": "stream",
+                                        "cache_shape": cache_shape,
+                                    },
+                                )
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream mutated "
+                                        "state after finish_reason"
+                                    ),
+                                    code="invalid_stream_order",
+                                )
+                                return
+                            # Usage was already accounted for above.  Do not let
+                            # the duplicate choice re-enter the normal parser or
+                            # append a second finish reason.
+                            continue
+
+                        for choice in raw_choices:
+                            if not isinstance(choice, Mapping):
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream returned "
+                                        "a malformed choice"
+                                    ),
+                                    code="invalid_stream_frame",
+                                )
+                                return
+                            choice_index = choice.get("index", 0)
+                            if (
+                                not isinstance(choice_index, int)
+                                or isinstance(choice_index, bool)
+                                or choice_index != 0
+                            ):
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream returned "
+                                        "an unsupported choice index"
+                                    ),
+                                    code="invalid_stream_frame",
+                                )
+                                return
+                            active_choice_seen = True
                             finish = choice.get("finish_reason")
+                            if finish is not None and (
+                                not isinstance(finish, str) or not finish.strip()
+                            ):
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream returned "
+                                        "an invalid finish reason"
+                                    ),
+                                    code="invalid_stream_frame",
+                                )
+                                return
                             if finish:
                                 stop_reason = finish
+                                finish_reasons.append(str(finish))
 
                             delta = choice.get("delta", {})
+                            if not isinstance(delta, Mapping):
+                                yield ErrorEvent(
+                                    message=(
+                                        f"{self._compat.display_name} stream returned "
+                                        "a malformed choice delta"
+                                    ),
+                                    code="invalid_stream_frame",
+                                )
+                                return
 
                             # Text content
                             text = delta.get("content")
                             if text:
                                 emitted_stream_event = True
-                                yield TextDeltaEvent(text=text)
                                 assistant_text_parts.append(text)
+                                for visible_text in text_tool_normalizer.push(text):
+                                    text_event = TextDeltaEvent(text=visible_text)
+                                    if text_tool_normalizer.native_lifecycle_deferred:
+                                        _append_coalesced_stream_event(
+                                            deferred_post_native_events,
+                                            text_event,
+                                        )
+                                        if deferred_queue_is_oversized():
+                                            for release_event in release_deferred_queue():
+                                                if isinstance(
+                                                    release_event,
+                                                    TextDeltaEvent,
+                                                ):
+                                                    visible_assistant_text_parts.append(
+                                                        release_event.text
+                                                    )
+                                                yield release_event
+                                    else:
+                                        visible_assistant_text_parts.append(visible_text)
+                                        yield text_event
+                                if deferred_queue_is_oversized():
+                                    for release_event in release_deferred_queue():
+                                        if isinstance(release_event, TextDeltaEvent):
+                                            visible_assistant_text_parts.append(
+                                                release_event.text
+                                            )
+                                        yield release_event
 
                             # Reasoning content (always parsed, not gated on thinking).
                             # Streamed in real time as ReasoningDeltaEvent; the
@@ -2757,11 +3035,45 @@ class OpenAIProvider:
                                         reasoning_event = reasoning.emit(detail.get("text", ""))
                                         if reasoning_event is not None:
                                             emitted_stream_event = True
-                                            yield reasoning_event
+                                            if text_tool_normalizer.native_lifecycle_deferred:
+                                                _append_coalesced_stream_event(
+                                                    deferred_post_native_events,
+                                                    reasoning_event,
+                                                )
+                                                if deferred_queue_is_oversized():
+                                                    for (
+                                                        release_event
+                                                    ) in release_deferred_queue():
+                                                        if isinstance(
+                                                            release_event,
+                                                            TextDeltaEvent,
+                                                        ):
+                                                            visible_assistant_text_parts.append(
+                                                                release_event.text
+                                                            )
+                                                        yield release_event
+                                            else:
+                                                yield reasoning_event
                             reasoning_event = reasoning.emit(delta.get("reasoning_content"))
                             if reasoning_event is not None:
                                 emitted_stream_event = True
-                                yield reasoning_event
+                                if text_tool_normalizer.native_lifecycle_deferred:
+                                    _append_coalesced_stream_event(
+                                        deferred_post_native_events,
+                                        reasoning_event,
+                                    )
+                                    if deferred_queue_is_oversized():
+                                        for release_event in release_deferred_queue():
+                                            if isinstance(
+                                                release_event,
+                                                TextDeltaEvent,
+                                            ):
+                                                visible_assistant_text_parts.append(
+                                                    release_event.text
+                                                )
+                                            yield release_event
+                                else:
+                                    yield reasoning_event
 
                             # Gemini thought_signature on non-FC deltas
                             # (streamed thinking path): Gemini sends it on
@@ -2772,10 +3084,28 @@ class OpenAIProvider:
                                 streamed_thought_signature = ts_delta
 
                             # Tool calls (may stream over multiple chunks)
-                            for tc in delta.get("tool_calls") or []:
+                            raw_tool_calls = delta.get("tool_calls") or []
+                            if not isinstance(raw_tool_calls, list):
+                                invalid_native_structure += 1
+                                log.warning(
+                                    "provider.native_tool_call_invalid",
+                                    provider=self._provider_kind,
+                                    model=self._model,
+                                    reason="tool_calls_not_array",
+                                )
+                                raw_tool_calls = []
+                            for tc in raw_tool_calls:
+                                if not isinstance(tc, Mapping):
+                                    invalid_native_structure += 1
+                                    log.warning(
+                                        "provider.native_tool_call_invalid",
+                                        provider=self._provider_kind,
+                                        model=self._model,
+                                        reason="tool_call_not_object",
+                                    )
+                                    continue
                                 if (
                                     self._provider_kind == "dashscope"
-                                    and isinstance(tc, Mapping)
                                     and _dashscope_tool_call_chunk_is_empty(tc)
                                 ):
                                     log.warning(
@@ -2784,16 +3114,219 @@ class OpenAIProvider:
                                         reason="empty_tool_call_chunk",
                                     )
                                     continue
-                                idx = _resolve_tool_call_index(tc, tools_acc)
-                                function = tc.get("function", {}) or {}
-                                for tool_event in tools_acc.append_or_start(
-                                    idx,
-                                    tool_call_id=tc.get("id"),
-                                    tool_name=function.get("name", ""),
-                                    fragment=function.get("arguments", ""),
+                                idx, index_valid = _resolve_tool_call_index(tc, tools_acc)
+                                if not index_valid:
+                                    invalid_native_structure += 1
+                                    log.warning(
+                                        "provider.native_tool_call_invalid",
+                                        provider=self._provider_kind,
+                                        model=self._model,
+                                        reason="invalid_tool_call_index",
+                                    )
+                                wire_id = tc.get("id")
+                                wire_id = wire_id if isinstance(wire_id, str) else ""
+                                existing_wire_id = native_wire_ids.get(idx, "")
+                                if (
+                                    existing_wire_id
+                                    and wire_id
+                                    and existing_wire_id != wire_id
                                 ):
+                                    invalid_native_structure += 1
+                                    log.warning(
+                                        "provider.native_tool_call_invalid",
+                                        provider=self._provider_kind,
+                                        model=self._model,
+                                        reason="conflicting_tool_call_id",
+                                    )
+                                    matching_key = tools_acc.find_key_for_tool_call_id(
+                                        wire_id
+                                    )
+                                    idx = (
+                                        cast(int, matching_key)
+                                        if matching_key is not None
+                                        else tools_acc.next_int_key()
+                                    )
+                                if wire_id and idx not in native_wire_ids:
+                                    native_wire_ids[idx] = wire_id
+                                is_new_native_key = not tools_acc.has_key(idx)
+                                if is_new_native_key:
+                                    native_key_order.append(idx)
+                                raw_function = tc.get("function", {}) or {}
+                                if not isinstance(raw_function, Mapping):
+                                    invalid_native_structure += 1
+                                    log.warning(
+                                        "provider.native_tool_call_invalid",
+                                        provider=self._provider_kind,
+                                        model=self._model,
+                                        reason="function_not_object",
+                                    )
+                                    raw_function = {}
+                                function = raw_function
+                                raw_tool_name = function.get("name")
+                                tool_name = (
+                                    raw_tool_name if isinstance(raw_tool_name, str) else ""
+                                )
+                                existing_tool_name = native_tool_names.get(idx, "")
+                                if tool_name.strip():
+                                    if existing_tool_name and existing_tool_name != tool_name:
+                                        invalid_native_structure += 1
+                                        log.warning(
+                                            "provider.native_tool_call_invalid",
+                                            provider=self._provider_kind,
+                                            model=self._model,
+                                            reason="conflicting_tool_name",
+                                        )
+                                    elif not existing_tool_name:
+                                        native_tool_names[idx] = tool_name
+                                effective_tool_name = native_tool_names.get(idx, "")
+                                if is_new_native_key:
+                                    pending_segments = (
+                                        text_tool_normalizer.observe_native_tool_start(
+                                            effective_tool_name
+                                        )
+                                    )
+                                    for pending_event in _segment_text_tool_events(
+                                        pending_segments,
+                                        provider_kind=self._provider_kind,
+                                        model=self._model,
+                                    ):
+                                        if isinstance(pending_event, TextDeltaEvent):
+                                            visible_assistant_text_parts.append(
+                                                pending_event.text
+                                            )
+                                            emitted_stream_event = True
+                                            yield pending_event
+                                raw_arguments_fragment = function.get("arguments", "")
+                                if raw_arguments_fragment is None:
+                                    arguments_fragment = ""
+                                elif isinstance(raw_arguments_fragment, str):
+                                    arguments_fragment = raw_arguments_fragment
+                                else:
+                                    invalid_native_structure += 1
+                                    log.warning(
+                                        "provider.native_tool_call_invalid",
+                                        provider=self._provider_kind,
+                                        model=self._model,
+                                        reason="arguments_fragment_not_string",
+                                    )
+                                    arguments_fragment = ""
+                                tool_events = list(
+                                    tools_acc.append_or_start(
+                                        idx,
+                                        tool_call_id=(
+                                            wire_id or None
+                                        ),
+                                        tool_name=effective_tool_name,
+                                        fragment=arguments_fragment,
+                                    )
+                                )
+                                routed_tool_events: list[StreamEvent] = []
+                                if idx in native_flushed_keys:
+                                    routed_tool_events.extend(tool_events)
+                                else:
+                                    identity_events = (
+                                        pending_native_identity_events.setdefault(
+                                            idx,
+                                            _DeferredStreamEventBuffer(),
+                                        )
+                                    )
+                                    for tool_event in tool_events:
+                                        emitted_stream_event = True
+                                        _append_coalesced_stream_event(
+                                            identity_events,
+                                            tool_event,
+                                        )
+                                    while native_identity_flush_index < len(
+                                        native_key_order
+                                    ):
+                                        flush_key = native_key_order[
+                                            native_identity_flush_index
+                                        ]
+                                        known_name = native_tool_names.get(flush_key, "")
+                                        if not known_name:
+                                            break
+                                        flush_buffer = (
+                                            pending_native_identity_events.pop(
+                                                flush_key,
+                                                _DeferredStreamEventBuffer(),
+                                            )
+                                        )
+                                        flush_buffer.patch_start_tool_name(known_name)
+                                        routed_tool_events.extend(flush_buffer.drain())
+                                        native_flushed_keys.add(flush_key)
+                                        native_identity_flush_index += 1
+
+                                    if deferred_queue_is_oversized():
+                                        log.warning(
+                                            "provider.pending_native_identity_oversized",
+                                            provider=self._provider_kind,
+                                            model=self._model,
+                                            max_events=_MAX_DEFERRED_NATIVE_EVENTS,
+                                            max_argument_chars=(
+                                                _MAX_DEFERRED_NATIVE_ARGUMENT_CHARS
+                                            ),
+                                        )
+                                        for release_event in _segment_text_tool_events(
+                                            text_tool_normalizer.finish(
+                                                successful_text_tool_terminal=False,
+                                            ),
+                                            provider_kind=self._provider_kind,
+                                            model=self._model,
+                                        ):
+                                            if isinstance(release_event, TextDeltaEvent):
+                                                visible_assistant_text_parts.append(
+                                                    release_event.text
+                                                )
+                                            yield release_event
+                                        for native_event in deferred_native_events:
+                                            yield native_event
+                                        for post_native_event in deferred_post_native_events:
+                                            if isinstance(
+                                                post_native_event,
+                                                TextDeltaEvent,
+                                            ):
+                                                visible_assistant_text_parts.append(
+                                                    post_native_event.text
+                                                )
+                                            yield post_native_event
+                                        trace.record_error(
+                                            code="incomplete_tool_call",
+                                            message=(
+                                                "Native tool identity remained missing "
+                                                "beyond the bounded queue"
+                                            ),
+                                            metadata={
+                                                "phase": "stream",
+                                                "cache_shape": cache_shape,
+                                            },
+                                        )
+                                        yield ErrorEvent(
+                                            message=(
+                                                f"{self._compat.display_name} returned "
+                                                "an incomplete native tool identity"
+                                            ),
+                                            code="incomplete_tool_call",
+                                        )
+                                        return
+                                for tool_event in routed_tool_events:
                                     emitted_stream_event = True
-                                    yield tool_event
+                                    if text_tool_normalizer.native_lifecycle_deferred:
+                                        _append_coalesced_stream_event(
+                                            deferred_native_events,
+                                            tool_event,
+                                        )
+                                        if deferred_queue_is_oversized():
+                                            for release_event in release_deferred_queue():
+                                                if isinstance(
+                                                    release_event,
+                                                    TextDeltaEvent,
+                                                ):
+                                                    visible_assistant_text_parts.append(
+                                                        release_event.text
+                                                    )
+                                                yield release_event
+                                    else:
+                                        yield tool_event
 
                                 # Gemini thought_signature (OpenAI compat format):
                                 # tool_calls[].extra_content.google.thought_signature
@@ -2805,10 +3338,173 @@ class OpenAIProvider:
                                 if isinstance(sig, str) and sig:
                                     tools_acc.set_metadata(idx, "thought_signature", sig)
 
+                            if finish:
+                                choice_terminal_seen = True
+                                terminal_finish_reason = finish
+                                terminal_native_finish_reason_present = (
+                                    "native_finish_reason" in choice
+                                )
+                                terminal_native_finish_reason = choice.get(
+                                    "native_finish_reason"
+                                )
+
+                    if malformed_stream_frames:
+                        for pending_event in _segment_text_tool_events(
+                            text_tool_normalizer.finish(
+                                successful_text_tool_terminal=False,
+                            ),
+                            provider_kind=self._provider_kind,
+                            model=self._model,
+                        ):
+                            if isinstance(pending_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(pending_event.text)
+                            yield pending_event
+                        for deferred_event in deferred_native_events:
+                            yield deferred_event
+                        deferred_native_events.clear()
+                        for deferred_event in deferred_post_native_events:
+                            if isinstance(deferred_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(deferred_event.text)
+                            yield deferred_event
+                        deferred_post_native_events.clear()
+                        trace.record_error(
+                            code="invalid_stream_frame",
+                            message="Provider stream contained malformed data frames",
+                            metadata={
+                                "phase": "stream",
+                                "cache_shape": cache_shape,
+                                "malformed_frame_count": malformed_stream_frames,
+                            },
+                        )
+                        yield ErrorEvent(
+                            message=(
+                                f"{self._compat.display_name} stream contained "
+                                "a malformed data frame"
+                            ),
+                            code="invalid_stream_frame",
+                        )
+                        return
+
+                    has_terminal_evidence = active_choice_seen and choice_terminal_seen
+                    if not has_terminal_evidence:
+                        if (
+                            self._compat.empty_stream_fallback
+                            and not active_choice_seen
+                            and not emitted_stream_event
+                            and not assistant_text_parts
+                            and not tools_acc.has_calls
+                            and input_tokens == 0
+                            and output_tokens == 0
+                        ):
+                            log.warning(
+                                "openai.empty_stream_fallback_started",
+                                provider=self._provider_kind,
+                                model=self._model,
+                            )
+                            yield ProviderHeartbeatEvent(
+                                phase="llm_fallback",
+                                message=(
+                                    "Provider returned an empty stream; retrying "
+                                    "without streaming."
+                                ),
+                            )
+                            empty_stream_exc = httpx.ReadTimeout("empty stream")
+                            async for fallback_event in self._complete_non_stream(
+                                payload=payload,
+                                headers=headers,
+                                cfg=cfg,
+                                tools=tools,
+                                timeout_exc=empty_stream_exc,
+                            ):
+                                yield fallback_event
+                            return
+                        for pending_event in _segment_text_tool_events(
+                            text_tool_normalizer.finish(
+                                successful_text_tool_terminal=False,
+                            ),
+                            provider_kind=self._provider_kind,
+                            model=self._model,
+                        ):
+                            if isinstance(pending_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(pending_event.text)
+                                yield pending_event
+                        for deferred_event in deferred_native_events:
+                            yield deferred_event
+                        deferred_native_events.clear()
+                        for deferred_event in deferred_post_native_events:
+                            if isinstance(deferred_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(deferred_event.text)
+                            yield deferred_event
+                        deferred_post_native_events.clear()
+                        trace.record_error(
+                            code="incomplete_stream",
+                            message="Provider stream ended without terminal evidence",
+                            metadata={"phase": "stream", "cache_shape": cache_shape},
+                        )
+                        yield ErrorEvent(
+                            message=(
+                                f"{self._compat.display_name} stream ended before a "
+                                "finish reason"
+                            ),
+                            code="incomplete_stream",
+                        )
+                        return
+
+                    successful_text_tool_terminal = _successful_text_tool_terminal(
+                        saw_done_sentinel=saw_done_sentinel,
+                        finish_reasons=finish_reasons,
+                    )
+                    warn_for_unauthorized_plain_candidate(
+                        "".join(assistant_text_parts),
+                        tools,
+                        dialects=text_tool_dialects,
+                        provider_kind=self._provider_kind,
+                        model=self._model,
+                    )
+
+                    if tools_acc.has_calls and not successful_text_tool_terminal:
+                        for pending_event in _segment_text_tool_events(
+                            text_tool_normalizer.finish(
+                                successful_text_tool_terminal=False,
+                            ),
+                            provider_kind=self._provider_kind,
+                            model=self._model,
+                        ):
+                            if isinstance(pending_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(pending_event.text)
+                            yield pending_event
+                        for deferred_event in deferred_native_events:
+                            yield deferred_event
+                        deferred_native_events.clear()
+                        for deferred_event in deferred_post_native_events:
+                            if isinstance(deferred_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(deferred_event.text)
+                            yield deferred_event
+                        deferred_post_native_events.clear()
+                        trace.record_error(
+                            code="incomplete_tool_call",
+                            message=(
+                                "Provider ended a native tool call with an "
+                                f"unsuccessful finish reason: {stop_reason}"
+                            ),
+                            metadata={"phase": "stream", "cache_shape": cache_shape},
+                        )
+                        yield ErrorEvent(
+                            message=(
+                                f"{self._compat.display_name} ended a native tool call "
+                                f"with finish reason {stop_reason!r}"
+                            ),
+                            code="incomplete_tool_call",
+                        )
+                        return
+
                     # Chat Completions has no per-call stop event: close every
                     # assembled call once the stream ends, running the
                     # provider-aware argument parser (including the DashScope
                     # JSON repair) over the accumulated raw fragments first.
+                    native_calls: list[tuple[str, dict[str, Any]]] = []
+                    pending_native_finishes: list[tuple[Any, dict[str, Any]]] = []
+                    invalid_native_arguments = invalid_native_structure
                     for key, tool_use_id, tool_name, raw_arguments in (
                         tools_acc.pending_raw_arguments()
                     ):
@@ -2830,31 +3526,97 @@ class OpenAIProvider:
                                 "arguments": args,
                             }
                         )
-                        for tool_event in tools_acc.finish_with_arguments(key, args):
-                            emitted_stream_event = True
-                            yield tool_event
+                        tool_name_valid = bool(tool_name.strip())
+                        if not tool_name_valid:
+                            log.warning(
+                                "provider.native_tool_call_invalid",
+                                provider=self._provider_kind,
+                                model=self._model,
+                                tool_use_id=tool_use_id,
+                                reason="missing_tool_name",
+                            )
+                        if not arguments_valid or not tool_name_valid:
+                            invalid_native_arguments += 1
+                            continue
+                        native_calls.append((tool_name, args))
+                        pending_native_finishes.append((key, args))
 
-                    # Last-resort MiniMax compatibility: some OpenRouter
-                    # upstreams leak native MiniMax XML tool calls as text
-                    # instead of structured tool_calls. Only synthesize calls
-                    # for provider kinds known to leak the text protocol, when
-                    # no structured calls arrived, tools were offered, and the
-                    # parsed tool name is explicitly allowed by this turn.
-                    if (
-                        not tools_acc.has_calls
-                        and tools
-                        and assistant_text_parts
-                        and self._compat.text_tool_synthesis
-                    ):
-                        full_text = "".join(assistant_text_parts)
-                        for event in _synthesize_text_tool_events(
-                            full_text,
-                            tools,
+                    if invalid_native_arguments:
+                        for event in _segment_text_tool_events(
+                            text_tool_normalizer.finish(
+                                successful_text_tool_terminal=False,
+                            ),
                             provider_kind=self._provider_kind,
                             model=self._model,
                         ):
-                            emitted_stream_event = True
+                            if isinstance(event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(event.text)
                             yield event
+                        for deferred_event in deferred_native_events:
+                            yield deferred_event
+                        deferred_native_events.clear()
+                        for deferred_event in deferred_post_native_events:
+                            if isinstance(deferred_event, TextDeltaEvent):
+                                visible_assistant_text_parts.append(deferred_event.text)
+                            yield deferred_event
+                        deferred_post_native_events.clear()
+                        trace.record_error(
+                            code="incomplete_tool_call",
+                            message="Provider returned invalid native tool arguments",
+                            metadata={
+                                "phase": "stream",
+                                "cache_shape": cache_shape,
+                                "invalid_call_count": invalid_native_arguments,
+                            },
+                        )
+                        yield ErrorEvent(
+                            message=(
+                                f"{self._compat.display_name} returned invalid "
+                                "native tool arguments"
+                            ),
+                            code="incomplete_tool_call",
+                        )
+                        return
+
+                    for key, args in pending_native_finishes:
+                        for tool_event in tools_acc.finish_with_arguments(key, args):
+                            emitted_stream_event = True
+                            if text_tool_normalizer.native_lifecycle_deferred:
+                                deferred_native_events.append(tool_event)
+                            else:
+                                yield tool_event
+
+                    normalized_segments = text_tool_normalizer.finish(
+                        successful_text_tool_terminal=successful_text_tool_terminal,
+                        native_calls=native_calls,
+                    )
+                    for event in _segment_text_tool_events(
+                        normalized_segments,
+                        provider_kind=self._provider_kind,
+                        model=self._model,
+                    ):
+                        emitted_stream_event = True
+                        if isinstance(event, TextDeltaEvent):
+                            visible_assistant_text_parts.append(event.text)
+                        elif isinstance(event, ToolUseEndEvent):
+                            trace_tool_calls.append(
+                                {
+                                    "id": event.tool_use_id,
+                                    "name": event.tool_name,
+                                    "arguments": event.arguments,
+                                    "synthetic_from_text": True,
+                                }
+                            )
+                        yield event
+
+                    for deferred_event in deferred_native_events:
+                        yield deferred_event
+                    deferred_native_events.clear()
+                    for deferred_event in deferred_post_native_events:
+                        if isinstance(deferred_event, TextDeltaEvent):
+                            visible_assistant_text_parts.append(deferred_event.text)
+                        yield deferred_event
+                    deferred_post_native_events.clear()
 
                     # Assemble reasoning from the structured fields already
                     # streamed in real time via ReasoningDeltaEvent.
@@ -2923,7 +3685,7 @@ class OpenAIProvider:
                         },
                         stop_reason=stop_reason,
                         actual_model=actual_model,
-                        assistant_text="".join(assistant_text_parts),
+                        assistant_text="".join(visible_assistant_text_parts),
                         reasoning_content=reasoning_text or None,
                         tool_calls=trace_tool_calls,
                         response_ids=sorted(response_ids),
@@ -2978,6 +3740,19 @@ class OpenAIProvider:
                         timeout_exc=exc,
                     ):
                         yield fallback_event
+                except ToolStreamProtocolError as fallback_exc:
+                    log.warning(
+                        "provider.tool_stream_protocol_error",
+                        provider=self._provider_kind,
+                        model=self._model,
+                        phase="non_stream_fallback",
+                        operation=fallback_exc.operation,
+                        reason=fallback_exc.reason,
+                    )
+                    yield ErrorEvent(
+                        message="Provider returned an invalid tool lifecycle",
+                        code="provider_protocol_error",
+                    )
                 except Exception as fallback_exc:  # noqa: BLE001 - see contract note below
                     log.exception(
                         "provider.stream_internal_error",
@@ -2989,6 +3764,21 @@ class OpenAIProvider:
                         code="provider_internal",
                     )
                 return
+            for pending_event in _segment_text_tool_events(
+                text_tool_normalizer.finish(successful_text_tool_terminal=False),
+                provider_kind=self._provider_kind,
+                model=self._model,
+            ):
+                if isinstance(pending_event, TextDeltaEvent):
+                    yield pending_event
+            for deferred_event in deferred_native_events:
+                yield deferred_event
+            deferred_native_events.clear()
+            for deferred_event in deferred_post_native_events:
+                if isinstance(deferred_event, TextDeltaEvent):
+                    visible_assistant_text_parts.append(deferred_event.text)
+                yield deferred_event
+            deferred_post_native_events.clear()
             yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
         except httpx.RequestError as exc:
             trace.record_error(
@@ -2996,13 +3786,72 @@ class OpenAIProvider:
                 message=f"Request error: {exc}",
                 metadata={"phase": "stream", "cache_shape": cache_shape},
             )
+            for pending_event in _segment_text_tool_events(
+                text_tool_normalizer.finish(successful_text_tool_terminal=False),
+                provider_kind=self._provider_kind,
+                model=self._model,
+            ):
+                if isinstance(pending_event, TextDeltaEvent):
+                    yield pending_event
+            for deferred_event in deferred_native_events:
+                yield deferred_event
+            deferred_native_events.clear()
+            for deferred_event in deferred_post_native_events:
+                if isinstance(deferred_event, TextDeltaEvent):
+                    visible_assistant_text_parts.append(deferred_event.text)
+                yield deferred_event
+            deferred_post_native_events.clear()
             yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+        except ToolStreamProtocolError as exc:
+            message = "Provider returned an invalid tool lifecycle"
+            log.warning(
+                "provider.tool_stream_protocol_error",
+                provider=self._provider_kind,
+                model=self._model,
+                phase="stream",
+                operation=exc.operation,
+                reason=exc.reason,
+            )
+            trace.record_error(
+                code="provider_protocol_error",
+                message=message,
+                metadata={
+                    "phase": "stream",
+                    "cache_shape": cache_shape,
+                    "reason": exc.reason,
+                },
+            )
+            for pending_event in _segment_text_tool_events(
+                text_tool_normalizer.finish(successful_text_tool_terminal=False),
+                provider_kind=self._provider_kind,
+                model=self._model,
+            ):
+                if isinstance(pending_event, TextDeltaEvent):
+                    yield pending_event
+            deferred_native_events.clear()
+            deferred_post_native_events.clear()
+            yield ErrorEvent(message=message, code="provider_protocol_error")
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
             log.exception(
                 "provider.stream_internal_error",
                 provider=self._provider_kind,
                 model=self._model,
             )
+            for pending_event in _segment_text_tool_events(
+                text_tool_normalizer.finish(successful_text_tool_terminal=False),
+                provider_kind=self._provider_kind,
+                model=self._model,
+            ):
+                if isinstance(pending_event, TextDeltaEvent):
+                    yield pending_event
+            for deferred_event in deferred_native_events:
+                yield deferred_event
+            deferred_native_events.clear()
+            for deferred_event in deferred_post_native_events:
+                if isinstance(deferred_event, TextDeltaEvent):
+                    visible_assistant_text_parts.append(deferred_event.text)
+                yield deferred_event
+            deferred_post_native_events.clear()
             yield ErrorEvent(
                 message=f"Provider response handling failed: {exc}",
                 code="provider_internal",
@@ -3115,6 +3964,62 @@ class OpenAIProvider:
             yield ErrorEvent(message="Invalid JSON response from provider", code="invalid_json")
             return
 
+        if not isinstance(data, dict):
+            yield ErrorEvent(
+                message="Provider returned an invalid response object",
+                code="invalid_response",
+            )
+            return
+        if "error" in data and data["error"] is not None:
+            top_level_error = data["error"]
+            error_message = (
+                str(top_level_error.get("message") or "provider error response")
+                if isinstance(top_level_error, Mapping)
+                else str(top_level_error).strip() or "provider error response"
+            )
+            error_code = (
+                str(top_level_error.get("code") or "response_error")
+                if isinstance(top_level_error, Mapping)
+                else "response_error"
+            )
+            yield ErrorEvent(message=error_message, code=error_code)
+            return
+        choices = data.get("choices")
+        if not isinstance(choices, list) or len(choices) != 1:
+            yield ErrorEvent(
+                message="Provider returned an invalid choice batch",
+                code="invalid_response",
+            )
+            return
+        choice = choices[0]
+        if not isinstance(choice, Mapping):
+            yield ErrorEvent(
+                message="Provider returned a malformed choice",
+                code="invalid_response",
+            )
+            return
+        choice_index = choice.get("index", 0)
+        finish_reason = choice.get("finish_reason")
+        message = choice.get("message")
+        if (
+            not isinstance(choice_index, int)
+            or isinstance(choice_index, bool)
+            or choice_index != 0
+            or (
+                finish_reason is not None
+                and (
+                    not isinstance(finish_reason, str)
+                    or not finish_reason.strip()
+                )
+            )
+            or not isinstance(message, Mapping)
+        ):
+            yield ErrorEvent(
+                message="Provider returned an invalid choice terminal",
+                code="invalid_response",
+            )
+            return
+
         actual_model = data.get("model") or self._model
         (
             input_tokens,
@@ -3136,20 +4041,36 @@ class OpenAIProvider:
         )
         stop_reason = "stop"
         assistant_text_parts: list[str] = []
+        visible_assistant_text_parts: list[str] = []
         reasoning = ReasoningAccumulator()
         tools_acc = ToolStreamAccumulator()
         trace_tool_calls: list[dict[str, Any]] = []
         tools_by_name = _tool_by_name(tools)
+        finish_reasons: list[str] = []
+        text_tool_dialects = self._compat.text_tool_profile.dialects_for_model(self._model)
+        text_tool_normalizer = TextToolStreamNormalizer(
+            tools=tools,
+            dialects=text_tool_dialects,
+            provider_kind=self._provider_kind,
+            model=self._model,
+        )
+        native_calls: list[tuple[str, dict[str, Any]]] = []
+        pending_native_finishes: list[tuple[Any, dict[str, Any]]] = []
+        deferred_native_events = _DeferredStreamEventBuffer()
+        invalid_native_arguments = 0
 
-        for choice in data.get("choices", []):
+        for choice in choices:
             if choice.get("finish_reason"):
                 stop_reason = choice["finish_reason"]
+                finish_reasons.append(str(choice["finish_reason"]))
             message = choice.get("message") or {}
 
             text = message.get("content")
             if isinstance(text, str) and text:
                 assistant_text_parts.append(text)
-                yield TextDeltaEvent(text=text)
+                for visible_text in text_tool_normalizer.push(text):
+                    visible_assistant_text_parts.append(visible_text)
+                    yield TextDeltaEvent(text=visible_text)
 
             reasoning_details = message.get("reasoning_details")
             if reasoning_details:
@@ -3165,21 +4086,83 @@ class OpenAIProvider:
                     if reasoning_event is not None:
                         yield reasoning_event
 
-            for tc in message.get("tool_calls") or []:
-                function = tc.get("function") or {}
-                tool_use_id = tc.get("id") or f"call_{uuid4().hex[:12]}"
-                tool_name = function.get("name") or ""
+            raw_tool_calls = message.get("tool_calls") or []
+            if not isinstance(raw_tool_calls, list):
+                invalid_native_arguments += 1
+                log.warning(
+                    "provider.native_tool_call_invalid",
+                    provider=self._provider_kind,
+                    model=self._model,
+                    reason="tool_calls_not_array",
+                )
+                raw_tool_calls = []
+            for tc in raw_tool_calls:
+                if not isinstance(tc, Mapping):
+                    invalid_native_arguments += 1
+                    log.warning(
+                        "provider.native_tool_call_invalid",
+                        provider=self._provider_kind,
+                        model=self._model,
+                        reason="tool_call_not_object",
+                    )
+                    continue
+                raw_function = tc.get("function") or {}
+                if not isinstance(raw_function, Mapping):
+                    invalid_native_arguments += 1
+                    log.warning(
+                        "provider.native_tool_call_invalid",
+                        provider=self._provider_kind,
+                        model=self._model,
+                        reason="function_not_object",
+                    )
+                    raw_function = {}
+                function = raw_function
+                raw_tool_use_id = tc.get("id")
+                tool_use_id = (
+                    raw_tool_use_id
+                    if isinstance(raw_tool_use_id, str) and raw_tool_use_id
+                    else f"call_{uuid4().hex[:12]}"
+                )
+                raw_tool_name = function.get("name")
+                tool_name = raw_tool_name if isinstance(raw_tool_name, str) else ""
+                tool_name_valid = bool(tool_name.strip())
                 call_key = tools_acc.next_int_key()
+                for pending_event in _segment_text_tool_events(
+                    text_tool_normalizer.observe_native_tool_start(tool_name),
+                    provider_kind=self._provider_kind,
+                    model=self._model,
+                ):
+                    if isinstance(pending_event, TextDeltaEvent):
+                        visible_assistant_text_parts.append(pending_event.text)
+                        yield pending_event
                 for tool_event in tools_acc.start(
                     call_key,
                     tool_use_id=tool_use_id,
                     tool_name=tool_name,
                 ):
-                    yield tool_event
-                arguments_text = function.get("arguments") or ""
+                    if not tool_name_valid:
+                        continue
+                    deferred_native_events.append(tool_event)
+                raw_arguments_text = function.get("arguments")
+                if raw_arguments_text is None:
+                    arguments_text = ""
+                elif isinstance(raw_arguments_text, str):
+                    arguments_text = raw_arguments_text
+                else:
+                    invalid_native_arguments += 1
+                    log.warning(
+                        "provider.native_tool_call_invalid",
+                        provider=self._provider_kind,
+                        model=self._model,
+                        tool_use_id=tool_use_id,
+                        reason="arguments_not_string",
+                    )
+                    arguments_text = ""
                 if arguments_text:
                     for tool_event in tools_acc.append(call_key, arguments_text):
-                        yield tool_event
+                        if not tool_name_valid:
+                            continue
+                        deferred_native_events.append(tool_event)
                 sig = (tc.get("extra_content") or {}).get("google", {}).get("thought_signature")
                 if isinstance(sig, str) and sig:
                     tools_acc.set_metadata(call_key, "thought_signature", sig)
@@ -3201,22 +4184,153 @@ class OpenAIProvider:
                         "arguments": arguments,
                     }
                 )
-                for tool_event in tools_acc.finish_with_arguments(call_key, arguments):
-                    yield tool_event
+                if not tool_name_valid:
+                    log.warning(
+                        "provider.native_tool_call_invalid",
+                        provider=self._provider_kind,
+                        model=self._model,
+                        tool_use_id=tool_use_id,
+                        reason="missing_tool_name",
+                    )
+                if arguments_valid and tool_name_valid:
+                    native_calls.append((tool_name, arguments))
+                    pending_native_finishes.append((call_key, arguments))
+                else:
+                    invalid_native_arguments += 1
 
-        if (
-            not tools_acc.has_calls
-            and tools
-            and assistant_text_parts
-            and self._compat.text_tool_synthesis
-        ):
-            for event in _synthesize_text_tool_events(
-                "".join(assistant_text_parts),
-                tools,
+        warn_for_unauthorized_plain_candidate(
+            "".join(assistant_text_parts),
+            tools,
+            dialects=text_tool_dialects,
+            provider_kind=self._provider_kind,
+            model=self._model,
+        )
+        successful_text_tool_terminal = _successful_text_tool_terminal(
+            saw_done_sentinel=False,
+            finish_reasons=finish_reasons,
+        )
+        if not finish_reasons:
+            for event in _segment_text_tool_events(
+                text_tool_normalizer.finish(
+                    successful_text_tool_terminal=False,
+                ),
                 provider_kind=self._provider_kind,
                 model=self._model,
             ):
+                if isinstance(event, TextDeltaEvent):
+                    visible_assistant_text_parts.append(event.text)
                 yield event
+            yield ErrorEvent(
+                message=(
+                    f"{self._compat.display_name} response ended without a finish reason"
+                ),
+                code="incomplete_stream",
+            )
+            return
+        if (
+            deferred_native_events.event_count
+            + tools_acc.pending_unemitted_event_count
+            + text_tool_normalizer.held_event_count
+            > _MAX_DEFERRED_NATIVE_EVENTS
+            or deferred_native_events.char_count
+            + tools_acc.pending_unemitted_char_count
+            + text_tool_normalizer.held_chars
+            > _MAX_DEFERRED_NATIVE_ARGUMENT_CHARS
+        ):
+            invalid_native_arguments += 1
+            log.warning(
+                "provider.deferred_native_queue_oversized",
+                provider=self._provider_kind,
+                model=self._model,
+                max_events=_MAX_DEFERRED_NATIVE_EVENTS,
+                max_argument_chars=_MAX_DEFERRED_NATIVE_ARGUMENT_CHARS,
+            )
+        if tools_acc.has_calls and not successful_text_tool_terminal:
+            normalized_segments = text_tool_normalizer.finish(
+                successful_text_tool_terminal=False,
+            )
+            for event in _segment_text_tool_events(
+                normalized_segments,
+                provider_kind=self._provider_kind,
+                model=self._model,
+            ):
+                if isinstance(event, TextDeltaEvent):
+                    visible_assistant_text_parts.append(event.text)
+                yield event
+            trace.record_error(
+                code="incomplete_tool_call",
+                message=(
+                    "Provider ended a native tool call with an unsuccessful "
+                    f"finish reason: {stop_reason}"
+                ),
+                metadata={"phase": "non_stream", "cache_shape": cache_shape},
+            )
+            yield ErrorEvent(
+                message=(
+                    f"{self._compat.display_name} ended a native tool call with "
+                    f"finish reason {stop_reason!r}"
+                ),
+                code="incomplete_tool_call",
+            )
+            return
+
+        if invalid_native_arguments:
+            normalized_segments = text_tool_normalizer.finish(
+                successful_text_tool_terminal=False,
+            )
+            for event in _segment_text_tool_events(
+                normalized_segments,
+                provider_kind=self._provider_kind,
+                model=self._model,
+            ):
+                if isinstance(event, TextDeltaEvent):
+                    visible_assistant_text_parts.append(event.text)
+                yield event
+            trace.record_error(
+                code="incomplete_tool_call",
+                message="Provider returned invalid native tool arguments",
+                metadata={
+                    "phase": "non_stream",
+                    "cache_shape": cache_shape,
+                    "invalid_call_count": invalid_native_arguments,
+                },
+            )
+            yield ErrorEvent(
+                message=(
+                    f"{self._compat.display_name} returned invalid native tool arguments"
+                ),
+                code="incomplete_tool_call",
+            )
+            return
+
+        for call_key, arguments in pending_native_finishes:
+            for tool_event in tools_acc.finish_with_arguments(call_key, arguments):
+                deferred_native_events.append(tool_event)
+
+        normalized_segments = text_tool_normalizer.finish(
+            successful_text_tool_terminal=successful_text_tool_terminal,
+            native_calls=native_calls,
+        )
+        for event in _segment_text_tool_events(
+            normalized_segments,
+            provider_kind=self._provider_kind,
+            model=self._model,
+        ):
+            if isinstance(event, TextDeltaEvent):
+                visible_assistant_text_parts.append(event.text)
+            elif isinstance(event, ToolUseEndEvent):
+                trace_tool_calls.append(
+                    {
+                        "id": event.tool_use_id,
+                        "name": event.tool_name,
+                        "arguments": event.arguments,
+                        "synthetic_from_text": True,
+                    }
+                )
+            yield event
+
+        for deferred_event in deferred_native_events:
+            yield deferred_event
 
         reasoning_text = reasoning.finalize()
         if (
@@ -3239,7 +4353,7 @@ class OpenAIProvider:
             },
             stop_reason=stop_reason,
             actual_model=actual_model,
-            assistant_text="".join(assistant_text_parts),
+            assistant_text="".join(visible_assistant_text_parts),
             reasoning_content=reasoning_text or None,
             tool_calls=trace_tool_calls,
             response_ids=[str(data["id"])] if data.get("id") else [],

@@ -356,6 +356,40 @@ def test_chat_final_text_reconciliation_preserves_live_artifacts() -> None:
     assert "_renderStreamArtifacts();" in body
 
 
+def test_chat_final_text_reconciliation_preserves_tools_and_honors_empty_snapshot() -> None:
+    source = CHAT_JS.read_text(encoding="utf-8")
+    replace_start = source.index("function _replaceStreamText(finalText)")
+    replace_end = source.index("  function _doneTextSnapshot", replace_start)
+    replace_body = source[replace_start:replace_end]
+    reconcile_start = source.index("function _reconcileFinalStreamText(finalText)")
+    reconcile_end = source.index("  /* ── Send Message", reconcile_start)
+    reconcile_body = source[reconcile_start:reconcile_end]
+    done_start = source.index("if (event.endsWith('.done') || event === 'chat.done') {")
+    done_end = source.index("        // Capture stream bubble", done_start)
+    done_body = source[done_start:done_end]
+
+    assert "if (seg.type === 'text')" in replace_body
+    assert "preservedSegments.push(seg);" in replace_body
+    assert "_segments = preservedSegments;" in replace_body
+    assert "body.innerHTML = '';" not in replace_body
+    assert "if (finalText)" in replace_body
+    assert "_newTextSegment();" in replace_body
+    assert "!finalText" not in reconcile_body
+    assert "_replaceStreamText(finalText);" in reconcile_body
+    assert "const finalTextSnapshot = _doneTextSnapshot(payload, u);" in done_body
+    assert "if (finalTextSnapshot !== null)" in done_body
+
+    end_start = source.index("function _endStreaming(opts)")
+    end_end = source.index("  function _hasViewLocalStreamState", end_start)
+    end_body = source[end_start:end_end]
+    assert "const hasToolSegments = _segments.some(seg => seg.type === 'tool');" in end_body
+    assert (
+        "const emptyStream = !cleanedText && !hasToolSegments "
+        "&& _streamArtifacts.length === 0;"
+    ) in end_body
+    assert "if (emptyStream)" in end_body
+
+
 def test_chat_markdown_export_includes_artifact_download_entries() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     start = source.index("function _exportMarkdown()")
@@ -3069,13 +3103,15 @@ def test_chat_done_event_reconciles_final_text_before_ending_stream() -> None:
     end = source.index("        // Populate savings indicator", start)
     body = source[start:end]
 
-    assert "const finalText = typeof u.text === 'string' ? u.text : '';" in body
-    assert "if (finalText && finalText !== _streamRaw)" in body
+    snapshot_marker = "const finalTextSnapshot = _doneTextSnapshot(payload, u);"
+    reconcile_marker = "if (finalTextSnapshot !== null)"
+    assert snapshot_marker in body
+    assert reconcile_marker in body
     # _endStreaming now takes an optional {reason} so abort-vs-natural can be
     # distinguished; the ordering invariant (reconcile before end) is preserved.
     end_call_marker = "_endStreaming(_doneWasAborted ? { reason: 'aborted' } : undefined);"
     assert end_call_marker in body
-    assert body.index("if (finalText && finalText !== _streamRaw)") < body.index(end_call_marker)
+    assert body.index(snapshot_marker) < body.index(reconcile_marker) < body.index(end_call_marker)
 
 
 def test_chat_turn_complete_event_schedules_history_sync() -> None:
@@ -3391,7 +3427,7 @@ def test_chat_streaming_text_strips_generated_artifact_markers() -> None:
     assert "_stripGeneratedArtifactMarkers(seg.raw)" in end_body
 
 
-def test_chat_history_text_segments_use_protocol_leak_guard() -> None:
+def test_chat_history_text_segments_preserve_protocol_shaped_text() -> None:
     source = CHAT_JS.read_text(encoding="utf-8")
     reconstruct_start = source.index("function _reconstructToolCalls")
     reconstruct_end = source.index("  /* ── Message Rendering", reconstruct_start)
@@ -3399,13 +3435,16 @@ def test_chat_history_text_segments_use_protocol_leak_guard() -> None:
     render_start = source.index("function _renderMessageBody")
     render_end = source.index("  function _scrollToBottom", render_start)
     render_body = source[render_start:render_end]
+    compat_start = source.index("function _stripProtocolTextLeak(text)")
+    compat_end = source.index("\n  }", compat_start) + len("\n  }")
+    compat_body = source[compat_start:compat_end]
 
     assert "function _stripProtocolTextLeak" in source
     assert "_stripProtocolTextLeak(seg.text || '')" in reconstruct_body
     assert "_stripProtocolTextLeak(_stripDirectiveTags(visibleText))" in render_body
-    assert "View areas around line" in source
-    assert "effect_calls" in source
-    assert "angle\\s+brackets" in source
+    assert "return String(text || '');" in compat_body
+    assert "slice(0, match.index)" not in compat_body
+    assert "_looksLikeProtocolTextSuffix" not in source
 
 
 def test_approval_monitor_uses_adaptive_timeout_backoff() -> None:

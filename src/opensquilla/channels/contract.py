@@ -191,6 +191,10 @@ class ChannelCapabilityProfile:
     thread_reply: bool = False
     edit: bool = False
     delete: bool = False
+    # Stronger than generic edit support: send_streaming must return the stable
+    # id of the message it created so dispatch can replace or delete a stale
+    # preview when Done carries an authoritative terminal text snapshot.
+    streamed_message_replacement: bool = False
     cards: bool = False
     interactive_cards: bool = False
     card_actions: bool = False

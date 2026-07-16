@@ -32,6 +32,7 @@ import {
   truncateToolPreview,
 } from '@/utils/chat/toolDisplay'
 import { segmentsToTimelineItems } from '@/utils/chat/segmentsToTimelineItems'
+import { reconcileTextSnapshot } from '@/utils/chat/foldTurn'
 import { useChatTurnLog } from '@/composables/chat/useChatTurnLog'
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 630_000
@@ -87,7 +88,6 @@ export interface UseChatStreamOptions {
   renderMarkdown: (text: string, opts?: { highlight?: boolean }) => string
   stripDirectiveTags: (text: string) => string
   stripGeneratedArtifactMarkers: (text: string) => string
-  stripProtocolTextLeak: (text: string) => string
   scrollToBottom: () => void
   /** Resolution view-state keyed by approval id; threaded into the fold so each
    *  interrupt part is stamped with its resolution/busy/error. The approvals
@@ -315,8 +315,11 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamIdlePausedForApproval.value = false
 
     if (streamBubble.value) {
-      const cleanedText = options.stripProtocolTextLeak(
-        options.stripDirectiveTags(options.stripGeneratedArtifactMarkers(streamRaw.value)),
+      // `streamRaw` is the canonical backend answer. Do not guess that visible
+      // Markdown/XML is a leaked tool protocol: doing so mutates local history,
+      // copy/export/share, and can disagree with the durable server transcript.
+      const cleanedText = options.stripDirectiveTags(
+        options.stripGeneratedArtifactMarkers(streamRaw.value),
       ).trim()
 
       const sentinelOnly = !wasAborted && ['NO_REPLY', 'HEARTBEAT_OK'].includes(cleanedText)
@@ -776,15 +779,23 @@ export function useChatStream(options: UseChatStreamOptions) {
     isStreaming.value = true
   }
 
-  function reconcileFinalText(finalText: string) {
-    if (finalText && finalText !== streamRaw.value) {
-      streamRaw.value = finalText
+  function reconcileFinalText(finalText: string | null | undefined) {
+    // null/undefined means the terminal event carried no authoritative text
+    // snapshot, so streamed deltas remain canonical. Empty string is distinct:
+    // it intentionally clears stale text while preserving tool history.
+    if (finalText == null) return
+
+    const reconciled = reconcileTextSnapshot(
+      streamSegments.value,
+      streamRaw.value,
+      finalText,
+    )
+    if (reconciled.changed) {
+      streamRaw.value = reconciled.rawText
+      streamSegments.value = reconciled.segments
+      scheduleRender()
     }
-    // Mirror the reconcile to the fold even when legacy was a no-op: the fold
-    // re-applies the same "override only when present and non-equal" rule
-    // against its own accumulated text, and overrides rawText without
-    // re-segmenting.
-    if (useReducer.value && finalText) appendFrame({ kind: 'final-text', text: finalText })
+    if (useReducer.value) appendFrame({ kind: 'final-text', text: finalText })
   }
 
   function isToolGroupOpen(groupId: string): boolean {

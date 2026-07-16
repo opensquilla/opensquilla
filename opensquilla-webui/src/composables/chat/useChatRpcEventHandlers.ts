@@ -60,7 +60,7 @@ export interface ChatRpcStreamApi {
   appendToolDelta: (payload: ToolDeltaPayload) => void
   appendToolResult: (payload: ToolResultPayload) => void
   appendArtifact: (payload: ArtifactPayload) => void
-  reconcileFinalText: (finalText: string) => void
+  reconcileFinalText: (finalText: string | null | undefined) => void
   resetStreamIdleTimer: () => void
   clearStreamIdleTimer: () => void
   setStreamActivity: (label: string) => void
@@ -114,6 +114,8 @@ type ChatDoneUsageFields = {
   cost_usd?: number
   model?: string
   text?: string
+  text_snapshot?: string | null
+  textSnapshot?: string | null
   model_usage_breakdown?: unknown
   modelUsageBreakdown?: unknown
   ensemble_trace?: unknown
@@ -140,6 +142,31 @@ type BufferedPendingStreamEvent = {
 
 const MAX_PENDING_TASK_BUCKETS = 8
 const MAX_PENDING_STREAM_EVENTS_PER_TASK = 64
+
+function doneTextSnapshot(
+  donePayload: ChatDoneUsagePayload,
+  usagePayload: ChatDoneUsageFields,
+): string | null {
+  // A string snapshot is authoritative even when it is empty. Dataclass
+  // serialization includes an unset optional field as null, so null must mean
+  // "absent" and still permit the legacy nonempty `text` fallback.
+  // Prefer any actual string across the outer and nested compatibility shapes.
+  for (const source of [donePayload, usagePayload]) {
+    for (const key of ['text_snapshot', 'textSnapshot'] as const) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        const value = source[key]
+        if (typeof value === 'string') return value
+      }
+    }
+  }
+
+  // Older gateways only sent `text`. Preserve their nonempty terminal
+  // reconciliation behavior; legacy empty text always meant "fall back".
+  for (const source of [usagePayload, donePayload]) {
+    if (typeof source.text === 'string' && source.text) return source.text
+  }
+  return null
+}
 
 // A completed turn's measured thinking duration must survive the
 // chat.history sync that replaces the messages array ~50ms after done.
@@ -797,8 +824,7 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       if (u.model) usageModel.value = u.model
       options.saveWidgetState()
 
-      const finalText = typeof u.text === 'string' ? u.text : ''
-      stream.reconcileFinalText(finalText)
+      stream.reconcileFinalText(doneTextSnapshot(donePayload, u))
 
       if (payload?.reason === 'aborted') {
         options.clearPendingRouterDecision()

@@ -141,6 +141,7 @@ class SlackChannel:
             thread_reply=True,
             edit=True,
             delete=True,
+            streamed_message_replacement=True,
             transports=(self.transport_name,),
         )
 
@@ -376,10 +377,24 @@ class SlackChannel:
             provider_file_id=file_id,
         )
 
-    async def edit(self, message_id: str, content: str) -> None:
-        """Update an existing Slack message via chat.update."""
+    async def edit(
+        self,
+        message_id: str,
+        content: str,
+        *,
+        channel: str | None = None,
+    ) -> None:
+        """Update an existing Slack message via chat.update.
+
+        ``channel`` pins dynamic replies to the conversation that created the
+        message. Direct callers that only know a message id retain the legacy
+        configured-channel fallback.
+        """
+        target = channel or self.slack_channel_id
+        if not target:
+            raise RuntimeError("Slack edit has no target channel")
         payload: dict[str, Any] = {
-            "channel": self.slack_channel_id,
+            "channel": target,
             "ts": message_id,
             "text": content,
         }
@@ -392,10 +407,18 @@ class SlackChannel:
             raise RuntimeError(f"Slack API error: {data.get('error')}")
         log.debug("slack.edit", message_id=message_id)
 
-    async def delete(self, message_id: str) -> None:
+    async def delete(
+        self,
+        message_id: str,
+        *,
+        channel: str | None = None,
+    ) -> None:
         """Delete a Slack message via chat.delete."""
+        target = channel or self.slack_channel_id
+        if not target:
+            raise RuntimeError("Slack delete has no target channel")
         payload: dict[str, Any] = {
-            "channel": self.slack_channel_id,
+            "channel": target,
             "ts": message_id,
         }
         client = self._get_client()

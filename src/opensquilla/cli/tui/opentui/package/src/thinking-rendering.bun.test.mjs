@@ -143,6 +143,21 @@ test("long narration soft-wraps into continuation rows with no content loss", as
   }
 });
 
+test("a terminal snapshot update clears stale intermediate narration", async () => {
+  const { renderer, renderOnce, captureSpans, block } = await mountThinking({ width: 52 });
+  try {
+    block.append("stale intermediate narration");
+    await renderOnce();
+    expect(flatText(captureSpans())).toContain("stale intermediate narration");
+
+    block.update({ text: "" });
+    await renderOnce();
+    expect(flatText(captureSpans())).not.toContain("stale intermediate narration");
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
 test("a resize re-wraps narration from the raw text at the new width", async () => {
   const { renderer, renderOnce, captureSpans, resize, block } = await mountThinking({
     width: 90,

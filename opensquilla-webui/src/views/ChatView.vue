@@ -777,7 +777,6 @@ const {
   sanitizeCopyText,
   stripDirectiveTags,
   stripGeneratedArtifactMarkers,
-  stripProtocolTextLeak,
   stripTimePrefix,
 } = chatTextRendering
 
@@ -796,7 +795,6 @@ const chatStream = useChatStream({
   renderMarkdown,
   stripDirectiveTags,
   stripGeneratedArtifactMarkers,
-  stripProtocolTextLeak,
   scrollToBottom,
   interruptState,
   rpcPolicy: () => rpc.policy,

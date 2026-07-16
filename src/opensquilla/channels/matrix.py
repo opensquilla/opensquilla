@@ -141,6 +141,7 @@ class MatrixChannel:
             reply=True,
             edit=True,
             delete=True,
+            streamed_message_replacement=True,
             transports=("websocket",),
         )
 
@@ -632,6 +633,22 @@ class MatrixChannel:
         )
         log.debug("matrix.outbound_sent", room_id=room_id)
 
+    def build_reply_message(
+        self,
+        content: str,
+        inbound: IncomingMessage,
+    ) -> OutgoingMessage:
+        """Pin a batch reply to the room that triggered the turn."""
+        return OutgoingMessage(
+            content=content,
+            reply_to=inbound.channel_id,
+            metadata={"room_id": inbound.channel_id},
+        )
+
+    def streaming_reply_kwargs(self, inbound: IncomingMessage) -> dict[str, Any]:
+        """Pin a streaming reply and its terminal replacement to one room."""
+        return {"room_id": inbound.channel_id}
+
     async def send_file(
         self,
         room_id: str,
@@ -679,18 +696,41 @@ class MatrixChannel:
             return str(upload_result.get("content_uri", ""))
         return str(getattr(upload_result, "content_uri", ""))
 
-    async def edit(self, message_id: str, content: str) -> None:
+    @staticmethod
+    def _message_route(
+        message_id: str,
+        room_id: str | None,
+    ) -> tuple[str, str]:
+        encoded_room, separator, encoded_event = message_id.partition("|")
+        if room_id:
+            if separator and encoded_room and encoded_room != room_id:
+                raise RuntimeError("Matrix edit/delete route does not match message handle")
+            event_id = encoded_event if separator else message_id
+            if event_id:
+                return room_id, event_id
+        if separator and encoded_room and encoded_event:
+            return encoded_room, encoded_event
+        raise RuntimeError(
+            "Matrix edit/delete requires room_id or '<room_id>|<event_id>'"
+        )
+
+    async def edit(
+        self,
+        message_id: str,
+        content: str,
+        *,
+        room_id: str | None = None,
+    ) -> None:
         """Edit a previously sent event by ``event_id`` via ``m.replace``.
 
         ``message_id`` is encoded as ``<room_id>|<event_id>`` so the
-        adapter can resolve both halves without storing per-event state
-        on the channel object.
+        adapter can resolve both halves without storing per-event state on the
+        channel object. Streaming dispatch may instead pass the pinned
+        ``room_id`` route alongside the historical raw event-id return value.
         """
         if self._client is None:
             raise RuntimeError("Matrix adapter not started")
-        room_id, _, event_id = message_id.partition("|")
-        if not room_id or not event_id:
-            raise RuntimeError("Matrix edit requires '<room_id>|<event_id>'")
+        target_room, event_id = self._message_route(message_id, room_id)
         formatted = self._render_html(content)
         new_content = self._build_text_content(content, formatted)
         payload = {
@@ -703,19 +743,22 @@ class MatrixChannel:
             },
         }
         await self._client.room_send(
-            room_id=room_id,
+            room_id=target_room,
             message_type="m.room.message",
             content=payload,
         )
 
-    async def delete(self, message_id: str) -> None:
+    async def delete(
+        self,
+        message_id: str,
+        *,
+        room_id: str | None = None,
+    ) -> None:
         """Delete (redact) a previously sent event."""
         if self._client is None:
             raise RuntimeError("Matrix adapter not started")
-        room_id, _, event_id = message_id.partition("|")
-        if not room_id or not event_id:
-            raise RuntimeError("Matrix delete requires '<room_id>|<event_id>'")
-        await self._client.room_redact(room_id=room_id, event_id=event_id)
+        target_room, event_id = self._message_route(message_id, room_id)
+        await self._client.room_redact(room_id=target_room, event_id=event_id)
 
     # ------------------------------------------------------------------
     # Streaming (edit-throttled)

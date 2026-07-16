@@ -21,6 +21,7 @@ import re
 import time
 import weakref
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
@@ -52,6 +53,7 @@ from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.engine.start_turn import reserve_turn_via_runtime, start_turn_via_runtime
 from opensquilla.engine.types import (
     ArtifactEvent,
+    DoneEvent,
     EnsembleProgressEvent,
     ErrorEvent,
     RouterDecisionEvent,
@@ -59,6 +61,7 @@ from opensquilla.engine.types import (
     TextDeltaEvent,
     ToolResultEvent,
     ToolUseStartEvent,
+    done_text_snapshot,
 )
 from opensquilla.execution_status import normalize_execution_status
 from opensquilla.gateway.attachment_ingest import AttachmentIngestResult, ingest_attachments
@@ -73,6 +76,104 @@ if TYPE_CHECKING:
     from opensquilla.gateway.event_bridge import EventBridge
 
 log = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class _StreamedMessageHandle:
+    """A platform message id pinned to the route that created it.
+
+    Built-in adapters intentionally keep returning their historical string
+    ids.  Dispatch wraps that result with the exact ``send_streaming`` route
+    kwargs so a later terminal edit/delete cannot fall back to mutable
+    adapter-global state or a statically configured default conversation.
+    """
+
+    message_id: str
+    route_kwargs: dict[str, Any]
+
+
+def _streamed_message_handle(
+    result: Any,
+    route_kwargs: dict[str, Any],
+) -> _StreamedMessageHandle | None:
+    if isinstance(result, _StreamedMessageHandle):
+        return result
+    if not isinstance(result, str) or not result:
+        return None
+    return _StreamedMessageHandle(
+        message_id=result,
+        route_kwargs=dict(route_kwargs),
+    )
+
+
+def _channel_can_replace_streamed_text(channel: Any) -> bool:
+    """Whether a live preview can be replaced by its terminal snapshot.
+
+    Generic edit support is insufficient: ``send_streaming`` must also promise
+    a stable id for the message it created. Unknown/custom adapters and typed
+    adapters without that stronger declaration buffer deltas until Done, so a
+    conflicting or explicitly empty snapshot cannot leave stale output behind.
+    """
+
+    if resolve_channel_stream_policy(channel).mode == "final_only":
+        return False
+    has_edit = callable(getattr(channel, "edit", None))
+    profile = channel_capability_profile(channel)
+    return bool(
+        profile is not None
+        and profile.edit
+        and profile.streamed_message_replacement
+        and has_edit
+    )
+
+
+def _sanitize_streamed_channel_text(text: str) -> str:
+    sanitizer = _DirectiveTagStreamSanitizer()
+    cleaned = sanitizer.clean(_strip_artifact_markers_from_channel_text(text))
+    return cleaned + sanitizer.flush()
+
+
+async def _replace_streamed_channel_text(
+    channel: Any,
+    raw_handle: Any,
+    text: str,
+) -> bool:
+    """Best-effort route-pinned replacement of an already delivered preview."""
+
+    handle = (
+        raw_handle
+        if isinstance(raw_handle, _StreamedMessageHandle)
+        else _streamed_message_handle(raw_handle, {})
+    )
+    if handle is None:
+        return False
+
+    def _route_kwargs(operation: Any) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in handle.route_kwargs.items()
+            if _accepts_keyword_arg(operation, key)
+        }
+
+    try:
+        if not text:
+            delete = getattr(channel, "delete", None)
+            if callable(delete):
+                await delete(handle.message_id, **_route_kwargs(delete))
+                return True
+        edit = getattr(channel, "edit", None)
+        if not callable(edit):
+            return False
+        await edit(handle.message_id, text, **_route_kwargs(edit))
+        return True
+    except Exception as exc:  # noqa: BLE001 - caller has a canonical batch fallback.
+        log.warning(
+            "channel_dispatch.stream_terminal_reconcile_failed",
+            channel_type=type(channel).__name__,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        return False
 
 
 def _terminal_payload_from_exception(exc: BaseException) -> dict[str, str]:
@@ -1550,6 +1651,11 @@ class _RuntimeChannelStreamRelay:
         self.delivered_artifact_keys: set[str] = set()
         self._task: asyncio.Task[Any] | None = None
         self._closed = False
+        self._live_preview = _channel_can_replace_streamed_text(channel)
+        self._text_deltas: list[str] = []
+        self._done_snapshot_present = False
+        self._done_snapshot_text = ""
+        self._stream_handle: _StreamedMessageHandle | None = None
         self.text_emitted = False
         self.stream_error: BaseException | None = None
         # Buffer of chunks already yielded to ``send_streaming``. If the
@@ -1596,11 +1702,13 @@ class _RuntimeChannelStreamRelay:
             self._task = asyncio.create_task(self._run())
 
     async def _run(self) -> Any:
+        reply_kwargs = _streaming_reply_kwargs(self._channel, self._inbound)
         try:
-            return await self._channel.send_streaming(
+            result = await self._channel.send_streaming(
                 self._chunks(),
-                **_streaming_reply_kwargs(self._channel, self._inbound),
+                **reply_kwargs,
             )
+            return _streamed_message_handle(result, reply_kwargs)
         except Exception as exc:  # noqa: BLE001 - streaming is best-effort fallback.
             self.stream_error = exc
             log.warning(
@@ -1688,14 +1796,48 @@ class _RuntimeChannelStreamRelay:
         if artifact is not None:
             self._artifacts.append(artifact)
             return
+        snapshot_present, snapshot_text = done_text_snapshot(event)
+        if snapshot_present and (
+            isinstance(event, DoneEvent)
+            or getattr(event, "kind", None) == "done"
+            or (isinstance(event, dict) and event.get("kind") == "done")
+        ):
+            self._done_snapshot_present = True
+            self._done_snapshot_text = snapshot_text
+            return
         text = _text_delta_from_event(event)
         if not text:
             return
         text = _strip_artifact_markers_from_channel_text(text)
         if not text:
             return
-        self.text_emitted = True
-        await self._queue.put(text)
+        self._text_deltas.append(text)
+        if self._live_preview:
+            self.text_emitted = True
+            await self._queue.put(text)
+
+    async def reconcile_final_text(self, text: str) -> bool:
+        """Make the delivered channel message equal one canonical final value."""
+
+        canonical = _sanitize_streamed_channel_text(text)
+        streamed = "".join(self._yielded_chunks)
+        if canonical == streamed:
+            self.text_emitted = bool(canonical)
+            return True
+        replaced = await _replace_streamed_channel_text(
+            self._channel,
+            self._stream_handle,
+            canonical,
+        )
+        if replaced:
+            self._yielded_chunks[:] = [canonical] if canonical else []
+            self._undelivered_index = len(self._yielded_chunks)
+            self.text_emitted = bool(canonical)
+        return replaced
+
+    @property
+    def has_terminal_snapshot(self) -> bool:
+        return self._done_snapshot_present
 
     async def close(self, timeout: float = 10.0) -> None:
         if self._closed:
@@ -1706,8 +1848,16 @@ class _RuntimeChannelStreamRelay:
             if _can_deliver_channel_files(self._channel)
             else _artifact_fallback_lines(self._artifacts)
         )
+        terminal_text = (
+            self._done_snapshot_text
+            if self._done_snapshot_present
+            else "".join(self._text_deltas)
+        )
+        if not self._live_preview and terminal_text:
+            await self._queue.put(terminal_text)
+            self.text_emitted = True
         if artifact_lines:
-            prefix = "\n\n" if self.text_emitted else ""
+            prefix = "\n\n" if terminal_text else ""
             artifact_text = "\n".join(artifact_lines)
             await self._queue.put(f"{prefix}{artifact_text}")
             self.text_emitted = True
@@ -1715,7 +1865,9 @@ class _RuntimeChannelStreamRelay:
         if self._task is None:
             return
         try:
-            await asyncio.wait_for(asyncio.shield(self._task), timeout=timeout)
+            self._stream_handle = await asyncio.wait_for(
+                asyncio.shield(self._task), timeout=timeout
+            )
         except TimeoutError as exc:
             self.stream_error = exc
             self._task.cancel()
@@ -1723,6 +1875,18 @@ class _RuntimeChannelStreamRelay:
                 await self._task
         except Exception as exc:  # noqa: BLE001 - error already becomes batch fallback.
             self.stream_error = exc
+
+        if self.stream_error is None and self._done_snapshot_present:
+            canonical_with_artifacts = _sanitize_streamed_channel_text(terminal_text)
+            if artifact_lines:
+                artifact_text = "\n".join(artifact_lines)
+                canonical_with_artifacts = "\n\n".join(
+                    part for part in (canonical_with_artifacts, artifact_text) if part
+                )
+            if not await self.reconcile_final_text(canonical_with_artifacts):
+                self.stream_error = RuntimeError(
+                    "streamed channel reply could not apply terminal text snapshot"
+                )
 
         # Per-event delivery fallback: when send_streaming raised mid-stream,
         # any chunk that was queued but never reached the consumer must
@@ -2704,12 +2868,6 @@ async def _deliver_runtime_channel_reply(
 
     status = _status_value(getattr(record, "status", None))
     if status == "succeeded":
-        if (
-            stream_relay is not None
-            and stream_relay.text_emitted
-            and stream_relay.stream_error is None
-        ):
-            return
         exact_content = await _replayed_assistant_text(
             session_manager,
             session_key,
@@ -2730,6 +2888,47 @@ async def _deliver_runtime_channel_reply(
                 session_key,
                 transcript_watermark,
             )
+        if (
+            stream_relay is not None
+            and stream_relay.stream_error is None
+            and (content or stream_relay.has_terminal_snapshot)
+        ):
+            canonical_content, canonical_artifacts = _split_assistant_artifact_content(
+                content
+            )
+            if stream_relay.delivered_artifact_keys:
+                canonical_artifacts = [
+                    artifact
+                    for artifact in canonical_artifacts
+                    if _artifact_delivery_key(artifact)
+                    not in stream_relay.delivered_artifact_keys
+                ]
+            canonical_content = _strip_artifact_markers_from_channel_text(
+                canonical_content
+            )
+            canonical_content = _strip_delivered_artifact_image_references(
+                canonical_content,
+                canonical_artifacts,
+            )
+            if not _can_deliver_channel_files(channel):
+                fallback_lines = _artifact_fallback_lines(canonical_artifacts)
+                if fallback_lines:
+                    canonical_content = "\n\n".join(
+                        part
+                        for part in (canonical_content, "\n".join(fallback_lines))
+                        if part
+                    )
+            if await stream_relay.reconcile_final_text(canonical_content):
+                return
+            stream_relay.stream_error = RuntimeError(
+                "streamed channel reply could not apply persisted terminal text"
+            )
+        elif (
+            stream_relay is not None
+            and stream_relay.text_emitted
+            and stream_relay.stream_error is None
+        ):
+            return
     else:
         content = build_terminal_reply(record)
         if (
@@ -2825,6 +3024,8 @@ async def _run_turn_batch_path(
 ) -> None:
     """Batch mode: accumulate all text, send once at the end."""
     text_parts: list[str] = []
+    done_snapshot_present = False
+    done_snapshot_text = ""
     artifacts: list[dict[str, Any]] = []
     error_occurred = False
     clarify_card_sent = False
@@ -2860,6 +3061,11 @@ async def _run_turn_batch_path(
                             "presentation": getattr(event, "presentation", "answer"),
                         },
                     )
+            elif isinstance(event, DoneEvent):
+                snapshot_present, snapshot_text = done_text_snapshot(event)
+                if snapshot_present:
+                    done_snapshot_present = True
+                    done_snapshot_text = snapshot_text
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)
                 if event_bridge is not None:
@@ -2933,7 +3139,7 @@ async def _run_turn_batch_path(
         error_occurred = True
 
     if not error_occurred:
-        content = "".join(text_parts)
+        content = done_snapshot_text if done_snapshot_present else "".join(text_parts)
         content = _strip_artifact_markers_from_channel_text(content)
         content = _strip_delivered_artifact_image_references(content, artifacts)
         if _can_deliver_channel_files(channel):
@@ -2968,9 +3174,15 @@ async def _run_turn_streaming_path(
     channel streamer run concurrently.
     """
     queue: asyncio.Queue[str | None] = asyncio.Queue()
+    live_preview = _channel_can_replace_streamed_text(channel)
     text_emitted = False
+    text_parts: list[str] = []
+    done_snapshot_present = False
+    done_snapshot_text = ""
     stream_error: str | None = None
     stream_task_error: BaseException | None = None
+    stream_handle: _StreamedMessageHandle | None = None
+    terminal_reconcile_fallback = ""
     yielded_stream_chunks: list[str] = []
     stream_delivered_index = 0
     artifacts: list[dict[str, Any]] = []
@@ -2996,10 +3208,11 @@ async def _run_turn_streaming_path(
                 stream_delivered_index = len(yielded_stream_chunks)
 
     # Start the streaming consumer as a background task
+    streaming_reply_kwargs = _streaming_reply_kwargs(channel, msg)
     stream_task = asyncio.create_task(
         channel.send_streaming(
             _chunk_iter(),
-            **_streaming_reply_kwargs(channel, msg),
+            **streaming_reply_kwargs,
         ),
     )
 
@@ -3027,7 +3240,9 @@ async def _run_turn_streaming_path(
                 cleaned = _strip_artifact_markers_from_channel_text(event.text)
                 if cleaned:
                     text_emitted = True
-                    await queue.put(cleaned)
+                    text_parts.append(cleaned)
+                    if live_preview:
+                        await queue.put(cleaned)
                 if event_bridge is not None:
                     await event_bridge.emit(
                         session_key,
@@ -3037,6 +3252,11 @@ async def _run_turn_streaming_path(
                             "presentation": getattr(event, "presentation", "answer"),
                         },
                     )
+            elif isinstance(event, DoneEvent):
+                snapshot_present, snapshot_text = done_text_snapshot(event)
+                if snapshot_present:
+                    done_snapshot_present = True
+                    done_snapshot_text = snapshot_text
             elif artifact := _artifact_event_payload(event):
                 artifacts.append(artifact)
                 if event_bridge is not None:
@@ -3093,11 +3313,21 @@ async def _run_turn_streaming_path(
         log.error("channel_dispatch.agent_stream_timeout", session_key=session_key)
         stream_error = build_terminal_reply(_terminal_payload_from_exception(exc))
     finally:
+        if not live_preview:
+            terminal_text = (
+                done_snapshot_text if done_snapshot_present else "".join(text_parts)
+            )
+            if terminal_text:
+                await queue.put(terminal_text)
         # Signal end-of-stream to the consumer
         await queue.put(None)
         # Wait for the streaming task to finish
         try:
-            await asyncio.wait_for(stream_task, timeout=10.0)
+            stream_result = await asyncio.wait_for(stream_task, timeout=10.0)
+            stream_handle = _streamed_message_handle(
+                stream_result,
+                streaming_reply_kwargs,
+            )
         except TimeoutError as exc:
             stream_task_error = exc
             log.warning(
@@ -3117,6 +3347,33 @@ async def _run_turn_streaming_path(
             )
             stream_task.cancel()
 
+    if (
+        stream_task_error is None
+        and live_preview
+        and done_snapshot_present
+        and stream_error is None
+    ):
+        canonical_text = _strip_delivered_artifact_image_references(
+            done_snapshot_text,
+            artifacts,
+        )
+        canonical_text = _sanitize_streamed_channel_text(canonical_text)
+        streamed_text = "".join(yielded_stream_chunks)
+        if canonical_text != streamed_text:
+            if await _replace_streamed_channel_text(
+                channel,
+                stream_handle,
+                canonical_text,
+            ):
+                yielded_stream_chunks[:] = [canonical_text] if canonical_text else []
+                stream_delivered_index = len(yielded_stream_chunks)
+                text_emitted = bool(canonical_text)
+            else:
+                stream_task_error = RuntimeError(
+                    "streamed channel reply could not apply terminal text snapshot"
+                )
+                terminal_reconcile_fallback = canonical_text
+
     if stream_task_error is not None and text_emitted:
         queued_remainder: list[str] = []
         while True:
@@ -3134,7 +3391,10 @@ async def _run_turn_streaming_path(
         undelivered_yielded = "".join(
             yielded_stream_chunks[stream_delivered_index:]
         )
-        fallback_text = undelivered_yielded + "".join(queued_remainder)
+        fallback_text = (
+            terminal_reconcile_fallback
+            or undelivered_yielded + "".join(queued_remainder)
+        )
         if fallback_text:
             try:
                 await channel.send(_build_reply_message(channel, fallback_text, msg))

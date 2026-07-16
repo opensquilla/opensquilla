@@ -89,10 +89,41 @@ async def test_client_sends_bearer_and_standard_search_request(monkeypatch) -> N
         "budget": {
             "maxSnippetChars": 800,
             "maxTotalChars": 12000,
-            "maxChunkChars": 8000,
         },
         "scope": {"collectionIds": ["datasets"]},
         "retrievalProfile": "lexical",
+    }
+    await http.aclose()
+
+
+@pytest.mark.asyncio
+async def test_client_sends_v11_chunk_budget_only_for_protocol_v11() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json=search_v11([result_v11(1)]))
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = RagProviderClient(
+        base_url="https://knowledge.example.com/provider",
+        token_env=None,
+        connect_timeout_seconds=2,
+        request_timeout_seconds=5,
+        http_client=http,
+    )
+
+    await client.search(
+        query="NAND",
+        limit=8,
+        budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
+        protocol_version="1.1",
+    )
+
+    assert json.loads(requests[0].content)["budget"] == {
+        "maxSnippetChars": 800,
+        "maxTotalChars": 12000,
+        "maxChunkChars": 8000,
     }
     await http.aclose()
 

@@ -118,14 +118,16 @@ class RagProviderClient:
         collection_ids: tuple[str, ...] = (),
         retrieval_profile: str | None = None,
     ) -> ValidatedSearchResponse:
+        request_budget = {
+            "maxSnippetChars": budget.max_snippet_chars,
+            "maxTotalChars": budget.max_total_chars,
+        }
+        if protocol_version == "1.1":
+            request_budget["maxChunkChars"] = budget.max_chunk_chars
         body: dict[str, Any] = {
             "query": query,
             "limit": limit,
-            "budget": {
-                "maxSnippetChars": budget.max_snippet_chars,
-                "maxTotalChars": budget.max_total_chars,
-                "maxChunkChars": budget.max_chunk_chars,
-            },
+            "budget": request_budget,
         }
         if collection_ids:
             body["scope"] = {"collectionIds": list(collection_ids)}

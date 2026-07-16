@@ -126,6 +126,18 @@ def test_capabilities_negotiate_chunk_limit_by_version() -> None:
     assert compatible.limits.max_chunk_chars == rag_protocol.LOCAL_MAX_CHUNK_CHARS
 
 
+def test_capabilities_v11_enforces_mandatory_empty_response_floor() -> None:
+    invalid = capabilities(version="1.1")
+    invalid["limits"]["maxSearchResponseChars"] = 105
+
+    with pytest.raises(ProviderProtocolViolation):
+        validate_capabilities(invalid)
+
+    legacy = capabilities(version="1.0")
+    legacy["limits"]["maxSearchResponseChars"] = 105
+    assert validate_capabilities(legacy).limits.max_search_response_chars == 105
+
+
 @pytest.mark.parametrize("value", [True, 0, -1, "8000"])
 def test_capabilities_reject_invalid_v11_chunk_limit(value: object) -> None:
     payload = capabilities(version="1.1")
@@ -222,6 +234,22 @@ def test_search_never_delivers_more_results_than_the_effective_request_limit() -
     assert validated.provider_budget_violation is True
 
 
+def test_search_v10_rejects_unsafe_citation_source_label() -> None:
+    item = result(1)
+    item["citation"]["source"] = "/etc/passwd"
+
+    with pytest.raises(ProviderProtocolViolation):
+        validate_search_response(
+            {
+                "returnedCount": 1,
+                "totalMatched": 1,
+                "resultsTruncated": False,
+                "results": [item],
+            },
+            budget=SearchBudget(800, 12_000),
+        )
+
+
 def test_search_v11_accepts_response_without_query_and_omits_normalized_query() -> None:
     payload = search_v11([result_v11(1)])
 
@@ -289,6 +317,11 @@ def test_search_v11_normalizes_full_response_and_filters_private_fields() -> Non
         ("sourcePath", "a/../../secret"),
         ("sourcePath", "C:\\secret"),
         ("sourcePath", "safe/\x85secret"),
+        ("sourcePath", "https:private"),
+        ("sourcePath", "mailto:secret"),
+        ("sourcePath", "knowledge:documents/doc_1"),
+        ("sourcePath", "file:private"),
+        ("sourcePath", "  https:private  "),
         ("openUrl", "//evil.example/path"),
         ("openUrl", "javascript:alert(1)"),
         ("openUrl", "http://[broken"),
@@ -306,6 +339,80 @@ def test_search_v11_rejects_unsafe_document_locations(field: str, value: str) ->
             protocol_version="1.1",
             budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
         )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/etc/passwd",
+        "folder/private.md",
+        "folder\\private.md",
+        "C:private.md",
+        "https:private",
+        "knowledge:documents/doc_1",
+        "private\x85.md",
+    ],
+)
+def test_search_v11_rejects_unsafe_document_file_name(value: str) -> None:
+    payload = search_v11([result_v11(1)])
+    payload["results"][0]["document"]["fileName"] = value
+
+    with pytest.raises(ProviderProtocolViolation):
+        validate_search_response(
+            payload,
+            protocol_version="1.1",
+            budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
+        )
+
+
+@pytest.mark.parametrize(
+    ("container", "value"),
+    [
+        ("document", "/root/private.sqlite"),
+        ("document", "datasets/private"),
+        ("document", "C:private"),
+        ("document", "https:private"),
+        ("document", "mailto:secret"),
+        ("citation", "/etc/passwd"),
+        ("citation", "datasets/private"),
+        ("citation", "knowledge:documents/doc_1"),
+        ("citation", "secret\x85label"),
+    ],
+)
+def test_search_v11_rejects_unsafe_source_labels(
+    container: str,
+    value: str,
+) -> None:
+    payload = search_v11([result_v11(1)])
+    payload["results"][0][container]["source"] = value
+
+    with pytest.raises(ProviderProtocolViolation):
+        validate_search_response(
+            payload,
+            protocol_version="1.1",
+            budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
+        )
+
+
+def test_search_v11_preserves_safe_unicode_document_locations() -> None:
+    payload = search_v11([result_v11(1)])
+    document = payload["results"][0]["document"]
+    document["fileName"] = "研究报告（终稿）.md"
+    document["source"] = "研发知识库"
+    document["sourcePath"] = "资料/研究报告（终稿）.md"
+    payload["results"][0]["citation"]["source"] = "研发知识库"
+
+    validated = validate_search_response(
+        payload,
+        protocol_version="1.1",
+        budget=SearchBudget(800, 12_000, max_chunk_chars=8_000),
+    )
+
+    normalized = validated.payload["results"][0]
+    assert normalized["document"]["fileName"] == "研究报告（终稿）.md"
+    assert normalized["document"]["source"] == "研发知识库"
+    assert normalized["document"]["sourcePath"] == "资料/研究报告（终稿）.md"
+    assert normalized["citation"]["source"] == "研发知识库"
 
 
 def test_search_v11_rejects_invalid_rank_content_count_and_citation_uri() -> None:
@@ -414,6 +521,19 @@ def test_search_v11_allows_omitted_total_matched() -> None:
     assert "totalMatched" not in validated.payload
 
 
+def test_search_v11_rejects_mandatory_metadata_over_total_budget() -> None:
+    payload = search_v11([])
+    payload["totalMatched"] = None
+    payload["retrieval"]["profile"] = "provider-profile-" * 20
+
+    with pytest.raises(ProviderProtocolViolation, match="budget"):
+        validate_search_response(
+            payload,
+            protocol_version="1.1",
+            budget=SearchBudget(800, 106, max_chunk_chars=8_000),
+        )
+
+
 def test_get_rejects_oversized_content_instead_of_creating_a_paging_gap() -> None:
     response = {
         "evidenceId": "ev_1",
@@ -425,6 +545,25 @@ def test_get_rejects_oversized_content_instead_of_creating_a_paging_gap() -> Non
     }
 
     with pytest.raises(ProviderBudgetViolation):
+        validate_get_response(response, evidence_id="ev_1", max_content_chars=100)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("document", "/etc/passwd"), ("citation", "https:private")],
+)
+def test_get_v10_rejects_unsafe_source_labels(field: str, value: str) -> None:
+    response = {
+        "evidenceId": "ev_1",
+        "document": {"title": "Document", "source": "datasets"},
+        "content": "safe",
+        "previousCursor": None,
+        "nextCursor": None,
+        "citation": {"title": "Document", "source": "datasets"},
+    }
+    response[field]["source"] = value
+
+    with pytest.raises(ProviderProtocolViolation):
         validate_get_response(response, evidence_id="ev_1", max_content_chars=100)
 
 

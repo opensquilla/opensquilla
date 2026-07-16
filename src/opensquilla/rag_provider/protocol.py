@@ -14,9 +14,12 @@ LOCAL_MAX_SNIPPET_CHARS = 800
 LOCAL_MAX_SEARCH_RESPONSE_CHARS = 12_000
 LOCAL_MAX_GET_CONTENT_CHARS = 8_000
 LOCAL_MAX_CHUNK_CHARS = 8_000
+MIN_PROTOCOL_1_1_SEARCH_RESPONSE_CHARS = 106
 
 _CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
+_URI_FORM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _UNSAFE_RESOURCE_SCHEMES = frozenset({"data", "file", "javascript", "vbscript"})
 
 
@@ -155,6 +158,17 @@ def validate_capabilities(raw: Any) -> CapabilitiesSnapshot:
         )
     else:
         max_chunk_chars = LOCAL_MAX_CHUNK_CHARS
+    max_search_response_chars = _positive_int(
+        limits.get("maxSearchResponseChars"),
+        "maxSearchResponseChars",
+    )
+    if (
+        version == "1.1"
+        and max_search_response_chars < MIN_PROTOCOL_1_1_SEARCH_RESPONSE_CHARS
+    ):
+        raise ProviderProtocolViolation(
+            "maxSearchResponseChars is below the Protocol 1.1 minimum"
+        )
     effective = EffectiveLimits(
         max_search_results=min(
             _positive_int(limits.get("maxSearchResults"), "maxSearchResults"),
@@ -165,7 +179,7 @@ def validate_capabilities(raw: Any) -> CapabilitiesSnapshot:
             LOCAL_MAX_SNIPPET_CHARS,
         ),
         max_search_response_chars=min(
-            _positive_int(limits.get("maxSearchResponseChars"), "maxSearchResponseChars"),
+            max_search_response_chars,
             LOCAL_MAX_SEARCH_RESPONSE_CHARS,
         ),
         max_get_content_chars=min(
@@ -243,10 +257,28 @@ def _validate_source_path(value: Any) -> str:
         path.startswith(("/", "\\"))
         or "\\" in path
         or any(part in {"", ".", ".."} for part in path.split("/"))
-        or re.match(r"^[A-Za-z]:", path)
+        or _URI_FORM_RE.match(path)
+        or _WINDOWS_DRIVE_RE.match(path)
     ):
         raise ProviderProtocolViolation("document.sourcePath is invalid")
     return path
+
+
+def _validate_source_label(value: Any, name: str) -> str:
+    label = _required_text(value, name)
+    if (
+        label in {".", ".."}
+        or "/" in label
+        or "\\" in label
+        or _URI_FORM_RE.match(label)
+        or _WINDOWS_DRIVE_RE.match(label)
+    ):
+        raise ProviderProtocolViolation(f"{name} is invalid")
+    return label
+
+
+def _validate_file_name(value: Any) -> str:
+    return _validate_source_label(value, "document.fileName")
 
 
 def _safe_urlsplit(value: str, name: str) -> Any:
@@ -306,7 +338,13 @@ def _validate_document(value: Any) -> dict[str, str]:
         "id": _required_text(document.get("id"), "document.id"),
         "title": _required_text(document.get("title"), "document.title"),
     }
-    for key in ("source", "fileName", "mediaType", "revision"):
+    source = document.get("source")
+    if source is not None:
+        result["source"] = _validate_source_label(source, "document.source")
+    file_name = document.get("fileName")
+    if file_name is not None:
+        result["fileName"] = _validate_file_name(file_name)
+    for key in ("mediaType", "revision"):
         candidate = _optional_text(document.get(key), f"document.{key}")
         if candidate is not None:
             result[key] = candidate
@@ -328,7 +366,10 @@ def _validate_citation_v1_0(value: Any) -> dict[str, str]:
     if not isinstance(title, str) or not title:
         raise ProviderProtocolViolation("citation.title is required")
     result = {"title": title}
-    for key in ("source", "locator", "uri"):
+    source = citation.get("source")
+    if source is not None:
+        result["source"] = _validate_source_label(source, "citation.source")
+    for key in ("locator", "uri"):
         candidate = citation.get(key)
         if candidate is not None:
             if not isinstance(candidate, str):
@@ -353,7 +394,7 @@ def _validate_citation_v1_1(
     }
     source = _optional_text(citation.get("source"), "citation.source")
     if source is not None:
-        result["source"] = source
+        result["source"] = _validate_source_label(source, "citation.source")
     return result
 
 
@@ -559,7 +600,7 @@ def _validate_search_response_v1_1(
         results=normalized,
     )
     if _compact_chars(normalized_payload) > budget.max_total_chars:
-        violation = True
+        raise ProviderProtocolViolation("search response exceeds requested budget")
     return ValidatedSearchResponse(normalized_payload, violation)
 
 
@@ -609,7 +650,10 @@ def _validate_get_response_v1_0(
         "evidenceId": evidence_id,
         "document": {
             "title": document["title"],
-            "source": document["source"],
+            "source": _validate_source_label(
+                document["source"],
+                "document.source",
+            ),
         },
         "content": content,
         "previousCursor": previous_cursor,

@@ -18,6 +18,7 @@ from typing import Any
 from opensquilla.channels.contract import (
     ChannelSendResult,
     channel_capability_profile,
+    classify_channel_send_error,
     normalize_channel_send_result,
 )
 from opensquilla.channels.types import IncomingMessage, OutgoingMessage
@@ -566,13 +567,17 @@ class ChannelDeliveryStore:
         return normalized
 
     def fail_send(self, send_id: str, error: BaseException) -> None:
+        # error_class carries the taxonomy value every consumer branches on
+        # (doctor's auth_invalid alert, the console's operator cause lines);
+        # the concrete exception type stays in error_message so nothing is
+        # lost for debugging.
         with self._lock:
             self._conn.execute(
                 "UPDATE channel_outbox SET state = 'unknown', error_class = ?, "
                 "error_message = ?, updated_at = ? WHERE send_id = ?",
                 (
-                    type(error).__name__,
-                    _safe_error_text(error),
+                    classify_channel_send_error(error),
+                    f"{type(error).__name__}: {_safe_error_text(error)}"[:2000],
                     time.time(),
                     send_id,
                 ),

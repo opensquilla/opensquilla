@@ -20,6 +20,8 @@ from typing import Any, Literal
 import httpx
 import structlog
 
+from opensquilla.http_retry import parse_retry_after
+
 log = structlog.get_logger(__name__)
 
 
@@ -286,6 +288,23 @@ class FloodStrikeBackoff:
         self._fallback = False
 
 
+#: Defensive ceiling for a provider-supplied ``Retry-After``. A broken or
+#: hostile header must not park a channel for hours; generous enough that any
+#: realistic chat-provider hint is honored verbatim.
+MAX_RETRY_AFTER_S: float = 900.0
+
+
+def _retry_after_delay(response: httpx.Response, fallback: float) -> float:
+    """Seconds to wait before retrying, from ``Retry-After`` or ``fallback``.
+
+    Handles both RFC 9110 forms and rejects absent/negative/unparseable
+    values (a bare ``float()`` raises on the HTTP-date form). The honored
+    delay is capped so a hostile header cannot park the channel.
+    """
+    parsed = parse_retry_after(response.headers.get("Retry-After"))
+    return min(fallback if parsed is None else parsed, MAX_RETRY_AFTER_S)
+
+
 async def retry_request(
     func: Callable[..., Awaitable[httpx.Response]],
     *args: Any,
@@ -293,18 +312,24 @@ async def retry_request(
     base_delay: float = 1.0,
     **kwargs: Any,
 ) -> httpx.Response:
-    """Retry an httpx request with exponential backoff on transient errors."""
+    """Retry an httpx request with exponential backoff on transient errors.
+
+    On exhaustion the final response is returned rather than raised: a 429 or
+    5xx that survived every attempt is the provider's answer, and the caller
+    needs it to classify the failure.
+    """
     last_exc: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             resp = await func(*args, **kwargs)
-            if resp.status_code == 429:
-                retry_after = float(resp.headers.get("Retry-After", base_delay * (2**attempt)))
+            backoff = base_delay * (2**attempt)
+            if resp.status_code == 429 and attempt < max_retries:
+                retry_after = _retry_after_delay(resp, backoff)
                 log.warning("rate_limited", retry_after=retry_after, attempt=attempt)
                 await asyncio.sleep(retry_after)
                 continue
             if resp.status_code in {500, 502, 503, 504} and attempt < max_retries:
-                delay = base_delay * (2**attempt) + random.random()
+                delay = backoff + random.random()
                 log.warning("transient_error", status=resp.status_code, delay=delay)
                 await asyncio.sleep(delay)
                 continue

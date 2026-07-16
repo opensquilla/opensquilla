@@ -4,9 +4,11 @@ import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from opensquilla.channels.contract import (
+    UNCLASSIFIED_ERROR_CLASS,
     ChannelCapabilities,
     ChannelCapabilityProfile,
     ChannelSendResult,
@@ -366,7 +368,57 @@ async def test_outbox_only_wraps_declared_operations_and_redacts_failure(
 
     with sqlite3.connect(store.path) as connection:
         row = connection.execute(
-            "SELECT capability, state, error_message FROM channel_outbox"
+            "SELECT capability, state, error_class, error_message FROM channel_outbox"
         ).fetchone()
-    assert row == ("send_streaming", "unknown", "bot token=[REDACTED]")
+    capability, state, error_class, error_message = row
+    assert (capability, state) == ("send_streaming", "unknown")
+    # A bare RuntimeError carries no status, no retry hint, and no declared
+    # class, so it must park rather than be guessed into the taxonomy.
+    assert error_class == UNCLASSIFIED_ERROR_CLASS
+    # The credential stays redacted; the exception type is retained alongside
+    # it now that error_class carries the taxonomy value instead.
+    assert error_message == "RuntimeError: bot token=[REDACTED]"
+    assert "do-not-persist" not in error_message
+    store.close()
+
+
+def test_fail_send_persists_the_taxonomy_class_not_the_exception_type(tmp_path) -> None:
+    # The outbox's error_class column is what doctor alerts on and what the
+    # console renders operator cause lines from. Storing type(error).__name__
+    # ("HTTPStatusError") made it unusable for any decision.
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    request = httpx.Request("POST", "https://provider.example/send")
+    response = httpx.Response(401, request=request)
+
+    send_id = store.begin_send(
+        "slack-main",
+        OutgoingMessage(content="hi", reply_to="C1"),
+    )
+    store.fail_send(send_id, httpx.HTTPStatusError("nope", request=request, response=response))
+
+    with sqlite3.connect(store.path) as connection:
+        state, error_class, error_message = connection.execute(
+            "SELECT state, error_class, error_message FROM channel_outbox WHERE send_id = ?",
+            (send_id,),
+        ).fetchone()
+
+    assert state == "unknown"
+    assert error_class == "auth_invalid"
+    # The concrete type stays available for debugging rather than being lost.
+    assert "HTTPStatusError" in error_message
+    store.close()
+
+
+def test_fail_send_parks_an_unclassifiable_error_without_guessing(tmp_path) -> None:
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    send_id = store.begin_send("slack-main", OutgoingMessage(content="hi", reply_to="C1"))
+
+    store.fail_send(send_id, ValueError("something bespoke"))
+
+    with sqlite3.connect(store.path) as connection:
+        error_class = connection.execute(
+            "SELECT error_class FROM channel_outbox WHERE send_id = ?", (send_id,)
+        ).fetchone()[0]
+
+    assert error_class == UNCLASSIFIED_ERROR_CLASS
     store.close()

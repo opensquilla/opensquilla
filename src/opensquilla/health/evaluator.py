@@ -1524,9 +1524,10 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     fix_steps=[
                         FixStep(
                             label="Review pending pairings",
+                            command=f"opensquilla channels pairings list {name_arg}",
                             detail=(
-                                "Open the control console Channels page and approve "
-                                "or revoke the pending requests."
+                                "Approve or revoke each request from this list or "
+                                "the control console Channels page."
                             ),
                         ),
                         FixStep(

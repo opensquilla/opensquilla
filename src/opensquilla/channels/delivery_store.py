@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import structlog
+
 from opensquilla.channels.contract import (
     ChannelSendResult,
     channel_capability_profile,
@@ -24,12 +26,28 @@ from opensquilla.channels.contract import (
 from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.paths import state_dir
 
+log = structlog.get_logger(__name__)
+
 _ERROR_SECRET = re.compile(
     r"(?i)\b(authorization|access[_ -]?token|app[_ -]?secret|bot[_ -]?token|"
     r"client[_ -]?secret|password|signing[_ -]?secret)\b"
     r"(\s*[=:]\s*|\s+)([^\s,;]+)"
 )
 _TELEGRAM_URL_TOKEN = re.compile(r"(?i)(/bot)[^/\s]+")
+
+# Pending pairing requests an operator never acted on are pruned after this
+# long; approved and revoked rows never expire — approval is a durable access
+# grant, and revocation only stays enforced while its row survives.
+PENDING_PAIRING_TTL_S = 7 * 24 * 3600.0
+# New pending rows a channel will hold at once. Every denied DM from a new
+# sender is a durable row, so without a cap one flood makes the operator's
+# approval queue unreadable and the disk grow without bound.
+MAX_PENDING_PAIRINGS_PER_CHANNEL = 25
+# Repeat requests inside this window skip the durable write when nothing
+# would change — a sender re-sending in a tight loop otherwise costs one
+# synchronous commit per message before admission even runs.
+PAIRING_REFRESH_WINDOW_S = 30.0
+_PAIRING_PRUNE_EVERY = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,9 +131,20 @@ def inbound_event_key(channel_name: str, message: IncomingMessage) -> str | None
 class ChannelDeliveryStore:
     """SQLite-backed at-least-once ingress and explicit outbound receipts."""
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        db_path: str | Path | None = None,
+        *,
+        pending_pairing_ttl_s: float = PENDING_PAIRING_TTL_S,
+        max_pending_pairings_per_channel: int = MAX_PENDING_PAIRINGS_PER_CHANNEL,
+        pairing_refresh_window_s: float = PAIRING_REFRESH_WINDOW_S,
+    ) -> None:
         self.path = Path(db_path) if db_path is not None else state_dir("channel_delivery.sqlite")
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._pending_pairing_ttl_s = pending_pairing_ttl_s
+        self._max_pending_pairings_per_channel = max_pending_pairings_per_channel
+        self._pairing_refresh_window_s = pairing_refresh_window_s
+        self._pairing_writes = 0
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(
             os.fspath(self.path),
@@ -280,12 +309,19 @@ class ChannelDeliveryStore:
         sender_id: str,
         sender_name: str | None = None,
         reply_to: str | None = None,
-    ) -> ChannelPairing:
+    ) -> ChannelPairing | None:
         """Create or refresh a pending request without storing message content.
 
         ``reply_to`` is the address the request arrived on — kept so an
         approval can reach a sender who has no session yet. It is a route,
         never content.
+
+        Returns ``None`` only when the store refuses to create a NEW row
+        because the channel's pending queue is full. A sender with an existing
+        row — pending, approved, or revoked — always gets that row back, so a
+        full queue can never lock out an already-decided sender. Refusal is a
+        return value, never an exception: this runs on the admission path,
+        where an exception kills the channel's dispatch loop.
         """
         if not channel_name.strip() or not sender_id.strip():
             raise ValueError("channel_name and sender_id are required")
@@ -294,8 +330,41 @@ class ChannelDeliveryStore:
         safe_name = sender_name.strip()[:256] if isinstance(sender_name, str) else None
         safe_name = safe_name or None
         account = account_id.strip() or channel_name.strip()
+        clean_reply_to = (reply_to.strip() or None) if isinstance(reply_to, str) else None
         with self._lock:
+            self._pairing_writes += 1
+            if self._pairing_writes % _PAIRING_PRUNE_EVERY == 0:
+                self._prune_stale_pending_pairings(now)
             self._conn.execute("BEGIN IMMEDIATE")
+            existing = self._conn.execute(
+                "SELECT * FROM channel_pairings WHERE channel_name = ? "
+                "AND account_id = ? AND sender_id = ?",
+                (channel_name.strip(), account, sender_id.strip()),
+            ).fetchone()
+            if existing is not None:
+                # Flood guard: a repeat request that would change nothing
+                # skips the durable write entirely.
+                fresh = now - float(existing["last_seen_at"]) < self._pairing_refresh_window_s
+                same_route = clean_reply_to is None or clean_reply_to == existing["reply_to"]
+                same_name = safe_name is None or safe_name == existing["sender_name"]
+                if fresh and same_route and same_name:
+                    self._conn.rollback()
+                    return self._pairing_from_row(existing)
+            else:
+                pending = self._conn.execute(
+                    "SELECT COUNT(*) AS count FROM channel_pairings "
+                    "WHERE channel_name = ? AND status = 'pending'",
+                    (channel_name.strip(),),
+                ).fetchone()
+                if int(pending["count"]) >= self._max_pending_pairings_per_channel:
+                    self._conn.rollback()
+                    log.warning(
+                        "channel.pairing_queue_full",
+                        channel=channel_name.strip(),
+                        pending=int(pending["count"]),
+                        cap=self._max_pending_pairings_per_channel,
+                    )
+                    return None
             self._conn.execute(
                 "INSERT INTO channel_pairings "
                 "(pairing_id, channel_name, provider, account_id, sender_id, "
@@ -316,7 +385,7 @@ class ChannelDeliveryStore:
                     safe_name,
                     now,
                     now,
-                    (reply_to.strip() or None) if isinstance(reply_to, str) else None,
+                    clean_reply_to,
                 ),
             )
             row = self._conn.execute(
@@ -329,17 +398,52 @@ class ChannelDeliveryStore:
             raise RuntimeError("pairing request was not persisted")
         return self._pairing_from_row(row)
 
+    def _prune_stale_pending_pairings(self, now: float) -> None:
+        """Best-effort expiry of pending rows the operator never acted on.
+
+        Only ``pending`` rows expire. Approved rows are durable access grants,
+        and revoked rows must survive because revocation is enforced by the
+        row's status — deleting one would let the sender's next message
+        recreate a fresh pending request.
+        """
+        cutoff = now - self._pending_pairing_ttl_s
+        try:
+            cursor = self._conn.execute(
+                "DELETE FROM channel_pairings WHERE status = 'pending' AND last_seen_at < ?",
+                (cutoff,),
+            )
+            self._conn.commit()
+        except sqlite3.Error:
+            log.warning("channel.pairing_prune_failed", exc_info=True)
+            return
+        if cursor.rowcount:
+            log.info(
+                "channel.pairing_pruned",
+                rows=cursor.rowcount,
+                ttl_days=round(self._pending_pairing_ttl_s / 86400.0, 1),
+            )
+
     def list_pairings(
         self,
         *,
         channel_name: str | None = None,
         status: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[ChannelPairing]:
-        """List pairing records newest-first for operator review."""
+        """List pairing records newest-first for operator review.
+
+        ``limit``/``offset`` are opt-in: the default remains the full list, so
+        callers that summarize by status (badges, tab counts) stay complete.
+        """
         if status is not None and status not in {"pending", "approved", "revoked"}:
             raise ValueError("invalid pairing status")
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be positive")
+        if offset < 0:
+            raise ValueError("offset must not be negative")
         clauses: list[str] = []
-        values: list[str] = []
+        values: list[Any] = []
         if channel_name:
             clauses.append("channel_name = ?")
             values.append(channel_name)
@@ -347,10 +451,14 @@ class ChannelDeliveryStore:
             clauses.append("status = ?")
             values.append(status)
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        page = ""
+        if limit is not None:
+            page = " LIMIT ? OFFSET ?"
+            values.extend((limit, offset))
         with self._lock:
             rows = self._conn.execute(
                 f"SELECT * FROM channel_pairings{where} "  # noqa: S608
-                "ORDER BY last_seen_at DESC, pairing_id ASC",
+                f"ORDER BY last_seen_at DESC, pairing_id ASC{page}",
                 values,
             ).fetchall()
         return [self._pairing_from_row(row) for row in rows]

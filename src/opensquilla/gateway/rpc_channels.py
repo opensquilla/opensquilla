@@ -540,21 +540,50 @@ async def _handle_channels_pairings(
     params: dict | None,
     ctx: RpcContext,
 ) -> dict[str, Any]:
-    channel_name = str((params or {}).get("channelName") or "").strip()
+    data = params or {}
+    channel_name = str(data.get("channelName") or "").strip()
     if not channel_name:
         raise ValueError("channelName required")
-    records = _pairing_store(ctx).list_pairings(channel_name=channel_name)
+    status = str(data.get("status") or "").strip() or None
+    limit_raw = data.get("limit")
+    offset_raw = data.get("offset")
+    limit = int(limit_raw) if limit_raw is not None else None
+    offset = int(offset_raw) if offset_raw is not None else 0
+    records = _pairing_store(ctx).list_pairings(
+        channel_name=channel_name,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
     return {"pairings": [_pairing_payload(record) for record in records]}
 
 
-def _pairing_mutation_params(params: dict | None) -> tuple[str, str]:
+def _pairing_mutation_params(params: dict | None, ctx: RpcContext) -> tuple[str, str]:
+    """Resolve the target pairing from ``pairingId`` or the 8-char ``pairingCode``.
+
+    The code is what a sender's pairing notice shows and what the operator
+    list renders, so mutations accept it directly instead of making operators
+    hunt for the full id.
+    """
     channel_name = str((params or {}).get("channelName") or "").strip()
     pairing_id = str((params or {}).get("pairingId") or "").strip()
+    pairing_code = str((params or {}).get("pairingCode") or "").strip()
     if not channel_name:
         raise ValueError("channelName required")
-    if not pairing_id:
-        raise ValueError("pairingId required")
-    return channel_name, pairing_id
+    if pairing_id:
+        return channel_name, pairing_id
+    if not pairing_code:
+        raise ValueError("pairingId or pairingCode required")
+    matches = [
+        record
+        for record in _pairing_store(ctx).list_pairings(channel_name=channel_name)
+        if str(getattr(record, "pairing_id", "")).startswith(pairing_code)
+    ]
+    if not matches:
+        raise KeyError(f"no pairing matches code {pairing_code!r}")
+    if len(matches) > 1:
+        raise ValueError(f"pairing code {pairing_code!r} is ambiguous; use the full pairingId")
+    return channel_name, str(matches[0].pairing_id)
 
 
 def _channel_entry(ctx: RpcContext, channel_name: str) -> dict[str, Any] | None:
@@ -615,7 +644,7 @@ async def _handle_channels_pairing_approve(
     params: dict | None,
     ctx: RpcContext,
 ) -> dict[str, Any]:
-    channel_name, pairing_id = _pairing_mutation_params(params)
+    channel_name, pairing_id = _pairing_mutation_params(params, ctx)
     store = _pairing_store(ctx)
     # Re-approving an already-approved pairing must not re-notify the sender.
     was_approved = _pairing_status_of(store, channel_name, pairing_id) == "approved"
@@ -634,7 +663,7 @@ async def _handle_channels_pairing_revoke(
     params: dict | None,
     ctx: RpcContext,
 ) -> dict[str, Any]:
-    channel_name, pairing_id = _pairing_mutation_params(params)
+    channel_name, pairing_id = _pairing_mutation_params(params, ctx)
     record = _pairing_store(ctx).set_pairing_status(
         channel_name=channel_name,
         pairing_id=pairing_id,

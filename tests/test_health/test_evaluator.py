@@ -1328,6 +1328,8 @@ def test_channels_evaluator_surfaces_pending_pairings_without_degrading_ready() 
         "pendingPairings": 2,
     }
     commands = [step.command for step in finding.fix_steps if step.command]
+    # The first step is the actionable one: the list every decision starts from.
+    assert commands[0] == "opensquilla channels pairings list telegram-main"
     assert "opensquilla channels status telegram-main --json" in commands
 
 

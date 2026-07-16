@@ -46,31 +46,45 @@ _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
 _TOOL_RESULT_PROJECTION_FAILED = "tool_result_projection_failed"
 
 
-_NON_SUCCESS_RESULT_STATUSES: frozenset[str] = frozenset(
+# Explicit success receipts emitted by built-in tools. Status-free results are
+# also eligible, while any unrecognized explicit status fails closed.
+_SUCCESS_RESULT_STATUSES: frozenset[str] = frozenset(
     {
-        "approval_denied",
-        "approval_pending",
-        "approval_required",
-        "blocked",
-        "cancelled",
-        "canceled",
-        "control",
-        "denied",
-        "error",
-        "failed",
-        "failure",
-        "pending",
-        "rejected",
-        "running",
-        "timed_out",
-        "timeout",
+        "already_published",
+        "applied",
+        "available",
+        "completed",
+        "created",
+        "deleted",
+        "delivered",
+        "done",
+        "dry_run",
+        "edited",
+        "eof",
+        "granted",
+        "installed",
+        "ok",
+        "preview",
+        "published",
+        "queued",
+        "reacted",
+        "removed",
+        "restored",
+        "scheduled",
+        "sent",
+        "submitted",
+        "success",
+        "uploaded",
+        "written",
+        "yielded",
     }
 )
 
 
 _DISPATCH_TRUNCATION_RETRIEVE_HINT = (
     "This tool result was truncated before entering model context. "
-    "Use retrieve_tool_result with tool_result_handle to inspect the original raw output."
+    "Use retrieve_tool_result with tool_result_handle to inspect the full "
+    "pre-budget model-facing output."
 )
 
 
@@ -176,7 +190,7 @@ def _has_live_approval_surface(ctx: ToolContext | None) -> bool:
     return ctx is None or ctx.interaction_mode is InteractionMode.INTERACTIVE
 
 
-def _result_status(content: Any) -> str | None:
+def _result_payload(content: Any) -> dict[str, Any] | None:
     payload: Any = content
     if isinstance(content, str):
         try:
@@ -185,7 +199,16 @@ def _result_status(content: Any) -> str | None:
             return None
     if not isinstance(payload, dict):
         return None
+    return payload
+
+
+def _result_status(content: Any) -> str | int | None:
+    payload = _result_payload(content)
+    if payload is None:
+        return None
     status = payload.get("status")
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
     if not isinstance(status, str):
         return None
     normalized = status.strip().lower()
@@ -200,9 +223,21 @@ def _is_successful_projection_result(
 ) -> bool:
     if denial or _extract_pending_approval(result) is not None:
         return False
-    if execution_status is not None and execution_status.get("status") != "success":
+    if execution_status is not None:
+        return execution_status.get("status") == "success"
+
+    payload = _result_payload(result)
+    if payload is None or "status" not in payload:
+        return True
+
+    status = _result_status(payload)
+    if isinstance(status, int):
+        return 200 <= status < 400
+    if status == "router_control":
+        return payload.get("accepted") is True
+    if status is None:
         return False
-    return _result_status(result) not in _NON_SUCCESS_RESULT_STATUSES
+    return status in _SUCCESS_RESULT_STATUSES
 
 
 def _projection_failure_result(

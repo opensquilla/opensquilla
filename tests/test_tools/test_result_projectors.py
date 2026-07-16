@@ -207,6 +207,69 @@ async def test_non_success_results_bypass_projectors(tool_name: str, raw: str) -
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool_name", "status", "details"),
+    [
+        (
+            "read_file",
+            "path_access_required",
+            {"path": "/outside/workspace", "access": "read"},
+        ),
+        (
+            "text_to_speech",
+            "not_available",
+            {"provider": "elevenlabs", "missing_capability": "text_to_speech"},
+        ),
+        (
+            "voice_clone",
+            "consent_required",
+            {"provider": "elevenlabs", "note": "consent metadata is required"},
+        ),
+        (
+            "execute_code",
+            "unsupported_tool_use",
+            {"recommended_tool": "exec_command"},
+        ),
+        (
+            "router_control",
+            "router_control",
+            {"accepted": False, "action": "reject", "replay_required": False},
+        ),
+    ],
+)
+async def test_established_non_success_envelopes_bypass_both_projectors(
+    tool_name: str,
+    status: str,
+    details: dict[str, Any],
+) -> None:
+    calls: list[str] = []
+    raw = json.dumps({"status": status, **details})
+
+    async def non_success() -> str:
+        return raw
+
+    handler = _handler_for(
+        _projection_spec(
+            tool_name,
+            model_projector=lambda content: calls.append(f"model:{content}") or "unsafe",
+            sources_projector=lambda content: calls.append(f"sources:{content}")
+            or [{"unsafe": True}],
+        ),
+        non_success,
+    )
+
+    result = await handler(
+        ToolCall(tool_use_id=f"tc-{status}", tool_name=tool_name, arguments={})
+    )
+
+    assert result.content == raw
+    assert result.is_error is False
+    assert result.execution_status is None
+    assert result.sources == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_handler_exception_bypasses_projectors() -> None:
     calls: list[str] = []
 
@@ -392,6 +455,11 @@ async def test_truncated_snapshot_contains_full_projected_model_string_not_raw_r
     assert stored.content == projected
     assert "RAW-REMOVED" not in stored.content
     assert result.sources == [{"kind": "probe"}]
+    assert payload["retrieve_hint"] == (
+        "This tool result was truncated before entering model context. "
+        "Use retrieve_tool_result with tool_result_handle to inspect the full "
+        "pre-budget model-facing output."
+    )
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,16 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+function parseJsonRecord(value: string | undefined): Record<string, unknown> | null {
+  const raw = String(value || '').trim()
+  if (!raw.startsWith('{')) return null
+  try {
+    return asRecord(JSON.parse(raw))
+  } catch {
+    return null
+  }
+}
+
 function domainFor(url: string): string {
   try {
     const parsed = new URL(url)
@@ -74,19 +84,19 @@ function addWebSource(
   url: unknown,
   title: unknown,
   meta: SourceMeta = {},
-) {
-  if (typeof url !== 'string') return
+): boolean {
+  if (typeof url !== 'string') return false
   const trimmed = url.trim()
-  if (trimmed.endsWith('…')) return
+  if (trimmed.endsWith('…')) return false
   const domain = domainFor(trimmed)
-  if (!domain) return
+  if (!domain) return false
   const key = trimmed.replace(/#.*$/, '')
   const cleanTitle = typeof title === 'string' ? title.trim() : ''
   const existing = seen.get(key)
   if (existing) {
     if (!existing.title && cleanTitle) existing.title = cleanTitle
     mergeWebMeta(existing, meta)
-    return
+    return true
   }
   const source: WebSourceDraft = {
     kind: 'web',
@@ -97,25 +107,52 @@ function addWebSource(
   }
   seen.set(key, source)
   out.push(source)
+  return true
 }
 
 function extractWebSources(
   raw: unknown,
   out: SourceDraft[],
   seen: Map<string, WebSourceDraft>,
-) {
-  if (!Array.isArray(raw)) return
+): number {
+  if (!Array.isArray(raw)) return 0
+  let extracted = 0
   for (const item of raw) {
     const entry = asRecord(item)
     if (!entry || entry.kind === 'knowledge') continue
     if (entry.kind !== undefined && entry.kind !== 'web') continue
-    addWebSource(
+    if (addWebSource(
       out,
       seen,
       entry.url || entry.final_url || entry.canonical_url,
       entry.title,
       sourceMeta(entry),
-    )
+    )) extracted += 1
+  }
+  return extracted
+}
+
+const WEB_SOURCE_FIELD_RE = /"(title|url|final_url)"\s*:\s*"((?:[^"\\]|\\.)*)"/g
+
+function scanWebSourceFields(
+  raw: string,
+  out: SourceDraft[],
+  seen: Map<string, WebSourceDraft>,
+) {
+  let pendingTitle = ''
+  for (const match of raw.matchAll(WEB_SOURCE_FIELD_RE)) {
+    let value = ''
+    try {
+      value = JSON.parse(`"${match[2]}"`)
+    } catch {
+      continue
+    }
+    if (match[1] === 'title') {
+      pendingTitle = value
+    } else {
+      addWebSource(out, seen, value, pendingTitle)
+      pendingTitle = ''
+    }
   }
 }
 
@@ -299,7 +336,26 @@ export function toSourcesFromToolCalls(
       continue
     }
     if (operation === 'web.search' || operation === 'web.read') {
-      extractWebSources(call.sources, out, seenWeb)
+      if (extractWebSources(call.sources, out, seenWeb) > 0) continue
+      const result = parseJsonRecord(call.result)
+      if (operation === 'web.search') {
+        if (result && extractWebSources(result.sources, out, seenWeb) > 0) continue
+        if (result && extractWebSources(result.results, out, seenWeb) > 0) continue
+        if (call.result) scanWebSourceFields(call.result, out, seenWeb)
+        continue
+      }
+      if (result) {
+        addWebSource(
+          out,
+          seenWeb,
+          result.final_url || result.url,
+          result.title,
+          sourceMeta(result),
+        )
+      } else {
+        const input = parseJsonRecord(call.inputRaw)
+        addWebSource(out, seenWeb, input?.url, '')
+      }
     }
   }
 
@@ -310,9 +366,9 @@ export function toSourcesFromToolCalls(
 }
 
 /**
- * Pure per-turn source fold. Sources come exclusively from the structured
- * event/segment `sources` sidecar; model-visible result JSON is never parsed
- * to recover citations or full Knowledge chunks.
+ * Pure per-turn source fold. Knowledge sources come exclusively from the
+ * structured event/segment `sources` sidecar. Web tools prefer that sidecar
+ * and retain their legacy result/input fallback for live and historical calls.
  */
 export function toSources(msg: ChatRenderedMessage): SourcePart[] {
   return toSourcesFromToolCalls(msg.toolCalls)

@@ -61,6 +61,7 @@ const READY_STATUS: RagProviderStatus = {
   lastErrorCode: null,
   consecutiveFailures: 0,
   retrievalProfileOverride: null,
+  effectiveRetrievalProfile: 'hybrid',
   collectionScope: ['datasets', 'manuals'],
   legacyConfigPresent: false,
   legacyAdapterEnabled: false,
@@ -167,7 +168,7 @@ beforeEach(() => {
         snippetTruncated: 'Snippet truncated',
         completeChunk: 'Complete chunk',
         chunkCharacters: '{count} characters',
-        providerExecutedProfile: 'Provider executed profile: {profile}',
+        providerExecutedProfile: 'Provider executed profile',
         fileName: 'File name',
         sourcePath: 'Source path',
         empty: 'Search the knowledge base to see citable evidence.',
@@ -325,7 +326,12 @@ describe('KnowledgeSearchWorkspace', () => {
     expect(result.textContent).toContain('datasets')
     expect(result.textContent).toContain('#1')
     expect(result.textContent).toContain('section 2')
-    expect(root.textContent).toContain('Provider executed profile: provider-actual')
+    const executedProfile = root.querySelector<HTMLElement>(
+      '[data-testid="rag-executed-profile"]',
+    )
+    expect(executedProfile?.textContent).toContain('Provider executed profile')
+    expect(executedProfile?.querySelector('code')?.textContent).toBe('provider-actual')
+    expect(executedProfile?.classList.contains('control-pill--warn')).toBe(true)
     expect(root.querySelector('a[href="javascript:alert(1)"]')).toBeNull()
 
     const complete = result.querySelector<HTMLDetailsElement>('[data-testid="rag-complete-chunk"]')!

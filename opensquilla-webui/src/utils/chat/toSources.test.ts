@@ -200,15 +200,123 @@ describe('toSources', () => {
     expectNoChunkOrContent(sources)
   })
 
-  it('does not reconstruct Web or Knowledge sources from model result JSON', () => {
+  it('restores live WebSearch sources from the legacy result shape', () => {
     const sources = toSources(message([
       baseCall({
         name: 'web_search',
         sources: [],
         result: JSON.stringify({
-          sources: [{ url: 'https://result.example/hidden', title: 'Hidden Web result' }],
+          results: [{
+            url: 'https://result.example/live',
+            title: 'Live Web result',
+            canonical_url: 'https://result.example/live',
+            provider: 'duckduckgo',
+            fetched: true,
+            fetch_status: 'ok',
+          }],
         }),
       }),
+    ]))
+
+    expect(sources).toEqual([{
+      kind: 'web',
+      sourceId: 1,
+      url: 'https://result.example/live',
+      title: 'Live Web result',
+      domain: 'result.example',
+      canonicalUrl: 'https://result.example/live',
+      provider: 'duckduckgo',
+      fetched: true,
+      fetchStatus: 'ok',
+    }])
+  })
+
+  it('prefers persisted WebSearch sidecars without adding fallback duplicates', () => {
+    const sources = toSources(message([
+      baseCall({
+        name: 'web_search',
+        sources: [{
+          kind: 'web',
+          url: 'https://sidecar.example/persisted',
+          title: 'Persisted sidecar',
+        }],
+        result: JSON.stringify({
+          results: [
+            {
+              url: 'https://sidecar.example/persisted',
+              title: 'Fallback duplicate',
+            },
+            {
+              url: 'https://fallback.example/must-not-render',
+              title: 'Fallback-only result',
+            },
+          ],
+        }),
+      }),
+    ]))
+
+    expect(sources).toEqual([{
+      kind: 'web',
+      sourceId: 1,
+      url: 'https://sidecar.example/persisted',
+      title: 'Persisted sidecar',
+      domain: 'sidecar.example',
+      canonicalUrl: undefined,
+      provider: undefined,
+      fetched: undefined,
+      fetchStatus: undefined,
+    }])
+  })
+
+  it('restores WebFetch sources from the legacy result and input shapes', () => {
+    const sources = toSources(message([
+      baseCall({
+        toolId: 'fetch-result',
+        name: 'web_fetch',
+        sources: [],
+        result: JSON.stringify({
+          url: 'https://requested.example/article',
+          final_url: 'https://final.example/article',
+          title: 'Fetched article',
+        }),
+      }),
+      baseCall({
+        toolId: 'fetch-input',
+        name: 'web_fetch',
+        sources: [],
+        result: '',
+        inputRaw: JSON.stringify({ url: 'https://input.example/article' }),
+      }),
+    ]))
+
+    expect(sources).toEqual([
+      {
+        kind: 'web',
+        sourceId: 1,
+        url: 'https://final.example/article',
+        title: 'Fetched article',
+        domain: 'final.example',
+        canonicalUrl: undefined,
+        provider: undefined,
+        fetched: undefined,
+        fetchStatus: undefined,
+      },
+      {
+        kind: 'web',
+        sourceId: 2,
+        url: 'https://input.example/article',
+        title: '',
+        domain: 'input.example',
+        canonicalUrl: undefined,
+        provider: undefined,
+        fetched: undefined,
+        fetchStatus: undefined,
+      },
+    ])
+  })
+
+  it('never reconstructs Knowledge sources from model result JSON', () => {
+    const sources = toSources(message([
       baseCall({
         name: 'knowledge_search',
         sources: [],
@@ -375,6 +483,8 @@ describe('toSources', () => {
       }),
     ]))
 
+    expect(source?.kind).toBe('knowledge')
+    if (!source || source.kind !== 'knowledge') throw new Error('expected Knowledge source')
     expect(Array.from(source.snippet || '')).toHaveLength(400)
     expect(source.snippetTruncated).toBe(true)
   })

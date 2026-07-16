@@ -64,6 +64,7 @@ const READY_STATUS: RagProviderStatus = {
   lastErrorCode: null,
   consecutiveFailures: 0,
   retrievalProfileOverride: null,
+  effectiveRetrievalProfile: 'hybrid',
   collectionScope: ['datasets'],
   legacyConfigPresent: false,
   legacyAdapterEnabled: false,
@@ -328,6 +329,30 @@ describe('RAG Provider response normalization', () => {
     })).toBeNull()
   })
 
+  it('normalizes the negotiated effective profile and rejects unsupported protocol versions', () => {
+    expect(normalizeRagProviderStatus(READY_STATUS)?.effectiveRetrievalProfile).toBe('hybrid')
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      effectiveRetrievalProfile: 'provider/opaque:v2',
+    })?.effectiveRetrievalProfile).toBe('provider/opaque:v2')
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      protocolVersion: '1.2',
+    })).toBeNull()
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      protocolVersion: '1.0-preview',
+    })).toBeNull()
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      effectiveRetrievalProfile: false,
+    })).toBeNull()
+    expect(normalizeRagProviderStatus({
+      ...READY_STATUS,
+      effectiveRetrievalProfile: undefined,
+    })).toBeNull()
+  })
+
   it('requires returnedCount to match the actual search array', () => {
     expect(normalizeRagSearchResponse(SEARCH_RESPONSE)?.results).toHaveLength(1)
     expect(normalizeRagSearchResponse({ ...SEARCH_RESPONSE, returnedCount: 20 })).toBeNull()
@@ -408,19 +433,24 @@ describe('RAG Provider response normalization', () => {
   it('safely drops unsafe paths, URLs, URIs, and malformed optional document metadata', () => {
     const payload = structuredClone(V11_SEARCH_RESPONSE)
     Object.assign(payload.results[0].document, {
-      source: 7,
+      source: 'file:private-source',
+      fileName: '../private.md',
       mediaType: false,
-      sourcePath: '/etc/passwd',
+      sourcePath: 'file:relative-secret',
       uri: 'javascript:alert(1)',
       openUrl: 'javascript:alert(1)',
     })
+    payload.results[0].citation.source = '/etc/passwd'
     const document = normalizeRagSearchResponse(payload)?.results[0].document
-    expect(document).toMatchObject({ id: 'doc_a', title: 'NAND architecture', fileName: 'nand.md' })
+    const citation = normalizeRagSearchResponse(payload)?.results[0].citation
+    expect(document).toMatchObject({ id: 'doc_a', title: 'NAND architecture' })
     expect(document).not.toHaveProperty('source')
+    expect(document).not.toHaveProperty('fileName')
     expect(document).not.toHaveProperty('mediaType')
     expect(document).not.toHaveProperty('sourcePath')
     expect(document).not.toHaveProperty('uri')
     expect(document).not.toHaveProperty('openUrl')
+    expect(citation).not.toHaveProperty('source')
   })
 
   it.each(PROTOCOL_CONTROL_CHARACTERS)(
@@ -535,11 +565,17 @@ describe('RAG Provider response normalization', () => {
     expect(document).not.toHaveProperty('openUrl')
   })
 
-  it('derives the effective profile from override before provider default', () => {
+  it('prefers the server-negotiated effective profile before saved fallbacks', () => {
     expect(effectiveRetrievalProfile(READY_STATUS)).toBe('hybrid')
     expect(effectiveRetrievalProfile({
       ...READY_STATUS,
+      retrievalProfileOverride: 'retired-profile',
+      effectiveRetrievalProfile: 'provider/opaque:v2',
+    })).toBe('provider/opaque:v2')
+    expect(effectiveRetrievalProfile({
+      ...READY_STATUS,
       retrievalProfileOverride: 'vector',
+      effectiveRetrievalProfile: null,
     })).toBe('vector')
   })
 
@@ -547,6 +583,7 @@ describe('RAG Provider response normalization', () => {
     expect(effectiveRetrievalProfile({
       ...READY_STATUS,
       retrievalProfileOverride: '',
+      effectiveRetrievalProfile: null,
     })).toBe('')
   })
 
@@ -596,13 +633,17 @@ describe('KnowledgeView workbench', () => {
       if (method === 'knowledge.status') return structuredClone(currentStatus)
       if (method === 'knowledge.profile.set') {
         const value = params?.retrievalProfileOverride as string | null
-        currentStatus = { ...currentStatus, retrievalProfileOverride: value }
+        const effective = value ?? currentStatus.searchOptions?.defaultRetrievalProfile ?? null
+        currentStatus = {
+          ...currentStatus,
+          retrievalProfileOverride: value,
+          effectiveRetrievalProfile: effective,
+        }
         return {
           retrievalProfileOverride: value,
           providerDefaultRetrievalProfile:
             currentStatus.searchOptions?.defaultRetrievalProfile ?? null,
-          effectiveRetrievalProfile:
-            value ?? currentStatus.searchOptions?.defaultRetrievalProfile ?? null,
+          effectiveRetrievalProfile: effective,
           restartRequired: false,
         }
       }
@@ -876,6 +917,7 @@ describe('KnowledgeView workbench', () => {
         ],
         defaultRetrievalProfile: 'selected-profile',
       },
+      effectiveRetrievalProfile: 'selected-profile',
     }
     rpcMock.call.mockImplementation(async (method: string) => {
       if (method === 'knowledge.status') return structuredClone(currentStatus)
@@ -888,7 +930,7 @@ describe('KnowledgeView workbench', () => {
         results: {
           completeChunk: 'Complete chunk',
           chunkCharacters: '{count} characters',
-          providerExecutedProfile: 'Provider executed profile: {profile}',
+          providerExecutedProfile: 'Provider executed profile',
           fileName: 'File name',
           sourcePath: 'Source path',
         },
@@ -902,7 +944,12 @@ describe('KnowledgeView workbench', () => {
 
     expect(root.querySelector('.rag-result-card__title')?.textContent).toContain('nand.md')
     expect(root.textContent).toContain('NAND architecture')
-    expect(root.textContent).toContain('Provider executed profile: provider-profile')
+    const executedProfile = root.querySelector<HTMLElement>(
+      '[data-testid="rag-executed-profile"]',
+    )
+    expect(executedProfile?.textContent).toContain('Provider executed profile')
+    expect(executedProfile?.querySelector('code')?.textContent).toBe('provider-profile')
+    expect(executedProfile?.classList.contains('control-pill--warn')).toBe(true)
     expect(root.textContent).toContain('Complete chunk')
     expect(root.textContent).toContain('34 characters')
 
@@ -914,6 +961,50 @@ describe('KnowledgeView workbench', () => {
     expect(root.textContent).toContain('29 characters')
     expect(root.textContent).toContain('previous-page')
     expect(root.textContent).toContain('next-page')
+  })
+
+  it('uses the negotiated effective profile before a retired saved override', async () => {
+    currentStatus = {
+      ...structuredClone(READY_STATUS),
+      protocolVersion: '1.1',
+      effectiveLimits: {
+        ...structuredClone(READY_STATUS.effectiveLimits!),
+        maxChunkChars: 4096,
+      },
+      searchOptions: {
+        supportsCollectionScope: true,
+        retrievalProfiles: [
+          { id: 'selected-profile', label: 'Selected profile' },
+          { id: 'provider-profile', label: 'Provider profile' },
+        ],
+        defaultRetrievalProfile: 'selected-profile',
+      },
+      retrievalProfileOverride: 'retired-profile',
+      effectiveRetrievalProfile: 'provider-profile',
+    }
+    rpcMock.call.mockImplementation(async (method: string) => {
+      if (method === 'knowledge.status') return structuredClone(currentStatus)
+      if (method === 'knowledge.search') return structuredClone(V11_SEARCH_RESPONSE)
+      throw new Error(`unexpected method ${method}`)
+    })
+    i18n.global.mergeLocaleMessage('en', {
+      rag: {
+        results: {
+          providerExecutedProfile: 'Provider executed profile',
+        },
+      },
+    })
+
+    mountView()
+    await settle()
+    await submitQuery(root, 'NAND capacity')
+    await settle()
+
+    const executedProfile = root.querySelector<HTMLElement>(
+      '[data-testid="rag-executed-profile"]',
+    )
+    expect(executedProfile?.querySelector('code')?.textContent).toBe('provider-profile')
+    expect(executedProfile?.classList.contains('control-pill--warn')).toBe(false)
   })
 
   it('does not read selections or cursor pages when Get capability is unavailable', async () => {

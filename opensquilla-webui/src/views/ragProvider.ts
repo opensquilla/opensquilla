@@ -92,6 +92,7 @@ export interface RagProviderStatus {
   lastErrorCode: string | null
   consecutiveFailures: number
   retrievalProfileOverride: string | null
+  effectiveRetrievalProfile: string | null
   collectionScope: string[]
   legacyConfigPresent: boolean
   legacyAdapterEnabled: boolean
@@ -159,7 +160,14 @@ function characterCount(value: string): number {
 function safeSourcePath(value: string): boolean {
   if (!value || value.startsWith('/') || value.startsWith('\\')) return false
   if (value.includes('\\') || /^[A-Za-z]:/.test(value)) return false
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)) return false
   return value.split('/').every(part => part !== '' && part !== '.' && part !== '..')
+}
+
+function safeDisplayMetadata(value: string): boolean {
+  if (value === '.' || value === '..') return false
+  if (value.includes('/') || value.includes('\\')) return false
+  return !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)
 }
 
 function parsedUrl(value: string): URL | null {
@@ -194,11 +202,23 @@ function optionalText(raw: Record<string, unknown>, key: string): string | undef
   return nonEmptyString(value) ? value : undefined
 }
 
+function optionalDisplayMetadata(
+  raw: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = optionalText(raw, key)
+  return value !== undefined && safeDisplayMetadata(value) ? value : undefined
+}
+
 function normalizedDocument(value: unknown): RagDocument | null {
   const raw = record(value)
   if (!raw || !nonEmptyString(raw.id) || !nonEmptyString(raw.title)) return null
   const result: RagDocument = { id: raw.id, title: raw.title }
-  for (const key of ['source', 'fileName', 'mediaType', 'revision'] as const) {
+  for (const key of ['source', 'fileName'] as const) {
+    const item = optionalDisplayMetadata(raw, key)
+    if (item !== undefined) result[key] = item
+  }
+  for (const key of ['mediaType', 'revision'] as const) {
     const item = optionalText(raw, key)
     if (item !== undefined) result[key] = item
   }
@@ -239,7 +259,7 @@ function citation(value: unknown, options: CitationOptions = {}): RagCitation | 
   if (options.requireUri && uri === undefined) return null
 
   const result: RagCitation = { title: raw.title }
-  const source = optionalText(raw, 'source')
+  const source = optionalDisplayMetadata(raw, 'source')
   if (source !== undefined) result.source = source
   if (locator !== undefined) result.locator = locator
   if (uri !== undefined) result.uri = uri
@@ -255,8 +275,17 @@ export function normalizeRagProviderStatus(value: unknown): RagProviderStatus | 
   const raw = record(value)
   if (!raw || !STATES.has(raw.connectionState as RagProviderState)) return null
   if (typeof raw.enabled !== 'boolean') return null
-  if (!nullableString(raw.protocolVersion) || !nullableString(raw.lastErrorCode)) return null
-  if (!nullableString(raw.retrievalProfileOverride) || !nullableString(raw.warning)) return null
+  if (
+    raw.protocolVersion !== null
+    && raw.protocolVersion !== '1.0'
+    && raw.protocolVersion !== '1.1'
+  ) return null
+  if (!nullableString(raw.lastErrorCode)) return null
+  if (
+    !nullableString(raw.retrievalProfileOverride)
+    || !nullableString(raw.effectiveRetrievalProfile)
+    || !nullableString(raw.warning)
+  ) return null
   if (!nonNegativeInteger(raw.consecutiveFailures)) return null
   if (!(raw.lastSuccessAt === null || (typeof raw.lastSuccessAt === 'number' && Number.isFinite(raw.lastSuccessAt)))) return null
   if (!Array.isArray(raw.collectionScope) || !raw.collectionScope.every(item => typeof item === 'string')) return null
@@ -350,6 +379,7 @@ export function normalizeRagProviderStatus(value: unknown): RagProviderStatus | 
     lastErrorCode: raw.lastErrorCode,
     consecutiveFailures: raw.consecutiveFailures,
     retrievalProfileOverride: raw.retrievalProfileOverride,
+    effectiveRetrievalProfile: raw.effectiveRetrievalProfile,
     collectionScope: raw.collectionScope.slice() as string[],
     legacyConfigPresent: raw.legacyConfigPresent,
     legacyAdapterEnabled: raw.legacyAdapterEnabled,
@@ -373,7 +403,8 @@ export function normalizeRagProfileSetResponse(value: unknown): RagProfileSetRes
 }
 
 export function effectiveRetrievalProfile(status: RagProviderStatus | null): string | null {
-  return status?.retrievalProfileOverride
+  return status?.effectiveRetrievalProfile
+    ?? status?.retrievalProfileOverride
     ?? status?.searchOptions?.defaultRetrievalProfile
     ?? null
 }

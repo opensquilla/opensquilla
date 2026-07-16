@@ -67,12 +67,12 @@
           </span>
           <span
             v-if="props.searchResponse.retrievalProfile !== null"
+            data-testid="rag-executed-profile"
             class="control-pill"
             :class="{ 'control-pill--warn': profileDiffers }"
           >
-            {{ t('rag.results.providerExecutedProfile', {
-              profile: props.searchResponse.retrievalProfile,
-            }) }}
+            <span>{{ t('rag.results.providerExecutedProfile') }}</span>
+            <code>{{ props.searchResponse.retrievalProfile }}</code>
           </span>
         </p>
         <div v-if="!props.searchResponse" class="state">

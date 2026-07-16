@@ -110,6 +110,7 @@ class ToolResultEvent:
     is_error: bool = False
     arguments: dict[str, Any] | None = None
     execution_status: ExecutionStatus | None = None
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

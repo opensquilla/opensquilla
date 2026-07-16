@@ -11,6 +11,10 @@ from typing import Any
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 
 
+ModelResultProjector = Callable[[str], str]
+ResultSourcesProjector = Callable[[str], list[dict[str, Any]]]
+
+
 class CallerKind(StrEnum):
     """Entry-point caller type — used in ToolContext for filtering decisions."""
 
@@ -181,6 +185,8 @@ class ToolSpec:
     sandbox: SandboxToolDescriptor = field(
         default_factory=lambda: SandboxToolDescriptor.custom(kind="")
     )
+    model_result_projector: ModelResultProjector | None = None
+    result_sources_projector: ResultSourcesProjector | None = None
 
 
 # Registered tool implementation: async fn that accepts keyword args and returns str.

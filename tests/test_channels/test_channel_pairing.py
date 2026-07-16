@@ -458,3 +458,102 @@ def test_pairing_request_captures_and_refreshes_the_reply_address(tmp_path):
         assert kept.reply_to == "dm-2"
     finally:
         store.close()
+
+
+def test_full_pairing_queue_denies_without_code_or_notice(tmp_path: Path) -> None:
+    # A refused pairing (queue full) must deny exactly like an unapproved one
+    # — same reason code, but no pairing code to approve and no outbound
+    # notice — and must never raise into the dispatch loop.
+    store = ChannelDeliveryStore(
+        tmp_path / "delivery.sqlite", max_pending_pairings_per_channel=1
+    )
+    channel = _Channel()
+    channel._delivery_store = store
+    channel._delivery_channel_name = "telegram-main"
+    first = decide_channel_admission(channel, _message(), "agent:main:telegram:dm:user-42")
+    assert first.reason == "pairing_required" and first.pairing_id
+
+    overflow = IncomingMessage(
+        sender_id="user-99",
+        channel_id="dm-99",
+        content="hello",
+        metadata={"is_group": False, "conversation_kind": "dm"},
+        provenance=IngressProvenance(
+            provider="telegram",
+            account_id="bot-account",
+            transport="polling",
+            verification=IngressVerification.OAUTH_TOKEN,
+            event_id="event-99",
+            principal=AuthenticatedPrincipal(subject_id="user-99", display_name="Bob"),
+        ),
+    )
+    decision = decide_channel_admission(channel, overflow, "agent:main:telegram:dm:user-99")
+
+    assert decision.admit is False
+    assert decision.reason == "pairing_required"
+    assert decision.pairing_id is None
+    assert decision.pairing_notice is False
+    # The refused sender left no durable row behind.
+    senders = {p.sender_id for p in store.list_pairings(channel_name="telegram-main")}
+    assert senders == {"user-42"}
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_pairing_rpc_accepts_status_filter_pagination_and_code(tmp_path: Path) -> None:
+    store = ChannelDeliveryStore(tmp_path / "delivery.sqlite")
+    records = [
+        store.request_pairing(
+            channel_name="telegram-main",
+            provider="telegram",
+            account_id="bot-account",
+            sender_id=f"user-{i}",
+        )
+        for i in range(3)
+    ]
+    assert all(records)
+
+    class Manager:
+        _delivery_store = store
+
+    admin = RpcContext(
+        conn_id="admin",
+        principal=Principal(
+            role="operator",
+            scopes=frozenset({"operator.admin"}),
+            is_owner=True,
+            authenticated=True,
+        ),
+        channel_manager=Manager(),
+    )
+
+    page = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairings",
+        {"channelName": "telegram-main", "status": "pending", "limit": 2, "offset": 1},
+        admin,
+    )
+    assert page.error is None
+    assert len(page.payload["pairings"]) == 2
+
+    # Approving by the 8-char code the sender's notice shows.
+    target = records[0]
+    assert target is not None
+    approved = await get_dispatcher().dispatch(
+        "r2",
+        "channels.pairing.approve",
+        {"channelName": "telegram-main", "pairingCode": target.pairing_id[:8]},
+        admin,
+    )
+    assert approved.error is None
+    assert approved.payload["pairing"]["pairingId"] == target.pairing_id
+    assert approved.payload["pairing"]["status"] == "approved"
+
+    unknown = await get_dispatcher().dispatch(
+        "r3",
+        "channels.pairing.revoke",
+        {"channelName": "telegram-main", "pairingCode": "ffffffff"},
+        admin,
+    )
+    assert unknown.error is not None
+    store.close()

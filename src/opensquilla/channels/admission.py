@@ -192,15 +192,21 @@ def decide_channel_admission(
                     # session yet. No inbound content is retained.
                     reply_to=msg.channel_id,
                 )
-                status = str(getattr(record, "status", "pending"))
-                pairing_id = str(getattr(record, "pairing_id", "") or "") or None
-                pairing_notice = int(getattr(record, "request_count", 0) or 0) == 1
-                if status == "pending":
+                if record is None:
+                    # The store refused a new pending row (queue full). Deny
+                    # exactly like an unapproved pairing, but without a
+                    # pairing code or notice — there is no row to approve.
                     pairing_status = "pending"
-                elif status == "approved":
-                    pairing_status = "approved"
-                elif status == "revoked":
-                    pairing_status = "revoked"
+                else:
+                    status = str(getattr(record, "status", "pending"))
+                    pairing_id = str(getattr(record, "pairing_id", "") or "") or None
+                    pairing_notice = int(getattr(record, "request_count", 0) or 0) == 1
+                    if status == "pending":
+                        pairing_status = "pending"
+                    elif status == "approved":
+                        pairing_status = "approved"
+                    elif status == "revoked":
+                        pairing_status = "revoked"
 
     access = evaluate_policy(
         policy,

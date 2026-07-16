@@ -571,3 +571,115 @@ def channels_certify(
 
     if not evidence_passed(evidence):
         raise typer.Exit(code=1)
+
+
+pairings_app = typer.Typer(help="Review and decide channel pairing requests.")
+channels_app.add_typer(pairings_app, name="pairings")
+
+
+def _render_pairings_table(records: list[dict[str, Any]], *, channel: str) -> None:
+    table = Table(title=f"Pairing requests: {channel}", header_style=ACCENT_HEADER)
+    table.add_column("Code")
+    table.add_column("Sender")
+    table.add_column("Status")
+    table.add_column("Requested")
+    table.add_column("Approved")
+    for record in records:
+        sender = str(record.get("senderName") or record.get("senderId") or "")
+        table.add_row(
+            str(record.get("pairingCode") or ""),
+            sender,
+            str(record.get("status") or ""),
+            str(record.get("createdAt") or ""),
+            str(record.get("approvedAt") or ""),
+        )
+    Console(width=140, force_terminal=False).print(table)
+    if not records:
+        typer.echo("No pairing requests.")
+
+
+@pairings_app.command("list")
+def pairings_list(
+    channel: str = typer.Argument(..., help="Channel name to inspect"),
+    status: str | None = typer.Option(
+        None, "--status", help="Filter by status: pending, approved, or revoked"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
+) -> None:
+    """List pairing requests for a channel, newest first."""
+
+    async def _run(client):
+        params: dict[str, Any] = {"channelName": channel}
+        if status:
+            params["status"] = status
+        return await client.call("channels.pairings", params)
+
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
+    if json_output:
+        print_json(payload)
+        return
+    _render_pairings_table(list(payload.get("pairings") or []), channel=channel)
+
+
+@pairings_app.command("approve")
+def pairings_approve(
+    channel: str = typer.Argument(..., help="Channel name"),
+    pairing: str = typer.Argument(..., help="Pairing code (8 chars) or full pairing id"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
+) -> None:
+    """Approve a pairing request; the sender is notified they can start."""
+
+    confirm_or_exit(
+        f"Approve pairing {pairing!r} on channel {channel!r}? "
+        "The sender gains conversational access.",
+        yes=yes,
+        json_output=json_output,
+    )
+
+    async def _run(client):
+        return await client.call(
+            "channels.pairing.approve",
+            {"channelName": channel, "pairingCode": pairing},
+        )
+
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
+    if json_output:
+        print_json(payload)
+        return
+    record = payload.get("pairing") or {}
+    sender = str(record.get("senderName") or record.get("senderId") or "")
+    typer.echo(f"Pairing approved: {record.get('pairingCode', pairing)} ({sender})")
+
+
+@pairings_app.command("revoke")
+def pairings_revoke(
+    channel: str = typer.Argument(..., help="Channel name"),
+    pairing: str = typer.Argument(..., help="Pairing code (8 chars) or full pairing id"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
+    json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
+    config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
+) -> None:
+    """Revoke a pairing; the sender loses conversational access."""
+
+    confirm_or_exit(
+        f"Revoke pairing {pairing!r} on channel {channel!r}? "
+        "The sender loses conversational access.",
+        yes=yes,
+        json_output=json_output,
+    )
+
+    async def _run(client):
+        return await client.call(
+            "channels.pairing.revoke",
+            {"channelName": channel, "pairingCode": pairing},
+        )
+
+    payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
+    if json_output:
+        print_json(payload)
+        return
+    record = payload.get("pairing") or {}
+    typer.echo(f"Pairing revoked: {record.get('pairingCode', pairing)}")

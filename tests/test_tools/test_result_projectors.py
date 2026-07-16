@@ -86,6 +86,90 @@ async def test_success_projects_redacted_full_result_in_sources_then_model_order
 
 
 @pytest.mark.asyncio
+async def test_executed_receipt_with_zero_exit_code_runs_both_projectors() -> None:
+    raw = json.dumps(
+        {
+            "status": "executed",
+            "exit_code": 0,
+            "stdout": "dependency installed",
+            "stderr": "",
+        }
+    )
+    calls: list[tuple[str, str]] = []
+
+    def project_sources(content: str) -> list[dict[str, Any]]:
+        calls.append(("sources", content))
+        return [{"kind": "probe", "snippet": content}]
+
+    def project_model(content: str) -> str:
+        calls.append(("model", content))
+        return "projected dependency install"
+
+    async def executed() -> str:
+        return raw
+
+    handler = _handler_for(
+        _projection_spec(
+            "install_skill_deps",
+            model_projector=project_model,
+            sources_projector=project_sources,
+        ),
+        executed,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-executed-success",
+            tool_name="install_skill_deps",
+            arguments={},
+        )
+    )
+
+    assert result.content == "projected dependency install"
+    assert result.sources == [{"kind": "probe", "snippet": raw}]
+    assert calls == [("sources", raw), ("model", raw)]
+
+
+@pytest.mark.asyncio
+async def test_executed_receipt_with_nonzero_exit_code_bypasses_projectors() -> None:
+    raw = json.dumps(
+        {
+            "status": "executed",
+            "exit_code": 7,
+            "stdout": "",
+            "stderr": "dependency install failed",
+        }
+    )
+    calls: list[str] = []
+
+    async def executed() -> str:
+        return raw
+
+    handler = _handler_for(
+        _projection_spec(
+            "install_skill_deps",
+            model_projector=lambda content: calls.append(f"model:{content}")
+            or "unsafe",
+            sources_projector=lambda content: calls.append(f"sources:{content}")
+            or [{"unsafe": True}],
+        ),
+        executed,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-executed-failure",
+            tool_name="install_skill_deps",
+            arguments={},
+        )
+    )
+
+    assert result.content == raw
+    assert result.sources == []
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_projectors_are_independently_optional() -> None:
     async def raw_result() -> str:
         return "full result"

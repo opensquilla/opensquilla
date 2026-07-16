@@ -46,37 +46,30 @@ _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
 _TOOL_RESULT_PROJECTION_FAILED = "tool_result_projection_failed"
 
 
-# Explicit success receipts emitted by built-in tools. Status-free results are
-# also eligible, while any unrecognized explicit status fails closed.
-_SUCCESS_RESULT_STATUSES: frozenset[str] = frozenset(
+# Semantic non-success fragments shared by structured tool receipts. This keeps
+# projection eligibility independent of any tool-specific success vocabulary.
+_NON_SUCCESS_RESULT_STATUS_PARTS: frozenset[str] = frozenset(
     {
-        "already_published",
-        "applied",
-        "available",
-        "completed",
-        "created",
-        "deleted",
-        "delivered",
-        "done",
-        "dry_run",
-        "edited",
-        "eof",
-        "granted",
-        "installed",
-        "ok",
-        "preview",
-        "published",
-        "queued",
-        "reacted",
-        "removed",
-        "restored",
-        "scheduled",
-        "sent",
-        "submitted",
-        "success",
-        "uploaded",
-        "written",
-        "yielded",
+        "blocked",
+        "cancelled",
+        "canceled",
+        "control",
+        "denied",
+        "error",
+        "failed",
+        "failure",
+        "killed",
+        "missing",
+        "not",
+        "pending",
+        "rejected",
+        "required",
+        "running",
+        "timed",
+        "timeout",
+        "unavailable",
+        "unknown",
+        "unsupported",
     }
 )
 
@@ -215,6 +208,32 @@ def _result_status(content: Any) -> str | int | None:
     return normalized or None
 
 
+def _structured_receipt_success(payload: dict[str, Any]) -> bool | None:
+    if payload.get("timed_out") is True:
+        return False
+
+    exit_code = payload.get("exit_code")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+        return exit_code == 0
+
+    for key in ("success", "ok"):
+        value = payload.get(key)
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def _status_indicates_non_success(status: str) -> bool:
+    normalized = (
+        status.replace("-", "_").replace(" ", "_").replace(".", "_")
+    )
+    return any(
+        part in _NON_SUCCESS_RESULT_STATUS_PARTS
+        for part in normalized.split("_")
+        if part
+    )
+
+
 def _is_successful_projection_result(
     *,
     result: Any,
@@ -227,7 +246,13 @@ def _is_successful_projection_result(
         return execution_status.get("status") == "success"
 
     payload = _result_payload(result)
-    if payload is None or "status" not in payload:
+    if payload is None:
+        return True
+
+    receipt_success = _structured_receipt_success(payload)
+    if receipt_success is False:
+        return False
+    if "status" not in payload:
         return True
 
     status = _result_status(payload)
@@ -235,9 +260,9 @@ def _is_successful_projection_result(
         return 200 <= status < 400
     if status == "router_control":
         return payload.get("accepted") is True
-    if status is None:
+    if status is None or _status_indicates_non_success(status):
         return False
-    return status in _SUCCESS_RESULT_STATUSES
+    return True
 
 
 def _projection_failure_result(

@@ -470,6 +470,13 @@ async def sessions_spawn(
             agent_id=resolved_agent_id,
             parent_task_id=parent_task_id,
             spawn_depth=spawn_depth,
+            principal_is_owner=getattr(ctx, "is_owner", None) if ctx is not None else None,
+            elevated=getattr(ctx, "elevated", None) if ctx is not None else None,
+            run_mode=getattr(ctx, "run_mode", None) if ctx is not None else None,
+            sandbox_run_context=(
+                getattr(ctx, "sandbox_run_context", None) if ctx is not None else None
+            ),
+            sandbox_mounts=getattr(ctx, "sandbox_mounts", None) if ctx is not None else None,
         )
         handle = await runtime.enqueue(
             envelope,

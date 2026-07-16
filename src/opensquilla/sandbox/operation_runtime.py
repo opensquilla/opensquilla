@@ -568,6 +568,8 @@ class SandboxOperationRuntime:
     async def run(self, operation: SandboxOperation) -> object | None:
         if self.runtime is None:
             return None
+        if str(operation.run_mode).strip().lower() == "full":
+            return None
         effective = getattr(self.runtime, "effective", None)
         if effective is not None and not effective.sandbox_enabled:
             return None

@@ -13401,6 +13401,7 @@ class Agent:
 
         parent_session_key = self._session_key or "unknown"
         subagent_label = spec.label or "subagent"
+        parent_tool_ctx = current_tool_context.get()
 
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
@@ -13411,6 +13412,21 @@ class Agent:
             subagent_depth=depth,
             agent_id=parse_agent_id(parent_session_key),
             workspace_dir=spec.workspace_dir or self.config.workspace_dir,
+            run_mode=getattr(parent_tool_ctx, "run_mode", None)
+            if parent_tool_ctx is not None
+            else None,
+            sandbox_mounts=[
+                dict(item)
+                for item in (
+                    getattr(parent_tool_ctx, "sandbox_mounts", None)
+                    if parent_tool_ctx is not None
+                    else None
+                )
+                or []
+            ],
+            sandbox_run_context=getattr(parent_tool_ctx, "sandbox_run_context", None)
+            if parent_tool_ctx is not None
+            else None,
             session_key=f"subagent:{parent_session_key}",
             channel_kind="subagent",
             channel_id=f"subagent:{parent_session_key}",
@@ -13425,6 +13441,9 @@ class Agent:
             tool_run_budget_key=(
                 f"subagent:{parent_session_key}:{subagent_label}:{depth}:{uuid.uuid4().hex}"
             ),
+            elevated=getattr(parent_tool_ctx, "elevated", None)
+            if parent_tool_ctx is not None
+            else None,
             on_runtime_event=self._record_tool_context_runtime_event
             if self.config.runtime_events_path
             else None,

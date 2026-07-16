@@ -18,6 +18,8 @@ from dataclasses import dataclass
 
 import pytest
 
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.builtin import sessions as sessions_tool
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -141,6 +143,14 @@ def _ctx() -> ToolContext:
         session_key="agent:caller:main",
         task_id="task-parent",
     )
+
+
+def _full_host_ctx() -> ToolContext:
+    ctx = _ctx()
+    ctx.run_mode = "full"
+    ctx.elevated = "full"
+    ctx.sandbox_run_context = RunContext(run_mode=RunMode.FULL, source="request")
+    return ctx
 
 
 @pytest.fixture(autouse=True)
@@ -282,3 +292,26 @@ async def test_spawn_with_registry_raises_for_missing_agent() -> None:
             await sessions_tool.sessions_spawn(agent_id="ghost", task="hi")
     finally:
         current_tool_context.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_sessions_spawn_inherits_parent_full_host_run_mode() -> None:
+    mgr = _PaginatingSessionManager(
+        agents={"caller": {"id": "caller", "enabled": True}},
+        children_for_parent={},
+    )
+    rt = _StubTaskRuntime()
+    sessions_tool.set_session_manager(mgr)
+    sessions_tool.set_task_runtime(rt)
+
+    token = current_tool_context.set(_full_host_ctx())
+    try:
+        await sessions_tool.sessions_spawn(task="probe host write")
+    finally:
+        current_tool_context.reset(token)
+
+    assert len(rt.enqueued) == 1
+    envelope = rt.enqueued[0]["envelope"]
+    assert envelope.metadata["run_mode"] == "full"
+    assert envelope.metadata["elevated"] == "full"
+    assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"

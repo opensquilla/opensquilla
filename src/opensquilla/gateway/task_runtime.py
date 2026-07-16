@@ -1281,6 +1281,31 @@ class TaskRuntime:
             update_envelope_cache=False,
         )
 
+    async def send_with_envelope(
+        self,
+        envelope: RouteEnvelope,
+        message: str,
+        provenance: dict[str, Any] | None = None,
+        stream_event_sink: TaskStreamEventSink | None = None,
+    ) -> TaskHandle:
+        """Send a follow-up while preserving an authoritative routing context."""
+        if not isinstance(envelope, RouteEnvelope):
+            raise TypeError("envelope must be a RouteEnvelope")
+        canonical_session_key = canonicalize_session_key(envelope.session_key)
+        routed = replace(
+            envelope,
+            session_key=canonical_session_key,
+            agent_id=parse_agent_id(canonical_session_key),
+            input_provenance=provenance or envelope.input_provenance,
+        )
+        return await self.enqueue(
+            routed,
+            message,
+            mode="followup",
+            stream_event_sink=stream_event_sink,
+            update_envelope_cache=False,
+        )
+
     async def wait(self, task_id: str, timeout: float | None = None) -> AgentTaskRecord:
         runtime_task = self._tasks.get(task_id)
         if runtime_task is None:

@@ -306,6 +306,11 @@ def build_subagent_route_envelope(
     parent_task_id: str | None = None,
     spawn_depth: int = 0,
     origin: str = "sessions_spawn",
+    principal_is_owner: bool | None = None,
+    elevated: str | None = None,
+    run_mode: str | None = None,
+    sandbox_run_context: Any | None = None,
+    sandbox_mounts: list[dict[str, Any]] | None = None,
 ) -> RouteEnvelope:
     """Build a route for a child subagent run."""
     metadata = {
@@ -315,6 +320,34 @@ def build_subagent_route_envelope(
         "spawn_depth": spawn_depth,
         "origin": origin,
     }
+    if principal_is_owner is not None:
+        metadata["principal_is_owner"] = principal_is_owner
+    if elevated in ("on", "bypass", "full"):
+        metadata["elevated"] = elevated
+    try:
+        normalized_run_mode = normalize_run_mode(run_mode) if run_mode else None
+    except ValueError:
+        normalized_run_mode = None
+    run_context_payload: dict[str, Any] | None = None
+    if sandbox_run_context is not None:
+        to_origin_payload = getattr(sandbox_run_context, "to_origin_payload", None)
+        if callable(to_origin_payload):
+            raw_payload = to_origin_payload()
+            if isinstance(raw_payload, dict):
+                run_context_payload = dict(raw_payload)
+        elif isinstance(sandbox_run_context, dict):
+            run_context_payload = dict(sandbox_run_context)
+    if normalized_run_mode is None and run_context_payload is not None:
+        try:
+            normalized_run_mode = normalize_run_mode(run_context_payload.get("run_mode"))
+        except ValueError:
+            normalized_run_mode = None
+    if normalized_run_mode is not None:
+        metadata["run_mode"] = normalized_run_mode.value
+    if run_context_payload is not None:
+        metadata["sandbox_run_context"] = run_context_payload
+    if sandbox_mounts is not None:
+        metadata["sandbox_mounts"] = [dict(item) for item in sandbox_mounts]
     return RouteEnvelope(
         source_kind=SourceKind.SUBAGENT,
         source_name="subagent",
@@ -331,6 +364,7 @@ def build_subagent_route_envelope(
         },
         metadata=metadata,
         interaction_mode=InteractionMode.UNATTENDED,
+        sandbox_run_context_fresh=run_context_payload is not None,
     )
 
 

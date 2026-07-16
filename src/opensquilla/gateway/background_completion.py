@@ -83,6 +83,7 @@ class BackgroundCompletionManager:
         self._wake_groups: set[str] = set()
         self._delivery_attempted: set[str] = set()
         self._delivery_targets: dict[str, _DeliveryTarget] = {}
+        self._parent_envelopes: dict[str, Any] = {}
         self._watch_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
 
@@ -119,18 +120,22 @@ class BackgroundCompletionManager:
         task_runtime: Any,
     ) -> None:
         group_id = self.group_id(parent_session_key, parent_task_id)
+        parent_envelope = _parent_envelope_from_task_runtime(task_runtime, parent_task_id)
         delivery_target = await _capture_delivery_target(
             session_manager=self._session_manager,
             task_runtime=task_runtime,
             parent_session_key=parent_session_key,
             parent_task_id=parent_task_id,
         )
-        if delivery_target is None:
+        if parent_envelope is None and delivery_target is None:
             return
         async with self._state_lock:
             if self._closing:
                 return
-            self._delivery_targets.setdefault(group_id, delivery_target)
+            if parent_envelope is not None:
+                self._parent_envelopes.setdefault(group_id, parent_envelope)
+            if delivery_target is not None:
+                self._delivery_targets.setdefault(group_id, delivery_target)
 
     async def send_parent_wake(
         self,
@@ -144,6 +149,7 @@ class BackgroundCompletionManager:
     ) -> None:
         """Schedule a parent wake without waiting inline for same-session work."""
         group_id = self.group_id(parent_session_key, parent_task_id)
+        parent_envelope = _parent_envelope_from_task_runtime(task_runtime, parent_task_id)
         delivery_target = await _capture_delivery_target(
             session_manager=self._session_manager,
             task_runtime=task_runtime,
@@ -158,6 +164,9 @@ class BackgroundCompletionManager:
                 return
             self._wake_groups.add(group_id)
             self._waiting_groups.discard(group_id)
+            parent_envelope = self._parent_envelopes.get(group_id) or parent_envelope
+            if parent_envelope is not None:
+                self._parent_envelopes[group_id] = parent_envelope
             delivery_target = self._delivery_targets.get(group_id) or delivery_target
             if delivery_target is not None:
                 self._delivery_targets[group_id] = delivery_target
@@ -169,6 +178,7 @@ class BackgroundCompletionManager:
                     task_runtime=task_runtime,
                     message=message,
                     provenance=provenance,
+                    parent_envelope=parent_envelope,
                     delivery_target=delivery_target,
                 )
             )
@@ -215,6 +225,7 @@ class BackgroundCompletionManager:
             self._wake_groups.clear()
             self._delivery_attempted.clear()
             self._delivery_targets.clear()
+            self._parent_envelopes.clear()
             self._watch_tasks.clear()
             self._closing = True
 
@@ -245,18 +256,28 @@ class BackgroundCompletionManager:
         task_runtime: Any,
         message: str,
         provenance: dict[str, Any],
+        parent_envelope: Any | None,
         delivery_target: _DeliveryTarget | None,
     ) -> None:
         group_id = self.group_id(parent_session_key, parent_task_id)
         stream_collector = _SynthesisStreamCollector()
         try:
             await self._wait_for_parent_task_to_release(task_runtime, parent_task_id)
-            handle = await task_runtime.send(
-                parent_session_key,
-                message,
-                provenance=provenance,
-                stream_event_sink=stream_collector,
-            )
+            send_with_envelope = getattr(task_runtime, "send_with_envelope", None)
+            if parent_envelope is not None and callable(send_with_envelope):
+                handle = await send_with_envelope(
+                    parent_envelope,
+                    message,
+                    provenance=provenance,
+                    stream_event_sink=stream_collector,
+                )
+            else:
+                handle = await task_runtime.send(
+                    parent_session_key,
+                    message,
+                    provenance=provenance,
+                    stream_event_sink=stream_collector,
+                )
         except Exception as exc:  # noqa: BLE001 - failure becomes a group event.
             error_class, error_message = sanitize_agent_error(
                 {
@@ -493,6 +514,7 @@ class BackgroundCompletionManager:
             self._wake_groups.discard(group_id)
             self._delivery_attempted.discard(group_id)
             self._delivery_targets.pop(group_id, None)
+            self._parent_envelopes.pop(group_id, None)
 
 
 async def _get_session(session_manager: Any, session_key: str) -> Any | None:
@@ -503,6 +525,12 @@ async def _get_session(session_manager: Any, session_key: str) -> Any | None:
         return await get_session(session_key)
     except Exception:
         return None
+
+
+def _parent_envelope_from_task_runtime(task_runtime: Any, parent_task_id: str) -> Any | None:
+    tasks = getattr(task_runtime, "_tasks", None)
+    runtime_task = tasks.get(parent_task_id) if isinstance(tasks, dict) else None
+    return getattr(runtime_task, "envelope", None)
 
 
 async def _capture_delivery_target(

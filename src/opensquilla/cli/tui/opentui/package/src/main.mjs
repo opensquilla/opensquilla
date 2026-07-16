@@ -9,8 +9,9 @@ import { createContextRail } from "./contextView.mjs";
 import { replaceHistoryConversation } from "./historyRenderer.mjs";
 import {
   ALTERNATE_SCREEN,
+  SURFACE_Z_INDEX,
   assertRendererScreenMode,
-  rendererLayoutHeight,
+  createRendererViewportState,
   rendererOptions,
 } from "./screenMode.mjs";
 import { createTurnFlow, createTurnView } from "./turnView.mjs";
@@ -113,6 +114,8 @@ async function main() {
     backgroundColor: THEME.appBg,
   });
   assertRendererScreenMode(renderer);
+  const viewportState = createRendererViewportState(renderer);
+  const viewport = () => viewportState.current();
   bootRenderer = renderer;
   let shuttingDown = false;
   const shutdownHost = (exitCode = 0) => {
@@ -136,7 +139,6 @@ async function main() {
   registerThemeStyles(syntaxStyle, THEME);
   onThemeApplied((t) => {
     registerThemeStyles(syntaxStyle, t);
-    renderer.requestRender?.();
   });
 
   const conversationBox = new ScrollBoxRenderable(renderer, {
@@ -145,7 +147,8 @@ async function main() {
     left: 0,
     top: 0,
     right: 0,
-    height: Math.max(1, rendererLayoutHeight(renderer) - footerRows(rendererLayoutHeight(renderer))),
+    height: Math.max(1, viewport().height - footerRows(viewport().height)),
+    zIndex: SURFACE_Z_INDEX.transcript,
     backgroundColor: THEME.appBg,
     stickyScroll: true,
     stickyStart: "bottom",
@@ -188,7 +191,8 @@ async function main() {
     left: 0,
     right: 0,
     bottom: 0,
-    height: footerRows(rendererLayoutHeight(renderer)),
+    height: footerRows(viewport().height),
+    zIndex: SURFACE_Z_INDEX.footer,
     // Opaque so the footer fully repaints every frame; without it, cells vacated
     // when the composer/router boxes move on resize/reflow keep stale glyphs.
     backgroundColor: THEME.footerBg,
@@ -199,7 +203,7 @@ async function main() {
     renderer,
     BoxRenderable,
     TextRenderable,
-    bottom: footerRows(rendererLayoutHeight(renderer)),
+    bottom: footerRows(viewport().height),
     theme: THEME,
   });
   renderer.root.add(heldIndicator.node);
@@ -217,6 +221,7 @@ async function main() {
     conversationBox,
     inputBox,
     footerHeight: FOOTER_HEIGHT,
+    viewport,
     allowWideRail: true,
   });
   renderer.root.add(contextRail.header);
@@ -233,6 +238,7 @@ async function main() {
     ASCIIFontRenderable,
     conversationBox,
     contentWidth: () => contextRail.contentWidth(),
+    viewport,
   });
 
   // Full-screen, top-of-stack host for transient floating UI (completion menu,
@@ -250,7 +256,7 @@ async function main() {
     top: 0,
     right: 0,
     bottom: 0,
-    zIndex: 1000,
+    zIndex: SURFACE_Z_INDEX.overlay,
     shouldFill: false,
     // Start hidden. A full-screen, top-zIndex layer participates in mouse
     // hit-testing even with shouldFill:false, so a permanently-present overlay
@@ -279,12 +285,13 @@ async function main() {
     inputBox,
     overlayLayer,
     footerHeight: FOOTER_HEIGHT,
+    viewport,
     onContextUpdate: (snapshot) => {
       const result = contextRail.updateContext(snapshot);
       contextGeometryChanged ||= Boolean(result?.geometryChanged);
     },
     onRouterUpdate: (snapshot) => contextRail.updateRouter(snapshot),
-    onFullRedraw: () => requestFullRepaint(renderer),
+    onFullRedraw: () => commitSurfaceFrame("manual-redraw"),
     onJumpToLatest: () => {
       transcriptScroller.followLatest();
       renderer.requestRender?.();
@@ -315,6 +322,7 @@ async function main() {
     // ignore the additive dependency and retain their existing behavior.
     contentWidth: () => contextRail.contentWidth(),
     agentLabel: () => contextRail.agentLabel(),
+    viewport,
   };
   // flow owns which turn view receives each protocol event (queued-prompt
   // routing, late-block tolerance) and retains every turn ever created so a
@@ -348,7 +356,7 @@ async function main() {
     welcome.recolor();
     for (const t of flow.turns) t.recolor?.();
     recolorNoticeNodes(looseNodes, THEME);
-    requestFullRepaint(renderer);
+    commitSurfaceFrame("theme");
   });
 
   // Keep the conversation pinned to the newest content as it grows. stickyScroll
@@ -393,9 +401,7 @@ async function main() {
       // terminal resize. Commit that geometry atomically across every surface,
       // then repaint vacated cells; ordinary value-only updates stay cheap.
       if (contextGeometryChanged) {
-        welcome.relayout();
-        for (const t of flow.turns) t.relayout?.();
-        requestFullRepaint(renderer);
+        commitSurfaceFrame("context-geometry");
       } else {
         renderer.requestRender?.();
       }
@@ -403,6 +409,7 @@ async function main() {
     routerUpdate: (m) => composer.setRouterState(m),
     modelRoutingState: (m) => composer.setModelRoutingState(m),
     modelRoutingPicker: (m) => composer.openModelRoutingPicker(m),
+    modelPicker: (m) => composer.openModelPicker(m),
     // A bootstrap/session switch is one atomic protocol frame. Clear every
     // retained renderable and replay canonical rows through the same turn
     // views as live prompt/tool/answer traffic before accepting more input.
@@ -428,7 +435,7 @@ async function main() {
       // remount it, while resumed sessions never mix branding into history.
       welcome.syncHistory(m);
       scrollConversationToBottom();
-      requestFullRepaint(renderer);
+      commitSurfaceFrame("history-replace");
     },
     blockBegin: (m) => {
       withBottomFollow(() => flow.turnForBlock().begin(m.id, m.kind, m.meta));
@@ -524,41 +531,68 @@ async function main() {
   // terminal's own selection instead.
   renderer.on?.("selection", (selection) => copySelectionToClipboard(renderer, selection));
 
-  renderer.on?.("resize", () => {
-    transcriptScroller.restore(() => {
-      const h = rendererLayoutHeight(renderer);
-      const fh = footerRows(h);
-      inputBox.height = fh; // clamp so a short terminal never overflows the footer
-      conversationBox.height = Math.max(1, h - fh);
-      heldIndicator.setBottom(fh);
-      contextRail.onResize();
-      welcome.relayout();
-      composer.onResize();
-      // Reflow every existing turn's full-width header rule to the new width, so a
-      // resize re-rules the cards instead of leaving baked rules to wrap or strand.
-      // (Each turn skips itself when its ruled width is already current.)
-      for (const t of flow.turns) t.relayout?.();
-    });
+  function commitSurfaceFrame(
+    reason,
+    { repaint = true, relayout = true, dimensions = null } = {},
+  ) {
+    // OpenTUI's documented resize event carries the authoritative dimensions.
+    // Feed that payload into the shared epoch directly: in 0.4.3 the renderer's
+    // Yoga-backed width/height getters can still expose the previous computed
+    // frame while the resize callback itself is running.
+    const snapshot = viewportState.refresh(reason, dimensions);
+    transcriptScroller.restoreSurface(
+      () => {
+        if (!relayout) return;
+        const fh = footerRows(snapshot.height);
+        inputBox.height = fh; // clamp so a short terminal never overflows the footer
+        conversationBox.height = Math.max(1, snapshot.height - fh);
+        heldIndicator.setBottom(fh);
+        contextRail.onResize();
+        welcome.relayout();
+        // Reflow every existing turn's full-width header rule to the new width, so a
+        // resize re-rules the cards instead of leaving baked rules to wrap or strand.
+        // (Each turn skips itself when its ruled width is already current.)
+        for (const t of flow.turns) t.relayout?.();
+        // Footer is the final layout owner: rebuild it after the transcript and
+        // context rail have settled their shared right inset.
+        composer.onResize();
+      },
+      // OpenTUI applies Yoga immediately before painting. Reassert the hardware
+      // caret after that public frame callback so it can never inherit a stale
+      // transcript or pre-resize cell.
+      { afterLayout: () => composer.syncCursor() },
+    );
+    if (repaint) requestFullRepaint(renderer);
+    return snapshot;
+  }
+
+  renderer.on?.("resize", (width, height) => {
+    const snapshot = commitSurfaceFrame("resize", { dimensions: { width, height } });
     // Force a FULL repaint after a resize. OpenTUI's standard (alternate-screen)
     // resize path renders a DIFF, so cells the old — wider/taller — layout
     // occupied are left uncleared: e.g. the router box's previous position and
     // the composer's old right border bleed through as stale glyphs when the
     // window shrinks. Forcing a full repaint clears the vacated cells.
-    requestFullRepaint(renderer);
-    const w = renderer.terminalWidth ?? 0;
-    const terminalHeight = renderer.terminalHeight ?? h;
-    if (w && terminalHeight) ipc.send({ type: "resize", width: w, height: terminalHeight });
+    if (snapshot.width && snapshot.height) {
+      ipc.send({ type: "resize", width: snapshot.width, height: snapshot.height });
+    }
   });
 
-  // Node's WriteStream resize fires after its cached columns/rows are refreshed,
-  // while SIGWINCH can arrive before that refresh. Focus-in covers same-size
-  // surface remounts where no resize occurs at all. Every event repaints now,
-  // then resets one final pass beyond OpenTUI's own 100ms resize debounce so an
-  // older cached sample cannot win the race. Do not suspend on blur: that would
-  // remove the stdin listener needed to receive the subsequent focus-in.
+  // OpenTUI's documented renderer.resize event above owns normal resize work.
+  // Raw WriteStream/SIGWINCH are delayed, coalesced fallbacks only when that
+  // event is missed; focus covers a same-size surface remount. Do not suspend
+  // on blur: that would remove the stdin listener needed for focus-in.
   surfaceRecovery = installTerminalViewportRecovery({
     renderer,
-    onRecovered: () => transcriptScroller.bumpSurfaceEpoch(),
+    // commitViewportRecoveryTransaction calls this synchronously before it
+    // exposes the forced frame. A real renderer.resize already committed the
+    // new epoch through the listener above; a same-size remount needs the same
+    // layout transaction even though geometry did not change.
+    onRecovered: (result) => {
+      if (result !== "resized") {
+        commitSurfaceFrame("surface-recovery", { repaint: false, relayout: true });
+      }
+    },
   });
 
   // Single always-on pulse interval. The body is gated on statusActive so an

@@ -18,6 +18,7 @@ import {
   installTerminalViewportRecovery,
   reconcileTerminalViewport,
   viewportRecoveryWatchdogMs,
+  viewportRecoveryWatchdogReassertsSurface,
   TERMINAL_SURFACE_REASSERT_SEQUENCE,
   VIEWPORT_RECOVERY_SETTLE_MS,
 } from "./viewportRecovery.mjs";
@@ -168,11 +169,13 @@ test("viewport recovery falls back per dimension when direct PTY geometry is tra
   assert.deepEqual(resizes, [[132, 36]]);
 });
 
-test("viewport recovery wins OpenTUI's delayed stale resize and cleans up listeners", () => {
+test("viewport recovery defers raw resize and yields to OpenTUI's public resize event", () => {
   const output = new EventEmitter();
   output.columns = 80;
   output.rows = 24;
   output.getWindowSize = () => [132, 42];
+  const terminalWrites = [];
+  output.write = (value) => { terminalWrites.push(value); };
   const signalSource = new EventEmitter();
   const renderer = new EventEmitter();
   renderer.terminalWidth = 80;
@@ -190,6 +193,7 @@ test("viewport recovery wins OpenTUI's delayed stale resize and cleans up listen
     renderer,
     output,
     signalSource,
+    watchdogMs: 0,
     setTimer(callback, delay) {
       const timer = { callback, delay, cleared: false, unref() {} };
       timers.push(timer);
@@ -199,26 +203,33 @@ test("viewport recovery wins OpenTUI's delayed stale resize and cleans up listen
   });
 
   signalSource.emit("SIGWINCH");
-  assert.deepEqual([renderer.terminalWidth, renderer.terminalHeight], [132, 42]);
+  output.emit("resize");
+  assert.deepEqual([renderer.terminalWidth, renderer.terminalHeight], [80, 24]);
   assert.ok(timers[0].delay > 100);
+  assert.equal(timers[0].cleared, true);
+  assert.equal(renders, 0);
 
-  // Simulate the engine's debounced handler landing later with the stale
-  // WriteStream sample. Our final direct PTY read must be the last writer.
-  renderer.resize(80, 24);
-  timers[0].callback();
+  // OpenTUI's documented resize event owns the application transaction and
+  // cancels the raw-event fallback before it can emit a duplicate full frame.
+  renderer.resize(132, 42);
+  renderer.emit("resize");
   assert.deepEqual([renderer.terminalWidth, renderer.terminalHeight], [132, 42]);
+  assert.equal(timers[1].cleared, true);
+  assert.equal(renders, 0);
 
-  // A same-size focus/reveal still repaints, and shares the one resettable final
-  // timer with resize and SIGWINCH rather than stacking callbacks.
+  // A same-size focus/reveal still produces exactly one recovery frame.
   renderer.emit("focus");
   signalSource.emit("SIGWINCH");
-  assert.equal(timers[1].cleared, true);
-  assert.equal(renders, 4);
+  assert.equal(timers.length, 2); // matching geometry does not schedule fallback
+  assert.equal(renders, 1);
+  // OpenTUI restores modes before its public focus event. Our lifecycle
+  // recovery may repaint, but must not toggle DECSET 1049 on a healthy screen.
+  assert.deepEqual(terminalWrites, []);
 
   renderer.emit("destroy");
-  assert.equal(timers[2].cleared, true);
   assert.equal(output.listenerCount("resize"), 0);
   assert.equal(signalSource.listenerCount("SIGWINCH"), 0);
+  assert.equal(renderer.listenerCount("resize"), 0);
   assert.equal(renderer.listenerCount("focus"), 0);
   assert.equal(recovery.recover(), "disposed");
 });
@@ -227,7 +238,7 @@ test("viewport recovery final pass stays beyond OpenTUI's debounce window", () =
   assert.ok(VIEWPORT_RECOVERY_SETTLE_MS > 100);
 });
 
-test("viewport recovery never enables periodic repaint implicitly", () => {
+test("viewport recovery watchdog is explicit opt-in in every terminal", () => {
   assert.equal(viewportRecoveryWatchdogMs({}), 0);
   assert.equal(viewportRecoveryWatchdogMs({ CODEX_SHELL: "1" }), 0);
   assert.equal(viewportRecoveryWatchdogMs({ TERM_PROGRAM: "vscode" }), 0);
@@ -242,6 +253,50 @@ test("viewport recovery never enables periodic repaint implicitly", () => {
     viewportRecoveryWatchdogMs({ OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS: "1200" }),
     1200,
   );
+  assert.equal(viewportRecoveryWatchdogReassertsSurface({ CODEX_SHELL: "1" }), false);
+  assert.equal(
+    viewportRecoveryWatchdogReassertsSurface({ OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS: "1200" }),
+    true,
+  );
+});
+
+test("raw resize fallback recovers once only when OpenTUI misses its resize event", () => {
+  const output = new EventEmitter();
+  output.columns = 80;
+  output.rows = 24;
+  output.getWindowSize = () => [132, 42];
+  output.write = () => {};
+  const signalSource = new EventEmitter();
+  const renderer = new EventEmitter();
+  renderer.terminalWidth = 80;
+  renderer.terminalHeight = 24;
+  renderer.resize = (width, height) => {
+    renderer.terminalWidth = width;
+    renderer.terminalHeight = height;
+  };
+  let renders = 0;
+  renderer.requestRender = () => { renders += 1; };
+  const timers = [];
+  const recovery = installTerminalViewportRecovery({
+    renderer,
+    output,
+    signalSource,
+    watchdogMs: 0,
+    setTimer(callback, delay) {
+      const timer = { callback, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer() {},
+  });
+
+  signalSource.emit("SIGWINCH");
+  assert.equal(renders, 0);
+  assert.equal(timers.length, 1);
+  timers[0].callback();
+  assert.deepEqual([renderer.terminalWidth, renderer.terminalHeight], [132, 42]);
+  assert.equal(renders, 1);
+  recovery.dispose();
 });
 
 test("viewport watchdog restores a same-size framebuffer without any terminal event", () => {
@@ -264,6 +319,7 @@ test("viewport watchdog restores a same-size framebuffer without any terminal ev
     output,
     signalSource,
     watchdogMs: 750,
+    watchdogReassertSurface: false,
     setIntervalFn(callback, delay) {
       const timer = { callback, delay, cleared: false, unref() {} };
       intervals.push(timer);
@@ -277,14 +333,40 @@ test("viewport watchdog restores a same-size framebuffer without any terminal ev
   assert.equal(renders, 0);
 
   // No resize, SIGWINCH, focus, input, or stream event occurs here. The
-  // watchdog must independently invalidate OpenTUI's retained back-buffer.
+  // embedded-host watchdog must independently invalidate OpenTUI's retained
+  // back-buffer without periodically toggling the alternate-screen mode.
   intervals[0].callback();
-  assert.deepEqual(terminalWrites, [TERMINAL_SURFACE_REASSERT_SEQUENCE]);
+  assert.deepEqual(terminalWrites, []);
   assert.equal(renderer.forceFullRepaintRequested, true);
   assert.equal(renders, 1);
 
   recovery.dispose();
   assert.equal(intervals[0].cleared, true);
+});
+
+test("surface recovery commits application layout before exposing the full frame", () => {
+  const order = [];
+  const output = new EventEmitter();
+  output.columns = 120;
+  output.rows = 36;
+  output.write = () => { order.push("surface"); };
+  const renderer = new EventEmitter();
+  renderer.terminalWidth = 120;
+  renderer.terminalHeight = 36;
+  renderer.requestRender = () => { order.push("repaint"); };
+
+  const recovery = installTerminalViewportRecovery({
+    renderer,
+    output,
+    signalSource: new EventEmitter(),
+    watchdogMs: 0,
+    onRecovered: () => { order.push("layout"); },
+  });
+
+  assert.equal(recovery.recover(), "unchanged");
+  assert.deepEqual(order, ["surface", "layout", "repaint"]);
+  assert.equal(renderer.forceFullRepaintRequested, true);
+  recovery.dispose();
 });
 
 test("routine wheels do not touch the terminal surface; first wheel after blur recovers once", () => {

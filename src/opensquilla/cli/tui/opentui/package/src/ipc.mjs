@@ -151,6 +151,7 @@ export function createDispatcher(h) {
       case "router.update": return h.routerUpdate(m);
       case "model.routing.state": return h.modelRoutingState?.(m);
       case "model.routing.picker": return h.modelRoutingPicker?.(m);
+      case "model.picker": return h.modelPicker?.(m);
       case "block.begin": return h.blockBegin(m);
       case "block.append": return h.blockAppend(m);
       case "block.update": return h.blockUpdate(m);

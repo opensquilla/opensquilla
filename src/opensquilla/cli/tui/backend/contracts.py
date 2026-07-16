@@ -104,6 +104,13 @@ class TuiInputKind(Enum):
     # immediately while a turn streams, but unlike LOCAL it may persist shared
     # product state. It is never echoed, steered, or placed in the turn queue.
     CONTROL = "control"
+    # Deterministic slash command handled by the local/Gateway command plane.
+    # Commands never become prompt cards, steering text, or queued turns.
+    COMMAND = "command"
+    # Command-plane operation that is safe only when no turn is active. The
+    # runtime rejects it with a notice while busy instead of silently enqueueing
+    # it as conversation input.
+    COMMAND_REQUIRES_IDLE = "command_requires_idle"
 
 
 @dataclass(frozen=True, eq=False)

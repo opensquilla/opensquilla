@@ -36,6 +36,32 @@ def _write_log(event: str, payload: dict[str, Any] | None = None) -> None:
         fh.write(json.dumps({"event": event, "payload": payload or {}}, sort_keys=True) + "\n")
 
 
+async def _wait_phase_ack(phase: str, *, timeout_s: float = 20.0) -> None:
+    """Hold a transient visual state until the terminal harness captures it."""
+
+    raw_dir = os.environ.get("OPENSQUILLA_TUI_FAKE_PHASE_ACK_DIR", "").strip()
+    if not raw_dir:
+        await asyncio.sleep(0.25)
+        return
+    ack_dir = Path(raw_dir)
+    # Only scenario runs that explicitly create this sentinel own the phase
+    # clock. Other real-terminal tests reuse the same fake complex turn and
+    # must keep streaming without waiting for visual capture acknowledgements.
+    if not (ack_dir / "enabled").is_file():
+        await asyncio.sleep(0.25)
+        return
+    ack_dir.mkdir(parents=True, exist_ok=True)
+    ack_path = ack_dir / f"{phase}.ack"
+    _write_log("phase_wait", {"phase": phase, "ack": str(ack_path)})
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s
+    while not ack_path.is_file():
+        if loop.time() >= deadline:
+            raise TimeoutError(f"timed out waiting for visual phase ack: {phase}")
+        await asyncio.sleep(0.01)
+    _write_log("phase_ack", {"phase": phase})
+
+
 async def _render_response(
     scope: dict[str, Any],
     user_input: str,
@@ -77,13 +103,23 @@ async def _render_response(
             # Keep the turn live long enough for the real-terminal scenario to
             # resize narrow and wide while the same answer block is mutating.
             await asyncio.sleep(stream_delay_s)
-    elif scenario_id == "same_size_stream_framebuffer_recovery":
+    elif scenario_id in {
+        "same_size_stream_framebuffer_recovery",
+        "same_size_eventless_stream_framebuffer_recovery",
+    }:
+        stream_delay_s = max(
+            0.001,
+            min(
+                0.25,
+                float(os.environ.get("OPENSQUILLA_TUI_FAKE_STREAM_DELAY_S", "0.015")),
+            ),
+        )
         for index in range(80):
             cjk_probe = "推理中 " if index % 8 == 0 else ""
             await renderer.aappend_reasoning(f"stream-token-{index:03d} {cjk_probe}")
             # Keep real provider-style reasoning deltas live while the terminal
             # surface disappears and remounts at the same geometry.
-            await asyncio.sleep(0.015)
+            await asyncio.sleep(stream_delay_s)
     elif scenario_id == "complex_ui_state":
         usage = UsageSummary(
             model="fake-terminal",
@@ -148,8 +184,9 @@ async def _render_response(
                 "proposer_model": "candidate-critic",
             }
         )
-        # Hold one real framebuffer with both candidates visibly running.
-        await asyncio.sleep(0.25)
+        # Hold one real framebuffer with both candidates visibly running. The
+        # harness releases this barrier only after it records styled cells.
+        await _wait_phase_ack("ensemble")
         await renderer.aensemble_progress(
             {
                 "event_type": "proposer_finish",
@@ -177,14 +214,29 @@ async def _render_response(
         # Mirror the real turn shape so the harness exercises the live
         # ensemble plus all three existing process/output block kinds:
         #   1. reasoning — the model's extended-thinking PROCESS. Exact safe
-        #      deltas stream live, then fold behind Ctrl+O when the model moves
+        #      deltas stream live, then retain a bounded tail when the model moves
         #      on to assistant narration.
         await renderer.aappend_reasoning(
-            "reasoning-process-streams-live " + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 6
+            "\n".join(
+                (
+                    "reasoning-opening-context",
+                    "reasoning-step-02",
+                    "reasoning-step-03",
+                    "reasoning-step-04",
+                    "reasoning-step-05",
+                    "reasoning-step-06",
+                    "reasoning-step-07",
+                    "reasoning-step-08",
+                    "reasoning-step-09",
+                    "reasoning-step-10",
+                    "reasoning-step-11",
+                    "reasoning-process-streams-live",
+                )
+            )
         )
         # Give the real-terminal driver a deterministic live frame before the
         # next assistant-text block closes and folds the reasoning block.
-        await asyncio.sleep(0.25)
+        await _wait_phase_ack("reasoning")
         #   2. assistant text the model speaks before a tool call — streams into
         #      a purple intermediate narration block.
         await renderer.aappend_text(
@@ -193,6 +245,7 @@ async def _render_response(
             + "\nsecond-intermediate-line tail",
             presentation="intermediate",
         )
+        await _wait_phase_ack("intermediate")
         await renderer.atool_start(
             "fake_tool",
             {
@@ -213,11 +266,13 @@ async def _render_response(
             ),
         )
         await renderer.astatus("approval requested: allow fake_tool fixture.txt")
+        await _wait_phase_ack("tool")
         #   3. final answer — the cyan answer card.
         await renderer.aappend_text(
             "complex-state-complete tool-card history projection",
             presentation="answer",
         )
+        await _wait_phase_ack("answer")
     elif scenario_id == "architecture_prompt":
         usage = await replay_architecture_prompt(renderer, output)
     elif scenario_id == "terminal_changes":
@@ -235,6 +290,8 @@ async def _render_response(
     else:
         await renderer.aappend_text(f"fake-response:{user_input}")
     await renderer.afinalize(usage)
+    if scenario_id == "complex_ui_state":
+        await _wait_phase_ack("usage")
     _write_log("turn_complete", {"input": user_input})
     return True
 

@@ -262,7 +262,10 @@ async def run_opentui_chat_runtime(
                     task_name=surface_task_name(surface),
                     queue_max_size=queue_max_size,
                     concurrent_input_during_turn=True,
-                    classify_input=classify_chat_input,
+                    classify_input=lambda user_input: classify_chat_input(
+                        user_input,
+                        surface=surface,
+                    ),
                     state=runtime_state,
                 ),
                 hooks=TuiRuntimeHooks(

@@ -22,11 +22,11 @@ export function invalidateConversationViewport(renderer, scrollBox) {
 // frame's height either jumps the held viewport or paints one visibly wrong
 // frame first. Keep the one OpenTUI-specific pre-paint hook here.
 //
-// `setFrameCallback` is public in OpenTUI 0.4.x. The small scrollbar sync is a
-// compatibility shim for the ordering inside that public callback: ScrollBox's
-// normal size-change callback has not run yet, so its public scrollTop setter
-// would otherwise clamp against the previous frame's range. Product components
-// never reach into those host details themselves.
+// `setFrameCallback` is on OpenTUI 0.4.x's public type surface but is not yet
+// covered by its standard documentation. Keep that pre-paint bridge and the
+// synchronous Yoga/scrollbar ordering workaround inside this versioned adapter:
+// ScrollBox's public scrollTop setter would otherwise clamp against the prior
+// frame's range. Product components never reach into those host details.
 export function scheduleConversationLayoutCommit(
   renderer,
   scrollBox,
@@ -91,18 +91,26 @@ export function scheduleConversationLayoutCommit(
   };
 }
 
-// ScrollBox.onMouseEvent is protected rather than public in OpenTUI's type
-// surface. The application needs to intercept wheel input before the engine's
-// own accelerator, so keep that one dependency inside this adapter and protect
-// it with the real-terminal wheel gate on every OpenTUI upgrade.
+// Keep wheel ownership on OpenTUI's public surface. `onMouseScroll` observes the
+// event before ScrollBox's built-in handler; a zero multiplier prevents that
+// handler from applying a second movement after the application scroller has
+// queued its semantic 3-row tick. This avoids overriding protected
+// `onMouseEvent`, which is not an application API in OpenTUI 0.4.x.
+const APPLICATION_OWNS_SCROLL_ACCELERATION = Object.freeze({
+  tick: () => 0,
+  reset: () => {},
+});
+
 export function installConversationWheelHandler(scrollBox, handleWheel) {
   if (!scrollBox || typeof handleWheel !== "function") return false;
-  const nativeMouseHandler = typeof scrollBox.onMouseEvent === "function"
-    ? scrollBox.onMouseEvent.bind(scrollBox)
-    : null;
-  scrollBox.onMouseEvent = (event) => {
-    if (event?.type === "scroll" && handleWheel(event)) return true;
-    return nativeMouseHandler?.(event);
+  scrollBox.scrollAcceleration = APPLICATION_OWNS_SCROLL_ACCELERATION;
+  scrollBox.onMouseScroll = (event) => {
+    handleWheel(event);
+    // The event is fully owned by the transcript scroller. Stop bubbling to a
+    // parent ScrollBox while leaving OpenTUI's own protected handler intact;
+    // its zero acceleration makes that handler a harmless state sync.
+    event?.stopPropagation?.();
+    event?.preventDefault?.();
   };
   return true;
 }

@@ -14,6 +14,7 @@ from opensquilla.cli.tui.opentui.messages import (
     AttachmentRemove,
     AttachmentState,
     AttachmentUpdate,
+    CompletionArgumentChoice,
     CompletionCandidate,
     CompletionContext,
     HistoryMessage,
@@ -67,7 +68,24 @@ def test_python_message_to_json_serializes_completion_context() -> None:
                     label="/compact",
                     description="Compact chat context.",
                     insert_text="/compact",
-                    category="command",
+                    category="control",
+                    usage="/compact",
+                    aliases=("/cmp",),
+                    busy_policy="abort_and_run",
+                    presentation="notice",
+                ),
+                CompletionCandidate(
+                    label="/strategy",
+                    description="Choose the model strategy.",
+                    insert_text="/strategy ",
+                    category="control",
+                    usage="/strategy [direct|router|ensemble|status]",
+                    argument_choices=(
+                        CompletionArgumentChoice(
+                            value="router",
+                            description="Use Squilla Router.",
+                        ),
+                    ),
                 ),
                 CompletionCandidate(
                     label="/code-review",
@@ -84,7 +102,10 @@ def test_python_message_to_json_serializes_completion_context() -> None:
     assert payload.endswith("\n")
     assert '"type":"completion.context"' in payload
     assert '"label":"/compact"' in payload
-    assert '"category":"command"' in payload
+    assert '"category":"control"' in payload
+    assert '"aliases":["/cmp"]' in payload
+    assert '"busy_policy":"abort_and_run"' in payload
+    assert '"argument_choices":[{"value":"router"' in payload
     assert '"insert_text":"use the code-review skill: "' in payload
     assert '"files":["src/main.py"]' in payload
     assert '"filters_sensitive_paths":true' in payload
@@ -200,9 +221,7 @@ def test_host_message_rejects_malformed_control_payloads() -> None:
         host_message_from_json('{"type":"surprise"}')
 
     with pytest.raises(HostToPythonMessageError, match="input.submit.intent"):
-        host_message_from_json(
-            '{"type":"input.submit","text":"hello","intent":"interrupt"}'
-        )
+        host_message_from_json('{"type":"input.submit","text":"hello","intent":"interrupt"}')
 
 
 def test_host_message_from_json_parses_protocol_unknown() -> None:

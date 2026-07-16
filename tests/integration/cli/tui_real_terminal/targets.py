@@ -85,14 +85,19 @@ def _opentui_target(context: TargetContext) -> TuiTarget:
         {
             "OPENSQUILLA_TUI_FAKE_SCENARIO": context.scenario_id,
             "OPENSQUILLA_TUI_FAKE_APP_LOG": str(app_log),
+            "OPENSQUILLA_TUI_FAKE_PHASE_ACK_DIR": str(
+                context.artifact_dir / "phase-acks"
+            ),
             "OPENSQUILLA_TUI_READY_MARKER": "OPEN_SQUILLA_TUI_READY",
             "OPENSQUILLA_TUI_BACKEND": "opentui",
         }
     )
     if context.scenario_id in {
         "alternate_screen_mode_loss",
+        "complex_ui_state",
         "long_streaming",
         "same_size_eventless_framebuffer_recovery",
+        "same_size_eventless_stream_framebuffer_recovery",
         "same_size_framebuffer_recovery",
         "same_size_stream_framebuffer_recovery",
     }:

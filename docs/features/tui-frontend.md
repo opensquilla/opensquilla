@@ -93,18 +93,20 @@ plain-text mode from the transcript's actual width and terminal height. History
 replacement is authoritative: resumed content removes the welcome view, while
 an empty `/new` or `/reset` snapshot remounts it.
 
-Terminal viewport recovery reconciles the direct PTY size on resize,
-`SIGWINCH`, and focus-in, then requests one native full repaint. Codex and VS
-Code can also remount a same-size physical alternate-screen surface without
-emitting any of those events, so only those embedded hosts receive a restrained
-event-independent recovery watchdog. Each recovery first reasserts alternate
-screen, focus, mouse, SGR-mouse, and bracketed-paste modes, then performs the
-native full repaint; this prevents whole TUI frames from accumulating in normal
-scrollback and restores the hardware caret inside the composer. Ordinary
-terminals remain event-driven.
-Maintainers can set `OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS=0` to disable that
-fallback or a positive millisecond value (clamped to 250ms) to exercise it in
-the real-terminal harness.
+OpenTUI's public renderer `resize` and `focus` events own normal viewport
+recovery. Raw WriteStream resize and `SIGWINCH` are coalesced fallbacks only
+when the renderer misses its resize event. A resize, remount, theme change, or
+history replacement rebuilds transcript, rail, welcome, footer, and caret in
+one pre-paint transaction and exposes one full frame. Healthy focus/resize
+paths do not rewrite alternate-screen or mouse modes; the stronger mode
+reassertion is reserved for explicit recovery and the first wheel after a
+known blur. This avoids repeated screen swaps and keeps the caret inside the
+composer.
+
+There is no automatic periodic repaint in Codex, VS Code, or another terminal.
+For diagnosis only, maintainers can opt in with a positive
+`OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS` value (clamped to at least 250ms). The
+real-terminal gate must pass with the default event-driven value of zero.
 
 ## Complete Process Detail
 
@@ -118,10 +120,12 @@ reasoning settles as `Thought for Ns`.
 
 Thinking, reasoning, and tool renderers accumulate every delta delivered by the
 host protocol. Tool detail includes full arguments, process updates, results,
-and errors. Completed blocks are folded into compact previews by default and
-show the number of hidden visual lines; this is a presentation choice, not data
-discarding. Late deltas received after `block.end` are retained as part of the
-same block.
+and errors. Completed reasoning keeps up to eight of its latest visual rows, so
+short traces remain fully visible and long traces retain their most recent
+context without changing height on terminal resize. Other completed detail
+stays compact. Folded content shows the number of hidden visual lines; this is
+a presentation choice, not data discarding. Late deltas received after
+`block.end` are retained as part of the same block.
 
 When an ensemble actually executes, provider lifecycle events create one
 in-place `Ensemble · n/m complete` block. `Ctrl+O` discloses public member model,
@@ -129,8 +133,9 @@ provider, status, elapsed time, tokens, cost, and error metadata. The completed
 receipt and fallback reason survive history hydration. Candidate answer bodies
 and private reasoning are never copied into this block. Configuration alone is
 not treated as evidence that an Ensemble executed. The footer separately shows
-the Gateway-owned `direct | router | ensemble` strategy. `/router` and
-`/ensemble` update that canonical state through `models.routing.set`; during an
+the Gateway-owned `direct | router | ensemble` strategy. `/strategy` is the
+primary picker and `/router` plus `/ensemble` remain compatibility controls;
+all three update that canonical state through `models.routing.set`. During an
 active Turn the footer labels it as the next-Turn strategy while the Turn keeps
 rendering its captured Router decision or Ensemble lifecycle.
 
@@ -169,6 +174,43 @@ release installs resolve the companion package instead.
 
 Do not add parallel terminal/frontend implementations without fresh product
 direction and replay plus real-terminal evidence.
+
+## OpenTUI compatibility contract
+
+The companion pins one exact `@opentui/core` version (currently `0.4.3`) and one
+exact Bun toolchain. Product layout follows OpenTUI's documented
+[renderer and resize contract](https://opentui.com/docs/core-concepts/renderer/),
+[absolute renderable, mouse, and z-index APIs](https://opentui.com/docs/core-concepts/renderables/),
+and public [ScrollBox contract](https://opentui.com/docs/components/scrollbox/).
+It uses `onMouseScroll`, `scrollAcceleration`, and the documented cursor and
+[lifecycle cleanup](https://opentui.com/docs/core-concepts/lifecycle/) APIs.
+Application code must not override protected renderable methods.
+
+OpenTUI 0.4.x documentation does not expose a pre-paint layout callback or a
+public full-frame invalidation method. The typed `setFrameCallback` /
+`calculateLayout` bridge is isolated in `opentuiCompat.mjs`, and the one private
+full-repaint flag is isolated in `viewportRecovery.mjs`; no product component
+may reach into either seam. Both adapters are re-audited on every OpenTUI
+upgrade and removed as soon as documented upstream replacements exist.
+
+Follow new OpenTUI releases deliberately rather than floating the dependency:
+
+1. update the exact package and native-artifact lock together;
+2. run the complete Node and Bun renderer suites;
+3. run the styled framebuffer visual matrix at 80×24, 120×30, and 160×40;
+4. pass real-terminal streaming, wheel, resize, focus/remount, alternate-screen,
+   cursor, and teardown gates on macOS and Linux;
+5. ship only after the packaged companion repeats the same gates.
+
+An OpenTUI major version is eligible promptly, but it is never adopted solely
+because it exists: public API review and the visual/terminal gates are the
+compatibility decision.
+
+Component tests use OpenTUI's official
+[`@opentui/core/testing` renderer](https://opentui.com/docs/core-concepts/testing/)
+for exact character/span/cursor assertions. The PTY/tmux harness remains the
+separate integration oracle for real alternate-screen bytes and terminal mode
+restoration.
 
 ## Replay Benchmarks
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,27 +12,12 @@ from tui_real_terminal.driver import (
     probe_terminal_capabilities,
 )
 from tui_real_terminal.evidence import EvidenceBundle
-from tui_real_terminal.framebuffer import (
-    FOOTER_HEIGHT,
-    assert_opentui_framebuffer,
-    context_rail_width,
-)
+from tui_real_terminal.framebuffer import assert_opentui_framebuffer
 from tui_real_terminal.targets import TargetContext, build_tui_target
 
 pytestmark = pytest.mark.tui_real_terminal
 
 _SIZE = TerminalSize(cols=140, rows=36)
-
-
-def _pane_cursor(run_id: str) -> tuple[int, int]:
-    result = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", run_id, "#{cursor_x},#{cursor_y}"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    x, y = result.stdout.strip().split(",", 1)
-    return int(x), int(y)
 
 
 def test_sgr_wheel_holds_streaming_view_and_end_restores_follow(
@@ -119,14 +103,12 @@ def test_sgr_wheel_holds_streaming_view_and_end_restores_follow(
         held_framebuffer = session.capture_framebuffer("wheel-held-during-stream")
         assert held_framebuffer is not None
         evidence.record_framebuffer(held_framebuffer)
-        assert_opentui_framebuffer(held_framebuffer)
+        assert_opentui_framebuffer(
+            held_framebuffer,
+            cursor=session.cursor_position(),
+        )
         assert held.text.count("OpenSquilla · Session") == 1
         assert held.text.count("steer current turn · Tab queues") == 1
-
-        cursor_x, cursor_y = _pane_cursor(session.run_id)
-        content_width = _SIZE.cols - context_rail_width(_SIZE.cols)
-        assert 1 < cursor_x < content_width - 2
-        assert _SIZE.rows - FOOTER_HEIGHT < cursor_y < _SIZE.rows - 1
 
         session.send_key("End")
         followed = session.wait_for_text(
@@ -139,7 +121,10 @@ def test_sgr_wheel_holds_streaming_view_and_end_restores_follow(
         followed_framebuffer = session.capture_framebuffer("end-restored-follow")
         assert followed_framebuffer is not None
         evidence.record_framebuffer(followed_framebuffer)
-        assert_opentui_framebuffer(followed_framebuffer)
+        assert_opentui_framebuffer(
+            followed_framebuffer,
+            cursor=session.cursor_position(),
+        )
         evidence.write_scrollback(session.capture_scrollback_text("scrollback"))
     finally:
         session.terminate()

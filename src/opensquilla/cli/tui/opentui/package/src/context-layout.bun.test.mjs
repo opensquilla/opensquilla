@@ -16,6 +16,7 @@ import {
   normalizeContextUpdate,
 } from "./contextView.mjs";
 import { createDispatcher } from "./ipc.mjs";
+import { createRendererViewportState } from "./screenMode.mjs";
 import { THEME } from "./theme.mjs";
 import { textWidth } from "./primitives.mjs";
 
@@ -145,6 +146,10 @@ test("transport bootstrap placeholders are not presented as Router decisions", (
 async function makeRailHarness(width, height = 30) {
   const setup = await createTestRenderer({ width, height });
   const { renderer } = setup;
+  const viewportState = createRendererViewportState(renderer);
+  renderer.on("resize", (nextWidth, nextHeight) => {
+    viewportState.refresh("resize", { width: nextWidth, height: nextHeight });
+  });
   const conversationBox = new BoxRenderable(renderer, {
     id: "conversation",
     position: "absolute",
@@ -172,6 +177,7 @@ async function makeRailHarness(width, height = 30) {
     conversationBox,
     inputBox,
     footerHeight: FOOTER_HEIGHT,
+    viewport: () => viewportState.current(),
   });
   renderer.root.add(rail.header);
   renderer.root.add(rail.node);
@@ -290,6 +296,35 @@ test("rail content geometry is coherent inside the resize callback before Yoga r
     rail.onResize();
     expect(rail.rightInset()).toBe(0);
     expect(rail.contentWidth()).toBe(72);
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
+test("footer clamp expansion uses the new viewport before Yoga exposes the new height", async () => {
+  const { renderer, renderOnce, conversationBox, inputBox, rail } = await makeRailHarness(160, 5);
+  try {
+    // Mirror the production surface transaction in a pane shorter than the
+    // normal six-row footer, then render so OpenTUI caches the clamped height.
+    inputBox.height = 5;
+    rail.onResize();
+    await renderOnce();
+
+    // On expansion the setter updates Yoga style, but inputBox.height still
+    // exposes the prior computed value until the next frame. Rail geometry must
+    // come from the shared 30-row viewport, not that stale five-row getter.
+    renderer.resize(160, 30);
+    inputBox.height = FOOTER_HEIGHT;
+    rail.onResize();
+    expect(conversationBox.top).toBe(CONTEXT_HEADER_HEIGHT);
+    // The public height getter intentionally remains the last computed Yoga
+    // value until render. Inspect the pending public layout node style, then
+    // prove the next OpenTUI frame exposes the same committed geometry.
+    expect(conversationBox.getLayoutNode().getHeight().value).toBe(
+      30 - FOOTER_HEIGHT - CONTEXT_HEADER_HEIGHT,
+    );
+    await renderOnce();
+    expect(conversationBox.height).toBe(30 - FOOTER_HEIGHT - CONTEXT_HEADER_HEIGHT);
   } finally {
     renderer.destroy?.();
   }

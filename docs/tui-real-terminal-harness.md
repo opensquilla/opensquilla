@@ -108,6 +108,21 @@ OpenTUI backend path:
 uv run pytest tests/integration/cli/tui_real_terminal -q --tui-backend opentui
 ```
 
+Deterministic styled-framebuffer visual matrix (direct cold start at every
+size, with cursor and fixed-layer ownership checks):
+
+```bash
+uv run pytest \
+  tests/integration/cli/tui_real_terminal/test_visual_layout_matrix.py -q \
+  --tui-backend opentui --tui-driver tmux --tui-require-capabilities
+```
+
+This gate inspects terminal cells and their resolved RGB styles at 80×24,
+120×30, and 160×40. It asserts one header/logo/footer/composer, a cursor inside
+the composer, no transcript paint in footer rows, and coherent narrow/wide rail
+geometry. It is intentionally font-independent; screenshots remain evidence,
+while the styled framebuffer is the blocking visual oracle.
+
 The `opentui` backend runs deterministic fake-provider apps through the real
 terminal harness. A guarded `live-opentui` backend exists for manual real CLI
 smoke checks:

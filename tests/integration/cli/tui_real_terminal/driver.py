@@ -86,6 +86,8 @@ class RealTerminalSession(Protocol):
 
     def capture_scrollback_text(self, checkpoint: str) -> TerminalFrame: ...
 
+    def cursor_position(self) -> tuple[int, int] | None: ...
+
     def alternate_screen_active(self) -> bool: ...
 
     def wait_for_text(
@@ -300,6 +302,23 @@ class TmuxTerminalSession(_BaseTerminalSession):
         self._append_log(f"\n--- {checkpoint} scrollback ---\n{frame.text}")
         return frame
 
+    def cursor_position(self) -> tuple[int, int]:
+        result = subprocess.run(
+            [
+                "tmux",
+                "display-message",
+                "-p",
+                "-t",
+                self.run_id,
+                "#{cursor_x},#{cursor_y}",
+            ],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+        )
+        x, y = result.stdout.strip().split(",", 1)
+        return int(x), int(y)
+
     def alternate_screen_active(self) -> bool:
         # tmux tracks the pane's alternate-screen mode itself, so this probes
         # real terminal state rather than inferring it from captured text: an
@@ -436,6 +455,11 @@ class PtyTerminalSession(_BaseTerminalSession):
 
     def capture_scrollback_text(self, checkpoint: str) -> TerminalFrame:
         return self.capture_text(checkpoint)
+
+    def cursor_position(self) -> None:
+        # The PTY driver records an append-only byte stream; without a terminal
+        # emulator it cannot observe the physical hardware cursor.
+        return None
 
     def wait_for_text(
         self,

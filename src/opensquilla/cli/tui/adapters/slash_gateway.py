@@ -255,6 +255,13 @@ async def _activate_session_from_bootstrap(
             manage_composer=False,
         )
         apply_bootstrap_to_state(context.state, snapshot, history)
+        raw_session = snapshot.get("session")
+        session = raw_session if isinstance(raw_session, dict) else {}
+        if "model" in session:
+            # ``effective_model`` is display state and can be a Router pick.
+            # Only the canonical session ``model`` field is the durable pin.
+            model_pin = session.get("model")
+            context.requested_model = str(model_pin) if model_pin else None
         await send_context_update(
             context.tui_output,
             snapshot,
@@ -290,6 +297,24 @@ async def handle_gateway_slash_command(
         return True
 
 
+async def _canonical_session_model_pin(context: GatewaySlashContext) -> str | None:
+    """Read the durable model pin owned by the current Gateway session.
+
+    Gateway slash contexts are deliberately short-lived: the runtime creates
+    one per command, while ``state.model`` tracks the most recently effective
+    model and may therefore contain a Router/Ensemble selection.  Neither is a
+    reliable source for the model picker.  ``sessions.resolve.model`` is the
+    shared canonical field used by WebUI and every other Gateway client.
+    """
+
+    payload = await asyncio.wait_for(
+        context.client.resolve_session(context.state.session_key),
+        timeout=2.0,
+    )
+    model = payload.get("model")
+    return str(model) if model else None
+
+
 async def _requested_session_model(context: GatewaySlashContext) -> str | None:
     """Return the explicitly requested model for new sessions, if any.
 
@@ -302,10 +327,7 @@ async def _requested_session_model(context: GatewaySlashContext) -> str | None:
     if context.requested_model:
         return context.requested_model
     try:
-        payload = await asyncio.wait_for(
-            context.client.resolve_session(context.state.session_key),
-            timeout=2.0,
-        )
+        return await _canonical_session_model_pin(context)
     except Exception:  # noqa: BLE001 - best-effort read; default to routing
         # The read itself failed (slow/erroring gateway), which is different
         # from "no pin stored". Warn so the user is not surprised that the new
@@ -316,8 +338,6 @@ async def _requested_session_model(context: GatewaySlashContext) -> str | None:
             "[bold]/model <id>[/bold][yellow] if needed.[/yellow]"
         )
         return None
-    model = payload.get("model")
-    return str(model) if model else None
 
 
 async def _dispatch_gateway_slash_command(
@@ -338,11 +358,21 @@ async def _dispatch_gateway_slash_command(
         await dispatch_theme_command(cmd, tui_output)
         return True
 
-    if parts := _slash_parts_any(cmd, "/router", "/ensemble"):
+    if parts := _slash_parts_any(cmd, "/strategy", "/router", "/ensemble"):
         command = parts[0].lower()
         argument = parts[1].strip().lower() if len(parts) > 1 else ""
-        if argument not in {"", "on", "off", "status"}:
-            console.print(f"[red]Usage: {command} [on|off|status][/red]")
+        allowed_arguments = (
+            {"", "direct", "router", "ensemble", "status"}
+            if command == "/strategy"
+            else {"", "on", "off", "status"}
+        )
+        if argument not in allowed_arguments:
+            usage = (
+                "/strategy [direct|router|ensemble|status]"
+                if command == "/strategy"
+                else f"{command} [on|off|status]"
+            )
+            console.print(f"[red]Usage: {usage}[/red]")
             return True
 
         try:
@@ -376,7 +406,9 @@ async def _dispatch_gateway_slash_command(
             argument = "status"
 
         try:
-            if argument == "on":
+            if command == "/strategy" and argument in {"direct", "router", "ensemble"}:
+                snapshot = await client.set_model_routing(argument)
+            elif argument == "on":
                 requested = "router" if command == "/router" else "ensemble"
                 snapshot = await client.set_model_routing(requested)
             elif argument == "off":
@@ -529,15 +561,69 @@ async def _dispatch_gateway_slash_command(
         return True
 
     if parts := _slash_parts(cmd, "/model"):
-        if len(parts) == 1:
-            console.print(f"[dim]model={state.model or 'default'}[/dim]")
-        else:
-            new_model = parts[1].strip()
-            await client.patch_session(state.session_key, model=new_model)
-            state.model = new_model
-            context.requested_model = new_model
-            await send_context_patch(tui_output, model=new_model)
-            console.print(f"[green]model:[/green] {new_model}")
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        normalized = argument.lower()
+        if not argument:
+            requested_model = await _canonical_session_model_pin(context)
+            models = await client.list_models()
+            send = getattr(tui_output, "send_message", None)
+            if bool(getattr(tui_output, "supports_send_message", False)) and callable(send):
+                await send(
+                    "model.picker",
+                    {
+                        # The picker marks the durable session pin, not the
+                        # last model projected by a routed/ensemble turn.
+                        "current": requested_model,
+                        "options": [
+                            {
+                                "id": str(row.get("id") or ""),
+                                "provider": str(row.get("provider") or ""),
+                                "context_window": row.get("contextWindow"),
+                            }
+                            for row in models
+                            if str(row.get("id") or "").strip()
+                        ],
+                    },
+                )
+                return True
+            console.print(
+                "[dim]model pin[/dim] "
+                f"[bold]{requested_model or 'auto'}[/bold]"
+            )
+            _print_models_table(models)
+            return True
+        if normalized == "status":
+            requested_model = await _canonical_session_model_pin(context)
+            console.print(
+                "[dim]model pin[/dim] "
+                f"[bold]{requested_model or 'auto'}[/bold]"
+                + (
+                    " [dim](explicit; overrides Router selection)[/dim]"
+                    if requested_model
+                    else " [dim](Router/default decides)[/dim]"
+                )
+            )
+            return True
+        if normalized in {"auto", "default"}:
+            await client.patch_session(state.session_key, model=None)
+            state.model = None
+            context.requested_model = None
+            await send_context_patch(tui_output, model="default")
+            console.print(
+                "[green]model pin:[/green] auto "
+                "[dim](Router/default decides from the next accepted turn)[/dim]"
+            )
+            return True
+
+        new_model = argument
+        await client.patch_session(state.session_key, model=new_model)
+        state.model = new_model
+        context.requested_model = new_model
+        await send_context_patch(tui_output, model=new_model)
+        console.print(
+            f"[green]model pin:[/green] {new_model} "
+            "[dim](explicit; applies to the next accepted turn)[/dim]"
+        )
         return True
 
     if cmd == "/cost":

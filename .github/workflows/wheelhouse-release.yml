@@ -454,6 +454,7 @@ jobs:
               tests/integration/cli/tui_real_terminal/test_mouse_scroll_stability.py \
               tests/integration/cli/tui_real_terminal/test_framebuffer_recovery.py \
               tests/integration/cli/tui_real_terminal/test_idle_resize_round_trip.py \
+              tests/integration/cli/tui_real_terminal/test_visual_layout_matrix.py \
               tests/integration/cli/tui_real_terminal/test_exit_restoration.py \
               tests/integration/cli/tui_real_terminal/test_packaged_gateway_e2e.py \
               --tui-backend opentui \
@@ -866,6 +867,7 @@ jobs:
               tests/integration/cli/tui_real_terminal/test_mouse_scroll_stability.py \
               tests/integration/cli/tui_real_terminal/test_framebuffer_recovery.py \
               tests/integration/cli/tui_real_terminal/test_idle_resize_round_trip.py \
+              tests/integration/cli/tui_real_terminal/test_visual_layout_matrix.py \
               tests/integration/cli/tui_real_terminal/test_exit_restoration.py \
               tests/integration/cli/tui_real_terminal/test_packaged_gateway_e2e.py \
               --tui-backend opentui \

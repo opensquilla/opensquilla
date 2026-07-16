@@ -106,12 +106,15 @@ never get invented thought text: a sub-second wait disappears when output starts
 while a longer wait may leave an honest `Worked for Ns` receipt. Real reasoning
 finishes as `Thought for Ns`.
 
-Completed thinking, reasoning, and tool activity use compact previews so a long
-turn remains readable. Press **Ctrl+O** to expand or collapse the complete detail
-delivered to the TUI across the transcript, including thinking and reasoning
-deltas plus tool arguments, process updates, results, and errors. The shortcut
-does not move focus out of the composer. A hidden-line count makes folded data
-explicit.
+Completed reasoning keeps up to eight of its latest visual rows by default.
+Short reasoning is therefore fully readable without another action; longer
+reasoning preserves the most recent context plus an exact count of earlier
+hidden rows. The fixed cap avoids reflowing completed history when the terminal
+height changes. Completed thinking narration and tool activity remain compact.
+Press **Ctrl+O** to expand or collapse the complete detail delivered to the TUI
+across the transcript, including thinking and reasoning deltas plus tool
+arguments, process updates, results, and errors. The shortcut does not move
+focus out of the composer.
 
 An executed model ensemble appears as one live `Ensemble · n/m complete` row.
 **Ctrl+O** expands its member models, providers, status, duration, token/cost
@@ -119,10 +122,11 @@ metadata, and errors. The final receipt is restored with session history; raw
 candidate answers are not rendered.
 
 Gateway chat exposes one shared model strategy with three states: `direct`,
-`router`, and `ensemble`. Run `/router` or `/ensemble` to open the same
-three-state picker, or use `/router on|off|status` and
-`/ensemble on|off|status` for one-step control. The Gateway persists the
-selection and broadcasts it to WebUI and other TUI clients. A change made while
+`router`, and `ensemble`. Run `/strategy` to open the picker, or use
+`/strategy direct|router|ensemble|status` for one-step control. The compatibility
+commands `/router on|off|status` and `/ensemble on|off|status` operate on the
+same state. The Gateway persists the selection and broadcasts it to WebUI and
+other TUI clients. A change made while
 a turn is streaming is immediate control-plane input: it does not enter the
 prompt queue or interrupt the running turn, and applies to the next accepted
 turn. The footer always retains the configured strategy; each Turn shows only
@@ -165,6 +169,16 @@ path with `/path`, or use `/file` to upload a local file from the CLI machine.
 ## Common Commands
 
 Type `/help` in terminal chat to see the commands supported by the current mode.
+Typing `/` opens the curated command palette. Continue typing to fuzzy-search
+canonical names and aliases; compatibility commands stay out of the default
+palette but remain searchable. **Enter** runs a complete highlighted command,
+while **Tab** only completes it so you can add arguments. Commands with required
+arguments are never submitted by completion before the argument is present.
+
+Slash controls and queries execute on the command plane: they do not become
+user Prompt cards and do not enter the Turn queue. Commands such as `/file`,
+`/image`, `/path`, and `/meta <name>` intentionally create a Turn because their
+purpose is to send model input.
 
 Commands available in both gateway and standalone chat include:
 
@@ -173,25 +187,26 @@ Commands available in both gateway and standalone chat include:
 | `/help` | Show command help. |
 | `/status` or `/session` | Show the active session and model. |
 | `/new [title]` | Start a new session. |
-| `/model [model]` | Show or change the active model. |
+| `/model [auto\|status\|name]` | Inspect or set the session model; Gateway TUI opens a picker when no argument is given. |
 | `/cost` | Show usage for the current chat state. |
 | `/clear` or `/reset` | Clear the current session context. |
 | `/compact` or `/cmp` | Compact long context when possible. |
 | `/save [path]` | Save the transcript. |
+| `/image <path> [prompt]` | Send an image file with an optional prompt. |
+| `/path <path> [prompt]` | Attach a file by path. |
+| `/theme [name]` | Open or change terminal theme settings. |
+| `/quit` or `/exit` | Leave chat. |
 
 Gateway-only model strategy controls:
 
 | Command | Purpose |
 | --- | --- |
+| `/strategy [direct\|router\|ensemble\|status]` | Open the shared strategy picker, switch strategy, or inspect canonical state. |
 | `/router [on\|off\|status]` | Open the shared strategy picker, enable Router, select direct mode, or inspect canonical state. |
 | `/ensemble [on\|off\|status]` | Open the same picker, enable Model Ensemble, select direct mode, or inspect canonical state. |
 
 Standalone chat reports these controls as unavailable rather than maintaining
 a second local Router/Ensemble configuration.
-| `/image <path> [prompt]` | Send an image file with an optional prompt. |
-| `/path <path> [prompt]` | Attach a file by path. |
-| `/theme ...` | Change terminal theme settings when the active backend supports it. |
-| `/quit` or `/exit` | Leave chat. |
 
 Gateway-backed chat also supports session and operations commands:
 
@@ -200,14 +215,16 @@ Gateway-backed chat also supports session and operations commands:
 | `/sessions [limit]` | Open a searchable recent-session picker in TUI (table in plain mode). |
 | `/resume [id]` | Open the picker, or resume a specific session. |
 | `/delete <id>` | Delete a session. |
-| `/models` | List available models. |
 | `/usage` | Show aggregate usage. |
 | `/meta` | List MetaSkills. |
 | `/meta <name>` | Run a MetaSkill in the current session. |
 | `/file <path> [prompt]` | Upload a local file and send it with a prompt. |
 | `/permissions ...` | Inspect or change interactive permission mode. |
 | `/approvals ...` | Inspect or reset approval state. |
-| `/forget` | Clear remembered approvals. |
+
+`/models` and `/forget` remain executable compatibility commands, but are hidden
+from the default palette. Use `/model` for session-model selection and
+`/approvals` for the current approval state.
 
 Standalone chat supports the core commands above, but `/models`, `/meta`, and
 gateway-wide usage or approval commands require gateway mode.

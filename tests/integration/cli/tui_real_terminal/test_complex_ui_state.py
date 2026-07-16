@@ -66,12 +66,14 @@ def test_complex_ui_state(run_real_terminal_scenario) -> None:
     # thinking-accent glyph.
     assert intermediate_lines[0].lstrip().startswith("│  ✻ ")
     assert "second-intermediate-line" in intermediate_frame.text
-    # Once the model moves on to narration, the exact reasoning body folds out
-    # of the compact transcript but remains explicitly discoverable via Ctrl+O.
-    assert "reasoning-process-streams-live" not in intermediate_frame.text
+    # Once the model moves on to narration, completed reasoning keeps its latest
+    # eight visual rows. The opening rows fold out, real provider content stays
+    # visible, and the complete payload remains discoverable via Ctrl+O.
+    assert "reasoning-opening-context" not in intermediate_frame.text
+    assert "reasoning-process-streams-live" in intermediate_frame.text
     assert "Thinking" not in intermediate_frame.text
     assert "Thought for" in intermediate_frame.text
-    assert "reasoning lines · expand details" in intermediate_frame.text
+    assert "4 earlier · Ctrl+O details" in intermediate_frame.text
     assert_visible_text(final_frame, "think 436")
     assert "Ensemble · 2/2 complete" in final_frame.text
     assert "in 36,060 / out 1,047 / think 436" in final_frame.text

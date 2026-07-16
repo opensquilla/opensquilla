@@ -14,6 +14,7 @@ from opensquilla.cli.chat.turn import TurnResult
 from opensquilla.cli.tui.adapters import slash_bridge as _slash_bridge
 from opensquilla.cli.tui.adapters import slash_gateway as _slash_gateway
 from opensquilla.cli.tui.adapters import slash_standalone as _slash_standalone
+from opensquilla.cli.tui.adapters.commands import is_exit_command
 from opensquilla.cli.tui.adapters.slash_common import (
     record_turn,
     registry_handler_words,
@@ -80,6 +81,7 @@ class _StubGatewayClient:
         self.history_pages: dict[str | None, dict[str, Any]] = {}
         self.raise_map: dict[str, Exception] = {}
         self.session_rows: list[dict[str, Any]] = []
+        self.model_rows: list[dict[str, Any]] = []
         self._counter = 0
         self.model_routing: dict[str, Any] = {
             "mode": "direct",
@@ -173,7 +175,7 @@ class _StubGatewayClient:
         capabilities: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         self._maybe_raise("list_models")
-        return []
+        return list(self.model_rows)
 
     async def patch_session(self, key: str, **fields: Any) -> dict[str, Any]:
         self._maybe_raise("patch_session")
@@ -989,6 +991,135 @@ async def test_gateway_model_records_explicit_request_on_context(
     assert ("patch_session", ("agent:main:test:0", {"model": "openai/chosen"})) in client.calls
 
 
+async def test_gateway_model_bare_command_opens_model_picker() -> None:
+    client = _StubGatewayClient()
+    client.resolve_payloads["agent:main:test:0"] = {
+        "model": "openai/chosen",
+        "effective_model": "router/last-pick",
+    }
+    client.model_rows = [
+        {
+            "id": "openai/chosen",
+            "provider": "openai",
+            "contextWindow": 128_000,
+        }
+    ]
+    output = _StructuredOutput()
+
+    handled = await handle_gateway_slash_command(
+        "/model",
+        _gateway_context(client, model="router/last-pick", requested_model=None, tui_output=output),
+    )
+
+    assert handled is True
+    assert output.messages == [
+        (
+            "model.picker",
+            {
+                "current": "openai/chosen",
+                "options": [
+                    {
+                        "id": "openai/chosen",
+                        "provider": "openai",
+                        "context_window": 128_000,
+                    }
+                ],
+            },
+        )
+    ]
+
+
+async def test_gateway_model_bare_command_plain_fallback_lists_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _patch_gateway_io(monkeypatch)
+    listed: list[dict[str, Any]] = []
+    monkeypatch.setattr(_slash_gateway, "_print_models_table", listed.extend)
+    client = _StubGatewayClient()
+    client.resolve_payloads["agent:main:test:0"] = {"model": None}
+    client.model_rows = [
+        {
+            "id": "openai/example",
+            "provider": "openai",
+            "contextWindow": 128_000,
+            "capabilities": ["text"],
+        }
+    ]
+
+    handled = await handle_gateway_slash_command("/model", _gateway_context(client))
+
+    assert handled is True
+    assert "model pin" in recorder.text()
+    assert "auto" in recorder.text()
+    assert listed == client.model_rows
+
+
+async def test_gateway_model_status_reads_canonical_pin_not_routed_display_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    client.resolve_payloads["agent:main:test:0"] = {
+        "model": "openai/pinned",
+        "effective_model": "router/last-pick",
+    }
+
+    handled = await handle_gateway_slash_command(
+        "/model status",
+        _gateway_context(client, model="router/last-pick", requested_model=None),
+    )
+
+    assert handled is True
+    assert "openai/pinned" in recorder.text()
+    assert "router/last-pick" not in recorder.text()
+
+
+async def test_gateway_resume_refreshes_in_context_model_pin_from_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    target = "agent:main:resumed"
+    client.bootstrap_payloads[target] = {
+        "session": {
+            "session_key": target,
+            "model": "openai/resumed-pin",
+            "effective_model": "router/resumed-pick",
+        },
+        "history": {"messages": [], "history_scope": "complete"},
+    }
+    context = _gateway_context(
+        client,
+        requested_model="openai/old-pin",
+        tui_output=_StructuredOutput(),
+    )
+
+    handled = await handle_gateway_slash_command(f"/resume {target}", context)
+
+    assert handled is True
+    assert context.requested_model == "openai/resumed-pin"
+    assert context.state.model == "router/resumed-pick"
+
+
+async def test_gateway_model_auto_clears_explicit_session_pin() -> None:
+    client = _StubGatewayClient()
+    output = _StructuredOutput()
+    context = _gateway_context(
+        client,
+        model="openai/chosen",
+        requested_model="openai/chosen",
+        tui_output=output,
+    )
+
+    handled = await handle_gateway_slash_command("/model auto", context)
+
+    assert handled is True
+    assert context.requested_model is None
+    assert context.state.model is None
+    assert ("patch_session", ("agent:main:test:0", {"model": None})) in client.calls
+    assert output.messages[-1] == ("context.update", {"model": "default"})
+
+
 # --------------------------------------------------------------------------- #
 # /delete of the active session                                                #
 # --------------------------------------------------------------------------- #
@@ -1118,12 +1249,29 @@ def test_classify_exit_variants_enqueue_for_runtime_interception(command: str) -
     assert category is not SlashCategory.NON_SLASH
 
 
+@pytest.mark.parametrize("command", ["/EXIT", "/exit now", "/Quit"])
+def test_runtime_exit_interception_rejects_malformed_slash_variants(command: str) -> None:
+    """Command-plane input must not bypass the exact drain-and-exit policy."""
+    assert is_exit_command(command, Surface.CLI_GATEWAY) is False
+    assert is_exit_command(command, Surface.CLI_STANDALONE) is False
+
+
+@pytest.mark.parametrize("command", ["exit", "EXIT", "quit", "QUIT", ":q", ":Q"])
+def test_runtime_exit_interception_preserves_bare_exit_compatibility(command: str) -> None:
+    assert is_exit_command(command, Surface.CLI_GATEWAY) is True
+
+
 @pytest.mark.parametrize(
     "command",
     ["/router", "/router on", "/router status", "/ensemble", "/ensemble off"],
 )
 def test_classify_model_strategy_as_immediate_control(command: str) -> None:
     assert classify(command) is SlashCategory.CONTROL
+
+
+@pytest.mark.parametrize("command", ["/strategy", "/router on", "/ensemble", "/meta foo"])
+def test_standalone_gateway_only_commands_stay_off_the_turn_plane(command: str) -> None:
+    assert classify(command, surface=Surface.CLI_STANDALONE) is SlashCategory.COMMAND
 
 
 async def test_gateway_model_strategy_bare_command_opens_shared_picker() -> None:
@@ -1155,6 +1303,9 @@ async def test_gateway_model_strategy_bare_command_opens_shared_picker() -> None
         ("/router off", "direct"),
         ("/ensemble on", "ensemble"),
         ("/ensemble off", "direct"),
+        ("/strategy direct", "direct"),
+        ("/strategy router", "router"),
+        ("/strategy ensemble", "ensemble"),
     ],
 )
 async def test_gateway_model_strategy_command_sets_canonical_mode(

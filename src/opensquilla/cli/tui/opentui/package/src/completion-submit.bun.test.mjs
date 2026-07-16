@@ -42,7 +42,19 @@ async function setupComposer() {
   composer.setCompletionContext({
     catalog: [
       { label: "/theme", insert_text: "/theme ", description: "List or switch the OpenTUI color theme.", category: "command" },
-      { label: "/html-coder", insert_text: "use the html-coder skill: ", description: "HTML skill.", category: "skill" },
+      { label: "/skill:html-coder", insert_text: "use the html-coder skill: ", description: "HTML skill.", category: "skill", submit_behavior: "complete" },
+      {
+        label: "/router",
+        insert_text: "/router ",
+        description: "Control Router.",
+        category: "model",
+        argument_choices: [
+          { value: "on", description: "Enable Router." },
+          { value: "off", description: "Use direct mode." },
+          { value: "status", description: "Show current strategy." },
+        ],
+      },
+      { label: "/resume", insert_text: "/resume ", description: "Resume a session.", category: "session", submit_behavior: "submit" },
     ],
     files: ["src/app.mjs"],
   });
@@ -73,6 +85,24 @@ test("Tab on the /theme suggestion completes without submitting", async () => {
 
   // Tab completes (for typing arguments) — it must NOT submit on its own.
   expect(sent.some((m) => m.type === "input.submit")).toBe(false);
+  renderer.destroy?.();
+});
+
+test("command argument choices complete and submit in one Enter", async () => {
+  const { renderer, sent } = await setupComposer();
+  type(renderer, "/router s");
+  press(renderer, "return");
+
+  expect(sent.find((m) => m.type === "input.submit")?.text).toBe("/router status ");
+  renderer.destroy?.();
+});
+
+test("bare picker command Enter opens it in one keystroke", async () => {
+  const { renderer, sent } = await setupComposer();
+  type(renderer, "/resume");
+  press(renderer, "return");
+
+  expect(sent.find((m) => m.type === "input.submit")?.text).toBe("/resume ");
   renderer.destroy?.();
 });
 

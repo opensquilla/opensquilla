@@ -539,6 +539,50 @@ test("model strategy picker is modal and submits one control command", () => {
   });
 });
 
+test("model picker starts with Auto and submits the selected session pin", () => {
+  const { composer, press, paste, overlayLayer, sent } = makeHarness();
+  composer.openModelPicker({
+    current: null,
+    options: [
+      { id: "deepseek/deepseek-v4-pro", provider: "deepseek", context_window: 128000 },
+      { id: "z-ai/glm-5.2", provider: "z-ai", context_window: 200000 },
+    ],
+  });
+
+  const picker = findDeep(overlayLayer, "model-picker");
+  assert.ok(picker);
+  assert.match(findDeep(picker, "model-picker-row-0").options.content, /● Auto/);
+  paste("must-not-enter-the-composer");
+  press({ name: "down" });
+  press({ name: "return" });
+
+  assert.equal(findDeep(overlayLayer, "model-picker"), null);
+  assert.deepEqual(sent.at(-1), {
+    type: "input.submit",
+    text: "/model deepseek/deepseek-v4-pro",
+    intent: "control",
+  });
+});
+
+test("model picker filters without mutating the composer and Escape cancels", () => {
+  const { composer, type, press, overlayLayer, sent } = makeHarness();
+  composer.openModelPicker({
+    current: "deepseek/deepseek-v4-pro",
+    options: [
+      { id: "deepseek/deepseek-v4-pro", provider: "deepseek" },
+      { id: "z-ai/glm-5.2", provider: "z-ai" },
+    ],
+  });
+
+  type("glm");
+  const picker = findDeep(overlayLayer, "model-picker");
+  assert.ok(findDeep(picker, "model-picker-row-0").options.content.includes("z-ai/glm-5.2"));
+  press({ name: "escape" });
+
+  assert.equal(findDeep(overlayLayer, "model-picker"), null);
+  assert.equal(sent.length, 0);
+});
+
 test("strategy changes during a turn render as next until the turn ends", () => {
   const { composer, inputBox } = makeHarness({ terminalWidth: 160 });
   const strategyText = () => findDeep(inputBox, "router-strategy")?.options?.content;

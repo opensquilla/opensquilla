@@ -6,6 +6,7 @@ import {
   normalizeContextUpdate,
 } from "./contextView.mjs";
 import { destroyChildren, destroyRenderable } from "./renderableLifecycle.mjs";
+import { rendererViewportSnapshot } from "./screenMode.mjs";
 
 const COMPLETION_MENU_LEFT = 1;
 const COMPLETION_MENU_RIGHT = 34;
@@ -153,6 +154,44 @@ export function shouldTriggerMenu(token, start, lineStart) {
   return { active: false, kind: null, query: "" };
 }
 
+// Resolve the first argument of a known slash command into structured choice
+// rows.  The Python catalog owns the command grammar; the host only projects
+// it into the same completion menu used for command names.  Keeping this pure
+// also makes the exact "command + space" transition independently testable.
+export function slashArgumentContext(text, cursorPos, catalog) {
+  const chars = Array.from(String(text ?? ""));
+  const pos = clamp(Number(cursorPos) || 0, 0, chars.length);
+  let lineStart = pos;
+  while (lineStart > 0 && chars[lineStart - 1] !== "\n") lineStart -= 1;
+  const line = chars.slice(lineStart, pos).join("");
+  const match = line.match(/^(\/\S+)\s+(\S*)$/u);
+  if (!match) return null;
+
+  const head = match[1].toLocaleLowerCase();
+  const query = match[2];
+  const command = (Array.isArray(catalog) ? catalog : []).find((item) => {
+    const words = [item?.label, ...(Array.isArray(item?.aliases) ? item.aliases : [])];
+    return words.some((word) => String(word ?? "").toLocaleLowerCase() === head);
+  });
+  const choices = command?.argument_choices ?? command?.argumentChoices;
+  if (!Array.isArray(choices) || choices.length === 0) return null;
+
+  return {
+    query,
+    tokenStart: pos - Array.from(query).length,
+    items: choices.map((choice) => ({
+      label: String(choice?.value ?? ""),
+      description: String(choice?.description ?? ""),
+      insert_text: `${String(choice?.value ?? "")} `,
+      category: "argument",
+      visible_by_default: true,
+      deprecated: false,
+      submit_behavior: "submit",
+      parent_command: String(command?.label ?? ""),
+    })).filter((item) => item.label),
+  };
+}
+
 function subsequencePositions(query, text) {
   const positions = [];
   let from = 0;
@@ -217,13 +256,25 @@ function fuzzyScore(query, candidate) {
 export function filterCatalog(catalog, query) {
   const items = Array.isArray(catalog) ? catalog : [];
   const q = String(query ?? "");
-  if (!q) return [...items];
+  if (!q) {
+    return items.filter((item) =>
+      item?.visible_by_default !== false && item?.deprecated !== true);
+  }
   return items
-    .map((item, index) => ({
-      item,
-      index,
-      score: fuzzyScore(q, String(item?.label ?? "")),
-    }))
+    .map((item, index) => {
+      const words = [
+        String(item?.label ?? ""),
+        ...(Array.isArray(item?.aliases) ? item.aliases.map(String) : []),
+      ];
+      const scores = words
+        .map((word) => fuzzyScore(q, word))
+        .filter((score) => score !== null);
+      return {
+        item,
+        index,
+        score: scores.length > 0 ? Math.max(...scores) : null,
+      };
+    })
     .filter((entry) => entry.score !== null)
     .sort((a, b) => (b.score - a.score) || (a.index - b.index))
     .map((entry) => entry.item);
@@ -444,11 +495,14 @@ export function menuKeyAction(menu, keyName) {
     // can still type arguments (e.g. `/theme dark`). File completions only insert
     // the path — Enter there keeps composing the message, never submits it.
     if (keyName === "return" && menu.kind === "slash") {
-      // Skill suggestions insert a prompt PREFIX ("use the X skill: ") that
-      // still needs the task typed after it — submitting it immediately would
-      // send a dangling instruction. They complete like file paths instead.
       const item = menu.filtered[clamp(selected, 0, maxSelected)];
-      if (String(item?.category ?? "") === "skill") {
+      // Structured metadata decides whether Enter is a one-step command submit
+      // or only a completion.  Required-argument commands and skill prompt
+      // prefixes use "complete" so Enter cannot send an incomplete operation.
+      if (
+        String(item?.submit_behavior ?? "") === "complete"
+        || String(item?.category ?? "") === "skill"
+      ) {
         return { handled: true, action: "accept", menu };
       }
       return { handled: true, action: "accept_submit", menu };
@@ -482,6 +536,7 @@ export function createComposer(deps) {
     inputBox,
     overlayLayer,
     footerHeight,
+    viewport = () => rendererViewportSnapshot(renderer),
     sendHostMessage,
     onContextUpdate,
     onRouterUpdate,
@@ -496,13 +551,14 @@ export function createComposer(deps) {
   // so the composer must lay out (and place the caret / overlays) against the
   // same clamped value or it overflows a 3–5 row pane. Recomputed each use so it
   // tracks live resizes.
-  const effFooterHeight = () => clampFooterHeight(footerHeight, renderer.terminalHeight ?? 24);
+  const viewportHeight = () => viewport().height;
+  const effFooterHeight = () => clampFooterHeight(footerHeight, viewportHeight());
 
   // inputBox.right is the single source of truth for space reserved by the
   // optional context rail. Composer wrapping, overlays, and the hardware caret
   // all use the same effective surface so none can paint beneath the rail.
   function terminalWidth() {
-    return Math.max(1, Number(renderer?.terminalWidth ?? renderer?.width) || 80);
+    return viewport().width;
   }
 
   function footerRightInset() {
@@ -701,12 +757,20 @@ export function createComposer(deps) {
 
   // Rows available above the footer for the menu box (its borders included).
   function completionMenuMaxRows() {
-    return Math.max(0, (Number(renderer?.terminalHeight) || 24) - effFooterHeight());
+    return Math.max(0, viewportHeight() - effFooterHeight());
   }
 
   function updateMenuFromInput() {
     const { token, start } = tokenUnderCaret(inputText, cursorPos);
-    const trigger = shouldTriggerMenu(token, start, lineStartForToken(inputText, start));
+    const argumentContext = slashArgumentContext(
+      inputText,
+      cursorPos,
+      completionContext.catalog,
+    );
+    const trigger = argumentContext
+      ? { active: true, kind: "slash", query: argumentContext.query }
+      : shouldTriggerMenu(token, start, lineStartForToken(inputText, start));
+    const tokenStart = argumentContext?.tokenStart ?? start;
     if (!trigger.active) {
       menuDismissed = null; // leaving the token ends an Escape dismissal
       resetMenu();
@@ -714,7 +778,11 @@ export function createComposer(deps) {
     }
     // Escape dismissed the menu for this exact token: keep it closed until the
     // token (or trigger kind) changes, instead of reopening on the next key.
-    if (menuDismissed && menuDismissed.kind === trigger.kind && menuDismissed.tokenStart === start) {
+    if (
+      menuDismissed
+      && menuDismissed.kind === trigger.kind
+      && menuDismissed.tokenStart === tokenStart
+    ) {
       resetMenu();
       return;
     }
@@ -732,13 +800,16 @@ export function createComposer(deps) {
     menu.active = true;
     menu.kind = trigger.kind;
     menu.query = trigger.query;
-    menu.tokenStart = start;
+    menu.tokenStart = tokenStart;
     if (menu.kind === "slash") {
       if (fileDebounce) {
         clearTimeout(fileDebounce);
         fileDebounce = null;
       }
-      menu.filtered = filterCatalog(completionContext.catalog, menu.query);
+      menu.filtered = filterCatalog(
+        argumentContext?.items ?? completionContext.catalog,
+        menu.query,
+      );
     } else {
       menu.filtered = filterCatalog(fileCompletionItems(completionContext.files), menu.query);
       scheduleFileCompletionRequest(menu.query);
@@ -802,6 +873,7 @@ export function createComposer(deps) {
     destroyRenderable(overlayLayer, "approval-overlay");
     destroyRenderable(overlayLayer, "session-picker");
     destroyRenderable(overlayLayer, "model-routing-picker");
+    destroyRenderable(overlayLayer, "model-picker");
     // Hide the layer again so it stops intercepting wheel events — otherwise a
     // permanently-visible full-screen overlay blocks conversation scrolling.
     if (overlayLayer) overlayLayer.visible = false;
@@ -867,6 +939,8 @@ export function createComposer(deps) {
   let sessionPicker = null;
   const MODEL_ROUTING_PICKER_WIDTH = 46;
   let modelRoutingPicker = null;
+  const MODEL_PICKER_WIDTH = 72;
+  let modelPicker = null;
 
   function overlayPanelGeometry(preferredWidth) {
     const width = Math.max(
@@ -891,7 +965,7 @@ export function createComposer(deps) {
     destroyRenderable(overlayLayer, "theme-picker");
     const names = themePicker.names;
     const geometry = overlayPanelGeometry(THEME_PICKER_WIDTH);
-    const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const maxRows = Math.max(1, viewportHeight() - effFooterHeight() - 1);
     const node = new BoxRenderable(renderer, {
       id: "theme-picker",
       position: "absolute",
@@ -928,6 +1002,7 @@ export function createComposer(deps) {
   function openThemePicker() {
     if (sessionPicker?.active) closeSessionPicker();
     if (modelRoutingPicker?.active) closeModelRoutingPicker();
+    if (modelPicker?.active) closeModelPicker();
     resetMenu(); // close the completion menu if it was open
     const names = THEME_NAMES;
     let selected = names.indexOf(activeThemeName());
@@ -975,7 +1050,7 @@ export function createComposer(deps) {
     if (!sessionPicker?.active) return;
     destroyRenderable(overlayLayer, "session-picker");
     const geometry = overlayPanelGeometry(SESSION_PICKER_WIDTH);
-    const available = Math.max(4, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const available = Math.max(4, viewportHeight() - effFooterHeight() - 1);
     const rows = filteredSessions();
     sessionPicker.selected = clamp(sessionPicker.selected, 0, Math.max(0, rows.length - 1));
     const visible = Math.max(1, Math.min(rows.length || 1, available - 4, 8));
@@ -1045,6 +1120,7 @@ export function createComposer(deps) {
   function openSessionPicker(message) {
     if (themePicker?.active) handleThemePickerKey("escape");
     if (modelRoutingPicker?.active) closeModelRoutingPicker();
+    if (modelPicker?.active) closeModelPicker();
     resetMenu();
     const sessions = (Array.isArray(message?.sessions) ? message.sessions : [])
       .map((item) => ({
@@ -1125,7 +1201,7 @@ export function createComposer(deps) {
     if (!modelRoutingPicker?.active) return;
     destroyRenderable(overlayLayer, "model-routing-picker");
     const geometry = overlayPanelGeometry(MODEL_ROUTING_PICKER_WIDTH);
-    const available = Math.max(4, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const available = Math.max(4, viewportHeight() - effFooterHeight() - 1);
     const node = new BoxRenderable(renderer, {
       id: "model-routing-picker",
       position: "absolute",
@@ -1174,6 +1250,7 @@ export function createComposer(deps) {
   function openModelRoutingPicker(message) {
     if (themePicker?.active) handleThemePickerKey("escape");
     if (sessionPicker?.active) closeSessionPicker();
+    if (modelPicker?.active) closeModelPicker();
     if (modelRoutingPicker?.active) closeModelRoutingPicker();
     resetMenu();
     const supplied = Array.isArray(message?.options) ? message.options : [];
@@ -1214,6 +1291,174 @@ export function createComposer(deps) {
     return true;
   }
 
+  // ---- Session model picker -----------------------------------------------
+  // The Gateway sends its canonical model catalog.  "Auto" is a synthetic
+  // first row that clears the durable session pin; every other row submits the
+  // existing /model fast path so Python remains the only mutation owner.
+  function filteredModels() {
+    if (!modelPicker?.active) return [];
+    const query = String(modelPicker.query ?? "").trim().toLowerCase();
+    if (!query) return modelPicker.options;
+    return modelPicker.options.filter((item) =>
+      `${item.label} ${item.id} ${item.provider}`.toLowerCase().includes(query));
+  }
+
+  function renderModelPicker() {
+    if (!modelPicker?.active) return;
+    destroyRenderable(overlayLayer, "model-picker");
+    const geometry = overlayPanelGeometry(MODEL_PICKER_WIDTH);
+    const available = Math.max(4, viewportHeight() - effFooterHeight() - 1);
+    const rows = filteredModels();
+    modelPicker.selected = clamp(modelPicker.selected, 0, Math.max(0, rows.length - 1));
+    const visible = Math.max(1, Math.min(rows.length || 1, available - 4, 10));
+    let start = Math.max(0, modelPicker.selected - Math.floor(visible / 2));
+    start = Math.min(start, Math.max(0, rows.length - visible));
+    const node = new BoxRenderable(renderer, {
+      id: "model-picker",
+      position: "absolute",
+      left: COMPLETION_MENU_LEFT,
+      width: geometry.width,
+      bottom: effFooterHeight(),
+      height: Math.min(available, visible + 4),
+      borderStyle: "rounded",
+      borderColor: THEME.brandAccent,
+      backgroundColor: THEME.overlayBg,
+      title: " session model ",
+      titleAlignment: "left",
+      flexDirection: "column",
+      paddingLeft: 1,
+      paddingRight: 1,
+    });
+    node.add(new TextRenderable(renderer, {
+      id: "model-picker-query",
+      content: clipToCells(`search: ${modelPicker.query || "_"}`, geometry.inner),
+      fg: THEME.text,
+      wrapMode: "none",
+    }));
+    if (rows.length === 0) {
+      node.add(new TextRenderable(renderer, {
+        id: "model-picker-empty",
+        content: "  no matching models",
+        fg: THEME.muted,
+      }));
+    } else {
+      rows.slice(start, start + visible).forEach((item, offset) => {
+        const index = start + offset;
+        const current = item.id === modelPicker.current ? "●" : " ";
+        const meta = [item.provider, item.contextWindow]
+          .filter(Boolean).join(" · ");
+        node.add(new TextRenderable(renderer, {
+          id: `model-picker-row-${index}`,
+          content: clipToCells(
+            `${index === modelPicker.selected ? "›" : " "} ${current} ${item.label}${meta ? `  ${meta}` : ""}`,
+            geometry.inner,
+          ),
+          fg: index === modelPicker.selected ? THEME.brandAccentSoft : THEME.muted,
+          wrapMode: "none",
+        }));
+      });
+    }
+    node.add(new TextRenderable(renderer, {
+      id: "model-picker-hint",
+      content: clipToCells("type to filter · ↑↓ choose · enter pin · esc", geometry.inner),
+      fg: THEME.detailText,
+      wrapMode: "none",
+    }));
+    overlayLayer.add(node);
+    overlayLayer.visible = true;
+  }
+
+  function closeModelPicker() {
+    modelPicker = null;
+    clearOverlay();
+  }
+
+  function openModelPicker(message) {
+    if (themePicker?.active) handleThemePickerKey("escape");
+    if (sessionPicker?.active) closeSessionPicker();
+    if (modelRoutingPicker?.active) closeModelRoutingPicker();
+    if (modelPicker?.active) closeModelPicker();
+    resetMenu();
+    const seen = new Set();
+    const supplied = (Array.isArray(message?.options) ? message.options : [])
+      .map((item) => ({
+        id: String(item?.id ?? "").trim(),
+        label: String(item?.id ?? "").trim(),
+        provider: String(item?.provider ?? "").trim(),
+        contextWindow: item?.context_window ?? item?.contextWindow ?? "",
+      }))
+      .filter((item) => item.id && !seen.has(item.id) && seen.add(item.id));
+    const options = [
+      {
+        id: "auto",
+        label: "Auto",
+        provider: "Router/default decides",
+        contextWindow: "",
+      },
+      ...supplied,
+    ];
+    const current = String(message?.current ?? "").trim() || "auto";
+    modelPicker = {
+      active: true,
+      options,
+      current,
+      query: "",
+      selected: Math.max(0, options.findIndex((item) => item.id === current)),
+    };
+    renderModelPicker();
+    renderer.requestRender?.();
+  }
+
+  function handleModelPickerKey(key) {
+    if (!modelPicker?.active) return false;
+    if (key.name === "escape" || (key.ctrl && key.name === "c")) {
+      closeModelPicker();
+      rerenderInputRegion();
+      return true;
+    }
+    const rows = filteredModels();
+    if (key.name === "up" || key.name === "down") {
+      const delta = key.name === "up" ? -1 : 1;
+      modelPicker.selected = clamp(
+        modelPicker.selected + delta,
+        0,
+        Math.max(0, rows.length - 1),
+      );
+      renderModelPicker();
+      renderer.requestRender?.();
+      return true;
+    }
+    if (key.name === "return") {
+      const selected = rows[modelPicker.selected];
+      if (!selected) return true;
+      closeModelPicker();
+      sendHostMessage({
+        type: "input.submit",
+        text: `/model ${selected.id}`,
+        intent: "control",
+      });
+      rerenderInputRegion();
+      return true;
+    }
+    if (key.name === "backspace") {
+      modelPicker.query = Array.from(modelPicker.query).slice(0, -1).join("");
+      modelPicker.selected = 0;
+      renderModelPicker();
+      renderer.requestRender?.();
+      return true;
+    }
+    const printable = !key.ctrl && !key.meta && !key.alt && !key.option
+      && typeof key.sequence === "string"
+      && !/[\u0000-\u001f\u007f]/u.test(key.sequence);
+    if (printable) {
+      modelPicker.query += key.sequence;
+      modelPicker.selected = 0;
+      renderModelPicker();
+      renderer.requestRender?.();
+    }
+    return true;
+  }
+
   // ---- Tool-approval overlay ------------------------------------------------
   // A modal confirm panel mounted on the overlay layer (like the theme picker),
   // opened by the Python side's approval.request frame while a turn is waiting
@@ -1234,7 +1479,7 @@ export function createComposer(deps) {
     destroyRenderable(overlayLayer, "approval-overlay");
     const choices = approvalOverlay.choices;
     const geometry = overlayPanelGeometry(APPROVAL_OVERLAY_WIDTH);
-    const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - effFooterHeight() - 1);
+    const maxRows = Math.max(1, viewportHeight() - effFooterHeight() - 1);
     const bodyRows = 2 + choices.length + (approvalOverlay.summary ? 1 : 0);
     const node = new BoxRenderable(renderer, {
       id: "approval-overlay",
@@ -1296,6 +1541,8 @@ export function createComposer(deps) {
     // its live preview, exactly like Escape) and any completion menu first.
     if (themePicker?.active) handleThemePickerKey("escape");
     if (sessionPicker?.active) closeSessionPicker();
+    if (modelRoutingPicker?.active) closeModelRoutingPicker();
+    if (modelPicker?.active) closeModelPicker();
     resetMenu();
     approvalOverlay = {
       active: true,
@@ -1526,6 +1773,7 @@ export function createComposer(deps) {
     if (approvalOverlay?.active) renderApprovalOverlay();
     if (sessionPicker?.active) renderSessionPicker();
     if (modelRoutingPicker?.active) renderModelRoutingPicker();
+    if (modelPicker?.active) renderModelPicker();
     syncTerminalCursorToCaret(viewport);
     renderer.requestRender?.();
   }
@@ -1625,7 +1873,7 @@ export function createComposer(deps) {
   function syncTerminalCursorToCaret(viewport) {
     const setCursorPosition = renderer?.setCursorPosition;
     if (typeof setCursorPosition !== "function") return;
-    const terminalHeight = Number(renderer?.terminalHeight ?? renderer?.height) || 24;
+    const terminalHeight = viewportHeight();
     const fh = effFooterHeight();
     const footerTop = Math.max(0, terminalHeight - fh);
     // The caret row/col come from the SAME wrapped-and-windowed layout the
@@ -1826,6 +2074,10 @@ export function createComposer(deps) {
       }
       if (modelRoutingPicker?.active) {
         handleModelRoutingPickerKey(key.name);
+        return;
+      }
+      if (modelPicker?.active) {
+        handleModelPickerKey(key);
         return;
       }
       // Modified Enter is the newline chord — it must reach the newline branch
@@ -2067,7 +2319,12 @@ export function createComposer(deps) {
       // The theme picker is modal for keypresses; paste must not slip past it
       // and mutate the draft underneath the overlay. The approval overlay is
       // modal the same way.
-      if (themePicker?.active || approvalOverlay?.active || modelRoutingPicker?.active) return;
+      if (
+        themePicker?.active
+        || approvalOverlay?.active
+        || modelRoutingPicker?.active
+        || modelPicker?.active
+      ) return;
       // Sanitize pasted text: real terminals (and tmux paste-buffer) transmit
       // pasted newlines as bare CR, so normalize CRLF/CR to LF FIRST — the
       // control-byte strip below removes CR and would otherwise concatenate
@@ -2257,6 +2514,7 @@ export function createComposer(deps) {
     openThemePicker,
     openSessionPicker,
     openModelRoutingPicker,
+    openModelPicker,
     openApprovalOverlay,
     dismissApprovalOverlay,
     applyHostTheme,

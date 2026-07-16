@@ -211,9 +211,9 @@ test("a height-only resize recomputes the active reasoning peek", async () => {
 });
 
 test("a turn cancelled during reasoning keeps the Thought record in its card", async () => {
-  // Cancel during extended thinking: the reasoning block collapses to its
-  // "Thought for Ns" record, so the card keeps a real body and closes into a
-  // footer that carries both the cancel marker and the usage receipt.
+  // Cancel during extended thinking: the reasoning block settles to its
+  // "Thought for Ns" record and bounded preview, so the card keeps a real body
+  // and closes into a footer carrying both cancel marker and usage receipt.
   const { renderer, renderOnce, captureSpans, turn } = await makeTurnHarness();
   turn.begin("r1", "reasoning", {});
   turn.append("r1", "weighing the options");
@@ -224,8 +224,8 @@ test("a turn cancelled during reasoning keeps the Thought record in its card", a
   await renderOnce();
   const text = frameText(captureSpans());
   expect(text).toContain("╭ squilla");
-  expect(text).toContain("Thought for"); // the collapsed reasoning record
-  expect(text).not.toContain("weighing the options"); // the peek is gone
+  expect(text).toContain("Thought for");
+  expect(text).toContain("weighing the options");
   const footer = text.split("\n").find((line) => line.includes("╰"));
   expect(footer).toContain("cancelled");
   expect(footer).toContain("in 10 / out 0");

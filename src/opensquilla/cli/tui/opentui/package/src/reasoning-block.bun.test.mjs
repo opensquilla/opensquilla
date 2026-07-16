@@ -206,7 +206,35 @@ test("live reasoning peek adapts to terminal height", () => {
   expect(livePeekRows(100)).toBe(8);
 });
 
-test("finished reasoning reports hidden lines and expands the complete retained payload", async () => {
+test("short completed reasoning remains visible without Ctrl+O", async () => {
+  const setup = await createTestRenderer({ width: WIDTH, height: HEIGHT });
+  const { renderer, renderOnce, captureSpans } = setup;
+  const box = new BoxRenderable(renderer, {
+    id: "turn", position: "absolute", left: 0, top: 0, right: 0, bottom: 0,
+    flexDirection: "column",
+  });
+  renderer.root.add(box);
+  const block = createReasoningBlock({
+    renderer, BoxRenderable, TextRenderable, MarkdownRenderable,
+    syntaxStyle: undefined, box, idPrefix: "short",
+  });
+  try {
+    block.begin({ elapsedSeconds: 5 });
+    block.append("understand the request\ncheck the workspace\nprepare the answer");
+    block.end();
+    await renderOnce();
+    const text = flatText(captureSpans());
+    expect(text).toContain("Thought for 5s");
+    expect(text).toContain("understand the request");
+    expect(text).toContain("prepare the answer");
+    expect(text).not.toContain("Ctrl+O details");
+    expect(block.hiddenLineCount).toBe(0);
+  } finally {
+    renderer.destroy?.();
+  }
+});
+
+test("finished reasoning previews a bounded tail and expands the complete retained payload", async () => {
   const setup = await createTestRenderer({ width: WIDTH, height: HEIGHT });
   const { renderer, renderOnce, captureSpans } = setup;
   const box = new BoxRenderable(renderer, {
@@ -219,31 +247,37 @@ test("finished reasoning reports hidden lines and expands the complete retained 
     syntaxStyle: undefined, box, idPrefix: "blk",
   });
   block.begin({});
-  const initial = "line one\nline two\nline three\nline four";
+  const initial = Array.from(
+    { length: 12 },
+    (_, index) => `reasoning-row-${String(index + 1).padStart(2, "0")}-END`,
+  ).join("\n");
   block.append(initial);
   await renderOnce();
   // The peek is a rolling tail: only the newest lines stay visible.
   const streaming = flatText(captureSpans());
-  expect(streaming).not.toContain("line one");
-  expect(streaming).toContain("line four");
+  expect(streaming).not.toContain("reasoning-row-09-END");
+  expect(streaming).toContain("reasoning-row-10-END");
+  expect(streaming).toContain("reasoning-row-12-END");
 
   block.end();
   await renderOnce();
   const done = flatText(captureSpans());
-  // Collapsed: process text is compact, but the disclosure makes the retained
-  // payload and exact hidden-line count explicit.
+  // Completed: the latest context remains exactly where the live rolling peek
+  // left it, while the disclosure makes the hidden-line count explicit.
   expect(done).toContain("Thought for");
-  expect(done).toContain("4 reasoning lines");
-  expect(done).toContain("expand details");
-  expect(done).not.toContain("line four");
+  expect(done).not.toContain("reasoning-row-04-END");
+  expect(done).toContain("reasoning-row-05-END");
+  expect(done).toContain("reasoning-row-12-END");
+  expect(done).toContain("4 earlier · Ctrl+O details");
+  expect(done).toContain("Ctrl+O details");
   expect(block.rawText).toBe(initial);
   expect(block.hiddenLineCount).toBe(4);
 
   expect(block.toggleExpanded()).toBe(true);
   await renderOnce();
   const expanded = flatText(captureSpans());
-  expect(expanded).toContain("line one");
-  expect(expanded).toContain("line four");
+  expect(expanded).toContain("reasoning-row-01-END");
+  expect(expanded).toContain("reasoning-row-12-END");
   expect(expanded).toContain("collapse details");
   expect(block.hiddenLineCount).toBe(0);
 
@@ -255,8 +289,56 @@ test("finished reasoning reports hidden lines and expands the complete retained 
 
   expect(block.toggleExpanded(false)).toBe(false);
   await renderOnce();
-  expect(flatText(captureSpans())).toContain("5 reasoning lines");
+  expect(flatText(captureSpans())).toContain("5 earlier · Ctrl+O details");
   renderer.destroy?.();
+});
+
+test("completed reasoning rewrap keeps the latest eight visual rows without losing raw text", async () => {
+  const setup = await createTestRenderer({ width: 90, height: 16 });
+  const { renderer, renderOnce, captureSpans, resize } = setup;
+  const box = new BoxRenderable(renderer, {
+    id: "turn", position: "absolute", left: 0, top: 0, right: 0, bottom: 0,
+    flexDirection: "column",
+  });
+  renderer.root.add(box);
+  const block = createReasoningBlock({
+    renderer, BoxRenderable, TextRenderable, MarkdownRenderable,
+    syntaxStyle: undefined, box, idPrefix: "rewrap",
+  });
+  const raw = Array.from(
+    { length: 6 },
+    (_, index) => `step-${index + 1} ${"context ".repeat(7)}tail-${index + 1}`,
+  ).join("\n");
+  const doResize = resize || ((width, height) => renderer.resize(width, height));
+  try {
+    block.begin({});
+    block.append(raw);
+    block.end();
+    await renderOnce();
+    const wide = flatText(captureSpans());
+    expect(wide).toContain("step-1");
+    expect(wide).toContain("tail-6");
+    expect(wide).not.toContain("Ctrl+O details");
+
+    await doResize(34, 16);
+    block.relayout();
+    await renderOnce();
+    const narrow = flatText(captureSpans());
+    expect(narrow).not.toContain("step-1");
+    expect(narrow).toContain("tail-6");
+    expect(narrow).toContain("earlier · Ctrl+O details");
+    expect(block.hiddenLineCount).toBeGreaterThan(0);
+    expect(block.rawText).toBe(raw);
+
+    await doResize(90, 16);
+    block.relayout();
+    await renderOnce();
+    expect(flatText(captureSpans())).toContain("step-1");
+    expect(block.hiddenLineCount).toBe(0);
+    expect(block.rawText).toBe(raw);
+  } finally {
+    renderer.destroy?.();
+  }
 });
 
 test("turn-level details toggles narration, reasoning, and tools together", async () => {
@@ -272,7 +354,7 @@ test("turn-level details toggles narration, reasoning, and tools together", asyn
     "details",
   );
   const narration = Array.from({ length: 8 }, (_, i) => `narration ${i + 1}`).join("\n");
-  const reasoning = "reason one\nreason two\nreason three\nreason four";
+  const reasoning = Array.from({ length: 12 }, (_, index) => `reason ${index + 1}`).join("\n");
   const output = "output one\noutput two\noutput three\noutput four";
 
   turn.begin("n", "thinking", {});
@@ -290,7 +372,9 @@ test("turn-level details toggles narration, reasoning, and tools together", asyn
     await renderOnce();
     const collapsed = flatText(captureSpans());
     expect(collapsed).not.toContain("narration 8");
-    expect(collapsed).not.toContain("reason four");
+    expect(collapsed).not.toContain("reason 4");
+    expect(collapsed).toContain("reason 5");
+    expect(collapsed).toContain("reason 12");
     expect(collapsed).not.toContain("output four");
     expect(turn.blockState("n").rawText).toBe(narration);
     expect(turn.blockState("r").rawText).toBe(reasoning);
@@ -301,10 +385,10 @@ test("turn-level details toggles narration, reasoning, and tools together", asyn
     await renderOnce();
     const expanded = flatText(captureSpans());
     expect(expanded).toContain("narration 8");
-    expect(expanded).toContain("reason four");
+    expect(expanded).toContain("reason 1");
     expect(expanded).toContain("output four");
     expect(expanded.indexOf("narration 8")).toBeLessThan(expanded.indexOf("Thought for"));
-    expect(expanded.indexOf("reason four")).toBeLessThan(expanded.indexOf("probe value"));
+    expect(expanded.indexOf("reason 12")).toBeLessThan(expanded.indexOf("probe value"));
     for (const id of ["n", "r", "t"]) expect(turn.blockState(id).isExpanded).toBe(true);
 
     expect(turn.setDetailsExpanded(false)).toBe(false);

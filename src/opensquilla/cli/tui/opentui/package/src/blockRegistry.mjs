@@ -14,7 +14,7 @@ const FACTORIES = {
   // Intermediate narration the model speaks between tool calls. It streams in
   // full, then long completed narration keeps a retained expandable preview.
   thinking: createThinkingBlock,
-  // Extended-thinking process: a live tail while running and a disclosure row
+  // Extended-thinking process: a live tail while running and a bounded preview
   // after completion; expansion always reconstructs the full retained payload.
   reasoning: createReasoningBlock,
   tool: createToolBlock,

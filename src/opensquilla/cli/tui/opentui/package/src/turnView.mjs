@@ -2,6 +2,7 @@ import { createBlock } from "./blockRegistry.mjs";
 import { STATUS_PULSE_FRAMES, THEME } from "./theme.mjs";
 import { TOOL_INDENT, clipToCells, stripTerminalControls } from "./primitives.mjs";
 import { destroyRenderable } from "./renderableLifecycle.mjs";
+import { rendererViewportSnapshot } from "./screenMode.mjs";
 
 // Block kinds that render OUTSIDE the assistant's single per-turn card: the
 // prompt is the user's own compact row and the usage summary folds into the
@@ -55,6 +56,9 @@ export function createTurnView(deps, id) {
   const agentLabel = typeof deps.agentLabel === "function"
     ? deps.agentLabel
     : () => "squilla";
+  const viewport = typeof deps.viewport === "function"
+    ? deps.viewport
+    : () => rendererViewportSnapshot(renderer);
   // marginTop gives each turn a blank line of vertical rhythm so turns read as
   // distinct groups (proximity) and the conversation has room to breathe.
   const box = new BoxRenderable(renderer, { id: `turn-${id}`, flexDirection: "column", marginTop: 1, paddingLeft: 1, paddingRight: 1 });
@@ -84,7 +88,7 @@ export function createTurnView(deps, id) {
   let lastInCardKind = null; // for prose<->procedure spacing inside the card
   let gapSeq = 0;
   let lastRelayoutWidth = contentWidth(); // block content is clipped at this width
-  let lastRelayoutHeight = renderer.terminalHeight; // live reasoning density follows height
+  let lastRelayoutHeight = viewport().height; // live reasoning density follows height
 
   function openCard() {
     if (cardOpen) return;
@@ -188,7 +192,17 @@ export function createTurnView(deps, id) {
     // In-card blocks draw into the shared bordered body so the gutter stays
     // continuous; everything else draws straight into the turn box.
     const target = !isOutOfCardKind(kind) && cardBody ? cardBody : box;
-    return { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, contentWidth, box: target, idPrefix: `turn-${id}-${blockId}` };
+    return {
+      renderer,
+      BoxRenderable,
+      TextRenderable,
+      MarkdownRenderable,
+      syntaxStyle,
+      contentWidth,
+      viewport,
+      box: target,
+      idPrefix: `turn-${id}-${blockId}`,
+    };
   }
 
   function setDetailsExpanded(value) {
@@ -334,7 +348,7 @@ export function createTurnView(deps, id) {
     // unrelated blocks skip text-buffer work.
     relayout() {
       const width = contentWidth();
-      const height = renderer.terminalHeight;
+      const height = viewport().height;
       const widthChanged = width !== lastRelayoutWidth;
       const heightChanged = height !== lastRelayoutHeight;
       if (!widthChanged && !heightChanged) return;

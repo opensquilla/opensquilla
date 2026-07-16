@@ -200,6 +200,8 @@ def test_tmux_session_uses_owned_session_commands(
         calls.append((args, kwargs))
         if args[:2] == ["tmux", "capture-pane"]:
             return subprocess.CompletedProcess(args, 0, stdout="ready screen")
+        if args[:2] == ["tmux", "display-message"]:
+            return subprocess.CompletedProcess(args, 0, stdout="7,28\n")
         if args[:2] == ["tmux", "has-session"]:
             return subprocess.CompletedProcess(args, 0)
         return subprocess.CompletedProcess(args, 0)
@@ -221,6 +223,7 @@ def test_tmux_session_uses_owned_session_commands(
     session.mouse_scroll("up", ticks=2, x=7, y=9)
     session.resize(TerminalSize(cols=120, rows=40))
     frame = session.wait_for_text("ready", timeout_s=0.1, checkpoint="ready")
+    cursor = session.cursor_position()
     alive = session.is_alive()
     session.terminate()
 
@@ -249,6 +252,7 @@ def test_tmux_session_uses_owned_session_commands(
     ]
     assert frame.text == "ready screen"
     assert frame.size == TerminalSize(cols=120, rows=40)
+    assert cursor == (7, 28)
     assert alive is True
     assert calls[-1][0] == ["tmux", "kill-session", "-t", "opensquilla-tui-owned-1"]
 
@@ -290,6 +294,7 @@ def test_pty_session_drives_text_process_and_cleans_up(tmp_path: Path) -> None:
         assert "ECHO:hello" in echoed.text
         assert "ECHO:draft" in pasted.text
         assert session.size == TerminalSize(cols=90, rows=20)
+        assert session.cursor_position() is None
         assert session.is_alive() is True
     finally:
         session.terminate()

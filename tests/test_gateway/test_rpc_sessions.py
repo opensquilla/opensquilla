@@ -3259,6 +3259,33 @@ class TestSessionsPatch:
         assert "displayName" in res.payload["updated"]
 
     @pytest.mark.asyncio
+    async def test_patch_model_to_none_clears_canonical_session_pin(
+        self,
+        dispatcher,
+        ctx_with_sessions,
+        session,
+    ):
+        session.model = "provider/pinned"
+
+        patched = await dispatcher.dispatch(
+            "r1",
+            "sessions.patch",
+            {"key": session.session_key, "model": None},
+            ctx_with_sessions,
+        )
+        resolved = await dispatcher.dispatch(
+            "r2",
+            "sessions.resolve",
+            {"key": session.session_key},
+            ctx_with_sessions,
+        )
+
+        assert patched.ok is True
+        assert "model" in patched.payload["updated"]
+        assert resolved.ok is True
+        assert resolved.payload["model"] is None
+
+    @pytest.mark.asyncio
     async def test_patch_not_found(self, dispatcher, ctx_with_sessions):
         res = await dispatcher.dispatch(
             "r1",

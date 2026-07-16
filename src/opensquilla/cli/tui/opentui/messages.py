@@ -181,11 +181,27 @@ class HistoryReplace:
 
 
 @dataclass(frozen=True)
+class CompletionArgumentChoice:
+    """One structured value offered after a slash command's name."""
+
+    value: str
+    description: str = ""
+
+
+@dataclass(frozen=True)
 class CompletionCandidate:
     label: str
     description: str
     insert_text: str
     category: str
+    usage: str = ""
+    aliases: tuple[str, ...] = ()
+    argument_choices: tuple[CompletionArgumentChoice, ...] = ()
+    visible_by_default: bool = True
+    deprecated: bool = False
+    submit_behavior: str = "submit"
+    busy_policy: str = "immediate"
+    presentation: str = "notice"
 
 
 @dataclass(frozen=True)
@@ -338,6 +354,7 @@ PYTHON_TO_HOST_TYPES: dict[str, type | None] = {
     "router.update": RouterPluginState,
     "model.routing.state": ModelRoutingState,
     "model.routing.picker": None,
+    "model.picker": None,
     "block.begin": BlockBegin,
     "block.append": BlockAppend,
     "block.update": BlockUpdate,

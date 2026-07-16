@@ -112,6 +112,7 @@ def test_release_workflow_builds_desktop_installers() -> None:
         "test_mouse_scroll_stability.py",
         "test_framebuffer_recovery.py",
         "test_idle_resize_round_trip.py",
+        "test_visual_layout_matrix.py",
     ):
         assert terminal_gate in macos_gate
     assert "test_exit_restoration.py" in workflow
@@ -223,6 +224,7 @@ def test_release_workflow_builds_and_gates_native_linux_tui_hosts() -> None:
         "test_mouse_scroll_stability.py",
         "test_framebuffer_recovery.py",
         "test_idle_resize_round_trip.py",
+        "test_visual_layout_matrix.py",
     ):
         assert terminal_gate in gate
     assert "test_exit_restoration.py" in gate

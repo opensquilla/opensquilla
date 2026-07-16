@@ -24,20 +24,25 @@ function harness() {
   return { scrollBox, scheduled, states, scroller, invalidations: () => invalidations };
 }
 
-test("protected OpenTUI wheel interception stays inside the compatibility adapter", () => {
+test("wheel ownership uses OpenTUI's public scroll callback and acceleration API", () => {
   const calls = [];
   const scrollBox = {
-    onMouseEvent(event) { calls.push(["native", event.type]); return "native-result"; },
+    scrollAcceleration: null,
   };
   assert.equal(installConversationWheelHandler(scrollBox, (event) => {
     calls.push(["app", event.type]);
-    return event.type === "scroll";
+    return true;
   }), true);
 
-  assert.equal(scrollBox.onMouseEvent({ type: "scroll" }), true);
-  assert.deepEqual(calls, [["app", "scroll"]]);
-  assert.equal(scrollBox.onMouseEvent({ type: "down" }), "native-result");
-  assert.deepEqual(calls, [["app", "scroll"], ["native", "down"]]);
+  const event = {
+    type: "scroll",
+    stopPropagation: () => calls.push(["stop"]),
+    preventDefault: () => calls.push(["prevent"]),
+  };
+  scrollBox.onMouseScroll(event);
+  assert.deepEqual(calls, [["app", "scroll"], ["stop"], ["prevent"]]);
+  assert.equal(scrollBox.scrollAcceleration.tick(), 0);
+  scrollBox.scrollAcceleration.reset();
 });
 
 test("routine viewport invalidation never requests a full framebuffer repaint", () => {
@@ -150,6 +155,136 @@ test("returning to the bottom resumes following", () => {
   h.scroller.mutate(() => { h.scrollBox.scrollHeight += 10; });
   h.scheduled.shift()();
   assert.equal(h.scrollBox.scrollTop, 90);
+});
+
+test("scroll range follows OpenTUI viewport height instead of outer box height", () => {
+  const scrollBox = {
+    scrollTop: 0,
+    scrollHeight: 100,
+    height: 30,
+    viewport: { height: 20 },
+  };
+  const scheduled = [];
+  const scroller = createStableTranscriptScroller({
+    scrollBox,
+    renderer: {},
+    scheduleFrame: (callback) => { scheduled.push(callback); return callback; },
+    cancelFrame: () => {},
+    invalidate: () => {},
+  });
+
+  scroller.followLatest();
+  assert.equal(scrollBox.scrollTop, 80);
+});
+
+test("surface rebuild advances one epoch and commits one pre-paint restore", () => {
+  const scrollBox = { scrollTop: 80, scrollHeight: 100, height: 20 };
+  const scheduled = [];
+  const order = [];
+  const scroller = createStableTranscriptScroller({
+    scrollBox,
+    renderer: {},
+    scheduleFrame: (callback) => { scheduled.push(callback); return callback; },
+    cancelFrame: () => {},
+    invalidate: () => { order.push("invalidate"); },
+  });
+
+  scroller.restoreSurface(
+    () => {
+      order.push("layout");
+      scrollBox.scrollHeight = 140;
+    },
+    { afterLayout: () => order.push("cursor") },
+  );
+
+  assert.equal(scroller.snapshot().surfaceEpoch, 1);
+  assert.equal(scroller.followMode, "restoring");
+  assert.equal(scheduled.length, 1);
+  scheduled.shift()();
+  assert.equal(scrollBox.scrollTop, 120);
+  assert.equal(scroller.followMode, "following");
+  // The surface caller marks the already-scheduled frame as a full repaint.
+  // No invalidation may happen from inside the frame callback, because
+  // OpenTUI would interpret it as an immediate second physical frame.
+  assert.deepEqual(order, ["layout", "cursor"]);
+});
+
+test("surface rebuild preserves a wheel gesture pending at the frame boundary", () => {
+  const scrollBox = {
+    scrollTop: 80,
+    scrollHeight: 100,
+    height: 20,
+    viewport: { height: 20 },
+  };
+  const scheduled = [];
+  const cancelled = new Set();
+  const scroller = createStableTranscriptScroller({
+    scrollBox,
+    renderer: {},
+    scheduleFrame: (callback) => {
+      const token = { callback };
+      scheduled.push(token);
+      return token;
+    },
+    cancelFrame: (token) => { cancelled.add(token); },
+    invalidate: () => {},
+  });
+
+  scroller.handleWheel({ scroll: { direction: "up", delta: 1 } });
+  const wheelFrame = scheduled.shift();
+  scroller.restoreSurface(() => { scrollBox.scrollHeight = 140; });
+  assert.equal(cancelled.has(wheelFrame), true);
+  scheduled.shift().callback();
+
+  assert.equal(scrollBox.scrollTop, 77);
+  assert.equal(scroller.followMode, "held");
+});
+
+test("a nested surface rebuild preserves wheel rows already merged into the transaction", () => {
+  const scrollBox = {
+    scrollTop: 80,
+    scrollHeight: 100,
+    height: 20,
+    viewport: { height: 20 },
+  };
+  const scheduled = [];
+  const cancelled = new Set();
+  const scroller = createStableTranscriptScroller({
+    scrollBox,
+    renderer: {},
+    scheduleFrame: (callback) => {
+      const token = { callback };
+      scheduled.push(token);
+      return token;
+    },
+    cancelFrame: (token) => { cancelled.add(token); },
+    invalidate: () => {},
+  });
+
+  scroller.handleWheel({ scroll: { direction: "up", delta: 1 } });
+  const wheelFrame = scheduled.shift();
+  scroller.restoreSurface(() => { scrollBox.scrollHeight = 120; });
+  const firstSurfaceFrame = scheduled.shift();
+  scroller.restoreSurface(() => { scrollBox.scrollHeight = 140; });
+  const finalSurfaceFrame = scheduled.shift();
+
+  assert.equal(cancelled.has(wheelFrame), true);
+  assert.equal(cancelled.has(firstSurfaceFrame), true);
+  finalSurfaceFrame.callback();
+  assert.equal(scrollBox.scrollTop, 77);
+  assert.equal(scroller.followMode, "held");
+  assert.equal(scroller.snapshot().surfaceEpoch, 2);
+});
+
+test("surface rebuild leaves restoring mode even when relayout throws", () => {
+  const h = harness();
+  assert.throws(
+    () => h.scroller.restoreSurface(() => { throw new Error("layout failed"); }),
+    /layout failed/,
+  );
+  assert.equal(h.scroller.followMode, "restoring");
+  h.scheduled.shift()();
+  assert.equal(h.scroller.followMode, "following");
 });
 
 test("streaming mutations coalesce into one pre-paint anchor restore", () => {

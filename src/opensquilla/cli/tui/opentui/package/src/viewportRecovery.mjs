@@ -10,10 +10,15 @@ import process from "node:process";
 // direct getWindowSize() result applied by this controller.
 export const VIEWPORT_RECOVERY_SETTLE_MS = 150;
 
-// Recovery is event-driven; a periodic watchdog is available only as an
-// explicit diagnostic override for unusual embedded hosts.
+// Recovery is event-driven by default. A periodic full-frame watchdog is a
+// diagnostic escape hatch only: enabling it in every embedded terminal creates
+// a visible one-second flash cadence and bypasses OpenTUI's retained renderer.
 const VIEWPORT_RECOVERY_MIN_WATCHDOG_MS = 250;
 const VIEWPORT_RECOVERY_WATCHDOG_ENV = "OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS";
+
+function explicitWatchdogValue(env) {
+  return String(env?.[VIEWPORT_RECOVERY_WATCHDOG_ENV] ?? "").trim();
+}
 
 // A Codex pane remount can forget terminal modes as well as cell contents. A
 // full repaint issued while DECSET 1049 is off lands in the ordinary scrollback
@@ -28,7 +33,7 @@ export const TERMINAL_SURFACE_REASSERT_SEQUENCE = (
 );
 
 export function viewportRecoveryWatchdogMs(env = process.env) {
-  const explicit = String(env?.[VIEWPORT_RECOVERY_WATCHDOG_ENV] ?? "").trim();
+  const explicit = explicitWatchdogValue(env);
   if (explicit) {
     const parsed = Number(explicit);
     if (Number.isFinite(parsed)) {
@@ -38,6 +43,13 @@ export function viewportRecoveryWatchdogMs(env = process.env) {
   }
 
   return 0;
+}
+
+export function viewportRecoveryWatchdogReassertsSurface(env = process.env) {
+  const explicit = explicitWatchdogValue(env);
+  if (!explicit) return false;
+  const parsed = Number(explicit);
+  return Number.isFinite(parsed) && parsed > 0;
 }
 
 export function requestFullRepaint(renderer) {
@@ -82,11 +94,11 @@ function terminalViewportSize(output) {
 export function reconcileTerminalViewport(
   renderer,
   output = process.stdout,
-  { forceRepaint = false } = {},
+  { forceRepaint = false, requestRepaint = true } = {},
 ) {
   const viewport = terminalViewportSize(output);
   if (!viewport) {
-    if (forceRepaint) {
+    if (forceRepaint && requestRepaint) {
       requestFullRepaint(renderer);
       return "repainted";
     }
@@ -99,9 +111,28 @@ export function reconcileTerminalViewport(
   if (changed && typeof renderer?.resize === "function") {
     renderer.resize(viewport.width, viewport.height);
   }
-  if (changed || forceRepaint) requestFullRepaint(renderer);
+  if (requestRepaint && (changed || forceRepaint)) requestFullRepaint(renderer);
   if (changed) return "resized";
   return forceRepaint ? "repainted" : "unchanged";
+}
+
+// Reconcile physical geometry, commit application layout, and only then expose
+// one forced frame. Keeping these operations in a single synchronous turn
+// prevents streaming/pulse diffs from painting between old and new epochs.
+export function commitViewportRecoveryTransaction({
+  renderer,
+  output = process.stdout,
+  reassertSurface = true,
+  beforeRepaint = null,
+} = {}) {
+  if (reassertSurface) reassertTerminalSurface(output);
+  const result = reconcileTerminalViewport(renderer, output, {
+    forceRepaint: false,
+    requestRepaint: false,
+  });
+  beforeRepaint?.(result);
+  requestFullRepaint(renderer);
+  return result;
 }
 
 export function installTerminalViewportRecovery({
@@ -114,6 +145,7 @@ export function installTerminalViewportRecovery({
   clearTimer = clearTimeout,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
+  watchdogReassertSurface = viewportRecoveryWatchdogReassertsSurface(),
   onRecovered = null,
 } = {}) {
   let settleTimer = null;
@@ -125,33 +157,67 @@ export function installTerminalViewportRecovery({
   // blur marks the surface as needing recovery before the next received wheel.
   let wheelRecoveryPending = false;
 
-  const recover = () => {
+  const cancelFinalRecovery = () => {
+    if (settleTimer === null) return;
+    clearTimer(settleTimer);
+    settleTimer = null;
+  };
+
+  const recover = ({ reassertSurface = true } = {}) => {
     if (disposed) return "disposed";
     try {
-      reassertTerminalSurface(output);
-      const result = reconcileTerminalViewport(renderer, output, { forceRepaint: true });
-      onRecovered?.(result);
-      return result;
+      return commitViewportRecoveryTransaction({
+        renderer,
+        output,
+        reassertSurface,
+        beforeRepaint: (result) => onRecovered?.(result),
+      });
     } catch {
       // A transient detached PTY must not stop the renderer's stream loop.
       return "unavailable";
     }
   };
 
-  const scheduleFinalRecovery = () => {
+  const scheduleFinalRecovery = ({ reassertSurface = false } = {}) => {
     if (disposed) return;
-    if (settleTimer !== null) clearTimer(settleTimer);
+    cancelFinalRecovery();
     settleTimer = setTimer(() => {
       settleTimer = null;
-      recover();
+      recover({ reassertSurface });
     }, settleMs);
     settleTimer?.unref?.();
   };
 
-  const handleViewportEvent = () => {
+  const handleFocus = () => {
     wheelRecoveryPending = false;
-    recover();
-    scheduleFinalRecovery();
+    // OpenTUI 0.4.x restores terminal modes before publishing its documented
+    // `focus` event, and a geometry event does not imply mode loss. Rewriting
+    // DECSET 1049 on every focus/resize can visibly swap or clear a healthy
+    // alternate screen, so lifecycle events only reconcile and repaint. The
+    // explicit/manual recovery and first wheel after a known blur retain the
+    // stronger mode-reassert path.
+    cancelFinalRecovery();
+    recover({ reassertSurface: false });
+  };
+  const handleRendererResize = () => {
+    // The application's renderer.resize listener owns the full layout
+    // transaction. Raw stdout/SIGWINCH are fallbacks only; cancel their delayed
+    // recovery once OpenTUI publishes its documented resize event.
+    wheelRecoveryPending = false;
+    cancelFinalRecovery();
+  };
+  const handleRawViewportEvent = () => {
+    if (disposed) return;
+    const viewport = terminalViewportSize(output);
+    const width = positiveDimension(renderer?.terminalWidth ?? renderer?.width);
+    const height = positiveDimension(renderer?.terminalHeight ?? renderer?.height);
+    if (viewport && viewport.width === width && viewport.height === height) {
+      cancelFinalRecovery();
+      return;
+    }
+    // OpenTUI debounces SIGWINCH and will normally publish renderer.resize.
+    // Wait beyond that public lifecycle window; recover only if it never does.
+    scheduleFinalRecovery({ reassertSurface: false });
   };
   const handleBlur = () => {
     wheelRecoveryPending = true;
@@ -180,9 +246,10 @@ export function installTerminalViewportRecovery({
       clearIntervalFn(watchdogTimer);
       watchdogTimer = null;
     }
-    removeListener(output, "resize", handleViewportEvent);
-    removeListener(signalSource, "SIGWINCH", handleViewportEvent);
-    removeListener(renderer, "focus", handleViewportEvent);
+    removeListener(output, "resize", handleRawViewportEvent);
+    removeListener(signalSource, "SIGWINCH", handleRawViewportEvent);
+    removeListener(renderer, "resize", handleRendererResize);
+    removeListener(renderer, "focus", handleFocus);
     removeListener(renderer, "blur", handleBlur);
     removeListener(renderer, "destroy", dispose);
   };
@@ -190,15 +257,22 @@ export function installTerminalViewportRecovery({
   // OpenTUI's documented lifecycle events remain the primary contract. The
   // WriteStream event repairs stale cached geometry; SIGWINCH covers native
   // terminal resizing; focus covers a same-size surface remount.
-  output?.on?.("resize", handleViewportEvent);
-  signalSource?.on?.("SIGWINCH", handleViewportEvent);
-  renderer?.on?.("focus", handleViewportEvent);
+  output?.on?.("resize", handleRawViewportEvent);
+  signalSource?.on?.("SIGWINCH", handleRawViewportEvent);
+  renderer?.on?.("resize", handleRendererResize);
+  renderer?.on?.("focus", handleFocus);
   renderer?.on?.("blur", handleBlur);
   renderer?.once?.("destroy", dispose);
 
   const watchdogDelay = positiveDimension(watchdogMs);
   if (watchdogDelay > 0) {
-    watchdogTimer = setIntervalFn(recover, watchdogDelay);
+    // This path is explicit opt-in only. Re-entering DECSET 1049 periodically
+    // can visibly swap/clear a healthy terminal; callers choose whether their
+    // diagnostic watchdog also exercises mode-loss recovery.
+    watchdogTimer = setIntervalFn(
+      () => recover({ reassertSurface: Boolean(watchdogReassertSurface) }),
+      watchdogDelay,
+    );
     watchdogTimer?.unref?.();
   }
 

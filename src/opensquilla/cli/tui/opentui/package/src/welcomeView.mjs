@@ -1,6 +1,7 @@
 import { THEME } from "./theme.mjs";
 import { clipToCells } from "./primitives.mjs";
 import { destroyRenderable } from "./renderableLifecycle.mjs";
+import { rendererViewportSnapshot } from "./screenMode.mjs";
 
 // The approved filled/shadowed block wordmark is 98 cells wide. Its font owns
 // the leading shadow geometry visible in the reference. The container keeps
@@ -40,7 +41,8 @@ export function createWelcomeView({
   TextRenderable,
   ASCIIFontRenderable,
   conversationBox,
-  contentWidth = () => renderer?.terminalWidth ?? 80,
+  contentWidth = null,
+  viewport = () => rendererViewportSnapshot(renderer),
 }) {
   let eligible = true;
   let node = null;
@@ -52,17 +54,17 @@ export function createWelcomeView({
   const mounted = () => (conversationBox.getChildren?.() ?? []).some((child) => child.id === node?.id);
 
   function availableCells() {
-    return Math.max(1, Number(contentWidth()) || Number(renderer?.terminalWidth) || 80);
+    return Math.max(1, Number(contentWidth?.()) || viewport().width);
   }
 
   function build() {
-    mode = welcomeLogoMode(renderer?.terminalWidth, renderer?.terminalHeight, availableCells());
+    mode = welcomeLogoMode(viewport().width, viewport().height, availableCells());
     const narrow = availableCells() < 64;
     const id = `welcome-${sequence++}`;
     node = new BoxRenderable(renderer, {
       id,
       flexDirection: "column",
-      marginTop: renderer?.terminalHeight >= 28 ? 2 : 1,
+      marginTop: viewport().height >= 28 ? 2 : 1,
       // Keep the approved mark and tagline on the identity header's one-cell
       // inset. The previous two-cell wide-screen inset made the brand anchor
       // visibly smaller than the selected reference.
@@ -142,8 +144,8 @@ export function createWelcomeView({
     relayout() {
       if (!eligible) return;
       const nextMode = welcomeLogoMode(
-        renderer?.terminalWidth,
-        renderer?.terminalHeight,
+        viewport().width,
+        viewport().height,
         availableCells(),
       );
       if (!mounted() || nextMode !== mode) {
@@ -155,7 +157,7 @@ export function createWelcomeView({
       // spacing. Update those live properties instead of leaving the old
       // margin/padding baked into the node until the next logo-mode change.
       const narrow = availableCells() < 64;
-      node.marginTop = renderer?.terminalHeight >= 28 ? 2 : 1;
+      node.marginTop = viewport().height >= 28 ? 2 : 1;
       node.paddingLeft = mode === "block" ? 1 : narrow ? 1 : 2;
       node.paddingRight = mode === "block" ? 0 : 1;
       tagline.marginTop = mode === "block" ? 1 : 0;

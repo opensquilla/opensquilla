@@ -1,6 +1,12 @@
 import { THEME } from "./theme.mjs";
-import { clipToCells, stripTerminalControls, textWidth } from "./primitives.mjs";
+import {
+  clampFooterHeight,
+  clipToCells,
+  stripTerminalControls,
+  textWidth,
+} from "./primitives.mjs";
 import { destroyChildren } from "./renderableLifecycle.mjs";
+import { SURFACE_Z_INDEX, rendererViewportSnapshot } from "./screenMode.mjs";
 
 // The rail appears only when subtracting its minimum width still leaves the
 // transcript enough room for the full welcome wordmark. This makes responsive
@@ -327,11 +333,12 @@ export function createContextRail({
   conversationBox,
   inputBox,
   footerHeight,
+  viewport = () => rendererViewportSnapshot(renderer),
   allowWideRail = true,
 }) {
   let context = emptyContextState();
   let router = {};
-  const initialWidth = contextRailWidth(renderer?.terminalWidth ?? 80) || CONTEXT_RAIL_MIN_WIDTH;
+  const initialWidth = contextRailWidth(viewport().width) || CONTEXT_RAIL_MIN_WIDTH;
   // OpenTUI emits `resize` after marking Yoga dirty but before the next frame
   // recomputes child geometry. Reading node.width in that callback therefore
   // returns the previous frame's computed width. Keep the logical inset here so
@@ -344,7 +351,7 @@ export function createContextRail({
     top: 0,
     right: 0,
     width: initialWidth,
-    height: Math.max(1, renderer?.terminalHeight ?? 24),
+    height: viewport().height,
     border: ["left"],
     borderColor: THEME.detailText,
     backgroundColor: THEME.appBg,
@@ -352,7 +359,7 @@ export function createContextRail({
     paddingRight: 1,
     flexDirection: "column",
     visible: false,
-    zIndex: 20,
+    zIndex: SURFACE_Z_INDEX.contextRail,
   });
   const header = new BoxRenderable(renderer, {
     id: "context-header",
@@ -368,7 +375,7 @@ export function createContextRail({
     paddingRight: 1,
     flexDirection: "row",
     visible: false,
-    zIndex: 10,
+    zIndex: SURFACE_Z_INDEX.header,
   });
 
   function clear(target) {
@@ -401,14 +408,17 @@ export function createContextRail({
   function render() {
     const previousRightInset = Number(inputBox?.right ?? 0);
     const previousTop = Number(conversationBox?.top ?? 0);
-    const terminalWidth = Number(renderer?.terminalWidth) || 80;
-    const layoutHeight = Number(renderer?.height ?? renderer?.terminalHeight) || 24;
+    const { width: terminalWidth, height: layoutHeight } = viewport();
     const width = allowWideRail ? contextRailWidth(terminalWidth) : 0;
     // Older parents and the pre-bootstrap first frame have no canonical context.
     // Do not reserve a blank identity rail (or render invented defaults) until a
     // real context.update arrives.
     const visible = width > 0 && hasContextState(context);
-    const currentFooterHeight = Math.max(1, Number(inputBox?.height) || Number(footerHeight) || 1);
+    // OpenTUI's height setter updates Yoga style immediately, while the getter
+    // still reports the previous computed frame until layout runs. Derive the
+    // footer from the same viewport snapshot as every sibling instead of
+    // reading that stale computed value during this transaction.
+    const currentFooterHeight = clampFooterHeight(footerHeight, layoutHeight);
     const mainRows = Math.max(1, layoutHeight - currentFooterHeight);
     const headerItems = allowWideRail ? contextHeaderItems(context, terminalWidth, width) : [];
     const headerVisible = headerItems.length > 0 && mainRows > CONTEXT_HEADER_HEIGHT;
@@ -486,7 +496,7 @@ export function createContextRail({
     rightInset: () => currentRightInset,
     contentWidth: () => Math.max(
       1,
-      (Number(renderer?.terminalWidth) || 80) - currentRightInset,
+      viewport().width - currentRightInset,
     ),
     agentLabel: () => contextAgentLabel(context),
   };

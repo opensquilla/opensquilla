@@ -17,10 +17,8 @@ from tui_real_terminal.driver import (
 from tui_real_terminal.evidence import EvidenceBundle, ScenarioResult
 from tui_real_terminal.framebuffer import (
     FOOTER_BACKGROUND,
-    FOOTER_HEIGHT,
     StyledFramebuffer,
     assert_opentui_framebuffer,
-    context_rail_width,
 )
 from tui_real_terminal.targets import TargetContext, build_tui_target
 
@@ -35,17 +33,6 @@ _NARROW = TerminalSize(cols=72, rows=24)
 _LARGE = TerminalSize(cols=160, rows=40)
 _TRANSCRIPT_MARKER = "fake-response:idle resize transcript"
 _STREAM_TRANSCRIPT_MARKER = "complex-state-complete"
-
-
-def _pane_cursor(run_id: str) -> tuple[int, int]:
-    result = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", run_id, "#{cursor_x},#{cursor_y}"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    x, y = result.stdout.strip().split(",", 1)
-    return int(x), int(y)
 
 
 def _reset_tmux_surface(run_id: str) -> None:
@@ -70,14 +57,16 @@ def _assert_idle_frame(
     assert_opentui_framebuffer(
         frame,
         required_rail_headings=required_rail_headings,
+        cursor=cursor,
     )
     assert transcript_marker in frame.text
 
-    rail_width = context_rail_width(frame.cols)
-    content_width = frame.cols - rail_width
-    footer_top = frame.rows - FOOTER_HEIGHT
-    top_row = footer_top + 1
-    bottom_row = frame.rows - 1
+    geometry = frame.geometry
+    rail_width = geometry.rail_width
+    content_width = geometry.content_width
+    footer_top = geometry.footer_top
+    top_row = geometry.composer_top
+    bottom_row = geometry.composer_bottom
 
     top_border = "".join(
         frame.cells[top_row][column].glyph for column in range(1, content_width - 1)
@@ -96,10 +85,6 @@ def _assert_idle_frame(
         cell = frame.cells[row][right_gutter]
         assert cell.glyph == " ", (row, right_gutter, cell)
         assert cell.background == FOOTER_BACKGROUND, (row, right_gutter, cell)
-
-    cursor_x, cursor_y = cursor
-    assert 1 < cursor_x < content_width - 2, cursor
-    assert top_row < cursor_y < bottom_row, cursor
 
     if rail_width:
         for row in range(footer_top):
@@ -129,11 +114,13 @@ def _wait_for_idle_frame(
     while time.monotonic() < deadline:
         last_frame = session.capture_framebuffer(checkpoint)
         assert last_frame is not None
+        cursor = session.cursor_position()
+        assert cursor is not None
         try:
             _assert_idle_frame(
                 last_frame,
                 expected_size=expected_size,
-                cursor=_pane_cursor(session.run_id),
+                cursor=cursor,
                 transcript_marker=transcript_marker,
                 required_rail_headings=required_rail_headings,
             )
@@ -174,10 +161,11 @@ def _assert_collapsed_frame(
 
     # At 18 columns the placeholder and status label intentionally elide, so
     # use the exact cell geometry rather than the normal copy-bearing gate.
-    content_width = frame.cols
-    footer_top = frame.rows - FOOTER_HEIGHT
-    top_row = footer_top + 1
-    bottom_row = frame.rows - 1
+    geometry = frame.geometry
+    content_width = geometry.content_width
+    footer_top = geometry.footer_top
+    top_row = geometry.composer_top
+    bottom_row = geometry.composer_bottom
     top_border = "".join(
         frame.cells[top_row][column].glyph for column in range(1, content_width - 1)
     )
@@ -216,10 +204,12 @@ def _wait_for_collapsed_frame(
     while time.monotonic() < deadline:
         last_frame = session.capture_framebuffer(checkpoint)
         assert last_frame is not None
+        cursor = session.cursor_position()
+        assert cursor is not None
         try:
             _assert_collapsed_frame(
                 last_frame,
-                cursor=_pane_cursor(session.run_id),
+                cursor=cursor,
             )
         except AssertionError as exc:
             last_error = exc
@@ -244,20 +234,24 @@ def _assert_welcome_frame(
     cursor: tuple[int, int],
 ) -> None:
     assert (frame.cols, frame.rows) == (_LARGE.cols, _LARGE.rows)
-    assert_opentui_framebuffer(frame, required_rail_headings=("AGENT",))
+    assert_opentui_framebuffer(
+        frame,
+        required_rail_headings=("AGENT",),
+        cursor=cursor,
+    )
     assert "Build with your agent. Stay in the flow." in frame.text
 
     block_logo_cells = sum(
         cell.glyph in "█▀▄╔╗╚╝║═"
-        for row in frame.cells[: frame.rows - FOOTER_HEIGHT]
+        for row in frame.cells[: frame.geometry.footer_top]
         for cell in row
     )
     assert block_logo_cells >= 30
 
-    content_width = frame.cols - context_rail_width(frame.cols)
-    footer_top = frame.rows - FOOTER_HEIGHT
-    top_row = footer_top + 1
-    bottom_row = frame.rows - 1
+    geometry = frame.geometry
+    content_width = geometry.content_width
+    top_row = geometry.composer_top
+    bottom_row = geometry.composer_bottom
     top_border = "".join(
         frame.cells[top_row][column].glyph for column in range(1, content_width - 1)
     )
@@ -266,10 +260,6 @@ def _assert_welcome_frame(
     )
     assert top_border == "╭" + "─" * (content_width - 4) + "╮"
     assert bottom_border == "╰" + "─" * (content_width - 4) + "╯"
-
-    cursor_x, cursor_y = cursor
-    assert 1 < cursor_x < content_width - 2, cursor
-    assert top_row < cursor_y < bottom_row, cursor
 
 
 def _wait_for_welcome_frame(
@@ -285,10 +275,12 @@ def _wait_for_welcome_frame(
     while time.monotonic() < deadline:
         last_frame = session.capture_framebuffer(checkpoint)
         assert last_frame is not None
+        cursor = session.cursor_position()
+        assert cursor is not None
         try:
             _assert_welcome_frame(
                 last_frame,
-                cursor=_pane_cursor(session.run_id),
+                cursor=cursor,
             )
         except AssertionError as exc:
             last_error = exc
@@ -648,7 +640,9 @@ def test_empty_welcome_resize_remount_recovers_without_duplicate_frames(
         settled = session.capture_framebuffer("welcome-remount-settled-large")
         assert settled is not None
         evidence.record_framebuffer(settled)
-        _assert_welcome_frame(settled, cursor=_pane_cursor(session.run_id))
+        cursor = session.cursor_position()
+        assert cursor is not None
+        _assert_welcome_frame(settled, cursor=cursor)
         assert settled.cells == restored.cells
 
         scrollback = session.capture_scrollback_text("welcome-remount-scrollback")

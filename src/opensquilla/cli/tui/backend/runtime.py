@@ -292,11 +292,32 @@ async def run_tui_runtime(
 
                 category = config.classify_input(user_input)
 
-                if category in (TuiInputKind.LOCAL, TuiInputKind.CONTROL):
-                    # Host-only UI and Gateway control-plane commands act now,
-                    # inline on the loop, with no prompt echo and no queue. The
-                    # in-flight turn keeps its captured runtime strategy; a
-                    # control write applies only to the next accepted turn.
+                if (
+                    category is TuiInputKind.COMMAND_REQUIRES_IDLE
+                    and turn_task is not None
+                    and not turn_task.done()
+                ):
+                    # Session navigation/mutation that cannot safely race a
+                    # running turn is rejected at the command boundary. It must
+                    # never masquerade as a queued user message.
+                    if hooks.notice is not None:
+                        hooks.notice(
+                            "[yellow]Command requires an idle session. "
+                            "Wait for the current turn to finish.[/yellow]"
+                        )
+                    continue
+
+                if category in (
+                    TuiInputKind.LOCAL,
+                    TuiInputKind.CONTROL,
+                    TuiInputKind.COMMAND,
+                    TuiInputKind.COMMAND_REQUIRES_IDLE,
+                ):
+                    # Host UI, Gateway control, and deterministic slash
+                    # commands act now, inline on the loop, with no prompt echo
+                    # and no queue. The in-flight turn keeps its captured
+                    # runtime strategy; a control write applies only to the
+                    # next accepted turn.
                     try:
                         keep_going = await dispatch(user_input)
                     except Exception as exc:

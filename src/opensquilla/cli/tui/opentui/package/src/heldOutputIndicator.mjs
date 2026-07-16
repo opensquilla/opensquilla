@@ -1,4 +1,5 @@
 import { textWidth } from "./primitives.mjs";
+import { SURFACE_Z_INDEX } from "./screenMode.mjs";
 
 export const HELD_OUTPUT_MESSAGE = "↓ new output · End to follow";
 
@@ -19,7 +20,7 @@ export function createHeldOutputIndicator({
     position: "absolute",
     left: 1,
     bottom,
-    zIndex: 40,
+    zIndex: SURFACE_Z_INDEX.footerIndicator,
     width: textWidth(HELD_OUTPUT_MESSAGE) + 2,
     height: 1,
     paddingLeft: 1,

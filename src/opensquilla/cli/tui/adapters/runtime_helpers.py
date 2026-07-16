@@ -147,6 +147,10 @@ def map_slash_category(category: SlashCategory) -> TuiInputKind:
         return TuiInputKind.LOCAL
     if category is SlashCategory.CONTROL:
         return TuiInputKind.CONTROL
+    if category is SlashCategory.COMMAND:
+        return TuiInputKind.COMMAND
+    if category is SlashCategory.REQUIRE_IDLE:
+        return TuiInputKind.COMMAND_REQUIRES_IDLE
     if category is SlashCategory.DESTRUCTIVE:
         return TuiInputKind.DESTRUCTIVE
     if category is SlashCategory.EXIT:
@@ -154,9 +158,13 @@ def map_slash_category(category: SlashCategory) -> TuiInputKind:
     return TuiInputKind.NORMAL
 
 
-def classify_chat_input(user_input: str) -> TuiInputKind:
+def classify_chat_input(
+    user_input: str,
+    *,
+    surface: Surface = Surface.CLI_GATEWAY,
+) -> TuiInputKind:
     """Classify chat input without leaking slash policy into the runtime."""
-    return map_slash_category(classify(user_input))
+    return map_slash_category(classify(user_input, surface=surface))
 
 
 def surface_task_name(surface: Surface | str) -> str:

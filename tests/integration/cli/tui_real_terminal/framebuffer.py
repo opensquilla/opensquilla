@@ -26,6 +26,13 @@ RAIL_EDGE_FRAGMENTS = (
     "ROUTING",
     "OUTING",
 )
+WELCOME_HEADER = "OpenSquilla ·"
+WELCOME_TAGLINE = "Build with your agent. Stay in the flow."
+WELCOME_READY_MARKER = "OPEN_SQUILLA_TUI_READY"
+WELCOME_BLOCK_MIN_COLUMNS = 100
+WELCOME_TINY_MIN_COLUMNS = 46
+WELCOME_DISPLAY_MIN_ROWS = 18
+WELCOME_LOGO_MIN_GLYPHS_PER_ROW = 12
 
 
 class FramebufferParseError(ValueError):
@@ -37,6 +44,49 @@ class FramebufferCell:
     glyph: str
     background: str = DEFAULT_BACKGROUND
     continuation: bool = False
+
+
+@dataclass(frozen=True)
+class FrameGeometry:
+    """One source of truth for the fixed OpenTUI screen regions.
+
+    The production renderer keeps the transcript and footer as absolute
+    siblings and optionally reserves a right-hand context rail.  Visual gates
+    must derive all of those boundaries from the same terminal dimensions;
+    computing them independently is how an old-width footer previously passed
+    while its transcript used the new viewport.
+    """
+
+    cols: int
+    rows: int
+    rail_width: int
+    content_width: int
+    footer_top: int
+    composer_top: int
+    composer_body_top: int
+    composer_bottom: int
+    rail_left: int | None
+
+    @classmethod
+    def from_size(cls, *, cols: int, rows: int) -> FrameGeometry:
+        if cols <= 0 or rows <= FOOTER_HEIGHT:
+            raise ValueError(
+                "framebuffer must have positive width and room above the footer"
+            )
+        rail_width = context_rail_width(cols)
+        content_width = cols - rail_width
+        footer_top = rows - FOOTER_HEIGHT
+        return cls(
+            cols=cols,
+            rows=rows,
+            rail_width=rail_width,
+            content_width=content_width,
+            footer_top=footer_top,
+            composer_top=footer_top + 1,
+            composer_body_top=footer_top + 2,
+            composer_bottom=rows - 1,
+            rail_left=content_width if rail_width else None,
+        )
 
 
 @dataclass(frozen=True)
@@ -79,6 +129,10 @@ class StyledFramebuffer:
                 for row_index, row in enumerate(self.cells)
             ],
         }
+
+    @property
+    def geometry(self) -> FrameGeometry:
+        return FrameGeometry.from_size(cols=self.cols, rows=self.rows)
 
 
 def parse_tmux_styled_framebuffer(
@@ -193,9 +247,10 @@ def opentui_framebuffer_violations(
     """Return structural violations for the deterministic dark-theme TUI gate."""
 
     violations: list[str] = []
-    rail_width = context_rail_width(frame.cols)
-    content_width = frame.cols - rail_width
-    footer_top = frame.rows - FOOTER_HEIGHT
+    geometry = frame.geometry
+    rail_width = geometry.rail_width
+    content_width = geometry.content_width
+    footer_top = geometry.footer_top
     prompt_surface_cells = _prompt_surface_cells(
         frame,
         footer_top=footer_top,
@@ -226,6 +281,16 @@ def opentui_framebuffer_violations(
         violations.append(f"background-mask: {len(mismatches)} mismatched cells; {sample}")
 
     rows = [frame.row_text(index) for index in range(frame.rows)]
+    fixed_header_locations = [
+        (row_index, match.start())
+        for row_index, row in enumerate(rows[:footer_top])
+        for match in re.finditer(re.escape(WELCOME_HEADER), row)
+    ]
+    if len(fixed_header_locations) != 1:
+        violations.append(
+            "fixed-header: expected exactly one OpenSquilla identity header, "
+            f"found {fixed_header_locations}"
+        )
     composer_placeholders = ("send a message", "steer current turn · Tab queues")
     placeholder_locations = [
         (row_index, row.find(placeholder), placeholder)
@@ -244,8 +309,8 @@ def opentui_framebuffer_violations(
             f"{placeholder_locations[0]}"
         )
 
-    top_row = footer_top + 1
-    bottom_row = frame.rows - 1
+    top_row = geometry.composer_top
+    bottom_row = geometry.composer_bottom
     expected_border: dict[tuple[int, int], str] = {}
     for col_index in range(1, content_width - 1):
         expected_border[(top_row, col_index)] = (
@@ -294,6 +359,28 @@ def opentui_framebuffer_violations(
             "footer-strip: expected one direct/router/ensemble strategy strip on row "
             f"{footer_top}, "
             f"found {footer_strip_locations}"
+        )
+
+    # Background ownership alone cannot detect an old transcript glyph painted
+    # onto an otherwise-correct footer surface. These gates run with the idle or
+    # busy placeholder (an empty draft), so any turn-role marker below
+    # ``footer_top`` is unambiguously stale transcript content.
+    transcript_footer_markers = (
+        re.compile(r"(?:^|\s)you\s{2}"),
+        re.compile(r"(?:^|\s)(?:main|squilla)\s*$"),
+        re.compile(r"\b(?:Thinking|Thought for|Worked for)\b"),
+        re.compile(r"(?:^|\s)in [\d,]+ / out [\d,]+"),
+    )
+    transcript_in_footer = [
+        (row_index, marker.pattern)
+        for row_index in range(footer_top, frame.rows)
+        for marker in transcript_footer_markers
+        if marker.search(rows[row_index])
+    ]
+    if transcript_in_footer:
+        violations.append(
+            "surface-ownership: transcript markers painted inside footer rows "
+            f"{transcript_in_footer}"
         )
 
     full_height_rails = [
@@ -350,7 +437,116 @@ def opentui_framebuffer_violations(
     if edge_residue:
         violations.append(f"context-rail: wrapped heading fragments at content edge {edge_residue}")
 
+    violations.extend(
+        _welcome_identity_violations(
+            frame,
+            rows=rows,
+            geometry=geometry,
+        )
+    )
+
     return tuple(violations)
+
+
+def _welcome_identity_violations(
+    frame: StyledFramebuffer,
+    *,
+    rows: list[str],
+    geometry: FrameGeometry,
+) -> tuple[str, ...]:
+    """Validate the fixed header and transient welcome identity as one copy.
+
+    This is deliberately conditional. Normal turn frames retain the fixed
+    identity header but have no welcome mark, so they must not be required to
+    render the logo or tagline. The deterministic fake app exposes a ready
+    marker; production welcome frames are recognized by their tagline.
+
+    OpenTUI's approved ``tiny`` and ``block`` faces are structurally different:
+    the former is two dense glyph rows at 46--99 content cells, while the
+    latter is six rows at 100+ cells. Counting one contiguous dense-row
+    component catches duplicated or residual welcome nodes without baking a
+    screenshot, font rasterizer, or terminal-specific colour conversion into
+    this terminal-cell contract.
+    """
+
+    # A welcome node belongs to the scrollable transcript, so a later held or
+    # streaming frame may legitimately show only its lower rows. Enforce the
+    # complete identity only at the explicit initial-ready checkpoint; later
+    # frames still retain the generic one-header/footer ownership checks.
+    welcome_present = "ready" in frame.checkpoint.lower() and any(
+        WELCOME_READY_MARKER in row or WELCOME_TAGLINE in row
+        for row in rows[: geometry.footer_top]
+    )
+    if not welcome_present:
+        return ()
+
+    violations: list[str] = []
+    tagline_locations = [
+        (row_index, match.start())
+        for row_index, row in enumerate(rows[: geometry.footer_top])
+        for match in re.finditer(re.escape(WELCOME_TAGLINE), row)
+    ]
+    if len(tagline_locations) != 1:
+        violations.append(
+            "welcome-tagline: expected exactly one welcome tagline, "
+            f"found {tagline_locations}"
+        )
+
+    content_width = geometry.content_width
+    if (
+        frame.rows >= WELCOME_DISPLAY_MIN_ROWS
+        and content_width >= WELCOME_TINY_MIN_COLUMNS
+    ):
+        expected_height = 6 if content_width >= WELCOME_BLOCK_MIN_COLUMNS else 2
+        dense_rows = [
+            row_index
+            for row_index in range(geometry.footer_top)
+            if sum(
+                frame.cells[row_index][col_index].glyph in BLOCK_LOGO_GLYPHS
+                for col_index in range(content_width)
+            )
+            >= WELCOME_LOGO_MIN_GLYPHS_PER_ROW
+        ]
+        groups = _consecutive_row_groups(dense_rows)
+        expected_groups = [group for group in groups if len(group) == expected_height]
+        valid_order = (
+            len(expected_groups) == 1
+            and len(groups) == 1
+            and len(tagline_locations) == 1
+            and expected_groups[0][-1] < tagline_locations[0][0]
+        )
+        if not valid_order:
+            violations.append(
+                "welcome-logo: expected exactly one "
+                f"{expected_height}-row block logo before the tagline, found {groups}"
+            )
+    else:
+        # The plain geometric fallback renders the wordmark as text. Exclude
+        # the fixed header's ``OpenSquilla ·`` occurrence and require one
+        # remaining wordmark in the transcript.
+        plain_logo_locations = [
+            (row_index, match.start())
+            for row_index, row in enumerate(rows[: geometry.footer_top])
+            for match in re.finditer("OpenSquilla", row)
+            if not row[match.end() :].startswith(" ·")
+        ]
+        if len(plain_logo_locations) != 1:
+            violations.append(
+                "welcome-logo: expected exactly one plain welcome logo, "
+                f"found {plain_logo_locations}"
+            )
+
+    return tuple(violations)
+
+
+def _consecutive_row_groups(rows: list[int]) -> list[list[int]]:
+    groups: list[list[int]] = []
+    for row in rows:
+        if groups and row == groups[-1][-1] + 1:
+            groups[-1].append(row)
+        else:
+            groups.append([row])
+    return groups
 
 
 def _prompt_surface_cells(
@@ -426,6 +622,7 @@ def assert_opentui_framebuffer(
     frame: StyledFramebuffer,
     *,
     required_rail_headings: tuple[str, ...] = ("AGENT", "RUNTIME"),
+    cursor: tuple[int, int] | None = None,
 ) -> None:
     violations = opentui_framebuffer_violations(
         frame,
@@ -437,6 +634,21 @@ def assert_opentui_framebuffer(
             f"{frame.checkpoint}: invalid styled terminal framebuffer:\n{rendered}\n\n"
             f"Visible cells:\n{frame.text}"
         )
+    if cursor is not None:
+        cursor_x, cursor_y = cursor
+        geometry = frame.geometry
+        inside_composer = (
+            1 < cursor_x < geometry.content_width - 2
+            and geometry.composer_top < cursor_y < geometry.composer_bottom
+        )
+        if not inside_composer:
+            raise AssertionError(
+                f"{frame.checkpoint}: hardware cursor {cursor} is outside the "
+                "composer content rectangle "
+                f"x=2..{geometry.content_width - 3}, "
+                f"y={geometry.composer_body_top}..{geometry.composer_bottom - 1}\n\n"
+                f"Visible cells:\n{frame.text}"
+            )
 
 
 def _apply_sgr_background(current: str, parameters: str) -> str:

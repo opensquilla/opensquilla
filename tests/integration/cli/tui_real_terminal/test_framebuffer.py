@@ -13,12 +13,49 @@ from tui_real_terminal.framebuffer import (
     SCROLLBAR_TRACK_BACKGROUND,
     FramebufferCell,
     FramebufferParseError,
+    FrameGeometry,
     StyledFramebuffer,
     assert_opentui_framebuffer,
     context_rail_width,
     opentui_framebuffer_violations,
     parse_tmux_styled_framebuffer,
 )
+
+
+@pytest.mark.parametrize(
+    ("cols", "rows", "content", "footer_top", "composer_top", "rail_left"),
+    [
+        (80, 24, 80, 18, 19, None),
+        (120, 30, 120, 24, 25, None),
+        (160, 40, 124, 34, 35, 124),
+    ],
+)
+def test_frame_geometry_owns_transcript_footer_composer_and_rail_boundaries(
+    cols: int,
+    rows: int,
+    content: int,
+    footer_top: int,
+    composer_top: int,
+    rail_left: int | None,
+) -> None:
+    geometry = FrameGeometry.from_size(cols=cols, rows=rows)
+
+    assert geometry.content_width == content
+    assert geometry.footer_top == footer_top
+    assert geometry.composer_top == composer_top
+    assert geometry.composer_body_top == composer_top + 1
+    assert geometry.composer_bottom == rows - 1
+    assert geometry.rail_left == rail_left
+
+
+def test_framebuffer_gate_optionally_requires_cursor_inside_composer() -> None:
+    frame = _canonical_frame(120, 34)
+
+    assert_opentui_framebuffer(frame, cursor=(4, 30))
+    with pytest.raises(AssertionError, match="hardware cursor .* outside the composer"):
+        assert_opentui_framebuffer(frame, cursor=(4, 28))
+    with pytest.raises(AssertionError, match="hardware cursor .* outside the composer"):
+        assert_opentui_framebuffer(frame, cursor=(119, 30))
 
 
 def test_styled_parser_preserves_background_state_but_not_unpainted_padding() -> None:
@@ -233,6 +270,19 @@ def test_border_only_duplicate_composer_residue_is_a_blocking_violation() -> Non
     )
 
 
+def test_transcript_glyphs_on_correct_footer_background_are_blocking() -> None:
+    frame = _write_text(
+        _canonical_frame(120, 34),
+        row=34 - FOOTER_HEIGHT + 3,
+        col=10,
+        text="Thinking · stale transcript frame",
+    )
+
+    violations = opentui_framebuffer_violations(frame)
+
+    assert any("surface-ownership" in violation for violation in violations)
+
+
 def test_duplicate_context_rail_is_a_blocking_violation() -> None:
     frame = _canonical_frame(132, 34)
     for row in range(frame.rows):
@@ -264,10 +314,78 @@ def test_wrapped_partial_context_headings_are_a_blocking_violation() -> None:
     assert any("wrapped heading fragments" in violation for violation in violations)
 
 
+@pytest.mark.parametrize("cols,rows", [(80, 24), (120, 30), (160, 40)])
+def test_welcome_identity_passes_at_supported_visual_gate_sizes(
+    cols: int,
+    rows: int,
+) -> None:
+    assert_opentui_framebuffer(_canonical_welcome_frame(cols, rows))
+
+
+def test_duplicate_welcome_header_is_a_blocking_violation() -> None:
+    frame = _canonical_welcome_frame(120, 30)
+    frame = _write_text(frame, row=16, col=2, text="OpenSquilla · stale header")
+
+    violations = opentui_framebuffer_violations(frame)
+
+    assert any("fixed-header" in violation for violation in violations)
+
+
+def test_duplicate_welcome_tagline_is_a_blocking_violation() -> None:
+    frame = _canonical_welcome_frame(120, 30)
+    frame = _write_text(
+        frame,
+        row=16,
+        col=2,
+        text="Build with your agent. Stay in the flow.",
+    )
+
+    violations = opentui_framebuffer_violations(frame)
+
+    assert any("welcome-tagline" in violation for violation in violations)
+
+
+def test_scrolled_partial_welcome_is_not_misclassified_as_a_duplicate_logo() -> None:
+    frame = replace(_canonical_welcome_frame(160, 40), checkpoint="after-stream")
+    for row in (4, 5):
+        frame = _write_text(frame, row=row, col=2, text=" " * 20)
+
+    violations = opentui_framebuffer_violations(frame)
+
+    assert not any("welcome-logo" in violation for violation in violations)
+    duplicate_header = _write_text(
+        frame,
+        row=16,
+        col=2,
+        text="OpenSquilla · stale fixed header",
+    )
+    assert any(
+        "fixed-header" in violation
+        for violation in opentui_framebuffer_violations(duplicate_header)
+    )
+
+
+@pytest.mark.parametrize("cols,rows", [(80, 24), (120, 30), (160, 40)])
+def test_duplicate_welcome_logo_is_a_blocking_violation(
+    cols: int,
+    rows: int,
+) -> None:
+    frame = _canonical_welcome_frame(cols, rows)
+    logo_height = 6 if frame.geometry.content_width >= 100 else 2
+    duplicate_start = 11 if cols == 80 else 16
+    for row in range(duplicate_start, duplicate_start + logo_height):
+        frame = _write_text(frame, row=row, col=2, text="█" * 20)
+
+    violations = opentui_framebuffer_violations(frame)
+
+    assert any("welcome-logo" in violation for violation in violations)
+
+
 def _canonical_frame(cols: int, rows: int) -> StyledFramebuffer:
-    rail = context_rail_width(cols)
-    content = cols - rail
-    footer_top = rows - FOOTER_HEIGHT
+    geometry = FrameGeometry.from_size(cols=cols, rows=rows)
+    rail = geometry.rail_width
+    content = geometry.content_width
+    footer_top = geometry.footer_top
     cells: list[list[FramebufferCell]] = []
     for row in range(rows):
         cells.append(
@@ -285,6 +403,8 @@ def _canonical_frame(cols: int, rows: int) -> StyledFramebuffer:
             cells[row][content] = replace(cells[row][content], glyph="│")
         _write_mutable(cells, row=0, col=content + 2, text="AGENT")
         _write_mutable(cells, row=6, col=content + 2, text="RUNTIME")
+
+    _write_mutable(cells, row=0, col=1, text="OpenSquilla · Session")
 
     footer_strip = "direct · model fake-terminal"
     _write_mutable(cells, row=footer_top, col=3, text=footer_strip)
@@ -310,6 +430,36 @@ def _canonical_frame(cols: int, rows: int) -> StyledFramebuffer:
         rows=rows,
         cells=tuple(tuple(row) for row in cells),
     )
+
+
+def _canonical_welcome_frame(cols: int, rows: int) -> StyledFramebuffer:
+    frame = replace(_canonical_frame(cols, rows), checkpoint="ready")
+    frame = _write_text(frame, row=0, col=1, text="OpenSquilla · Session")
+    if frame.geometry.content_width >= 100:
+        logo_start = 4
+        logo_height = 6
+        tagline_row = 11
+        marker_row = 14
+    else:
+        logo_start = 3
+        logo_height = 2
+        tagline_row = 5
+        marker_row = 8
+    for row in range(logo_start, logo_start + logo_height):
+        frame = _write_text(frame, row=row, col=2, text="█" * 20)
+    frame = _write_text(
+        frame,
+        row=tagline_row,
+        col=2,
+        text="Build with your agent. Stay in the flow.",
+    )
+    frame = _write_text(
+        frame,
+        row=marker_row,
+        col=0,
+        text="OPEN_SQUILLA_TUI_READY",
+    )
+    return frame
 
 
 def _replace_cell(

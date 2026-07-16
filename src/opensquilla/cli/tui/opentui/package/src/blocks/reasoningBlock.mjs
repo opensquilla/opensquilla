@@ -1,14 +1,16 @@
 import { THEME } from "../theme.mjs";
 import { TOOL_INDENT, clipToCells, stripTerminalControls, timelineAvailCells, wrapToCells } from "../primitives.mjs";
 import { destroyRenderable } from "../renderableLifecycle.mjs";
+import { rendererViewportSnapshot } from "../screenMode.mjs";
 
-// Extended reasoning stays compact by default, but compact no longer means
-// destructive: every delta is retained, completed reasoning advertises the
-// exact number of hidden visual lines, and toggleExpanded() deterministically
-// reveals/collapses the complete sanitized payload. A future host keybinding
-// can call the same API without changing this block's rendering contract.
+// Extended reasoning stays bounded by default, but bounded no longer means
+// invisible or destructive: every delta is retained, completed reasoning keeps
+// a substantial fixed preview, and toggleExpanded() deterministically
+// reveals/collapses the complete sanitized payload. Keeping the completed cap
+// independent from terminal height avoids reflowing old turns on every resize.
 const MIN_LIVE_PEEK_ROWS = 3;
 const MAX_LIVE_PEEK_ROWS = 8;
+const COMPLETED_PREVIEW_ROWS = 8;
 
 export function livePeekRows(terminalHeight) {
   const height = Math.max(1, Number(terminalHeight) || 24);
@@ -20,6 +22,9 @@ export function createReasoningBlock(ctx) {
   const contentWidth = typeof ctx.contentWidth === "function"
     ? ctx.contentWidth
     : () => renderer.terminalWidth;
+  const viewport = typeof ctx.viewport === "function"
+    ? ctx.viewport
+    : () => rendererViewportSnapshot(renderer);
   const headerId = `${idPrefix}-mark`;
   let header = null;
   const detailNodes = [];
@@ -55,7 +60,7 @@ export function createReasoningBlock(ctx) {
       id: headerId,
       content: headerContent(),
       // Keep the semantic purple marker after completion. The reasoning body
-      // still collapses to muted detail, so retained history stays quiet while
+      // settles to bounded muted detail, so retained history stays quiet while
       // `Thought` cannot be mistaken for an answer or usage receipt.
       fg: THEME.thinkingAccent,
     });
@@ -98,13 +103,21 @@ export function createReasoningBlock(ctx) {
     }
 
     if (done) {
-      hiddenLineCount = rows.length;
       if (!rows.length) return [];
-      const noun = rows.length === 1 ? "line" : "lines";
-      return [{
-        content: `${prefix}▸ ${rows.length} reasoning ${noun} · expand details`,
-        fg: THEME.muted,
-      }];
+      const visible = rows.slice(-COMPLETED_PREVIEW_ROWS);
+      hiddenLineCount = Math.max(0, rows.length - visible.length);
+      const specs = [];
+      if (hiddenLineCount) {
+        specs.push({
+          content: `${prefix}… ${hiddenLineCount} earlier · Ctrl+O details`,
+          fg: THEME.muted,
+        });
+      }
+      specs.push(...visible.map((line) => ({
+        content: `${prefix}${clipToCells(line, avail)}`,
+        fg: THEME.detailText,
+      })));
+      return specs;
     }
 
     if (!rows.length && waiting) {
@@ -115,7 +128,7 @@ export function createReasoningBlock(ctx) {
       }];
     }
 
-    const visible = rows.slice(-livePeekRows(renderer?.terminalHeight));
+    const visible = rows.slice(-livePeekRows(viewport().height));
     hiddenLineCount = Math.max(0, rows.length - visible.length);
     const specs = [];
     if (hiddenLineCount) {
@@ -219,7 +232,7 @@ export function createReasoningBlock(ctx) {
     },
     append(delta) {
       // Even a protocol-straggler arriving after block.end belongs to this
-      // reasoning block. Retain it and refresh the collapsed count/expanded
+      // reasoning block. Retain it and refresh the preview count/expanded
       // body instead of silently dropping the late tail.
       const next = String(delta ?? "");
       rawText += next;

@@ -22,7 +22,16 @@ function tickCount(event) {
 }
 
 function maxScrollTop(scrollBox) {
-  return Math.max(0, Number(scrollBox?.scrollHeight ?? 0) - Number(scrollBox?.height ?? 0));
+  // OpenTUI defines the scroll range against the public viewport height, not
+  // the outer ScrollBox height. They are equal today because the transcript
+  // has no padding/border, but using the engine's canonical geometry prevents
+  // a future style change from landing one row above/below the real bottom.
+  const viewportHeight = Number(scrollBox?.viewport?.height ?? scrollBox?.height ?? 0);
+  return Math.max(0, Number(scrollBox?.scrollHeight ?? 0) - viewportHeight);
+}
+
+function viewportHeight(scrollBox) {
+  return Number(scrollBox?.viewport?.height ?? scrollBox?.height ?? 0);
 }
 
 function clampRow(value, scrollBox) {
@@ -117,14 +126,50 @@ export function createStableTranscriptScroller({
       if (pending.output) newOutput = true;
       recordAnchor();
     }
+    const wheelRows = Number(pending.wheelRows ?? 0);
+    if (wheelRows) {
+      scrollBox.scrollTop = clampRow(Number(scrollBox.scrollTop ?? 0) + wheelRows, scrollBox);
+      const atBottom = isPinnedToBottom(
+        scrollBox.scrollTop,
+        scrollBox.scrollHeight,
+        viewportHeight(scrollBox),
+        0,
+      );
+      if (atBottom && wheelRows > 0) {
+        scrollBox.stickyScroll = true;
+        anchor = null;
+        newOutput = false;
+        followMode = "following";
+      } else {
+        scrollBox.stickyScroll = false;
+        followMode = "held";
+        recordAnchor();
+      }
+    }
+    pending.afterLayout?.();
     notify();
-    invalidate(renderer, scrollBox);
+    if (pending.invalidateAfterLayout !== false) invalidate(renderer, scrollBox);
   }
 
-  function queueLayoutCommit({ output = false, restoreMode = null } = {}) {
+  function queueLayoutCommit({
+    output = false,
+    restoreMode = null,
+    afterLayout = null,
+    wheelRows = 0,
+    invalidateAfterLayout = true,
+  } = {}) {
     if (layoutPending) {
       layoutPending.output ||= Boolean(output);
       if (restoreMode) layoutPending.restoreMode = restoreMode;
+      if (typeof afterLayout === "function") layoutPending.afterLayout = afterLayout;
+      layoutPending.wheelRows = Math.max(
+        -SCROLL_MAX_ROWS_PER_FRAME,
+        Math.min(
+          SCROLL_MAX_ROWS_PER_FRAME,
+          Number(layoutPending.wheelRows ?? 0) + Number(wheelRows || 0),
+        ),
+      );
+      layoutPending.invalidateAfterLayout &&= invalidateAfterLayout !== false;
       return;
     }
     if (followMode !== "following" && followMode !== "restoring" && !anchor) {
@@ -135,6 +180,9 @@ export function createStableTranscriptScroller({
       heldTop: Number(scrollBox?.scrollTop ?? 0),
       output: Boolean(output),
       restoreMode,
+      afterLayout: typeof afterLayout === "function" ? afterLayout : null,
+      wheelRows: Number(wheelRows) || 0,
+      invalidateAfterLayout: invalidateAfterLayout !== false,
     };
     const install = typeof scheduleLayout === "function"
       ? scheduleLayout
@@ -175,7 +223,7 @@ export function createStableTranscriptScroller({
     const atBottom = isPinnedToBottom(
       scrollBox.scrollTop,
       scrollBox.scrollHeight,
-      scrollBox.height,
+      viewportHeight(scrollBox),
       0,
     );
     // An upward gesture is an explicit hold intent even when OpenTUI has not
@@ -251,10 +299,26 @@ export function createStableTranscriptScroller({
     return result;
   }
 
-  function bumpSurfaceEpoch() {
+  // Rebuild every surface and advance the terminal epoch as one pre-paint
+  // transaction. This is intentionally distinct from ordinary transcript
+  // mutations: resize/remount/theme/history changes must cancel stale wheel or
+  // anchor work, apply the whole logical layout, then expose exactly one frame.
+  function restoreSurface(mutation, { afterLayout = null } = {}) {
     const restoreMode = followMode === "restoring"
       ? layoutPending?.restoreMode ?? "held"
       : followMode === "following" ? "following" : "held";
+    const heldTop = Number(scrollBox?.scrollTop ?? 0);
+    if (restoreMode !== "following" && !anchor) {
+      anchor = captureAnchor?.(heldTop) || null;
+    }
+    const interruptedOutput = Boolean(layoutPending?.output);
+    const interruptedWheelRows = Math.max(
+      -SCROLL_MAX_ROWS_PER_FRAME,
+      Math.min(
+        SCROLL_MAX_ROWS_PER_FRAME,
+        (Number(layoutPending?.wheelRows) || 0) + (Number(pendingRows) || 0),
+      ),
+    );
     surfaceEpoch += 1;
     pendingRows = 0;
     pendingDirection = 0;
@@ -262,9 +326,23 @@ export function createStableTranscriptScroller({
     frame = null;
     cancelLayoutCommit();
     followMode = "restoring";
-    queueLayoutCommit({ restoreMode });
-    invalidate(renderer, scrollBox);
     notify();
+    try {
+      return mutation();
+    } finally {
+      // Surface rebuilds are prepared inside OpenTUI's public pre-paint frame
+      // callback. The caller marks that same frame as a full repaint before it
+      // is rendered, so invalidating here would necessarily enqueue a second
+      // physical frame. Preserve any coalesced output/gesture instead and let
+      // the single transaction expose it with the rebuilt layout.
+      queueLayoutCommit({
+        output: interruptedOutput,
+        restoreMode,
+        afterLayout,
+        wheelRows: interruptedWheelRows,
+        invalidateAfterLayout: false,
+      });
+    }
   }
 
   function dispose() {
@@ -278,8 +356,8 @@ export function createStableTranscriptScroller({
     scrollBy,
     mutate,
     restore,
+    restoreSurface,
     followLatest,
-    bumpSurfaceEpoch,
     dispose,
     snapshot,
     get followMode() { return followMode; },

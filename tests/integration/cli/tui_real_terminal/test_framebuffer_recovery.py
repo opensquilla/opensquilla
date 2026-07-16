@@ -26,6 +26,7 @@ _SCENARIO_ID = "same_size_framebuffer_recovery"
 _EVENTLESS_SCENARIO_ID = "same_size_eventless_framebuffer_recovery"
 _MODE_LOSS_SCENARIO_ID = "alternate_screen_mode_loss"
 _STREAM_SCENARIO_ID = "same_size_stream_framebuffer_recovery"
+_EVENTLESS_STREAM_SCENARIO_ID = "same_size_eventless_stream_framebuffer_recovery"
 _SIZE = TerminalSize(cols=140, rows=36)
 _EVENTLESS_SIZE = TerminalSize(cols=120, rows=36)
 
@@ -47,17 +48,6 @@ def _pane_state(run_id: str) -> str:
         stdout=subprocess.PIPE,
     )
     return result.stdout.strip()
-
-
-def _pane_cursor(run_id: str) -> tuple[int, int]:
-    result = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", run_id, "#{cursor_x},#{cursor_y}"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    x, y = result.stdout.strip().split(",", 1)
-    return int(x), int(y)
 
 
 def _pane_input_modes(run_id: str) -> str:
@@ -198,6 +188,7 @@ def test_focus_in_restores_same_size_cleared_framebuffer(
         assert_opentui_framebuffer(
             initial_framebuffer,
             required_rail_headings=("AGENT",),
+            cursor=session.cursor_position(),
         )
         initial_state = _pane_state(session.run_id)
         assert initial_state.startswith("140x36 alternate=1 "), initial_state
@@ -241,6 +232,7 @@ def test_focus_in_restores_same_size_cleared_framebuffer(
         assert_opentui_framebuffer(
             restored_framebuffer,
             required_rail_headings=("AGENT",),
+            cursor=session.cursor_position(),
         )
 
         assert _pane_state(session.run_id) == initial_state
@@ -269,7 +261,7 @@ def test_watchdog_restores_same_size_framebuffer_without_terminal_event(
     artifact_root: Path,
     pytestconfig: pytest.Config,
 ) -> None:
-    """Recover the exact Codex side-terminal remount reported by the user.
+    """Exercise the explicit eventless-recovery diagnostic fallback.
 
     The physical grid disappears while the PTY stays alive at the same size.
     Crucially, this test sends no focus, resize, SIGWINCH, key, mouse, or stream
@@ -310,6 +302,9 @@ def test_watchdog_restores_same_size_framebuffer_without_terminal_event(
     )
     if not target.available:
         pytest.skip(target.skip_reason or "OpenTUI test target is unavailable")
+    # Periodic full repaint is deliberately not a production default: it can
+    # flash a healthy retained surface. Keep the otherwise-undetectable,
+    # eventless path as an explicit diagnostic/recovery capability.
     target.env["OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS"] = "400"
 
     session = open_real_terminal_session(
@@ -337,6 +332,7 @@ def test_watchdog_restores_same_size_framebuffer_without_terminal_event(
         assert_opentui_framebuffer(
             initial_framebuffer,
             required_rail_headings=("AGENT",),
+            cursor=session.cursor_position(),
         )
         initial_state = _pane_state(session.run_id)
 
@@ -356,6 +352,7 @@ def test_watchdog_restores_same_size_framebuffer_without_terminal_event(
         assert_opentui_framebuffer(
             restored_framebuffer,
             required_rail_headings=("AGENT",),
+            cursor=session.cursor_position(),
         )
 
         assert _pane_state(session.run_id) == initial_state
@@ -442,7 +439,8 @@ def test_watchdog_reenters_alternate_screen_without_polluting_scrollback_or_curs
             checkpoint="mode-loss-before-reset",
         )
         evidence.record_frame(initial)
-        initial_cursor = _pane_cursor(session.run_id)
+        initial_cursor = session.cursor_position()
+        assert initial_cursor is not None
         initial_input_modes = _pane_input_modes(session.run_id)
         assert session.alternate_screen_active() is True
 
@@ -465,7 +463,10 @@ def test_watchdog_reenters_alternate_screen_without_polluting_scrollback_or_curs
         restored_framebuffer = session.capture_framebuffer("mode-loss-after-recovery")
         assert restored_framebuffer is not None
         evidence.record_framebuffer(restored_framebuffer)
-        assert_opentui_framebuffer(restored_framebuffer)
+        assert_opentui_framebuffer(
+            restored_framebuffer,
+            cursor=session.cursor_position(),
+        )
 
         placeholder_row = next(
             row
@@ -473,10 +474,10 @@ def test_watchdog_reenters_alternate_screen_without_polluting_scrollback_or_curs
             if "send a message" in restored_framebuffer.row_text(row)
         )
         placeholder_column = restored_framebuffer.row_text(placeholder_row).index("send a message")
-        assert _pane_cursor(session.run_id) == initial_cursor
+        assert session.cursor_position() == initial_cursor
         assert _pane_input_modes(session.run_id) == initial_input_modes
         expected_cursor = (placeholder_column - 1, placeholder_row)
-        assert _pane_cursor(session.run_id) == expected_cursor
+        assert session.cursor_position() == expected_cursor
 
         # Cross another watchdog interval while the pane is already healthy.
         # Reasserting alternate-screen must remain idempotent: no full frames in
@@ -486,7 +487,7 @@ def test_watchdog_reenters_alternate_screen_without_polluting_scrollback_or_curs
         evidence.write_scrollback(scrollback)
         assert scrollback.text.count("Build with your agent. Stay in the flow.") == 1
         assert scrollback.text.count("OpenSquilla · Session") == 1
-        assert _pane_cursor(session.run_id) == expected_cursor
+        assert session.cursor_position() == expected_cursor
 
         evidence.write_result(
             ScenarioResult(
@@ -500,9 +501,18 @@ def test_watchdog_reenters_alternate_screen_without_polluting_scrollback_or_curs
         session.terminate()
 
 
-def test_focus_in_restores_same_size_framebuffer_during_live_stream(
+@pytest.mark.parametrize(
+    ("recovery_mode", "scenario_id"),
+    [
+        pytest.param("focus", _STREAM_SCENARIO_ID, id="focus-event"),
+        pytest.param("watchdog", _EVENTLESS_STREAM_SCENARIO_ID, id="eventless-watchdog-opt-in"),
+    ],
+)
+def test_restores_same_size_framebuffer_during_live_stream(
     artifact_root: Path,
     pytestconfig: pytest.Config,
+    recovery_mode: str,
+    scenario_id: str,
 ) -> None:
     capabilities = probe_terminal_capabilities()
     if not capabilities.tmux_available:
@@ -513,13 +523,14 @@ def test_focus_in_restores_same_size_framebuffer_during_live_stream(
 
     evidence = EvidenceBundle.create(
         artifact_root,
-        scenario_id=_STREAM_SCENARIO_ID,
+        scenario_id=scenario_id,
         backend_id="opentui",
     )
     evidence.write_scenario(
         {
-            "scenario_id": _STREAM_SCENARIO_ID,
+            "scenario_id": scenario_id,
             "family": "terminal_surface_recovery_during_stream",
+            "recovery_mode": recovery_mode,
             "initial_size": {"cols": _SIZE.cols, "rows": _SIZE.rows},
             "requires_tmux": True,
         }
@@ -529,18 +540,23 @@ def test_focus_in_restores_same_size_framebuffer_during_live_stream(
         TargetContext(
             project_root=Path.cwd(),
             artifact_dir=evidence.run_dir,
-            scenario_id=_STREAM_SCENARIO_ID,
+            scenario_id=scenario_id,
             size=_SIZE,
         ),
     )
     if not target.available:
         pytest.skip(target.skip_reason or "OpenTUI test target is unavailable")
+    if recovery_mode == "focus":
+        target.env["OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS"] = "0"
+    else:
+        target.env["OPENSQUILLA_TUI_REPAINT_WATCHDOG_MS"] = "400"
+        target.env["OPENSQUILLA_TUI_FAKE_STREAM_DELAY_S"] = "0.04"
 
     session = open_real_terminal_session(
         command=target.command,
         cwd=Path.cwd(),
         env=target.env,
-        run_id=build_run_id(_STREAM_SCENARIO_ID),
+        run_id=build_run_id(scenario_id),
         size=target.initial_size,
         artifact_dir=evidence.run_dir,
         driver="tmux",
@@ -568,25 +584,39 @@ def test_focus_in_restores_same_size_framebuffer_during_live_stream(
         evidence.record_frame(before)
         before_framebuffer = session.capture_framebuffer("stream-before-surface-reset")
         evidence.record_framebuffer(before_framebuffer)
-        assert_opentui_framebuffer(before_framebuffer)
+        assert_opentui_framebuffer(
+            before_framebuffer,
+            cursor=session.cursor_position(),
+        )
         initial_state = _pane_state(session.run_id)
 
         # Recreate the reported condition: the embedded surface is discarded
         # while the same reasoning block is still receiving deltas. No resize and
         # no child restart may help the renderer recover.
-        _send_focus_sequence(session.run_id, focused=False)
-        _clear_tmux_framebuffer(session.run_id)
-        _send_focus_sequence(session.run_id, focused=True)
+        if recovery_mode == "focus":
+            _send_focus_sequence(session.run_id, focused=False)
+            _clear_tmux_framebuffer(session.run_id)
+            _send_focus_sequence(session.run_id, focused=True)
+        else:
+            # No input or lifecycle event follows the clear. The explicitly
+            # enabled fallback must commit one coherent full frame while
+            # reasoning continues to mutate underneath it.
+            _clear_tmux_framebuffer(session.run_id)
 
         restored = session.wait_for_text(
             "stream-token-035",
             timeout_s=10.0,
-            checkpoint="stream-after-focus-full-repaint",
+            checkpoint=f"stream-after-{recovery_mode}-full-repaint",
         )
         evidence.record_frame(restored)
-        restored_framebuffer = session.capture_framebuffer("stream-after-focus-full-repaint")
+        restored_framebuffer = session.capture_framebuffer(
+            f"stream-after-{recovery_mode}-full-repaint"
+        )
         evidence.record_framebuffer(restored_framebuffer)
-        assert_opentui_framebuffer(restored_framebuffer)
+        assert_opentui_framebuffer(
+            restored_framebuffer,
+            cursor=session.cursor_position(),
+        )
 
         assert _pane_state(session.run_id) == initial_state
         assert session.alternate_screen_active() is True
@@ -598,9 +628,9 @@ def test_focus_in_restores_same_size_framebuffer_during_live_stream(
         assert restored.text.count("│ AGENT") == 1
         assert restored.text.count("│ RUNTIME") == 1
 
-        # Finalized reasoning intentionally folds behind its disclosure row, so
-        # wait on the usage receipt rather than a detail token that is no longer
-        # meant to remain visible in the collapsed transcript.
+        # Finalized reasoning keeps only a bounded latest-tail preview. Wait on
+        # the usage receipt because an arbitrary stream token may still fall
+        # outside those eight retained visual rows.
         session.wait_for_text(
             "in 1 / out 2 · fake-terminal",
             timeout_s=10.0,
@@ -609,7 +639,7 @@ def test_focus_in_restores_same_size_framebuffer_during_live_stream(
         evidence.write_scrollback(session.capture_scrollback_text("scrollback"))
         evidence.write_result(
             ScenarioResult(
-                scenario_id=_STREAM_SCENARIO_ID,
+                scenario_id=scenario_id,
                 backend_id="opentui",
                 status="pass",
                 run_dir=evidence.run_dir,

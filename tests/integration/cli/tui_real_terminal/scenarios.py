@@ -38,6 +38,7 @@ ScenarioAction = Literal[
     "key",
     "resize",
     "capture",
+    "ack_phase",
 ]
 
 
@@ -48,6 +49,7 @@ class ScenarioStep:
     value: str = ""
     checkpoint: str = ""
     timeout_s: float = 5.0
+    assert_framebuffer: bool = False
 
 
 @dataclass(frozen=True)
@@ -137,8 +139,15 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     "stream-token-035",
                     "after-stream-narrow",
                     timeout_s=10.0,
+                    assert_framebuffer=True,
                 ),
-                ScenarioStep("resize-stream-wide", "resize", "140x34", "stream-restored-wide"),
+                ScenarioStep(
+                    "resize-stream-wide",
+                    "resize",
+                    "140x34",
+                    "stream-restored-wide",
+                    assert_framebuffer=True,
+                ),
                 ScenarioStep(
                     "wait-stream-complete",
                     "wait_text",
@@ -175,41 +184,61 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     "Ensemble · 0/2 complete",
                     "during-ensemble",
                     timeout_s=10.0,
+                    assert_framebuffer=True,
                 ),
+                ScenarioStep("ack-ensemble", "ack_phase", "ensemble"),
                 ScenarioStep(
                     "wait-reasoning",
                     "wait_text",
                     "reasoning-process-streams-live",
                     "during-reasoning",
                     timeout_s=10.0,
+                    assert_framebuffer=True,
                 ),
+                ScenarioStep("ack-reasoning", "ack_phase", "reasoning"),
                 ScenarioStep(
                     "wait-intermediate",
                     "wait_text",
                     "intermediate-before-tool",
                     "during-intermediate",
                     timeout_s=10.0,
+                    assert_framebuffer=True,
                 ),
+                ScenarioStep("ack-intermediate", "ack_phase", "intermediate"),
+                ScenarioStep(
+                    "wait-tool",
+                    "wait_text",
+                    "fake_tool",
+                    "during-tool",
+                    timeout_s=10.0,
+                    assert_framebuffer=True,
+                ),
+                ScenarioStep("ack-tool", "ack_phase", "tool"),
                 ScenarioStep(
                     "wait-answer",
                     "wait_text",
                     "complex-state-complete",
                     "during-answer",
                     timeout_s=10.0,
+                    assert_framebuffer=True,
                 ),
+                ScenarioStep("ack-answer", "ack_phase", "answer"),
                 ScenarioStep(
                     "wait-usage",
                     "wait_text",
                     "think 436",
                     "after-usage",
                     timeout_s=10.0,
+                    assert_framebuffer=True,
                 ),
+                ScenarioStep("ack-usage", "ack_phase", "usage"),
                 ScenarioStep(
                     "settle-final-frame",
                     "capture",
                     "",
                     "after-complex",
                     timeout_s=0.3,
+                    assert_framebuffer=True,
                 ),
             ),
             expected_text=(
@@ -219,6 +248,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                 "complex-state-complete",
                 "think 436",
             ),
+            requires_tmux=True,
         ),
         TuiScenario(
             scenario_id="architecture_prompt",
@@ -338,7 +368,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
             ),
             # The conversation text rendered before the menu must remain visible:
             # the overlay layer must not paint a filled rectangle over history.
-            expected_text=("fake-response:history before menu", "/compact"),
+            expected_text=("fake-response:history before menu", "/model"),
             requires_prompt_ready=False,
         ),
         TuiScenario(
@@ -368,7 +398,7 @@ def all_scenarios() -> tuple[TuiScenario, ...]:
                     timeout_s=0.3,
                 ),
             ),
-            expected_text=("/compact",),
+            expected_text=("/model",),
             requires_prompt_ready=False,
         ),
         TuiScenario(
@@ -452,13 +482,21 @@ def run_scenario(
     last_frame = TerminalFrame("not-started", "", 0, scenario.initial_size)
     last_frame_path = evidence.frames_dir / "not-started.txt"
     current_step = "start"
+    phase_ack_dir = evidence.run_dir / "phase-acks"
+    if any(step.action == "ack_phase" for step in scenario.steps):
+        phase_ack_dir.mkdir(parents=True, exist_ok=True)
+        (phase_ack_dir / "enabled").write_text("enabled\n", encoding="utf-8")
     session.start()
     try:
         last_frame = session.capture_text("started")
         last_frame_path = evidence.record_frame(last_frame)
         for step in scenario.steps:
             current_step = step.step_id
-            last_frame = _run_step(session, step)
+            last_frame = _run_step(
+                session,
+                step,
+                phase_ack_dir=phase_ack_dir,
+            )
             last_frame_path = evidence.record_frame(last_frame)
             assertions.assert_no_traceback(last_frame)
             assertions.assert_no_raw_ansi_leakage(last_frame)
@@ -474,7 +512,10 @@ def run_scenario(
                         "a styled cell framebuffer"
                     )
                 evidence.record_framebuffer(framebuffer)
-                assert_opentui_framebuffer(framebuffer)
+                assert_opentui_framebuffer(
+                    framebuffer,
+                    cursor=session.cursor_position(),
+                )
             if not session.is_alive() and step.action != "key":
                 raise AssertionError(f"{step.step_id}: terminal process exited unexpectedly")
         # Keep one styled, exact-cell framebuffer for visual review in addition
@@ -534,6 +575,8 @@ def run_scenario(
 def _run_step(
     session: RealTerminalSession,
     step: ScenarioStep,
+    *,
+    phase_ack_dir: Path,
 ) -> TerminalFrame:
     checkpoint = step.checkpoint or step.step_id
     if step.action == "wait_text":
@@ -567,6 +610,10 @@ def _run_step(
     if step.action == "capture":
         if step.timeout_s:
             time.sleep(step.timeout_s)
+        return session.capture_text(checkpoint)
+    if step.action == "ack_phase":
+        phase_ack_dir.mkdir(parents=True, exist_ok=True)
+        (phase_ack_dir / f"{step.value}.ack").write_text("captured\n", encoding="utf-8")
         return session.capture_text(checkpoint)
     raise ValueError(f"unknown scenario step action: {step.action}")
 
@@ -612,10 +659,11 @@ def _requires_styled_framebuffer_gate(
     scenario: TuiScenario,
     checkpoint: str,
 ) -> bool:
-    return scenario.scenario_id == "long_streaming" and checkpoint in {
-        "after-stream-narrow",
-        "stream-restored-wide",
-    }
+    return any(
+        step.assert_framebuffer
+        and (step.checkpoint or step.step_id) == checkpoint
+        for step in scenario.steps
+    )
 
 
 def _write_visual_verdict(

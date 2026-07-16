@@ -26,18 +26,31 @@ def _serialize(cmd: CommandDef, surface: Surface) -> dict[str, Any]:
         raise ValueError(f"{cmd.name} is not visible on {surface.value}")
     out: dict[str, Any] = {
         "name": cmd.name,
-        "usage": cmd.usage,
-        "description": cmd.description,
+        "usage": cmd.usage_for(surface),
+        "description": cmd.description_for(surface),
         "aliases": list(cmd.aliases),
         "argument_choices": [
             {"value": choice.value, "description": choice.description}
-            for choice in cmd.argument_choices
+            for choice in cmd.argument_choices_for(surface)
         ],
         "execution": {
             "kind": execution.kind.value,
             "action": execution.action,
         },
     }
+    # Scheduling and presentation metadata belongs to the terminal runtime.
+    # WebUI and channel clients keep their historic command-list contract;
+    # projecting TUI metadata there would mislabel e.g. channel /model as a
+    # picker and channel /meta as model-turn input.
+    if surface in {Surface.CLI_GATEWAY, Surface.CLI_STANDALONE}:
+        out.update(
+            category=cmd.category.value,
+            busy_policy=cmd.busy_policy.value,
+            presentation=cmd.presentation.value,
+            order=cmd.order,
+            visible_by_default=cmd.visible_by_default,
+            deprecated=cmd.deprecated,
+        )
     if execution.rpc_method is not None:
         out["execution"]["rpc_method"] = execution.rpc_method
         out["rpc_method"] = execution.rpc_method

@@ -558,6 +558,145 @@ def test_live_knowledge_sources_are_allowlisted_and_bounded_without_mutation() -
 
 
 @pytest.mark.parametrize(
+    "unsafe_evidence_id",
+    [
+        " ",
+        "ev_control\nid",
+        "\nev_trimmed_control",
+        "x" * 257,
+        "/root/private-evidence",
+        r"C:\private-evidence",
+        "file:private-evidence",
+    ],
+)
+def test_live_knowledge_source_drops_invalid_evidence_id(
+    unsafe_evidence_id: str,
+) -> None:
+    live_source = _live_knowledge_source()
+    live_source["evidenceId"] = unsafe_evidence_id
+    original_source = copy.deepcopy(live_source)
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_invalid_evidence_id",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    assert "sources" not in segment
+    assert live_source == original_source
+
+
+@pytest.mark.parametrize(
+    ("container_key", "field_name", "unsafe_value"),
+    [
+        ("document", "id", "/root/private-id"),
+        ("document", "id", "doc_control\nid"),
+        ("document", "title", "/etc/passwd"),
+        ("document", "title", "title\x85private"),
+        ("document", "source", "/root/.ssh/id_rsa"),
+        ("document", "source", "file:private-source"),
+        ("document", "fileName", "/etc/passwd"),
+        ("document", "fileName", r"C:\private.txt"),
+        ("document", "mediaType", "text/plain\x85private"),
+        ("document", "revision", "r" * 513),
+        ("citation", "title", "https:private-title"),
+        ("citation", "title", "citation\nprivate"),
+        ("citation", "locator", "../private-locator"),
+        ("citation", "locator", "locator\x85private"),
+    ],
+)
+def test_live_knowledge_source_omits_unsafe_scalar_metadata(
+    container_key: str,
+    field_name: str,
+    unsafe_value: str,
+) -> None:
+    live_source = _live_knowledge_source()
+    live_source[container_key][field_name] = unsafe_value
+    original_source = copy.deepcopy(live_source)
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_unsafe_scalar_metadata",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    persisted_source = segment["sources"][0]
+    assert field_name not in persisted_source[container_key]
+    assert persisted_source["document"]["sourcePath"] == "datasets/team docs/report.md"
+    assert live_source == original_source
+
+
+def test_live_knowledge_source_trims_and_preserves_safe_unicode_scalars() -> None:
+    live_source = _live_knowledge_source()
+    live_source.update(
+        {
+            "evidenceId": " 证据_一 ",
+            "snippet": " 安全证据 ",
+        }
+    )
+    live_source["document"] = {
+        "id": " 文档_一 ",
+        "title": " 季度报告：增长 ",
+        "source": " 团队知识库 ",
+        "fileName": " 报告终稿.md ",
+        "sourcePath": " datasets/报告终稿.md ",
+        "mediaType": " text/markdown ",
+        "revision": " sha256:abc ",
+        "uri": " knowledge://documents/doc_safe_boundary ",
+        "openUrl": " /knowledge/files/doc_safe_boundary ",
+    }
+    live_source["citation"] = {
+        "title": " 季度报告：增长 ",
+        "locator": " 第三节，第 2 段 ",
+        "uri": " knowledge://documents/doc_safe_boundary#chunk=chunk_1 ",
+    }
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_safe_unicode_scalars",
+            tool_name="knowledge_search",
+            result="MODEL_RESULT",
+            is_error=False,
+            sources=[live_source],
+        )
+    )
+
+    assert segment["sources"] == [
+        {
+            "kind": "knowledge",
+            "evidenceId": "证据_一",
+            "rank": 1,
+            "document": {
+                "id": "文档_一",
+                "title": "季度报告：增长",
+                "source": "团队知识库",
+                "fileName": "报告终稿.md",
+                "sourcePath": "datasets/报告终稿.md",
+                "mediaType": "text/markdown",
+                "revision": "sha256:abc",
+                "uri": "knowledge://documents/doc_safe_boundary",
+                "openUrl": "/knowledge/files/doc_safe_boundary",
+            },
+            "snippet": "安全证据",
+            "snippetTruncated": False,
+            "citation": {
+                "title": "季度报告：增长",
+                "locator": "第三节，第 2 段",
+                "uri": "knowledge://documents/doc_safe_boundary#chunk=chunk_1",
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize(
     "unsafe_path",
     [
         "/root/private.md",

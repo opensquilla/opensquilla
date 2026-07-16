@@ -44,7 +44,7 @@ def _handler_for(
 @pytest.mark.asyncio
 async def test_success_projects_redacted_full_result_in_sources_then_model_order() -> None:
     secret = "sk-or-v1-abcdefghijklmnopqrstuvwxyz"
-    raw = f"api_key={secret}\nfull redacted payload"
+    raw = f"api_key={secret} | full redacted payload"
     calls: list[tuple[str, str]] = []
 
     def project_sources(content: str) -> list[dict[str, Any]]:
@@ -75,12 +75,12 @@ async def test_success_projects_redacted_full_result_in_sources_then_model_order
     assert result.sources == [
         {
             "kind": "probe",
-            "snippet": "api_key=[REDACTED]\nfull redacted payload",
+            "snippet": "api_key=[REDACTED] | full redacted payload",
         }
     ]
     assert calls == [
-        ("sources", "api_key=[REDACTED]\nfull redacted payload"),
-        ("model", "api_key=[REDACTED]\nfull redacted payload"),
+        ("sources", "api_key=[REDACTED] | full redacted payload"),
+        ("model", "api_key=[REDACTED] | full redacted payload"),
     ]
     assert secret not in repr(calls)
 
@@ -206,7 +206,7 @@ async def test_projectors_are_independently_optional() -> None:
 async def test_model_projection_is_budgeted_by_configured_class_without_sources() -> None:
     raw = "RAW-" + ("r" * 1000)
     projected = "MODEL-" + ("m" * 200)
-    sources = [{"kind": "probe", "snippet": "s" * 1000}]
+    sources = [{"kind": "probe", "snippet": "s" * 400}]
 
     async def external_result() -> str:
         return raw
@@ -491,6 +491,152 @@ async def test_model_projector_failure_discards_projected_sources_and_fails_clos
     logged = repr(recording_log.records)
     assert "KeyError" in logged
     assert raw not in logged
+
+
+@pytest.mark.asyncio
+async def test_source_projector_rejects_fr2_malformed_probe_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    finalize_module = importlib.import_module("opensquilla.tools.policy.finalize")
+    recording_log = _RecordingLog()
+    monkeypatch.setattr(finalize_module, "log", recording_log)
+    private_body = "private full chunk body"
+    calls: list[str] = []
+    malformed_sources = [
+        {
+            "kind": "future-provider",
+            "snippet": "证" * 401,
+            "metadata": {
+                "chunk": {"content": private_body},
+                "fusionScore": 0.99,
+            },
+        },
+        *[
+            {
+                "kind": "future-provider",
+                "snippet": f"source {index}",
+            }
+            for index in range(2, 14)
+        ],
+    ]
+
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "malformed_sources",
+            sources_projector=lambda _content: calls.append("sources")
+            or malformed_sources,
+            model_projector=lambda content: calls.append("model") or content,
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-malformed-sources",
+            tool_name="malformed_sources",
+            arguments={},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert result.is_error is True
+    assert payload["error_class"] == "tool_result_projection_failed"
+    assert result.execution_status is not None
+    assert result.execution_status["reason"] == "tool_result_projection_failed"
+    assert result.sources == []
+    assert calls == ["sources"]
+    assert private_body not in result.content
+    assert private_body not in repr(recording_log.records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "malformed_source",
+    [
+        {"kind": "future-provider", "bad\x00key": "value"},
+        {"kind": "future-provider", "title": "bad\x85value"},
+        {"kind": "future-provider", "metadata": {"content": "private body"}},
+        {"kind": "future-provider", "metadata": {"vectorDiagnostics": {"rank": 1}}},
+        {"kind": "future-provider", "metadata": {"snippet": "x" * 401}},
+        {"kind": "future-provider", "metadata": {1: "invalid key"}},
+        {"kind": "future-provider", "metadata": ("invalid", "tuple")},
+    ],
+)
+async def test_source_projector_rejects_recursive_unsafe_values(
+    malformed_source: dict[str, Any],
+) -> None:
+    calls: list[str] = []
+
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "recursive_unsafe_sources",
+            sources_projector=lambda _content: calls.append("sources")
+            or [malformed_source],
+            model_projector=lambda content: calls.append("model") or content,
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-recursive-unsafe-sources",
+            tool_name="recursive_unsafe_sources",
+            arguments={},
+        )
+    )
+
+    assert result.is_error is True
+    assert json.loads(result.content)["error_class"] == "tool_result_projection_failed"
+    assert result.sources == []
+    assert calls == ["sources"]
+
+
+@pytest.mark.asyncio
+async def test_source_projector_preserves_safe_generic_source_dictionaries() -> None:
+    sources = [
+        {
+            "kind": "future-provider",
+            "headline": "安全的通用来源",
+            "snippet": "证" * 400,
+            "metadata": {
+                "authors": ["Ada", "图灵"],
+                "published": "2026-07-16",
+                "labels": {"confidence": "high", "edition": 2},
+                "available": True,
+                "optional": None,
+            },
+        }
+    ]
+
+    async def projected() -> str:
+        return "safe model input"
+
+    handler = _handler_for(
+        _projection_spec(
+            "generic_sources",
+            sources_projector=lambda _content: sources,
+            model_projector=lambda content: f"projected:{content}",
+        ),
+        projected,
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-generic-sources",
+            tool_name="generic_sources",
+            arguments={},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content == "projected:safe model input"
+    assert result.sources == sources
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,8 @@ otherwise the result is normalised through the budget tracker.
 from __future__ import annotations
 
 import json
+import math
+import re
 from typing import Any
 
 import structlog
@@ -44,6 +46,12 @@ _PENDING_APPROVAL_STATUSES: frozenset[str] = frozenset(
 
 
 _TOOL_RESULT_PROJECTION_FAILED = "tool_result_projection_failed"
+_MAX_PROJECTED_SOURCES = 12
+_MAX_PROJECTED_SOURCE_SNIPPET_CHARS = 400
+_PROJECTED_SOURCE_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_PROJECTED_SOURCE_FORBIDDEN_KEY_PARTS = frozenset(
+    {"bm25", "vector", "rrf", "fusion", "pair", "score"}
+)
 
 
 # Semantic non-success fragments shared by structured tool receipts. This keeps
@@ -296,6 +304,92 @@ def _projection_failure_result(
     )
 
 
+def _projected_source_key_is_forbidden(key: str) -> bool:
+    folded = "".join(character for character in key.casefold() if character.isalnum())
+    return folded in {"chunk", "content"} or any(
+        part in folded for part in _PROJECTED_SOURCE_FORBIDDEN_KEY_PARTS
+    )
+
+
+def _validate_projected_source_value(
+    value: Any,
+    *,
+    active_containers: set[int],
+) -> None:
+    if isinstance(value, str):
+        if _PROJECTED_SOURCE_CONTROL_CHAR_RE.search(value):
+            raise ValueError("result sources projector returned a control character")
+        return
+    if value is None or isinstance(value, bool | int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("result sources projector returned a non-finite number")
+        return
+    if isinstance(value, list):
+        container_id = id(value)
+        if container_id in active_containers:
+            raise ValueError("result sources projector returned a cyclic list")
+        active_containers.add(container_id)
+        try:
+            for item in value:
+                _validate_projected_source_value(
+                    item,
+                    active_containers=active_containers,
+                )
+        finally:
+            active_containers.remove(container_id)
+        return
+    if isinstance(value, dict):
+        container_id = id(value)
+        if container_id in active_containers:
+            raise ValueError("result sources projector returned a cyclic mapping")
+        active_containers.add(container_id)
+        try:
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise TypeError(
+                        "result sources projector returned a non-string mapping key"
+                    )
+                if _PROJECTED_SOURCE_CONTROL_CHAR_RE.search(key):
+                    raise ValueError(
+                        "result sources projector returned a control character in a key"
+                    )
+                if _projected_source_key_is_forbidden(key):
+                    raise ValueError(
+                        "result sources projector returned forbidden source metadata"
+                    )
+                folded = "".join(
+                    character for character in key.casefold() if character.isalnum()
+                )
+                if folded == "snippet" and (
+                    not isinstance(item, str)
+                    or len(item) > _MAX_PROJECTED_SOURCE_SNIPPET_CHARS
+                ):
+                    raise ValueError(
+                        "result sources projector returned an invalid snippet"
+                    )
+                _validate_projected_source_value(
+                    item,
+                    active_containers=active_containers,
+                )
+        finally:
+            active_containers.remove(container_id)
+        return
+    raise TypeError("result sources projector returned a non-JSON source value")
+
+
+def _validate_projected_sources(sources: Any) -> None:
+    if (
+        not isinstance(sources, list)
+        or len(sources) > _MAX_PROJECTED_SOURCES
+        or any(not isinstance(source, dict) for source in sources)
+    ):
+        raise TypeError("result sources projector returned an invalid value")
+    for source in sources:
+        _validate_projected_source_value(source, active_containers=set())
+
+
 def _project_successful_result(
     *,
     call: ToolCall,
@@ -313,10 +407,7 @@ def _project_successful_result(
     try:
         if sources_projector is not None:
             sources = sources_projector(full_redacted_content)
-            if not isinstance(sources, list) or any(
-                not isinstance(source, dict) for source in sources
-            ):
-                raise TypeError("result sources projector returned an invalid value")
+            _validate_projected_sources(sources)
         if model_projector is not None:
             model_content = model_projector(full_redacted_content)
             if not isinstance(model_content, str):

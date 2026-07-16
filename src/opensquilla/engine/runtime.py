@@ -706,25 +706,16 @@ _MAX_TOOL_RESULT_CHARS = 2000
 _MAX_TOOL_RESULT_METADATA_VALUE_CHARS = 256
 _MAX_PERSISTED_TOOL_SOURCES = 12
 _MAX_PERSISTED_SOURCE_SNIPPET_CHARS = 400
+_MAX_PERSISTED_SOURCE_ID_CHARS = 256
+_MAX_PERSISTED_SOURCE_LABEL_CHARS = 512
+_MAX_PERSISTED_SOURCE_RESOURCE_CHARS = 2048
 _PERSISTED_SOURCE_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _PERSISTED_SOURCE_URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*$")
+_PERSISTED_SOURCE_MEDIA_TYPE_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+*-]*/"
+    r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+*-]*$"
+)
 _PERSISTED_UNSAFE_RESOURCE_SCHEMES = frozenset({"data", "file", "javascript", "vbscript"})
-_PERSISTED_KNOWLEDGE_DOCUMENT_KEYS: Final[tuple[str, ...]] = (
-    "id",
-    "title",
-    "source",
-    "fileName",
-    "sourcePath",
-    "mediaType",
-    "revision",
-    "uri",
-    "openUrl",
-)
-_PERSISTED_KNOWLEDGE_CITATION_KEYS: Final[tuple[str, ...]] = (
-    "title",
-    "locator",
-    "uri",
-)
 _MAX_PERSISTED_TOOL_ARGUMENT_FIELD_CHARS = 4096
 _PERSISTED_TOOL_ARGUMENT_PREVIEW_CHARS = 512
 _PERSISTED_TOOL_ARGUMENT_PROJECTION_PREFIX = "[historical_tool_argument_omitted]\n"
@@ -972,8 +963,11 @@ def _persisted_event_sources(candidates: Sequence[Any]) -> list[dict[str, Any]]:
 
 
 def _persisted_knowledge_source(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
-    evidence_id = candidate.get("evidenceId")
-    if not isinstance(evidence_id, str) or not evidence_id.strip():
+    evidence_id = _persisted_source_label_text(
+        candidate.get("evidenceId"),
+        max_chars=_MAX_PERSISTED_SOURCE_ID_CHARS,
+    )
+    if evidence_id is None:
         return None
 
     source: dict[str, Any] = {
@@ -988,9 +982,9 @@ def _persisted_knowledge_source(candidate: Mapping[str, Any]) -> dict[str, Any] 
     if document:
         source["document"] = document
 
-    snippet = candidate.get("snippet")
+    snippet = _persisted_source_snippet(candidate.get("snippet"))
     snippet_was_truncated = False
-    if isinstance(snippet, str):
+    if snippet is not None:
         source["snippet"] = snippet[:_MAX_PERSISTED_SOURCE_SNIPPET_CHARS]
         snippet_was_truncated = len(snippet) > _MAX_PERSISTED_SOURCE_SNIPPET_CHARS
     snippet_truncated = candidate.get("snippetTruncated")
@@ -1008,37 +1002,39 @@ def _persisted_knowledge_source(candidate: Mapping[str, Any]) -> dict[str, Any] 
     return source
 
 
-def _persisted_source_mapping(value: Any, keys: Sequence[str]) -> dict[str, str]:
+def _persisted_knowledge_document(value: Any) -> dict[str, str]:
     if not isinstance(value, Mapping):
         return {}
-    return {
-        key: item
-        for key in keys
-        if isinstance((item := value.get(key)), str) and item
-    }
 
+    document: dict[str, str] = {}
+    for key in ("id", "title", "source", "fileName"):
+        max_chars = (
+            _MAX_PERSISTED_SOURCE_ID_CHARS
+            if key == "id"
+            else _MAX_PERSISTED_SOURCE_LABEL_CHARS
+        )
+        text = _persisted_source_label_text(value.get(key), max_chars=max_chars)
+        if text is not None:
+            document[key] = text
 
-def _persisted_knowledge_document(value: Any) -> dict[str, str]:
-    document = _persisted_source_mapping(
-        value,
-        _PERSISTED_KNOWLEDGE_DOCUMENT_KEYS,
-    )
-    source_path = _persisted_knowledge_source_path(document.get("sourcePath"))
-    if source_path is None:
-        document.pop("sourcePath", None)
-    else:
+    media_type = _persisted_knowledge_media_type(value.get("mediaType"))
+    if media_type is not None:
+        document["mediaType"] = media_type
+
+    revision = _persisted_knowledge_revision(value.get("revision"))
+    if revision is not None:
+        document["revision"] = revision
+
+    source_path = _persisted_knowledge_source_path(value.get("sourcePath"))
+    if source_path is not None:
         document["sourcePath"] = source_path
 
-    uri = _persisted_knowledge_resource_uri(document.get("uri"))
-    if uri is None:
-        document.pop("uri", None)
-    else:
+    uri = _persisted_knowledge_resource_uri(value.get("uri"))
+    if uri is not None:
         document["uri"] = uri
 
-    open_url = _persisted_knowledge_open_url(document.get("openUrl"))
-    if open_url is None:
-        document.pop("openUrl", None)
-    else:
+    open_url = _persisted_knowledge_open_url(value.get("openUrl"))
+    if open_url is not None:
         document["openUrl"] = open_url
     return document
 
@@ -1048,32 +1044,115 @@ def _persisted_knowledge_citation(
     *,
     document_uri: str | None,
 ) -> dict[str, str]:
-    citation = _persisted_source_mapping(
-        value,
-        _PERSISTED_KNOWLEDGE_CITATION_KEYS,
-    )
+    if not isinstance(value, Mapping):
+        return {}
+
+    citation: dict[str, str] = {}
+    for key in ("title", "locator"):
+        text = _persisted_source_label_text(
+            value.get(key),
+            max_chars=_MAX_PERSISTED_SOURCE_LABEL_CHARS,
+        )
+        if text is not None:
+            citation[key] = text
+
     uri = _persisted_knowledge_citation_uri(
-        citation.get("uri"),
+        value.get("uri"),
         document_uri=document_uri,
     )
-    if uri is None:
-        citation.pop("uri", None)
-    else:
+    if uri is not None:
         citation["uri"] = uri
     return citation
 
 
-def _persisted_source_field_text(value: Any) -> str | None:
-    if not isinstance(value, str):
+def _persisted_source_field_text(value: Any, *, max_chars: int) -> str | None:
+    if (
+        not isinstance(value, str)
+        or _PERSISTED_SOURCE_CONTROL_CHAR_RE.search(value)
+    ):
         return None
     text = value.strip()
-    if not text or _PERSISTED_SOURCE_CONTROL_CHAR_RE.search(text):
+    if not text or len(text) > max_chars:
         return None
     return text
 
 
+def _persisted_source_label_text(value: Any, *, max_chars: int) -> str | None:
+    text = _persisted_source_field_text(value, max_chars=max_chars)
+    if text is None or _persisted_source_text_looks_path_shaped(text):
+        return None
+    return text
+
+
+def _persisted_source_text_looks_path_shaped(text: str) -> bool:
+    if text in {".", ".."} or text.startswith(("/", "\\")):
+        return True
+    if "/" in text or "\\" in text:
+        return True
+    try:
+        scheme = urlsplit(text).scheme
+    except ValueError:
+        return True
+    if not scheme:
+        return False
+    remainder = text.partition(":")[2]
+    return not remainder.startswith(" ")
+
+
+def _persisted_source_snippet(value: Any) -> str | None:
+    if (
+        not isinstance(value, str)
+        or _PERSISTED_SOURCE_CONTROL_CHAR_RE.search(value)
+    ):
+        return None
+    text = value.strip()
+    return text or None
+
+
+def _persisted_knowledge_media_type(value: Any) -> str | None:
+    media_type = _persisted_source_field_text(
+        value,
+        max_chars=_MAX_PERSISTED_SOURCE_LABEL_CHARS,
+    )
+    if media_type is None or not _PERSISTED_SOURCE_MEDIA_TYPE_RE.fullmatch(media_type):
+        return None
+    return media_type
+
+
+def _persisted_knowledge_revision(value: Any) -> str | None:
+    revision = _persisted_source_field_text(
+        value,
+        max_chars=_MAX_PERSISTED_SOURCE_LABEL_CHARS,
+    )
+    if (
+        revision is None
+        or revision.startswith(("/", "\\"))
+        or "/" in revision
+        or "\\" in revision
+    ):
+        return None
+    try:
+        scheme = urlsplit(revision).scheme.lower()
+    except ValueError:
+        return None
+    if scheme and scheme not in {
+        "git",
+        "md5",
+        "sha1",
+        "sha224",
+        "sha256",
+        "sha384",
+        "sha512",
+    }:
+        return None
+    return revision
+
+
 def _persisted_knowledge_source_path(value: Any) -> str | None:
-    path = _persisted_source_field_text(value)
+    path = _persisted_source_field_text(
+        value,
+        max_chars=_MAX_PERSISTED_SOURCE_RESOURCE_CHARS,
+    )
     if path is None:
         return None
     if (
@@ -1091,7 +1170,10 @@ def _persisted_knowledge_source_path(value: Any) -> str | None:
 
 
 def _persisted_knowledge_resource_uri(value: Any) -> str | None:
-    uri = _persisted_source_field_text(value)
+    uri = _persisted_source_field_text(
+        value,
+        max_chars=_MAX_PERSISTED_SOURCE_RESOURCE_CHARS,
+    )
     if uri is None or "\\" in uri or any(character.isspace() for character in uri):
         return None
     try:
@@ -1112,7 +1194,10 @@ def _persisted_knowledge_resource_uri(value: Any) -> str | None:
 
 
 def _persisted_knowledge_open_url(value: Any) -> str | None:
-    url = _persisted_source_field_text(value)
+    url = _persisted_source_field_text(
+        value,
+        max_chars=_MAX_PERSISTED_SOURCE_RESOURCE_CHARS,
+    )
     if url is None or "\\" in url or any(character.isspace() for character in url):
         return None
     try:

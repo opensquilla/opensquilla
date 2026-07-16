@@ -17,7 +17,12 @@ from rich.table import Table
 from opensquilla.cli.gateway_rpc import default_gateway_url, gateway_url_from_config
 from opensquilla.cli.output import print_json
 from opensquilla.cli.url_utils import normalize_gateway_url
-from opensquilla.health.model import FixStep, HealthFinding, build_report
+from opensquilla.health.model import (
+    FixStep,
+    HealthFinding,
+    build_report,
+    summarize_impact_counts,
+)
 from opensquilla.health.recovery_commands import command_with_config as _command_with_config
 
 _LOCAL_GATEWAY_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
@@ -429,34 +434,6 @@ def _impact_text(finding: dict[str, Any]) -> str:
     return labels[_impact_value(finding)]
 
 
-def _summary_from_impact_counts(impact_counts: dict[str, int], *, attention_count: int = 0) -> str:
-    parts: list[str] = []
-    if impact_counts["blocks_ready"]:
-        label = "action" if impact_counts["blocks_ready"] == 1 else "actions"
-        parts.append(f"{impact_counts['blocks_ready']} {label} required")
-    if impact_counts["degrades"]:
-        label = "check" if impact_counts["degrades"] == 1 else "checks"
-        if not impact_counts["blocks_ready"]:
-            parts.append(f"Ready, {impact_counts['degrades']} degraded {label}")
-        else:
-            parts.append(f"{impact_counts['degrades']} degraded {label}")
-    if parts:
-        return ", ".join(parts)
-    if impact_counts["optional"]:
-        # Mirrors health/model.py: an optional-impact warn is an operator
-        # action item, not a setup suggestion.
-        setup_count = impact_counts["optional"] - attention_count
-        segments: list[str] = []
-        if attention_count:
-            label = "item" if attention_count == 1 else "items"
-            segments.append(f"{attention_count} {label} awaiting operator action")
-        if setup_count:
-            label = "item" if setup_count == 1 else "items"
-            segments.append(f"{setup_count} optional setup {label}")
-        return "Ready, " + ", ".join(segments)
-    return "Ready"
-
-
 def _same_config_path(left: str, right: str) -> bool:
     try:
         return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
@@ -494,7 +471,7 @@ def _refresh_report_readiness(report: dict[str, Any]) -> None:
         "degraded" if impact_counts["degrades"] else "ready"
     )
     report["ready"] = impact_counts["blocks_ready"] == 0
-    report["summary"] = _summary_from_impact_counts(impact_counts, attention_count=attention_count)
+    report["summary"] = summarize_impact_counts(impact_counts, attention_count=attention_count)
 
 
 def _apply_requested_config_context(

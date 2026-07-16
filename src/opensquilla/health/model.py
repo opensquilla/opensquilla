@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -81,7 +82,14 @@ def _readiness_impact(finding: HealthFinding) -> ReadinessImpact:
     return finding.readiness_impact or _DEFAULT_IMPACT_BY_SEVERITY[finding.severity]
 
 
-def _summary(impact_counts: dict[ReadinessImpact, int], *, attention_count: int = 0) -> str:
+def summarize_impact_counts(impact_counts: Mapping[str, int], *, attention_count: int = 0) -> str:
+    """Human summary line for a readiness report.
+
+    Shared with the CLI's local readiness refresh so the operator-facing
+    wording cannot drift between the gateway report and ``opensquilla doctor``.
+    ``attention_count`` is the number of warn-severity optional-impact
+    findings — operator action items, labeled distinctly from setup items.
+    """
     parts: list[str] = []
     if impact_counts["blocks_ready"]:
         label = "action" if impact_counts["blocks_ready"] == 1 else "actions"
@@ -110,7 +118,7 @@ def _summary(impact_counts: dict[ReadinessImpact, int], *, attention_count: int 
     return "Ready"
 
 
-def _status(impact_counts: dict[ReadinessImpact, int]) -> HealthStatus:
+def _status(impact_counts: Mapping[str, int]) -> HealthStatus:
     # "unavailable" is reserved for callers that cannot reach doctor.status at all.
     if impact_counts["blocks_ready"]:
         return "action_required"
@@ -121,7 +129,9 @@ def _status(impact_counts: dict[ReadinessImpact, int]) -> HealthStatus:
 
 def build_report(findings: list[HealthFinding]) -> dict[str, Any]:
     counts: dict[HealthSeverity, int] = {key: 0 for key in _COUNT_KEYS}
-    impact_counts: dict[ReadinessImpact, int] = {key: 0 for key in _IMPACT_KEYS}
+    # str-keyed so the shared summary helper (Mapping[str, int]) accepts it;
+    # writes still come only from _IMPACT_KEYS.
+    impact_counts: dict[str, int] = {key: 0 for key in _IMPACT_KEYS}
     attention_count = 0
     for finding in findings:
         counts[finding.severity] += 1
@@ -140,7 +150,7 @@ def build_report(findings: list[HealthFinding]) -> dict[str, Any]:
     return {
         "status": status,
         "ready": impact_counts["blocks_ready"] == 0,
-        "summary": _summary(impact_counts, attention_count=attention_count),
+        "summary": summarize_impact_counts(impact_counts, attention_count=attention_count),
         "counts": counts,
         "impactCounts": impact_counts,
         "findings": [finding.to_dict() for _, finding in ordered_findings],

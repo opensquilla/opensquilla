@@ -299,7 +299,7 @@ async def test_try_collect_atomically_mutates_only_after_persist_and_skips_repla
     ]
     assert candidate.message == "first\nsecond"
     assert candidate.attachments == [{"name": "first.txt"}, {"name": "second.txt"}]
-    assert candidate.semantic_message == "semantic first\nsemantic second"
+    assert candidate.semantic_message == "semantic first\n\nsemantic second"
     assert candidate.message_count == 5
     assert candidate.persisted_user_message_id == "message-first"
     assert candidate.persisted_user_message_ids == [
@@ -338,7 +338,7 @@ async def test_try_collect_atomically_mutates_only_after_persist_and_skips_repla
         {"name": "first.txt"},
         {"name": "second.txt"},
     ]
-    assert collected_run.semantic_message == "semantic first\nsemantic second"
+    assert collected_run.semantic_message == "semantic first\n\nsemantic second"
     assert collected_run.persisted_user_message_id == "message-first"
     assert collected_run.persisted_user_message_ids == (
         "message-first",

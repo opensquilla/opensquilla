@@ -1515,11 +1515,11 @@ class TaskRuntime:
             try:
                 await self._storage.update_agent_task(handle.task_id, details=details)
             except Exception:
-                if not identity_rebound:
-                    raise
-                # The transcript rebind is the acceptance boundary on this
-                # compatibility path. Task details are diagnostic only; raising
-                # after the rebind would invite a retry of the same input.
+                # Collect acceptance is owned by the queued runtime task (and,
+                # for identity-aware input, the transcript rebind above).
+                # Agent-task details are diagnostic only. Surfacing their write
+                # failure would invite the caller to retry an input that this
+                # process has already accepted and will execute.
                 log.warning(
                     "task_runtime.collect_details_update_failed",
                     session_key=envelope.session_key,
@@ -1657,7 +1657,7 @@ class TaskRuntime:
                     next_semantic = (
                         semantic_message if semantic_message is not None else message
                     )
-                    collected_semantic_message = f"{first_semantic}\n{next_semantic}"
+                    collected_semantic_message = f"{first_semantic}\n\n{next_semantic}"
                 else:
                     collected_semantic_message = None
                 collected_message_ids = _ordered_message_ids(

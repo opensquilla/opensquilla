@@ -1051,6 +1051,8 @@ def _is_under_configured_scratch_dir(resolved: Path) -> bool:
 
 
 def _gate_workspace_lockdown_write(tool_name: str, resolved: Path, original_path: str) -> None:
+    if full_host_access_active():
+        return
     roots = _workspace_lockdown_roots()
     if not roots or _inside_any_root(resolved, roots):
         return
@@ -1642,6 +1644,18 @@ async def write_file(
     prefix_rule: list[str] | None = None,
 ) -> str:
     p = _resolve_path(path)
+    if full_host_access_active():
+        loop = asyncio.get_event_loop()
+
+        def _write_full_host() -> None:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+
+        await loop.run_in_executor(None, _write_full_host)
+        _notify_memory_source_write(p)
+        _notify_bootstrap_source_write(p)
+        return f"Written {len(content)} bytes to {p}"
+
     approval, elevated = await _gate_out_of_workspace_write(
         "write_file",
         p,
@@ -1903,6 +1917,8 @@ def _gate_write_file_destructive_overwrite(
     `edit_file` or `apply_patch` instead.
     """
 
+    if full_host_access_active():
+        return
     workspace = _workspace_root()
     if workspace is None or _is_outside_workspace(path):
         return
@@ -2069,6 +2085,23 @@ async def edit_file(
         new_text=new_text,
         edits=edits,
     )
+    if full_host_access_active():
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        loop = asyncio.get_event_loop()
+        original = await loop.run_in_executor(None, p.read_text, "utf-8")
+        updated = _apply_edit_replacements(original, replacements, path=path)
+        await loop.run_in_executor(None, p.write_text, updated, "utf-8")
+        _notify_memory_source_write(p)
+        _notify_bootstrap_source_write(p)
+        if len(replacements) == 1:
+            replacement = replacements[0]
+            return (
+                f"Edited {p}: replaced {len(replacement.old_text)} chars with "
+                f"{len(replacement.new_text)} chars"
+            )
+        return f"Edited {p}: applied {len(replacements)} replacements"
+
     edit_digest = hashlib.sha256(
         json.dumps(
             [

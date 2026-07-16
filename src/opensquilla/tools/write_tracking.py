@@ -69,12 +69,20 @@ _SCRATCH_ONLY_NUDGE_COUNTS = frozenset({3, 6, 10})
 _WORKSPACE_WRITE_PROGRESS_COUNTS = frozenset({1, 3, 6, 10})
 
 
+def _tracking_disabled() -> bool:
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    return full_host_access_active()
+
+
 def record_workspace_file_write(
     path: Path,
     *,
     operation: str = "write",
     created: bool = False,
 ) -> None:
+    if _tracking_disabled():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir:
         return
@@ -100,6 +108,8 @@ def mutation_ledger_text_hash(text: str) -> str:
 
 
 def snapshot_current_workspace_mutations() -> dict[str, str]:
+    if _tracking_disabled():
+        return {}
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir:
         return {}
@@ -134,6 +144,8 @@ def record_observed_workspace_mutations(
     before: dict[str, str],
     metadata: dict[str, Any] | None = None,
 ) -> None:
+    if _tracking_disabled():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir or ctx.on_runtime_event is None:
         return
@@ -236,6 +248,8 @@ def record_workspace_file_read(
     limit: int | None = None,
     complete: bool | None = None,
 ) -> None:
+    if _tracking_disabled():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir:
         return
@@ -274,6 +288,8 @@ def refresh_workspace_file_read_state(
     *,
     operation: str = "write",
 ) -> None:
+    if _tracking_disabled():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir:
         return
@@ -300,6 +316,8 @@ def require_fresh_workspace_file_read(
     tool_name: str,
     original_path: str,
 ) -> None:
+    if _tracking_disabled():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir:
         return
@@ -401,6 +419,8 @@ def _record_fresh_read_guard_event(
 
 
 def record_scratch_file_write(path: Path) -> None:
+    if _tracking_disabled():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.scratch_dir:
         return

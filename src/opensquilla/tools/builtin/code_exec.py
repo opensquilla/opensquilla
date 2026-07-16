@@ -438,8 +438,9 @@ async def execute_code(
     if not code.strip():
         raise ToolError("Code must not be empty")
 
-    sensitive_access = _check_code_sensitive_access(code)
-    if sensitive_access is not None and not full_host_access_active():
+    full_host = full_host_access_active()
+    sensitive_access = None if full_host else _check_code_sensitive_access(code)
+    if sensitive_access is not None:
         reason, marker = sensitive_access
         if reason == "sensitive_payload":
             from opensquilla.tools.builtin.web import _sensitive_body_block
@@ -457,7 +458,7 @@ async def execute_code(
             ensure_ascii=False,
         )
 
-    destructive_warning = _check_code_destructive(code)
+    destructive_warning = None if full_host else _check_code_destructive(code)
 
     timeout = max(1.0, min(float(timeout), _MAX_TIMEOUT))
 
@@ -546,13 +547,19 @@ async def execute_code(
     apply_utf8_child_env(safe_env)
     if sandbox_enabled and _windows_sandbox_backend_active(runtime):
         _apply_windows_session_tmp_env(safe_env)
-    hints = LevelHints(
-        needs_network=_code_needs_network(code),
-        high_impact=destructive_warning is not None,
+    hints = (
+        LevelHints()
+        if full_host
+        else LevelHints(
+            needs_network=_code_needs_network(code),
+            high_impact=destructive_warning is not None,
+        )
     )
-    mutation_before = snapshot_current_workspace_mutations()
+    mutation_before = {} if full_host else snapshot_current_workspace_mutations()
 
     def finish(output: str) -> str:
+        if full_host:
+            return output
         record_observed_workspace_mutations(
             tool_name="execute_code",
             before=mutation_before,
@@ -560,7 +567,9 @@ async def execute_code(
         )
         return output
 
-    if runtime is None or (runtime.effective.sandbox_enabled and not host_execution):
+    if not full_host and (
+        runtime is None or (runtime.effective.sandbox_enabled and not host_execution)
+    ):
         decision, _policy, request = await gate_action(
             action_kind="code.exec",
             argv=(python_bin, "-c", code),

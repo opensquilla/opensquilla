@@ -35,6 +35,7 @@ from opensquilla.search.types import (
 )
 from opensquilla.tools.path_policy import reject_foreign_host_path
 from opensquilla.tools.registry import tool
+from opensquilla.tools.run_mode import full_host_access_active
 from opensquilla.tools.types import ToolError, UnsupportedURLSchemeError, current_tool_context
 
 
@@ -215,6 +216,8 @@ class _BenchmarkBlocklistSearchProvider:
 
 
 def _sensitive_body_marker(body: str | None) -> str | None:
+    if full_host_access_active():
+        return None
     if not body:
         return None
     if _PEM_PRIVATE_KEY_RE.search(body):

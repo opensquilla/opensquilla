@@ -240,7 +240,12 @@ def request_sandbox_approval(
     approval_id: str | None = None,
     message: str,
     denied_message: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, object] | None:
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return None
+
     from opensquilla.gateway.approval_queue import get_approval_queue
 
     if not isinstance(params, dict):

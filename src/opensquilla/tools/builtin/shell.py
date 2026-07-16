@@ -4379,6 +4379,32 @@ async def _run_host_shell_command(
         return f"[error] {e}"
 
 
+async def _run_full_host_shell_command(
+    command: str,
+    *,
+    workdir: str | None,
+    timeout: float,
+    env: dict[str, str] | None,
+    stdin: str | None,
+) -> str:
+    """Execute directly on the host without sandbox policy or safety preflight."""
+
+    runtime = get_runtime()
+    merged_env = os.environ.copy()
+    if env:
+        merged_env.update(env)
+    apply_utf8_child_env(merged_env)
+    _append_windows_app_alias_path(merged_env, runtime=runtime)
+    merged_env = _dedupe_windows_env_keys(_host_shell_env(merged_env))
+    return await _run_host_shell_command(
+        command,
+        cwd=_effective_workdir(workdir),
+        env=merged_env,
+        stdin_bytes=stdin.encode("utf-8") if stdin is not None else None,
+        effective_timeout=_resolve_exec_timeout(timeout),
+    )
+
+
 async def _create_host_shell_subprocess(command: str, **kwargs: Any) -> Any:
     if os.name == "nt":
         return await asyncio.create_subprocess_exec(
@@ -4466,6 +4492,15 @@ async def exec_command(
     approval_id: str | None = None,
 ) -> str:
     import os
+
+    if full_host_access_active():
+        return await _run_full_host_shell_command(
+            command,
+            workdir=workdir,
+            timeout=timeout,
+            env=env,
+            stdin=stdin,
+        )
 
     runtime = get_runtime()
     windows_process_sandbox = _windows_sandbox_backend_active(runtime)
@@ -4750,6 +4785,59 @@ async def exec_command(
     return finish(f"exit_code={returncode}\n{output}")
 
 
+async def _start_host_background_process(
+    command: str,
+    *,
+    cwd: str | None,
+    effective_timeout: float,
+    runtime: object | None,
+) -> str:
+    """Start a host background process without sandbox policy or safety preflight."""
+
+    session_id = str(uuid.uuid4())[:8]
+    host_env = apply_utf8_child_env(_host_shell_env(os.environ.copy()))
+    _append_windows_app_alias_path(host_env, runtime=runtime)
+    host_env = _dedupe_windows_env_keys(host_env)
+
+    process_kwargs: dict[str, Any] = {
+        "stdin": asyncio.subprocess.PIPE,
+        "stdout": asyncio.subprocess.PIPE,
+        "stderr": asyncio.subprocess.STDOUT,
+        "cwd": cwd,
+        "env": host_env,
+    }
+    if os.name == "posix":
+        process_kwargs["start_new_session"] = True
+    proc = await _create_host_shell_subprocess(command, **process_kwargs)
+
+    ctx = current_tool_context.get()
+    session = _BgSession(
+        session_id=session_id,
+        command=command,
+        process=proc,
+        session_key=ctx.session_key if ctx is not None else None,
+        agent_id=ctx.agent_id if ctx is not None else None,
+        is_owner_run=bool(ctx.is_owner) if ctx is not None else False,
+        local_urls=_local_server_urls_from_command(command),
+    )
+    _bg_sessions[session_id] = session
+
+    async def _collect_host() -> None:
+        output_task = asyncio.create_task(_read_bg_output(session))
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
+        except TimeoutError:
+            session.timed_out = True
+            await _terminate_bg_session(session)
+            session.output_lines.append(f"[timeout after {effective_timeout}s]\n")
+        finally:
+            await _await_bg_output_task(output_task)
+            await _finalize_bg_session_async(session)
+
+    session.collector_task = asyncio.create_task(_collect_host())
+    return _background_process_result(session)
+
+
 @tool(
     name="background_process",
     description=(
@@ -4810,6 +4898,14 @@ async def background_process(
     prefix_rule: list[str] | None = None,
     approval_id: str | None = None,
 ) -> str:
+    if full_host_access_active():
+        return await _start_host_background_process(
+            command,
+            cwd=_effective_workdir(workdir),
+            effective_timeout=_resolve_background_timeout(timeout),
+            runtime=get_runtime(),
+        )
+
     runtime = get_runtime()
     windows_process_sandbox = _windows_sandbox_backend_active(runtime)
     runtime_readonly_block = _runtime_readonly_shell_block(
@@ -5028,58 +5124,12 @@ async def background_process(
             host_effect=profile.host_effect,
         )
 
-    session_id = str(uuid.uuid4())[:8]
-    host_env = apply_utf8_child_env(_host_shell_env(os.environ.copy()))
-    _append_windows_app_alias_path(host_env, runtime=runtime)
-    host_env = _dedupe_windows_env_keys(host_env)
-
-    if os.name == "posix":
-        proc = await _create_host_shell_subprocess(
-            command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=cwd,
-            env=host_env,
-            start_new_session=True,
-        )
-    else:
-        proc = await _create_host_shell_subprocess(
-            command,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            cwd=cwd,
-            env=host_env,
-        )
-
-    ctx = current_tool_context.get()
-    session = _BgSession(
-        session_id=session_id,
-        command=command,
-        process=proc,
-        session_key=ctx.session_key if ctx is not None else None,
-        agent_id=ctx.agent_id if ctx is not None else None,
-        is_owner_run=bool(ctx.is_owner) if ctx is not None else False,
-        local_urls=_local_server_urls_from_command(command),
+    return await _start_host_background_process(
+        command,
+        cwd=cwd,
+        effective_timeout=effective_timeout,
+        runtime=runtime,
     )
-    _bg_sessions[session_id] = session
-
-    async def _collect_host() -> None:
-        output_task = asyncio.create_task(_read_bg_output(session))
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=effective_timeout)
-        except TimeoutError:
-            session.timed_out = True
-            await _terminate_bg_session(session)
-            session.output_lines.append(f"[timeout after {effective_timeout}s]\n")
-        finally:
-            await _await_bg_output_task(output_task)
-            await _finalize_bg_session_async(session)
-
-    session.collector_task = asyncio.create_task(_collect_host())
-
-    return _background_process_result(session)
 
 
 async def _spawn_sandboxed_background_process(

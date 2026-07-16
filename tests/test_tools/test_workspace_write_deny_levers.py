@@ -13,6 +13,7 @@ deny globs protect files that must not be modified at all (e.g. test files).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -275,6 +276,7 @@ async def test_exec_command_scans_stdin_for_mutators_when_lever_on(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="test command requires POSIX sed")
 async def test_exec_command_mutator_passes_through_by_default(
     tmp_path: Path,
 ) -> None:
@@ -308,7 +310,7 @@ async def test_exec_command_reads_stay_unblocked_with_lever_on(
 
     result = await shell.exec_command("cat tests/test_a.py", workdir=str(workspace))
 
-    assert result == "exit_code=0\nassert a\n"
+    assert result.replace("\r\n", "\n") == "exit_code=0\nassert a\n"
 
 
 @pytest.mark.asyncio

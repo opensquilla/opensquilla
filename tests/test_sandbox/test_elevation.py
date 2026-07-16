@@ -12,6 +12,7 @@ from opensquilla.sandbox.elevation import (
     gate_elevated_action,
     request_elevation,
 )
+from opensquilla.tools.types import ToolContext, current_tool_context
 
 
 def _shell_action(command: str, *, cwd: str = "/workspace/opensquilla") -> ElevationAction:
@@ -289,6 +290,36 @@ def test_gate_elevated_action_ignores_default_sandbox_intent(tmp_path: Path) -> 
         assert queue.list_pending() == []
     finally:
         queue.close()
+
+
+def test_gate_elevated_action_full_host_never_touches_approval_queue() -> None:
+    class _FailIfUsedQueue:
+        def __getattribute__(self, name: str):
+            if name.startswith("__"):
+                return object.__getattribute__(self, name)
+            raise AssertionError(f"Full Host must not access ApprovalQueue.{name}")
+
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            run_mode="full",
+            elevated="full",
+            session_key="session-full",
+        )
+    )
+    try:
+        decision = gate_elevated_action(
+            _shell_action("touch /mnt/desktop/probe"),
+            approval_id="must-not-be-consumed",
+            session_key="session-full",
+            queue=_FailIfUsedQueue(),  # type: ignore[arg-type]
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert decision.requested is False
+    assert decision.allowed is True
+    assert decision.status == "full_host_access"
 
 
 def test_gate_elevated_action_requests_then_consumes_exact_approval(tmp_path: Path) -> None:

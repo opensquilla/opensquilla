@@ -84,7 +84,7 @@ def _patch_request(args: Mapping[str, Any]) -> FilesystemOperationRequest:
     resolved_paths: list[Path] = []
     try:
         for op in _parse_patch(patch_text):
-            resolved = _validate_path(op.path, root)
+            resolved = _resolve_path(op.path, root)
             if resolved not in resolved_paths:
                 resolved_paths.append(resolved)
     except Exception:
@@ -271,7 +271,9 @@ def _read_patch_text_from_file(path: str, root: Path) -> str:
         else raw.resolve(strict=False)
     )
     allowed_roots = _patch_file_read_roots(root)
-    if not any(resolved.is_relative_to(allowed_root) for allowed_root in allowed_roots):
+    if not full_host_access_active() and not any(
+        resolved.is_relative_to(allowed_root) for allowed_root in allowed_roots
+    ):
         allowed = ", ".join(str(allowed_root) for allowed_root in allowed_roots)
         raise RetryableToolInputError(
             "apply_patch path must point to a UTF-8 patch file under the workspace "
@@ -285,19 +287,32 @@ def _read_patch_text_from_file(path: str, root: Path) -> str:
     return resolved.read_text(encoding="utf-8")
 
 
-def _validate_path(path: str, root: Path | None = None) -> Path:
-    """Resolve a patch path, enforcing the active root outside Full Host mode."""
+def _resolve_path(path: str, root: Path | None = None) -> Path:
+    """Resolve a patch path without making an authorization decision."""
     root = root if root is not None else _default_patch_root()
     reject_foreign_host_path(path, platform=os.name, workspace=root)
     raw = Path(path).expanduser()
-    resolved = (root / raw).resolve() if not raw.is_absolute() else raw.resolve()
-    if not resolved.is_relative_to(root) and not full_host_access_active():
+    return (root / raw).resolve() if not raw.is_absolute() else raw.resolve()
+
+
+def _validate_path(
+    path: str,
+    root: Path | None = None,
+    *,
+    allow_outside_root: bool | None = None,
+) -> Path:
+    """Resolve a patch path and enforce the active root unless already authorized."""
+    root = root if root is not None else _default_patch_root()
+    resolved = _resolve_path(path, root)
+    if allow_outside_root is None:
+        allow_outside_root = full_host_access_active()
+    if not resolved.is_relative_to(root) and not allow_outside_root:
         raise ValueError(f"Path traversal detected: {path!r} resolves outside patch root")
     return resolved
 
 
 def _memory_source_rel_path(path: str, root: Path) -> str | None:
-    resolved = _validate_path(path, root)
+    resolved = _resolve_path(path, root)
     try:
         rel = resolved.relative_to(root)
     except ValueError:
@@ -311,7 +326,7 @@ def _memory_source_rel_path(path: str, root: Path) -> str | None:
 
 
 def _bootstrap_source_rel_path(path: str, root: Path) -> str | None:
-    resolved = _validate_path(path, root)
+    resolved = _resolve_path(path, root)
     try:
         rel = resolved.relative_to(root)
     except ValueError:
@@ -357,30 +372,42 @@ def _notify_bootstrap_source_writes(ops: list[PatchOp], root: Path) -> None:
         ctx.on_bootstrap_source_write(ctx.agent_id or "main", rel)
 
 
-def _record_workspace_file_writes(ops: list[PatchOp], root: Path) -> None:
+def _record_workspace_file_writes(
+    ops: list[PatchOp],
+    root: Path,
+    *,
+    allow_outside_root: bool = False,
+) -> None:
     for op in ops:
         if isinstance(op, AddFile):
             record_workspace_file_write(
-                _validate_path(op.path, root),
+                _validate_path(op.path, root, allow_outside_root=allow_outside_root),
                 operation="apply_patch_add",
                 created=True,
             )
         elif isinstance(op, UpdateFile):
             record_workspace_file_write(
-                _validate_path(op.path, root),
+                _validate_path(op.path, root, allow_outside_root=allow_outside_root),
                 operation="apply_patch_update",
                 created=False,
             )
         elif isinstance(op, DeleteFile):
             record_workspace_file_write(
-                _validate_path(op.path, root),
+                _validate_path(op.path, root, allow_outside_root=allow_outside_root),
                 operation="apply_patch_delete",
                 created=False,
             )
 
 
-def _workspace_write_note_summary(ops: list[PatchOp], root: Path) -> str:
-    paths = [_validate_path(op.path, root) for op in ops]
+def _workspace_write_note_summary(
+    ops: list[PatchOp],
+    root: Path,
+    *,
+    allow_outside_root: bool = False,
+) -> str:
+    paths = [
+        _validate_path(op.path, root, allow_outside_root=allow_outside_root) for op in ops
+    ]
     return summarize_workspace_write_notes(paths)
 
 
@@ -409,7 +436,7 @@ def _gate_patch_ops(
 
     if elevated_full:
         for op in ops:
-            _validate_path(op.path, root)
+            _resolve_path(op.path, root)
         return None, False
 
     if sandbox_permissions not in {"use_default", "require_escalated"}:
@@ -422,7 +449,7 @@ def _gate_patch_ops(
         )
 
     for op in ops:
-        resolved = _validate_path(op.path, root)
+        resolved = _resolve_path(op.path, root)
         if not elevated_full and not filesystem._sandbox_path_access_enabled():
             sensitive = sensitive_path_marker(str(resolved), workspace=workspace)
             if sensitive is not None:
@@ -508,7 +535,7 @@ def _gate_patch_ops(
     target_paths: list[tuple[str, str]] = []
     argv: list[str] = ["apply_patch"]
     for op in ops:
-        resolved = _validate_path(op.path, root)
+        resolved = _resolve_path(op.path, root)
         access = "delete" if isinstance(op, DeleteFile) else "write"
         target_paths.append((str(resolved), access))
         argv.append(f"{type(op).__name__}:{resolved}")
@@ -617,8 +644,13 @@ def _apply_update_content(content: str, hunks: list[Hunk]) -> str:
     return "".join(lines)
 
 
-def _plan_add(op: AddFile, root: Path | None = None) -> PlannedPatchWrite:
-    resolved = _validate_path(op.path, root)
+def _plan_add(
+    op: AddFile,
+    root: Path | None = None,
+    *,
+    allow_outside_root: bool = False,
+) -> PlannedPatchWrite:
+    resolved = _validate_path(op.path, root, allow_outside_root=allow_outside_root)
     if resolved.exists():
         raise RetryableToolInputError(
             f"apply_patch Add File target already exists: {op.path}. "
@@ -633,8 +665,13 @@ def _plan_add(op: AddFile, root: Path | None = None) -> PlannedPatchWrite:
     )
 
 
-def _plan_update(op: UpdateFile, root: Path | None = None) -> PlannedPatchWrite:
-    resolved = _validate_path(op.path, root)
+def _plan_update(
+    op: UpdateFile,
+    root: Path | None = None,
+    *,
+    allow_outside_root: bool = False,
+) -> PlannedPatchWrite:
+    resolved = _validate_path(op.path, root, allow_outside_root=allow_outside_root)
     if not resolved.exists():
         raise RetryableToolInputError(
             f"apply_patch could not find file to update: {op.path}. "
@@ -653,8 +690,13 @@ def _plan_update(op: UpdateFile, root: Path | None = None) -> PlannedPatchWrite:
     )
 
 
-def _plan_delete(op: DeleteFile, root: Path | None = None) -> PlannedPatchWrite:
-    resolved = _validate_path(op.path, root)
+def _plan_delete(
+    op: DeleteFile,
+    root: Path | None = None,
+    *,
+    allow_outside_root: bool = False,
+) -> PlannedPatchWrite:
+    resolved = _validate_path(op.path, root, allow_outside_root=allow_outside_root)
     if not resolved.exists():
         raise RetryableToolInputError(
             f"apply_patch could not find file to delete: {op.path}. "
@@ -669,18 +711,27 @@ def _plan_delete(op: DeleteFile, root: Path | None = None) -> PlannedPatchWrite:
     )
 
 
-def _plan_ops(ops: list[PatchOp], root: Path | None = None) -> list[PlannedPatchWrite]:
+def _plan_ops(
+    ops: list[PatchOp],
+    root: Path | None = None,
+    *,
+    allow_outside_root: bool = False,
+) -> list[PlannedPatchWrite]:
     planned: list[PlannedPatchWrite] = []
     virtual_content: dict[Path, str | None] = {}
     for op in ops:
-        resolved = _validate_path(op.path, root)
+        resolved = _validate_path(
+            op.path,
+            root,
+            allow_outside_root=allow_outside_root,
+        )
         if resolved not in virtual_content:
             if isinstance(op, AddFile):
-                item = _plan_add(op, root)
+                item = _plan_add(op, root, allow_outside_root=allow_outside_root)
             elif isinstance(op, UpdateFile):
-                item = _plan_update(op, root)
+                item = _plan_update(op, root, allow_outside_root=allow_outside_root)
             else:
-                item = _plan_delete(op, root)
+                item = _plan_delete(op, root, allow_outside_root=allow_outside_root)
         else:
             current_content = virtual_content[resolved]
             before = _fingerprint_content(current_content)
@@ -821,9 +872,11 @@ def _commit_planned_writes(planned: list[PlannedPatchWrite]) -> tuple[int, int, 
 def _apply_ops(
     ops: list[PatchOp],
     root: Path | None = None,
+    *,
+    allow_outside_root: bool = False,
 ) -> tuple[int, int, int, list[PlannedPatchWrite]]:
     """Execute all patch operations after planning them in memory."""
-    planned = _plan_ops(ops, root)
+    planned = _plan_ops(ops, root, allow_outside_root=allow_outside_root)
     added, modified, deleted = _commit_planned_writes(planned)
     return added, modified, deleted, planned
 
@@ -902,6 +955,7 @@ async def apply_patch(
 ) -> str:
     loop = asyncio.get_event_loop()
     root = _default_patch_root()
+    full_host = full_host_access_active()
     if (patch is None or not patch.strip()) and path:
         patch = _read_patch_text_from_file(path, root)
     if patch is None or not patch.strip():
@@ -924,7 +978,15 @@ async def apply_patch(
         return json.dumps(blocked, ensure_ascii=False)
     from opensquilla.tools.builtin import filesystem
 
-    paths = tuple(_validate_path(op.path, root) for op in ops)
+    outside_root_authorized = elevated or full_host
+    paths = tuple(
+        _validate_path(
+            op.path,
+            root,
+            allow_outside_root=outside_root_authorized,
+        )
+        for op in ops
+    )
     sandbox_result = await filesystem._run_sandbox_operation_if_required(
         SandboxOperation.filesystem(
             kind="apply_patch",
@@ -937,17 +999,47 @@ async def apply_patch(
         host_execution_active=elevated,
     )
     if sandbox_result is not None:
-        _record_workspace_file_writes(ops, root)
+        _record_workspace_file_writes(
+            ops,
+            root,
+            allow_outside_root=outside_root_authorized,
+        )
         _notify_memory_source_writes(ops, root)
         _notify_bootstrap_source_writes(ops, root)
         return str(getattr(sandbox_result, "message"))
 
     def _run() -> tuple[int, int, int, list[PlannedPatchWrite]]:
+        if outside_root_authorized:
+            return _apply_ops(
+                ops,
+                root,
+                allow_outside_root=True,
+            )
         return _apply_ops(ops, root)
 
     added, modified, deleted, planned = await loop.run_in_executor(None, _run)
-    _record_workspace_file_writes(ops, root)
-    write_note_summary = _workspace_write_note_summary(ops, root)
+    if full_host:
+        _notify_memory_source_writes(ops, root)
+        _notify_bootstrap_source_writes(ops, root)
+        parts: list[str] = []
+        if added:
+            parts.append(f"{added} file(s) added")
+        if modified:
+            parts.append(f"{modified} file(s) modified")
+        if deleted:
+            parts.append(f"{deleted} file(s) deleted")
+        return "Applied patch: " + ", ".join(parts)
+
+    _record_workspace_file_writes(
+        ops,
+        root,
+        allow_outside_root=outside_root_authorized,
+    )
+    write_note_summary = _workspace_write_note_summary(
+        ops,
+        root,
+        allow_outside_root=outside_root_authorized,
+    )
     ctx = current_tool_context.get()
     write_progress_note = (
         workspace_write_progress_note() if ctx is not None and ctx.is_owner else ""

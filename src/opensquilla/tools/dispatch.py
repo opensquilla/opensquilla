@@ -58,6 +58,7 @@ from opensquilla.tools.envelope import build_tool_failure_envelope
 from opensquilla.tools.policy import DispatchInput, finalize, run_chain_with_emit
 from opensquilla.tools.projected_arguments import find_projected_tool_argument
 from opensquilla.tools.registry import ToolRegistry
+from opensquilla.tools.run_mode import full_host_access_for_context
 from opensquilla.tools.schema_validation import (
     tool_spec_schema_parts,
     validate_tool_arguments,
@@ -933,19 +934,22 @@ async def preflight_tool_call(
 ) -> ToolResult | None:
     """Return a denial envelope when a tool call fails dispatch preflight."""
     known = frozenset(known_skill_names or ())
+    full_host = full_host_access_for_context(ctx)
 
-    injection_envelope = _check_injection_guard(tool_call, ctx)
-    if injection_envelope is not None:
-        return injection_envelope
+    if not full_host:
+        injection_envelope = _check_injection_guard(tool_call, ctx)
+        if injection_envelope is not None:
+            return injection_envelope
 
     registered = registry.get(tool_call.tool_name)
     if registered is None:
         return _resolve_registry_miss(tool_call, known, ctx)
 
     tool_call = _unwrap_nested_json_arguments(tool_call, registered, ctx)
-    injection_envelope = _check_injection_guard(tool_call, ctx)
-    if injection_envelope is not None:
-        return injection_envelope
+    if not full_host:
+        injection_envelope = _check_injection_guard(tool_call, ctx)
+        if injection_envelope is not None:
+            return injection_envelope
 
     non_executable_arguments = _check_non_executable_arguments(tool_call, ctx)
     if non_executable_arguments is not None:
@@ -966,6 +970,9 @@ async def preflight_tool_call(
     executable_shape = _check_executable_tool_shape(tool_call, ctx)
     if executable_shape is not None:
         return executable_shape
+
+    if full_host:
+        return None
 
     dispatch_input = DispatchInput(
         tool_call=tool_call,
@@ -1061,11 +1068,13 @@ def build_tool_handler(
 
     async def _handler(tool_call: ToolCall) -> ToolResult:  # type: ignore[return]
         effective_ctx = current_tool_context.get() or ctx
+        full_host = full_host_access_for_context(effective_ctx)
 
         # 1. Ingress injection guard.
-        injection_envelope = _check_injection_guard(tool_call, effective_ctx)
-        if injection_envelope is not None:
-            return injection_envelope
+        if not full_host:
+            injection_envelope = _check_injection_guard(tool_call, effective_ctx)
+            if injection_envelope is not None:
+                return injection_envelope
 
         # 2. Registry lookup.
         registered = registry.get(tool_call.tool_name)
@@ -1073,9 +1082,10 @@ def build_tool_handler(
             return _resolve_registry_miss(tool_call, known, effective_ctx)
 
         tool_call = _unwrap_nested_json_arguments(tool_call, registered, effective_ctx)
-        injection_envelope = _check_injection_guard(tool_call, effective_ctx)
-        if injection_envelope is not None:
-            return injection_envelope
+        if not full_host:
+            injection_envelope = _check_injection_guard(tool_call, effective_ctx)
+            if injection_envelope is not None:
+                return injection_envelope
 
         runtime_only_supplied = sorted(
             set(tool_call.arguments) & registered.spec.runtime_only_arguments
@@ -1133,40 +1143,41 @@ def build_tool_handler(
                     )
 
         # 4. Policy chain — first denial wins. Single emission site via run_chain_with_emit.
-        dispatch_input = DispatchInput(
-            tool_call=tool_call,
-            ctx=effective_ctx,
-            registered=registered,
-            known_skill_names=known,
-            registry=registry,
-        )
+        if not full_host:
+            dispatch_input = DispatchInput(
+                tool_call=tool_call,
+                ctx=effective_ctx,
+                registered=registered,
+                known_skill_names=known,
+                registry=registry,
+            )
 
-        def _emit_policy_log(log_event: dict) -> None:
-            event = log_event.get("event", "dispatch.policy_block")
-            fields = {k: v for k, v in log_event.items() if k != "event"}
-            log.warning(event, **fields)
+            def _emit_policy_log(log_event: dict) -> None:
+                event = log_event.get("event", "dispatch.policy_block")
+                fields = {k: v for k, v in log_event.items() if k != "event"}
+                log.warning(event, **fields)
 
-        decision = run_chain_with_emit(dispatch_input, emit=_emit_policy_log)
-        if not decision.allowed:
-            if decision.envelope is None:
-                raise RuntimeError(
-                    "PolicyCheck returned a denial without an envelope"
-                )
-            if hook_call is not None:
-                for hook in hooks:
-                    try:
-                        hook.after_tool(
-                            hook_call,
-                            ToolHookResult(result=decision.envelope),
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        log.warning(
-                            "dispatch.tool_hook_failed",
-                            hook=getattr(hook, "name", type(hook).__name__),
-                            phase="after_tool",
-                            error=str(exc),
-                        )
-            return decision.envelope
+            decision = run_chain_with_emit(dispatch_input, emit=_emit_policy_log)
+            if not decision.allowed:
+                if decision.envelope is None:
+                    raise RuntimeError(
+                        "PolicyCheck returned a denial without an envelope"
+                    )
+                if hook_call is not None:
+                    for hook in hooks:
+                        try:
+                            hook.after_tool(
+                                hook_call,
+                                ToolHookResult(result=decision.envelope),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning(
+                                "dispatch.tool_hook_failed",
+                                hook=getattr(hook, "name", type(hook).__name__),
+                                phase="after_tool",
+                                error=str(exc),
+                            )
+                return decision.envelope
 
         # 5. Handler dispatch inside the request-scoped contextvar. Runtime
         # continuation authority is injected only after model-argument schema

@@ -223,6 +223,60 @@ async def test_dispatch_tool_exception_envelope_is_canonical_five_key_shape() ->
 
 
 @pytest.mark.asyncio
+async def test_full_host_dispatch_skips_injection_and_policy_checks(monkeypatch) -> None:
+    def fail_safety_preflight(*args, **kwargs):
+        pytest.fail("Full Host Access dispatch must skip safety preflight")
+
+    monkeypatch.setattr(dispatch_module, "_check_injection_guard", fail_safety_preflight)
+    monkeypatch.setattr(dispatch_module, "run_chain_with_emit", fail_safety_preflight)
+    handler = build_tool_handler(
+        _build_registry(),
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            run_mode="full",
+            session_key="cli:main:full-host-fast-path",
+        ),
+    )
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="tc-full-host-fast-path",
+            tool_name="echo",
+            arguments={"value": "host"},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content == "host"
+
+
+@pytest.mark.asyncio
+async def test_full_host_preflight_skips_injection_and_policy_checks(monkeypatch) -> None:
+    def fail_safety_preflight(*args, **kwargs):
+        pytest.fail("Full Host Access preflight must skip safety checks")
+
+    monkeypatch.setattr(dispatch_module, "_check_injection_guard", fail_safety_preflight)
+    monkeypatch.setattr(dispatch_module, "run_chain_with_emit", fail_safety_preflight)
+    result = await dispatch_module.preflight_tool_call(
+        registry=_build_registry(),
+        ctx=ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.CLI,
+            run_mode="full",
+            session_key="cli:main:full-host-preflight",
+        ),
+        tool_call=ToolCall(
+            tool_use_id="tc-full-host-preflight",
+            tool_name="echo",
+            arguments={"value": "host"},
+        ),
+    )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_dispatch_redacts_secret_like_tool_result_content() -> None:
     handler = build_tool_handler(_build_registry())
     secret = "sk-or-v1-abcdefghijklmnopqrstuvwxyz"

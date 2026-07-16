@@ -125,21 +125,50 @@ async def test_full_host_access_warnlisted_exec_skips_approval_and_uses_host(
         return "exit_code=0\nhost\n"
 
     monkeypatch.setattr(shell, "_run_host_shell_command", fake_host_execution)
-    monkeypatch.setattr(
-        shell,
-        "check_safe_bin",
-        lambda command: PolicyResult(
-            allowed=True,
-            reason=f"command requires approval: {command}",
-            needs_approval=True,
-        ),
-    )
+    def fail_preflight(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Full Host Access must skip shell safety preflight")
+
+    monkeypatch.setattr(shell, "_runtime_readonly_shell_block", fail_preflight)
+    monkeypatch.setattr(shell, "_profile_shell_command", fail_preflight)
+    monkeypatch.setattr(shell, "check_safe_bin", fail_preflight)
+    monkeypatch.setattr(shell, "_approval_policy_denial", fail_preflight)
+    monkeypatch.setattr(shell, "snapshot_current_workspace_mutations", fail_preflight)
 
     result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
 
     assert result == "exit_code=0\nhost\n"
     assert calls == ["host"]
     assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_full_host_write_file_skips_guards_and_mutation_tracking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = current_tool_context.get()
+    assert ctx is not None
+    ctx.run_mode = "full"
+    ctx.workspace_dir = str(tmp_path / "workspace")
+    ctx.file_edit_requires_fresh_read = True
+    ctx.workspace_write_deny_globs = ["**"]
+    target = tmp_path / "outside" / "large.txt"
+    target.parent.mkdir()
+    target.write_text("old" * 4096, encoding="utf-8")
+
+    def fail_safety_tracking(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Full Host Access must skip file safety and tracking")
+
+    monkeypatch.setattr(filesystem, "_gate_out_of_workspace_write", fail_safety_tracking)
+    monkeypatch.setattr(filesystem, "require_fresh_workspace_file_read", fail_safety_tracking)
+    monkeypatch.setattr(filesystem, "_gate_write_file_destructive_overwrite", fail_safety_tracking)
+    monkeypatch.setattr(filesystem, "fingerprint_path", fail_safety_tracking)
+    monkeypatch.setattr(filesystem, "record_semantic_mutation_receipt", fail_safety_tracking)
+
+    result = await _original_async(filesystem.write_file)(str(target), "new")
+
+    assert result == f"Written 3 bytes to {target}"
+    assert target.read_text(encoding="utf-8") == "new"
 
 
 @pytest.mark.asyncio

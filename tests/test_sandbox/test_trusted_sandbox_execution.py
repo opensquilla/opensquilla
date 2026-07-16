@@ -338,6 +338,15 @@ async def test_full_host_access_code_exec_resolves_host_python(monkeypatch, tmp_
     monkeypatch.setattr(code_exec, "_resolve_python_bin", _fake_resolve_python_bin)
     monkeypatch.setattr(code_exec.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
 
+    def fail_safety_preflight(*args, **kwargs):
+        pytest.fail("Full Host Access code execution must skip safety preflight")
+
+    monkeypatch.setattr(code_exec, "_check_code_sensitive_access", fail_safety_preflight)
+    monkeypatch.setattr(code_exec, "_check_code_destructive", fail_safety_preflight)
+    monkeypatch.setattr(code_exec, "_code_needs_network", fail_safety_preflight)
+    monkeypatch.setattr(code_exec, "snapshot_current_workspace_mutations", fail_safety_preflight)
+    monkeypatch.setattr(code_exec, "gate_action", fail_safety_preflight)
+
     token = current_tool_context.set(
         ToolContext(
             is_owner=True,

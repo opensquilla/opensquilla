@@ -546,10 +546,7 @@ async def test_apply_patch_run_mode_full_skips_sandbox_wrapper_gate(
         current_tool_context.reset(token)
         reset_runtime()
 
-    assert result == (
-        "Applied patch: 1 file(s) modified Note: workspace changes are now present. "
-        "Before final, inspect git_diff and run focused verification for the changed behavior."
-    )
+    assert result == "Applied patch: 1 file(s) modified"
     assert outside.read_text(encoding="utf-8") == "new\n"
     assert get_approval_queue().list_pending("exec") == []
 

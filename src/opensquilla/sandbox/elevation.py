@@ -296,6 +296,15 @@ def gate_elevated_action(
 ) -> ElevationGateResult:
     """Request or consume elevation according to one tool call's intent."""
 
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return ElevationGateResult(
+            requested=False,
+            allowed=True,
+            status="full_host_access",
+        )
+
     if action.sandbox_permissions != "require_escalated":
         return ElevationGateResult(
             requested=False,

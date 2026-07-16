@@ -1347,6 +1347,14 @@ function removeEnsembleCandidate(candidate: EnsembleCandidateView) {
   ensembleForm.removeCandidate(candidate)
 }
 
+function replaceEnsembleCandidate(candidate: EnsembleCandidateView, model: string) {
+  ensembleForm.replaceCandidate(candidate, model)
+}
+
+function setEnsembleAggregator(provider: string, model: string) {
+  ensembleForm.setAggregator(provider, model)
+}
+
 function setEnsembleCandidateRole(candidate: EnsembleCandidateView, role: EnsembleCandidateRole) {
   ensembleForm.setCandidateRole(candidate, role)
 }
@@ -1946,6 +1954,8 @@ async function copyConfigPath() {
     removeEnsembleModelOption,
     addEnsembleCandidate,
     removeEnsembleCandidate,
+    replaceEnsembleCandidate,
+    setEnsembleAggregator,
     setEnsembleCandidateRole,
     importEnsembleTierCandidates,
     migrateEnsembleLegacy,

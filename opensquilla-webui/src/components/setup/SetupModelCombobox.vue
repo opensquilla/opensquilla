@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// Model combobox for the provider "model" field: the plain text input stays
-// the primary control (free text ALWAYS works — discovery is an accelerator,
-// never a gate), with an optional dropdown of live-discovered models layered
-// on top. Presentational only: props in, events out (panel-contract pattern).
+// Shared model picker for provider defaults, router tiers, and ensemble roles:
+// the plain text input stays the primary control (free text ALWAYS works —
+// discovery is an accelerator, never a gate), with an optional dropdown of
+// live-discovered models layered on top. Presentational only: props in, events
+// out (panel-contract pattern).
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
@@ -331,8 +332,12 @@ function onKeydown(event: KeyboardEvent) {
         @mousedown.prevent
         @click="toggleList"
       >
-        <span class="setup-model-combobox__count">{{ models.length }}</span>
-        <Icon class="setup-model-combobox__chevron" name="chevronDown" :size="14" />
+        <Icon
+          class="setup-model-combobox__chevron"
+          name="chevronDown"
+          :size="14"
+          aria-hidden="true"
+        />
       </button>
       <Teleport to="body">
         <div
@@ -421,6 +426,7 @@ function onKeydown(event: KeyboardEvent) {
 
 .setup-model-combobox--cellwrap .setup-model-combobox input {
   box-sizing: border-box;
+  max-width: none;
   width: 100%;
 }
 
@@ -430,7 +436,7 @@ function onKeydown(event: KeyboardEvent) {
 }
 
 .setup-model-combobox.has-catalog input {
-  padding-right: 58px;
+  padding-right: 36px;
 }
 
 .setup-model-combobox__trigger {
@@ -438,15 +444,16 @@ function onKeydown(event: KeyboardEvent) {
   background: transparent;
   border: 0;
   border-radius: var(--radius-sm);
+  bottom: 2px;
   color: var(--text-dim);
   cursor: pointer;
   display: inline-flex;
-  gap: var(--sp-1);
-  padding: var(--sp-1);
+  justify-content: center;
+  padding: 0;
   position: absolute;
-  right: var(--sp-1);
-  top: 50%;
-  transform: translateY(-50%);
+  right: 2px;
+  top: 2px;
+  width: 32px;
 }
 
 .setup-model-combobox__trigger:hover {
@@ -457,12 +464,6 @@ function onKeydown(event: KeyboardEvent) {
 .setup-model-combobox__trigger:focus-visible {
   box-shadow: var(--focus-ring);
   outline: none;
-}
-
-.setup-model-combobox__count {
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
 }
 
 .setup-model-combobox__chevron {

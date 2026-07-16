@@ -190,7 +190,8 @@
               @update-ensemble-scheme="setEnsembleScheme"
               @add-ensemble-candidate="addEnsembleCandidate"
               @remove-ensemble-candidate="removeEnsembleCandidate"
-              @set-ensemble-candidate-role="setEnsembleCandidateRole"
+              @replace-ensemble-candidate="replaceEnsembleCandidate"
+              @set-ensemble-aggregator="setEnsembleAggregator"
               @import-ensemble-tier-candidates="importEnsembleTierCandidates"
               @migrate-ensemble-legacy="migrateEnsembleLegacy"
               @update-ensemble-min-successful="setEnsembleMinSuccessful"
@@ -326,7 +327,8 @@ const {
   setRouterVisualMode,
   addEnsembleCandidate,
   removeEnsembleCandidate,
-  setEnsembleCandidateRole,
+  replaceEnsembleCandidate,
+  setEnsembleAggregator,
   importEnsembleTierCandidates,
   migrateEnsembleLegacy,
   setEnsembleScheme,

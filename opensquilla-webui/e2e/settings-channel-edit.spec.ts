@@ -22,6 +22,10 @@ test.describe.serial('channel edit deep link', () => {
     await openSettingsChannels(page)
     const dlg = dialog(page)
     await dlg.locator('button[data-channel-type="telegram"]').click()
+    // Master-detail: picking a card keeps the gallery on screen, marks the
+    // card selected, and expands the form below it.
+    await expect(dlg.locator('button[data-channel-type="telegram"]')).toHaveClass(/is-selected/)
+    await expect(dlg.locator('button[data-channel-type="discord"]')).toBeVisible()
     await dlg.locator('input[name="setup_channel_name"]').fill(NAME)
     await dlg.locator('input[name="setup_channel_token"]').fill('0000:e2e-dummy-token')
     await dlg.getByRole('button', { name: 'Save Channel' }).click()
@@ -31,6 +35,8 @@ test.describe.serial('channel edit deep link', () => {
     await page.goto(`${CONTROL_URL}settings/channels#channel-${NAME}`)
     await expect(page.locator('.conn-pill')).toBeVisible({ timeout: 15000 })
     await expect(dialog(page).getByText(`Edit channel: ${NAME}`)).toBeVisible({ timeout: 10000 })
+    // The gallery stays visible during an edit session.
+    await expect(dialog(page).locator('button[data-channel-type="telegram"]')).toBeVisible()
 
     // Name is read-only, secret is masked, and no input anywhere holds '***'.
     const nameInput = dialog(page).locator('input[name="setup_channel_name"]')
@@ -62,10 +68,10 @@ test.describe.serial('channel edit deep link', () => {
     const row = dlg.locator('.setup-runtime__row', { hasText: NAME })
     if (await row.count()) {
       await row.getByRole('button', { name: 'Remove' }).click()
-      await page.getByRole('button', { name: 'Remove channel' }).click().catch(async () => {
-        // Confirm modal primary label fallback.
-        await page.locator('.confirm-modal button.btn--primary, [role="alertdialog"] button.btn--primary').first().click()
-      })
+      await page
+        .getByRole('dialog', { name: 'Remove this channel?' })
+        .getByRole('button', { name: 'Remove' })
+        .click()
       await expect(dlg.locator('.setup-runtime__row', { hasText: NAME })).toHaveCount(0, { timeout: 10000 })
     }
   })

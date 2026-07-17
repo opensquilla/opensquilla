@@ -4344,15 +4344,20 @@ async def _terminate_exec_process_tree(proc: Any) -> None:
 async def _write_exec_stdin(proc: Any, stdin_bytes: bytes | None) -> None:
     if stdin_bytes is None or proc.stdin is None:
         return
+    stdin = proc.stdin
     try:
         for offset in range(0, len(stdin_bytes), _EXEC_STDIN_WRITE_CHUNK_BYTES):
-            proc.stdin.write(stdin_bytes[offset : offset + _EXEC_STDIN_WRITE_CHUNK_BYTES])
-            await proc.stdin.drain()
+            stdin.write(stdin_bytes[offset : offset + _EXEC_STDIN_WRITE_CHUNK_BYTES])
+            await stdin.drain()
     except (BrokenPipeError, ConnectionResetError):
         pass
     finally:
-        if proc.stdin is not None and not proc.stdin.is_closing():
-            proc.stdin.close()
+        if not stdin.is_closing():
+            stdin.close()
+        wait_closed = getattr(stdin, "wait_closed", None)
+        if wait_closed is not None:
+            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+                await wait_closed()
 
 
 async def _wait_exec_stdin_writer(writer_task: asyncio.Task[None], timeout: float) -> bool:

@@ -458,16 +458,13 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
         ("mock_user_profile", "permission"): {
             "allow_models",
             "deny_models",
-            "allow_tools",
             "risk_allowlist",
         },
         ("mock_user_profile", "preference"): {
             "quality_latency_tradeoff",
             "cost_sensitivity",
-            "preferred_formats",
         },
         ("mock_user_profile", "history"): {
-            "capability_prior",
             "positive_model_ids",
             "negative_model_ids",
             "feedback_count",
@@ -525,7 +522,6 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
             "neutral_score",
             "history_signal_weight",
             "feedback_saturation_count",
-            "preferred_format_bonus",
         },
         ("quality",): {"task_match_weight", "user_score_weight"},
         ("penalties",): {
@@ -849,7 +845,7 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
             "router_dynamic fallback_task_profile.session_intent.type is invalid"
         )
 
-    for key in ("allow_models", "deny_models", "allow_tools"):
+    for key in ("allow_models", "deny_models"):
         _ranking_string_list(config, "mock_user_profile", "permission", key)
     if not _ranking_string_set(
         config, "mock_user_profile", "permission", "risk_allowlist"
@@ -873,35 +869,6 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
         raise DynamicRankingError(
             "router_dynamic mock_user_profile.preference.cost_sensitivity is invalid"
         )
-    if not set(
-        _ranking_string_list(
-            config, "mock_user_profile", "preference", "preferred_formats"
-        )
-    ).issubset(set(FORMATS)):
-        raise DynamicRankingError(
-            "router_dynamic mock_user_profile.preference.preferred_formats is invalid"
-        )
-
-    capability_prior = _ranking_mapping(
-        config, "mock_user_profile", "history", "capability_prior"
-    )
-    if not set(capability_prior).issubset(set(CAPABILITIES)):
-        raise DynamicRankingError(
-            "router_dynamic mock_user_profile.history.capability_prior is invalid"
-        )
-    for capability in capability_prior:
-        prior = _ranking_number(
-            config,
-            "mock_user_profile",
-            "history",
-            "capability_prior",
-            str(capability),
-        )
-        if not 0.0 <= prior <= 1.0:
-            raise DynamicRankingError(
-                "router_dynamic mock_user_profile.history.capability_prior values "
-                "must be between 0 and 1"
-            )
     _ranking_string_list(config, "mock_user_profile", "history", "positive_model_ids")
     _ranking_string_list(config, "mock_user_profile", "history", "negative_model_ids")
     if _ranking_int(config, "mock_user_profile", "history", "feedback_count") < 0:
@@ -1012,7 +979,6 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
         ("task_match", "missing_role_fit_default"),
         ("user_score", "neutral_score"),
         ("user_score", "history_signal_weight"),
-        ("user_score", "preferred_format_bonus"),
         ("session", "intent_confidence_threshold"),
         ("session", "default_quality_feedback"),
         ("session", "score_delta"),
@@ -2066,8 +2032,6 @@ async def analyze_task_with_provider(
         ),
         "request_context": request_context,
     }
-    if user_profile is not None:
-        analyzer_input["user_profile"] = user_profile
     log.info(
         "llm_ensemble.router_dynamic.task_analyzer_started",
         decision_id=decision_id,
@@ -3021,7 +2985,6 @@ def _task_match(
 def _user_score(
     model: RankedModel,
     user_profile: Mapping[str, Any],
-    task_profile: Mapping[str, Any],
     ranking_config: Mapping[str, Any],
 ) -> float:
     history = user_profile.get("history")
@@ -3048,17 +3011,6 @@ def _user_score(
     ) + _ranking_number(
         ranking_config, "user_score", "history_signal_weight"
     ) * signal * confidence
-    optional = task_profile.get("optional_constraints")
-    preference = user_profile.get("preference")
-    preference_map = preference if isinstance(preference, Mapping) else {}
-    if not isinstance(optional, Mapping) or not optional.get("format"):
-        preferred = preference_map.get("preferred_formats")
-        if isinstance(preferred, Sequence) and preferred:
-            score += _ranking_number(
-                ranking_config, "user_score", "preferred_format_bonus"
-            ) * _strength(
-                model, "capability_dist_prior", "format_following", ranking_config
-            )
     return _clamp(score)
 
 
@@ -3198,7 +3150,7 @@ def _base_score_row(
         model, task_profile, ranking_config, role="proposer"
     )
     user_score = (
-        _user_score(model, user_profile, task_profile, ranking_config)
+        _user_score(model, user_profile, ranking_config)
         if user_profile is not None
         else 0.0
     )

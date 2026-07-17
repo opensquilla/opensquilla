@@ -851,11 +851,12 @@ async def test_task_analyzer_uses_provider_interface_and_validates_json() -> Non
     analyzer_payload = json.loads(str(provider.calls[0][0][0].content))
     assert analyzer_payload["allowed_constraints"]["risk"] == ["low", "medium", "high"]
     assert analyzer_payload["allowed_session_intents"] == ["new_task", "continue", "redo"]
-    assert "user_profile" in analyzer_payload
+    # The profile never reaches the analyzer provider, even when one is supplied.
+    assert "user_profile" not in analyzer_payload
 
 
 @pytest.mark.asyncio
-async def test_task_analyzer_omits_disabled_user_profile_and_correlates_logs() -> None:
+async def test_task_analyzer_omits_user_profile_and_correlates_logs() -> None:
     provider = _AnalyzerProvider(json.dumps(_task_profile(tier=2)))
 
     with structlog.testing.capture_logs() as captured:
@@ -886,6 +887,31 @@ async def test_task_analyzer_omits_disabled_user_profile_and_correlates_logs() -
         for row in analyzer_events
     )
     assert all(row["user_profile_enabled"] is False for row in analyzer_events)
+
+
+@pytest.mark.asyncio
+async def test_task_analyzer_logs_supplied_profile_without_sending_it() -> None:
+    provider = _AnalyzerProvider(json.dumps(_task_profile(tier=2)))
+
+    with structlog.testing.capture_logs() as captured:
+        await analyze_task_with_provider(
+            provider=provider,
+            message="implement a parser",
+            user_profile=mock_user_profile(),
+            request_context=_context(),
+            routed_tier="c1",
+            routing_confidence=0.8,
+            decision_id="decision-with-profile",
+        )
+
+    assert "user_profile" not in json.loads(str(provider.calls[0][0][0].content))
+    analyzer_events = [
+        row
+        for row in captured
+        if str(row["event"]).startswith("llm_ensemble.router_dynamic.task_analyzer_")
+    ]
+    assert analyzer_events
+    assert all(row["user_profile_enabled"] is True for row in analyzer_events)
 
 
 @pytest.mark.asyncio

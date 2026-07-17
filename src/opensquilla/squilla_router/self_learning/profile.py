@@ -81,9 +81,11 @@ def profile_update_lock() -> Iterator[None]:
     rating", and both then increment. One click becomes two ratings, and the
     model can land in neither list.
 
-    That is unrecoverable rather than merely wrong: the profile accumulates a
-    tally instead of replaying the log, so nothing later reconciles it against
-    ``feedback.jsonl``. Wrap the whole sequence:
+    That is unrecoverable rather than merely wrong, and not because
+    reconciliation is unimplemented — it is impossible. ``feedback.jsonl`` is
+    pruned by ``retention_days`` while ``model_counts`` accumulates forever, so
+    the log is lossy by design and can never rebuild the tally. This file is the
+    system of record, not a cache of the log. Wrap the whole sequence:
 
         with profile_update_lock():
             previous = load_feedback_map(agent_id).get(decision_id)

@@ -1421,6 +1421,84 @@ def mock_user_profile(
     return copy.deepcopy(dict(_ranking_mapping(effective_config, "mock_user_profile")))
 
 
+def validate_user_profile(
+    profile: Mapping[str, Any],
+    ranking_config: Mapping[str, Any] | None = None,
+) -> list[str]:
+    """Reasons a stored profile cannot be trusted; empty when it is fine.
+
+    ``profile.json`` is hand-editable and is the *only* configuration surface
+    for ``deny_models``. A typo there must be rejected rather than silently
+    ignored: ``_cost_latency_weights`` falls back to a default on an unknown
+    ``cost_sensitivity``, so an invalid edit would route exactly as if it had
+    never been made, and say nothing.
+
+    This lives here rather than in ``profile.py`` because the vocabularies are
+    defined here, and ``self_learning`` must not import from ``provider``.
+    Reading them from the same ranking config as the mock validator
+    (``_validate_ranking_config``) is what stops the two from drifting apart —
+    a shared source rather than two lists that agree today.
+
+    Only keys the file actually carries are checked; a partial profile is
+    normal, and the seam fills the rest from the mock baseline.
+    """
+
+    effective = _resolve_ranking_config(ranking_config)
+    errors: list[str] = []
+
+    permission = profile.get("permission")
+    if isinstance(permission, Mapping):
+        risk_values = _ranking_string_set(
+            effective, "task_profile_schema", "constraint_values", "risk"
+        )
+        allowlist = permission.get("risk_allowlist")
+        if allowlist is not None:
+            if not isinstance(allowlist, list) or not all(
+                isinstance(v, str) for v in allowlist
+            ):
+                errors.append("permission.risk_allowlist must be a list of strings")
+            elif not set(allowlist).issubset(risk_values):
+                unknown = sorted(set(allowlist) - risk_values)
+                errors.append(f"permission.risk_allowlist has unknown values: {unknown}")
+        for key in ("allow_models", "deny_models"):
+            value = permission.get(key)
+            if value is not None and (
+                not isinstance(value, list) or not all(isinstance(v, str) for v in value)
+            ):
+                errors.append(f"permission.{key} must be a list of strings")
+
+    preference = profile.get("preference")
+    if isinstance(preference, Mapping):
+        tradeoff = preference.get("quality_latency_tradeoff")
+        if tradeoff is not None and tradeoff not in _USER_TRADEOFFS:
+            errors.append(
+                f"preference.quality_latency_tradeoff {tradeoff!r} is not one of "
+                f"{sorted(_USER_TRADEOFFS)}"
+            )
+        sensitivity = preference.get("cost_sensitivity")
+        if sensitivity is not None:
+            known = _ranking_mapping(effective, "penalties", "user_cost_sensitivity_weights")
+            if sensitivity not in known:
+                errors.append(
+                    f"preference.cost_sensitivity {sensitivity!r} is not one of "
+                    f"{sorted(known)}"
+                )
+
+    history = profile.get("history")
+    if isinstance(history, Mapping):
+        for key in ("positive_model_ids", "negative_model_ids"):
+            value = history.get(key)
+            if value is not None and (
+                not isinstance(value, list) or not all(isinstance(v, str) for v in value)
+            ):
+                errors.append(f"history.{key} must be a list of strings")
+        count = history.get("feedback_count")
+        if count is not None and (not isinstance(count, int) or count < 0):
+            errors.append("history.feedback_count must be a non-negative integer")
+
+    return errors
+
+
 def build_request_context(
     *,
     message: str,

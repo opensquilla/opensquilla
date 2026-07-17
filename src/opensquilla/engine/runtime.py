@@ -2435,6 +2435,77 @@ class TurnRunner:
         self._router_dynamic_last_routes[session_key] = route
         return copy.deepcopy(route)
 
+    @staticmethod
+    def _resolve_user_profile(ranking_config: Any) -> dict[str, Any]:
+        """The learned profile over the mock baseline — the only real read seam.
+
+        The mock supplies the shape and every default the learned file does not
+        carry (risk_allowlist, preferences). Only keys the baseline already
+        defines are overlaid, so a hand-edited file can add ``deny_models`` but
+        cannot introduce a key ranking never validated.
+
+        Degrades to the baseline on any failure. This is deliberately NOT
+        wired into ``ensemble.py``'s own fallback: that path serves benchmarks
+        and the experiment runner, which must stay reproducible rather than
+        read whatever the operator happens to have thumbed.
+        """
+        from opensquilla.provider.ranking_router import (
+            mock_user_profile,
+            validate_user_profile,
+        )
+        from opensquilla.squilla_router.self_learning.profile import (
+            PROFILE_SOURCE,
+            content_version,
+            load_profile,
+            profile_path,
+        )
+
+        base = mock_user_profile(ranking_config)
+        try:
+            stored = load_profile()
+            if stored is None:
+                # Missing or unreadable both mean the same thing to ranking:
+                # what it is about to score against is not the user's profile.
+                base["profile_source"] = "fallback_mock"
+                return base
+            errors = validate_user_profile(stored, ranking_config)
+            if errors:
+                # Refuse the whole file rather than route on the half of it
+                # that parsed. This file is the only way to say deny_models,
+                # so a typo that silently did nothing would be worse than one
+                # that is loudly ignored.
+                log.warning(
+                    "router_dynamic.user_profile_invalid",
+                    errors=errors,
+                    path=str(profile_path()),
+                )
+                base["profile_source"] = "fallback_mock"
+                return base
+            for section in ("permission", "preference", "history"):
+                value = stored.get(section)
+                if not isinstance(value, Mapping):
+                    continue
+                merged = dict(base.get(section) or {})
+                merged.update({k: v for k, v in value.items() if k in merged})
+                base[section] = merged
+            # Provenance is what happened here, not what the file claims. Both
+            # fields are derived rather than read: the file is hand-editable, so
+            # reading them would let it pin a source ranking never chose, and
+            # would miss the one edit it exists for — ``deny_models`` has no TOML
+            # key, and editing it never touches the write path that stamps a
+            # version. Hash what was ranked with, after the overlay.
+            base["profile_source"] = PROFILE_SOURCE
+            base["profile_version"] = content_version(base)
+        except Exception:  # noqa: BLE001 — a broken profile must not fail a turn
+            log.warning("router_dynamic.user_profile_load_failed", exc_info=True)
+            # Rebuild rather than return ``base``: the overlay above mutates it
+            # section by section, so a raise partway through leaves a half-merged
+            # profile that would ship as if it were the user's own.
+            fallback = mock_user_profile(ranking_config)
+            fallback["profile_source"] = "fallback_mock"
+            return fallback
+        return base
+
     def _router_dynamic_task_analyzer_provider(
         self,
         inherited_provider_config: Any,
@@ -5453,7 +5524,6 @@ class TurnRunner:
                             analyze_task_with_provider,
                             build_request_context,
                             dynamic_output_token_budgets,
-                            mock_user_profile,
                             ranking_config_snapshot,
                         )
 
@@ -5506,7 +5576,7 @@ class TurnRunner:
                             ranking_config=ranking_config,
                         )
                         user_profile = (
-                            mock_user_profile(ranking_config)
+                            self._resolve_user_profile(ranking_config)
                             if ranking_user_profile_enabled
                             else None
                         )

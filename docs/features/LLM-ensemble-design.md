@@ -472,9 +472,15 @@ Before ranking, runtime builds four replaceable inputs:
    and do not discard an otherwise valid task profile.
 3. **User profile** — controlled by
    `llm_ensemble.ranking_user_profile_enabled` (default `true`). When enabled,
-   the current implementation uses a versioned global mock with permissions,
-   cost/latency preference, and empty feedback priors. When disabled, runtime
-   does not build or send that mock and ranking receives no user profile.
+   runtime overlays the learned profile at `router/profile.json` — permissions,
+   cost/latency preference, and the feedback history derived from thumb
+   ratings — onto the `mock_user_profile` baseline, which supplies the shape
+   and every default the file does not carry. The file is refused whole and
+   the baseline used alone (`profile_source = fallback_mock`) when it is
+   missing, unreadable, or fails validation. When disabled, runtime builds no
+   profile at all and ranking receives none.
+
+   The profile is never sent to the task analyzer; only ranking reads it.
 4. **Model registry snapshot** — composed from the routed model, enabled
    `llm_ensemble.candidates`, non-default legacy `model_options`, configured
    SquillaRouter tiers, and the packaged twenty-model mock registry. Unknown
@@ -713,7 +719,7 @@ tunable Step2 behavior lives in
 | `task_profile_schema` | accepted task constraints and session intents |
 | `task_analyzer` | timeout, input/response limits, output tokens, temperature, thinking |
 | `fallback_task_profile` | deterministic analyzer-failure profile and tier risk |
-| `mock_user_profile` | current global mock permissions, preferences, and history |
+| `mock_user_profile` | baseline permissions, preferences, and history; the learned profile at `router/profile.json` is overlaid on it at the engine read seam, and it is used as-is when no valid file exists |
 | `synthetic_model` | facts and priors for deployments missing a catalog profile |
 | `hard_filter` | eligible/unavailable states and default required modalities |
 | `exploration` | reserved trace declaration; must remain `false` / propensity `1.0` until exploration is implemented |

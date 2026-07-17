@@ -1074,6 +1074,7 @@ class EnsembleProvider:
         final_request_role: str,
         selected_candidates: Sequence[_CandidateResult] | None = None,
         final_request_member: EnsembleMemberConfig | None = None,
+        final_request_model: str | None = None,
         final_request_config: ChatConfig | None = None,
         final_request_tools: list[ToolDefinition] | None = None,
         final_request_messages: Sequence[Message] | None = None,
@@ -1126,13 +1127,23 @@ class EnsembleProvider:
                     final_request_member
                 ),
             )
-        elif final_request_config is not None or final_request_tools is not None:
-            final_request["execution"] = _request_execution_trace(
+        elif (
+            final_request_config is not None
+            or final_request_tools is not None
+            or final_request_model
+        ):
+            execution = _request_execution_trace(
                 role=final_request_role,
                 chat_config=final_request_config,
                 tools=final_request_tools,
                 timeout_seconds=final_request_timeout_seconds,
             )
+            # No EnsembleMemberConfig on this path, so the request trace cannot
+            # name the model. Feedback attribution reads it, so supply the
+            # configured id rather than leave the key absent.
+            if final_request_model:
+                execution["model"] = final_request_model
+            final_request["execution"] = execution
         if final_request_messages is not None:
             final_request["input"] = _messages_trace(
                 final_request_messages,
@@ -1324,6 +1335,7 @@ class EnsembleProvider:
             fallback_reason=reason,
             final_request_role="fallback_single",
             selected_candidates=[candidate for candidate in candidates if candidate.ok],
+            final_request_model=_provider_model_id(self.fallback_provider),
             final_request_config=config,
             final_request_tools=tools,
             final_request_messages=messages,
@@ -1484,6 +1496,21 @@ def _member_execution_trace(
         }
     )
     return payload
+
+
+def _provider_model_id(provider: Any) -> str | None:
+    """The configured model id a provider will run, via its public metadata.
+
+    ``provider_metadata()`` exists to expose exactly this without prying at
+    private state. Best-effort: a provider double that lacks it yields ``None``
+    and attribution fails closed rather than guessing.
+    """
+    try:
+        model = provider.provider_metadata().model
+    except Exception:  # noqa: BLE001 — trace enrichment must never fail a turn
+        return None
+    model = str(model or "").strip()
+    return model or None
 
 
 def _request_execution_trace(

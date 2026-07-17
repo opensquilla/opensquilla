@@ -136,8 +136,6 @@ exactly.
 ```json
 {
   "schema_version": 1,
-  "profile_version": "<content hash>",
-  "profile_source": "global_json",
   "permission": {
     "allow_models": [],
     "deny_models": [],
@@ -147,8 +145,8 @@ exactly.
     "quality_latency_tradeoff": "balanced",
     "cost_sensitivity": "medium"
   },
+  "model_counts": {"<model_id>": {"up": 0, "down": 0}},
   "history": {
-    "model_counts": {"<model_id>": {"up": 0, "down": 0}},
     "positive_model_ids": [],
     "negative_model_ids": [],
     "feedback_count": 0,
@@ -177,9 +175,20 @@ vocabularies — `risk_allowlist` values, `quality_latency_tradeoff`,
 two cannot drift apart. Drift here is not a crash; it is a hand-edited value
 that one validator accepts and the other silently ignores.
 
-`profile_version` is a content hash of the profile body, so it changes exactly
-when the profile changes. `profile_source` is `global_json`, or `fallback_mock`
-when the file is missing or unreadable.
+**Provenance is not in the file.** `profile_version` and `profile_source`
+describe a *read* — which profile ranking got, and what was in it — so the read
+seam derives both and the writer stores neither. `profile_version` is a content
+hash of the resolved profile, taken after the overlay, so it changes exactly
+when what ranking ranked with changes; `profile_source` is `global_json`, or
+`fallback_mock` when the file is missing or unusable.
+
+Storing them would be worse than redundant. The file is hand-editable, so a
+stored `profile_source` lets it claim `fallback_mock` while ranking uses it, and
+a stored `profile_version` misses the one edit the file exists for: `deny_models`
+has no TOML key, and editing it never runs the write path that would stamp a new
+version. A stored hash would also be computed over a different body than the
+emitted one — two values under one name, so an operator matching a decision's
+version against the file finds a mismatch for an unchanged profile.
 
 Writes are atomic (`tmp` + `os.replace`) under a module-level `_write_lock`,
 mirroring `feedback.py:_write_lock` — RPC submissions run on worker threads and

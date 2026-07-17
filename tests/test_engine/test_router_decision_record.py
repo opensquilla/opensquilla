@@ -165,6 +165,55 @@ def test_flush_records_ensemble_execution_facts() -> None:
     assert record["ensemble_profile"] == "static_openrouter_b5"
 
 
+def test_ensemble_flush_attributes_to_the_aggregator_not_the_classifier() -> None:
+    """The record must name the model whose text the user actually read.
+
+    ``decision.model`` is the classifier's pick. On an ensemble turn it never
+    authored the reply — the aggregator did — so feedback keyed on it would
+    train the profile on a model the user never saw.
+    """
+    writer = _FakeWriter()
+    set_decision_writer(writer)
+    ctx = _ctx()
+    stage_router_decision(
+        ctx,
+        decision=_decision(model="classifier/pick"),
+        routing_extra=ROUTING_EXTRA,
+    )
+
+    ctx.metadata["ensemble_enabled"] = True
+    flush_router_decision(
+        ctx.metadata,
+        ensemble_trace={
+            "profile": "router_dynamic",
+            "final_request": {
+                "role": "aggregator",
+                "execution": {"model": "aggregator/that-ran"},
+                # Response space: what the provider says it ran. Forensics
+                # only — attribution must not key on it.
+                "usage": {"model": "aggregator/that-ran-20260101"},
+            },
+        },
+    )
+    assert writer.records[0]["model"] == "aggregator/that-ran"
+
+
+def test_ensemble_flush_fails_closed_when_the_trace_cannot_name_the_model() -> None:
+    """None, not a guess: crediting the wrong model is worse than not learning."""
+    writer = _FakeWriter()
+    set_decision_writer(writer)
+    ctx = _ctx()
+    stage_router_decision(
+        ctx,
+        decision=_decision(model="classifier/pick"),
+        routing_extra=ROUTING_EXTRA,
+    )
+
+    ctx.metadata["ensemble_enabled"] = True
+    flush_router_decision(ctx.metadata, ensemble_trace={"profile": "router_dynamic"})
+    assert writer.records[0]["model"] is None
+
+
 def test_flush_realigns_model_and_counts_fallback_hops() -> None:
     writer = _FakeWriter()
     set_decision_writer(writer)

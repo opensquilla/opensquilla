@@ -4481,8 +4481,13 @@ async def _run_full_host_shell_command(
     )
 
 
-async def _create_host_shell_subprocess(command: str, **kwargs: Any) -> Any:
-    if os.name == "nt":
+async def _create_host_shell_subprocess(
+    command: str,
+    *,
+    windows_host: bool = False,
+    **kwargs: Any,
+) -> Any:
+    if os.name == "nt" or windows_host:
         return await asyncio.create_subprocess_exec(
             *_windows_direct_powershell_argv(command),
             **kwargs,
@@ -4570,13 +4575,34 @@ async def exec_command(
     import os
 
     if full_host_access_active():
-        return await _run_full_host_shell_command(
+        cwd = _effective_workdir(workdir)
+        mutation_before = snapshot_current_workspace_mutations()
+        source_mutation_signal = (
+            _shell_source_mutation_signal(command, cwd)
+            if _shell_source_mutation_telemetry_enabled()
+            else None
+        )
+        output = await _run_full_host_shell_command(
             command,
             workdir=workdir,
             timeout=timeout,
             env=env,
             stdin=stdin,
         )
+        metadata: dict[str, Any] = {"command_hash": mutation_ledger_text_hash(command)}
+        if source_mutation_signal is not None:
+            metadata.update(source_mutation_signal)
+            _emit_shell_source_mutation_signal(
+                tool_name="exec_command",
+                command=command,
+                signal_payload=source_mutation_signal,
+            )
+        record_observed_workspace_mutations(
+            tool_name="exec_command",
+            before=mutation_before,
+            metadata=metadata,
+        )
+        return output
 
     runtime = get_runtime()
     windows_process_sandbox = _windows_sandbox_backend_active(runtime)
@@ -4915,7 +4941,11 @@ async def _start_host_background_process(
     }
     if os.name == "posix":
         process_kwargs["start_new_session"] = True
-    proc = await _create_host_shell_subprocess(command, **process_kwargs)
+    proc = await _create_host_shell_subprocess(
+        command,
+        windows_host=_windows_sandbox_backend_active(runtime),
+        **process_kwargs,
+    )
 
     ctx = current_tool_context.get()
     session = _BgSession(

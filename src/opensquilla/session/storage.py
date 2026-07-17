@@ -827,7 +827,15 @@ class SessionStorage:
         if "updated_at" in session_columns:
             await self._conn.execute(_CREATE_IDX_SESSIONS_UPDATED)
         await self._conn.commit()
-        await self.mark_abandoned_agent_tasks()
+        required_recovery_columns = {
+            "status",
+            "updated_at",
+            "ended_at",
+            "runtime_ms",
+            "started_at",
+        }
+        if required_recovery_columns <= session_columns:
+            await self.mark_abandoned_agent_tasks()
 
     async def _migrate_epoch_column(self) -> None:
         """Idempotently add the epoch column to an existing sessions table.

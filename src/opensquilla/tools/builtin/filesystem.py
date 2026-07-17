@@ -1673,12 +1673,14 @@ async def write_file(
     p = _resolve_path(path)
     if full_host_access_active():
         loop = asyncio.get_event_loop()
+        created = not p.exists()
 
         def _write_full_host() -> None:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
 
         await loop.run_in_executor(None, _write_full_host)
+        record_workspace_file_write(p, operation="write_file", created=created)
         _notify_memory_source_write(p)
         _notify_bootstrap_source_write(p)
         return f"Written {len(content)} bytes to {p}"

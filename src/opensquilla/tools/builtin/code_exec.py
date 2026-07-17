@@ -1050,11 +1050,9 @@ async def execute_code(
             high_impact=destructive_high_impact,
         )
     )
-    mutation_before = {} if full_host else snapshot_current_workspace_mutations()
+    mutation_before = snapshot_current_workspace_mutations()
 
     def finish(output: str) -> str:
-        if full_host:
-            return output
         record_observed_workspace_mutations(
             tool_name="execute_code",
             before=mutation_before,

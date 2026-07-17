@@ -1071,6 +1071,11 @@ async def apply_patch(
         contextvars.copy_context().run,
         _run,
     )
+    _record_workspace_file_writes(
+        ops,
+        root,
+        allow_outside_root=outside_root_authorized,
+    )
     if full_host:
         _notify_memory_source_writes(ops, root)
         _notify_bootstrap_source_writes(ops, root)
@@ -1083,11 +1088,6 @@ async def apply_patch(
             parts.append(f"{deleted} file(s) deleted")
         return "Applied patch: " + ", ".join(parts)
 
-    _record_workspace_file_writes(
-        ops,
-        root,
-        allow_outside_root=outside_root_authorized,
-    )
     write_note_summary = _workspace_write_note_summary(
         ops,
         root,

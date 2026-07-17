@@ -110,7 +110,7 @@ async def test_exec_approval_deny_pattern_does_not_depend_on_warnlist(
 
 
 @pytest.mark.asyncio
-async def test_full_host_access_warnlisted_exec_skips_approval_and_uses_host(
+async def test_full_host_access_warnlisted_exec_skips_approval_and_records_mutations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -132,17 +132,30 @@ async def test_full_host_access_warnlisted_exec_skips_approval_and_uses_host(
     monkeypatch.setattr(shell, "_profile_shell_command", fail_preflight)
     monkeypatch.setattr(shell, "check_safe_bin", fail_preflight)
     monkeypatch.setattr(shell, "_approval_policy_denial", fail_preflight)
-    monkeypatch.setattr(shell, "snapshot_current_workspace_mutations", fail_preflight)
+    monkeypatch.setattr(shell, "snapshot_current_workspace_mutations", lambda: {})
+    mutation_records: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        shell,
+        "record_observed_workspace_mutations",
+        lambda **kwargs: mutation_records.append(kwargs),
+    )
 
     result = await shell.exec_command("pip install requests", workdir=str(tmp_path))
 
     assert result == "exit_code=0\nhost\n"
     assert calls == ["host"]
+    assert mutation_records == [
+        {
+            "tool_name": "exec_command",
+            "before": {},
+            "metadata": {"command_hash": shell.mutation_ledger_text_hash("pip install requests")},
+        }
+    ]
     assert get_approval_queue().list_pending("exec") == []
 
 
 @pytest.mark.asyncio
-async def test_full_host_write_file_skips_guards_and_mutation_tracking(
+async def test_full_host_write_file_skips_safety_guards(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -157,7 +170,7 @@ async def test_full_host_write_file_skips_guards_and_mutation_tracking(
     target.write_text("old" * 4096, encoding="utf-8")
 
     def fail_safety_tracking(*args: object, **kwargs: object) -> object:
-        raise AssertionError("Full Host Access must skip file safety and tracking")
+        raise AssertionError("Full Host Access must skip file safety guards")
 
     monkeypatch.setattr(filesystem, "_gate_out_of_workspace_write", fail_safety_tracking)
     monkeypatch.setattr(filesystem, "require_fresh_workspace_file_read", fail_safety_tracking)

@@ -203,7 +203,7 @@ async def test_execute_code_observes_workspace_mutation_classification(
 
 
 @pytest.mark.asyncio
-async def test_exec_command_blocks_root_repro_files_as_scratch_artifacts(
+async def test_full_host_exec_command_allows_and_observes_root_repro_files(
     mutation_context,
 ) -> None:
     workspace, _scratch, ctx, events = mutation_context
@@ -211,10 +211,14 @@ async def test_exec_command_blocks_root_repro_files_as_scratch_artifacts(
         "printf 'temporary repro\\n' > debug_case.php",
         workdir=str(workspace),
     )
-    payload = json.loads(result)
 
-    assert payload["status"] == "blocked"
-    assert payload["reason"] == "workspace_scratch_artifact"
-    assert payload["path"] == "debug_case.php"
-    assert ctx.workspace_mutation_records == []
-    assert not [event for event in events if event.get("name") == "workspace_mutation_observed"]
+    assert result.startswith("exit_code=0")
+    assert (workspace / "debug_case.php").read_text(encoding="utf-8") == "temporary repro\n"
+    assert ctx.workspace_mutation_records[0]["paths"] == [
+        {
+            "relative_path": "debug_case.php",
+            "status": "??",
+            "classification": "scratch",
+        }
+    ]
+    assert [event for event in events if event.get("name") == "workspace_mutation_observed"]

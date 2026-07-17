@@ -166,6 +166,17 @@ expect. `positive_model_ids` / `negative_model_ids` / `feedback_count` are
 derived from the tally on write. Keeping the raw tally is what lets a rating be
 revised or revoked without replaying the whole JSONL.
 
+**The tally is the system of record, not a cache of the log.** Replay is not
+merely unimplemented, it is impossible: `feedback.jsonl` is pruned by
+`retention_days` (default 30) while `model_counts` accumulates forever, so the
+log is lossy by design and cannot rebuild the tally. Nothing reconciles the two
+because nothing can. This is the right trade — replay would mean retaining the
+log indefinitely, against the same retention and privacy posture that makes the
+file storable — but it is what puts the whole weight of correctness on the delta
+path: a lost or double-counted delta is permanent. That is why the merge-then-
+filter order in `load_feedback_map` and the lock spanning read-append-fold are
+tested rather than merely documented.
+
 **Validation.** `profile.py` needs its own loader-validator: the existing
 checks at `ranking_router.py:851-913` read
 `config["mock_user_profile"][...]` and validate the *ranking config*, not a

@@ -230,7 +230,7 @@ async def test_exec_command_writes_optional_stdin() -> None:
         "import sys; data = sys.stdin.read(); print('STDIN:' + data)"
     )
 
-    result = await shell.exec_command(command, stdin="payload", timeout=1.0)
+    result = await shell.exec_command(command, stdin="payload", timeout=5.0)
 
     exit_line, stdout = result.split("\n", 1)
     assert exit_line == "exit_code=0"

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- OpenSquilla profile transfers now leave machine-local `code-task` run
+  worktrees in the source and preserve lexically contained relative workspace
+  links on POSIX without dereferencing them. Existing-profile backup and
+  restore keeps canonical and historical workspace links as no-follow leaves;
+  source imports still fail closed on absolute or escaping workspace links and
+  Windows reparse points.
+
 ## [0.5.0rc4] - 2026-07-13
 
 ### Added

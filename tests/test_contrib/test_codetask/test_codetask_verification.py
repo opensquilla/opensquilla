@@ -337,10 +337,10 @@ def test_run_shell_resolves_python_from_repo_venv_in_foreign_cwd(tmp_path):
     from opensquilla.contrib.codetask import verification
 
     repo = tmp_path / "repo"
-    venv_bin = repo / ".venv" / "bin"
+    venv_bin = repo / ".venv" / ("Scripts" if os.name == "nt" else "bin")
     venv_bin.mkdir(parents=True)
     fake = venv_bin / "python"
-    fake.write_text("#!/bin/sh\necho VENV_PY_OK\n")
+    fake.write_text("#!/usr/bin/env bash\necho VENV_PY_OK\n", newline="\n")
     fake.chmod(0o755)
     foreign = tmp_path / "wt"  # like the base worktree: no .venv here
     foreign.mkdir()
@@ -429,6 +429,7 @@ def test_write_python_shim_falls_back_to_wrapper_when_symlink_fails(tmp_path, mo
         "#!/usr/bin/env bash\n"
         'exec /c/repo/.venv/Scripts/python.exe "$@"\n'
     )
+    assert b"\r" not in shim.read_bytes()
     assert chmod_calls == [("python", 0o755)]
 
 
@@ -515,10 +516,11 @@ def test_tail_bounds_output():
 # ─────────────── bash resolution (probe-past-fake-stub) ──────────────────
 # Field report: on Windows a fake `bash.cmd` ahead of real Git Bash on PATH
 # hijacks `shutil.which("bash")` and the verifier dies on the stub instead
-# of falling through to the real shell. The class also covers WSL launchers
-# that exist but exit non-zero when WSL is not configured. POSIX is bit-
-# equivalent to the old shutil.which path (the bug is Windows-only), so the
-# enumeration/probe tests below are skipped there.
+# of falling through to the real shell. The class also covers WSL launchers:
+# unconfigured WSL exits non-zero, and configured WSL is a real Linux bash but
+# not a native Windows shell. POSIX is bit-equivalent to the old shutil.which
+# path (the bug is Windows-only), so the enumeration/probe tests below are
+# skipped there.
 
 import os  # noqa: E402
 import sys  # noqa: E402  -- used by the busybox-mimic test below
@@ -532,10 +534,15 @@ def _reset_bash_cache_between_tests():
 
 
 def _real_bash() -> str:
-    real = shutil.which("bash")
-    if real is None:
-        pytest.skip("real bash not available")
-    return real
+    if os.name != "nt":
+        real = shutil.which("bash")
+        if real is None:
+            pytest.skip("real bash not available")
+        return real
+    for candidate in verification._windows_bash_candidates():
+        if verification._probe_bash(candidate):
+            return candidate
+    pytest.skip("native Windows bash not available")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="fake bash.cmd hijack is Windows-only")
@@ -580,6 +587,30 @@ def test_resolve_bash_skips_failing_probe(tmp_path, monkeypatch):
     resolved = verification._resolve_bash()
     assert resolved is not None
     assert os.path.normcase(resolved) != os.path.normcase(str(stub))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows WSL launcher is Windows-only")
+def test_probe_bash_rejects_configured_wsl_launcher(tmp_path):
+    """A configured WSL launcher is a real bash, but not a native Windows shell.
+
+    The verifier runs Windows worktrees and Windows subprocesses; accepting WSL
+    here breaks Windows path and command-line variable semantics.
+    """
+    mimic_py = tmp_path / "configured_wsl_bash.py"
+    mimic_py.write_text(
+        "import sys\n"
+        "argv = sys.argv[1:]\n"
+        "if len(argv) >= 2 and argv[0] == '-lc':\n"
+        "    script = argv[1]\n"
+        "    if 'BASH_VERSION' in script and 'uname -s' in script:\n"
+        "        sys.exit(42)\n"
+        "sys.exit(2)\n",
+        encoding="ascii",
+    )
+    stub = tmp_path / "bash.cmd"
+    stub.write_text(f'@"{sys.executable}" "{mimic_py}" %*\r\n', encoding="ascii")
+
+    assert verification._probe_bash(str(stub)) is False
 
 
 @pytest.mark.skipif(os.name != "nt", reason="busybox-vs-bash discrimination is Windows-only")

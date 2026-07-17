@@ -494,8 +494,10 @@ class LongTermMemoryStore:
             import sqlite_vec  # type: ignore
 
             await self._db.enable_load_extension(True)
-            await self._db.load_extension(sqlite_vec.loadable_path())
-            await self._db.enable_load_extension(False)
+            try:
+                await self._db.load_extension(sqlite_vec.loadable_path())
+            finally:
+                await self._db.enable_load_extension(False)
 
             # Create vec table if needed
             # We need to know embedding dims; defer table creation until first insert

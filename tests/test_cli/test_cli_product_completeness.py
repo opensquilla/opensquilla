@@ -18,6 +18,7 @@ class FakeGatewayClient:
     model_rows: list[dict[str, Any]] = []
     sessions_payload: dict[str, Any] = {"sessions": [], "count": 0}
     cost_payload: dict[str, Any] = {"breakdown": [], "totalCostUsd": 0.0}
+    history_pages: dict[str | None, dict[str, Any]] = {}
 
     async def connect(self, url: str, *, token=None) -> None:
         type(self).calls.append(("connect", url))
@@ -59,6 +60,27 @@ class FakeGatewayClient:
         type(self).calls.append(("sessions.abort", {"key": key}))
         return type(self).rpc_payloads.get("sessions.abort", {"aborted": False, "key": key})
 
+    async def session_history(
+        self,
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        include_canonical: bool | None = None,
+        include_summaries: bool | None = None,
+    ) -> dict[str, Any]:
+        params = {
+            "sessionKey": session_key,
+            "limit": limit,
+            "before": before,
+            "after": after,
+            "includeCanonical": include_canonical,
+            "includeSummaries": include_summaries,
+        }
+        type(self).calls.append(("chat.history", params))
+        return dict(type(self).history_pages.get(before, {"messages": [], "has_more": False}))
+
     async def usage_cost(self) -> dict[str, Any]:
         type(self).calls.append(("usage.cost", {}))
         return type(self).cost_payload
@@ -88,6 +110,7 @@ def _install_fake_gateway(monkeypatch, cls=FakeGatewayClient) -> type[FakeGatewa
     cls.model_rows = []
     cls.sessions_payload = {"sessions": [], "count": 0}
     cls.cost_payload = {"breakdown": [], "totalCostUsd": 0.0}
+    cls.history_pages = {}
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", cls)
     return cls
 
@@ -98,9 +121,15 @@ def test_catalog_list_json_surfaces(tmp_path: Path, monkeypatch):
     runner.invoke(
         app,
         [
-            "channels", "add", "slack",
-            "--name", "w", "--token", "supersecret",
-            "--field", "signing_secret=ss",
+            "channels",
+            "add",
+            "slack",
+            "--name",
+            "w",
+            "--token",
+            "supersecret",
+            "--field",
+            "signing_secret=ss",
         ],
     )
 
@@ -169,8 +198,7 @@ def test_models_list_table_warns_about_provider_listing_errors(monkeypatch):
 def test_config_get_honors_env_path_and_redacts(tmp_path: Path, monkeypatch):
     target = tmp_path / "opensquilla.toml"
     target.write_text(
-        "search_api_key = \"secret\"\n"
-        "[llm]\nprovider = \"openrouter\"\nmodel = \"test/model\"\n",
+        'search_api_key = "secret"\n[llm]\nprovider = "openrouter"\nmodel = "test/model"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
@@ -191,7 +219,7 @@ def test_config_get_honors_env_path_and_redacts(tmp_path: Path, monkeypatch):
 
 def test_config_get_explicit_config_path_wins(tmp_path: Path):
     target = tmp_path / "explicit.toml"
-    target.write_text("[llm]\nmodel = \"explicit/model\"\n", encoding="utf-8")
+    target.write_text('[llm]\nmodel = "explicit/model"\n', encoding="utf-8")
 
     result = runner.invoke(app, ["config", "get", "llm.model", "--config", str(target)])
 
@@ -278,6 +306,58 @@ def test_version_check_honors_config_privacy_network_observability(
     assert payload["error"] is None
 
 
+def test_version_check_on_rc_uses_rc_channel_and_keeps_json_contract(
+    tmp_path: Path,
+    monkeypatch,
+):
+    import opensquilla
+    from opensquilla.observability import network_policy, update_check
+
+    target = tmp_path / "config.toml"
+    target.write_text(
+        f"state_dir = {json.dumps(str(tmp_path / 'state'))}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(target))
+    for name in (
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
+        update_check.UPDATE_CHECK_DISABLED_ENV,
+        update_check.TELEMETRY_DISABLED_ENV,
+        "GITHUB_ACTIONS",
+        "PYTEST_CURRENT_TEST",
+        update_check.TELEMETRY_TESTING_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(opensquilla, "__version__", "0.5.0rc4")
+    monkeypatch.setattr(update_check, "_CACHED_INFO", {})
+    calls: list[tuple[str, str]] = []
+
+    def fake_fetch(endpoint: str, current_version: str, *, timeout: float):
+        calls.append((endpoint, current_version))
+        assert timeout == update_check.DEFAULT_TIMEOUT_SECONDS
+        return (
+            "0.5.0rc5",
+            "https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0rc5",
+            None,
+        )
+
+    monkeypatch.setattr(update_check, "_fetch_latest_release", fake_fetch)
+
+    result = runner.invoke(app, ["version", "--check", "--json"])
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload == {
+        "current": "0.5.0rc4",
+        "latest": "0.5.0rc5",
+        "updateAvailable": True,
+        "releaseUrl": "https://github.com/opensquilla/opensquilla/releases/tag/v0.5.0rc5",
+        "disabled": False,
+        "error": None,
+    }
+    assert calls == [(update_check._channel_for("0.5.0rc4").endpoint, "0.5.0rc4")]
+
+
 def test_gateway_json_errors_go_to_stderr(monkeypatch):
     _install_fake_gateway(monkeypatch, FailingConnectGatewayClient)
 
@@ -298,9 +378,7 @@ def test_skills_view_and_update_use_gateway_rpc(monkeypatch):
             "description": "Plan work",
             "content": "skill body",
         },
-        "skills.update": {
-            "results": [{"success": True, "name": "planner", "message": "updated"}]
-        },
+        "skills.update": {"results": [{"success": True, "name": "planner", "message": "updated"}]},
     }
 
     view = runner.invoke(app, ["skills", "view", "planner", "--json"])
@@ -568,6 +646,75 @@ def test_sessions_abort_resolves_then_aborts(monkeypatch):
     assert payload["aborted"] is True
     assert ("sessions.resolve", {"key": "abc"}) in fake.calls
     assert ("sessions.abort", {"key": "agent:main:abc"}) in fake.calls
+
+
+def test_sessions_export_reads_more_than_gateway_page_limit(tmp_path: Path, monkeypatch) -> None:
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "sessions.resolve": {
+            "session_key": "agent:main:long",
+            "status": "done",
+            "model": "openai/test",
+        },
+        "sessions.preview": {"previews": []},
+    }
+
+    def messages(start: int, end: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "message_id": f"message-{idx}",
+                "role": "user" if idx % 2 else "assistant",
+                "text": f"message {idx}",
+            }
+            for idx in range(start, end + 1)
+        ]
+
+    fake.history_pages = {
+        None: {
+            "messages": messages(202, 401),
+            "has_more": True,
+            "oldest_cursor": "202|202",
+            "newest_cursor": "401|401",
+        },
+        "202|202": {
+            "messages": messages(2, 201),
+            "has_more": True,
+            "oldest_cursor": "2|2",
+            "newest_cursor": "201|201",
+        },
+        "2|2": {
+            "messages": messages(1, 1),
+            "has_more": False,
+            "oldest_cursor": "1|1",
+            "newest_cursor": "1|1",
+        },
+    }
+    target = tmp_path / "long-session.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "sessions",
+            "export",
+            "long",
+            "--format",
+            "json",
+            "--output",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    exported = payload["history"]["messages"]
+    assert len(exported) == 401
+    assert exported[0]["message_id"] == "message-1"
+    assert exported[-1]["message_id"] == "message-401"
+    history_calls = [params for method, params in fake.calls if method == "chat.history"]
+    assert [params["before"] for params in history_calls] == [None, "202|202", "2|2"]
+    assert all(params["limit"] == 200 for params in history_calls)
+    assert all(params["includeCanonical"] is True for params in history_calls)
+    assert all(params["includeSummaries"] is False for params in history_calls)
 
 
 def test_memory_status_json_reuses_doctor_rpc(monkeypatch):
@@ -970,9 +1117,7 @@ def test_channels_status_table_shows_channel_diagnostic(monkeypatch):
     assert ("channels.status", {}) in fake.calls
 
 
-def test_runtime_diagnostics_commands_can_target_configured_gateway(
-    tmp_path: Path, monkeypatch
-):
+def test_runtime_diagnostics_commands_can_target_configured_gateway(tmp_path: Path, monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     target = tmp_path / "custom.toml"
     target.write_text('host = "0.0.0.0"\nport = 19999\n', encoding="utf-8")
@@ -996,9 +1141,7 @@ def test_runtime_diagnostics_commands_can_target_configured_gateway(
     )
     providers = runner.invoke(app, ["providers", "status", "--json", "--config", str(target)])
     search = runner.invoke(app, ["search", "status", "--json", "--config", str(target)])
-    diagnostics = runner.invoke(
-        app, ["diagnostics", "status", "--json", "--config", str(target)]
-    )
+    diagnostics = runner.invoke(app, ["diagnostics", "status", "--json", "--config", str(target)])
     memory = runner.invoke(app, ["memory", "status", "--json", "--config", str(target)])
 
     assert channels.exit_code == 0, channels.stdout
@@ -1010,9 +1153,7 @@ def test_runtime_diagnostics_commands_can_target_configured_gateway(
     assert connected_urls == ["ws://127.0.0.1:19999/ws"] * 5
 
 
-def test_runtime_diagnostics_commands_use_gateway_config_env_path(
-    tmp_path: Path, monkeypatch
-):
+def test_runtime_diagnostics_commands_use_gateway_config_env_path(tmp_path: Path, monkeypatch):
     fake = _install_fake_gateway(monkeypatch)
     target = tmp_path / "env-config.toml"
     target.write_text('host = "127.0.0.1"\nport = 20001\n', encoding="utf-8")

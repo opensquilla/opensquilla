@@ -19,6 +19,16 @@ export type DesktopUpdateStatus =
   | 'error'
   | 'applying'
 
+export type DesktopUpdateInstallMode = 'native' | 'manual' | 'unsupported'
+export type DesktopUpdateSource = 'oss' | 'github'
+export type DesktopUpdateErrorCode =
+  | 'source_unreachable'
+  | 'manifest_invalid'
+  | 'checksum_unavailable'
+  | 'integrity_failed'
+  | 'download_failed'
+  | 'install_failed'
+
 export interface DesktopUpdateState {
   status: DesktopUpdateStatus
   currentVersion: string
@@ -26,9 +36,14 @@ export interface DesktopUpdateState {
   progress: number | null
   checkedAt: string | null
   error: string | null
+  errorCode: DesktopUpdateErrorCode | null
   snoozedUntil: string | null
+  canCheck: boolean
   canNativeInstall: boolean
+  installMode: DesktopUpdateInstallMode
   releaseUrl: string | null
+  source: DesktopUpdateSource | null
+  fallbackUsed: boolean
 }
 
 export interface DesktopSettings {
@@ -170,9 +185,16 @@ export interface Platform {
    * Whether THIS host applies updates natively (electron-updater). Web always
    * returns false; desktop returns the shell's live native-update capability,
    * including runtime guards such as macOS requiring /Applications.
-   * The passive "newer version available" banner suppresses itself only when
-   * this is true, so surfaces without native auto-update (the browser, and
-   * desktop platforms not yet covered — e.g. unsigned Windows) keep the notice.
+   * Presentation ownership is intentionally reported separately by
+   * desktopUpdateManaged(), since unsigned Windows can discover an update and
+   * open a manual installer without applying it natively.
    */
   nativeAutoUpdateEnabled: () => Promise<boolean>
+  /**
+   * Whether the desktop shell owns update discovery and presentation, including
+   * manual versioned installers on unsigned Windows builds. This is deliberately
+   * separate from nativeAutoUpdateEnabled so the passive gateway banner does not
+   * duplicate the shell-managed Windows notice.
+   */
+  desktopUpdateManaged: () => Promise<boolean>
 }

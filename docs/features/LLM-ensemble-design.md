@@ -132,8 +132,11 @@ Source: `_build_custom_b5_members`, `_custom_b5_candidates`
 `llm_ensemble.candidates`. Each candidate row carries:
 
 - **`provider`** / **`model`** — required, non-empty; provider is lower-cased.
-- **`role`** — advisory label, one of `""` (unassigned), `primary`, `contrast`,
-  `fast_check`, `critic`, or the structural `aggregator`. Unknown values coerce
+- **`role`** — `aggregator` is the only structural value; an empty or omitted
+  role means proposer. The Web UI therefore presents only **Proposer** and
+  **Aggregator**. Released values `primary`, `contrast`, `fast_check`, and
+  `critic` remain accepted and preserved as advisory decision-trace labels,
+  but all execute and appear in settings as proposers. Unknown values coerce
   to `""` instead of failing, so a hand-edited config never blocks boot.
 - **`enabled`** — disabled rows are kept for read compatibility but never
   counted or run.
@@ -229,12 +232,10 @@ selection_mode = "custom_b5"
 [[llm_ensemble.candidates]]
 provider = "openrouter"
 model = "deepseek/deepseek-v4-pro"
-role = "primary"
 
 [[llm_ensemble.candidates]]
 provider = "openrouter"
 model = "z-ai/glm-5.2"
-role = "contrast"
 
 [[llm_ensemble.candidates]]
 provider = "openrouter"

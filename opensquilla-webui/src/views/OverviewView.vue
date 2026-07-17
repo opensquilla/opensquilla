@@ -155,7 +155,7 @@
                 </span>
                 <span v-if="finding.restartRequired" class="health-chip">{{ t('sessions.overview.recoveryRestart') }}</span>
                 <button
-                  v-if="settingsLinkForFinding(finding)"
+                  v-if="findingSettingsLink(finding)"
                   type="button"
                   class="health-settings-link"
                   @click="openFindingSettings(finding)"
@@ -285,8 +285,11 @@ import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
 import { useToasts } from '@/composables/useToasts'
+import { isOwnedGatewayConnection } from '@/composables/useCliInvocation'
+import { usePlatform } from '@/platform'
 import { copyTextWithFallback } from '@/utils/browser'
 import {
+  buildAgentDiagnosisHandoff,
   formatLatencyLine,
   normalizeHomePaths,
   providerBlocksAgent,
@@ -393,6 +396,7 @@ const { t } = useI18n()
 const router = useRouter()
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
+const platform = usePlatform()
 
 // ---------------------------------------------------------------------------
 // State
@@ -830,8 +834,17 @@ function diagnoseWithAgent() {
     impactCounts: report.impactCounts,
     findings: report.findings,
   }
-  const payload = xmlEscape(normalizeHomePaths(JSON.stringify(minReport)))
+  const ownsGatewayConnection = platform.capabilities.ownsGateway && isOwnedGatewayConnection()
+  const handoff = buildAgentDiagnosisHandoff(minReport, {
+    platform: platform.id,
+    hasTerminalWorkflow: platform.capabilities.hasTerminalWorkflow,
+    ownsGateway: platform.capabilities.ownsGateway,
+    ownsGatewayConnection,
+  })
+  const clientContext = xmlEscape(JSON.stringify(handoff.clientContext))
+  const payload = xmlEscape(normalizeHomePaths(JSON.stringify(handoff.report)))
   const text = `${t('sessions.overview.diagnosePrompt')}\n`
+    + `<context source="client:diagnostic-context">${clientContext}</context>\n`
     + `<untrusted source="doctor:report">${payload}</untrusted>`
   router.push({
     path: '/chat/new',
@@ -842,8 +855,15 @@ function diagnoseWithAgent() {
   }).catch(() => {})
 }
 
+function findingSettingsLink(finding: Finding) {
+  return settingsLinkForFinding(finding, {
+    isDesktop: platform.capabilities.isDesktop,
+    ownsGatewayConnection: platform.capabilities.ownsGateway && isOwnedGatewayConnection(),
+  })
+}
+
 function openFindingSettings(finding: Finding) {
-  const link = settingsLinkForFinding(finding)
+  const link = findingSettingsLink(finding)
   if (!link) return
   router.push(link.hash ? { path: link.path, hash: link.hash } : { path: link.path }).catch(() => {})
 }

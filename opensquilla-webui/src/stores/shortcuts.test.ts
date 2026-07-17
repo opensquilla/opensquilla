@@ -37,10 +37,12 @@ describe('useShortcutsStore defaults', () => {
     setActivePinia(createPinia())
   })
 
-  it('seeds the command palette enabled and new-chat disabled', () => {
+  it('seeds Codex-style sidebar and palette shortcuts while keeping new-chat disabled', () => {
     const s = useShortcutsStore()
+    expect(s.states['toggle-sidebar'].enabled).toBe(true)
     expect(s.states['command-palette'].enabled).toBe(true)
     expect(s.states['new-chat'].enabled).toBe(false)
+    expect(s.effectiveBinding('toggle-sidebar')).toEqual({ primary: true, key: 'b' })
     expect(s.effectiveBinding('command-palette')).toEqual({ primary: true, key: 'k' })
     // Disabled → no effective binding even though a default chord is stored.
     expect(s.effectiveBinding('new-chat')).toBeNull()
@@ -58,7 +60,8 @@ describe('useShortcutsStore hydration + mutation', () => {
     setActivePinia(createPinia())
     const s = useShortcutsStore()
     expect(s.effectiveBinding('new-chat')).toEqual({ primary: true, shift: true, key: 'n' })
-    // Unspecified shortcut keeps its default.
+    // Shortcuts introduced after this partial persisted blob keep their defaults.
+    expect(s.effectiveBinding('toggle-sidebar')).toEqual({ primary: true, key: 'b' })
     expect(s.states['command-palette'].enabled).toBe(true)
   })
 
@@ -87,6 +90,7 @@ describe('useShortcutsStore hydration + mutation', () => {
     const s = useShortcutsStore()
     // The palette owns Ctrl/⌘+K; binding new-chat to the same chord conflicts.
     expect(s.findConflict({ primary: true, key: 'k' }, 'new-chat')).toBe('command-palette')
+    expect(s.findConflict({ primary: true, key: 'b' }, 'command-palette')).toBe('toggle-sidebar')
     // A free chord has no conflict.
     expect(s.findConflict({ primary: true, alt: true, key: 'k' }, 'new-chat')).toBeNull()
   })

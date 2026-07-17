@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
 import structlog
 
 from opensquilla.engine.hooks.types import CompactionState
-from opensquilla.engine.tool_text_compat import ProtocolTextLeakGuard
 from opensquilla.observability.decision_log import build_vision_followup_gate_reason_code
 
 if TYPE_CHECKING:
@@ -192,8 +191,8 @@ class _StreamState:
     stage does NOT mutate ``TurnContext`` directly -- it writes through
     this state object the harness owns.
 
-    Four fields move INTO this object from the inline body. Four
-    fields STAY on the harness-level ``_run_turn`` body and are
+    Stream-local fields move INTO this object from the inline body. Four
+    accumulator fields STAY on the harness-level ``_run_turn`` body and are
     PASSED IN as mutable references -- the outer ``CancelledError``
     handler reads them after the stream loop. Wrapping each mutation
     into a yielded state-delta envelope would balloon LOC and harm
@@ -205,10 +204,6 @@ class _StreamState:
     error_message: str | None = None
     pending_error_event: ErrorEvent | None = None
     done_event: DoneEvent | None = None
-    protocol_text_guard: ProtocolTextLeakGuard = field(
-        default_factory=ProtocolTextLeakGuard
-    )
-
     # PASSED IN by the harness -- references, not copies.
     final_text_parts: list[str] = field(default_factory=list)
     turn_segments: list[dict] = field(default_factory=list)
@@ -302,62 +297,20 @@ class _TextDeltaHandler:
         event: TextDeltaEvent,
         state: _StreamState,
     ) -> TextDeltaEvent:
-        cleaned_delta = _normalize_cumulative_text_delta(
-            state.protocol_text_guard.push(event.text),
-            state,
-        )
-        if cleaned_delta:
-            state.final_text_parts.append(cleaned_delta)
-            state.current_text_parts.append(cleaned_delta)
-        return replace(event, text=cleaned_delta)
+        canonical_delta = _normalize_cumulative_text_delta(event.text, state)
+        if canonical_delta:
+            state.final_text_parts.append(canonical_delta)
+            state.current_text_parts.append(canonical_delta)
+        return replace(event, text=canonical_delta)
 
 class _ToolUseStartHandler:
-    """Strip synthetic-tool-call text, flush the current text segment, append tool_use segment.
-
-    Implements the canonical ToolUseStart handling -- the
-    synthetic-text strip rewrites ``final_text_parts`` and
-    ``current_text_parts`` in place when the agent emitted a synthetic
-    tool call with prefix text it now wants stripped.
-    """
+    """Flush the canonical current text segment and append a tool-use segment."""
 
     def handle(
         self,
         event: ToolUseStartEvent,
         state: _StreamState,
     ) -> ToolUseStartEvent:
-        # Late import keeps the module import-cycle-free.
-        from opensquilla.engine.tool_text_compat import (
-            strip_synthetic_tool_call_text,
-        )
-
-        pending_text = state.protocol_text_guard.flush_before_tool_use()
-        if pending_text:
-            state.final_text_parts.append(pending_text)
-            state.current_text_parts.append(pending_text)
-
-        if event.synthetic_from_text and state.current_text_parts:
-            raw_current_text = "".join(state.current_text_parts)
-            cleaned_current_text = strip_synthetic_tool_call_text(
-                raw_current_text,
-                event.tool_name,
-            )
-            if cleaned_current_text != raw_current_text:
-                full_text = "".join(state.final_text_parts)
-                if full_text.endswith(raw_current_text):
-                    prefix = full_text[: -len(raw_current_text)]
-                    # Replace the list contents in place to preserve the
-                    # caller's reference to the shared list.
-                    state.final_text_parts[:] = [prefix + cleaned_current_text]
-                else:
-                    state.final_text_parts[:] = [
-                        strip_synthetic_tool_call_text(
-                            full_text,
-                            event.tool_name,
-                        )
-                    ]
-                state.current_text_parts[:] = (
-                    [cleaned_current_text] if cleaned_current_text else []
-                )
         if state.current_text_parts:
             state.turn_segments.append(
                 {"type": "text", "text": "".join(state.current_text_parts)}
@@ -456,10 +409,16 @@ class _ErrorHandler:
                 message=_LLM_TIMEOUT_ENVELOPE["user_message"],
                 code=_LLM_TIMEOUT_ENVELOPE["error_class"],
             )
-        if event.code in {"incomplete_tool_stream", "provider_output_truncated"}:
-            state.turn_segments[:] = _drop_unpaired_tool_use_segments(
-                state.turn_segments
-            )
+        # A provider error is terminal for the current attempt.  Never persist a
+        # tool_use that did not reach a matching tool_result: adapters use
+        # provider-specific error codes (for example ``incomplete_stream`` and
+        # ``incomplete_tool_call``), so keying this invariant to a small code
+        # allowlist can leave an orphaned executable segment in the transcript.
+        # Completed tool rounds remain intact because the helper preserves every
+        # tool_use whose id has a paired tool_result.
+        state.turn_segments[:] = _drop_unpaired_tool_use_segments(
+            state.turn_segments
+        )
         state.error_message = event.message or "Unknown error"
         state.pending_error_event = event
         return _SUPPRESS
@@ -512,27 +471,23 @@ class _DoneHandler:
             _compute_route_input_savings_usd,
             _normalize_heartbeat_text,
             _should_add_artifact_delivery_failure_notice,
+            _turn_used_ensemble,
         )
         from opensquilla.engine.types import (
             WarningEvent as _WarningEvent,
+        )
+        from opensquilla.engine.types import (
+            done_text_snapshot,
         )
 
         turn = inp.turn
         metadata = turn.metadata
 
-        pending_text = state.protocol_text_guard.flush()
-        if pending_text:
-            state.final_text_parts.append(pending_text)
-            state.current_text_parts.append(pending_text)
-
-        from opensquilla.engine.tool_text_compat import strip_protocol_text_leak
-
-        normalized_text = strip_protocol_text_leak(
-            _normalize_heartbeat_text(
-                event.text,
-                run_kind=inp.run_kind,
-                heartbeat_ack_max_chars=inp.heartbeat_ack_max_chars,
-            )
+        snapshot_present, terminal_text = done_text_snapshot(event)
+        done_fallback_text = _normalize_heartbeat_text(
+            terminal_text,
+            run_kind=inp.run_kind,
+            heartbeat_ack_max_chars=inp.heartbeat_ack_max_chars,
         )
         routed_tier = metadata.get("routed_tier")
         routing_source = metadata.get("routing_source", "none")
@@ -543,14 +498,23 @@ class _DoneHandler:
         rollout_phase = str(metadata.get("rollout_phase") or "full")
         baseline_model = metadata.get("baseline_model", "")
         routed_model = metadata.get("routed_model", "") or event.model
-        savings_pct = float(metadata.get("savings_pct") or 0.0)
-        _max_p = float(metadata.get("savings_max_price_per_m") or 0.0)
-        _rte_p = float(metadata.get("savings_routed_price_per_m") or 0.0)
-        savings_usd = _compute_route_input_savings_usd(
-            _max_p,
-            _rte_p,
-            event.input_tokens,
-        )
+        if _turn_used_ensemble(event, metadata):
+            # Route-level savings share the single-model assumption the
+            # comprehensive score rejects for ensemble turns: the input-price
+            # delta would be applied to fan-out-multiplied token totals. Zero
+            # both so channels and the decision log never attribute savings
+            # to a turn that fanned out to several member models.
+            savings_pct = 0.0
+            savings_usd = 0.0
+        else:
+            savings_pct = float(metadata.get("savings_pct") or 0.0)
+            _max_p = float(metadata.get("savings_max_price_per_m") or 0.0)
+            _rte_p = float(metadata.get("savings_routed_price_per_m") or 0.0)
+            savings_usd = _compute_route_input_savings_usd(
+                _max_p,
+                _rte_p,
+                event.input_tokens,
+            )
         router_cfg = inp.router_cfg
         squilla_router_tiers = getattr(router_cfg, "tiers", {})
         estimated_output_savings_pct = getattr(
@@ -570,7 +534,8 @@ class _DoneHandler:
         decision_id = metadata.get("router_decision_id")
         event = replace(
             event,
-            text=normalized_text,
+            text=done_fallback_text,
+            text_snapshot=(done_fallback_text if snapshot_present else None),
             decision_id=str(decision_id) if decision_id else None,
             routed_tier=routed_tier,
             routing_source=routing_source or "none",
@@ -604,21 +569,23 @@ class _DoneHandler:
             vision_followup_needs_image=metadata.get("router_vision_followup_needs_image"),
             vision_followup_fallback=metadata.get("router_vision_followup_fallback"),
         )
-        state.done_event = event
-
-        if normalized_text and not state.final_text_parts:
-            state.final_text_parts.append(normalized_text)
-            if state.turn_segments:
-                state.current_text_parts.append(normalized_text)
 
         accumulated_text = "".join(state.final_text_parts)
+        canonical_text, done_suffix_event = _reconcile_done_text_snapshot(
+            done_fallback_text,
+            state,
+            accumulated_text=accumulated_text,
+            authoritative=snapshot_present,
+        )
+        accumulated_text = "".join(state.final_text_parts)
+        event = replace(event, text=canonical_text)
+        state.done_event = event
         extra_yields: list[AgentEvent] = []
         corrective_router_event = _fallback_router_decision_event(turn)
         if corrective_router_event is not None:
             extra_yields.append(corrective_router_event)
-        if accumulated_text.strip() and not event.text.strip():
-            event = replace(event, text=accumulated_text)
-            state.done_event = event
+        if done_suffix_event is not None:
+            extra_yields.append(done_suffix_event)
         if not accumulated_text.strip() and state.completed_meta_skill_without_text:
             event, fallback_event = _append_done_notice_delta(
                 event,
@@ -684,6 +651,54 @@ class _DoneHandler:
         return event, extra_yields
 
 
+def _reconcile_done_text_snapshot(
+    done_text: str,
+    state: _StreamState,
+    *,
+    accumulated_text: str,
+    authoritative: bool = False,
+) -> tuple[str, AgentEvent | None]:
+    """Reconcile streamed text with the Agent's authoritative final snapshot.
+
+    Exact matches preserve the streamed segment layout. A strict extension promotes
+    only the new suffix into the delta stream, preserving tool/text ordering (for
+    example the artifact-ready notice after a terminal ``publish_artifact`` call).
+    A conflicting authoritative snapshot supersedes stale retry/recovery text:
+    remove text segments, retain tool lifecycle segments, and stage one canonical
+    text segment after them. An empty legacy terminal value falls back to deltas;
+    an explicitly present empty snapshot clears superseded text.
+    """
+
+    if not authoritative and not done_text:
+        return accumulated_text, None
+
+    if done_text == accumulated_text:
+        return done_text, None
+
+    if accumulated_text and done_text.startswith(accumulated_text):
+        from opensquilla.engine.types import TextDeltaEvent as _TextDeltaEvent
+
+        suffix = done_text[len(accumulated_text) :]
+        state.final_text_parts.append(suffix)
+        state.current_text_parts.append(suffix)
+        return done_text, _TextDeltaEvent(text=suffix)
+
+    # The terminal aggregate is a complete Agent-owned snapshot. A mismatch means
+    # streamed text was intentionally superseded (retry, recovery, or a producer
+    # that emitted a cumulative final value). Keep non-text segments so tool
+    # execution history is never erased, but collapse text to one canonical value.
+    state.final_text_parts[:] = [done_text] if done_text else []
+    state.turn_segments[:] = [
+        segment
+        for segment in state.turn_segments
+        if not (isinstance(segment, dict) and segment.get("type") == "text")
+    ]
+    state.current_text_parts[:] = (
+        [done_text] if done_text and state.turn_segments else []
+    )
+    return done_text, None
+
+
 def _append_done_notice_delta(
     event: DoneEvent,
     state: _StreamState,
@@ -697,7 +712,8 @@ def _append_done_notice_delta(
     notice_delta = separator + notice
     state.final_text_parts.append(notice_delta)
     state.current_text_parts.append(notice_delta)
-    event = replace(event, text="".join(state.final_text_parts))
+    final_text = "".join(state.final_text_parts)
+    event = replace(event, text=final_text, text_snapshot=final_text)
     state.done_event = event
     return event, _TextDeltaEvent(text=notice_delta)
 

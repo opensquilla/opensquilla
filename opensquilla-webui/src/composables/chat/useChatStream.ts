@@ -32,9 +32,10 @@ import {
   truncateToolPreview,
 } from '@/utils/chat/toolDisplay'
 import { segmentsToTimelineItems } from '@/utils/chat/segmentsToTimelineItems'
+import { reconcileTextSnapshot } from '@/utils/chat/foldTurn'
 import { useChatTurnLog } from '@/composables/chat/useChatTurnLog'
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 210000
+export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 630_000
 const THINKING_DELAY_MS = 400
 const THINKING_TTL_MS = 60000
 // Bounds for trusting a server-stamped tool start time against the local clock
@@ -54,6 +55,8 @@ const STREAM_LABEL_KEYS: Record<string, string> = {
   'Reading context': 'chat.stream.readingContext',
   'Waiting for model': 'chat.stream.waitingForModel',
   'Preparing output': 'chat.stream.preparingOutput',
+  'Generating candidates': 'chat.stream.generatingCandidates',
+  'Synthesizing candidates': 'chat.stream.synthesizingCandidates',
 }
 
 function localizeStreamLabel(label: string): string {
@@ -85,12 +88,20 @@ export interface UseChatStreamOptions {
   renderMarkdown: (text: string, opts?: { highlight?: boolean }) => string
   stripDirectiveTags: (text: string) => string
   stripGeneratedArtifactMarkers: (text: string) => string
-  stripProtocolTextLeak: (text: string) => string
   scrollToBottom: () => void
   /** Resolution view-state keyed by approval id; threaded into the fold so each
    *  interrupt part is stamped with its resolution/busy/error. The approvals
    *  composable owns the map; the stream only forwards it to the turn log. */
   interruptState?: Ref<ReadonlyMap<string, InterruptViewState>>
+  /** Current hello policy. Read lazily so reconnects can replace the timeout. */
+  rpcPolicy?: () => Record<string, unknown> | null | undefined
+}
+
+export function streamIdleTimeoutFromPolicy(policy: Record<string, unknown> | null | undefined): number {
+  const raw = policy?.webui_stream_idle_grace_ms
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_STREAM_IDLE_TIMEOUT_MS
 }
 
 export function useChatStream(options: UseChatStreamOptions) {
@@ -304,8 +315,11 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamIdlePausedForApproval.value = false
 
     if (streamBubble.value) {
-      const cleanedText = options.stripProtocolTextLeak(
-        options.stripDirectiveTags(options.stripGeneratedArtifactMarkers(streamRaw.value)),
+      // `streamRaw` is the canonical backend answer. Do not guess that visible
+      // Markdown/XML is a leaked tool protocol: doing so mutates local history,
+      // copy/export/share, and can disagree with the durable server transcript.
+      const cleanedText = options.stripDirectiveTags(
+        options.stripGeneratedArtifactMarkers(streamRaw.value),
       ).trim()
 
       const sentinelOnly = !wasAborted && ['NO_REPLY', 'HEARTBEAT_OK'].includes(cleanedText)
@@ -498,6 +512,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     // it doubles as the liveness signal for the staleness note.
     noteStreamSignal()
     clearStreamIdleTimer()
+    streamIdleTimeoutMs.value = streamIdleTimeoutFromPolicy(options.rpcPolicy?.())
     if (!isStreaming.value || streamIdlePausedForApproval.value) return
     streamIdleTimer.value = setTimeout(() => {
       if (isStreaming.value && !streamIdlePausedForApproval.value) {
@@ -764,15 +779,23 @@ export function useChatStream(options: UseChatStreamOptions) {
     isStreaming.value = true
   }
 
-  function reconcileFinalText(finalText: string) {
-    if (finalText && finalText !== streamRaw.value) {
-      streamRaw.value = finalText
+  function reconcileFinalText(finalText: string | null | undefined) {
+    // null/undefined means the terminal event carried no authoritative text
+    // snapshot, so streamed deltas remain canonical. Empty string is distinct:
+    // it intentionally clears stale text while preserving tool history.
+    if (finalText == null) return
+
+    const reconciled = reconcileTextSnapshot(
+      streamSegments.value,
+      streamRaw.value,
+      finalText,
+    )
+    if (reconciled.changed) {
+      streamRaw.value = reconciled.rawText
+      streamSegments.value = reconciled.segments
+      scheduleRender()
     }
-    // Mirror the reconcile to the fold even when legacy was a no-op: the fold
-    // re-applies the same "override only when present and non-equal" rule
-    // against its own accumulated text, and overrides rawText without
-    // re-segmenting.
-    if (useReducer.value && finalText) appendFrame({ kind: 'final-text', text: finalText })
+    if (useReducer.value) appendFrame({ kind: 'final-text', text: finalText })
   }
 
   function isToolGroupOpen(groupId: string): boolean {
@@ -826,6 +849,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     streamPhaseElapsed,
     streamStepLabel,
     streamToolElapsedText,
+    streamIdleTimeoutMs,
     thinkingVisible,
     thinkingText,
     startStreaming,

@@ -142,6 +142,12 @@ function attachmentMeta(attachment: DisplayAttachment): string {
   max-width: calc(100% - 48px);
 }
 
+.msg-user:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0.25rem;
+  border-radius: var(--radius-md);
+}
+
 .msg-user--share-mode {
   cursor: pointer;
   width: min(calc(100% - 16px), 1012px);
@@ -208,12 +214,64 @@ function attachmentMeta(attachment: DisplayAttachment): string {
 /* Stretch to the full conversation column so the 82% caps on the bubble and
    the attachment row resolve against the column, not shrink-to-fit content. */
 .msg-user-stack {
+  position: relative;
   align-self: stretch;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
   gap: 0.375rem;
   min-width: 0;
+}
+
+/* Arrival feedback stays local to the destination instead of washing the full
+   conversation row with accent color. The guide glides in beside the user
+   bubble, settles, then fades, preserving orientation without a screen flash. */
+.msg-user.is-history-target .msg-user-stack::after {
+  position: absolute;
+  inset: 0.375rem -0.625rem 0.375rem auto;
+  width: 2px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--accent) 78%, transparent);
+  content: '';
+  pointer-events: none;
+  transform-origin: center;
+  animation: history-target-arrival calc(var(--dur-base) * 3) var(--ease-out) both;
+}
+
+@keyframes history-target-arrival {
+  0% {
+    opacity: 0;
+    transform: translateX(4px) scaleY(0.55);
+  }
+
+  24% {
+    opacity: 0.78;
+    transform: translateX(0) scaleY(1);
+  }
+
+  68% {
+    opacity: 0.78;
+    transform: translateX(0) scaleY(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translateX(0) scaleY(0.88);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-user.is-history-target .msg-user-stack::after {
+    animation: none;
+    opacity: 0.78;
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .msg-user.is-history-target .msg-user-stack::after {
+    background: Highlight;
+  }
 }
 
 .msg-user-bubble {

@@ -295,6 +295,28 @@ def test_build_task_runtime_run_kwargs_omits_bound_id_when_absent() -> None:
     assert "bound_user_message_id" not in kwargs
 
 
+def test_build_task_runtime_run_kwargs_forwards_exact_assistant_sink() -> None:
+    def sink(message_id: str | None, content: str) -> None:
+        return None
+
+    run = SimpleNamespace(
+        agent_id="main",
+        attachments=[],
+        input_provenance=None,
+        run_kind="channel_turn",
+        no_memory_capture=False,
+        fresh_user_session=False,
+        ingress_pipeline_steps=(),
+        semantic_message=None,
+        persisted_user_message_id="msg-123",
+        assistant_message_sink=sink,
+    )
+
+    kwargs = build_task_runtime_run_kwargs(run, tool_context=object(), model="model")
+
+    assert kwargs["assistant_message_sink"] is sink
+
+
 def test_gateway_stream_timeout_config_defaults_remain_serializable() -> None:
     config = GatewayConfig()
 

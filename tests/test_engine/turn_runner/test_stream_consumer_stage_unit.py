@@ -337,7 +337,7 @@ def test_text_delta_handler_appends_to_both_buffers() -> None:
     assert state.current_text_parts == ["hi"]
 
 
-def test_text_delta_handler_suppresses_malformed_tool_protocol_html() -> None:
+def test_text_delta_handler_preserves_protocol_like_html_as_canonical_text() -> None:
     state = _make_state()
     handler = _TextDeltaHandler()
     payload = (
@@ -350,34 +350,26 @@ def test_text_delta_handler_suppresses_malformed_tool_protocol_html() -> None:
 
     out = handler.handle(TextDeltaEvent(text=payload), state)
 
-    assert out.text == "Let me write the dashboard now."
-    assert state.final_text_parts == ["Let me write the dashboard now."]
-    assert state.current_text_parts == ["Let me write the dashboard now."]
-    assert "<!DOCTYPE html>" not in "".join(state.final_text_parts)
+    assert out.text == payload
+    assert state.final_text_parts == [payload]
+    assert state.current_text_parts == [payload]
 
 
-def test_text_delta_handler_holds_split_malformed_tool_protocol_html() -> None:
+def test_text_delta_handler_preserves_split_protocol_like_html() -> None:
     state = _make_state()
     handler = _TextDeltaHandler()
 
-    first = handler.handle(
-        TextDeltaEvent(text="Let me write the dashboard now.\n\n<tvoe"),
-        state,
+    first_chunk = "Let me write the dashboard now.\n\n<tvoe"
+    second_chunk = (
+        '_calls><invoke name="write_file">'
+        '<parameter name="content"><!DOCTYPE html><html></html>'
     )
-    second = handler.handle(
-        TextDeltaEvent(
-            text=(
-                '_calls><invoke name="write_file">'
-                '<parameter name="content"><!DOCTYPE html><html></html>'
-            )
-        ),
-        state,
-    )
+    first = handler.handle(TextDeltaEvent(text=first_chunk), state)
+    second = handler.handle(TextDeltaEvent(text=second_chunk), state)
 
-    assert first.text == "Let me write the dashboard now."
-    assert second.text == ""
-    assert state.final_text_parts == ["Let me write the dashboard now."]
-    assert "<tvoe" not in "".join(state.final_text_parts)
+    assert first.text == first_chunk
+    assert second.text == second_chunk
+    assert "".join(state.final_text_parts) == first_chunk + second_chunk
 
 
 def test_text_delta_handler_strips_cumulative_post_tool_snapshot() -> None:
@@ -452,7 +444,7 @@ def test_text_delta_handler_drops_duplicate_post_tool_snapshot() -> None:
     assert state.current_text_parts == []
 
 
-def test_tool_use_start_handler_drops_tool_scaffold_text_segment() -> None:
+def test_tool_use_start_handler_preserves_canonical_details_text_segment() -> None:
     state = _make_state()
     text_handler = _TextDeltaHandler()
     tool_handler = _ToolUseStartHandler()
@@ -484,14 +476,18 @@ def test_tool_use_start_handler_drops_tool_scaffold_text_segment() -> None:
         state,
     )
 
-    assert first.text == "Let me read the specific problematic areas to fix them."
-    assert second.text == ""
+    expected = (
+        "Let me read the specific problematic areas to fix them.\n\n"
+        "<details><summary>View areas around line 10393, 14751, and nearby"
+        "</summary>"
+    )
+    assert first.text == expected[: expected.index("<summary>")]
+    assert second.text == expected[expected.index("<summary>") :]
     assert state.turn_segments[0] == {
         "type": "text",
-        "text": "Let me read the specific problematic areas to fix them.",
+        "text": expected,
     }
-    assert "<details>" not in "".join(state.final_text_parts)
-    assert "<summary>" not in "".join(state.final_text_parts)
+    assert "".join(state.final_text_parts) == expected
 
 
 def test_tool_use_start_handler_flushes_text_and_appends_segment() -> None:
@@ -709,6 +705,38 @@ def test_error_handler_drops_unpaired_tool_use_on_output_truncation() -> None:
     assert state.turn_segments == [{"type": "text", "text": "partial"}]
 
 
+def test_error_handler_drops_unpaired_tool_use_for_provider_specific_error() -> None:
+    state = _make_state()
+    state.turn_segments[:] = [
+        {"type": "tool_use", "tool_use_id": "t1", "name": "x", "input": "{"},
+    ]
+    handler = _ErrorHandler()
+    result = handler.handle(
+        ErrorEvent(message="stream ended before terminal evidence", code="incomplete_stream"),
+        state,
+    )
+    assert result is _SUPPRESS
+    assert state.turn_segments == []
+
+
+def test_error_handler_preserves_tool_use_already_paired_with_result() -> None:
+    state = _make_state()
+    state.turn_segments[:] = [
+        {"type": "tool_use", "tool_use_id": "t1", "name": "x", "input": "{}"},
+        {"type": "tool_result", "tool_use_id": "t1", "result": "ok"},
+    ]
+    handler = _ErrorHandler()
+    result = handler.handle(
+        ErrorEvent(message="later provider failure", code="provider_error"),
+        state,
+    )
+    assert result is _SUPPRESS
+    assert [segment["type"] for segment in state.turn_segments] == [
+        "tool_use",
+        "tool_result",
+    ]
+
+
 def test_warning_handler_forwards_through_transformer() -> None:
     state = _make_state()
     state.final_text_parts = ["keep"]
@@ -797,6 +825,74 @@ def test_done_handler_carries_vision_followup_metadata() -> None:
     assert extra == []
 
 
+_ROUTE_SAVINGS_METADATA = {
+    "routed_tier": "c1",
+    "routing_source": "squilla_router",
+    "savings_pct": 62.0,
+    "savings_max_price_per_m": 5.0,
+    "savings_routed_price_per_m": 0.5,
+}
+
+
+def test_done_handler_zeroes_savings_for_ensemble_turns() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata=dict(_ROUTE_SAVINGS_METADATA)),
+    )
+
+    transformed, _ = handler.handle(
+        DoneEvent(
+            text="ok",
+            input_tokens=1_000_000,
+            output_tokens=500,
+            ensemble_trace={"profile": "router_dynamic", "mode": "llm_ensemble"},
+        ),
+        inp,
+        state,
+    )
+
+    assert transformed.savings_pct == 0.0
+    assert transformed.savings_usd == 0.0
+    assert transformed.total_savings_pct == 0.0
+    assert transformed.total_savings_usd == 0.0
+
+
+def test_done_handler_zeroes_savings_when_ensemble_metadata_flag_is_set() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata={**_ROUTE_SAVINGS_METADATA, "ensemble_enabled": True}),
+    )
+
+    transformed, _ = handler.handle(
+        DoneEvent(text="ok", input_tokens=1_000_000, output_tokens=500), inp, state
+    )
+
+    assert transformed.savings_pct == 0.0
+    assert transformed.savings_usd == 0.0
+    assert transformed.total_savings_pct == 0.0
+    assert transformed.total_savings_usd == 0.0
+
+
+def test_done_handler_keeps_route_savings_for_single_model_turns() -> None:
+    state = _make_state()
+    handler = _DoneHandler()
+    inp = _make_input(
+        state=state,
+        turn=_make_turn(metadata=dict(_ROUTE_SAVINGS_METADATA)),
+    )
+
+    transformed, _ = handler.handle(
+        DoneEvent(text="ok", input_tokens=1_000_000, output_tokens=500), inp, state
+    )
+
+    assert transformed.savings_pct == 62.0
+    assert transformed.savings_usd == pytest.approx(4.5)
+
+
 @pytest.mark.asyncio
 async def test_compaction_handler_runs_persist_snapshot_prompt_in_order() -> None:
     persist = _RecordingCompactionPersist()
@@ -880,6 +976,45 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
     assert len(recs["memory_sync_notify"].calls) == 1
     assert recs["memory_sync_notify"].calls[0]["runtime_message"] == "hello there"
     assert recs["memory_sync_notify"].calls[0]["sync_manager_present"] is True
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_persists_literal_text_before_native_tool_segment() -> None:
+    literal = (
+        '<tool_call>{"name":"search","arguments":{"query":"synthetic"}}'
+        "</tool_call>"
+    )
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text=literal),
+            ToolUseStartEvent(
+                tool_use_id="native-1",
+                tool_name="search",
+                synthetic_from_text=False,
+            ),
+            ToolResultEvent(
+                tool_use_id="native-1",
+                tool_name="search",
+                result="synthetic result",
+                arguments={"query": "native"},
+            ),
+            DoneEvent(text=literal),
+        ]
+    )
+    state = _make_state()
+    stage, _ = _make_stage(agent_run=agent_run)
+
+    await _drain(stage, _make_input(state=state))
+
+    assert state.turn_segments[:2] == [
+        {"type": "text", "text": literal},
+        {
+            "type": "tool_use",
+            "tool_use_id": "native-1",
+            "name": "search",
+            "input": {"query": "native"},
+        },
+    ]
 
 
 @pytest.mark.asyncio

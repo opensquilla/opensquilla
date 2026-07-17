@@ -11,10 +11,12 @@ behavior so any future change to it is a conscious contract decision.
 Pinned here:
 
 - **Keep-current re-saves** (deliberate change): a same-provider re-save
-  carries over stored ``provider_routing``/``max_tokens``, a blank
-  ``apiKey`` keeps the stored key, and an operator-authored inline router
-  ladder survives a provider save. ``onboarding.router.configure`` with
-  ``mode=disabled`` keeps the effective ladder stored inline for re-enable.
+  carries over stored ``provider_routing``/``max_tokens``; a blank
+  ``apiKey`` keeps a required-provider key, while optional-provider keys are
+  preserved only with ``preserveApiKey=true``; and an operator-authored
+  inline router ladder survives a provider save.
+  ``onboarding.router.configure`` with ``mode=disabled`` keeps the effective
+  ladder stored inline for re-enable.
 - **Explicit JSON null = legacy default** (compatibility): a client sending
   ``null`` for ``model``/``proxy``/``maxResults``/... gets the pre-widening
   reset/derive behavior, not keep-current.
@@ -109,6 +111,170 @@ async def test_provider_resave_blank_api_key_keeps_stored_key(config_file):
     assert res.error is None, res.error
     data = tomllib.loads(config_file.read_text())
     assert data["llm"]["api_key"] == "sk-stored"
+
+
+async def test_optional_provider_blank_api_key_keeps_legacy_clear_default(
+    config_file,
+):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "custom"\n'
+        'model = "custom-model"\n'
+        'api_key = "sk-stored"\n'
+        'base_url = "https://llm.example.test/v1"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {
+            "providerId": "custom",
+            "model": "custom-model",
+            "apiKey": "",
+            "baseUrl": "https://llm.example.test/v1",
+        },
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"].get("api_key", "") == ""
+
+
+async def test_optional_provider_preserve_api_key_opt_in_keeps_stored_key(
+    config_file,
+):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "custom"\n'
+        'model = "custom-model"\n'
+        'api_key = "sk-stored"\n'
+        'base_url = "https://llm.example.test/v1"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {
+            "providerId": "custom",
+            "model": "custom-model",
+            "preserveApiKey": True,
+            "baseUrl": "https://llm.example.test:443/v2",
+        },
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"]["api_key"] == "sk-stored"
+    assert data["llm"]["base_url"] == "https://llm.example.test:443/v2"
+
+
+async def test_optional_provider_preserve_treats_whitespace_env_as_blank(
+    config_file,
+):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "custom"\n'
+        'model = "custom-model"\n'
+        'api_key = "sk-stored"\n'
+        'base_url = "https://llm.example.test/v1"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {
+            "providerId": "custom",
+            "model": "custom-model",
+            "apiKeyEnv": "   ",
+            "preserveApiKey": True,
+            "baseUrl": "https://llm.example.test/v2",
+        },
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"]["api_key"] == "sk-stored"
+    assert data["llm"].get("api_key_env", "") == ""
+
+
+async def test_optional_provider_preserve_api_key_rejects_cross_origin_endpoint(
+    config_file,
+):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "custom"\n'
+        'model = "custom-model"\n'
+        'api_key = "sk-origin-a"\n'
+        'base_url = "https://a.example.test/v1"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {
+            "providerId": "custom",
+            "model": "custom-model",
+            "preserveApiKey": True,
+            "baseUrl": "https://b.example.test/v1",
+        },
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"].get("api_key", "") == ""
+    assert data["llm"]["base_url"] == "https://b.example.test/v1"
+
+
+async def test_optional_provider_env_reference_does_not_cross_origin(config_file):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "custom"\n'
+        'model = "custom-model"\n'
+        'api_key_env = "CUSTOM_ORIGIN_A_KEY"\n'
+        'base_url = "https://a.example.test/v1"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {
+            "providerId": "custom",
+            "model": "custom-model",
+            "baseUrl": "https://b.example.test/v1",
+        },
+    )
+
+    assert res.error is None, res.error
+    data = tomllib.loads(config_file.read_text())
+    assert data["llm"].get("api_key_env", "") == ""
+    assert data["llm"]["base_url"] == "https://b.example.test/v1"
+
+
+async def test_provider_configure_rejects_non_boolean_preserve_api_key(
+    config_file,
+):
+    config_file.write_text(
+        "[llm]\n"
+        'provider = "custom"\n'
+        'model = "custom-model"\n'
+        'api_key = "sk-stored"\n'
+        'base_url = "https://llm.example.test/v1"\n',
+        encoding="utf-8",
+    )
+
+    res = await _dispatch(
+        "onboarding.provider.configure",
+        {
+            "providerId": "custom",
+            "model": "custom-model",
+            "preserveApiKey": "true",
+            "baseUrl": "https://llm.example.test/v1",
+        },
+    )
+
+    assert res.error is not None
+    assert res.error.code == "onboarding.provider.invalid"
+    assert "preserveApiKey must be a boolean" in res.error.message
 
 
 async def test_provider_resave_keeps_operator_authored_router_ladder(config_file):

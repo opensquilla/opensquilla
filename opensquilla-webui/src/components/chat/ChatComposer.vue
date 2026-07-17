@@ -346,8 +346,18 @@ function composerElement(): HTMLElement | null {
   return composerEl.value
 }
 
+function documentCanReceiveFocus(): boolean {
+  return document.visibilityState === 'visible' && document.hasFocus()
+}
+
 function focusTextarea() {
-  nextTick(() => textareaEl.value?.focus())
+  // Programmatic focus must never reactivate a background/minimized browser
+  // window. Recheck inside nextTick because the page can lose focus between
+  // scheduling and execution (GitHub issue 382).
+  if (!documentCanReceiveFocus()) return
+  nextTick(() => {
+    if (documentCanReceiveFocus()) textareaEl.value?.focus()
+  })
 }
 
 function isTextareaFocused(): boolean {

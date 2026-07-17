@@ -25,6 +25,7 @@ declare global {
   interface OpenSquillaDesktopApi {
     getOsLocale: () => Promise<string | undefined>
     isAutoUpdateEnabled: () => Promise<boolean>
+    isDesktopUpdateManaged?: () => Promise<boolean>
     getUpdateState?: () => Promise<DesktopUpdateState>
     checkForUpdates?: () => Promise<DesktopUpdateState>
     downloadUpdate?: () => Promise<DesktopUpdateState>
@@ -66,6 +67,8 @@ declare global {
     saveOnboarding: (payload: unknown) => Promise<unknown>
     cancelOnboarding: () => Promise<unknown>
     getBootState: () => Promise<unknown>
+    getRecoveryState?: () => Promise<unknown>
+    getDesktopProfileKind?: () => Promise<'primary' | 'recovery' | null>
     retryStartup: () => Promise<unknown>
     quitApp: () => Promise<unknown>
     migrationSummary?: (payload?: { source?: string }) => Promise<unknown>

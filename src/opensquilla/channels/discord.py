@@ -181,6 +181,7 @@ class DiscordChannel:
             group_dm=True,
             edit=True,
             delete=True,
+            streamed_message_replacement=True,
             transports=("websocket",),
         )
 
@@ -981,17 +982,26 @@ class DiscordChannel:
             provider_message_id=message_id,
         )
 
-    async def edit(self, message_id: str, content: str) -> ChannelSendResult:
-        channel_id = str(
-            self._sent_messages.get(message_id, self.config.default_channel_id) or ""
+    async def edit(
+        self,
+        message_id: str,
+        content: str,
+        *,
+        channel_id: str | None = None,
+    ) -> ChannelSendResult:
+        target = (
+            channel_id
+            or self._sent_messages.get(message_id)
+            or self.config.default_channel_id
+            or ""
         ).strip()
-        if not channel_id:
+        if not target:
             raise ValueError("discord.edit: channel target is required")
         await self._rate_limiter.acquire()
         client = self._get_client()
         resp = await retry_request(
             client.patch,
-            f"/channels/{channel_id}/messages/{message_id}",
+            f"/channels/{target}/messages/{message_id}",
             json={"content": content},
             headers=self._auth_headers(),
         )
@@ -999,21 +1009,29 @@ class DiscordChannel:
         log.debug("discord.edit", message_id=message_id)
         return ChannelSendResult.sent(
             capability=ChannelCapabilities.EDIT,
-            target_id=channel_id,
+            target_id=target,
             provider_message_id=message_id,
         )
 
-    async def delete(self, message_id: str) -> ChannelSendResult:
-        channel_id = str(
-            self._sent_messages.get(message_id, self.config.default_channel_id) or ""
+    async def delete(
+        self,
+        message_id: str,
+        *,
+        channel_id: str | None = None,
+    ) -> ChannelSendResult:
+        target = (
+            channel_id
+            or self._sent_messages.get(message_id)
+            or self.config.default_channel_id
+            or ""
         ).strip()
-        if not channel_id:
+        if not target:
             raise ValueError("discord.delete: channel target is required")
         await self._rate_limiter.acquire()
         client = self._get_client()
         resp = await retry_request(
             client.delete,
-            f"/channels/{channel_id}/messages/{message_id}",
+            f"/channels/{target}/messages/{message_id}",
             headers=self._auth_headers(),
         )
         resp.raise_for_status()
@@ -1021,7 +1039,7 @@ class DiscordChannel:
         log.debug("discord.delete", message_id=message_id)
         return ChannelSendResult.sent(
             capability=ChannelCapabilities.DELETE,
-            target_id=channel_id,
+            target_id=target,
             provider_message_id=message_id,
         )
 
@@ -1106,6 +1124,8 @@ class DiscordChannel:
         single transient failure does not lose accumulated text.
         """
         target = channel_id or self.config.default_channel_id
+        if not target:
+            raise RuntimeError("Discord stream has no target channel")
         client = self._get_client()
         throttle = StreamThrottle(interval_s=update_interval_ms / 1000.0)
         message_id: str | None = None
@@ -1128,6 +1148,8 @@ class DiscordChannel:
                 )
             resp.raise_for_status()
             message_id = resp.json().get("id") if resp.content else None
+            if message_id:
+                self._sent_messages[str(message_id)] = str(target)
 
         async def _edit(text: str) -> None:
             await self._rate_limiter.acquire()

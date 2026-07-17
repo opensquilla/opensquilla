@@ -181,6 +181,51 @@ async def test_session_lock_kept_during_pending() -> None:
     # do not assert its absence here.
 
 
+@pytest.mark.asyncio
+async def test_older_terminal_task_keeps_newer_route_envelope_cached() -> None:
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+
+    async def handler(run: Any) -> None:
+        if run.message == "first":
+            first_started.set()
+            await release_first.wait()
+        elif run.message == "second":
+            second_started.set()
+            await release_second.wait()
+
+    rt = _make_runtime(turn_handler=handler, max_concurrency=1)
+    session_key = "agent-1::route-cache-race"
+    first_envelope = _make_envelope(session_key)
+    second_envelope = RouteEnvelope(
+        source_kind=SourceKind.WEB,
+        source_name="newer-route",
+        agent_id="agent-1",
+        session_key=session_key,
+        input_provenance={"kind": "newer-test-route"},
+    )
+
+    first = await rt.enqueue(first_envelope, "first")
+    await asyncio.wait_for(first_started.wait(), timeout=1.0)
+    second = await rt.enqueue(second_envelope, "second")
+    second_runtime_task = rt._tasks[second.task_id]
+    assert rt._last_envelope_by_session[session_key] is second_runtime_task.envelope
+
+    release_first.set()
+    await rt.wait(first.task_id, timeout=1.0)
+    await asyncio.wait_for(second_started.wait(), timeout=1.0)
+
+    # The older task may clean up only the envelope it installed. The newer
+    # task's route remains available to TaskRuntime.send until that task ends.
+    assert rt._last_envelope_by_session[session_key] is second_runtime_task.envelope
+
+    release_second.set()
+    await rt.wait(second.task_id, timeout=1.0)
+    assert session_key not in rt._last_envelope_by_session
+
+
 # ---------------------------------------------------------------------------
 # exception path cleans up
 # ---------------------------------------------------------------------------

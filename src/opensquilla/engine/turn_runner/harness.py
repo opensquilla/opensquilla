@@ -65,6 +65,7 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     CostRollupResult,
     SessionTotalsPort,
     TranscriptAppendPort,
+    TranscriptAppendResult,
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
 )
@@ -1074,12 +1075,12 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
         reasoning_content: str | None,
         turn_usage: dict[str, Any] | None,
         token_count: int | None,
-    ) -> bool:
+    ) -> TranscriptAppendResult:
         from opensquilla.engine.runtime import _accepts_keyword_arg
 
         session_manager = self._runner._session_manager
         if session_manager is None:
-            return False
+            return TranscriptAppendResult(appended=False)
         append_kwargs: dict[str, Any] = {
             "role": role,
             "content": content,
@@ -1094,8 +1095,14 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
             append_kwargs["turn_usage"] = turn_usage
         if _accepts_keyword_arg(session_manager.append_message, "token_count"):
             append_kwargs["token_count"] = token_count
-        await self._runner._append_session_message(session_key, **append_kwargs)
-        return True
+        entry = await self._runner._append_session_message(session_key, **append_kwargs)
+        raw_message_id = getattr(entry, "message_id", None)
+        message_id = (
+            raw_message_id
+            if isinstance(raw_message_id, str) and raw_message_id
+            else None
+        )
+        return TranscriptAppendResult(appended=True, message_id=message_id)
 
 class _TurnRunnerTurnMemoryCaptureAdapter(TurnMemoryCapturePort):
     """Bind ``TurnRunner._capture_turn_memory`` as a Protocol port.

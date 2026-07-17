@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from pathlib import Path
 
 import pytest
@@ -14,10 +15,17 @@ from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaS
 MIGRATIONS_DIR = Path(__file__).resolve().parents[1].parent / "migrations"
 
 
+@pytest.fixture(scope="session")
+def _writer_db_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    db = tmp_path_factory.mktemp("meta-run-persistence-template") / "template.db"
+    apply_pending(str(db), MIGRATIONS_DIR)
+    return db
+
+
 @pytest.fixture
-def writer_db(tmp_path: Path):
+def writer_db(tmp_path: Path, _writer_db_template: Path):
     db = str(tmp_path / "test.db")
-    apply_pending(db, MIGRATIONS_DIR)
+    shutil.copyfile(_writer_db_template, db)
     w = open_meta_run_writer(db)
     yield w
     w.close()

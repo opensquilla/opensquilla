@@ -2088,6 +2088,14 @@ class GatewayConfig(BaseSettings):
     diagnostics_enabled: bool = False
     channel_admin_senders: dict[str, list[str]] = Field(default_factory=dict)
 
+    @property
+    def effective_run_mode(self) -> str:
+        """Return the canonical sandbox run mode for this validated config."""
+
+        from opensquilla.sandbox.run_mode import config_run_mode
+
+        return config_run_mode(self).value
+
     @model_validator(mode="after")
     def _resolve_default_llm_provider(self) -> GatewayConfig:
         """Resolve the built-in provider default for configs that never chose one.

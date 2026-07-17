@@ -240,6 +240,18 @@ describe('useSetupEnsembleForm — scheme switching', () => {
     expect(f.candidates.value[0]!.role).toBe('critic')
     expect(f.candidates.value[1]!.role).toBe('fast_check')
   })
+
+  it('activateForProvider only seeds tiers from the active provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({})
+    f.activateForProvider('volcengine', [
+      { provider: 'volcengine', model: 'doubao-2.0-pro', tier: 'c3' },
+      { provider: 'openrouter', model: 'z-ai/glm-5.2', tier: 'c2' },
+    ])
+    expect(f.candidates.value.map(c => `${c.provider}/${c.model}`)).toEqual([
+      'volcengine/doubao-2.0-pro',
+    ])
+  })
 })
 
 describe('useSetupEnsembleForm — custom lineup editing', () => {
@@ -277,6 +289,148 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
     expect(aggregators).toHaveLength(1)
     expect(aggregators[0]!.model).toBe('m2')
     expect(f.candidates.value.find(c => c.model === 'm1')!.role).toBe('')
+  })
+
+  it('replaces a proposer atomically without changing quorum or advisory roles', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      min_successful_proposers: 3,
+      candidates: [
+        { provider: 'a', model: 'primary-model', role: 'primary' },
+        { provider: 'a', model: 'critic-model', role: 'critic' },
+        { provider: 'a', model: 'plain-model' },
+        { provider: 'a', model: 'fuser', role: 'aggregator' },
+      ],
+    })
+
+    expect(makePanel(f, 'a').value.custom.proposerCount).toBe(3)
+    f.replaceCandidate(
+      { provider: 'a', model: 'primary-model', source: 'custom', role: 'primary' },
+      'primary-model-next',
+    )
+
+    const expectedCandidates = [
+      {
+        provider: 'a',
+        model: 'primary-model-next',
+        source: 'custom',
+        enabled: true,
+        role: 'primary',
+      },
+      {
+        provider: 'a',
+        model: 'critic-model',
+        source: 'custom',
+        enabled: true,
+        role: 'critic',
+      },
+      {
+        provider: 'a',
+        model: 'plain-model',
+        source: 'custom',
+        enabled: true,
+        role: '',
+      },
+      {
+        provider: 'a',
+        model: 'fuser',
+        source: 'custom',
+        enabled: true,
+        role: 'aggregator',
+      },
+    ]
+    expect(f.candidates.value).toEqual(expectedCandidates)
+    expect(makePanel(f, 'a').value.custom.proposerCount).toBe(3)
+    expect(f.minSuccessfulProposers.value).toBe(3)
+    expect(f.payload()).toEqual({ candidates: expectedCandidates })
+
+    const beforeDuplicate = {
+      candidates: f.candidates.value.map(candidate => ({ ...candidate })),
+      proposerCount: makePanel(f, 'a').value.custom.proposerCount,
+      minSuccessfulProposers: f.minSuccessfulProposers.value,
+      payload: f.payload(),
+    }
+    f.replaceCandidate(
+      { provider: 'a', model: 'primary-model-next', source: 'custom', role: 'primary' },
+      'critic-model',
+    )
+    expect({
+      candidates: f.candidates.value,
+      proposerCount: makePanel(f, 'a').value.custom.proposerCount,
+      minSuccessfulProposers: f.minSuccessfulProposers.value,
+      payload: f.payload(),
+    }).toEqual(beforeDuplicate)
+  })
+
+  it('uses a proposer as aggregator without removing it or its advisory roles', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        { provider: 'a', model: 'old-aggregator', role: 'aggregator' },
+        { provider: 'a', model: 'shared-model', role: 'primary' },
+        { provider: 'a', model: 'other-proposer', role: 'critic' },
+      ],
+    })
+
+    f.setAggregator('a', 'shared-model')
+
+    const expectedCandidates = [
+      {
+        provider: 'a',
+        model: 'shared-model',
+        source: 'custom',
+        enabled: true,
+        role: 'primary',
+      },
+      {
+        provider: 'a',
+        model: 'other-proposer',
+        source: 'custom',
+        enabled: true,
+        role: 'critic',
+      },
+      {
+        provider: 'a',
+        model: 'shared-model',
+        source: 'custom',
+        enabled: true,
+        role: 'aggregator',
+      },
+    ]
+    expect(f.candidates.value).toEqual(expectedCandidates)
+    expect(makePanel(f, 'a').value.custom.proposerCount).toBe(2)
+    expect(f.payload()).toEqual({ candidates: expectedCandidates })
+  })
+
+  it('keeps all six proposers when one also fills the aggregator slot', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        ...Array.from({ length: CUSTOM_B5_MAX_PROPOSERS }, (_, index) => ({
+          provider: 'a',
+          model: `model-${index}`,
+        })),
+        { provider: 'a', model: 'old-aggregator', role: 'aggregator' },
+      ],
+    })
+
+    f.setAggregator('a', 'model-0')
+
+    expect(f.candidates.value.filter(candidate => candidate.role !== 'aggregator'))
+      .toHaveLength(CUSTOM_B5_MAX_PROPOSERS)
+    expect(f.candidates.value.filter(candidate => candidate.role === 'aggregator'))
+      .toEqual([
+        {
+          provider: 'a',
+          model: 'model-0',
+          source: 'custom',
+          enabled: true,
+          role: 'aggregator',
+        },
+      ])
   })
 
   it('editing the lineup pins the mode to custom_b5 (no ineffective-pool trap)', () => {
@@ -317,6 +471,22 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
       { provider: 'volcengine', model: 'deepseek-v4-flash', tier: 'c0' },
     ])
     expect(f.candidates.value.map(c => c.model)).toEqual(['doubao-2.0-pro', 'deepseek-v4-flash'])
+  })
+
+  it('importTierCandidates can restrict new rows to the current provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [{ provider: 'openrouter', model: 'existing-cross-provider' }],
+    })
+    f.importTierCandidates([
+      { provider: 'volcengine', model: 'doubao-2.0-pro', tier: 'c3' },
+      { provider: 'openrouter', model: 'z-ai/glm-5.2', tier: 'c2' },
+    ], 'volcengine')
+    expect(f.candidates.value.map(c => `${c.provider}/${c.model}`)).toEqual([
+      'openrouter/existing-cross-provider',
+      'volcengine/doubao-2.0-pro',
+    ])
   })
 
   it('migrateLegacyToCustom folds legacy inputs into a capped custom lineup', () => {
@@ -386,6 +556,8 @@ describe('useSetupEnsembleForm — panel contract', () => {
     f.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
     const panel = makePanel(f, 'openrouter')
     expect(panel.value.scheme).toBe('preset')
+    expect(panel.value.activeProvider).toBe('openrouter')
+    expect(panel.value.activeModel).toBe('current-model')
     expect(panel.value.schemeCardsAvailable).toBe(true)
     expect(panel.value.fixedProfile).not.toBeNull()
     expect(panel.value.fixedProfile!.proposers.map(c => c.model))

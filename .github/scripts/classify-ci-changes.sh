@@ -109,6 +109,12 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
     opensquilla-webui/*)
       mark_frontend_changed
       ;;
+    src/opensquilla/gateway/static/dist/*)
+      # The committed Web UI bundle is runtime package data, but changing the
+      # generated bundle alone does not make platform-native recovery paths risky.
+      mark_frontend_changed
+      mark_runtime_changed
+      ;;
     src/opensquilla/cli/tui/opentui/package/*)
       mark_tui_changed
       ;;

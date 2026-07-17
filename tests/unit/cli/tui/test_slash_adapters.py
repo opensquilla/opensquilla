@@ -76,6 +76,7 @@ class _StubGatewayClient:
         self.created: list[dict[str, Any]] = []
         self.resolve_payloads: dict[str, dict[str, Any]] = {}
         self.history: list[dict[str, Any]] = []
+        self.history_pages: dict[str | None, dict[str, Any]] = {}
         self.raise_map: dict[str, Exception] = {}
         self._counter = 0
 
@@ -171,9 +172,33 @@ class _StubGatewayClient:
     async def abort_session(self, key: str) -> dict[str, Any]:
         return {"ok": True}
 
-    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, Any]:
+    async def session_history(
+        self,
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        include_canonical: bool | None = None,
+        include_summaries: bool | None = None,
+    ) -> dict[str, Any]:
         self._maybe_raise("session_history")
-        return {"messages": list(self.history)}
+        self.calls.append(
+            (
+                "session_history",
+                {
+                    "session_key": session_key,
+                    "limit": limit,
+                    "before": before,
+                    "after": after,
+                    "include_canonical": include_canonical,
+                    "include_summaries": include_summaries,
+                },
+            )
+        )
+        if self.history_pages:
+            return dict(self.history_pages[before])
+        return {"messages": list(self.history), "has_more": False}
 
     async def forget_approvals(self, target: str | None = None) -> dict[str, Any]:
         self.calls.append(("forget_approvals", target))
@@ -395,6 +420,67 @@ async def test_gateway_save_bad_path_renders_error_panel(
     assert handled is True
     assert "Could not save transcript" in recorder.text()
     assert not target.exists()
+
+
+async def test_gateway_save_reads_all_canonical_history_pages(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    client.history_pages = {
+        None: {
+            "messages": [
+                {"message_id": "m3", "role": "user", "text": "later question"},
+                {"message_id": "m4", "role": "assistant", "text": "later answer"},
+            ],
+            "has_more": True,
+            "oldest_cursor": "3|3",
+            "newest_cursor": "4|4",
+        },
+        "3|3": {
+            "messages": [
+                {"message_id": "m1", "role": "user", "text": "earliest question"},
+                {"message_id": "m2", "role": "assistant", "text": "earliest answer"},
+            ],
+            "has_more": False,
+            "oldest_cursor": "1|1",
+            "newest_cursor": "2|2",
+        },
+    }
+    target = tmp_path / "all-history.md"
+
+    handled = await handle_gateway_slash_command(f"/save {target}", _gateway_context(client))
+
+    assert handled is True
+    saved = target.read_text(encoding="utf-8")
+    assert saved.index("earliest question") < saved.index("later question")
+    history_calls = [call for call in client.calls if call[0] == "session_history"]
+    assert [call[1]["before"] for call in history_calls] == [None, "3|3"]
+    assert all(call[1]["include_canonical"] is True for call in history_calls)
+    assert all(call[1]["include_summaries"] is False for call in history_calls)
+
+
+async def test_gateway_save_does_not_write_partial_file_when_cursor_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    recorder = _patch_gateway_io(monkeypatch)
+    client = _StubGatewayClient()
+    stalled_page = {
+        "messages": [{"message_id": "m1", "role": "user", "text": "partial"}],
+        "has_more": True,
+        "oldest_cursor": "1|1",
+        "newest_cursor": "1|1",
+    }
+    client.history_pages = {None: stalled_page, "1|1": stalled_page}
+    target = tmp_path / "partial.md"
+
+    handled = await handle_gateway_slash_command(f"/save {target}", _gateway_context(client))
+
+    assert handled is True
+    assert not target.exists()
+    assert "cursor did not advance" in recorder.text()
 
 
 async def test_standalone_save_bad_path_renders_error_panel(

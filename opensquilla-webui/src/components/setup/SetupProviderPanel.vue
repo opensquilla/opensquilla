@@ -11,7 +11,7 @@ import type { ConnectionState, ProviderCredentialPanelState } from '@/composable
 import { parseContextWindowInput } from '@/composables/setup/useSettingsPromotedForm'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 interface ProviderOption {
   providerId: string
@@ -44,6 +44,10 @@ interface ProviderPanelContract {
   llmTimeoutSeconds: number
   contextWindowTokens: string
   contextWindowGlobal: number | null
+  effectiveMaxTokens: {
+    value: number
+    source: 'config' | 'catalog' | 'default'
+  } | null
   providerIsLocal: boolean
   connection: ConnectionState
   providerFieldValue: (field: FieldSpec) => string
@@ -85,10 +89,10 @@ function onProviderSelect(event: Event) {
 }
 
 function useCombobox(field: FieldSpec): boolean {
-  // The discovered-model combobox only ever replaces the model field, and only
-  // when discovery actually returned models — otherwise the plain free-text
-  // field renders untouched (free text always works).
-  return field.name === 'model' && props.panel.connection.models.length > 0
+  // Keep one stable model-picker shell before, during, and after discovery.
+  // SetupModelCombobox degrades to a normal free-text input when no live
+  // catalog exists, so async discovery never swaps the focused DOM control.
+  return field.name === 'model'
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +144,20 @@ const contextWindowReadout = computed(() => t('setup.provider.contextWindowReado
     ? String(contextWindowEffective.value.value)
     : t('setup.provider.contextWindowUnknown'),
 }))
+
+const effectiveMaxTokensReadout = computed(() => {
+  const record = props.panel.effectiveMaxTokens
+  if (!record) return ''
+  const sourceKey = {
+    config: 'setup.provider.effectiveSourceConfig',
+    catalog: 'setup.provider.effectiveSourceCatalog',
+    default: 'setup.provider.effectiveSourceDefault',
+  }[record.source]
+  return t('setup.provider.effectiveMaxTokens', {
+    tokens: new Intl.NumberFormat(locale.value).format(record.value),
+    source: t(sourceKey),
+  })
+})
 
 const showContextWindowWarning = computed(() => (
   props.panel.providerIsLocal
@@ -216,6 +234,12 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
         @update="(name, val) => emit('updateProviderField', name, val)"
       />
     </template>
+    <p
+      v-if="effectiveMaxTokensReadout"
+      class="setup-effective-output"
+      data-testid="setup-effective-max-tokens"
+      aria-live="polite"
+    >{{ effectiveMaxTokensReadout }}</p>
     <SetupProviderCredentialCard
       v-if="panel.credentialPanel"
       :panel="panel.credentialPanel"
@@ -322,6 +346,12 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 
 .setup-inline-link:hover {
   text-decoration: underline;
+}
+
+.setup-effective-output {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  margin: calc(var(--sp-2) * -1) 0 var(--sp-3);
 }
 
 /* Test-connection row: button + status pill side by side; the pill can wrap

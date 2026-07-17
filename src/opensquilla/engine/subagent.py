@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from opensquilla.agents.limits import MAX_SPAWN_DEPTH
+from opensquilla.engine.types import done_text_snapshot
 
 if TYPE_CHECKING:
     from .agent import Agent
@@ -209,12 +210,15 @@ class SubagentManager:
 
         async def _run() -> str:
             collected: list[str] = []
+            terminal_text_present = False
+            terminal_text = ""
             async for event in child_agent.run_turn(spec.task):
                 if hasattr(event, "text") and event.kind == "text_delta":  # type: ignore[union-attr]
                     collected.append(event.text)  # type: ignore[union-attr]
                 elif event.kind == "done":  # type: ignore[union-attr]
+                    terminal_text_present, terminal_text = done_text_snapshot(event)
                     break
-            return "".join(collected)
+            return terminal_text if terminal_text_present else "".join(collected)
 
         async def _run_with_timeout() -> str:
             if spec.timeout <= 0:

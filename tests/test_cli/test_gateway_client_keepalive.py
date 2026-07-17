@@ -10,8 +10,10 @@ import pytest
 
 from opensquilla.cli.gateway_client import (
     GatewayClient,
+    GatewayRPCError,
     _normalize_session_error_payload,
     _task_terminal_as_session_event,
+    session_history_all,
 )
 
 _STOP = object()
@@ -228,3 +230,208 @@ async def test_call_after_send_failure_raises_clear_connection_error() -> None:
         await client._call("sessions.messages.subscribe", {"key": "agent:main:x"})  # noqa: SLF001
 
     assert client._pending == {}  # noqa: SLF001
+
+
+@pytest.mark.asyncio
+async def test_session_history_forwards_optional_paging_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_call(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        calls.append((method, params))
+        return {"messages": []}
+
+    monkeypatch.setattr(client, "_call", fake_call)
+
+    await client.session_history(
+        "agent:main:test",
+        limit=25,
+        before="12|message-12",
+        include_canonical=True,
+        include_summaries=False,
+    )
+
+    assert calls == [
+        (
+            "chat.history",
+            {
+                "sessionKey": "agent:main:test",
+                "limit": 25,
+                "before": "12|message-12",
+                "includeCanonical": True,
+                "includeSummaries": False,
+            },
+        )
+    ]
+
+    calls.clear()
+    await client.session_history("agent:main:test", limit=5)
+    assert calls == [
+        ("chat.history", {"sessionKey": "agent:main:test", "limit": 5})
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_history_all_orders_and_deduplicates_pages() -> None:
+    calls: list[dict[str, Any]] = []
+
+    async def fetch(
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        calls.append(
+            {"session_key": session_key, "limit": limit, "before": before, **kwargs}
+        )
+        if before is None:
+            return {
+                "messages": [
+                    {"message_id": "m3", "role": "user", "text": "three"},
+                    {"message_id": "m4", "role": "assistant", "text": "four"},
+                ],
+                "has_more": True,
+                "oldest_cursor": "3|3",
+                "newest_cursor": "4|4",
+            }
+        return {
+            "messages": [
+                {"message_id": "m1", "role": "user", "text": "one"},
+                {"message_id": "m2", "role": "assistant", "text": "two"},
+                {"message_id": "m2", "role": "assistant", "text": "two"},
+            ],
+            "has_more": False,
+            "oldest_cursor": "1|1",
+            "newest_cursor": "2|2",
+        }
+
+    result = await session_history_all(fetch, "agent:main:test", page_size=2)
+
+    assert [message["message_id"] for message in result["messages"]] == [
+        "m1",
+        "m2",
+        "m3",
+        "m4",
+    ]
+    assert result["has_more"] is False
+    assert result["loaded_count"] == 4
+    assert result["oldest_cursor"] == "1|1"
+    assert result["newest_cursor"] == "4|4"
+    assert calls == [
+        {
+            "session_key": "agent:main:test",
+            "limit": 2,
+            "before": None,
+            "include_canonical": True,
+            "include_summaries": False,
+        },
+        {
+            "session_key": "agent:main:test",
+            "limit": 2,
+            "before": "3|3",
+            "include_canonical": True,
+            "include_summaries": False,
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_history_all_rejects_non_advancing_cursor() -> None:
+    async def fetch(
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return {
+            "messages": [{"message_id": "m3", "role": "user", "text": "three"}],
+            "has_more": True,
+            "oldest_cursor": "3|3",
+            "newest_cursor": "3|3",
+        }
+
+    with pytest.raises(GatewayRPCError, match="cursor did not advance"):
+        await session_history_all(fetch, "agent:main:test")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "replacement_page",
+    [
+        {
+            "messages": [],
+            "has_more": False,
+            "oldest_cursor": None,
+            "newest_cursor": None,
+        },
+        {
+            "messages": [
+                {"message_id": "replacement", "role": "user", "text": "new session"}
+            ],
+            "has_more": False,
+            "oldest_cursor": "10|10",
+            "newest_cursor": "10|10",
+        },
+    ],
+)
+async def test_session_history_all_rejects_reset_or_unknown_cursor_page(
+    replacement_page: dict[str, Any],
+) -> None:
+    async def fetch(
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        if before is not None:
+            return replacement_page
+        return {
+            "messages": [
+                {"message_id": "m3", "role": "user", "text": "three"},
+                {"message_id": "m4", "role": "assistant", "text": "four"},
+            ],
+            "has_more": True,
+            "oldest_cursor": "3|3",
+            "newest_cursor": "4|4",
+        }
+
+    with pytest.raises(GatewayRPCError) as exc_info:
+        await session_history_all(fetch, "agent:main:test")
+
+    assert exc_info.value.code == "HISTORY_CURSOR_INVALIDATED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "code"),
+    [
+        ("canonical_available", "CANONICAL_HISTORY_UNAVAILABLE"),
+        ("canonical_complete", "CANONICAL_HISTORY_INCOMPLETE"),
+    ],
+)
+async def test_session_history_all_refuses_partial_canonical_export(
+    field: str,
+    code: str,
+) -> None:
+    async def fetch(
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        return {
+            "messages": [{"message_id": "m1", "role": "user", "text": "one"}],
+            "has_more": False,
+            field: False,
+        }
+
+    with pytest.raises(GatewayRPCError) as exc_info:
+        await session_history_all(fetch, "agent:main:test")
+
+    assert exc_info.value.code == code

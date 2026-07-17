@@ -530,14 +530,24 @@ def _probe_bash(path: str) -> bool:
     """True iff ``path`` is real bash (not a stub or busybox).
 
     Runs ``-lc`` with a bash-specific invariant (``$BASH_VERSION`` is set
-    by every real bash and unset by busybox, dash, the WSL launcher stub,
-    and a ``bash.cmd`` wrapper that calls ``exit /b``). Requires both
-    returncode 0 AND the sentinel in stdout so a stub that happens to
-    exit 0 but echoes nothing — or echoes garbage — is rejected.
+    by every real bash and unset by busybox, dash, and a ``bash.cmd`` wrapper
+    that calls ``exit /b``). On Windows we also reject WSL's launcher: it is
+    a real Linux bash, but it does not provide native Windows shell semantics
+    for paths and ``-lc`` command-line variables. Requires both returncode 0
+    AND the sentinel in stdout so a stub that happens to exit 0 but echoes
+    nothing — or echoes garbage — is rejected.
     """
     try:
         proc = subprocess.run(
-            [path, "-lc", f'test -n "$BASH_VERSION" && echo {_BASH_PROBE_SENTINEL}'],
+            [
+                path,
+                "-lc",
+                (
+                    'test -n "$BASH_VERSION" && '
+                    'case "$(uname -s 2>/dev/null)" in Linux*) exit 42;; esac && '
+                    f"echo {_BASH_PROBE_SENTINEL}"
+                ),
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -607,8 +617,11 @@ def _write_python_shim(shim_dir: Path, name: str, venv_python: Path) -> None:
         return
     except OSError:
         pass
-    script = f'#!/usr/bin/env bash\nexec {shlex.quote(_bash_path_entry(venv_python))} "$@"\n'
-    target.write_text(script, encoding="utf-8")
+    script = (
+        "#!/usr/bin/env bash\n"
+        f'exec {shlex.quote(_bash_path_entry(venv_python))} "$@"\n'
+    )
+    target.write_text(script, encoding="utf-8", newline="\n")
     try:
         target.chmod(0o755)
     except OSError:
@@ -622,8 +635,10 @@ def _run_shell(
 
     Verification commands the agent records use POSIX shell semantics
     (``VAR=val command``, pipelines, ``&&``). We require ``bash`` to honor
-    them. On Windows the user must have Git Bash / WSL installed; we surface
-    a clear error instead of an opaque ``FileNotFoundError`` if it is not.
+    them. On Windows the user must have Git Bash installed; WSL's launcher is
+    deliberately skipped because it does not provide native Windows path and
+    ``-lc`` variable semantics. We surface a clear error instead of an opaque
+    ``FileNotFoundError`` if no native bash is available.
     """
     bash = _resolve_bash()
     if bash is None:

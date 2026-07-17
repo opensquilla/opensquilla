@@ -29,6 +29,7 @@ from opensquilla.cli.tui.backend.domain_events import (
     now_ms,
 )
 from opensquilla.cli.tui.backend.streaming import StreamingPlane
+from opensquilla.engine.types import done_text_snapshot
 from opensquilla.execution_status import derive_is_error
 from opensquilla.router_tiers import tier_index
 from opensquilla.session.terminal_reply import build_terminal_reply
@@ -98,6 +99,9 @@ class _BackendFallbackRenderer:
     async def aappend_text(self, delta: str, *, presentation: str = "answer") -> None:
         del presentation
         self.buffer += delta
+
+    async def areconcile_final_text(self, text: str) -> None:
+        self.buffer = text
 
     def pulse(self) -> None:
         return None
@@ -722,6 +726,22 @@ async def renderer_close(renderer: Any) -> None:
         await _async_renderer_method(aclose)()
 
 
+async def renderer_reconcile_final_text(renderer: Any, text: str) -> None:
+    """Replace a renderer's logical answer with an authoritative terminal snapshot.
+
+    Renderers may provide an async reconciliation hook when their UI can replace a
+    live preview. The shared fallback still rewrites ``buffer`` so every caller's
+    ``TurnResult`` observes the canonical terminal value, including an explicit
+    empty snapshot.
+    """
+
+    reconcile = getattr(renderer, "areconcile_final_text", None)
+    if callable(reconcile):
+        await _async_renderer_method(reconcile)(text)
+        return
+    renderer.buffer = text
+
+
 def artifact_event_payload(event: Any) -> dict[str, Any]:
     from opensquilla.artifacts import artifact_payload
 
@@ -998,6 +1018,7 @@ async def stream_response_gateway(
                         usage = UsageSummary.from_gateway_payload(event)
                         cancelled = event.get("reason") == "aborted"
                         model_after = event.get("routed_model") or event.get("model") or None
+                        snapshot_present, snapshot_text = done_text_snapshot(event)
                         await _finish_text_delta_stream(
                             renderer,
                             stream_deps,
@@ -1005,15 +1026,20 @@ async def stream_response_gateway(
                             source="gateway",
                             turn_id=session_key,
                         )
+                        if snapshot_present:
+                            await renderer_reconcile_final_text(renderer, snapshot_text)
+                        done_payload: dict[str, Any] = {
+                            "model": model_after,
+                            "cancelled": cancelled,
+                            "reason": event.get("reason"),
+                        }
+                        if snapshot_present:
+                            done_payload["text_snapshot"] = snapshot_text
                         _emit_tui_domain_event(
                             stream_deps,
                             kind=KIND_DONE,
                             source="gateway",
-                            payload={
-                                "model": model_after,
-                                "cancelled": cancelled,
-                                "reason": event.get("reason"),
-                            },
+                            payload=done_payload,
                             turn_id=session_key,
                         )
             except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1369,6 +1395,7 @@ async def stream_response_turnrunner(
                     elif isinstance(event, DoneEvent):
                         usage = UsageSummary.from_done_event(event)
                         model_after = usage.model or None
+                        snapshot_present, snapshot_text = done_text_snapshot(event)
                         await _finish_text_delta_stream(
                             renderer,
                             stream_deps,
@@ -1376,15 +1403,20 @@ async def stream_response_turnrunner(
                             source="turn_runner",
                             turn_id=session_key,
                         )
+                        if snapshot_present:
+                            await renderer_reconcile_final_text(renderer, snapshot_text)
+                        done_payload: dict[str, Any] = {
+                            "model": model_after,
+                            "cancelled": False,
+                            "stop_reason": getattr(event, "stop_reason", None),
+                        }
+                        if snapshot_present:
+                            done_payload["text_snapshot"] = snapshot_text
                         _emit_tui_domain_event(
                             stream_deps,
                             kind=KIND_DONE,
                             source="turn_runner",
-                            payload={
-                                "model": model_after,
-                                "cancelled": False,
-                                "stop_reason": getattr(event, "stop_reason", None),
-                            },
+                            payload=done_payload,
                             turn_id=session_key,
                         )
             except (KeyboardInterrupt, asyncio.CancelledError):
@@ -1581,6 +1613,7 @@ async def handle_image_command_turnrunner(
                     elif isinstance(event, DoneEvent):
                         usage = UsageSummary.from_done_event(event)
                         model_after = usage.model or None
+                        snapshot_present, snapshot_text = done_text_snapshot(event)
                         await _finish_text_delta_stream(
                             renderer,
                             stream_deps,
@@ -1588,15 +1621,20 @@ async def handle_image_command_turnrunner(
                             source="turn_runner",
                             turn_id=session_key,
                         )
+                        if snapshot_present:
+                            await renderer_reconcile_final_text(renderer, snapshot_text)
+                        done_payload: dict[str, Any] = {
+                            "model": model_after,
+                            "cancelled": False,
+                            "stop_reason": getattr(event, "stop_reason", None),
+                        }
+                        if snapshot_present:
+                            done_payload["text_snapshot"] = snapshot_text
                         _emit_tui_domain_event(
                             stream_deps,
                             kind=KIND_DONE,
                             source="turn_runner",
-                            payload={
-                                "model": model_after,
-                                "cancelled": False,
-                                "stop_reason": getattr(event, "stop_reason", None),
-                            },
+                            payload=done_payload,
                             turn_id=session_key,
                         )
             except TimeoutError as exc:

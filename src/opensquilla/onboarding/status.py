@@ -231,7 +231,7 @@ def _llm_provider_credential_status(
             "source": "unsupported",
             "envKey": env_key,
         }
-    if not spec.requires_api_key:
+    if not spec.accepts_api_key:
         return {
             "provider": provider,
             "available": True,
@@ -242,7 +242,8 @@ def _llm_provider_credential_status(
     llm = getattr(cfg, "llm", None)
     current_provider = str(getattr(llm, "provider", "") or "").strip().lower()
     if provider == current_provider:
-        env_key = str(getattr(llm, "api_key_env", "") or "").strip() or env_key
+        configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
+        env_key = configured_env_key or env_key
         if _saved_llm_api_key(cfg):
             return {
                 "provider": provider,
@@ -257,6 +258,13 @@ def _llm_provider_credential_status(
                 "source": "env",
                 "envKey": env_key,
             }
+        if not spec.requires_api_key and not configured_env_key:
+            return {
+                "provider": provider,
+                "available": True,
+                "source": "not_required",
+                "envKey": env_key,
+            }
         return {
             "provider": provider,
             "available": False,
@@ -269,6 +277,13 @@ def _llm_provider_credential_status(
             "provider": provider,
             "available": True,
             "source": "env",
+            "envKey": env_key,
+        }
+    if not spec.requires_api_key:
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "not_required",
             "envKey": env_key,
         }
     return {
@@ -338,7 +353,7 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
             "revealAllowed": False,
         }
 
-    if not spec.requires_api_key:
+    if not spec.accepts_api_key:
         return {
             "provider": provider,
             "available": True,
@@ -370,10 +385,29 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
                 "masked": _mask_credential(env_value),
                 "revealAllowed": False,
             }
+        if not spec.requires_api_key and not configured_env_key:
+            return {
+                "provider": provider,
+                "available": True,
+                "source": "not_required",
+                "envKey": resolved_env_key,
+                "masked": "",
+                "revealAllowed": False,
+            }
         return {
             "provider": provider,
             "available": False,
             "source": "missing_env",
+            "envKey": resolved_env_key,
+            "masked": "",
+            "revealAllowed": False,
+        }
+
+    if not spec.requires_api_key:
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "not_required",
             "envKey": resolved_env_key,
             "masked": "",
             "revealAllowed": False,

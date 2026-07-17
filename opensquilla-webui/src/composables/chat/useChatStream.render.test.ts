@@ -1,13 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { ref } from 'vue'
-import { useChatStream } from './useChatStream'
+import {
+  DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+  streamIdleTimeoutFromPolicy,
+  useChatStream,
+} from './useChatStream'
 import type { ChatMessage } from '@/types/chat'
 
 // Focused coverage for the streaming render coalescer: stream deltas are
 // batched onto the frame clock (requestAnimationFrame) and the live reveal
 // renders with syntax highlighting deferred. The test env is `node`, so rAF is
 // stubbed and driven manually; fake timers cover the Date.now() flush throttle.
-function makeStream(renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolean }) => `<p>${t}</p>`)) {
+function makeStream(
+  renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolean }) => `<p>${t}</p>`),
+  rpcPolicy?: () => Record<string, unknown> | undefined,
+) {
   const scrollToBottom = vi.fn()
   const messages = ref<ChatMessage[]>([])
   const api = useChatStream({
@@ -19,8 +26,8 @@ function makeStream(renderMarkdown = vi.fn((t: string, _o?: { highlight?: boolea
     renderMarkdown: renderMarkdown as never,
     stripDirectiveTags: (t: string) => t,
     stripGeneratedArtifactMarkers: (t: string) => t,
-    stripProtocolTextLeak: (t: string) => t,
     scrollToBottom,
+    rpcPolicy,
   })
   return { api, messages, scrollToBottom, renderMarkdown }
 }
@@ -40,6 +47,27 @@ describe('useChatStream render coalescing', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+
+  it('uses valid negotiated idle grace and falls back to 630s for invalid policy', () => {
+    expect(streamIdleTimeoutFromPolicy({ webui_stream_idle_grace_ms: 1_260_000 })).toBe(1_260_000)
+    expect(streamIdleTimeoutFromPolicy(undefined)).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+    expect(streamIdleTimeoutFromPolicy({ webui_stream_idle_grace_ms: 0 })).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+    expect(streamIdleTimeoutFromPolicy({ webui_stream_idle_grace_ms: '1260000' })).toBe(DEFAULT_STREAM_IDLE_TIMEOUT_MS)
+  })
+
+  it('re-reads policy whenever the hard idle timer is reset', () => {
+    let policy = { webui_stream_idle_grace_ms: 1_260_000 }
+    const { api } = makeStream(undefined, () => policy)
+
+    api.startStreaming()
+    api.resetStreamIdleTimer()
+    expect(api.streamIdleTimeoutMs.value).toBe(1_260_000)
+
+    policy = { webui_stream_idle_grace_ms: 900_000 }
+    api.resetStreamIdleTimer()
+    expect(api.streamIdleTimeoutMs.value).toBe(900_000)
+    api.cleanup()
   })
 
   it('coalesces rapid deltas into a single frame flush and defers highlighting', () => {
@@ -146,6 +174,83 @@ describe('useChatStream render coalescing', () => {
     api.endStreaming()
 
     expect(messages.value[0]?.text).toBe('prefixprefixsuffix')
+    api.cleanup()
+  })
+
+  it('commits a conflicting terminal snapshot into the tool timeline', () => {
+    const { api, messages } = makeStream()
+
+    api.appendDelta('stale preface')
+    api.appendToolCall({ tool_use_id: 'tool-1', tool_name: 'web_search' })
+    api.appendToolResult({ tool_use_id: 'tool-1', tool_name: 'web_search', result: 'ok' })
+    api.appendDelta('stale retry')
+    api.reconcileFinalText('Canonical answer')
+
+    expect(api.foldedTurn.value.rawText).toBe('Canonical answer')
+    expect(api.foldedTurn.value.timelineItems.map(item => item.type)).toEqual(['tool-group', 'text'])
+
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe('Canonical answer')
+    expect(messages.value[0]?.timeline).toEqual([
+      { type: 'tool-group', groupId: 'stream:tool-group:web.search:0', operationKey: 'web.search' },
+      { type: 'text', raw: 'Canonical answer' },
+    ])
+    expect(messages.value[0]?.tool_calls?.[0]).toMatchObject({
+      tool_use_id: 'tool-1',
+      result: 'ok',
+    })
+    api.cleanup()
+  })
+
+  it('clears stale text on an authoritative empty snapshot but keeps tools', () => {
+    const { api, messages } = makeStream()
+
+    api.appendDelta('stale text')
+    api.appendToolCall({ tool_use_id: 'tool-1', tool_name: 'web_search' })
+    api.appendToolResult({ tool_use_id: 'tool-1', tool_name: 'web_search', result: 'ok' })
+    api.reconcileFinalText('')
+
+    expect(api.foldedTurn.value.rawText).toBe('')
+    expect(api.foldedTurn.value.timelineItems.map(item => item.type)).toEqual(['tool-group'])
+
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe('')
+    expect(messages.value[0]?.timeline).toEqual([
+      { type: 'tool-group', groupId: 'stream:tool-group:web.search:0', operationKey: 'web.search' },
+    ])
+    expect(messages.value[0]?.tool_calls?.[0]).toMatchObject({ tool_use_id: 'tool-1' })
+    api.cleanup()
+  })
+
+  it('keeps streamed text when the terminal event has no snapshot', () => {
+    const { api, messages } = makeStream()
+
+    api.appendDelta('streamed fallback')
+    api.reconcileFinalText(null)
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe('streamed fallback')
+    expect(messages.value[0]?.timeline).toEqual([{ type: 'text', raw: 'streamed fallback' }])
+    api.cleanup()
+  })
+
+  it.each([
+    'Document the literal `<tool_calls>` marker and keep this suffix.',
+    '```xml\n<tool_calls><invoke name="demo"></invoke></tool_calls>\n```\nAfter the fence.',
+    'Keep `<｜DSML｜tool_calls><｜DSML｜invoke name="demo">` and continue.',
+    '<details><summary>View areas around line 10</summary>Visible note.</details>\n\nAfter details.',
+  ])('commits canonical protocol-shaped text without destructive filtering: %s', (text) => {
+    const { api, messages } = makeStream()
+    const split = Math.max(1, Math.floor(text.length / 2))
+
+    api.appendDelta(text.slice(0, split))
+    api.appendDelta(text.slice(split))
+    api.reconcileFinalText(text)
+    api.endStreaming()
+
+    expect(messages.value[0]?.text).toBe(text)
     api.cleanup()
   })
 

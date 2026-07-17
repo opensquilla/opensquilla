@@ -3,6 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_setup_marker_follows_active_profile_state_dir(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox.backend.windows_default_setup import (
+        default_setup_marker_path,
+    )
+
+    profile_home = tmp_path / "desktop-profile"
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(profile_home))
+
+    assert default_setup_marker_path() == profile_home / "sandbox" / "setup_marker.json"
+
+
 def test_support_probe_reports_unavailable_off_windows(monkeypatch) -> None:
     from opensquilla.sandbox.backend import windows_default_support as mod
 

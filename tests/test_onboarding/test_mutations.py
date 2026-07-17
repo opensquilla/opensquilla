@@ -472,6 +472,296 @@ def test_upsert_llm_provider_preserves_existing_api_key_on_same_provider():
     assert res2.config.llm.model == "m2"
 
 
+def test_upsert_llm_provider_required_key_legacy_preserve_ignores_endpoint_change():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openai",
+            "model": "model-a",
+            "api_key": "sk-required",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="openai",
+        model="model-b",
+        api_key="",
+        base_url="https://b.example.test/v1",
+    )
+
+    assert res.config.llm.api_key == "sk-required"
+    assert res.config.llm.base_url == "https://b.example.test/v1"
+
+
+def test_upsert_llm_provider_preserves_optional_key_on_same_custom_provider():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "sk-optional",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        api_key="",
+        preserve_api_key=True,
+        base_url="https://LLM.example.test:443/v2",
+    )
+
+    assert res.config.llm.api_key == "sk-optional"
+    assert res.config.llm.model == "model-b"
+
+
+def test_upsert_llm_provider_optional_preserve_treats_whitespace_env_as_blank():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "sk-optional",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        api_key_env="   ",
+        preserve_api_key=True,
+        base_url="https://llm.example.test/v2",
+    )
+
+    assert res.config.llm.api_key == "sk-optional"
+    assert res.config.llm.api_key_env == ""
+
+
+@pytest.mark.parametrize(
+    "candidate_base_url",
+    [
+        "https://other.example.test/v1",
+        "http://llm.example.test/v2",
+        "https://llm.example.test:444/v2",
+        "https://llm.example.test:not-a-port/v2",
+    ],
+)
+def test_upsert_llm_provider_optional_preserve_rejects_changed_or_invalid_origin(
+    candidate_base_url: str,
+):
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "sk-origin-a",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        preserve_api_key=True,
+        base_url=candidate_base_url,
+    )
+
+    assert res.config.llm.api_key == ""
+    assert res.config.llm.base_url == candidate_base_url
+
+
+def test_upsert_llm_provider_optional_preserve_blank_base_uses_default_origin():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "ollama",
+            "model": "model-a",
+            "api_key": "sk-remote-ollama",
+            "base_url": "https://remote-ollama.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="ollama",
+        model="model-b",
+        preserve_api_key=True,
+        base_url="",
+    )
+
+    assert res.config.llm.base_url == "http://localhost:11434"
+    assert res.config.llm.api_key == ""
+
+
+def test_upsert_llm_provider_optional_preserve_omitted_base_keeps_stored_origin():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "ollama",
+            "model": "model-a",
+            "api_key": "sk-remote-ollama",
+            "base_url": "https://remote-ollama.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="ollama",
+        model="model-b",
+        preserve_api_key=True,
+    )
+
+    assert res.config.llm.base_url == "https://remote-ollama.example.test/v1"
+    assert res.config.llm.api_key == "sk-remote-ollama"
+
+
+def test_upsert_llm_provider_optional_env_reference_follows_same_origin_path():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key_env": "CUSTOM_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        base_url="https://A.example.test:443/alternate/v2",
+    )
+
+    assert res.config.llm.api_key_env == "CUSTOM_ORIGIN_A_KEY"
+
+
+def test_upsert_llm_provider_optional_env_reference_never_crosses_origin():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key_env": "CUSTOM_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        base_url="https://b.example.test/v1",
+    )
+
+    assert res.config.llm.api_key_env == ""
+
+
+def test_upsert_llm_provider_clears_optional_key_by_default():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "sk-optional",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        api_key="",
+        base_url="https://llm.example.test/v1",
+    )
+
+    assert res.config.llm.api_key == ""
+
+
+def test_upsert_llm_provider_optional_preserve_yields_to_env_replacement():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "sk-optional",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        api_key_env="CUSTOM_REPLACEMENT_KEY",
+        preserve_api_key=True,
+        base_url="https://llm.example.test/v1",
+    )
+
+    assert res.config.llm.api_key == ""
+    assert res.config.llm.api_key_env == "CUSTOM_REPLACEMENT_KEY"
+
+
+def test_upsert_llm_provider_optional_preserve_never_crosses_providers():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "sk-custom",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="ollama",
+        model="llama3.1",
+        preserve_api_key=True,
+    )
+
+    assert res.config.llm.provider == "ollama"
+    assert res.config.llm.api_key == ""
+
+
+def test_upsert_llm_provider_optional_preserve_ignores_oauth_stale_key():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openai_codex",
+            "model": "gpt-5.1-codex",
+            "api_key": "stale-key",
+        }
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="openai_codex",
+        model="gpt-5.1-codex",
+        preserve_api_key=True,
+    )
+
+    assert res.config.llm.api_key == ""
+
+
+def test_upsert_llm_provider_optional_preserve_requires_stored_explicit_key():
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "runtime-env-value",
+            "base_url": "https://llm.example.test/v1",
+        }
+    )
+    cfg.mark_runtime_secret("llm.api_key")
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        preserve_api_key=True,
+        base_url="https://llm.example.test/v1",
+    )
+
+    assert res.config.llm.api_key == ""
+
+
 def test_upsert_llm_provider_can_use_env_key_without_secret():
     cfg = GatewayConfig()
     res = upsert_llm_provider(

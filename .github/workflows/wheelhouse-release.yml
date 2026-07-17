@@ -338,7 +338,8 @@ jobs:
           }
           .github/scripts/verify-release-windows-upgrade.ps1 `
             -CandidateInstaller $candidates[0].FullName `
-            -Label built-candidate
+            -Label built-candidate `
+            -VerifyLongRunningUpdateBanner
 
       - name: List Windows artifacts
         shell: bash
@@ -663,7 +664,7 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 75
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout release verification helpers
         uses: actions/checkout@v4
@@ -811,7 +812,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 75
     permissions:
-      contents: read
+      contents: write
     steps:
       - name: Checkout release verification helpers
         uses: actions/checkout@v4

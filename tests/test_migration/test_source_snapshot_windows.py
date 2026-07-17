@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import stat
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -104,8 +106,8 @@ class _FakeWindowsApi:
         assert self._handles[handle] == path
         return tuple(sorted(self.children.get(path, ())))
 
-    def read(self, handle: int, size: int) -> bytes:
-        path = self._handles[handle]
+    def read(self, handle: int, size: int, *, path: Path) -> bytes:
+        assert self._handles[handle] == path
         self.read_paths.append(path)
         data = self.data[path]
         offset = self._offsets[handle]
@@ -130,6 +132,40 @@ def _add_gateway_authority(api: _FakeWindowsApi) -> None:
     api.children[api.root / "state"] = tuple(
         sorted({*api.children[api.root / "state"], *(path.name for path in values)})
     )
+
+
+def _add_reparse_descendant(
+    api: _FakeWindowsApi,
+    *,
+    top_level: str,
+) -> Path:
+    """Add a representative generated tree ending in a Windows reparse point."""
+
+    top = api.root / top_level
+    repository = top / "run-1" / "repo"
+    reparse = repository / ".venv" / "Scripts" / "python.exe"
+    directories = (
+        top,
+        top / "run-1",
+        repository,
+        repository / ".venv",
+        repository / ".venv" / "Scripts",
+    )
+    next_inode = max(value.identity.inode for value in api.nodes.values()) + 1
+    for offset, directory in enumerate(directories):
+        api.nodes[directory] = _information(next_inode + offset, directory=True)
+    api.nodes[reparse] = _information(
+        next_inode + len(directories),
+        directory=False,
+        attributes=windows_snapshot._FILE_ATTRIBUTE_REPARSE_POINT,
+    )
+    api.children[api.root] = tuple(sorted({*api.children[api.root], top_level}))
+    api.children[top] = ("run-1",)
+    api.children[top / "run-1"] = ("repo",)
+    api.children[repository] = (".venv",)
+    api.children[repository / ".venv"] = ("Scripts",)
+    api.children[repository / ".venv" / "Scripts"] = ("python.exe",)
+    return reparse
 
 
 def test_public_scan_and_copy_use_pinned_api_for_sqlite_bundle(
@@ -170,6 +206,96 @@ def test_public_scan_and_copy_use_pinned_api_for_sqlite_bundle(
         assert destination.read_bytes() == copy_api.data[entry.source]
         assert (entry.source, True) in copy_api.open_modes
         assert not copy_api.open_handles
+
+
+def test_scan_excludes_transient_sqlite_shm_without_reading_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWindowsApi()
+    shm = api.root / "state" / "sessions.db-shm"
+    monkeypatch.setattr(windows_snapshot, "_new_api", lambda: api)
+
+    snapshot = windows_snapshot.scan_windows_source_tree(
+        api.root,
+        destination_prefix=Path(),
+        role="primary",
+        excluded_leaf_suffixes=("-shm",),
+    )
+
+    files = {
+        entry.relative.as_posix()
+        for entry in snapshot.entries
+        if entry.entry_type == "file"
+    }
+    assert files == {"state/sessions.db", "state/sessions.db-wal"}
+    assert shm not in api.read_paths
+    assert snapshot.excluded_leaf_suffixes == ("-shm",)
+
+
+@pytest.mark.parametrize("top_level", ["code-task", "profiles"])
+def test_scan_excludes_non_imported_tree_before_opening_its_reparse_descendant(
+    monkeypatch: pytest.MonkeyPatch,
+    top_level: str,
+) -> None:
+    api = _FakeWindowsApi()
+    reparse = _add_reparse_descendant(api, top_level=top_level)
+    excluded_root = api.root / top_level
+    monkeypatch.setattr(windows_snapshot, "_new_api", lambda: api)
+
+    snapshot = windows_snapshot.scan_windows_source_tree(
+        api.root,
+        destination_prefix=Path(),
+        role="primary",
+        excluded={Path(top_level)},
+    )
+
+    assert snapshot.excluded == frozenset({Path(top_level)})
+    assert all(
+        Path(top_level) not in entry.relative.parents
+        and entry.relative != Path(top_level)
+        for entry in snapshot.entries
+    )
+    assert excluded_root not in api.open_order
+    assert reparse not in api.open_order
+    assert not api.open_handles
+
+
+def test_scan_still_rejects_reparse_outside_excluded_code_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api = _FakeWindowsApi()
+    _add_reparse_descendant(api, top_level="code-task")
+    workspace_reparse = _add_reparse_descendant(api, top_level="workspace")
+    monkeypatch.setattr(windows_snapshot, "_new_api", lambda: api)
+
+    with pytest.raises(
+        windows_snapshot.WindowsSourceSnapshotError,
+        match="reparse point",
+    ):
+        windows_snapshot.scan_windows_source_tree(
+            api.root,
+            destination_prefix=Path(),
+            role="primary",
+            excluded={Path("code-task")},
+        )
+
+    assert api.root / "code-task" not in api.open_order
+    assert workspace_reparse in api.open_order
+    assert not api.open_handles
+
+
+def test_win32_read_error_keeps_the_specific_source_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = Path("C:/portable/state/sessions.db")
+    monkeypatch.setattr(windows_snapshot.ctypes, "get_last_error", lambda: 33, raising=False)
+
+    with pytest.raises(windows_snapshot.WindowsSourceSnapshotError) as captured:
+        windows_snapshot._raise_windows_error("ReadFile", source)
+
+    assert captured.value.errno == 33
+    assert captured.value.filename == str(source)
+    assert "ReadFile failed (WinError 33)" in str(captured.value)
 
 
 def test_parent_reparse_swap_is_rejected_before_sqlite_leaf_read(
@@ -218,9 +344,9 @@ def test_file_writer_sharing_still_rejects_metadata_change_during_read(
     original_read = api.read
     mutated = False
 
-    def mutate_after_first_read(handle: int, size: int) -> bytes:
+    def mutate_after_first_read(handle: int, size: int, *, path: Path) -> bytes:
         nonlocal mutated
-        chunk = original_read(handle, size)
+        chunk = original_read(handle, size, path=path)
         if api._handles[handle] == database and not mutated:
             current = api.nodes[database]
             api.nodes[database] = windows_snapshot._HandleInformation(
@@ -367,6 +493,7 @@ def test_migration_dispatch_retains_native_windows_snapshot_authority(
         destination_prefix=Path(),
         role="primary",
         excluded=frozenset(),
+        excluded_leaf_suffixes=(),
     )
     monkeypatch.setattr(home_migration, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(home_migration, "scan_windows_source_tree", lambda *args, **kwargs: native)
@@ -489,6 +616,89 @@ def test_real_windows_snapshot_copies_database_sidecars(tmp_path: Path) -> None:
         destination = tmp_path / "copied" / entry.relative
         windows_snapshot.copy_windows_snapshot_file(snapshot, entry, destination)
         assert destination.read_bytes() == values[entry.relative.name]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires real Win32 source handles")
+def test_real_windows_active_sqlite_shm_is_ignored_and_wal_is_preserved(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-active-sqlite"
+    state = source / "state"
+    state.mkdir(parents=True)
+    database = state / "sessions.db"
+    writer = sqlite3.connect(database)
+    try:
+        assert writer.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE sessions (value TEXT NOT NULL)")
+        writer.execute("INSERT INTO sessions VALUES ('committed-in-wal')")
+        writer.commit()
+        shm = database.with_name("sessions.db-shm")
+        wal = database.with_name("sessions.db-wal")
+        assert shm.is_file()
+        assert wal.stat().st_size > 32
+
+        started = time.monotonic()
+        snapshot = windows_snapshot.scan_windows_source_tree(
+            source,
+            destination_prefix=Path(),
+            role="primary",
+            excluded_leaf_suffixes=("-shm",),
+        )
+        assert time.monotonic() - started < 5
+        files = {
+            entry.relative.as_posix()
+            for entry in snapshot.entries
+            if entry.entry_type == "file"
+        }
+        assert files == {"state/sessions.db", "state/sessions.db-wal"}
+
+        copied = tmp_path / "copied-active-sqlite"
+        for entry in snapshot.entries:
+            if entry.entry_type == "file":
+                windows_snapshot.copy_windows_snapshot_file(
+                    snapshot,
+                    entry,
+                    copied / entry.relative,
+                )
+        reader = sqlite3.connect(copied / "state" / "sessions.db")
+        try:
+            assert reader.execute("SELECT value FROM sessions").fetchall() == [
+                ("committed-in-wal",)
+            ]
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires real Win32 byte-range locks")
+def test_real_windows_persistent_file_lock_reports_path_quickly(
+    tmp_path: Path,
+) -> None:
+    import msvcrt
+
+    source = tmp_path / "source-locked"
+    source.mkdir()
+    locked = source / "persistent.bin"
+    locked.write_bytes(b"locked-data")
+    with locked.open("r+b") as owner:
+        msvcrt.locking(owner.fileno(), msvcrt.LK_NBLCK, 1)
+        try:
+            started = time.monotonic()
+            with pytest.raises(windows_snapshot.WindowsSourceSnapshotError) as captured:
+                windows_snapshot.scan_windows_source_tree(
+                    source,
+                    destination_prefix=Path(),
+                    role="primary",
+                    excluded_leaf_suffixes=("-shm",),
+                )
+            assert time.monotonic() - started < 5
+            assert captured.value.errno in {32, 33}
+            assert captured.value.filename == str(locked)
+        finally:
+            owner.seek(0)
+            msvcrt.locking(owner.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="requires real Win32 source handles")

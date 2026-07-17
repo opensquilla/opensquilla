@@ -1381,13 +1381,32 @@ class _FakeGatewayClient:
         self.delete_calls.append(keys)
         return self.delete_result
 
-    async def session_history(self, session_key: str, limit: int = 1000) -> dict[str, object]:
-        self.history_calls.append({"session_key": session_key, "limit": limit})
+    async def session_history(
+        self,
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        include_canonical: bool | None = None,
+        include_summaries: bool | None = None,
+    ) -> dict[str, object]:
+        self.history_calls.append(
+            {
+                "session_key": session_key,
+                "limit": limit,
+                "before": before,
+                "after": after,
+                "include_canonical": include_canonical,
+                "include_summaries": include_summaries,
+            }
+        )
         return {
             "messages": [
                 {"role": "user", "text": "persisted hello"},
                 {"role": "assistant", "text": "persisted reply"},
-            ]
+            ],
+            "has_more": False,
         }
 
     async def list_models(self) -> list[dict[str, object]]:
@@ -1875,7 +1894,16 @@ async def test_gateway_slash_save_exports_persisted_history(monkeypatch, tmp_pat
     )
 
     assert handled is True
-    assert fake.history_calls == [{"session_key": "agent:main:abc123", "limit": 1000}]
+    assert fake.history_calls == [
+        {
+            "session_key": "agent:main:abc123",
+            "limit": 200,
+            "before": None,
+            "after": None,
+            "include_canonical": True,
+            "include_summaries": False,
+        }
+    ]
     text = output.read_text(encoding="utf-8")
     assert "## You" in text
     assert "persisted hello" in text

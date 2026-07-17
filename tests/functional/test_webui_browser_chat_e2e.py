@@ -4829,6 +4829,37 @@ def test_issue344_stale_task_events_do_not_leak_into_active_turn_in_real_browser
 
               await page.waitForTimeout(300);
 
+              // Finish task-B, then exercise an authoritative empty snapshot
+              // on a fresh turn. The stale preview must be removed without
+              // leaving a blank assistant bubble in the legacy DOM.
+              await emit(
+                page,
+                "session.event.done",
+                { task_id: "task-B", text_snapshot: "Generating HTML" },
+                true
+              );
+              await page.waitForTimeout(100);
+              const bubblesBeforeEmptySnapshot = await page.$$eval(
+                ".msg.assistant",
+                els => els.length
+              );
+              await emit(page, "task.running", { task_id: "task-C" });
+              await emit(page, "session.event.text_delta", {
+                text: "STALE_EMPTY_SNAPSHOT_PREVIEW",
+                task_id: "task-C",
+              });
+              await emit(
+                page,
+                "session.event.done",
+                { task_id: "task-C", text_snapshot: "" },
+                true
+              );
+              await page.waitForTimeout(100);
+              const bubblesAfterEmptySnapshot = await page.$$eval(
+                ".msg.assistant",
+                els => els.length
+              );
+
               const result = await page.evaluate(() => {
                 const log = JSON.parse(
                   localStorage.getItem("opensquilla.chat.debugLog") || "[]"
@@ -4850,8 +4881,13 @@ def test_issue344_stale_task_events_do_not_leak_into_active_turn_in_real_browser
                   bodyHasUntaggedTool: bodyText.includes("legacy_untagged_tool"),
                   bodyHasStaleTool: bodyText.includes("create_pdf_py_stale"),
                   bodyHasStaleError: bodyText.includes("STALE_PPTX_FAILURE_MARKER"),
+                  bodyHasEmptySnapshotPreview: bodyText.includes(
+                    "STALE_EMPTY_SNAPSHOT_PREVIEW"
+                  ),
                 };
               });
+              result.bubblesBeforeEmptySnapshot = bubblesBeforeEmptySnapshot;
+              result.bubblesAfterEmptySnapshot = bubblesAfterEmptySnapshot;
               result.pageErrors = pageErrors;
               console.log(JSON.stringify(result));
               await browser.close();
@@ -4903,6 +4939,12 @@ def test_issue344_stale_task_events_do_not_leak_into_active_turn_in_real_browser
     # Stale task-A artifacts never rendered into task-B's turn.
     assert not payload["bodyHasStaleTool"], "stale tool card leaked into the turn"
     assert not payload["bodyHasStaleError"], "stale terminal error leaked into the turn"
+    assert not payload["bodyHasEmptySnapshotPreview"], (
+        "authoritative empty snapshot left stale preview text in the DOM"
+    )
+    assert payload["bubblesAfterEmptySnapshot"] == payload["bubblesBeforeEmptySnapshot"], (
+        "authoritative empty snapshot left a ghost assistant bubble"
+    )
     assert "create_pdf_py_stale" not in payload["appendNames"]
     # task-B's own tool and untagged legacy events still flow.
     assert payload["bodyHasActiveTool"], "active task tool did not render"

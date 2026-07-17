@@ -114,7 +114,21 @@ def windows_sensitive_marker(path: str | Path, *, home: Path | None = None) -> s
             return "user_secret"
     if _has_sensitive_user_part(candidate):
         return "user_secret"
-    for root in opensquilla_protected_roots(base_home):
+    protected_roots = list(opensquilla_protected_roots(base_home))
+    if home is None:
+        # The active profile may live outside ``Path.home()/.opensquilla``
+        # (Desktop uses OPENSQUILLA_STATE_DIR). Protect its sandbox marker and
+        # secrets with the same classification as the legacy default profile.
+        from opensquilla.paths import default_opensquilla_home
+
+        active_root = default_opensquilla_home()
+        protected_roots.extend(
+            (
+                active_root / "sandbox",
+                active_root / "sandbox-secrets",
+            )
+        )
+    for root in dict.fromkeys(protected_roots):
         if _is_relative_to_casefold(candidate, root):
             return "opensquilla_sandbox_state"
     text = str(candidate).replace("\\", "/").lower()

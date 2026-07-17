@@ -93,6 +93,21 @@ def test_chat_does_not_render_persistent_bypass_warning_chip() -> None:
     assert "Approvals bypassed by global default" not in chat_source
 
 
+def test_chat_protocol_text_compatibility_filter_is_non_destructive() -> None:
+    source = _read_chat_js()
+    start = source.index("function _stripProtocolTextLeak(text)")
+    end = source.index("\n  }", start) + len("\n  }")
+    body = source[start:end]
+
+    # The shared backend stream is the canonical protocol boundary. Legacy UI
+    # keeps this helper name for call-site compatibility, but it must never
+    # guess from user-visible text and truncate Markdown/XML documentation.
+    assert "return String(text || '');" in body
+    assert "slice(0, match.index)" not in body
+    assert "_looksLikeProtocolTextSuffix" not in source
+    assert "_PROTOCOL_TEXT_MARKER_RE" not in source
+
+
 def test_webui_bypass_shortcuts_do_not_enable_full_mode() -> None:
     chat_source = _read_chat_js()
     monitor_source = _read_approval_monitor_js()
@@ -205,10 +220,12 @@ def test_chat_session_controls_mount_in_topbar_center_slot() -> None:
         assert "flex-shrink: 0" in rule
 
 
-def test_chat_composer_autofocus_is_desktop_only() -> None:
+def test_chat_composer_autofocus_requires_an_active_desktop_page() -> None:
     source = _read_chat_js()
 
     assert "function _shouldAutofocusComposer()" in source
+    assert "document.visibilityState !== 'visible'" in source
+    assert "!document.hasFocus()" in source
     assert "window.matchMedia('(max-width: 768px)')" in source
     assert "window.matchMedia('(pointer: coarse)')" in source
     assert "if (_textarea && _shouldAutofocusComposer()) _textarea.focus();" in source

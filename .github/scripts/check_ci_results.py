@@ -80,6 +80,7 @@ def check_ci_results(env: Mapping[str, str]) -> list[str]:
         ("RESULT_TUI", "OpenTUI package tests", flags["tui_changed"] or full),
         ("RESULT_DESKTOP", "Desktop Electron unit tests", flags["desktop_changed"] or full),
         ("RESULT_UBUNTU", "Ubuntu quality gate", flags["python_changed"] or full),
+        ("RESULT_UBUNTU_FULL", "Ubuntu full test matrix", full),
         (
             "RESULT_WINDOWS_SMOKE",
             "Windows compatibility smoke tests",
@@ -102,7 +103,10 @@ def check_ci_results(env: Mapping[str, str]) -> list[str]:
         (
             "RESULT_DESKTOP_RECOVERY_E2E",
             "Desktop recovery E2E matrix",
-            flags["platform_sensitive_changed"] or flags["desktop_changed"] or full,
+            flags["frontend_changed"]
+            or flags["platform_sensitive_changed"]
+            or flags["desktop_changed"]
+            or full,
         ),
         (
             "RESULT_RELEASE",

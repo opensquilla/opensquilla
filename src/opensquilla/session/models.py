@@ -300,3 +300,21 @@ class AgentTaskRecord(SQLModel, table=True):
     details: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
     schema_version: int = 1
+
+
+class TurnIngressReceipt(SQLModel, table=True):
+    """Durable idempotency receipt for one accepted inbound turn."""
+
+    __tablename__ = "turn_ingress_receipts"
+
+    receipt_id: str = Field(default_factory=_new_uuid, primary_key=True)
+    source_scope: str = Field(index=True, max_length=256)
+    request_session_key: str = Field(index=True, max_length=512)
+    client_request_id: str = Field(max_length=256)
+    request_fingerprint: str = Field(max_length=128)
+    accepted_session_key: str = Field(index=True, max_length=512)
+    session_id: str = Field(index=True)
+    message_id: str
+    task_id: str | None = Field(default=None, index=True)
+    accepted_at: int = Field(default_factory=_now_ms)
+    schema_version: int = 1

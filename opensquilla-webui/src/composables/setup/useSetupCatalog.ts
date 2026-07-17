@@ -8,6 +8,7 @@ import {
   normalizeDiscoveredModels,
   useSetupProviderForm,
   type DiscoveredModelsByProvider,
+  type EffectiveMaxTokens,
 } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 import {
@@ -29,7 +30,8 @@ import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { adapterLoaded } from '@/lib/channelStatus'
-import { localizeRpcError, saveFailedMessage, type RpcClientError } from '@/lib/rpcErrors'
+import type { RpcClientError } from '@/lib/rpc'
+import { localizeRpcError, saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabelKey } from '@/utils/chat/routerTiers'
 
@@ -74,6 +76,7 @@ interface ProviderSpec {
   fields?: FieldSpec[]
   whatYouNeed?: string[]
   envKey?: string
+  acceptsApiKey?: boolean
   requiresApiKey?: boolean
   defaultBaseUrl?: string
   defaultModel?: string
@@ -263,6 +266,10 @@ interface ConfigData {
   }
 }
 
+interface EffectiveConfigData {
+  fields?: Record<string, { value?: unknown; source?: string }>
+}
+
 export interface SettingsActionItem {
   label: string
   section: SettingsSectionId
@@ -282,6 +289,7 @@ const t = i18n.global.t
 const catalog = ref<OnboardingCatalog>({})
 const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
+const effectiveConfig = ref<EffectiveConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const channelTest = ref<ChannelTestState>({ phase: 'idle' })
 const channelEdit = ref<ChannelEditState>({ phase: 'idle' })
@@ -408,15 +416,19 @@ onUnmounted(() => {
 async function loadData() {
   try {
     await rpc.waitForConnection()
-    const [cat, st, cfg, chStatus] = await Promise.all([
+    const [cat, st, cfg, chStatus, effective] = await Promise.all([
       rpc.call<OnboardingCatalog>('onboarding.catalog'),
       rpc.call<OnboardingStatus>('onboarding.status'),
       rpc.call<ConfigData>('config.get'),
       rpc.call<{ channels: ChannelStatusRow[] }>('channels.status').catch(() => ({ channels: [] })),
+      // Optional on older gateways: effective metadata must never block the
+      // settings surface or provider saves.
+      rpc.call<EffectiveConfigData>('config.effective').catch(() => ({ fields: {} })),
     ])
     catalog.value = cat || {}
     status.value = st || {}
     config.value = cfg || {}
+    effectiveConfig.value = effective || {}
     channelStatus.value = chStatus || { channels: [] }
     pendingRestart.reconcile(channelStatus.value.channels || [])
     resetTierModelDiscovery()
@@ -476,7 +488,12 @@ const currentModel = computed(() => (config.value.llm || {}).model || '')
 const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
 // Lazy: routerPanel is declared below; this computed is only evaluated from
 // user-triggered strategy switches, long after setup completes.
-const modelStrategyTierCandidates = computed(() => ensembleTierCandidates.value)
+const modelStrategyTierCandidates = computed(() => {
+  const provider = normalizeProviderId(currentProvider.value)
+  return ensembleTierCandidates.value.filter(
+    candidate => normalizeProviderId(candidate.provider) === provider,
+  )
+})
 const modelStrategyForm = useSetupModelStrategyForm(
   routerForm,
   ensembleForm,
@@ -516,6 +533,36 @@ const providerIsLocal = computed(() => {
 const contextWindowGlobal = computed<number | null>(() => {
   const raw = Number((config.value.llm || {}).context_window_tokens)
   return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : null
+})
+
+const effectiveMaxTokens = computed<EffectiveMaxTokens | null>(() => {
+  const fields = effectiveConfig.value.fields || {}
+  const effectiveProvider = normalizeProviderId(fields['llm.provider']?.value)
+  const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
+  const effectiveModel = String(fields['llm.model']?.value || '').trim()
+  const selectedModel = currentFormModelValue()
+  if (
+    !effectiveProvider
+    || effectiveProvider !== selectedProvider
+    || !effectiveModel
+    || effectiveModel !== selectedModel
+  ) {
+    return null
+  }
+  const record = fields['llm.max_tokens']
+  const value = Number(record?.value)
+  const source = String(record?.source || '')
+  if (
+    !Number.isFinite(value)
+    || value <= 0
+    || !['config', 'catalog', 'default'].includes(source)
+  ) {
+    return null
+  }
+  return {
+    value: Math.floor(value),
+    source: source as EffectiveMaxTokens['source'],
+  }
 })
 
 const providerSummary = computed(() => {
@@ -653,6 +700,21 @@ const audioBadgeLabel = computed(() => {
 })
 const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? t('setup.common.leaveBlankKeep') : t('setup.audio.pasteKey'))
 
+const providerProbeMissingFields = computed(() => {
+  if (!providerForm.selectedProvider.value) return []
+  return providerFields.value
+    .filter(field => field.required === true && !isProviderCredentialField(field))
+    .filter(field => !String(providerForm.fieldValue(field, currentProviderConfig.value) ?? '').trim())
+    .map(providerProbeFieldLabel)
+})
+
+const providerProbeDisabledReason = computed(() => {
+  if (providerProbeMissingFields.value.length === 0) return ''
+  return t('setup.provider.probeMissingRequired', {
+    fields: providerProbeMissingFields.value.join(t('setup.provider.requiredFieldJoiner')),
+  })
+})
+
 const providerCredentialPanel = computed(() => {
   if (!providerSpec.value) return null
   const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
@@ -660,10 +722,19 @@ const providerCredentialPanel = computed(() => {
   const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
   const savedMatchesSelected = selectedProviderId !== '' && savedProviderId === selectedProviderId
   const requiresApiKey = providerSpec.value.requiresApiKey !== false
+  const acceptsApiKey = providerSpec.value.acceptsApiKey !== undefined
+    ? providerSpec.value.acceptsApiKey === true
+    // Older gateways do not publish acceptsApiKey. Fall back conservatively:
+    // a provider that requires a key necessarily accepts one, while an
+    // optional/keyless provider stays keyless instead of exposing a control
+    // whose semantics that gateway never advertised.
+    : requiresApiKey
 
   return {
     providerLabel: providerSpec.value.label || providerForm.selectedProvider.value,
     providerSelected: Boolean(providerForm.selectedProvider.value),
+    acceptsApiKey,
+    requiresApiKey,
     available: savedMatchesSelected ? savedCredential.available === true : !requiresApiKey,
     source: savedMatchesSelected
       ? String(savedCredential.source || 'none')
@@ -679,8 +750,10 @@ const providerCredentialPanel = computed(() => {
     apiKeyValue: String(providerForm.providerFieldValues.value.api_key || ''),
     apiKeyEnvValue: providerForm.fieldValue(
       { name: 'api_key_env', label: t('setup.common.apiKeyEnv'), default: providerSpec.value.envKey || '' },
-      config.value.llm || {},
+      savedMatchesSelected ? (config.value.llm || {}) : {},
     ),
+    probeReady: Boolean(providerForm.selectedProvider.value) && providerProbeMissingFields.value.length === 0,
+    probeDisabledReason: providerProbeDisabledReason.value,
     connection: providerForm.connection.value,
     onReveal: revealProviderCredential,
     onReplace: providerForm.startCredentialReplace,
@@ -706,6 +779,7 @@ const providerPanel = providerForm.createPanel({
   llmTimeoutSeconds: promotedForm.llmTimeoutSeconds,
   contextWindowTokens: promotedForm.contextWindowTokens,
   contextWindowGlobal,
+  effectiveMaxTokens,
   providerIsLocal,
 })
 
@@ -828,7 +902,7 @@ const ensemblePanel = ensembleForm.createPanel({
   statusText: ensembleStatusText,
   activeProvider: currentProvider,
   activeModel: currentModel,
-  tierCandidates: ensembleTierCandidates,
+  tierCandidates: modelStrategyTierCandidates,
   credentialStatus: computed(() => status.value.ensembleCredentialStatus || []),
 })
 
@@ -1168,6 +1242,12 @@ function isProviderCredentialField(field: FieldSpec): boolean {
   return field.name === 'api_key' || field.name === 'api_key_env'
 }
 
+function providerProbeFieldLabel(field: FieldSpec): string {
+  if (field.name === 'model') return t('setup.common.model')
+  if (field.name === 'base_url') return t('setup.common.baseUrl')
+  return field.label
+}
+
 function selectProvider(value: string) {
   providerForm.selectProvider(value)
 }
@@ -1223,6 +1303,7 @@ async function revealProviderCredential() {
 // form values. Never gates saving. The probe RPC requires a model id, so an
 // empty model field falls back to the catalog's default for the provider.
 function probeProviderConnection() {
+  if (providerProbeMissingFields.value.length > 0) return
   void providerForm.probeConnection({ defaultModel: providerSpec.value?.defaultModel || '' })
 }
 
@@ -1426,12 +1507,20 @@ function removeEnsembleCandidate(candidate: EnsembleCandidateView) {
   ensembleForm.removeCandidate(candidate)
 }
 
+function replaceEnsembleCandidate(candidate: EnsembleCandidateView, model: string) {
+  ensembleForm.replaceCandidate(candidate, model)
+}
+
+function setEnsembleAggregator(provider: string, model: string) {
+  ensembleForm.setAggregator(provider, model)
+}
+
 function setEnsembleCandidateRole(candidate: EnsembleCandidateView, role: EnsembleCandidateRole) {
   ensembleForm.setCandidateRole(candidate, role)
 }
 
 function importEnsembleTierCandidates() {
-  ensembleForm.importTierCandidates(ensembleTierCandidates.value)
+  ensembleForm.importTierCandidates(modelStrategyTierCandidates.value, currentProvider.value)
 }
 
 function migrateEnsembleLegacy() {
@@ -1600,6 +1689,43 @@ function capabilitySaveButtonClass(name: string): string {
 // Save actions
 // ---------------------------------------------------------------------------
 
+function sameEndpointOrigin(candidateValue: unknown, storedValue: unknown): boolean {
+  const candidate = String(candidateValue || '').trim()
+  if (!candidate) return true
+  const stored = String(storedValue || '').trim()
+  if (!stored) return false
+  if (candidate === stored) return true
+  try {
+    const candidateOrigin = new URL(candidate).origin
+    const storedOrigin = new URL(stored).origin
+    return candidateOrigin !== 'null' && candidateOrigin === storedOrigin
+  } catch {
+    return false
+  }
+}
+
+function providerConfigurePayload(): Record<string, unknown> {
+  const payload = providerForm.payload()
+  const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
+  const savedCredential = status.value.llmCredentialStatus || {}
+  const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
+  const credentialPanel = providerCredentialPanel.value
+  const hasReplacement = payload.apiKey !== undefined || payload.apiKeyEnv !== undefined
+  const endpointMatches = sameEndpointOrigin(payload.baseUrl, config.value.llm?.base_url)
+  if (
+    credentialPanel?.acceptsApiKey === true
+    && credentialPanel.requiresApiKey === false
+    && savedCredential.source === 'explicit'
+    && selectedProviderId !== ''
+    && selectedProviderId === savedProviderId
+    && !hasReplacement
+    && endpointMatches
+  ) {
+    payload.preserveApiKey = true
+  }
+  return payload
+}
+
 async function patchConfig(patches: Record<string, unknown>): Promise<boolean> {
   if (!Object.keys(patches).length) return false
   const res = await rpc.call<{ restartRequired?: boolean }>('config.patch', { patches })
@@ -1628,7 +1754,7 @@ async function saveProvider() {
     return
   }
   try {
-    const payload = providerForm.payload()
+    const payload = providerConfigurePayload()
     await rpc.call('onboarding.provider.configure', payload)
     const restart = await patchConfig(promotedForm.providerPatches())
     // The per-model context-window override rides the deep-merge patch form. Key
@@ -1767,7 +1893,7 @@ async function applyProviderPreset() {
   }
   const presetId = selectedPreset.value?.presetId || providerForm.selectedProvider.value
   try {
-    await rpc.call('onboarding.provider.configure', { ...providerForm.payload(), presetId })
+    await rpc.call('onboarding.provider.configure', { ...providerConfigurePayload(), presetId })
     const restart = await patchConfig(promotedForm.providerPatches())
     await loadData()
     if (providerEnvMissing.value) {
@@ -2014,6 +2140,8 @@ async function copyConfigPath() {
     removeEnsembleModelOption,
     addEnsembleCandidate,
     removeEnsembleCandidate,
+    replaceEnsembleCandidate,
+    setEnsembleAggregator,
     setEnsembleCandidateRole,
     importEnsembleTierCandidates,
     migrateEnsembleLegacy,

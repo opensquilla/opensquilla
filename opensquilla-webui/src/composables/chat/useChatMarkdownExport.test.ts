@@ -33,4 +33,30 @@ describe('buildChatMarkdown', () => {
     expect(markdown).not.toContain('"type": "subagent_completion"')
     expect(markdown).not.toContain('"parent_session_key"')
   })
+
+  it('exports protocol-shaped documentation without truncating it', () => {
+    const text = [
+      'Document `<tool_calls>` inline.',
+      '```xml',
+      '<tool_calls><invoke name="demo"></invoke></tool_calls>',
+      '```',
+      'Keep `<｜DSML｜tool_calls>` too.',
+      '<details><summary>View areas around line 10</summary>Visible note.</details>',
+      'Final suffix.',
+    ].join('\n')
+
+    const markdown = buildChatMarkdown({
+      title: 'Protocol documentation',
+      exportedAt: '2026-07-15T14:39:00.000Z',
+      messages: [{
+        displayRole: 'assistant',
+        roleLabel: 'Assistant',
+        text,
+        timeStr: 'now',
+      } as ChatRenderedMessage],
+    })
+
+    expect(markdown).toContain(text)
+    expect(markdown).toContain('Final suffix.')
+  })
 })

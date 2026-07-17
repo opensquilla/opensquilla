@@ -51,7 +51,7 @@ from opensquilla.gateway.session_lifecycle import (
     apply_task_lifecycle_to_session,
     session_status_for_task_status,
 )
-from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.gateway.session_services import get_session_lock, get_session_storage
 from opensquilla.gateway.session_streams import get_session_streams
 from opensquilla.gateway.websocket import get_registry
 from opensquilla.paths import default_opensquilla_home
@@ -697,7 +697,7 @@ class ServiceContainer:
                 pass
         if self.meta_run_writer is not None:
             try:
-                self.meta_run_writer.close()
+                await asyncio.to_thread(self.meta_run_writer.close)
             except Exception:
                 pass
         if self.router_decision_writer is not None:
@@ -718,12 +718,12 @@ class ServiceContainer:
             except Exception:
                 pass
             try:
-                self.router_decision_writer.close()
+                await asyncio.to_thread(self.router_decision_writer.close)
             except Exception:
                 pass
         if self.turn_error_writer is not None:
             try:
-                self.turn_error_writer.close()
+                await asyncio.to_thread(self.turn_error_writer.close)
             except Exception:
                 pass
         try:
@@ -936,6 +936,16 @@ def _gateway_home(config: GatewayConfig) -> Path:
     return default_opensquilla_home()
 
 
+def _desktop_ownership_profile_home(config: GatewayConfig) -> Path:
+    """Return the Desktop profile root independently of its runtime state override."""
+
+    config_path = _resolved_path(getattr(config, "config_path", None))
+    if config_path is not None:
+        return config_path.parent
+    default_home = default_opensquilla_home()
+    return _resolved_path(str(default_home)) or default_home.absolute()
+
+
 async def _ensure_sandbox_setup_on_boot(config: GatewayConfig) -> Any | None:
     """Run automatic sandbox setup when enabled."""
 
@@ -1048,28 +1058,56 @@ async def dispatch_task_runtime_turn(
             "provider_request_too_large",
             "current_turn_context_exhausted",
         }:
-            message_id = getattr(run, "persisted_user_message_id", None)
+            rollback_reason = exc.code
             remove_message = getattr(session_manager, "remove_message", None)
-            if isinstance(message_id, str) and message_id and callable(remove_message):
-                try:
-                    removed = remove_message(run.session_key, message_id)
-                    if inspect.isawaitable(removed):
-                        removed = await removed
-                    if removed:
-                        log.info(
-                            "task_runtime.user_message_rolled_back",
-                            session_key=run.session_key,
-                            message_id=message_id,
-                            reason=exc.code,
+            raw_message_ids = getattr(run, "persisted_user_message_ids", ())
+            message_ids: list[str] = []
+            for message_id in (
+                getattr(run, "persisted_user_message_id", None),
+                *(raw_message_ids if isinstance(raw_message_ids, list | tuple) else ()),
+            ):
+                if (
+                    isinstance(message_id, str)
+                    and message_id
+                    and message_id not in message_ids
+                ):
+                    message_ids.append(message_id)
+
+            async def _remove_persisted_messages() -> None:
+                assert callable(remove_message)
+                for persisted_message_id in message_ids:
+                    try:
+                        removed = remove_message(
+                            run.session_key,
+                            persisted_message_id,
                         )
-                except Exception as rb_exc:  # noqa: BLE001 - preserve terminal error
-                    log.warning(
-                        "task_runtime.user_message_rollback_failed",
-                        session_key=run.session_key,
-                        message_id=message_id,
-                        reason=exc.code,
-                        error=str(rb_exc),
-                    )
+                        if inspect.isawaitable(removed):
+                            removed = await removed
+                        if removed:
+                            log.info(
+                                "task_runtime.user_message_rolled_back",
+                                session_key=run.session_key,
+                                message_id=persisted_message_id,
+                                reason=rollback_reason,
+                            )
+                    except Exception as rb_exc:  # noqa: BLE001 - preserve terminal error
+                        # Try every collected id even if one best-effort cleanup
+                        # fails; the provider error remains the terminal cause.
+                        log.warning(
+                            "task_runtime.user_message_rollback_failed",
+                            session_key=run.session_key,
+                            message_id=persisted_message_id,
+                            reason=rollback_reason,
+                            error=str(rb_exc),
+                        )
+
+            if callable(remove_message) and message_ids:
+                rollback_lock = get_session_lock(turn_runner, run.session_key)
+                if rollback_lock is None:
+                    await _remove_persisted_messages()
+                else:
+                    async with rollback_lock:
+                        await _remove_persisted_messages()
         raise
 
 
@@ -1149,6 +1187,11 @@ def build_task_runtime_run_kwargs(
         # unanswered future prompts into context. Forwarded only when present so
         # legacy callers/mocks without the field keep the positional trim.
         kwargs["bound_user_message_id"] = bound_user_message_id
+    assistant_message_sink = getattr(run, "assistant_message_sink", None)
+    if assistant_message_sink is not None:
+        # Internal-only callback: the finalizer supplies the exact assistant
+        # row/content to TaskRuntime for durable channel delivery.
+        kwargs["assistant_message_sink"] = assistant_message_sink
     return kwargs
 
 
@@ -1530,6 +1573,28 @@ def _setup_file_logging(config: GatewayConfig | None = None) -> None:
         # The first warning fired before the file handler existed, so it only
         # reached the console; re-emit it so debug.log records it too.
         logging.getLogger(__name__).warning("structlog bridge disabled: %s", bridge_error)
+
+
+@dataclass
+class _GatewayShutdownRelay:
+    """Accept shutdown requests before the CLI runner installs its handler."""
+
+    _handler: Callable[[str], None] | None = field(default=None, repr=False)
+    _pending_reason: str | None = field(default=None, repr=False)
+
+    def __call__(self, reason: str) -> None:
+        handler = self._handler
+        if handler is not None:
+            handler(reason)
+        elif self._pending_reason is None:
+            self._pending_reason = reason
+
+    def install(self, handler: Callable[[str], None]) -> None:
+        self._handler = handler
+        pending_reason = self._pending_reason
+        self._pending_reason = None
+        if pending_reason is not None:
+            handler(pending_reason)
 
 
 @dataclass
@@ -2200,30 +2265,14 @@ async def build_services(
     apply_model_catalog_overrides(model_catalog, config)
 
     async def _warm_model_catalog_and_pricing() -> None:
-        # Registry-driven live listing first: when the primary provider's
-        # spec names a keyless public model listing (live_catalog_url),
-        # ingest its platform-published windows/limits into the shared
-        # catalog's provider-scoped live layer so request budgeting tracks
-        # the platform instead of the packaged fallback rows. Gated on the
-        # resolved credential like the OpenRouter fetch below — an
-        # unconfigured provider cannot serve turns, so warming it would
-        # only add network I/O to keyless boots (and to the offline default
-        # test suite, which relies on credential stripping for isolation).
-        # Warmed once per process with a hard deadline; provider hot-apply
-        # keeps the packaged rows until the next restart, matching the
-        # OpenRouter warm.
-        if api_key:
-            try:
-                from opensquilla.provider.live_catalog import warm_live_provider_catalogs
+        # Registry-driven live listing first. The shared refresh boundary
+        # re-resolves the CURRENT config at execution time: desktop deferred
+        # warmups therefore see a provider/key saved after first paint instead
+        # of the stale credential captured when build_services started. It also
+        # preserves the keyless-boot zero-network contract and the hard timeout.
+        from opensquilla.gateway.model_catalog_refresh import refresh_live_model_catalog
 
-                await asyncio.wait_for(
-                    warm_live_provider_catalogs(
-                        model_catalog, [config.llm.provider], proxy=proxy
-                    ),
-                    timeout=5.0,
-                )
-            except Exception as e:  # noqa: BLE001 - live metadata must never block boot
-                log.warning("build_services.live_catalog_warm_failed", error=str(e))
+        await refresh_live_model_catalog(config, catalog=model_catalog)
 
         if not (api_key and config.llm.provider == "openrouter"):
             return
@@ -2879,6 +2928,29 @@ async def start_gateway_server(
 
     _pid_lock = GatewayPidLock(_state_path(config, ""))
     _pid_lock.acquire()
+
+    # A Desktop child opts into a stronger, nonce-verifiable ownership record.
+    # Keep it separate from gateway.pid so legacy CLI/readers retain their
+    # exact schema. Electron supplies a separate userData control directory so
+    # an external or intentionally missing runtime state_dir remains untouched.
+    # Cleanup is deliberately owned by cli.main.gateway_run:
+    # that outer boundary removes the record only *after* the profile writer
+    # lock exits, so record disappearance is a safe restart signal.
+    _desktop_gateway_ownership = None
+    if run:
+        try:
+            from opensquilla.gateway.desktop_ownership import (
+                activate_desktop_gateway_ownership,
+            )
+
+            desktop_profile_home = _desktop_ownership_profile_home(config)
+            _desktop_gateway_ownership = activate_desktop_gateway_ownership(
+                profile_home=desktop_profile_home,
+                port=config.port,
+            )
+        except BaseException:
+            _pid_lock.release()
+            raise
 
     # Anonymous install telemetry is best-effort: it must never block gateway
     # startup. The built-in endpoint is intentionally empty until configured.
@@ -3632,6 +3704,15 @@ async def start_gateway_server(
         extra_routes=webhook_routes or None,
     )
     app.state.gateway_ready = False
+    app.state.desktop_gateway_ownership = _desktop_gateway_ownership
+    if run:
+        # Publish a shutdown trigger before uvicorn can expose the Desktop
+        # identity endpoint. cli.gateway_cmd installs the final event handler
+        # after this function returns; an early authenticated request is queued
+        # by the relay instead of transiently returning 503 and wedging recovery.
+        shutdown_relay = _GatewayShutdownRelay()
+        app.state.request_shutdown = shutdown_relay
+        app.state.install_shutdown_handler = shutdown_relay.install
 
     server_handle = GatewayServer(app=app, config=config)
     server_handle._pid_lock = _pid_lock

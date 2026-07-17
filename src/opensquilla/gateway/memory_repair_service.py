@@ -271,42 +271,17 @@ async def list_repair_queue(
     if limit == 0:
         return []
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    conn = getattr(storage, "conn", None)
-    if conn is not None:
-        placeholders = ", ".join("?" for _ in _REPAIR_QUEUE_STATUSES)
-        due_clause = ""
-        params: list[Any] = [*_REPAIR_QUEUE_STATUSES]
-        if due_only:
-            due_clause = "AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)"
-            params.append(now_ms)
-        path_clause = ""
-        if path is not None:
-            path_clause = "AND (source_path = ? OR target_path = ?)"
-            params.extend((path, path))
-        agent_clause = ""
-        agent_prefix = _agent_session_key_prefix(agent_id)
-        if agent_prefix is not None:
-            agent_clause = "AND substr(session_key, 1, ?) = ?"
-            params.extend((len(agent_prefix), agent_prefix))
-        params.append(limit)
-        async with conn.execute(
-            f"""
-            SELECT * FROM memory_durable_receipts
-            WHERE status IN ({placeholders})
-            {due_clause}
-            {path_clause}
-            {agent_clause}
-            ORDER BY
-                next_retry_at_ms IS NOT NULL ASC,
-                next_retry_at_ms ASC,
-                created_at ASC,
-                rowid ASC
-            LIMIT ?
-            """,
-            params,
-        ) as cur:
-            sql_rows = await cur.fetchall()
-        return [MemoryDurableReceipt(**dict(row)) for row in sql_rows]
+    list_repair_receipts = getattr(storage, "list_memory_repair_receipts", None)
+    if callable(list_repair_receipts):
+        return list(
+            await list_repair_receipts(
+                statuses=_REPAIR_QUEUE_STATUSES,
+                limit=limit,
+                due_before_ms=now_ms if due_only else None,
+                path=path,
+                session_key_prefix=_agent_session_key_prefix(agent_id),
+            )
+        )
 
     list_receipts = getattr(storage, "list_memory_durable_receipts", None)
     if not callable(list_receipts):
@@ -357,36 +332,14 @@ async def claim_repair_receipt(
     receipt_id = getattr(receipt, "receipt_id", None)
     if not receipt_id:
         return None
-    conn = getattr(storage, "conn", None)
-    if conn is not None:
-        placeholders = ", ".join("?" for _ in _REPAIR_QUEUE_STATUSES)
-        cursor = await conn.execute(
-            f"""
-            UPDATE memory_durable_receipts
-            SET status = ?, updated_at = ?
-            WHERE receipt_id = ?
-              AND status IN ({placeholders})
-              AND (next_retry_at_ms IS NULL OR next_retry_at_ms <= ?)
-            """,
-            (
-                _REPAIR_RUNNING_STATUS,
-                now_ms,
-                receipt_id,
-                *_REPAIR_QUEUE_STATUSES,
-                now_ms,
-            ),
+    claim = getattr(storage, "claim_memory_repair_receipt", None)
+    if callable(claim):
+        return await claim(
+            receipt_id,
+            eligible_statuses=_REPAIR_QUEUE_STATUSES,
+            claimed_status=_REPAIR_RUNNING_STATUS,
+            now_ms=now_ms,
         )
-        await conn.commit()
-        if getattr(cursor, "rowcount", 0) != 1:
-            return None
-        async with conn.execute(
-            "SELECT * FROM memory_durable_receipts WHERE receipt_id = ?",
-            (receipt_id,),
-        ) as cur:
-            row = await cur.fetchone()
-        if row is None or dict(row).get("status") != _REPAIR_RUNNING_STATUS:
-            return None
-        return MemoryDurableReceipt(**dict(row))
 
     if getattr(receipt, "status", None) not in _REPAIR_QUEUE_STATUSES:
         return None
@@ -405,30 +358,19 @@ async def recover_stale_repair_claims(
     now_ms: int | None = None,
 ) -> int:
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
-    conn = getattr(storage, "conn", None)
-    if conn is None:
+    recover = getattr(storage, "recover_stale_memory_repair_claims", None)
+    if not callable(recover):
         return 0
-    cursor = await conn.execute(
-        """
-        UPDATE memory_durable_receipts
-        SET status = ?,
-            reason = ?,
-            next_retry_at_ms = ?,
-            updated_at = ?
-        WHERE status = ?
-          AND updated_at <= ?
-        """,
-        (
-            "repair_pending",
-            "stale_repair_claim",
-            now_ms + _REPAIR_BACKOFF_MS[1],
-            now_ms,
-            _REPAIR_RUNNING_STATUS,
-            now_ms - _REPAIR_CLAIM_STALE_MS,
-        ),
+    return int(
+        await recover(
+            running_status=_REPAIR_RUNNING_STATUS,
+            pending_status="repair_pending",
+            stale_before_ms=now_ms - _REPAIR_CLAIM_STALE_MS,
+            next_retry_at_ms=now_ms + _REPAIR_BACKOFF_MS[1],
+            updated_at_ms=now_ms,
+            reason="stale_repair_claim",
+        )
     )
-    await conn.commit()
-    return int(getattr(cursor, "rowcount", 0) or 0)
 
 
 async def _repair_receipt_exists_for_path(
@@ -438,23 +380,11 @@ async def _repair_receipt_exists_for_path(
     agent_id: str | None = None,
 ) -> bool:
     agent_prefix = _agent_session_key_prefix(agent_id)
-    conn = getattr(storage, "conn", None)
-    if conn is not None:
-        agent_clause = ""
-        params: list[Any] = [path, path]
-        if agent_prefix is not None:
-            agent_clause = "AND substr(session_key, 1, ?) = ?"
-            params.extend((len(agent_prefix), agent_prefix))
-        async with conn.execute(
-            f"""
-            SELECT 1 FROM memory_durable_receipts
-            WHERE (source_path = ? OR target_path = ?)
-            {agent_clause}
-            LIMIT 1
-            """,
-            params,
-        ) as cur:
-            return await cur.fetchone() is not None
+    exists_for_path = getattr(storage, "memory_durable_receipt_exists_for_path", None)
+    if callable(exists_for_path):
+        return bool(
+            await exists_for_path(path, session_key_prefix=agent_prefix)
+        )
 
     list_receipts = getattr(storage, "list_memory_durable_receipts", None)
     if not callable(list_receipts):

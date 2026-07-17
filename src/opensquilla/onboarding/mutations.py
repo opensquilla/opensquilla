@@ -24,6 +24,7 @@ from opensquilla.gateway.config_secrets import (
     inherit_runtime_secrets,
 )
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
+from opensquilla.onboarding.endpoint_identity import base_url_allows_credential_reuse
 from opensquilla.onboarding.image_generation_specs import (
     get_image_generation_provider_setup_spec,
 )
@@ -418,6 +419,7 @@ def upsert_llm_provider(
     model: str | None = None,
     api_key: str | None = None,
     api_key_env: str | None = None,
+    preserve_api_key: bool = False,
     base_url: str | None = None,
     proxy: str | None = None,
     provider_routing: dict[str, str] | None = None,
@@ -433,9 +435,12 @@ def upsert_llm_provider(
     are always carried over verbatim on a same-provider re-save. Explicit
     values always win, and an explicit empty string keeps its legacy
     meaning: ``model=""``/``base_url=""`` fall back to derived defaults
-    (preset/tier model, spec base URL) and ``proxy=""`` clears the proxy.
-    On a provider switch nothing is carried over except the caller's values
-    (and the documented api_key keep-current never crosses providers).
+    (preset/tier model, spec base URL), ``proxy=""`` clears the proxy, and
+    optional-provider ``api_key=""`` clears the stored key unless the caller
+    explicitly sets ``preserve_api_key=True``. Required providers retain the
+    established blank-means-keep behavior. On a provider switch nothing is
+    carried over except the caller's values; optional credentials never
+    follow ``preserve_api_key`` across providers or endpoint origins.
 
     A same-provider re-save also never overwrites an operator-authored
     inline router ladder: the router profile is reconciled only when the
@@ -468,31 +473,54 @@ def upsert_llm_provider(
         )
     if not model_clean:
         raise ValueError("model is required")
-    # When the operator omits an api_key while reconfiguring the same
-    # provider that already has one stored, treat that as "leave key
-    # unchanged" — matches the WebUI's "leave blank to keep current"
-    # password-field affordance.
-    effective_api_key = clean_header_secret(api_key, label="LLM API key")
-    if api_key and api_key_env.strip():
-        raise ValueError("configure either api_key or api_key_env, not both")
-    effective_api_key_env = "" if api_key else api_key_env.strip()
-    if not api_key and not effective_api_key_env and same_provider:
-        effective_api_key_env = getattr(config.llm, "api_key_env", "").strip()
-    if (
-        not effective_api_key
-        and spec.requires_api_key
-        and not api_key_env
-        and same_provider
-        and config.llm.api_key
-    ):
-        effective_api_key = config.llm.api_key
-    if spec.requires_api_key and not effective_api_key and not effective_api_key_env:
-        raise ValueError(f"provider {provider_id!r} requires an api_key")
     effective_base_url = base_url or ""
     if not effective_base_url and base_url is None and same_provider:
         effective_base_url = str(config.llm.base_url or "")
     if not effective_base_url:
         effective_base_url = spec.default_base_url
+    stored_credentials_match_endpoint = base_url_allows_credential_reuse(
+        config.llm.base_url,
+        effective_base_url,
+    )
+    # Required providers retain their established blank-means-keep behavior.
+    # Optional providers preserve a stored explicit key only when the caller
+    # opts in and the final endpoint remains same-origin. This keeps legacy
+    # api_key="" clearing intact for existing RPC clients while giving newer
+    # clients an unambiguous password-field "leave current key unchanged"
+    # affordance without carrying secrets to another configurable endpoint.
+    effective_api_key = clean_header_secret(api_key, label="LLM API key")
+    if api_key and api_key_env.strip():
+        raise ValueError("configure either api_key or api_key_env, not both")
+    effective_api_key_env = "" if api_key else api_key_env.strip()
+    if (
+        not api_key
+        and not effective_api_key_env
+        and same_provider
+        and (
+            spec.requires_api_key
+            or (spec.accepts_api_key and stored_credentials_match_endpoint)
+        )
+    ):
+        effective_api_key_env = getattr(config.llm, "api_key_env", "").strip()
+    stored_api_key_is_explicit = bool(config.llm.api_key) and (
+        "llm.api_key" not in getattr(config, "_runtime_secret_paths", set())
+    )
+    preserve_optional_api_key = (
+        preserve_api_key
+        and spec.accepts_api_key
+        and stored_api_key_is_explicit
+        and stored_credentials_match_endpoint
+    )
+    if (
+        not effective_api_key
+        and not api_key_env.strip()
+        and same_provider
+        and config.llm.api_key
+        and (spec.requires_api_key or preserve_optional_api_key)
+    ):
+        effective_api_key = config.llm.api_key
+    if spec.requires_api_key and not effective_api_key and not effective_api_key_env:
+        raise ValueError(f"provider {provider_id!r} requires an api_key")
     if spec.requires_base_url and not effective_base_url:
         raise ValueError(f"provider {provider_id!r} requires a base_url")
     if proxy is None:

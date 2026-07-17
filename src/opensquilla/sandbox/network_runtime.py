@@ -89,7 +89,7 @@ class NetworkApprovalService:
     consume_temporary_grants: bool = True
     session_key_override: str | None = None
     workspace_override: str | None = None
-    approval_requester: Callable[..., dict[str, object]] = request_sandbox_approval
+    approval_requester: Callable[..., dict[str, object] | None] = request_sandbox_approval
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
     _pending: dict[HostApprovalKey, _PendingHostApproval] = field(
         default_factory=dict,
@@ -166,6 +166,8 @@ class NetworkApprovalService:
                 "grants. Resolve this approval to continue the current request."
             ),
         )
+        if payload is None:
+            return self._blocked(policy_request, "approval_missing")
         status = str(payload.get("status") or "")
         if status == "approval_denied":
             return self._blocked(policy_request, "denied")

@@ -186,6 +186,35 @@ async def test_trusted_runtime_network_decider_allows_without_approval(
     assert get_approval_queue().list_pending("exec") == []
 
 
+async def test_network_approval_missing_payload_blocks_request(tmp_path: Path) -> None:
+    request = SandboxRequest(
+        argv=("http_request", "GET", "https://unknown.test/path"),
+        cwd=tmp_path,
+        action_kind="network.http",
+        policy=_proxy_policy(),
+        session_id="network-missing-approval",
+        run_mode="standard",
+    )
+    service = NetworkApprovalService(
+        context=RunContext(run_mode=RunMode.STANDARD),
+        request=request,
+        runtime=SimpleNamespace(workspace=tmp_path),
+        approval_requester=lambda *_args, **_kwargs: None,
+    )
+
+    decision = await service.decide(
+        NetworkPolicyRequest(
+            protocol=NetworkProtocol.HTTPS_CONNECT,
+            host="unknown.test",
+            port=443,
+            method="CONNECT",
+        )
+    )
+
+    assert decision.status == "block"
+    assert decision.reason == "approval_missing"
+
+
 @pytest.mark.asyncio
 async def test_auto_review_network_request_is_hidden_and_canonical(
     tmp_path: Path,

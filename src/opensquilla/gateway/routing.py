@@ -313,7 +313,7 @@ def build_subagent_route_envelope(
     sandbox_mounts: list[dict[str, Any]] | None = None,
 ) -> RouteEnvelope:
     """Build a route for a child subagent run."""
-    metadata = {
+    metadata: dict[str, Any] = {
         "parent_session_key": parent_session_key,
         "run_id": run_id,
         "parent_task_id": parent_task_id,

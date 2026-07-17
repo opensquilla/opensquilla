@@ -888,7 +888,7 @@ def _path_access_required_envelope(
     decision: MountDecision,
     *,
     approval_id: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, object] | None:
     ctx = current_tool_context.get()
     workspace_root = _workspace_root_for_path_access()
     approval = build_path_approval_params(

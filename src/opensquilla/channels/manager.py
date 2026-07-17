@@ -195,27 +195,16 @@ class ChannelManager:
 
     @staticmethod
     def _register_tool_channel(name: str, adapter: ManagedChannel) -> None:
+        # Channels expose only the vendor-neutral messaging tool. Vendor API
+        # surfaces (docs/drive/calendar/...) are the platform vendors' own
+        # MCP servers and CLIs, mounted through the MCP client — never
+        # bundled per channel.
         try:
             from opensquilla.tools.builtin.messaging import register_channel
 
             register_channel(name, adapter)
         except Exception as exc:
             log.debug("channel.tool_register_failed", name=name, tool="message", error=str(exc))
-        if type(adapter).__name__ != "FeishuChannel":
-            return
-        try:
-            from opensquilla.channels.feishu import FeishuChannel
-            from opensquilla.tools.builtin.feishu_platform import register_feishu_channel
-
-            if isinstance(adapter, FeishuChannel):
-                register_feishu_channel(name, adapter)
-        except Exception as exc:
-            log.debug(
-                "channel.tool_register_failed",
-                name=name,
-                tool="feishu_platform",
-                error=str(exc),
-            )
 
     @staticmethod
     def _unregister_tool_channel(name: str, adapter: ManagedChannel | None) -> None:
@@ -225,19 +214,6 @@ class ChannelManager:
             unregister_channel(name)
         except Exception as exc:
             log.debug("channel.tool_unregister_failed", name=name, tool="message", error=str(exc))
-        if adapter is not None and type(adapter).__name__ != "FeishuChannel":
-            return
-        try:
-            from opensquilla.tools.builtin.feishu_platform import unregister_feishu_channel
-
-            unregister_feishu_channel(name)
-        except Exception as exc:
-            log.debug(
-                "channel.tool_unregister_failed",
-                name=name,
-                tool="feishu_platform",
-                error=str(exc),
-            )
 
     # ── Webhook routes ───────────────────────────────────────
 

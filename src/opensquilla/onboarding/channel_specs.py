@@ -189,20 +189,15 @@ def _slack_spec() -> ChannelSetupSpec:
     )
 
 
-# Every tenant scope the Feishu adapter and its platform tools exercise.
-# The inbound read scopes cover the im.message.receive_v1 event for DMs and
-# group @-mentions; the rest are declared per-feature by the platform tools
-# (a conformance test holds the two lists together). The status-reaction
-# feature self-disables when unauthorized, so its scope is deliberately not
-# in the paste-once manifest.
+# Every tenant scope the Feishu CHANNEL itself exercises — minimum privilege
+# for the conversation surface (send/reply/edit/recall as bot, attachment
+# up/download, and the inbound read scopes behind im.message.receive_v1 for
+# DMs and group @-mentions). Vendor API surfaces (docs/drive/wiki) are
+# Feishu's own MCP server and CLI with their own authorization flow, so
+# their scopes are deliberately NOT in this paste-once manifest. The
+# status-reaction feature self-disables when unauthorized and is likewise
+# excluded.
 FEISHU_TENANT_SCOPES: tuple[str, ...] = (
-    "docx:document",
-    "docx:document:readonly",
-    "drive:drive",
-    "drive:file",
-    "drive:file:readonly",
-    "drive:file:upload",
-    "drive:permission:member",
     "im:message",
     "im:message.group_at_msg:readonly",
     "im:message.p2p_msg:readonly",
@@ -210,10 +205,6 @@ FEISHU_TENANT_SCOPES: tuple[str, ...] = (
     "im:message:send_as_bot",
     "im:message:update",
     "im:resource",
-    "im:resource:upload",
-    "wiki:space:retrieve",
-    "wiki:wiki",
-    "wiki:wiki:readonly",
 )
 
 

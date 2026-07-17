@@ -22,7 +22,6 @@ OFFLINE_MARKER_EXCLUSIONS = {
     "tests/functional/test_agent_synthetic_golden.py",
     "tests/functional/test_gateway_llm_e2e.py",
     "tests/functional/test_live_agent_context_boundary_e2e.py",
-    "tests/functional/test_live_channel_feishu_platform_smoke.py",
     "tests/functional/test_live_channel_telegram_smoke.py",
     "tests/functional/test_live_openrouter_compaction.py",
     "tests/functional/test_llm_smoke.py",

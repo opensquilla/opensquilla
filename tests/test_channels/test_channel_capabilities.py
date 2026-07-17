@@ -200,7 +200,11 @@ def test_public_vendor_channels_expose_platform_manifests(
     }
 
 
-def test_feishu_platform_manifest_exposes_platform_tool_boundary() -> None:
+def test_feishu_platform_manifest_derives_from_the_profile() -> None:
+    # The channel no longer bundles vendor API tools (docs/drive/wiki are
+    # Feishu's own MCP server and CLI, mounted through the MCP client), so the
+    # manifest is the honest derivation from the capability profile: what the
+    # conversation surface itself can do.
     channel = FeishuChannel(
         FeishuChannelConfig(app_id="app", app_secret="secret", connection_mode="websocket")
     )
@@ -208,26 +212,14 @@ def test_feishu_platform_manifest_exposes_platform_tool_boundary() -> None:
     manifest = channel_platform_manifest(channel)
     assert isinstance(manifest, ChannelPlatformManifest)
 
+    chat = manifest.get(ChannelPlatformCategories.CHAT)
+    files = manifest.get(ChannelPlatformCategories.FILES)
     docs = manifest.get(ChannelPlatformCategories.DOCS)
-    drive = manifest.get(ChannelPlatformCategories.DRIVE)
-    wiki = manifest.get(ChannelPlatformCategories.WIKI)
-    scopes = manifest.get(ChannelPlatformCategories.SCOPES)
-    permissions = manifest.get(ChannelPlatformCategories.PERMISSIONS)
 
-    assert docs.status == ChannelPlatformCapabilityStatus.SUPPORTED
-    assert "feishu_doc_create" in docs.tools
-    assert "docx:document" in docs.required_scopes
-    assert drive.status == ChannelPlatformCapabilityStatus.SUPPORTED
-    assert "feishu_drive_upload_artifact" in drive.tools
-    assert "drive:drive" in drive.required_scopes
-    assert wiki.status == ChannelPlatformCapabilityStatus.SUPPORTED
-    assert "feishu_wiki_list_spaces" in wiki.tools
-    assert "wiki:space:retrieve" in wiki.required_scopes
-    assert scopes.status == ChannelPlatformCapabilityStatus.SUPPORTED
-    assert "feishu_scopes_status" in scopes.tools
-    assert permissions.status == ChannelPlatformCapabilityStatus.CONFIG_REQUIRED
-    assert "feishu_perm_grant_member" in permissions.tools
-    assert permissions.mutates is True
+    assert chat.status == ChannelPlatformCapabilityStatus.SUPPORTED
+    assert files.status == ChannelPlatformCapabilityStatus.SUPPORTED
+    assert docs.status == ChannelPlatformCapabilityStatus.UNSUPPORTED
+    assert not docs.tools
 
 
 @pytest.mark.parametrize(

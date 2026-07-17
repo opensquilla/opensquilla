@@ -909,6 +909,8 @@
       "presetApplied": "Routing-Preset angewendet.",
       "presetAppliedRestart": "Routing-Preset angewendet. Neustart erforderlich.",
       "channelSaved": "Kanal gespeichert — Konfiguration lokal validiert; mit „Verbindung testen“ die Zugangsdaten prüfen",
+      "channelSavedLive": "Kanal gespeichert und übernommen — läuft mit der neuen Konfiguration",
+      "channelStartFailed": "Kanal gespeichert, aber der Start ist fehlgeschlagen — Fehler im Status prüfen und mit Neustart erneut versuchen",
       "searchSaved": "Suche gespeichert.",
       "memorySurface": "Speicher-Embedding",
       "memorySaved": "Speicher gespeichert.",
@@ -923,8 +925,11 @@
       "copiedCommand": "Befehl kopiert",
       "copiedPath": "Pfad kopiert",
       "channelRemoved": "Kanal entfernt. Neustart erforderlich.",
+      "channelRemovedLive": "Kanal entfernt und gestoppt.",
       "channelEnabled": "Kanal aktiviert. Neustart erforderlich.",
-      "channelDisabled": "Kanal deaktiviert. Neustart erforderlich."
+      "channelEnabledLive": "Kanal aktiviert und gestartet.",
+      "channelDisabled": "Kanal deaktiviert. Neustart erforderlich.",
+      "channelDisabledLive": "Kanal deaktiviert und gestoppt."
     },
     "needs": {
       "noApiKey": "Kein API-Schlüssel erforderlich.",

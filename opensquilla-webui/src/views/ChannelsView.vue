@@ -785,9 +785,9 @@ async function removeChannel(ch: Channel): Promise<void> {
   if (!ok) return
   await withAction(ch, 'remove', async () => {
     try {
-      const res = await rpc.call<{ changed?: boolean }>('onboarding.channel.remove', { name })
-      if (res?.changed !== false) pendingRestart.record(name, 'remove')
-      pushToast(t('setup.toast.channelRemoved'), { tone: 'ok' })
+      const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean }>('onboarding.channel.remove', { name })
+      if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(name, 'remove')
+      pushToast(t(res?.restartRequired === false ? 'setup.toast.channelRemovedLive' : 'setup.toast.channelRemoved'), { tone: 'ok' })
       closeDetail()
       await refresh()
     } catch (err) {
@@ -947,9 +947,13 @@ async function toggleChannel(ch: Channel): Promise<void> {
   await withAction(ch, 'toggle', async () => {
     const enabling = ch.enabled === false
     try {
-      const res = await rpc.call<{ changed?: boolean }>(`onboarding.channel.${enabling ? 'enable' : 'disable'}`, { name: channelKey(ch) })
-      if (res?.changed !== false) pendingRestart.record(channelKey(ch), enabling ? 'enable' : 'disable')
-      pushToast(t(enabling ? 'console.channels.toastEnabled' : 'console.channels.toastDisabled', { name: channelKey(ch) }), { tone: 'ok' })
+      const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean; liveApply?: Record<string, string> | null }>(`onboarding.channel.${enabling ? 'enable' : 'disable'}`, { name: channelKey(ch) })
+      if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(channelKey(ch), enabling ? 'enable' : 'disable')
+      if (enabling && res?.liveApply?.[channelKey(ch)] === 'failed') {
+        pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
+      } else {
+        pushToast(t(enabling ? 'console.channels.toastEnabled' : 'console.channels.toastDisabled', { name: channelKey(ch) }), { tone: 'ok' })
+      }
       await refresh()
     } catch (err) {
       pushToast(t('console.channels.toastToggleFailed', { name: channelKey(ch), error: errorMessage(err) }), { tone: 'danger' })

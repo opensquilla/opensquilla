@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
+import json
 import time
 import uuid
 from collections.abc import Callable
@@ -83,6 +84,9 @@ class ChannelManager:
     _dispatch_states: dict[str, str] = field(default_factory=dict)
     _restart_counts: dict[str, int] = field(default_factory=dict)
     _start_errors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Stable per-entry config fingerprint, written at install time; reconcile
+    # compares it against the live config to decide rebuild vs unchanged.
+    _entry_fingerprints: dict[str, str] = field(default_factory=dict)
     # Wall-clock epoch (ms) at which the dispatch loop last entered "running".
     # Surfaced as ``connected_since`` so operators see uptime, cleared on stop.
     _running_since: dict[str, int] = field(default_factory=dict)
@@ -99,6 +103,10 @@ class ChannelManager:
     # restart attempts.
     _restart_delay_s: float = 30.0
     _max_restart_cycles: int = 3
+    # Serializes every path that mutates runtime channel state (reconcile,
+    # restart, stop). Without it, two concurrent CRUD RPCs interleave
+    # stop/start on the same name and orphan dispatch/lease tasks.
+    _mutate_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     # ── Factory ──────────────────────────────────────────────
 
@@ -120,57 +128,10 @@ class ChannelManager:
         Each entry's ``type`` field selects the adapter class.
         Disabled entries are skipped.
         """
-        channels: dict[str, ManagedChannel] = {}
-        from opensquilla.channels.delivery_store import (
-            delivery_store_for_config,
-            install_outbox,
-        )
+        from opensquilla.channels.delivery_store import delivery_store_for_config
 
-        delivery_store = delivery_store_for_config(config)
-        agent_ids: dict[str, str] = {}
-        channel_types: dict[str, str] = {}
-        group_session_scopes: dict[str, str] = {}
-        busy_input_modes: dict[str, str] = {}
-        for entry in entries:
-            if not entry.enabled:
-                log.info("channel.skipped_disabled", name=entry.name)
-                continue
-
-            adapter = build_managed_channel(entry)
-            if adapter is None:
-                log.warning("channel.unknown_type", type=entry.type, name=entry.name)
-                continue
-
-            channels[entry.name] = adapter
-            from opensquilla.channels._util import ChannelAccessPolicy, ChannelDmAccess
-
-            declared_policy = getattr(adapter, "policy", None)
-            if not isinstance(declared_policy, ChannelAccessPolicy):
-                declared_policy = ChannelAccessPolicy()
-            setattr(
-                adapter,
-                "policy",
-                replace(
-                    declared_policy,
-                    dm_access=ChannelDmAccess(str(getattr(entry, "dm_access", "pairing"))),
-                    allowlist=frozenset(getattr(entry, "allowed_senders", ())),
-                ),
-            )
-            setattr(adapter, "_delivery_store", delivery_store)
-            setattr(adapter, "_delivery_channel_name", entry.name)
-            install_outbox(adapter)
-            cls._register_tool_channel(entry.name, adapter)
-            agent_ids[entry.name] = getattr(entry, "agent_id", "main")
-            channel_types[entry.name] = entry.type
-            group_session_scopes[entry.name] = getattr(
-                entry, "group_session_scope", "per_sender"
-            )
-            busy_input_modes[entry.name] = getattr(entry, "busy_input_mode", "followup")
-            setattr(adapter, "debounce_window_s", getattr(entry, "debounce_window_s", 0.0))
-            log.info("channel.adapter_created", name=entry.name, type=entry.type)
-
-        return cls(
-            _channels=channels,
+        manager = cls(
+            _channels={},
             _turn_runner=turn_runner,
             _session_manager=session_manager,
             _event_bridge=event_bridge,
@@ -178,12 +139,59 @@ class ChannelManager:
             _task_runtime=task_runtime,
             _rpc_dispatcher=rpc_dispatcher,
             _channel_rpc_context_factory=channel_rpc_context_factory,
-            _delivery_store=delivery_store,
-            _agent_ids=agent_ids,
-            _channel_types=channel_types,
-            _group_session_scopes=group_session_scopes,
-            _busy_input_modes=busy_input_modes,
+            _delivery_store=delivery_store_for_config(config),
+            _agent_ids={},
+            _channel_types={},
+            _group_session_scopes={},
+            _busy_input_modes={},
         )
+        for entry in entries:
+            if not entry.enabled:
+                log.info("channel.skipped_disabled", name=entry.name)
+                continue
+            adapter = build_managed_channel(entry)
+            if adapter is None:
+                log.warning("channel.unknown_type", type=entry.type, name=entry.name)
+                continue
+            manager._install_adapter(entry, adapter)
+        return manager
+
+    def _install_adapter(self, entry: Any, adapter: ManagedChannel) -> None:
+        """Wire a built adapter into the manager — the ONE place this happens.
+
+        Everything an adapter needs beyond its constructor lives here: access
+        policy, delivery-store attributes, outbox wrapping, tool registration,
+        the per-name side maps, and the entry fingerprint reconcile uses to
+        detect config drift.
+        """
+        from opensquilla.channels._util import ChannelAccessPolicy, ChannelDmAccess
+        from opensquilla.channels.delivery_store import install_outbox
+
+        name = entry.name
+        self._channels[name] = adapter
+        declared_policy = getattr(adapter, "policy", None)
+        if not isinstance(declared_policy, ChannelAccessPolicy):
+            declared_policy = ChannelAccessPolicy()
+        setattr(
+            adapter,
+            "policy",
+            replace(
+                declared_policy,
+                dm_access=ChannelDmAccess(str(getattr(entry, "dm_access", "pairing"))),
+                allowlist=frozenset(getattr(entry, "allowed_senders", ())),
+            ),
+        )
+        setattr(adapter, "_delivery_store", self._delivery_store)
+        setattr(adapter, "_delivery_channel_name", name)
+        install_outbox(adapter)
+        self._register_tool_channel(name, adapter)
+        self._agent_ids[name] = getattr(entry, "agent_id", "main")
+        self._channel_types[name] = entry.type
+        self._group_session_scopes[name] = getattr(entry, "group_session_scope", "per_sender")
+        self._busy_input_modes[name] = getattr(entry, "busy_input_mode", "followup")
+        setattr(adapter, "debounce_window_s", getattr(entry, "debounce_window_s", 0.0))
+        self._entry_fingerprints[name] = self._entry_fingerprint(entry)
+        log.info("channel.adapter_created", name=name, type=entry.type)
 
     @staticmethod
     def _register_tool_channel(name: str, adapter: ManagedChannel) -> None:
@@ -257,10 +265,11 @@ class ChannelManager:
         Returns ``{name: success}`` map.  Partial failures do NOT
         prevent other channels from starting.
         """
-        results = await asyncio.gather(
-            *[self._safe_start(name) for name in self._channels],
-            return_exceptions=True,
-        )
+        async with self._mutate_lock:
+            results = await asyncio.gather(
+                *[self._safe_start(name) for name in self._channels],
+                return_exceptions=True,
+            )
         statuses: dict[str, bool] = {}
         for name, result in zip(self._channels, results):
             if isinstance(result, BaseException):
@@ -518,8 +527,9 @@ class ChannelManager:
 
     async def stop_all(self) -> None:
         """Stop every managed channel (dispatch task + adapter)."""
-        for name in list(self._channels):
-            await self.stop_channel(name)
+        async with self._mutate_lock:
+            for name in list(self._channels):
+                await self._stop_channel_locked(name)
         await self._debounce_coordinator.cancel_all()
         if self._delivery_store is not None:
             self._delivery_store.close()
@@ -535,6 +545,10 @@ class ChannelManager:
         before the adapter is stopped so no dangling coroutines remain after
         shutdown.
         """
+        async with self._mutate_lock:
+            await self._stop_channel_locked(name)
+
+    async def _stop_channel_locked(self, name: str) -> None:
         task = self._tasks.pop(name, None)
         if task and not task.done():
             task.cancel()
@@ -567,12 +581,167 @@ class ChannelManager:
         restart counter is cleared and a single ``dispatch.dead_to_running``
         decision-log entry is emitted before the new dispatch loop spins up.
         """
-        prev_state = self._dispatch_states.get(name)
-        await self.stop_channel(name)
-        self._restart_counts[name] = 0
-        if prev_state == "dead":
-            log.info("dispatch.dead_to_running", channel=name)
-        await self._safe_start(name)
+        async with self._mutate_lock:
+            prev_state = self._dispatch_states.get(name)
+            await self._stop_channel_locked(name)
+            self._restart_counts[name] = 0
+            if prev_state == "dead":
+                log.info("dispatch.dead_to_running", channel=name)
+            await self._safe_start(name)
+
+    # ── Live reconcile ───────────────────────────────────────
+
+    @staticmethod
+    def _entry_fingerprint(entry: Any) -> str:
+        """Stable hash of an entry's full configuration."""
+        dump = getattr(entry, "model_dump", None)
+        payload = dump(mode="json") if callable(dump) else dict(vars(entry))
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode()
+        ).hexdigest()
+
+    @staticmethod
+    def _is_webhook_adapter(adapter: Any) -> bool:
+        """Webhook-mode adapters register HTTP routes at boot; their routes
+        cannot be added or re-pointed on the running app yet, so reconcile
+        must leave them to a gateway restart."""
+        return (
+            getattr(adapter, "transport_name", "webhook") == "webhook"
+            and hasattr(adapter, "create_webhook_route")
+        )
+
+    def _uninstall_adapter(self, name: str) -> None:
+        """Forget a stopped channel's runtime state (inverse of _install_adapter)."""
+        self._channels.pop(name, None)
+        for side_map in (
+            self._agent_ids,
+            self._channel_types,
+            self._group_session_scopes,
+            self._busy_input_modes,
+            self._entry_fingerprints,
+            self._dispatch_states,
+            self._restart_counts,
+            self._start_errors,
+        ):
+            side_map.pop(name, None)
+
+    async def reconcile(self, entries: list) -> dict[str, str]:
+        """Make the running adapters match ``entries`` without a process restart.
+
+        Per-name outcomes:
+        - ``started``    — new entry built, wired, and started live
+        - ``rebuilt``    — config changed; old adapter stopped, new one started
+        - ``removed``    — entry gone (or disabled); adapter stopped and forgotten
+        - ``unchanged``  — fingerprint identical; adapter untouched
+        - ``pending_restart`` — webhook-mode on either side; needs a gateway
+          restart (HTTP routes are bound at boot) — nothing was changed live
+        - ``failed``     — the new adapter did not start; the entry stays
+          installed with its error in ``start_errors`` so ``channels.restart``
+          can retry, and the durable ingress journal keeps queued messages
+
+        A start failure never escalates beyond its own channel: the blast
+        radius of a bad entry is that entry, surfaced through the existing
+        status/doctor surfaces, not a gateway restart.
+        """
+        desired: dict[str, Any] = {}
+        for entry in entries:
+            if getattr(entry, "enabled", True):
+                desired[entry.name] = entry
+
+        results: dict[str, str] = {}
+        async with self._mutate_lock:
+            for name in [n for n in list(self._channels) if n not in desired]:
+                if self._is_webhook_adapter(self._channels[name]):
+                    results[name] = "pending_restart"
+                    continue
+                await self._stop_channel_locked(name)
+                self._uninstall_adapter(name)
+                log.info("channel.reconcile_removed", name=name)
+                results[name] = "removed"
+
+            for name, entry in desired.items():
+                current = self._channels.get(name)
+                if current is not None:
+                    fingerprint_equal = (
+                        self._entry_fingerprints.get(name) == self._entry_fingerprint(entry)
+                    )
+                    # Fingerprint-equal counts as unchanged only when the
+                    # channel actually runs: a previously failed start must be
+                    # retried by the operator's identical re-save, not
+                    # reported as already applied.
+                    if fingerprint_equal and name in self._tasks:
+                        results[name] = "unchanged"
+                        continue
+                    if self._is_webhook_adapter(current):
+                        results[name] = "pending_restart"
+                        continue
+
+                adapter = build_managed_channel(entry)
+                if adapter is None:
+                    log.warning("channel.unknown_type", type=entry.type, name=name)
+                    results[name] = "failed"
+                    continue
+                if self._is_webhook_adapter(adapter):
+                    results[name] = "pending_restart"
+                    continue
+                if self._collides_with_pending(name, entry, adapter, results):
+                    # Starting this adapter would fence out a still-running
+                    # restart-gated adapter that shares its transport account
+                    # — the whole migration is restart-gated.
+                    results[name] = "pending_restart"
+                    continue
+
+                if current is not None:
+                    await self._stop_channel_locked(name)
+                    self._uninstall_adapter(name)
+                self._install_adapter(entry, adapter)
+                try:
+                    await self._safe_start(name)
+                except Exception as exc:  # noqa: BLE001 - per-channel blast radius
+                    details: dict[str, Any] = {
+                        "error_type": type(exc).__name__,
+                        "error": str(exc),
+                        "exception": repr(exc),
+                    }
+                    diagnostic = _structured_diagnostic(exc)
+                    if diagnostic:
+                        details["diagnostic"] = diagnostic
+                    self._start_errors[name] = details
+                    # Drop the fingerprint so an identical re-save retries the
+                    # start instead of reading as unchanged.
+                    self._entry_fingerprints.pop(name, None)
+                    log.warning(
+                        "channel.reconcile_start_failed",
+                        name=name,
+                        error_type=type(exc).__name__,
+                    )
+                    results[name] = "failed"
+                    continue
+                self._start_errors.pop(name, None)
+                results[name] = "rebuilt" if current is not None else "started"
+                log.info("channel.reconcile_applied", name=name, outcome=results[name])
+
+        return results
+
+    def _collides_with_pending(
+        self, name: str, entry: Any, adapter: Any, results: dict[str, str]
+    ) -> bool:
+        """True when starting ``adapter`` would steal the transport lease of a
+        restart-gated adapter that keeps running (same type + account)."""
+        candidate = (str(entry.type), self._transport_account_id(name, adapter))
+        for other, outcome in results.items():
+            if outcome != "pending_restart" or other == name:
+                continue
+            running = self._channels.get(other)
+            if running is None:
+                continue
+            key = (
+                self._channel_types.get(other, other),
+                self._transport_account_id(other, running),
+            )
+            if key == candidate:
+                return True
+        return False
 
     # ── Health ───────────────────────────────────────────────
 

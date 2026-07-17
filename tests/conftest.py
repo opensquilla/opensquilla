@@ -75,6 +75,21 @@ def _isolate_provider_credentials(
 
 
 @pytest.fixture(autouse=True)
+def _reset_channels_reconciler_singleton():
+    """Clear the channels-reconcile bridge between tests.
+
+    Gateway boot registers a live reconciler in a module-level singleton;
+    without this reset, a boot-running test leaks its closure into later
+    channel CRUD tests, which then reconcile against a foreign gateway.
+    """
+    from opensquilla.gateway.channels_bridge import reset_channels_reconciler
+
+    reset_channels_reconciler()
+    yield
+    reset_channels_reconciler()
+
+
+@pytest.fixture(autouse=True)
 def _undo_leaked_cli_structlog_default():
     """Revert the CLI structlog default when a test leaves it behind.
 

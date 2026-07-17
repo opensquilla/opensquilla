@@ -1921,15 +1921,22 @@ async function saveChannel() {
   const wasEditing = channelEditActive.value
   try {
     await rpc.call('onboarding.channel.probe', { entry })
-    const res = await rpc.call<{ changed?: boolean; entry?: { name?: string } }>('onboarding.channel.upsert', { entry })
+    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean; liveApply?: Record<string, string> | null; entry?: { name?: string } }>('onboarding.channel.upsert', { entry })
     const name = String(entry.name || res?.entry?.name || '')
-    if (name && res?.changed !== false) {
-      // An upsert over a live adapter has no observable post-restart signal;
-      // flag it so the pending entry clears only manually.
+    if (name && res?.changed !== false && res?.restartRequired !== false) {
+      // Restart-gated outcome (webhook-mode entry or no live reconciler):
+      // an upsert over a live adapter has no observable post-restart signal,
+      // so flag it and let the pending entry clear only manually.
       const row = (channelStatus.value.channels || []).find(r => r.name === name)
       pendingRestart.record(name, 'upsert', { wasLoaded: row ? adapterLoaded(row) : false })
     }
-    pushToast(t('setup.toast.channelSaved'))
+    if (name && res?.liveApply?.[name] === 'failed') {
+      // Saved, applied — and the adapter failed to start. Success wording
+      // here would hide a down channel; channels.restart is the retry path.
+      pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
+    } else {
+      pushToast(t(res?.restartRequired === false ? 'setup.toast.channelSavedLive' : 'setup.toast.channelSaved'))
+    }
     await loadData()
     // Stay in edit mode after an edit save: re-seed from the server so a
     // just-replaced secret flips back to its masked row and the plaintext
@@ -1947,9 +1954,16 @@ async function saveChannel() {
 // list (loadChannelStatus) so the in-progress entry draft is preserved.
 async function setChannelEnabled(name: string, enabled: boolean) {
   try {
-    const res = await rpc.call<{ changed?: boolean }>(enabled ? 'onboarding.channel.enable' : 'onboarding.channel.disable', { name })
-    if (res?.changed !== false) pendingRestart.record(name, enabled ? 'enable' : 'disable')
-    pushToast(enabled ? t('setup.toast.channelEnabled') : t('setup.toast.channelDisabled'))
+    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean; liveApply?: Record<string, string> | null }>(enabled ? 'onboarding.channel.enable' : 'onboarding.channel.disable', { name })
+    if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(name, enabled ? 'enable' : 'disable')
+    const live = res?.restartRequired === false
+    if (enabled && res?.liveApply?.[name] === 'failed') {
+      pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
+    } else {
+      pushToast(enabled
+        ? t(live ? 'setup.toast.channelEnabledLive' : 'setup.toast.channelEnabled')
+        : t(live ? 'setup.toast.channelDisabledLive' : 'setup.toast.channelDisabled'))
+    }
     await loadChannelStatus()
   } catch (err) {
     pushToast(saveFailedMessage(err), { tone: 'danger' })
@@ -1972,9 +1986,9 @@ async function removeChannel(name: string) {
   })
   if (!ok) return
   try {
-    const res = await rpc.call<{ changed?: boolean }>('onboarding.channel.remove', { name })
-    if (res?.changed !== false) pendingRestart.record(name, 'remove')
-    pushToast(t('setup.toast.channelRemoved'))
+    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean }>('onboarding.channel.remove', { name })
+    if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(name, 'remove')
+    pushToast(t(res?.restartRequired === false ? 'setup.toast.channelRemovedLive' : 'setup.toast.channelRemoved'))
     await loadChannelStatus()
   } catch (err) {
     pushToast(saveFailedMessage(err), { tone: 'danger' })

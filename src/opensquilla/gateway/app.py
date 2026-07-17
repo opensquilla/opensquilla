@@ -681,5 +681,10 @@ def create_gateway_app(
     from opensquilla.gateway.bundle_routes import register_bundle_routes  # noqa: PLC0415
 
     register_bundle_routes(app, config=config)
+    from opensquilla.gateway.knowledge_management import (  # noqa: PLC0415
+        register_knowledge_management_routes,
+    )
+
+    register_knowledge_management_routes(app, config=config)
 
     return app

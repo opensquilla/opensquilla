@@ -34,8 +34,10 @@ ordinary request metadata to it, including your IP address and browser user
 agent.
 
 The first entry in `tracks` is the default selection. A track whose file is
-missing simply fails to play; the music control itself always works and can
-also play an ad-hoc local file via "Choose local file…".
+missing simply fails to play; the music control itself always works. Music
+added through the player's "Add local music…" picker does not need this
+directory at all: it is stored in the app's local library (IndexedDB),
+survives restarts, and can be removed from the picker menu.
 
 The player is off by default — enable it under Settings → Appearance →
 Background music, or via the command palette.

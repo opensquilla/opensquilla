@@ -12,7 +12,8 @@ export type IconName =
   | 'cloud' | 'fileText' | 'fileCode' | 'image' | 'table' | 'externalLink'
   | 'keyboard' | 'languages' | 'shield'
   | 'thumbs-up' | 'thumbs-down'
-  | 'music' | 'pause' | 'volume';
+  | 'music' | 'pause' | 'volume' | 'volume-x' | 'repeat' | 'shuffle' | 'repeat-one'
+  | 'skip-back' | 'skip-forward' | 'more-vertical';
 
 interface IconDef {
   path: string;
@@ -84,6 +85,13 @@ const ICONS: Record<IconName, IconDef> = {
   music:      { path: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>', strokeWidth: 1.7 },
   pause:      { path: '<rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>', strokeWidth: 1.7 },
   volume:     { path: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>', strokeWidth: 1.7 },
+  'volume-x': { path: '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>', strokeWidth: 1.7 },
+  'skip-back':    { path: '<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>', strokeWidth: 1.7 },
+  'skip-forward': { path: '<polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>', strokeWidth: 1.7 },
+  'more-vertical': { path: '<circle cx="12" cy="12" r="1"/><circle cx="12" cy="5" r="1"/><circle cx="12" cy="19" r="1"/>', strokeWidth: 1.7 },
+  repeat:     { path: '<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>', strokeWidth: 1.7 },
+  shuffle:    { path: '<polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>', strokeWidth: 1.7 },
+  'repeat-one': { path: '<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/><path d="M11 10l2-1v6"/>', strokeWidth: 1.7 },
 };
 
 export function getIconSvg(name: IconName, size: number = 16): string {

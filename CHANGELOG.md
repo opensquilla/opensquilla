@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The background-music player keeps "Add local music…" uploads in a local
+  in-app library (IndexedDB): they survive restarts, list after the bundled
+  playlist in the picker (multi-select supported), and can be renamed or
+  removed per track. Useful for packaged installs where the bundled `music/`
+  directory is not practically reachable. A toast warns when a file could not
+  be persisted and will only last the session.
+- Background-music play modes as a single cycling control: loop playlist
+  (default, advances to the next track when one ends and wraps around),
+  shuffle, and repeat-one. Multi-track lists previously looped a single track
+  forever. Previous/next transport buttons skip within the list.
+- The background-music player integrates with the OS media session: Now
+  Playing shows the track title, and hardware/headset media keys drive
+  play/pause and previous/next.
+- Background-music progress bar with seek, a mute toggle on the volume icon,
+  and short fade-in/fade-out ramps on play/pause instead of hard cuts.
+
+### Fixed
+
+- The background-music volume slider can reach both ends: the global input
+  styling dressed the range as a text field, insetting the native track (and
+  a fractional fixed step made `max` an invalid stepped value in float math).
+  The sliders are now explicitly drawn, and dragging a thumb past the menu
+  edge no longer dismisses the menu mid-adjustment.
+
 ## [0.5.0rc4] - 2026-07-13
 
 ### Added

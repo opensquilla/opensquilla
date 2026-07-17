@@ -10,6 +10,12 @@ from tui_real_terminal.driver import TerminalSize
 
 TuiBackendId = Literal["opentui", "live-opentui"]
 PACKAGED_GATE_ENV = "OPENSQUILLA_TUI_PACKAGED_GATE"
+# A source-host run still pays for a cold Python import, Bun startup, the
+# authenticated host handshake, and completion-catalog hydration.  Keep the
+# harness budget identical to the packaged gate so machine load cannot turn a
+# healthy first screen into a readiness flake.  The gate still requires the
+# canonical marker; this only changes how long it waits for that proof.
+TUI_READY_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -20,7 +19,11 @@ from tui_real_terminal.framebuffer import (
     StyledFramebuffer,
     assert_opentui_framebuffer,
 )
-from tui_real_terminal.targets import TargetContext, build_tui_target
+from tui_real_terminal.targets import (
+    TUI_READY_TIMEOUT_SECONDS,
+    TargetContext,
+    build_tui_target,
+)
 
 pytestmark = pytest.mark.tui_real_terminal
 
@@ -360,12 +363,9 @@ def test_idle_resize_narrow_large_narrow_repaints_complete_framebuffer(
 
     session.start()
     try:
-        ready_timeout = (
-            15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
-        )
         session.wait_for_text(
             "OPEN_SQUILLA_TUI_READY",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="idle-resize-ready",
         )
         session.send_text("idle resize transcript")
@@ -479,14 +479,11 @@ def test_collapsed_stream_resize_round_trip_recovers_without_stale_geometry(
 
     session.start()
     try:
-        ready_timeout = (
-            15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
-        )
         session.wait_for_text(
             # The 27-cell readiness marker necessarily wraps in an 18-column
             # pane; its stable first physical row still proves host readiness.
             "OPEN_SQUILLA_TUI_R",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="collapsed-stream-ready",
         )
         session.send_text("complex state please")
@@ -600,12 +597,9 @@ def test_empty_welcome_resize_remount_recovers_without_duplicate_frames(
 
     session.start()
     try:
-        ready_timeout = (
-            15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
-        )
         initial = session.wait_for_text(
             "OPEN_SQUILLA_TUI_R",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="welcome-remount-ready-collapsed",
         )
         evidence.record_frame(initial)

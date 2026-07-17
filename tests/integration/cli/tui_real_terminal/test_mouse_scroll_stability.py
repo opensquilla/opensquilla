@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +12,11 @@ from tui_real_terminal.driver import (
 )
 from tui_real_terminal.evidence import EvidenceBundle
 from tui_real_terminal.framebuffer import assert_opentui_framebuffer
-from tui_real_terminal.targets import TargetContext, build_tui_target
+from tui_real_terminal.targets import (
+    TUI_READY_TIMEOUT_SECONDS,
+    TargetContext,
+    build_tui_target,
+)
 
 pytestmark = pytest.mark.tui_real_terminal
 
@@ -76,10 +79,9 @@ def test_sgr_wheel_holds_streaming_view_and_end_restores_follow(
     )
     session.start()
     try:
-        ready_timeout = 15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
         session.wait_for_text(
             "OPEN_SQUILLA_TUI_READY",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="mouse-scroll-ready",
         )
         session.send_text("stream please")

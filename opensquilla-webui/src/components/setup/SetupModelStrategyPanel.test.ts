@@ -10,7 +10,7 @@ const FACTS = {
   proposerCount: 2,
   proposerTimeoutSeconds: 300,
   aggregatorTimeoutSeconds: 480,
-  quorumGraceSeconds: 30,
+  quorumGraceSeconds: 5,
 }
 
 function customLineup(overrides: Record<string, unknown> = {}) {
@@ -98,7 +98,7 @@ function panel(overrides: Record<string, unknown> = {}) {
         proposerCount: 4,
         proposerTimeoutSeconds: 300,
         aggregatorTimeoutSeconds: 480,
-        quorumGraceSeconds: 30,
+        quorumGraceSeconds: 5,
       },
       minSuccessfulProposers: 1,
       allFailedPolicy: 'fallback_single',

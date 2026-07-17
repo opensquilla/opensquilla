@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 import time
 from pathlib import Path
@@ -18,7 +17,11 @@ from tui_real_terminal.framebuffer import (
     assert_opentui_framebuffer,
     opentui_framebuffer_violations,
 )
-from tui_real_terminal.targets import TargetContext, build_tui_target
+from tui_real_terminal.targets import (
+    TUI_READY_TIMEOUT_SECONDS,
+    TargetContext,
+    build_tui_target,
+)
 
 pytestmark = pytest.mark.tui_real_terminal
 
@@ -171,10 +174,9 @@ def test_focus_in_restores_same_size_cleared_framebuffer(
 
     session.start()
     try:
-        ready_timeout = 15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
         initial = session.wait_for_text(
             "OPEN_SQUILLA_TUI_READY",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="before-surface-reset",
         )
         evidence.record_frame(initial)
@@ -319,10 +321,9 @@ def test_watchdog_restores_same_size_framebuffer_without_terminal_event(
 
     session.start()
     try:
-        ready_timeout = 15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
         initial = session.wait_for_text(
             "OPEN_SQUILLA_TUI_READY",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="eventless-before-surface-reset",
         )
         evidence.record_frame(initial)
@@ -432,10 +433,9 @@ def test_watchdog_reenters_alternate_screen_without_polluting_scrollback_or_curs
 
     session.start()
     try:
-        ready_timeout = 15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
         initial = session.wait_for_text(
             "OPEN_SQUILLA_TUI_READY",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="mode-loss-before-reset",
         )
         evidence.record_frame(initial)
@@ -564,10 +564,9 @@ def test_restores_same_size_framebuffer_during_live_stream(
 
     session.start()
     try:
-        ready_timeout = 15.0 if os.environ.get("OPENSQUILLA_TUI_PACKAGED_GATE") == "1" else 8.0
         session.wait_for_text(
             "OPEN_SQUILLA_TUI_READY",
-            timeout_s=ready_timeout,
+            timeout_s=TUI_READY_TIMEOUT_SECONDS,
             checkpoint="ready-before-stream",
         )
         session.send_text("stream please")

@@ -238,7 +238,7 @@ from opensquilla.session.terminal_reply import (
     build_terminal_reply,
     sanitize_agent_error,
 )
-from opensquilla.tools.types import CallerKind, ToolContext
+from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext
 
 if TYPE_CHECKING:
     from opensquilla.engine.routing.health import ProviderHealthLedger
@@ -254,6 +254,9 @@ _LLM_TIMEOUT_ENVELOPE: dict[str, Any] = {
 _DEFAULT_AGENT_RUNTIME_TIMEOUT_SECONDS: float = 48 * 60 * 60
 _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS: float = 120.0
 _DEFAULT_LLM_TIMEOUT_SECONDS: float = _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
+_WEB_CHAT_META_EXEMPT_KEYS: Final[frozenset[str]] = frozenset(
+    {"meta_match", "meta_launch", "meta_resume"}
+)
 _ROUTER_PREV_ASSISTANT_MAX_CHARS: Final[int] = 8000
 _ROUTER_HISTORY_USER_MAX_CHARS: Final[int] = 8000
 _ROUTER_HISTORY_USER_MAX_TURNS: Final[int] = 4
@@ -1294,6 +1297,12 @@ class _SelectorFallbackProvider:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._provider, name)
+
+    @property
+    def retry_failed_call_safe(self) -> bool:
+        """Whether replaying the currently active provider call is safe."""
+
+        return getattr(self._provider, "retry_failed_call_safe", True) is not False
 
     @property
     def provider_name(self) -> str:
@@ -3079,6 +3088,13 @@ class TurnRunner:
             active_provider_id = (
                 getattr(cloned_selector, "active_provider_id", "") or provider_name
             )
+            runtime_timeout_override = self._web_chat_runtime_timeout_override(
+                session_key,
+                explicit=timeout,
+                tool_context=tool_context,
+                input_mode=input_mode,
+                turn_metadata=turn.metadata,
+            )
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
                     provider=provider,
@@ -3094,7 +3110,7 @@ class TurnRunner:
                     tool_context=tool_context,
                     session_key=session_key,
                     agent_id=agent_id,
-                    timeout=timeout,
+                    timeout=runtime_timeout_override,
                     max_iterations=max_iterations,
                     iteration_timeout=iteration_timeout,
                     tool_timeout=tool_timeout,
@@ -3928,6 +3944,48 @@ class TurnRunner:
                 return float(value)
 
         return _DEFAULT_AGENT_RUNTIME_TIMEOUT_SECONDS
+
+    def _web_chat_runtime_timeout_override(
+        self,
+        session_key: str,
+        *,
+        explicit: float | None,
+        tool_context: ToolContext | None,
+        input_mode: str,
+        turn_metadata: Mapping[str, Any] | None,
+    ) -> float | None:
+        """Cap ordinary interactive Web turns without constraining long jobs."""
+
+        if explicit is not None:
+            return float(explicit)
+        cap = getattr(self._config, "web_chat_runtime_timeout_seconds", 0.0)
+        if not self._non_bool_number(cap) or cap <= 0:
+            return None
+        if tool_context is None or tool_context.caller_kind is not CallerKind.WEB:
+            return None
+        if tool_context.interaction_mode is not InteractionMode.INTERACTIVE:
+            return None
+        if input_mode != "user":
+            return None
+
+        metadata = turn_metadata or {}
+        if tool_context.coding_mode or bool(metadata.get("coding_mode")):
+            return None
+        if any(metadata.get(key) is not None for key in _WEB_CHAT_META_EXEMPT_KEYS):
+            return None
+
+        base_timeout = self._resolve_agent_runtime_timeout(session_key)
+        if base_timeout == 0:
+            return 0.0
+        effective_timeout = min(base_timeout, float(cap))
+        log.debug(
+            "turn_runner.web_chat_runtime_timeout",
+            session_key=session_key,
+            base_timeout_seconds=base_timeout,
+            cap_seconds=float(cap),
+            effective_timeout_seconds=effective_timeout,
+        )
+        return effective_timeout
 
     def _resolve_agent_max_iterations(
         self,

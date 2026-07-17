@@ -6352,7 +6352,24 @@ class Agent:
                             )
                             _call_attempt += 1
                             continue
-                        if not _fallback.should_retry(kind, _retry_attempt):
+                        should_retry = _fallback.should_retry(kind, _retry_attempt)
+                        retry_failed_call_safe = (
+                            getattr(
+                                self.provider,
+                                "retry_failed_call_safe",
+                                True,
+                            )
+                            is not False
+                        )
+                        if should_retry and not retry_failed_call_safe:
+                            _log.warning(
+                                "provider.retry_suppressed",
+                                reason="composite_provider",
+                                kind=kind.value,
+                                provider=getattr(self.provider, "provider_name", ""),
+                            )
+                            should_retry = False
+                        if not should_retry:
                             yield self._transition(AgentState.ERROR)
                             terminal_error = ErrorEvent(
                                 message=provider_error.message,

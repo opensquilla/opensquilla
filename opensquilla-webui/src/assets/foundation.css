@@ -92,6 +92,21 @@
   --fs-xl: 1.625rem;    /* 26px (was 24) */
   --fs-2xl: 2rem;
 
+  /* Platform brand marks — characteristic colors for the channel monogram
+     tiles (NOT vendor logos; see ChannelBrandMark.vue). Theme-invariant:
+     a brand's color does not change with the console theme, and the tile
+     text stays white on every ground. */
+  --brand-mark-fg: #ffffff;
+  --brand-dingtalk: #2d7ff9;
+  --brand-discord: #5865f2;
+  --brand-feishu: #3370ff;
+  --brand-matrix: #3d4450;
+  --brand-msteams: #6264a7;
+  --brand-qq: #12b7f5;
+  --brand-slack: #611f69;
+  --brand-telegram: #26a5e4;
+  --brand-wecom: #0989f0;
+
   --track-display: 0;
   --track-tabular: 0.01em;
   /* One unified eyebrow idiom (control-panel / control-section / sidebar nav

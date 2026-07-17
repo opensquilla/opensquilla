@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
+import ChannelBrandMark from '@/components/setup/ChannelBrandMark.vue'
 import PendingRestartBanner from '@/components/PendingRestartBanner.vue'
 import SetupChannelSecretField from '@/components/setup/SetupChannelSecretField.vue'
 import SetupField from '@/components/SetupField.vue'
@@ -141,6 +142,13 @@ watch(
   },
 )
 
+function needsPreview(type: string, needs: string[] | undefined): string {
+  return localizeNeeds(type, needs)
+    .slice(0, 2)
+    .map(need => need.replace(/[\s.。．]+$/u, ''))
+    .join(' · ')
+}
+
 function humanize(value: string): string {
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
 }
@@ -227,14 +235,17 @@ const testTone = computed(() => {
           @click="onCardClick(c.type)"
         >
           <span class="setup-channels__cardhead">
-            <strong>{{ c.label }}</strong>
-            <span class="setup-channels__badges">
-              <span v-if="c.transport && c.transport !== 'unknown'" class="setup-channels__typechip">{{ humanize(c.transport) }}</span>
-              <span v-if="c.requiresPublicUrl" class="setup-channels__typechip is-warn">{{ t('setup.channels.needsPublicUrl') }}</span>
+            <ChannelBrandMark :type="c.type" :label="c.label" />
+            <span class="setup-channels__cardid">
+              <strong class="setup-channels__cardname">{{ c.label }}</strong>
+              <span class="setup-channels__badges">
+                <span v-if="c.transport && c.transport !== 'unknown'" class="setup-channels__typechip">{{ humanize(c.transport) }}</span>
+                <span v-if="c.requiresPublicUrl" class="setup-channels__typechip is-warn">{{ t('setup.channels.needsPublicUrl') }}</span>
+              </span>
             </span>
           </span>
           <span v-if="c.description" class="setup-channels__carddesc">{{ localizeDescription(c.type, c.description) }}</span>
-          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ localizeNeeds(c.type, c.whatYouNeed).slice(0, 2).join(' · ') }}</span>
+          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ needsPreview(c.type, c.whatYouNeed) }}</span>
         </button>
       </div>
 
@@ -464,13 +475,18 @@ const testTone = computed(() => {
   padding: 12px 14px;
   text-align: left;
 }
-.setup-channels__card:hover, .setup-channels__card:focus-visible { border-color: var(--accent); }
+.setup-channels__card:hover, .setup-channels__card:focus-visible {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+}
 .setup-channels__card.is-selected {
   background: var(--bg-elevated);
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
 }
-.setup-channels__cardhead { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; }
+.setup-channels__cardhead { align-items: center; display: flex; gap: 10px; min-width: 0; }
+.setup-channels__cardid { display: grid; gap: 3px; min-width: 0; }
+.setup-channels__cardname { color: var(--text); font-size: var(--fs-md); line-height: 1.2; }
 .setup-channels__badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .setup-channels__carddesc { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }
 .setup-channels__cardneeds { color: var(--text-dim); font-size: 11px; }

@@ -1264,6 +1264,78 @@
     "refreshing": "更新中",
     "management": "プロバイダー管理",
     "managementLocalOnly": "プロバイダーから、ローカル環境でのみ利用できる管理パスが提供されています。",
+    "upload": {
+      "title": "アップロードしてインデックス化",
+      "description": "顧客文書を含む ZIP アーカイブをアップロードします。大きなファイルは再開可能なチャンクで送信されます。",
+      "collection": "コレクション：{id}",
+      "indexes": {
+        "title": "作成するインデックス",
+        "fts": "全文インデックス",
+        "ftsHint": "SQLite FTS5 によるキーワード検索",
+        "vector": "ベクトルインデックス",
+        "vectorHint": "BGE-M3 1024 次元によるセマンティック検索",
+        "required": "少なくとも 1 つのインデックスを選択してください。"
+      },
+      "fileLabel": "ZIP アーカイブ",
+      "fileHint": "ZIP のみ対応しています。約 1 GB のアーカイブに対応し、ブラウザーがファイル全体を一度にメモリへ読み込むことはありません。",
+      "reselect": "更新後に再開するには、同じファイルをもう一度選択してください：{filename}",
+      "retryStatus": "状態を再取得",
+      "singleTask": "別のインデックス作成タスクが実行中です。完了するまで新しいアップロードは無効です。",
+      "uploadProgress": "アップロード進捗",
+      "checking": "状態を確認中…",
+      "creating": "アップロードを準備中…",
+      "uploading": "アップロード中…",
+      "completing": "インデックス作成を開始中…",
+      "continueIndexing": "インデックス作成へ進む",
+      "resume": "アップロードを再開",
+      "start": "アップロードしてインデックス化",
+      "bytes": "{count} バイト",
+      "verifySearch": "ナレッジ検索で確認",
+      "job": {
+        "title": "インデックス作成状況",
+        "overall": "全体の進捗",
+        "phasesLabel": "インデックス作成フェーズ",
+        "states": {
+          "queued": "待機中",
+          "running": "実行中",
+          "ready": "準備完了",
+          "ready_with_warnings": "警告付きで完了",
+          "failed": "失敗"
+        },
+        "phases": {
+          "validating": "検証",
+          "extracting": "展開",
+          "parsing": "解析",
+          "fts_indexing": "全文インデックス作成",
+          "vector_indexing": "ベクトルインデックス作成",
+          "complete": "完了"
+        },
+        "phaseStates": {
+          "pending": "待機",
+          "current": "進行中",
+          "done": "完了",
+          "failed": "失敗",
+          "skipped": "未選択"
+        }
+      },
+      "result": {
+        "title": "インデックス作成結果",
+        "files": "処理済み文書／ファイル",
+        "filesBreakdown": "スキップ {skipped} 件 · 失敗 {failed} 件",
+        "chunks": "チャンク",
+        "fts": "全文検索チャンク",
+        "vector": "ベクトルチャンク",
+        "warnings": "警告",
+        "notRequested": "未指定",
+        "unknownError": "不明なインデックス作成エラー"
+      },
+      "errors": {
+        "zipOnly": "ZIP アーカイブを選択してください。",
+        "fileMismatch": "再開するには同じファイルを選択してください：{filename}",
+        "storage": "ブラウザーは再開用メタデータを保存できませんでした。アップロードが完了するまでこのページを開いたままにしてください。",
+        "missingResume": "再開用メタデータがありません。"
+      }
+    },
     "status": {
       "ready": "利用可能",
       "degraded": "一時的に利用できません",

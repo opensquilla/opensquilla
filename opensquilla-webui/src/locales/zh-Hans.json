@@ -1264,6 +1264,78 @@
     "refreshing": "刷新中",
     "management": "Provider 管理",
     "managementLocalOnly": "Provider 提供了仅本机可用的管理入口。",
+    "upload": {
+      "title": "上传并入库",
+      "description": "上传包含客户文档的 ZIP 压缩包。大文件将以可断点续传的分块发送。",
+      "collection": "集合：{id}",
+      "indexes": {
+        "title": "要构建的索引",
+        "fts": "全文索引",
+        "ftsHint": "使用 SQLite FTS5 进行关键词检索",
+        "vector": "向量索引",
+        "vectorHint": "使用 BGE-M3 1024 维向量进行语义检索",
+        "required": "请至少选择一种索引。"
+      },
+      "fileLabel": "ZIP 压缩包",
+      "fileHint": "仅支持 ZIP。支持约 1 GB 的压缩包，浏览器不会将整个文件一次性读入内存。",
+      "reselect": "刷新后如需续传，请重新选择同一文件：{filename}",
+      "retryStatus": "重试获取状态",
+      "singleTask": "当前有入库任务正在运行，任务完成前不能开始新的上传。",
+      "uploadProgress": "上传进度",
+      "checking": "正在检查状态…",
+      "creating": "正在准备上传…",
+      "uploading": "正在上传…",
+      "completing": "正在启动入库…",
+      "continueIndexing": "继续入库",
+      "resume": "继续上传",
+      "start": "上传并入库",
+      "bytes": "{count} 字节",
+      "verifySearch": "在知识检索中验证",
+      "job": {
+        "title": "入库状态",
+        "overall": "总体进度",
+        "phasesLabel": "入库阶段",
+        "states": {
+          "queued": "排队中",
+          "running": "运行中",
+          "ready": "已就绪",
+          "ready_with_warnings": "已就绪（有警告）",
+          "failed": "失败"
+        },
+        "phases": {
+          "validating": "校验",
+          "extracting": "解压",
+          "parsing": "解析",
+          "fts_indexing": "全文索引",
+          "vector_indexing": "向量索引",
+          "complete": "完成"
+        },
+        "phaseStates": {
+          "pending": "等待中",
+          "current": "进行中",
+          "done": "已完成",
+          "failed": "失败",
+          "skipped": "未选择"
+        }
+      },
+      "result": {
+        "title": "入库结果",
+        "files": "已处理文档/文件",
+        "filesBreakdown": "跳过 {skipped} 个 · 失败 {failed} 个",
+        "chunks": "知识块",
+        "fts": "全文索引知识块",
+        "vector": "向量索引知识块",
+        "warnings": "警告",
+        "notRequested": "未请求",
+        "unknownError": "未知入库错误"
+      },
+      "errors": {
+        "zipOnly": "请选择 ZIP 压缩包。",
+        "fileMismatch": "请选择同一文件以继续上传：{filename}",
+        "storage": "浏览器无法保存续传元数据。请保持本页面打开，直至上传完成。",
+        "missingResume": "续传元数据缺失。"
+      }
+    },
     "status": {
       "ready": "就绪",
       "degraded": "暂时不可用",

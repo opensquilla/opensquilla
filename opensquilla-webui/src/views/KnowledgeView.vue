@@ -1,5 +1,5 @@
 <template>
-  <div class="rag-provider control-stage control-stage--spacious">
+  <div ref="knowledgeStage" class="rag-provider control-stage control-stage--spacious">
     <header class="control-stage__header">
       <div class="control-stage__title-block">
         <h1 class="control-stage__title">{{ t('rag.title') }}</h1>
@@ -46,6 +46,7 @@
     <p v-if="status?.warning" class="rag-provider__warning" role="status">
       {{ status.warning }}
     </p>
+    <KnowledgeUploadPanel @verify-search="focusSearchWorkbench" />
 
     <KnowledgeProfileSelector
       :profiles="status?.searchOptions?.retrievalProfiles ?? []"
@@ -87,11 +88,13 @@ import {
   computed,
   onActivated,
   onDeactivated,
+  nextTick,
   onUnmounted,
   ref,
 } from 'vue'
 import { useI18n } from 'vue-i18n'
 import KnowledgeProfileSelector from '@/components/knowledge/KnowledgeProfileSelector.vue'
+import KnowledgeUploadPanel from '@/components/knowledge/KnowledgeUploadPanel.vue'
 import KnowledgeProviderDetails from '@/components/knowledge/KnowledgeProviderDetails.vue'
 import KnowledgeSearchWorkspace from '@/components/knowledge/KnowledgeSearchWorkspace.vue'
 import { useRpcStore } from '@/stores/rpc'
@@ -110,6 +113,7 @@ import {
 interface LoadStatusOptions {
   preserveDraft?: boolean
 }
+const knowledgeStage = ref<HTMLElement | null>(null)
 
 const MOBILE_READER_QUERY = '(max-width: 900px)'
 const rpc = useRpcStore()
@@ -221,6 +225,14 @@ function ensureMobileReader(state: unknown) {
   const evidenceId = syncMobileReaderUi(state)
   if (!evidenceId) return
   if (getResponse.value?.evidenceId !== evidenceId) void readEvidence(evidenceId, null)
+}
+
+async function focusSearchWorkbench() {
+  await nextTick()
+  const input = knowledgeStage.value?.querySelector<HTMLTextAreaElement>('[data-testid="rag-query"]')
+  if (!input) return
+  input.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+  input.focus()
 }
 
 async function loadStatus({ preserveDraft = true }: LoadStatusOptions = {}) {

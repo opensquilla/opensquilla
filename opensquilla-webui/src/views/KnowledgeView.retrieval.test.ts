@@ -230,6 +230,65 @@ const P14_RAG_KEYS = [
   'results.sourcePath',
 ].sort()
 
+const UPLOAD_RAG_KEYS = [
+  'upload.title',
+  'upload.description',
+  'upload.collection',
+  'upload.indexes.title',
+  'upload.indexes.fts',
+  'upload.indexes.ftsHint',
+  'upload.indexes.vector',
+  'upload.indexes.vectorHint',
+  'upload.indexes.required',
+  'upload.fileLabel',
+  'upload.fileHint',
+  'upload.reselect',
+  'upload.retryStatus',
+  'upload.singleTask',
+  'upload.uploadProgress',
+  'upload.checking',
+  'upload.creating',
+  'upload.uploading',
+  'upload.completing',
+  'upload.continueIndexing',
+  'upload.resume',
+  'upload.start',
+  'upload.bytes',
+  'upload.verifySearch',
+  'upload.job.title',
+  'upload.job.overall',
+  'upload.job.phasesLabel',
+  'upload.job.states.queued',
+  'upload.job.states.running',
+  'upload.job.states.ready',
+  'upload.job.states.ready_with_warnings',
+  'upload.job.states.failed',
+  'upload.job.phases.validating',
+  'upload.job.phases.extracting',
+  'upload.job.phases.parsing',
+  'upload.job.phases.fts_indexing',
+  'upload.job.phases.vector_indexing',
+  'upload.job.phases.complete',
+  'upload.job.phaseStates.pending',
+  'upload.job.phaseStates.current',
+  'upload.job.phaseStates.done',
+  'upload.job.phaseStates.failed',
+  'upload.job.phaseStates.skipped',
+  'upload.result.title',
+  'upload.result.files',
+  'upload.result.filesBreakdown',
+  'upload.result.chunks',
+  'upload.result.fts',
+  'upload.result.vector',
+  'upload.result.warnings',
+  'upload.result.notRequested',
+  'upload.result.unknownError',
+  'upload.errors.zipOnly',
+  'upload.errors.fileMismatch',
+  'upload.errors.storage',
+  'upload.errors.missingResume',
+].sort()
+
 function ragMessages(locale: unknown): JsonObject {
   return ((locale as JsonObject).rag ?? {}) as JsonObject
 }
@@ -238,9 +297,10 @@ describe('RAG production locale messages', () => {
   it('ships the baseline namespace and keeps P14-owned additions aligned', () => {
     const localeKeys = [en, zhHans, ja, fr, de, es]
       .map(locale => leafPaths(ragMessages(locale)).sort())
-    const allowed = new Set([...EXPECTED_RAG_KEYS, ...P14_RAG_KEYS])
+    const allowed = new Set([...EXPECTED_RAG_KEYS, ...P14_RAG_KEYS, ...UPLOAD_RAG_KEYS])
     for (const keys of localeKeys) {
       expect(keys).toEqual(expect.arrayContaining(EXPECTED_RAG_KEYS))
+      expect(keys).toEqual(expect.arrayContaining(UPLOAD_RAG_KEYS))
       expect(keys.every(key => allowed.has(key))).toBe(true)
     }
     for (const key of P14_RAG_KEYS) {

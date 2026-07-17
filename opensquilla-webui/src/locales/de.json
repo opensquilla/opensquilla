@@ -1264,6 +1264,78 @@
     "refreshing": "Wird aktualisiert…",
     "management": "Anbieterverwaltung",
     "managementLocalOnly": "Der Anbieter stellt einen Verwaltungspfad bereit, der nur lokal erreichbar ist.",
+    "upload": {
+      "title": "Hochladen und indexieren",
+      "description": "Eine ZIP-Datei mit Kundendokumenten hochladen. Große Dateien werden in fortsetzbaren Blöcken übertragen.",
+      "collection": "Sammlung: {id}",
+      "indexes": {
+        "title": "Zu erstellende Indizes",
+        "fts": "Volltextindex",
+        "ftsHint": "Schlagwortsuche mit SQLite FTS5",
+        "vector": "Vektorindex",
+        "vectorHint": "Semantische Suche mit BGE-M3 und 1.024 Dimensionen",
+        "required": "Mindestens einen Index auswählen."
+      },
+      "fileLabel": "ZIP-Datei",
+      "fileHint": "Nur ZIP-Dateien. Archive um 1 GB werden unterstützt und nie als Ganzes in den Browserspeicher geladen.",
+      "reselect": "Zum Fortsetzen nach dem Aktualisieren dieselbe Datei erneut auswählen: {filename}",
+      "retryStatus": "Status erneut abrufen",
+      "singleTask": "Eine andere Indexierungsaufgabe ist aktiv. Neue Uploads sind bis zu ihrem Abschluss deaktiviert.",
+      "uploadProgress": "Upload-Fortschritt",
+      "checking": "Status wird geprüft…",
+      "creating": "Upload wird vorbereitet…",
+      "uploading": "Wird hochgeladen…",
+      "completing": "Indexierung wird gestartet…",
+      "continueIndexing": "Mit der Indexierung fortfahren",
+      "resume": "Upload fortsetzen",
+      "start": "Hochladen und indexieren",
+      "bytes": "{count} Byte",
+      "verifySearch": "In der Wissenssuche überprüfen",
+      "job": {
+        "title": "Indexierungsstatus",
+        "overall": "Gesamtfortschritt",
+        "phasesLabel": "Indexierungsphasen",
+        "states": {
+          "queued": "In Warteschlange",
+          "running": "Läuft",
+          "ready": "Bereit",
+          "ready_with_warnings": "Bereit mit Warnungen",
+          "failed": "Fehlgeschlagen"
+        },
+        "phases": {
+          "validating": "Validierung",
+          "extracting": "Entpacken",
+          "parsing": "Analysieren",
+          "fts_indexing": "Volltextindexierung",
+          "vector_indexing": "Vektorindexierung",
+          "complete": "Abgeschlossen"
+        },
+        "phaseStates": {
+          "pending": "Ausstehend",
+          "current": "In Bearbeitung",
+          "done": "Erledigt",
+          "failed": "Fehlgeschlagen",
+          "skipped": "Nicht ausgewählt"
+        }
+      },
+      "result": {
+        "title": "Indexierungsergebnis",
+        "files": "Verarbeitete Dokumente / Dateien",
+        "filesBreakdown": "{skipped} übersprungen · {failed} fehlgeschlagen",
+        "chunks": "Blöcke",
+        "fts": "FTS-Blöcke",
+        "vector": "Vektorblöcke",
+        "warnings": "Warnungen",
+        "notRequested": "Nicht angefordert",
+        "unknownError": "Unbekannter Indexierungsfehler"
+      },
+      "errors": {
+        "zipOnly": "Eine ZIP-Datei auswählen.",
+        "fileMismatch": "Zum Fortsetzen dieselbe Datei auswählen: {filename}",
+        "storage": "Der Browser konnte die Fortsetzungsdaten nicht speichern. Diese Seite bis zum Abschluss des Uploads geöffnet lassen.",
+        "missingResume": "Fortsetzungsdaten fehlen."
+      }
+    },
     "status": {
       "ready": "Bereit",
       "degraded": "Vorübergehend nicht verfügbar",

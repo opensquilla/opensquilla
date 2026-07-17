@@ -1264,6 +1264,78 @@
     "refreshing": "Refreshing",
     "management": "Provider management",
     "managementLocalOnly": "The provider exposed a local-only management path.",
+    "upload": {
+      "title": "Upload and index",
+      "description": "Upload a ZIP archive of customer documents. Large files are sent in resumable chunks.",
+      "collection": "Collection: {id}",
+      "indexes": {
+        "title": "Indexes to build",
+        "fts": "Full-text index",
+        "ftsHint": "SQLite FTS5 keyword search",
+        "vector": "Vector index",
+        "vectorHint": "BGE-M3 1024-dimensional semantic search",
+        "required": "Select at least one index."
+      },
+      "fileLabel": "ZIP archive",
+      "fileHint": "ZIP files only. Archives around 1 GB are supported and are never loaded into browser memory as one body.",
+      "reselect": "To resume after refresh, select the same file again: {filename}",
+      "retryStatus": "Retry status",
+      "singleTask": "Another indexing task is active. New uploads are disabled until it finishes.",
+      "uploadProgress": "Upload progress",
+      "checking": "Checking status…",
+      "creating": "Preparing upload…",
+      "uploading": "Uploading…",
+      "completing": "Starting indexing…",
+      "continueIndexing": "Continue to indexing",
+      "resume": "Resume upload",
+      "start": "Upload and index",
+      "bytes": "{count} bytes",
+      "verifySearch": "Verify in knowledge search",
+      "job": {
+        "title": "Indexing status",
+        "overall": "Overall progress",
+        "phasesLabel": "Indexing phases",
+        "states": {
+          "queued": "Queued",
+          "running": "Running",
+          "ready": "Ready",
+          "ready_with_warnings": "Ready with warnings",
+          "failed": "Failed"
+        },
+        "phases": {
+          "validating": "Validating",
+          "extracting": "Extracting",
+          "parsing": "Parsing",
+          "fts_indexing": "Full-text indexing",
+          "vector_indexing": "Vector indexing",
+          "complete": "Complete"
+        },
+        "phaseStates": {
+          "pending": "Pending",
+          "current": "In progress",
+          "done": "Done",
+          "failed": "Failed",
+          "skipped": "Not selected"
+        }
+      },
+      "result": {
+        "title": "Indexing result",
+        "files": "Documents / files processed",
+        "filesBreakdown": "{skipped} skipped · {failed} failed",
+        "chunks": "Chunks",
+        "fts": "FTS chunks",
+        "vector": "Vector chunks",
+        "warnings": "Warnings",
+        "notRequested": "Not requested",
+        "unknownError": "Unknown indexing error"
+      },
+      "errors": {
+        "zipOnly": "Select a ZIP archive.",
+        "fileMismatch": "Select the same file to resume: {filename}",
+        "storage": "The browser could not save resume metadata. Keep this page open until the upload finishes.",
+        "missingResume": "Resume metadata is missing."
+      }
+    },
     "status": {
       "ready": "Ready",
       "degraded": "Temporarily unavailable",

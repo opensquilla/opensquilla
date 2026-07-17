@@ -1264,6 +1264,78 @@
     "refreshing": "Actualizando…",
     "management": "Gestión del proveedor",
     "managementLocalOnly": "El proveedor ofrece una ruta de gestión accesible solo desde el equipo local.",
+    "upload": {
+      "title": "Subir e indexar",
+      "description": "Sube un archivo ZIP con documentos de clientes. Los archivos grandes se envían en bloques reanudables.",
+      "collection": "Colección: {id}",
+      "indexes": {
+        "title": "Índices que se crearán",
+        "fts": "Índice de texto completo",
+        "ftsHint": "Búsqueda por palabras clave con SQLite FTS5",
+        "vector": "Índice vectorial",
+        "vectorHint": "Búsqueda semántica BGE-M3 de 1024 dimensiones",
+        "required": "Selecciona al menos un índice."
+      },
+      "fileLabel": "Archivo ZIP",
+      "fileHint": "Solo archivos ZIP. Se admiten archivos de alrededor de 1 GB sin cargarlos enteros en la memoria del navegador.",
+      "reselect": "Para reanudar tras actualizar, vuelve a seleccionar el mismo archivo: {filename}",
+      "retryStatus": "Reintentar estado",
+      "singleTask": "Hay otra tarea de indexación activa. Las nuevas subidas están desactivadas hasta que termine.",
+      "uploadProgress": "Progreso de la subida",
+      "checking": "Comprobando estado…",
+      "creating": "Preparando la subida…",
+      "uploading": "Subiendo…",
+      "completing": "Iniciando la indexación…",
+      "continueIndexing": "Continuar con la indexación",
+      "resume": "Reanudar subida",
+      "start": "Subir e indexar",
+      "bytes": "{count} bytes",
+      "verifySearch": "Verificar en la búsqueda de conocimiento",
+      "job": {
+        "title": "Estado de la indexación",
+        "overall": "Progreso general",
+        "phasesLabel": "Fases de indexación",
+        "states": {
+          "queued": "En cola",
+          "running": "En curso",
+          "ready": "Listo",
+          "ready_with_warnings": "Listo con advertencias",
+          "failed": "Fallido"
+        },
+        "phases": {
+          "validating": "Validación",
+          "extracting": "Extracción",
+          "parsing": "Análisis",
+          "fts_indexing": "Indexación de texto completo",
+          "vector_indexing": "Indexación vectorial",
+          "complete": "Completo"
+        },
+        "phaseStates": {
+          "pending": "Pendiente",
+          "current": "En curso",
+          "done": "Hecho",
+          "failed": "Fallido",
+          "skipped": "No seleccionado"
+        }
+      },
+      "result": {
+        "title": "Resultado de la indexación",
+        "files": "Documentos / archivos procesados",
+        "filesBreakdown": "{skipped} omitidos · {failed} fallidos",
+        "chunks": "Fragmentos",
+        "fts": "Fragmentos FTS",
+        "vector": "Fragmentos vectoriales",
+        "warnings": "Advertencias",
+        "notRequested": "No solicitado",
+        "unknownError": "Error de indexación desconocido"
+      },
+      "errors": {
+        "zipOnly": "Selecciona un archivo ZIP.",
+        "fileMismatch": "Selecciona el mismo archivo para reanudar: {filename}",
+        "storage": "El navegador no pudo guardar los metadatos de reanudación. Mantén esta página abierta hasta que termine la subida.",
+        "missingResume": "Faltan los metadatos de reanudación."
+      }
+    },
     "status": {
       "ready": "Listo",
       "degraded": "Temporalmente no disponible",

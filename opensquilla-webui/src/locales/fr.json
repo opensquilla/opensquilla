@@ -1264,6 +1264,78 @@
     "refreshing": "Actualisation…",
     "management": "Gestion du fournisseur",
     "managementLocalOnly": "Le fournisseur expose un chemin d’administration accessible uniquement en local.",
+    "upload": {
+      "title": "Importer et indexer",
+      "description": "Importez une archive ZIP de documents client. Les fichiers volumineux sont envoyés par blocs avec reprise.",
+      "collection": "Collection : {id}",
+      "indexes": {
+        "title": "Index à créer",
+        "fts": "Index de texte intégral",
+        "ftsHint": "Recherche par mots-clés avec SQLite FTS5",
+        "vector": "Index vectoriel",
+        "vectorHint": "Recherche sémantique BGE-M3 à 1 024 dimensions",
+        "required": "Sélectionnez au moins un index."
+      },
+      "fileLabel": "Archive ZIP",
+      "fileHint": "Fichiers ZIP uniquement. Les archives d’environ 1 Go sont prises en charge sans être chargées entièrement en mémoire.",
+      "reselect": "Pour reprendre après actualisation, sélectionnez à nouveau le même fichier : {filename}",
+      "retryStatus": "Réessayer l’état",
+      "singleTask": "Une autre tâche d’indexation est active. Les nouveaux imports sont désactivés jusqu’à sa fin.",
+      "uploadProgress": "Progression de l’import",
+      "checking": "Vérification de l’état…",
+      "creating": "Préparation de l’import…",
+      "uploading": "Import en cours…",
+      "completing": "Démarrage de l’indexation…",
+      "continueIndexing": "Continuer vers l’indexation",
+      "resume": "Reprendre l’import",
+      "start": "Importer et indexer",
+      "bytes": "{count} octets",
+      "verifySearch": "Vérifier dans la recherche de connaissances",
+      "job": {
+        "title": "État de l’indexation",
+        "overall": "Progression globale",
+        "phasesLabel": "Phases d’indexation",
+        "states": {
+          "queued": "En attente",
+          "running": "En cours",
+          "ready": "Prêt",
+          "ready_with_warnings": "Prêt avec avertissements",
+          "failed": "Échec"
+        },
+        "phases": {
+          "validating": "Validation",
+          "extracting": "Extraction",
+          "parsing": "Analyse",
+          "fts_indexing": "Indexation de texte intégral",
+          "vector_indexing": "Indexation vectorielle",
+          "complete": "Terminé"
+        },
+        "phaseStates": {
+          "pending": "En attente",
+          "current": "En cours",
+          "done": "Terminé",
+          "failed": "Échec",
+          "skipped": "Non sélectionné"
+        }
+      },
+      "result": {
+        "title": "Résultat de l’indexation",
+        "files": "Documents / fichiers traités",
+        "filesBreakdown": "{skipped} ignorés · {failed} en échec",
+        "chunks": "Blocs",
+        "fts": "Blocs FTS",
+        "vector": "Blocs vectoriels",
+        "warnings": "Avertissements",
+        "notRequested": "Non demandé",
+        "unknownError": "Erreur d’indexation inconnue"
+      },
+      "errors": {
+        "zipOnly": "Sélectionnez une archive ZIP.",
+        "fileMismatch": "Sélectionnez le même fichier pour reprendre : {filename}",
+        "storage": "Le navigateur n’a pas pu enregistrer les métadonnées de reprise. Gardez cette page ouverte jusqu’à la fin de l’import.",
+        "missingResume": "Les métadonnées de reprise sont absentes."
+      }
+    },
     "status": {
       "ready": "Prêt",
       "degraded": "Temporairement indisponible",

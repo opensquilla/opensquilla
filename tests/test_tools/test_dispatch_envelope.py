@@ -7,6 +7,7 @@ import pytest
 
 from opensquilla.engine.tool_result_store import ToolResultStore
 from opensquilla.engine.types import ToolCall
+from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
 from opensquilla.result_budget import (
     DEFAULT_TOOL_RUN_BUDGET_POLICY,
     ToolResultBudgetPolicy,
@@ -14,6 +15,7 @@ from opensquilla.result_budget import (
     ToolRunBudgetPolicy,
     build_web_retrieval_tool_run_budget_policy,
 )
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.tools import dispatch as dispatch_module
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import ToolRegistry
@@ -49,6 +51,23 @@ def _build_registry() -> ToolRegistry:
             }
         )
 
+    async def auto_pending() -> str:
+        gate = gate_elevated_action(
+            ElevationAction(
+                tool_name="exec_command",
+                action_kind="shell.exec",
+                argv=("exec_command", "echo ok"),
+                cwd="C:\\workspace",
+                sandbox_permissions="require_escalated",
+                justification="Run the exact requested command.",
+            ),
+            approval_id=None,
+            session_key="agent:main:subagent:demo",
+            queue=get_approval_queue(),
+            reviewer="auto_review",
+        )
+        return json.dumps(gate.to_envelope())
+
     registry.register(ToolSpec(name="boom", description="boom", parameters={}), boom)
     registry.register(
         ToolSpec(
@@ -68,6 +87,10 @@ def _build_registry() -> ToolRegistry:
         required_echo,
     )
     registry.register(ToolSpec(name="pending", description="pending", parameters={}), pending)
+    registry.register(
+        ToolSpec(name="auto_pending", description="auto pending", parameters={}),
+        auto_pending,
+    )
     return registry
 
 
@@ -1067,6 +1090,37 @@ async def test_dispatch_unsupported_surface_approval_payload_is_pending_status()
     assert payload["tool"] == "pending"
     assert payload["error_class"] == "UnsupportedSurface"
     assert payload["retry_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_unattended_subagent_preserves_automatic_rule_review() -> None:
+    reset_approval_queue()
+    handler = build_tool_handler(_build_registry())
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            caller_kind=CallerKind.SUBAGENT,
+            interaction_mode=InteractionMode.UNATTENDED,
+            session_key="agent:main:subagent:demo",
+            agent_id="main",
+            run_mode="trusted",
+        )
+    )
+    try:
+        result = await handler(
+            ToolCall(
+                tool_use_id="tc-auto-review",
+                tool_name="auto_pending",
+                arguments={},
+            )
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_approval_queue()
+
+    payload = json.loads(result.content)
+    assert payload["status"] == "approval_required"
+    assert payload.get("error_class") != "UnsupportedSurface"
 
 
 @pytest.mark.asyncio

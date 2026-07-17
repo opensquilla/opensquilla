@@ -507,8 +507,7 @@ class AgentConfig:
     # Prompt caching breakpoints (list of {"text": ..., "cache": "true"})
     cache_breakpoints: list[dict[str, str]] | None = None
     cache_mode: Literal["off", "auto", "on"] = "off"
-    # Optional final-answer JSON schema. Guardian uses a non-strict schema so
-    # the low-risk fast path can return only {"outcome": "allow"}.
+    # Optional final-answer JSON schema for provider-specific structured output.
     output_json_schema: dict[str, Any] | None = None
     output_json_schema_strict: bool = True
     # Per-turn volatile request context injected after persisted history

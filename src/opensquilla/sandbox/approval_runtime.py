@@ -35,7 +35,7 @@ class SandboxOverride(StrEnum):
 
 @dataclass(frozen=True)
 class ApprovalAction:
-    """The exact action Guardian reviews before a sandbox override."""
+    """The exact action reviewed before a sandbox override."""
 
     kind: ApprovalActionKind
     call_id: str
@@ -86,17 +86,6 @@ class ApprovalAction:
             },
             justification=justification,
         )
-
-    def guardian_payload(self) -> dict[str, object]:
-        return {
-            "kind": self.kind,
-            "call_id": self.call_id,
-            "tool_name": self.tool_name,
-            "cwd": str(self.cwd),
-            "sandbox_permissions": self.sandbox_permissions,
-            "justification": self.justification,
-            "payload": _jsonish(self.payload),
-        }
 
     def audit_payload(self) -> dict[str, object]:
         safe_payload: dict[str, Any] = {}

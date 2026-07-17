@@ -20,7 +20,7 @@ class _FakeProcess:
         return b"## main\n", None
 
 
-def test_guardian_git_diff_disables_repository_controlled_helpers() -> None:
+def test_read_only_git_diff_disables_repository_controlled_helpers() -> None:
     args = git._harden_read_only_git_args(("diff", "--cached"))
 
     assert args == (
@@ -75,7 +75,7 @@ async def test_git_status_run_mode_full_uses_host_subprocess(
 
 
 @pytest.mark.asyncio
-async def test_guardian_git_uses_read_only_profile_and_read_only_mounts(
+async def test_git_uses_runtime_read_only_profile_and_read_only_mounts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,7 +102,7 @@ async def test_guardian_git_uses_read_only_profile_and_read_only_mounts(
             is_owner=True,
             workspace_dir=str(tmp_path),
             run_mode="trusted",
-            session_key="guardian-review",
+            session_key="restricted-internal-reader",
             sandbox_file_system_profile=FileSystemPermissionProfile.read_only(),
         )
     )

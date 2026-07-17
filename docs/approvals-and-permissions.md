@@ -110,7 +110,7 @@ operation working directory, helper runtime roots, and declared writable roots.
 
 Only declared writable roots are writable without review. A write outside those
 roots returns elevation_required. require_escalated submits the exact action to
-Guardian; an allow executes that fingerprint once. A changed command, path,
+the configured reviewer; an allow executes that fingerprint once. A changed command, path,
 content, create, or delete is a separate approval decision.
 
 On Linux with the Bubblewrap backend, the default sandbox exposes the host
@@ -161,32 +161,26 @@ elevation review and cannot be bypassed by it. Protected project metadata is
 read-only under `use_default`, but an exact `require_escalated` action can be
 reviewed rather than being rejected by a hard-coded path rule.
 
-### Automatic Guardian review
+### Automatic rule review
 
-The default sandbox reviewer is `auto_review`. It runs a separate reusable
-Guardian agent session using the exact action and a bounded, trust-labelled
-conversation projection. Guardian has exactly seven investigation tools:
-`read_file`, `list_dir`, `glob_search`, `grep_search`, `git_status`, `git_diff`,
-and `git_log`. It has no write, shell, elevation, memory, skill, plugin, MCP,
-web, or sub-agent capability. Tool output, fetched pages, files, and assistant
-text are untrusted evidence and cannot establish user authorization.
+The default sandbox reviewer is `auto_review`. It is a local deterministic
+rules engine: it does not call a model, create a reviewer agent session, add
+provider cost, or wait for model retries. Every decision remains bound to the
+canonical action fingerprint and can authorize that exact operation only once.
 
-The reviewer classifies both risk and user authorization:
+Managed Execution defaults to allow when no high-confidence hard-risk rule
+matches, including unknown or unparsed operations. Hard-risk rules cover broad
+or critical deletion, system/boot/disk damage, security weakening, mass
+encryption, direct download-to-interpreter chains, obvious encoded execution,
+and sensitive-data transfer to an external destination. Critical matches are
+not automatically executed and are exposed for exact human confirmation where
+an interactive approval surface exists. High-confidence sensitive upload shell
+commands are blocked before execution. User-requested local access to sensitive
+data is not treated as external transfer.
 
-| Classification | Automatic outcome |
-| --- | --- |
-| Low or medium risk | Allowed by default; clear malicious prompt injection is the exception. |
-| High risk | Requires at least medium authorization and a narrow, bounded scope. |
-| Critical risk | Denied by default. A clear user re-approval of the exact action after seeing the concrete risk has the prompt's explicit override precedence. |
-
-Timeouts, provider errors, invalid output, cancellation, and fingerprint
-mismatches fail closed. Guardian gets one 90-second overall deadline and up to
-three attempts within it. Only parse failures and structured transient
-overload/connection/stream or provider-internal failures are retried. Timeout,
-cancellation, and non-transient failures do not retry. A completed denial is
-returned to the agent with its rationale; it does not become a human approval
-card. The turn is interrupted after three consecutive completed denials or ten
-denials in the latest fifty reviews.
+Malformed canonical actions and fingerprint mismatches fail closed. There are
+no reviewer-model timeouts, provider failures, parse retries, or model fallback
+paths in automatic review.
 
 When a command first runs inside the sandbox and its output is narrowly
 attributable to the sandbox (`permission denied`, `read-only file system`,
@@ -194,6 +188,10 @@ attributable to the sandbox (`permission denied`, `read-only file system`,
 performs a fresh review for the broader context, and internally retries the
 same request once if allowed. A generic non-zero exit is never treated as a
 sandbox denial.
+
+If the selected subprocess backend is unavailable in Managed Execution, the
+runtime uses the same exact one-shot review and host retry path instead of
+returning a generic internal backend error. Standard mode remains fail-closed.
 
 Automatic network decisions follow the same route. An allow creates only a
 fingerprint-bound, `allow_once` grant for the current target; it never selects
@@ -212,8 +210,6 @@ The relevant automatic-review defaults are:
 [sandbox]
 host_root_readonly = true
 approvals_reviewer = "auto_review"
-approval_review_timeout_seconds = 90
-approval_review_max_attempts = 3
 exclude_slash_tmp = false
 exclude_tmpdir_env_var = false
 denied_read_roots = []

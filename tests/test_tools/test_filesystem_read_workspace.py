@@ -91,7 +91,7 @@ async def test_read_file_invalid_utf8_before_selected_window_errors(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_filesystem_sandbox_boundary_attaches_guardian_profile_once(
+async def test_filesystem_sandbox_boundary_attaches_runtime_profile_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -51,8 +51,7 @@ class ToolContext:
     run_mode: str | None = None
     sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
     sandbox_run_context: Any | None = None
-    # Runtime-only filesystem profile override. Guardian installs Codex's
-    # read-only profile here so even its seven inspection tools cannot write.
+    # Runtime-only filesystem profile override for restricted internal callers.
     sandbox_file_system_profile: Any | None = None
     source_diff_preservation_mode: str = "log"
     source_diff_candidate_mode: str = "log"

@@ -34,7 +34,7 @@ from opensquilla.engine.cache_break_monitor import (
     notify_compaction,
     record_prompt_state,
 )
-from opensquilla.engine.elevation_triage import local_elevation_assessment
+from opensquilla.engine.elevation_triage import RuleAssessment, local_elevation_assessment
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.final_diff_contract import (
     FinalDiffContractObservation,
@@ -53,11 +53,6 @@ from opensquilla.engine.finalize_evidence_gate import (
 )
 from opensquilla.engine.finalize_evidence_gate import (
     WRITE_TOOL_NAMES as _GATE_WRITE_TOOL_NAMES,
-)
-from opensquilla.engine.guardian_review import (
-    GuardianAssessment,
-    GuardianCircuitBreaker,
-    GuardianReviewer,
 )
 from opensquilla.engine.history import limit_turns, repair_tool_pairing
 from opensquilla.engine.patch_evidence_ledger import PatchEvidenceLedger
@@ -1025,23 +1020,17 @@ async def _wait_for_pending_approval_resolution(
 async def _review_pending_elevation_if_configured(
     payload: dict[str, Any],
     *,
-    provider: LLMProvider,
     transcript: list[Message],
-    circuit: GuardianCircuitBreaker,
     runtime_events_path: str | None,
     suspended_action: ApprovalAction | None = None,
-    guardian_session: Any | None = None,
-) -> GuardianAssessment | None:
-    """Resolve one internal elevation record through Guardian, or leave it human-owned."""
+) -> RuleAssessment | None:
+    """Resolve one internal elevation record through deterministic local rules."""
 
     approval_id = payload.get("approval_id")
     if not isinstance(approval_id, str) or not approval_id:
         return None
 
     from opensquilla.gateway.approval_queue import get_approval_queue
-    from opensquilla.sandbox.config import SandboxSettings
-    from opensquilla.sandbox.integration import get_runtime
-
     queue = get_approval_queue()
     try:
         entry = queue.get(approval_id)
@@ -1076,14 +1065,14 @@ async def _review_pending_elevation_if_configured(
             "approval_id": approval_id,
             "fingerprint": fingerprint,
             "humanActionable": False,
-            "model": str(getattr(provider, "model", "") or ""),
+            "reviewer": "deterministic_rules",
             "action": (
                 suspended_action.audit_payload() if suspended_action is not None else None
             ),
         },
     )
 
-    review_source = "guardian"
+    review_source = "rules"
     try:
         raw_action = params.get("action")
         if not isinstance(raw_action, dict):
@@ -1091,46 +1080,24 @@ async def _review_pending_elevation_if_configured(
         action = ElevationAction.from_canonical_payload(raw_action)
         if action.fingerprint() != fingerprint:
             raise ValueError("elevation_action_fingerprint_mismatch")
-        local_assessment = local_elevation_assessment(action, transcript)
-        if local_assessment is not None:
-            review_source = "local"
-            assessment = local_assessment
-        elif circuit.is_open:
-            review_source = "circuit_breaker"
-            assessment = GuardianAssessment(
-                risk_level="high",
-                user_authorization="unknown",
-                outcome="deny",
-                rationale=(
-                    "Automatic elevation review stopped after three denied requests in "
-                    "this turn. Explain the risk and obtain a new explicit user instruction."
-                ),
-                status="failed_closed",
-            )
-        else:
-            runtime = get_runtime()
-            settings = runtime.settings if runtime is not None else SandboxSettings()
-            assessment = await GuardianReviewer(
-                provider,
-                timeout_seconds=settings.approval_review_timeout_seconds,
-                max_attempts=settings.approval_review_max_attempts,
-                session=guardian_session,
-            ).review(suspended_action or action, transcript)
+        assessment = local_elevation_assessment(action, transcript)
     except Exception as exc:
-        review_source = "failed_closed"
-        assessment = GuardianAssessment(
-            risk_level="high",
+        review_source = "rules_integrity_failure"
+        assessment = RuleAssessment(
+            risk_level="critical",
             user_authorization="unknown",
             outcome="deny",
             rationale=(
-                "Automatic approval review could not validate the exact action and "
-                f"failed closed: {str(exc) or type(exc).__name__}"
+                "The exact approval action failed canonical integrity validation: "
+                f"{str(exc) or type(exc).__name__}"
             ),
-            status="failed_closed",
+            human_confirmation_allowed=False,
         )
 
     updated_params = dict(params)
-    requires_human_confirmation = assessment.risk_level == "critical"
+    requires_human_confirmation = (
+        assessment.risk_level == "critical" and assessment.human_confirmation_allowed
+    )
     updated_params.update(
         {
             "reviewRiskLevel": assessment.risk_level,
@@ -1146,7 +1113,7 @@ async def _review_pending_elevation_if_configured(
             {
                 "reviewer": "user",
                 "humanActionable": True,
-                "modelReviewOutcome": assessment.outcome,
+                "ruleReviewOutcome": assessment.outcome,
                 "reviewStatus": "human_confirmation_required",
             }
         )
@@ -1163,7 +1130,6 @@ async def _review_pending_elevation_if_configured(
 
         grant_auto_review_network_once(updated_params)
 
-    circuit_interrupted = circuit.observe(assessment)
     append_runtime_event(
         runtime_events_path,
         {
@@ -1184,17 +1150,6 @@ async def _review_pending_elevation_if_configured(
             "review_source": review_source,
         },
     )
-    if circuit_interrupted:
-        append_runtime_event(
-            runtime_events_path,
-            {
-                "event_type": "sandbox_elevation_review",
-                "phase": "circuit_breaker_interrupted",
-                "approval_id": approval_id,
-                "consecutive_denials": circuit.consecutive_denials,
-                "recent_denials": circuit.recent_denial_count,
-            },
-        )
     logger.info(
         "sandbox_elevation.review_completed",
         approval_id=approval_id,
@@ -1730,8 +1685,6 @@ class Agent:
         self._session_key = session_key
         self._turn_call_logger = turn_call_logger
         self._tool_registry: ToolRegistry | None = tool_registry
-        self._guardian_review_session: Any | None = None
-        self._guardian_review_session_key: tuple[Any, ...] | None = None
         if (
             tool_context is not None
             and self.config.runtime_events_path
@@ -3989,102 +3942,6 @@ class Agent:
     def clear_history(self) -> None:
         self._history = []
 
-    def _guardian_session_for_approval(self) -> Any | None:
-        if self._tool_registry is None:
-            return None
-        from opensquilla.engine.guardian_session import GuardianReviewSessionManager
-        from opensquilla.sandbox.integration import get_runtime
-        from opensquilla.sandbox.permissions import FileSystemPermissionProfile
-        from opensquilla.sandbox.policy import build_policy
-        from opensquilla.sandbox.types import SecurityLevel
-
-        workspace = Path(
-            self.config.workspace_dir
-            or (self._tool_context.workspace_dir if self._tool_context is not None else "")
-            or os.getcwd()
-        ).expanduser().resolve(strict=False)
-        runtime = get_runtime()
-        review_timeout = float(
-            getattr(
-                getattr(runtime, "settings", None),
-                "approval_review_timeout_seconds",
-                90.0,
-            )
-        )
-        guardian_profile = FileSystemPermissionProfile.read_only()
-        runtime_policy_key: tuple[Any, ...] = ()
-        if runtime is not None and runtime.effective.sandbox_enabled:
-            parent_policy = build_policy(
-                SecurityLevel.STANDARD,
-                "fs.read",
-                workspace,
-                runtime.settings,
-            )
-            if parent_policy.file_system is not None:
-                guardian_profile = parent_policy.file_system.as_read_only()
-            runtime_policy_key = (
-                runtime.backend.name,
-                runtime.settings.network_default,
-                guardian_profile,
-            )
-        session_key = (
-            id(self.provider),
-            id(self._tool_registry),
-            str(workspace),
-            self.config.provider_id,
-            self.config.model_id,
-            review_timeout,
-            self.config.request_timeout,
-            self.config.tool_timeout,
-            self.config.cache_mode,
-            self.config.context_window_tokens,
-            runtime_policy_key,
-        )
-        if (
-            self._guardian_review_session is not None
-            and self._guardian_review_session_key == session_key
-        ):
-            return self._guardian_review_session
-        try:
-            self._guardian_review_session = GuardianReviewSessionManager(
-                self.provider,
-                tool_registry=self._tool_registry,
-                workspace=workspace,
-                parent_config=self.config,
-                timeout_seconds=review_timeout,
-                file_system_profile=guardian_profile,
-            )
-        except ValueError as exc:
-            logger.warning("guardian.read_only_session_unavailable", reason=str(exc))
-            self._guardian_review_session = None
-            self._guardian_review_session_key = None
-            return None
-        self._guardian_review_session_key = session_key
-        return self._guardian_review_session
-
-    def _prewarm_guardian_session_for_approval(self) -> None:
-        """Prepare the Guardian trunk before an approval reaches the hot path."""
-
-        if (self.config.metadata or {}).get("agent_role") == "guardian":
-            return
-        from opensquilla.sandbox.integration import get_runtime
-
-        runtime = get_runtime()
-        if runtime is not None and not runtime.effective.sandbox_enabled:
-            return
-        settings = getattr(runtime, "settings", None)
-        reviewer = str(getattr(settings, "approvals_reviewer", "auto_review") or "auto_review")
-        if reviewer != "auto_review":
-            return
-        manager = self._guardian_session_for_approval()
-        if manager is None:
-            return
-        try:
-            if manager.prewarm():
-                logger.debug("guardian.session_prewarmed")
-        except Exception as exc:
-            logger.warning("guardian.session_prewarm_failed", reason=str(exc))
-
     def set_history(self, messages: list[Message]) -> None:
         self._history = list(messages)
 
@@ -4106,7 +3963,6 @@ class Agent:
         Explicit state machine — no recursion. Tool loop iterates until
         the model finishes, unless config.max_iterations is a positive cap.
         """
-        self._prewarm_guardian_session_for_approval()
         if self._session_key:
             from opensquilla.sandbox.escalation import (
                 clear_sandbox_approval_denials,
@@ -4359,20 +4215,14 @@ class Agent:
         )
         turn_llm_calls = 0
         turn_tool_errors = 0
-        auto_review_circuit = GuardianCircuitBreaker()
-        auto_review_lock = asyncio.Lock()
-
         async def _review_inflight_sandbox_request(
             payload: dict[str, object],
-        ) -> GuardianAssessment | None:
-            async with auto_review_lock:
-                return await _review_pending_elevation_if_configured(
-                    dict(payload),
-                    provider=self.provider,
-                    transcript=turn_messages,
-                    circuit=auto_review_circuit,
-                    runtime_events_path=self.config.runtime_events_path,
-                )
+        ) -> RuleAssessment | None:
+            return await _review_pending_elevation_if_configured(
+                dict(payload),
+                transcript=turn_messages,
+                runtime_events_path=self.config.runtime_events_path,
+            )
 
         if self._tool_context is not None:
             self._tool_context.on_sandbox_auto_review = _review_inflight_sandbox_request
@@ -7951,15 +7801,12 @@ class Agent:
                         suspended = _suspend_tool_request(tc, pending_approval)
                         assessment = await _review_pending_elevation_if_configured(
                             pending_approval,
-                            provider=self.provider,
                             transcript=turn_messages,
-                            circuit=auto_review_circuit,
                             runtime_events_path=self.config.runtime_events_path,
                             suspended_action=suspended.action,
-                            guardian_session=self._guardian_session_for_approval(),
                         )
                         # Human-owned approvals need a lifecycle event so the UI can
-                        # render its card. Automatic Guardian reviews remain internal.
+                        # render its card. Automatic rule reviews remain internal.
                         if assessment is None:
                             yield ToolResultEvent(
                                 tool_use_id=projected_result.tool_use_id,
@@ -8015,8 +7862,6 @@ class Agent:
                                 arguments=tc.arguments,
                                 execution_status=projected_result.execution_status,
                             )
-                            if assessment is not None and auto_review_circuit.is_open:
-                                turn_yielded = True
                         else:
                             resumed_call = suspended.approve(
                                 str(pending_approval["approval_id"])

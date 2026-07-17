@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from opensquilla.sandbox.backend.unavailable import UnavailableBackend
 from opensquilla.sandbox.directory_listing import format_directory_entry
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
@@ -45,6 +46,7 @@ from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import (
     current_run_mode,
     full_host_access_active,
+    trusted_sandbox_active,
 )
 from opensquilla.tools.source_edit_contract import (
     SourceEditContractError,
@@ -658,6 +660,10 @@ def _sandbox_path_access_envelope(
     )
     if decision.status == "allowed":
         return None
+    if not write and trusted_sandbox_active():
+        # Managed Execution treats local reads as host-readable. Sensitive data
+        # exfiltration remains blocked at the action/network review boundary.
+        return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
     if write:
@@ -716,8 +722,18 @@ async def _run_sandbox_operation_if_required(
         profile = active_file_system_profile(_workspace_root())
         if profile is not None:
             operation = replace(operation, file_system_profile=profile)
+    runtime = get_runtime()
+    ctx = current_tool_context.get()
+    if (
+        trusted_sandbox_active()
+        and ctx is not None
+        and ctx.is_owner
+        and runtime is not None
+        and isinstance(runtime.backend, UnavailableBackend)
+    ):
+        return None
     return await SandboxOperationRuntime(
-        get_runtime(),
+        runtime,
         host_execution_active=full_host_access_active() or host_execution_active,
     ).run(operation)
 

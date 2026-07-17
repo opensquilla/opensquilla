@@ -155,7 +155,7 @@ def _add_network_reviewer_params(
 
 
 def grant_auto_review_network_once(params: dict[str, Any]) -> bool:
-    """Install one in-memory, fingerprint-bound grant after Guardian approval."""
+    """Install one in-memory, fingerprint-bound grant after rule approval."""
 
     if (
         params.get("approvalKind") != "sandbox_network"

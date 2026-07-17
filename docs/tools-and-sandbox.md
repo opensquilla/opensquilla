@@ -49,7 +49,7 @@ Read: [`approvals-and-permissions.md`](approvals-and-permissions.md)
 ## Approval Flow
 
 With the default `approvals_reviewer = "auto_review"`, an explicit
-`require_escalated` tool call is reviewed by an independent Guardian model.
+`require_escalated` tool call is reviewed by a local deterministic rules engine.
 The review record is internal and does not appear as an actionable Web UI
 approval. Configure `approvals_reviewer = "user"` only when a human approval
 surface is intentionally required.
@@ -72,14 +72,12 @@ with `sandbox_permissions = "require_escalated"` and a precise
 the same request exactly once after approval. Fingerprints provide integrity
 and audit checks; they are not a substitute for continuation identity.
 
-Guardian allows low/medium risk by default except for clear malicious prompt
-injection. High risk requires at least medium authorization and narrow scope;
-critical risk is denied by default, with the policy's narrow post-denial user
-re-approval override for the exact action. Its reusable agent can inspect local state
-with seven read-only filesystem/git tools, but has no mutation, shell, web,
-plugin, skill, memory, MCP, or sub-agent tools. Review errors and timeouts fail
-closed. A denial goes back to the agent for explanation or a safer proposal,
-never to an automatic human-popup fallback.
+Automatic review makes no provider or model call. Unknown operations default to
+allow. High-confidence rules stop broad or critical deletion, system damage,
+security weakening, mass encryption, direct download-to-interpreter chains,
+obvious encoded execution, and sensitive-data transfer to external targets.
+Critical matches require exact human confirmation on interactive surfaces;
+high-confidence sensitive upload shell commands are blocked before execution.
 
 ## Workspace Controls
 
@@ -111,7 +109,7 @@ operation working directory, helper runtime roots, and declared writable roots.
 
 Only declared writable roots are writable without review. A write outside those
 roots returns elevation_required. require_escalated submits the exact action to
-Guardian; an allow executes that fingerprint once. A changed command, path,
+the configured reviewer; an allow executes that fingerprint once. A changed command, path,
 content, create, or delete is a separate approval decision.
 
 On Linux Bubblewrap, host `/` is mounted read-only by default. The workspace,
@@ -144,18 +142,14 @@ sandbox = true
 security_grading = true
 host_root_readonly = true
 approvals_reviewer = "auto_review"
-approval_review_timeout_seconds = 90
-approval_review_max_attempts = 3
 exclude_slash_tmp = false
 exclude_tmpdir_env_var = false
 denied_read_roots = []
 denied_read_globs = []
 ```
 
-One review may make at most three attempts inside its single 90-second
-deadline, retrying only parse errors and structured transient provider/session
-failures. Three consecutive policy denials or ten denials in the latest fifty
-reviews interrupt the turn.
+Automatic rule review is synchronous and local. It has no provider deadline,
+model retry loop, or reviewer-session failure mode.
 
 The denied-read lists are optional explicit exceptions to global reads;
 relative entries are workspace-relative, and active denies prevent an

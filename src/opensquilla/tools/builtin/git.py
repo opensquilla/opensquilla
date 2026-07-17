@@ -117,7 +117,7 @@ async def _run_git(*args: str, cwd: str | None = None) -> str:
 
 
 def _harden_read_only_git_args(args: tuple[str, ...]) -> tuple[str, ...]:
-    """Disable repository-controlled helpers in the Guardian git surface."""
+    """Disable repository-controlled helpers for read-only git execution."""
 
     global_options = ("--no-optional-locks", "-c", "core.fsmonitor=false")
     if args and args[0] == "diff":

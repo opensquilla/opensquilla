@@ -327,8 +327,6 @@ host_root_readonly = true
 exclude_slash_tmp = false
 exclude_tmpdir_env_var = false
 approvals_reviewer = "auto_review"
-approval_review_timeout_seconds = 90
-approval_review_max_attempts = 3
 denied_read_roots = []
 denied_read_globs = []
 ```
@@ -342,7 +340,7 @@ operation working directory, helper runtime roots, and declared writable roots.
 
 Only declared writable roots are writable without review. A write outside those
 roots returns elevation_required. require_escalated submits the exact action to
-Guardian; an allow executes that fingerprint once. A changed command, path,
+the configured reviewer; an allow executes that fingerprint once. A changed command, path,
 content, create, or delete is a separate approval decision.
 
 On Linux and macOS, `/tmp` and `$TMPDIR` are writable by default. Windows does

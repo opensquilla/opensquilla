@@ -53,6 +53,7 @@ from opensquilla.sandbox.backend.seatbelt import (
     render_seatbelt_profile,
     seatbelt_env_for_policy,
 )
+from opensquilla.sandbox.backend.unavailable import UnavailableBackend
 from opensquilla.sandbox.denial_attribution import is_likely_sandbox_denied
 from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
@@ -66,6 +67,7 @@ from opensquilla.sandbox.integration import (
     active_file_system_profile,
     consume_backend_denial_retry,
     escalate_backend_denial,
+    escalate_unavailable_backend_in_managed_mode,
     gate_action,
     get_runtime,
     preflight_subprocess_managed_network,
@@ -92,6 +94,7 @@ from opensquilla.sandbox.types import (
     MountMode,
     MountSpec,
     NetworkMode,
+    SandboxBackendError,
     SandboxPolicy,
     SandboxRequest,
     SandboxResult,
@@ -163,7 +166,7 @@ _SANDBOX_NETWORK_HINT = (
 _SANDBOX_NETWORK_DISABLED_HINT = (
     "Hint: sandboxed shell/code has no direct network because sandbox "
     "network_default is configured as 'none'. Set [sandbox] "
-    "network_default = \"proxy_allowlist\" in the gateway config and restart "
+    'network_default = "proxy_allowlist" in the gateway config and restart '
     "the gateway to enable the managed proxy. Do not switch to separate web "
     "download tools for package installs unless the user explicitly asks for "
     "an offline workaround."
@@ -201,9 +204,7 @@ _WINDOWS_ABSOLUTE_PATH_IN_SCRIPT_RE = re.compile(
     r"(?<![A-Za-z0-9_])[A-Za-z]:[\\/]",
     re.IGNORECASE,
 )
-_WINDOWS_POSIX_TMP_QUOTED_RE = re.compile(
-    r"(?P<quote>['\"])(?P<path>/tmp(?:/[^'\"]*)?)(?P=quote)"
-)
+_WINDOWS_POSIX_TMP_QUOTED_RE = re.compile(r"(?P<quote>['\"])(?P<path>/tmp(?:/[^'\"]*)?)(?P=quote)")
 _WINDOWS_POSIX_TMP_BARE_RE = re.compile(
     r"(?<![A-Za-z0-9_./:\\-])(?P<path>/tmp(?:/[^\s'\";&|<>)]*)?)"
 )
@@ -724,6 +725,90 @@ def _iter_stdin_guard_chunks(text: str) -> Iterator[str]:
         start += step
 
 
+_SENSITIVE_HTTP_UPLOAD_RE = re.compile(
+    r"\b(?:curl(?:\.exe)?|wget(?:\.exe)?)\b[^\n]*(?:"
+    r"--upload-file\b|(?:^|\s)-T(?:\s|$)|--data(?:-ascii|-binary|-raw|-urlencode)?\b|"
+    r"(?:^|\s)-d(?:\s|$)|--form\b|(?:^|\s)-F(?:\s|$)|--post-file\b|--body-file\b)|"
+    r"\b(?:invoke-webrequest|invoke-restmethod|iwr|irm)\b[^\n]*(?:"
+    r"-infile\b|-body\b|-method\s+(?:post|put|patch)\b)",
+    flags=re.IGNORECASE,
+)
+
+
+def _looks_like_sensitive_copy_upload(command: str, marker: str) -> bool:
+    try:
+        tokens = shlex.split(command, posix=os.name != "nt")
+    except ValueError:
+        tokens = command.split()
+    if not tokens:
+        return False
+    executable = Path(tokens[0].strip("'\"")).name.casefold()
+    if executable not in {"scp", "scp.exe", "sftp", "sftp.exe", "rsync", "rsync.exe"}:
+        return False
+    operands = [token.strip("'\"") for token in tokens[1:] if not token.startswith("-")]
+    if len(operands) < 2:
+        return False
+    destination = operands[-1]
+    remote_destination = bool(re.match(r"^(?:[^@\s:]+@)?[^\s:/\\]+:.+", destination))
+    if not remote_destination:
+        return False
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_in_text
+
+    return any(sensitive_path_in_text(source) == marker for source in operands[:-1])
+
+
+def _sensitive_external_transfer_block(
+    tool_name: str,
+    command: str,
+    *,
+    workdir: str | None = None,
+    stdin: str | None = None,
+) -> str | None:
+    """Block only high-confidence attempts to send local secrets externally."""
+
+    if _context_elevated_mode() == "full":
+        return None
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_in_text
+    from opensquilla.tools.builtin.web import _sensitive_body_marker
+
+    checked_command = _without_shell_null_redirections(command)
+    ctx = current_tool_context.get()
+    workspace = ctx.workspace_dir if ctx is not None else None
+    checked_text = f"{workdir} {checked_command}" if workdir else checked_command
+    marker = sensitive_path_in_text(checked_text, workspace=workspace)
+    outbound = bool(_SENSITIVE_HTTP_UPLOAD_RE.search(checked_command))
+    if marker is not None and (
+        outbound or _looks_like_sensitive_copy_upload(checked_command, marker)
+    ):
+        return json.dumps(
+            {
+                "status": "blocked",
+                "reason": "sensitive_external_transfer",
+                "tool": tool_name,
+                "sensitive_path": marker,
+            },
+            ensure_ascii=False,
+        )
+    if not outbound or stdin is None:
+        return None
+    for chunk in _iter_stdin_guard_chunks(stdin):
+        marker = sensitive_path_in_text(chunk, workspace=workspace)
+        payload_marker = _sensitive_body_marker(chunk)
+        if marker is None and payload_marker is None:
+            continue
+        payload: dict[str, str] = {
+            "status": "blocked",
+            "reason": "sensitive_external_transfer",
+            "tool": tool_name,
+        }
+        if marker is not None:
+            payload["sensitive_path"] = marker
+        else:
+            payload["sensitive_payload"] = str(payload_marker)
+        return json.dumps(payload, ensure_ascii=False)
+    return None
+
+
 def _sensitive_shell_block(
     tool_name: str,
     command: str,
@@ -888,12 +973,7 @@ def _windows_session_tmp_root() -> Path | None:
     workspace = _workspace_root_for_path_access()
     if workspace is None:
         return None
-    return (
-        workspace
-        / ".opensquilla"
-        / "tmp"
-        / _windows_session_slug()
-    ).resolve(strict=False)
+    return (workspace / ".opensquilla" / "tmp" / _windows_session_slug()).resolve(strict=False)
 
 
 def _windows_tmp_tail(path: str) -> str | None:
@@ -971,16 +1051,13 @@ def _append_windows_app_alias_path(
     else:
         userprofile = env.get("USERPROFILE") or os.environ.get("USERPROFILE")
         if userprofile:
-            candidates.append(
-                Path(userprofile) / "AppData" / "Local" / "Microsoft" / "WindowsApps"
-            )
+            candidates.append(Path(userprofile) / "AppData" / "Local" / "Microsoft" / "WindowsApps")
 
     existing_key = next((key for key in env if key.casefold() == "path"), "PATH")
     existing_value = env.get(existing_key, "")
     existing_entries = [part.strip() for part in existing_value.split(";") if part.strip()]
     existing_keys = {
-        str(Path(part).expanduser().resolve(strict=False)).casefold()
-        for part in existing_entries
+        str(Path(part).expanduser().resolve(strict=False)).casefold() for part in existing_entries
     }
     additions: list[str] = []
     for candidate in candidates:
@@ -2125,8 +2202,7 @@ def _windows_powershell_compat_statement(statement: str) -> str:
     if not paths:
         return statement
     return "; ".join(
-        "New-Item -ItemType Directory -Force -Path "
-        f"{_windows_ps_single_quote(path)} | Out-Null"
+        f"New-Item -ItemType Directory -Force -Path {_windows_ps_single_quote(path)} | Out-Null"
         for path in paths
     )
 
@@ -2978,8 +3054,7 @@ def _sed_write_targets(argv: list[str]) -> list[str]:
     if not inplace:
         return []
     script_from_flag = any(
-        token in ("-e", "-f") or token.startswith(("--expression", "--file"))
-        for token in options
+        token in ("-e", "-f") or token.startswith(("--expression", "--file")) for token in options
     )
     positionals = _positional_args(
         options, value_flags=frozenset({"-e", "-f", "--expression", "--file"})
@@ -3035,36 +3110,28 @@ def _mv_write_targets(argv: list[str]) -> list[str]:
     # mv mutates every operand: sources are removed, the destination written.
     options = argv[1:]
     targets = [
-        token.split("=", 1)[1]
-        for token in options
-        if token.startswith("--target-directory=")
+        token.split("=", 1)[1] for token in options if token.startswith("--target-directory=")
     ]
     targets.extend(
         options[index + 1]
         for index, token in enumerate(options)
         if token in ("-t", "--target-directory") and index + 1 < len(options)
     )
-    targets.extend(
-        _positional_args(options, value_flags=frozenset({"-t", "--target-directory"}))
-    )
+    targets.extend(_positional_args(options, value_flags=frozenset({"-t", "--target-directory"})))
     return targets
 
 
 def _cp_write_targets(argv: list[str]) -> list[str]:
     options = argv[1:]
     targets = [
-        token.split("=", 1)[1]
-        for token in options
-        if token.startswith("--target-directory=")
+        token.split("=", 1)[1] for token in options if token.startswith("--target-directory=")
     ]
     targets.extend(
         options[index + 1]
         for index, token in enumerate(options)
         if token in ("-t", "--target-directory") and index + 1 < len(options)
     )
-    positionals = _positional_args(
-        options, value_flags=frozenset({"-t", "--target-directory"})
-    )
+    positionals = _positional_args(options, value_flags=frozenset({"-t", "--target-directory"}))
     if not targets and len(positionals) >= 2:
         targets.append(positionals[-1])
     return targets
@@ -3075,9 +3142,7 @@ def _dd_write_targets(argv: list[str]) -> list[str]:
 
 
 def _truncate_write_targets(argv: list[str]) -> list[str]:
-    return _positional_args(
-        argv[1:], value_flags=frozenset({"-s", "--size", "-r", "--reference"})
-    )
+    return _positional_args(argv[1:], value_flags=frozenset({"-s", "--size", "-r", "--reference"}))
 
 
 def _git_write_targets(argv: list[str]) -> list[str]:
@@ -3135,8 +3200,7 @@ def _mutating_command_write_targets(command: str) -> list[str]:
     for segment in _mutator_command_segments(command):
         argv = _segment_argv(segment)
         while argv and (
-            _ENV_ASSIGNMENT_RE.match(argv[0])
-            or argv[0].lower() in _COMMAND_PREFIX_WORDS
+            _ENV_ASSIGNMENT_RE.match(argv[0]) or argv[0].lower() in _COMMAND_PREFIX_WORDS
         ):
             argv = argv[1:]
         if not argv:
@@ -3551,10 +3615,13 @@ def _python_command_name(executable: str) -> bool:
     name = ntpath.basename(executable.strip("'\"")).lower()
     for suffix in (".exe", ".cmd", ".bat"):
         name = name.removesuffix(suffix)
-    return re.fullmatch(
-        r"python(?:\d+(?:\.\d+)*)?",
-        name,
-    ) is not None
+    return (
+        re.fullmatch(
+            r"python(?:\d+(?:\.\d+)*)?",
+            name,
+        )
+        is not None
+    )
 
 
 def _explicit_python_command_targets_runtime(
@@ -3596,8 +3663,7 @@ def _explicit_command_path(executable: str) -> bool:
 
 def _windows_explicit_path(path_text: str) -> bool:
     return bool(
-        re.match(r"^[A-Za-z]:[\\/]", path_text)
-        or path_text.startswith(("\\\\", ".\\", "..\\"))
+        re.match(r"^[A-Za-z]:[\\/]", path_text) or path_text.startswith(("\\\\", ".\\", "..\\"))
     )
 
 
@@ -3697,11 +3763,7 @@ def _workspace_write_deny_shell_block(
             workspace=workspace,
             ctx=ctx,
         )
-        if (
-            deny_match is None
-            and target in mutator_targets
-            and resolved.is_dir()
-        ):
+        if deny_match is None and target in mutator_targets and resolved.is_dir():
             # A directory operand (rm -rf tests) mutates everything beneath
             # it; match it against dir/** style globs as well.
             deny_match = match_workspace_write_deny(
@@ -3954,11 +4016,7 @@ def _shell_elevation_action(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    argv = (
-        ("cmd.exe", "/d", "/s", "/c", command)
-        if os.name == "nt"
-        else ("/bin/sh", "-c", command)
-    )
+    argv = ("cmd.exe", "/d", "/s", "/c", command) if os.name == "nt" else ("/bin/sh", "-c", command)
     return ElevationAction(
         tool_name=tool_name,
         action_kind=action_kind,
@@ -4166,9 +4224,7 @@ async def _read_bg_output(session: _BgSession) -> None:
 
 def _bg_rendered_output(session: _BgSession) -> str:
     """Decode the collected process output and append any synthetic markers."""
-    return decode_subprocess_output(bytes(session.output_bytes)) + "".join(
-        session.output_lines
-    )
+    return decode_subprocess_output(bytes(session.output_bytes)) + "".join(session.output_lines)
 
 
 def _finalize_bg_session(session: _BgSession) -> None:
@@ -4519,11 +4575,7 @@ async def exec_command(
     original_profile = _profile_shell_command(command, workdir=workdir)
     host_execution = _host_execution_allowed()
     backend_retry_granted = False
-    if (
-        windows_process_sandbox
-        and not host_execution
-        and sandbox_permissions == "use_default"
-    ):
+    if windows_process_sandbox and not host_execution and sandbox_permissions == "use_default":
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
             workdir = _windows_translate_posix_tmp_path(workdir)
@@ -4536,9 +4588,11 @@ async def exec_command(
     if not result.allowed:
         raise ToolError(result.reason)
 
-    sensitive_block = _sensitive_shell_block(
+    sensitive_block = _sensitive_external_transfer_block(
         "exec_command", command, workdir=cwd, stdin=stdin
     )
+    if sensitive_block is None:
+        sensitive_block = _sensitive_shell_block("exec_command", command, workdir=cwd, stdin=stdin)
     if sensitive_block is not None:
         return sensitive_block
     approval_denial = _approval_policy_denial(
@@ -4626,23 +4680,17 @@ async def exec_command(
         )
         if path_access is not None:
             return json.dumps(path_access, ensure_ascii=False)
-        lockdown_block = _workspace_lockdown_shell_block(
-            "exec_command", command, cwd, stdin=stdin
-        )
+        lockdown_block = _workspace_lockdown_shell_block("exec_command", command, cwd, stdin=stdin)
         if lockdown_block is not None:
             return json.dumps(lockdown_block, ensure_ascii=False)
-        deny_block = _workspace_write_deny_shell_block(
-            "exec_command", command, cwd, stdin=stdin
-        )
+        deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd, stdin=stdin)
         if deny_block is not None:
             return json.dumps(deny_block, ensure_ascii=False)
     elif _write_deny_lever_enabled("OPENSQUILLA_WORKSPACE_WRITE_DENY_HOST_SHELL"):
         # Host execution skips the sandbox policy block above entirely, which
         # also skips deny-glob enforcement. This opt-in keeps just the deny
         # check active for host-executed shell commands.
-        deny_block = _workspace_write_deny_shell_block(
-            "exec_command", command, cwd, stdin=stdin
-        )
+        deny_block = _workspace_write_deny_shell_block("exec_command", command, cwd, stdin=stdin)
         if deny_block is not None:
             return json.dumps(deny_block, ensure_ascii=False)
 
@@ -4731,11 +4779,52 @@ async def exec_command(
                     backend_request,
                     runtime=runtime,
                 )
+            except SandboxBackendError as exc:
+                review_action = _shell_elevation_action(
+                    tool_name="exec_command",
+                    action_kind="shell.exec",
+                    command=command,
+                    cwd=cwd,
+                    profile=profile,
+                    justification=(
+                        "Sandbox backend unavailable; retry this exact command on host."
+                    ),
+                    env=env,
+                    stdin=stdin,
+                    prefix_rule=prefix_rule,
+                )
+                escalation = await escalate_unavailable_backend_in_managed_mode(
+                    exc,
+                    request,
+                    policy,
+                    runtime=runtime,
+                    review_action=review_action,
+                )
+                if escalation is not None:
+                    if isinstance(escalation, DenialResult):
+                        return finish(json.dumps(escalation.to_dict(), ensure_ascii=False))
+                    return finish(json.dumps(escalation.to_envelope(), ensure_ascii=False))
+                raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
             except Exception as exc:
                 raise ToolError(f"Sandboxed shell execution failed: {exc}") from exc
             if is_likely_sandbox_denied(sandbox_result):
+                review_action = _shell_elevation_action(
+                    tool_name="exec_command",
+                    action_kind="shell.exec",
+                    command=command,
+                    cwd=cwd,
+                    profile=profile,
+                    justification="Sandbox denied this exact command; retry it on host.",
+                    env=env,
+                    stdin=stdin,
+                    prefix_rule=prefix_rule,
+                )
                 escalation = await escalate_backend_denial(
-                    sandbox_result, request, policy, runtime=runtime
+                    sandbox_result,
+                    request,
+                    policy,
+                    runtime=runtime,
+                    review_action=review_action,
                 )
                 if isinstance(escalation, DenialResult):
                     return finish(json.dumps(escalation.to_dict()))
@@ -4757,9 +4846,7 @@ async def exec_command(
             "shell_exec_host",
             command=_audit_command(command),
             run_mode=_context_run_mode(),
-            elevation_grant=(
-                sandbox_permissions == "require_escalated" or backend_retry_granted
-            ),
+            elevation_grant=(sandbox_permissions == "require_escalated" or backend_retry_granted),
             host_effect=profile.host_effect,
         )
         merged_env = _host_shell_env(merged_env)
@@ -4922,11 +5009,8 @@ async def background_process(
         )
     original_profile = _profile_shell_command(command, workdir=workdir)
     host_execution = _host_execution_allowed()
-    if (
-        windows_process_sandbox
-        and not host_execution
-        and sandbox_permissions == "use_default"
-    ):
+    backend_retry_granted = False
+    if windows_process_sandbox and not host_execution and sandbox_permissions == "use_default":
         command = _windows_translate_posix_tmp_references(command)
         if workdir:
             workdir = _windows_translate_posix_tmp_path(workdir)
@@ -4936,7 +5020,9 @@ async def background_process(
     profile = original_profile
     if not result.allowed:
         raise ToolError(result.reason)
-    sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
+    sensitive_block = _sensitive_external_transfer_block("background_process", command, workdir=cwd)
+    if sensitive_block is None:
+        sensitive_block = _sensitive_shell_block("background_process", command, workdir=cwd)
     if sensitive_block is not None:
         return sensitive_block
     approval_denial = _approval_policy_denial(
@@ -5051,76 +5137,114 @@ async def background_process(
         )
         if isinstance(decision, DenialResult):
             return json.dumps(decision.to_dict())
-        backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
-        backend_policy = policy
-        backend_policy = _policy_with_active_tool_mounts(backend_policy)
-        backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
-        backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
-        backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
-        backend_request = SandboxRequest(
-            argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
-            cwd=backend_cwd,
-            action_kind=request.action_kind,
-            policy=backend_policy,
-            env=merged_env,
-            session_id=getattr(request, "session_id", ""),
-            run_mode=getattr(request, "run_mode", ""),
-        )
-        preflight = await preflight_subprocess_managed_network(backend_request, runtime)
-        if isinstance(preflight, DenialResult):
-            return json.dumps(preflight.to_dict())
-        if isinstance(preflight, dict):
-            return json.dumps(preflight)
-        managed_network = await prepare_subprocess_managed_network_proxy(
-            backend_request,
+        retry_gate = consume_backend_denial_retry(
+            approval_id,
+            request,
+            policy,
             runtime=runtime,
         )
-        try:
-            spawned = await _spawn_sandboxed_background_process(
-                runtime=runtime,
-                request=managed_network.request,
+        if retry_gate is not None:
+            if not retry_gate.allowed:
+                return json.dumps(retry_gate.to_envelope(), ensure_ascii=False)
+            host_execution = True
+            backend_retry_granted = True
+        else:
+            backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
+            backend_policy = policy
+            backend_policy = _policy_with_active_tool_mounts(backend_policy)
+            backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
+            backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
+            backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
+            backend_request = SandboxRequest(
+                argv=_sandbox_shell_backend_argv(command, runtime, cwd=backend_cwd),
+                cwd=backend_cwd,
+                action_kind=request.action_kind,
+                policy=backend_policy,
+                env=merged_env,
+                session_id=getattr(request, "session_id", ""),
+                run_mode=getattr(request, "run_mode", ""),
             )
-        except Exception:
-            await managed_network.cleanup()
-            raise
-        session_id = str(uuid.uuid4())[:8]
-        ctx = current_tool_context.get()
-        session = _BgSession(
-            session_id=session_id,
-            command=command,
-            process=spawned.process,
-            session_key=ctx.session_key if ctx is not None else None,
-            agent_id=ctx.agent_id if ctx is not None else None,
-            is_owner_run=bool(ctx.is_owner) if ctx is not None else False,
-            local_urls=_local_server_urls_from_command(command),
-            cleanup_callbacks=spawned.cleanup_callbacks,
-            async_cleanup_callbacks=[
-                *spawned.async_cleanup_callbacks,
-                managed_network.cleanup,
-            ],
-        )
-        _bg_sessions[session_id] = session
-        async def _collect_restricted() -> None:
-            output_task = asyncio.create_task(_read_bg_output(session))
+            preflight = await preflight_subprocess_managed_network(backend_request, runtime)
+            if isinstance(preflight, DenialResult):
+                return json.dumps(preflight.to_dict())
+            if isinstance(preflight, dict):
+                return json.dumps(preflight)
+            managed_network = await prepare_subprocess_managed_network_proxy(
+                backend_request,
+                runtime=runtime,
+            )
             try:
-                await asyncio.wait_for(spawned.process.wait(), timeout=effective_timeout)
-            except TimeoutError:
-                session.timed_out = True
-                await _terminate_bg_session(session)
-                session.output_lines.append(f"[timeout after {effective_timeout}s]\n")
-            finally:
-                await _await_bg_output_task(output_task)
-                await _finalize_bg_session_async(session)
+                spawned = await _spawn_sandboxed_background_process(
+                    runtime=runtime,
+                    request=managed_network.request,
+                )
+            except SandboxBackendError as exc:
+                await managed_network.cleanup()
+                review_action = _shell_elevation_action(
+                    tool_name="background_process",
+                    action_kind="shell.background",
+                    command=command,
+                    cwd=cwd,
+                    profile=profile,
+                    justification=(
+                        "Sandbox backend unavailable; retry this exact background command on host."
+                    ),
+                    prefix_rule=prefix_rule,
+                )
+                escalation = await escalate_unavailable_backend_in_managed_mode(
+                    exc,
+                    request,
+                    policy,
+                    runtime=runtime,
+                    review_action=review_action,
+                )
+                if escalation is not None:
+                    if isinstance(escalation, DenialResult):
+                        return json.dumps(escalation.to_dict(), ensure_ascii=False)
+                    return json.dumps(escalation.to_envelope(), ensure_ascii=False)
+                raise
+            except Exception:
+                await managed_network.cleanup()
+                raise
+            session_id = str(uuid.uuid4())[:8]
+            ctx = current_tool_context.get()
+            session = _BgSession(
+                session_id=session_id,
+                command=command,
+                process=spawned.process,
+                session_key=ctx.session_key if ctx is not None else None,
+                agent_id=ctx.agent_id if ctx is not None else None,
+                is_owner_run=bool(ctx.is_owner) if ctx is not None else False,
+                local_urls=_local_server_urls_from_command(command),
+                cleanup_callbacks=spawned.cleanup_callbacks,
+                async_cleanup_callbacks=[
+                    *spawned.async_cleanup_callbacks,
+                    managed_network.cleanup,
+                ],
+            )
+            _bg_sessions[session_id] = session
 
-        session.collector_task = asyncio.create_task(_collect_restricted())
-        return _background_process_result(session)
+            async def _collect_restricted() -> None:
+                output_task = asyncio.create_task(_read_bg_output(session))
+                try:
+                    await asyncio.wait_for(spawned.process.wait(), timeout=effective_timeout)
+                except TimeoutError:
+                    session.timed_out = True
+                    await _terminate_bg_session(session)
+                    session.output_lines.append(f"[timeout after {effective_timeout}s]\n")
+                finally:
+                    await _await_bg_output_task(output_task)
+                    await _finalize_bg_session_async(session)
+
+            session.collector_task = asyncio.create_task(_collect_restricted())
+            return _background_process_result(session)
 
     if host_execution:
         log.info(
             "background_process_host",
             command=_audit_command(command),
             run_mode=_context_run_mode(),
-            elevation_grant=sandbox_permissions == "require_escalated",
+            elevation_grant=(sandbox_permissions == "require_escalated" or backend_retry_granted),
             host_effect=profile.host_effect,
         )
 
@@ -5205,17 +5329,20 @@ async def _spawn_sandboxed_background_process(
                 plan.protected_create_targets,
             )
             if plan.preserved_files:
+
                 def cleanup_preserved_files() -> None:
                     for file in plan.preserved_files:
                         file.close()
 
                 cleanup_callbacks.append(cleanup_preserved_files)
             if plan.synthetic_mount_targets:
+
                 def cleanup_synthetic_mounts() -> None:
                     cleanup_synthetic_mount_registrations(synthetic_registrations)
 
                 cleanup_callbacks.append(cleanup_synthetic_mounts)
             if plan.protected_create_targets:
+
                 def cleanup_protected_create() -> None:
                     messages = cleanup_protected_create_registrations(
                         protected_create_registrations,
@@ -5304,6 +5431,8 @@ async def _spawn_sandboxed_background_process(
         except Exception:
             cleanup()
             raise
+    if isinstance(backend, UnavailableBackend):
+        raise SandboxBackendError(f"sandbox backend unavailable: {backend.reason}")
     raise ToolError(f"Sandbox backend {backend.name!r} does not support background shell")
 
 

@@ -27,7 +27,7 @@ from opensquilla.tools.types import (
 )
 
 
-def test_patch_action_keeps_full_patch_for_guardian_but_not_audit(tmp_path: Path) -> None:
+def test_patch_action_redacts_full_patch_from_audit(tmp_path: Path) -> None:
     patch = "*** Begin Patch\n*** Update File: a.py\n@@\n-old\n+new\n*** End Patch"
     action = ApprovalAction.apply_patch(
         call_id="call-1",
@@ -37,7 +37,6 @@ def test_patch_action_keeps_full_patch_for_guardian_but_not_audit(tmp_path: Path
         justification="Apply the user's requested one-file change.",
     )
 
-    assert action.guardian_payload()["payload"]["patch"] == patch
     assert "patch" not in action.audit_payload()["payload"]
     assert action.audit_payload()["payload"]["patch_length"] == len(patch)
 

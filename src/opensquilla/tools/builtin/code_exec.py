@@ -22,6 +22,7 @@ from opensquilla.sandbox.integration import (
     SandboxRuntime,
     consume_backend_denial_retry,
     escalate_backend_denial,
+    escalate_unavailable_backend_in_managed_mode,
     gate_action,
     get_runtime,
     preflight_subprocess_managed_network,
@@ -30,7 +31,12 @@ from opensquilla.sandbox.integration import (
 )
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.sandbox.policy import LevelHints
-from opensquilla.sandbox.types import DenialResult, NetworkMode, SandboxRequest
+from opensquilla.sandbox.types import (
+    DenialResult,
+    NetworkMode,
+    SandboxBackendError,
+    SandboxRequest,
+)
 from opensquilla.subprocess_encoding import apply_utf8_child_env, decode_subprocess_output
 from opensquilla.tools.registry import tool
 from opensquilla.tools.run_mode import full_host_access_active, trusted_sandbox_active
@@ -99,6 +105,21 @@ _CODE_NETWORK_TOKENS = (
     ".put(",
     ".patch(",
 )
+_CODE_OUTBOUND_TRANSFER_RE = re.compile(
+    r"\b(?:requests|httpx|aiohttp)(?:\.[A-Za-z_][A-Za-z0-9_]*)?\."
+    r"(?:post|put|patch)\s*\(|"
+    r"\burllib\.request\.(?:urlopen|Request)\s*\([^\n]{0,500}\bdata\s*=|"
+    r"\bhttp\.client\b[^\n]{0,500}\.request\s*\(\s*['\"](?:POST|PUT|PATCH)|"
+    r"\b(?:socket|sock)\.(?:send|sendall|sendto)\s*\(|"
+    r"\b(?:ftp|ftps)\.storbinary\s*\(",
+    flags=re.IGNORECASE,
+)
+_CODE_SENSITIVE_REFERENCE_RE = re.compile(
+    r"(?:^|[/\\'\"])(?:\.ssh|\.aws|\.gnupg|\.kube|\.azure)(?:[/\\'\"]|$)|"
+    r"\b(?:id_rsa|id_ed25519|credentials|login data|cookies|web data)\b|"
+    r"(?:^|[/\\'\"])\.env(?:[./\\'\"]|$)",
+    flags=re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _iter_code_string_literals(code: str) -> list[str]:
@@ -139,7 +160,10 @@ def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
             literal,
             workspace=workspace,
         )
-        path_like_literal = literal.strip().startswith(("/", "~", "."))
+        stripped_literal = literal.strip()
+        path_like_literal = stripped_literal.startswith(("/", "~", ".", "\\\\")) or bool(
+            re.match(r"^[A-Za-z]:[\\/]", stripped_literal)
+        )
         if marker is not None and (has_read_or_shell or path_like_literal):
             return "sensitive_path", marker
 
@@ -156,6 +180,30 @@ def _check_code_sensitive_access(code: str) -> tuple[str, str] | None:
             return "sensitive_payload", marker
 
     return None
+
+
+def _check_code_sensitive_external_transfer(code: str) -> str | None:
+    """Return a marker for high-confidence Python secret exfiltration."""
+
+    if not _CODE_OUTBOUND_TRANSFER_RE.search(code):
+        return None
+    ctx = current_tool_context.get()
+    workspace = ctx.workspace_dir if ctx is not None else None
+    from opensquilla.sandbox.sensitive_paths import sensitive_path_in_text, sensitive_path_marker
+
+    for literal in _iter_code_string_literals(code):
+        marker = sensitive_path_marker(literal, workspace=workspace) or sensitive_path_in_text(
+            literal,
+            workspace=workspace,
+        )
+        if marker is not None:
+            return marker
+    match = _CODE_SENSITIVE_REFERENCE_RE.search(code)
+    if match is not None:
+        return match.group(0).strip("/\\'\"") or "sensitive_local_data"
+    from opensquilla.tools.builtin.web import _sensitive_body_marker
+
+    return _sensitive_body_marker(code)
 
 
 def _code_needs_network(code: str) -> bool:
@@ -196,7 +244,10 @@ def _code_elevation_effects(
                 network_targets.append(host)
             continue
         stripped = literal.strip()
-        if not stripped.startswith(("/", "~", ".")):
+        if not (
+            stripped.startswith(("/", "~", ".", "\\\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", stripped)
+        ):
             continue
         candidate = Path(stripped).expanduser()
         if not candidate.is_absolute():
@@ -207,6 +258,35 @@ def _code_elevation_effects(
             target_paths.append(item)
 
     return tuple(target_paths), tuple(network_targets), tuple(risk_markers)
+
+
+def _code_elevation_action(
+    code: str,
+    *,
+    workdir: Path,
+    destructive_warning: str | None,
+    justification: str,
+    prefix_rule: list[str] | None = None,
+) -> ElevationAction:
+    target_paths, network_targets, risk_markers = _code_elevation_effects(
+        code,
+        workdir=workdir,
+        destructive_warning=destructive_warning,
+    )
+    return ElevationAction(
+        tool_name="execute_code",
+        action_kind="code.exec",
+        argv=("execute_code",),
+        cwd=str(workdir),
+        sandbox_permissions="require_escalated",
+        justification=justification,
+        target_paths=target_paths,
+        network_targets=network_targets,
+        content_digest=hashlib.sha256(code.encode("utf-8")).hexdigest(),
+        content_length=len(code),
+        risk_markers=risk_markers,
+        prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+    )
 
 
 def _windows_sandbox_backend_active(runtime: object | None) -> bool:
@@ -439,6 +519,17 @@ async def execute_code(
         raise ToolError("Code must not be empty")
 
     full_host = full_host_access_active()
+    external_transfer = None if full_host else _check_code_sensitive_external_transfer(code)
+    if external_transfer is not None:
+        return json.dumps(
+            {
+                "status": "blocked",
+                "reason": "sensitive_external_transfer",
+                "tool": "execute_code",
+                "sensitive_reference": external_transfer,
+            },
+            ensure_ascii=False,
+        )
     sensitive_access = None if full_host else _check_code_sensitive_access(code)
     if sensitive_access is not None:
         reason, marker = sensitive_access
@@ -502,24 +593,12 @@ async def execute_code(
                     "message": "A precise justification is required for elevated execution.",
                 }
             )
-        target_paths, network_targets, risk_markers = _code_elevation_effects(
+        action = _code_elevation_action(
             code,
             workdir=workdir_path,
             destructive_warning=destructive_warning,
-        )
-        action = ElevationAction(
-            tool_name="execute_code",
-            action_kind="code.exec",
-            argv=("execute_code",),
-            cwd=str(workdir_path),
-            sandbox_permissions="require_escalated",
             justification=justification,
-            target_paths=target_paths,
-            network_targets=network_targets,
-            content_digest=hashlib.sha256(code.encode("utf-8")).hexdigest(),
-            content_length=len(code),
-            risk_markers=risk_markers,
-            prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+            prefix_rule=prefix_rule,
         )
         gate = gate_elevated_action(
             action,
@@ -613,6 +692,34 @@ async def execute_code(
                     backend_request,
                     runtime=runtime,
                 )
+            except SandboxBackendError as exc:
+                review_action = _code_elevation_action(
+                    code,
+                    workdir=workdir_path,
+                    destructive_warning=destructive_warning,
+                    justification="Sandbox backend unavailable; retry this exact code on host.",
+                    prefix_rule=prefix_rule,
+                )
+                escalation = await escalate_unavailable_backend_in_managed_mode(
+                    exc,
+                    request,
+                    _policy,
+                    runtime=runtime,
+                    review_action=review_action,
+                )
+                if escalation is not None:
+                    if isinstance(escalation, DenialResult):
+                        return finish(json.dumps(escalation.to_dict(), ensure_ascii=False))
+                    return finish(json.dumps(escalation.to_envelope(), ensure_ascii=False))
+                return finish(
+                    _execution_result_json(
+                        returncode=-1,
+                        stdout="",
+                        stderr=f"Execution error: {exc}",
+                        timed_out=False,
+                        elapsed_ms=0,
+                    )
+                )
             except Exception as exc:
                 return finish(
                     _execution_result_json(
@@ -624,8 +731,19 @@ async def execute_code(
                     )
                 )
             if is_likely_sandbox_denied(sandbox_result):
+                review_action = _code_elevation_action(
+                    code,
+                    workdir=workdir_path,
+                    destructive_warning=destructive_warning,
+                    justification="Sandbox denied this exact code; retry it on host.",
+                    prefix_rule=prefix_rule,
+                )
                 escalation = await escalate_backend_denial(
-                    sandbox_result, request, _policy, runtime=runtime
+                    sandbox_result,
+                    request,
+                    _policy,
+                    runtime=runtime,
+                    review_action=review_action,
                 )
                 if isinstance(escalation, DenialResult):
                     return finish(json.dumps(escalation.to_dict()))

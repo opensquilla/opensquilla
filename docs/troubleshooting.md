@@ -242,8 +242,9 @@ the workspace boundary: host `/` is read-only-visible and OS permissions still
 apply. Check whether the path has an explicit denied-read rule or whether the
 gateway user itself lacks access. A write outside the active writable roots
 should return `elevation_required`; `require_escalated` then starts an exact
-one-shot Guardian review. Guardian timeouts and provider failures fail closed
-and do not become human approval popups.
+one-shot local rule review. Automatic review does not call a model or provider.
+In Managed Execution, an unavailable subprocess backend follows the same exact
+reviewed host-retry path; Standard mode remains fail-closed.
 
 ## The Agent Seems to Forget Old Context
 

@@ -214,6 +214,7 @@
               @open-runtime="onOpenChannelRuntime"
               @open-details="onOpenChannelDetails"
               @add-new="onAddNewChannel"
+              @add-new-of-type="onAddNewChannelOfType"
               @duplicate-as-new="onDuplicateChannelAsNew"
               @retry-edit="onRetryChannelEdit"
               @replace-secret="replaceChannelSecret"
@@ -521,6 +522,17 @@ function onEditChannel(name: string) {
 
 function onAddNewChannel() {
   void requestChannelHash('#channel-new')
+}
+
+// A gallery-card click during an edit session: leave the editor (dirty draft
+// confirmed away first) and land in compose with that platform preselected.
+async function onAddNewChannelOfType(type: string) {
+  if (channelsFormDirty.value && !(await confirmDiscard())) return
+  if (channelEditActive.value) exitChannelEditor()
+  selectChannelType(type)
+  onChannelTypeChange()
+  // The hash funnel sees edit inactive and leaves the seeded type untouched.
+  void router.replace({ path: '/settings/channels', hash: '#channel-new' })
 }
 
 function onDuplicateChannelAsNew() {

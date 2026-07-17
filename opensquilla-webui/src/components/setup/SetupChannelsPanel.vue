@@ -82,6 +82,7 @@ const emit = defineEmits<{
   openRuntime: []
   openDetails: [name: string]
   addNew: []
+  addNewOfType: [type: string]
   duplicateAsNew: []
   retryEdit: []
   replaceSecret: [name: string]
@@ -100,18 +101,45 @@ const editRetryable = computed(() => {
 })
 const spec = computed(() => props.panel.channelSpec)
 const typeLabel = computed(() => spec.value?.label || props.panel.channelType)
-// Compose starts at the platform gallery; the form appears once a type is picked.
-const showGallery = computed(() => !isEdit.value && !editLoading.value && !editError.value && !props.panel.channelType)
+// Master-detail: the platform gallery is always visible on top; picking a
+// card (or opening an edit) expands the matching form below it in place.
+const showForm = computed(() =>
+  isEdit.value || editLoading.value || Boolean(editError.value) || Boolean(props.panel.channelType))
 
 function pickType(type: string) {
   emit('updateChannelType', type)
   emit('channelTypeChange')
 }
 
+function onCardClick(type: string) {
+  // While editing, a card click means "start a NEW channel of that platform"
+  // (same contract as the add-new-instead link), never a silent type change.
+  if (isEdit.value || editLoading.value || editError.value) {
+    emit('addNewOfType', type)
+    return
+  }
+  pickType(type)
+}
+
 function backToGallery() {
   emit('updateChannelType', '')
   emit('channelTypeChange')
 }
+
+// Bring the freshly-expanded form into view — the gallery above it stays put,
+// so without this a picked card can leave the form below the fold.
+const formRegionRef = ref<HTMLElement | null>(null)
+watch(
+  () => [props.panel.channelType, isEdit.value] as const,
+  ([type, editing], previous) => {
+    const [oldType, oldEditing] = previous ?? ['', false]
+    if ((type && type !== oldType) || (editing && !oldEditing)) {
+      void nextTick(() => {
+        formRegionRef.value?.scrollIntoView({ block: 'nearest' })
+      })
+    }
+  },
+)
 
 function humanize(value: string): string {
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
@@ -180,24 +208,39 @@ const testTone = computed(() => {
   <div class="setup-channels">
     <section class="control-section">
       <div class="control-section__head">
-        <template v-if="isEdit || editLoading || editError">
-          <h3 class="control-section__title">{{ t('setup.channels.editTitle', { name: edit?.name || panel.editName }) }}</h3>
-          <p class="control-section__desc setup-channels__edithead">
-            <span v-if="isEdit" class="setup-channels__typechip">{{ typeLabel }}</span>
-            <button type="button" class="setup-channels__link" @click="emit('addNew')">
-              {{ t('setup.channels.addNewInstead') }}
-            </button>
-          </p>
-        </template>
-        <template v-else>
-          <h3 class="control-section__title">{{ t('setup.channels.title') }}</h3>
-          <p class="control-section__desc">{{ showGallery ? t('setup.channels.galleryPick') : t('setup.channels.configuredCount', { count: panel.channelRuntimeRows.length }) }}</p>
-        </template>
+        <h3 class="control-section__title">{{ t('setup.channels.title') }}</h3>
+        <p class="control-section__desc">{{ t('setup.channels.galleryPick') }}</p>
       </div>
 
-      <div v-if="editLoading" class="setup-channels__loading"><LoadingSpinner /></div>
+      <!-- Type gallery: always visible. Picking a card expands the form
+           below; while editing, a card starts a new channel of that type. -->
+      <div class="setup-channels__gallery">
+        <button
+          v-for="c in panel.catalogChannels"
+          :key="c.type"
+          type="button"
+          class="setup-channels__card"
+          :class="{ 'is-selected': panel.channelType === c.type }"
+          :aria-pressed="panel.channelType === c.type"
+          :data-channel-type="c.type"
+          :title="isEdit ? t('setup.channels.addNewInstead') : undefined"
+          @click="onCardClick(c.type)"
+        >
+          <span class="setup-channels__cardhead">
+            <strong>{{ c.label }}</strong>
+            <span class="setup-channels__badges">
+              <span v-if="c.transport && c.transport !== 'unknown'" class="setup-channels__typechip">{{ humanize(c.transport) }}</span>
+              <span v-if="c.requiresPublicUrl" class="setup-channels__typechip is-warn">{{ t('setup.channels.needsPublicUrl') }}</span>
+            </span>
+          </span>
+          <span v-if="c.description" class="setup-channels__carddesc">{{ localizeDescription(c.type, c.description) }}</span>
+          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ localizeNeeds(c.type, c.whatYouNeed).slice(0, 2).join(' · ') }}</span>
+        </button>
+      </div>
 
-      <div v-else-if="editError" class="setup-channels__errorcard" role="alert">
+      <div v-if="editLoading" ref="formRegionRef" class="setup-channels__loading"><LoadingSpinner /></div>
+
+      <div v-else-if="editError" ref="formRegionRef" class="setup-channels__errorcard" role="alert">
         <strong>{{ editError.code === 'UNAUTHORIZED'
           ? t('setup.channels.editForbidden')
           : editError.code === 'NOT_FOUND'
@@ -214,30 +257,19 @@ const testTone = computed(() => {
         </div>
       </div>
 
-      <!-- Type gallery: what you need, transport, and docs before any field. -->
-      <div v-else-if="showGallery" class="setup-channels__gallery">
-        <button
-          v-for="c in panel.catalogChannels"
-          :key="c.type"
-          type="button"
-          class="setup-channels__card"
-          :data-channel-type="c.type"
-          @click="pickType(c.type)"
-        >
-          <span class="setup-channels__cardhead">
-            <strong>{{ c.label }}</strong>
-            <span class="setup-channels__badges">
-              <span v-if="c.transport && c.transport !== 'unknown'" class="setup-channels__typechip">{{ humanize(c.transport) }}</span>
-              <span v-if="c.requiresPublicUrl" class="setup-channels__typechip is-warn">{{ t('setup.channels.needsPublicUrl') }}</span>
-            </span>
+      <template v-else-if="showForm">
+        <div v-if="isEdit" ref="formRegionRef" class="setup-channels__selected">
+          <div class="setup-channels__selectedinfo">
+            <strong>{{ t('setup.channels.editTitle', { name: edit?.name || panel.editName }) }}</strong>
+            <span class="setup-channels__typechip">{{ typeLabel }}</span>
+          </div>
+          <span class="setup-channels__selectedactions">
+            <button type="button" class="setup-channels__link" @click="emit('addNew')">
+              {{ t('setup.channels.addNewInstead') }}
+            </button>
           </span>
-          <span v-if="c.description" class="setup-channels__carddesc">{{ localizeDescription(c.type, c.description) }}</span>
-          <span v-if="c.whatYouNeed?.length" class="setup-channels__cardneeds">{{ localizeNeeds(c.type, c.whatYouNeed).slice(0, 2).join(' · ') }}</span>
-        </button>
-      </div>
-
-      <template v-else>
-        <div v-if="!isEdit" class="setup-channels__selected">
+        </div>
+        <div v-else ref="formRegionRef" class="setup-channels__selected">
           <div class="setup-channels__selectedinfo">
             <strong>{{ typeLabel }}</strong>
             <span v-if="spec?.description">{{ localizeDescription(spec.type, spec.description) }}</span>
@@ -433,6 +465,11 @@ const testTone = computed(() => {
   text-align: left;
 }
 .setup-channels__card:hover, .setup-channels__card:focus-visible { border-color: var(--accent); }
+.setup-channels__card.is-selected {
+  background: var(--bg-elevated);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
 .setup-channels__cardhead { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: space-between; }
 .setup-channels__badges { display: flex; flex-wrap: wrap; gap: 4px; }
 .setup-channels__carddesc { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; min-width: 0; overflow-wrap: anywhere; }

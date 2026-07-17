@@ -328,10 +328,6 @@ describe('SetupModelStrategyPanel', () => {
       .toContain('deepseek/deepseek-v4-pro')
     expect(steps[0]?.textContent).toContain('Proposers')
     expect(el.textContent).toContain('DeepSeek · deepseek-v4-pro')
-    expect(el.textContent).not.toContain('Primary')
-    expect(el.textContent).not.toContain('Contrast')
-    expect(el.textContent).not.toContain('Fast check')
-    expect(el.textContent).not.toContain('Critic')
     expect(el.textContent).not.toContain('No role')
     expect(el.querySelector('select[aria-label^="Role for"]')).toBeNull()
     expect(el.querySelector('option[value="primary"], option[value="contrast"], option[value="fast_check"], option[value="critic"]')).toBeNull()
@@ -339,6 +335,39 @@ describe('SetupModelStrategyPanel', () => {
     expect(el.querySelector('[data-testid="ensemble-effective-summary"]')?.textContent)
       .toContain('3 model calls')
     expect(el.querySelector('[role="table"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('explains every custom ensemble role from an expandable help control', async () => {
+    const { app, el } = await mountPanel({
+      activeStrategy: 'ensemble',
+      ensemble: {
+        enabled: true,
+        scheme: 'custom',
+      },
+    })
+
+    const help = el.querySelector<HTMLDetailsElement>('[data-testid="ensemble-role-help"]')
+    expect(help).toBeTruthy()
+    expect(help?.open).toBe(false)
+
+    const trigger = help?.querySelector<HTMLElement>('summary')
+    expect(trigger?.getAttribute('aria-label')).toBe('About ensemble roles')
+    trigger?.click()
+    await nextTick()
+
+    expect(help?.open).toBe(true)
+    expect(help?.textContent).toContain('Primary')
+    expect(help?.textContent).toContain('Handles the main solution. Choose a well-rounded model.')
+    expect(help?.textContent).toContain('Contrast')
+    expect(help?.textContent).toContain('Use a different provider or model family to bring an independent approach.')
+    expect(help?.textContent).toContain('Fast check')
+    expect(help?.textContent).toContain('Choose a fast, inexpensive model to catch obvious mistakes.')
+    expect(help?.textContent).toContain('Critic')
+    expect(help?.textContent).toContain('Choose a strong reasoning model to challenge the answer and find gaps.')
+    expect(help?.textContent).toContain('Aggregator')
+    expect(help?.textContent).toContain('Choose the strongest, most reliable model to combine drafts and call tools.')
 
     app.unmount()
   })

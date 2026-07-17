@@ -418,32 +418,71 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
 
         <div
           v-if="panel.ensemble.schemeCardsAvailable && ensembleScheme !== 'legacy'"
-          class="setup-model-strategy__schemes"
-          role="radiogroup"
-          :aria-label="t('setup.modelStrategy.schemeLabel')"
+          class="setup-model-strategy__scheme-row"
         >
-          <button
-            type="button"
-            role="radio"
-            class="setup-model-strategy__scheme"
-            :class="{ 'is-active': ensembleScheme === 'preset' }"
-            data-testid="ensemble-scheme-preset"
-            :aria-checked="ensembleScheme === 'preset'"
-            @click="emit('updateEnsembleScheme', 'preset')"
+          <div
+            class="setup-model-strategy__schemes"
+            role="radiogroup"
+            :aria-label="t('setup.modelStrategy.schemeLabel')"
           >
-            {{ t('setup.modelStrategy.schemePresetTitle') }}
-          </button>
-          <button
-            type="button"
-            role="radio"
-            class="setup-model-strategy__scheme"
-            :class="{ 'is-active': ensembleScheme === 'custom' }"
-            data-testid="ensemble-scheme-custom"
-            :aria-checked="ensembleScheme === 'custom'"
-            @click="emit('updateEnsembleScheme', 'custom')"
+            <button
+              type="button"
+              role="radio"
+              class="setup-model-strategy__scheme"
+              :class="{ 'is-active': ensembleScheme === 'preset' }"
+              data-testid="ensemble-scheme-preset"
+              :aria-checked="ensembleScheme === 'preset'"
+              @click="emit('updateEnsembleScheme', 'preset')"
+            >
+              {{ t('setup.modelStrategy.schemePresetTitle') }}
+            </button>
+            <button
+              type="button"
+              role="radio"
+              class="setup-model-strategy__scheme"
+              :class="{ 'is-active': ensembleScheme === 'custom' }"
+              data-testid="ensemble-scheme-custom"
+              :aria-checked="ensembleScheme === 'custom'"
+              @click="emit('updateEnsembleScheme', 'custom')"
+            >
+              {{ t('setup.modelStrategy.schemeCustomTitle') }}
+            </button>
+          </div>
+
+          <details
+            v-if="ensembleScheme === 'custom'"
+            class="setup-model-strategy__role-help"
+            data-testid="ensemble-role-help"
           >
-            {{ t('setup.modelStrategy.schemeCustomTitle') }}
-          </button>
+            <summary :aria-label="t('setup.modelStrategy.roleHelpAria')">
+              <span aria-hidden="true">?</span>
+            </summary>
+            <div class="setup-model-strategy__role-help-popover" role="note">
+              <strong>{{ t('setup.modelStrategy.roleHelpTitle') }}</strong>
+              <dl>
+                <div>
+                  <dt>{{ t('setup.modelStrategy.role_primary') }}</dt>
+                  <dd>{{ t('setup.modelStrategy.roleHelp_primary') }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('setup.modelStrategy.role_contrast') }}</dt>
+                  <dd>{{ t('setup.modelStrategy.roleHelp_contrast') }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('setup.modelStrategy.role_fast_check') }}</dt>
+                  <dd>{{ t('setup.modelStrategy.roleHelp_fast_check') }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('setup.modelStrategy.role_critic') }}</dt>
+                  <dd>{{ t('setup.modelStrategy.roleHelp_critic') }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('setup.modelStrategy.role_aggregator') }}</dt>
+                  <dd>{{ t('setup.modelStrategy.roleHelp_aggregator') }}</dd>
+                </div>
+              </dl>
+            </div>
+          </details>
         </div>
 
         <div
@@ -1308,6 +1347,13 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   gap: 3px;
 }
 
+.setup-model-strategy__scheme-row {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-2);
+  position: relative;
+}
+
 .setup-model-strategy__schemes {
   background: var(--bg-surface-2);
   border: 1px solid var(--border);
@@ -1344,6 +1390,93 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   border-color: transparent;
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent);
   color: var(--accent-hover);
+}
+
+.setup-model-strategy__role-help {
+  flex: 0 0 auto;
+}
+
+.setup-model-strategy__role-help > summary {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-surface-2));
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: var(--radius-full);
+  color: var(--accent-hover);
+  cursor: help;
+  display: inline-flex;
+  font-size: var(--fs-sm);
+  font-weight: 800;
+  height: 2rem;
+  justify-content: center;
+  list-style: none;
+  transition: background-color var(--transition), border-color var(--transition), color var(--transition);
+  width: 2rem;
+}
+
+.setup-model-strategy__role-help > summary::-webkit-details-marker {
+  display: none;
+}
+
+.setup-model-strategy__role-help > summary:hover,
+.setup-model-strategy__role-help[open] > summary {
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.setup-model-strategy__role-help > summary:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.setup-model-strategy__role-help-popover {
+  background: var(--bg-elevated);
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  color: var(--text);
+  display: none;
+  left: 0;
+  padding: var(--sp-3);
+  position: absolute;
+  top: 100%;
+  width: min(360px, calc(100vw - 32px));
+  z-index: 20;
+}
+
+.setup-model-strategy__role-help:hover > .setup-model-strategy__role-help-popover,
+.setup-model-strategy__role-help:focus-within > .setup-model-strategy__role-help-popover,
+.setup-model-strategy__role-help[open] > .setup-model-strategy__role-help-popover {
+  display: block;
+}
+
+.setup-model-strategy__role-help-popover > strong {
+  display: block;
+  font-size: var(--fs-sm);
+  margin-bottom: var(--sp-2);
+}
+
+.setup-model-strategy__role-help-popover dl,
+.setup-model-strategy__role-help-popover dd {
+  margin: 0;
+}
+
+.setup-model-strategy__role-help-popover dl {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.setup-model-strategy__role-help-popover dt {
+  color: var(--accent-hover);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+
+.setup-model-strategy__role-help-popover dd {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  margin-top: 2px;
 }
 
 .setup-model-strategy__lineup {

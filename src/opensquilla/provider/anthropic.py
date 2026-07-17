@@ -430,6 +430,7 @@ class AnthropicProvider:
         text_parts: list[str] = []
         trace_tool_calls: list[dict[str, Any]] = []
         response_ids: set[str] = set()
+        response_model = ""
 
         def _trace_tool_call(end_event: ToolUseEndEvent, raw: str) -> None:
             # The trace mirrors the emitted ToolUseEndEvent; the raw fragment
@@ -518,6 +519,9 @@ class AnthropicProvider:
                             message_id = event.get("message", {}).get("id")
                             if isinstance(message_id, str) and message_id:
                                 response_ids.add(message_id)
+                            reported_model = event.get("message", {}).get("model")
+                            if isinstance(reported_model, str) and reported_model:
+                                response_model = reported_model
                             usage = event.get("message", {}).get("usage", {})
                             base_input_tokens = _coerce_int(usage.get("input_tokens"))
                             (
@@ -632,7 +636,7 @@ class AnthropicProvider:
                             "cache_write_tokens": cache_creation_tokens,
                         },
                         stop_reason=stop_reason,
-                        actual_model=self._model,
+                        actual_model=response_model or self._model,
                         assistant_text="".join(text_parts),
                         reasoning_content=reasoning_content,
                         tool_calls=trace_tool_calls,
@@ -646,6 +650,7 @@ class AnthropicProvider:
                         thinking_signature=thinking_signature,
                         cached_tokens=cached_tokens,
                         cache_write_tokens=cache_creation_tokens,
+                        model=response_model or self._model,
                     )
 
         except httpx.TimeoutException as exc:

@@ -200,6 +200,7 @@ class OllamaProvider:
 
         input_tokens = 0
         output_tokens = 0
+        response_model = ""
         assistant_text_parts: list[str] = []
         # Ollama tool calls accumulate in the full response (not streamed per-chunk)
         pending_tool_calls: list[dict[str, Any]] = []
@@ -240,6 +241,9 @@ class OllamaProvider:
                             continue
 
                         trace.record_chunk(chunk)
+                        reported_model = chunk.get("model")
+                        if isinstance(reported_model, str) and reported_model:
+                            response_model = reported_model
                         msg_chunk = chunk.get("message", {})
 
                         # Text content
@@ -289,7 +293,7 @@ class OllamaProvider:
                             "output_tokens": output_tokens,
                         },
                         stop_reason="stop",
-                        actual_model=self._model,
+                        actual_model=response_model or self._model,
                         assistant_text="".join(assistant_text_parts),
                         tool_calls=[
                             {
@@ -305,6 +309,7 @@ class OllamaProvider:
                         stop_reason="stop",
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        model=response_model or self._model,
                     )
 
         except httpx.TimeoutException as exc:

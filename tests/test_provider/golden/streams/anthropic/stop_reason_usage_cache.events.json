@@ -10,7 +10,7 @@
     "cost_source": "none",
     "ensemble_trace": null,
     "input_tokens": 146,
-    "model": "",
+    "model": "claude-test-1",
     "model_usage_breakdown": [],
     "output_tokens": 3,
     "reasoning_content": null,

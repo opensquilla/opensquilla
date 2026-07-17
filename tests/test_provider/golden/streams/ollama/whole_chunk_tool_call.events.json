@@ -26,7 +26,7 @@
     "cost_source": "none",
     "ensemble_trace": null,
     "input_tokens": 9,
-    "model": "",
+    "model": "test-model",
     "model_usage_breakdown": [],
     "output_tokens": 2,
     "reasoning_content": null,

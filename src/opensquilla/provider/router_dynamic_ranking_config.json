@@ -100,25 +100,13 @@
     "permission": {
       "allow_models": [],
       "deny_models": [],
-      "allow_tools": [
-        "code_execution",
-        "web_search",
-        "retrieval",
-        "database",
-        "file_system",
-        "calculator",
-        "browser",
-        "api_call"
-      ],
       "risk_allowlist": ["low", "medium", "high"]
     },
     "preference": {
       "quality_latency_tradeoff": "balanced",
-      "cost_sensitivity": "medium",
-      "preferred_formats": []
+      "cost_sensitivity": "medium"
     },
     "history": {
-      "capability_prior": {},
       "positive_model_ids": [],
       "negative_model_ids": [],
       "feedback_count": 0,
@@ -194,8 +182,7 @@
   "user_score": {
     "neutral_score": 0.50,
     "history_signal_weight": 0.50,
-    "feedback_saturation_count": 20,
-    "preferred_format_bonus": 0.05
+    "feedback_saturation_count": 20
   },
   "quality": {
     "task_match_weight": 0.85,

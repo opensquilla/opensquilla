@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from opensquilla.session.models import SessionNode, TranscriptEntry
-from opensquilla.session.storage import SessionStorage
+from opensquilla.session.storage import SessionStorage, StorageBusyError
 
 
 @pytest.mark.asyncio
@@ -110,6 +110,46 @@ async def test_transcript_turn_context_disposition_can_be_rebound() -> None:
         rows = await storage.get_transcript(node.session_id)
         assert rows[0].turn_context == promoted
     finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_transcript_turn_context_update_honors_transaction_gate() -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    try:
+        node = SessionNode(session_key="agent:main:webchat:gate", session_id="sid-gate")
+        await storage.upsert_session(node)
+        entry = TranscriptEntry(
+            session_id=node.session_id,
+            session_key=node.session_key,
+            role="user",
+            content="queued input",
+            turn_context={"turn_id": "turn-old", "disposition": "queued"},
+        )
+        await storage.append_transcript_entry(entry)
+
+        storage._busy_budget_seconds = 0.0
+        await storage._operation_lock.acquire()
+        try:
+            with pytest.raises(StorageBusyError) as caught:
+                await storage.update_transcript_turn_context(
+                    node.session_key,
+                    entry.message_id,
+                    {"turn_id": "turn-new", "disposition": "promoted"},
+                )
+            assert caught.value.operation == "update_transcript_turn_context"
+        finally:
+            storage._operation_lock.release()
+
+        rows = await storage.get_transcript(node.session_id)
+        assert rows[0].turn_context == {
+            "turn_id": "turn-old",
+            "disposition": "queued",
+        }
+    finally:
+        if storage._operation_lock.locked():
+            storage._operation_lock.release()
         await storage.close()
 
 

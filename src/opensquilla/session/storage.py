@@ -2719,14 +2719,14 @@ class SessionStorage:
 
         encoded = _serialize(turn_context)
         changed = 0
-        for table in ("transcript_entries", "compacted_transcript_entries"):
-            async with self.conn.execute(
-                f"UPDATE {table} SET turn_context = ? "
-                "WHERE session_key = ? AND message_id = ?",
-                (encoded, session_key, message_id),
-            ) as cur:
-                changed += cur.rowcount or 0
-        await self.conn.commit()
+        async with self._write_transaction("update_transcript_turn_context") as conn:
+            for table in ("transcript_entries", "compacted_transcript_entries"):
+                async with conn.execute(
+                    f"UPDATE {table} SET turn_context = ? "
+                    "WHERE session_key = ? AND message_id = ?",
+                    (encoded, session_key, message_id),
+                ) as cur:
+                    changed += cur.rowcount or 0
         return changed > 0
 
     async def delete_summaries(self, session_id: str) -> None:

@@ -82,9 +82,9 @@ def _print_tui_fallback_after_clear(
             hint = resolve_tui_source_checkout_hint()
             if hint is not None:
                 output_console.print(
-                    "[cyan]Tip:[/cyan] Full-screen TUI source is available in this checkout."
+                    f"[bold {ACCENT}]Tip:[/] Full-screen TUI source is available in this checkout."
                 )
-                output_console.print("[cyan]Exit chat, then run:[/cyan]")
+                output_console.print(f"[bold {ACCENT}]Exit chat, then run:[/]")
                 output_console.print(
                     f"[bold]{markup_escape(hint.install_command)}[/bold]",
                     soft_wrap=True,

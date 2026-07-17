@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from pathlib import Path
 
 from opensquilla.cli.tui.source_checkout import resolve_tui_source_checkout_hint
@@ -34,7 +35,7 @@ def test_source_checkout_hint_accepts_git_worktree_file(tmp_path: Path) -> None:
     assert hint is not None
     assert "bun install --frozen-lockfile --cwd" in hint.install_command
     assert "OPENSQUILLA_TUI_DEV_SOURCE_HOST=1" in hint.launch_command
-    assert f"uv --directory {tmp_path / 'checkout'}" in hint.launch_command
+    assert f"uv --directory {shlex.quote(str(tmp_path / 'checkout'))}" in hint.launch_command
     assert hint.launch_command.endswith("run opensquilla chat --ui tui")
 
 

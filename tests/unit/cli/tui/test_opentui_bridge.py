@@ -97,6 +97,7 @@ def test_opentui_host_availability_is_not_blocked_on_windows(tmp_path, monkeypat
     (package_dir / "src").mkdir()
     (package_dir / "src" / "main.mjs").write_text("", encoding="utf-8")
     monkeypatch.setattr(host_runtime_module.os, "name", "nt")
+    monkeypatch.setattr(host_runtime_module.shutil, "which", lambda cmd: cmd)
 
     availability = check_opentui_host_available(package_dir=package_dir, runtime_bin="bun")
 

@@ -166,22 +166,26 @@ def test_prebuilt_companion_wheel_has_platform_tag_and_public_api(tmp_path: Path
         == hashlib.sha256(second_wheel.read_bytes()).digest()
     )
 
+    install_dir = tmp_path / "installed"
     with zipfile.ZipFile(wheels[0]) as archive:
         wheel_metadata = next(
             name for name in archive.namelist() if name.endswith(".dist-info/WHEEL")
         )
         wheel_text = archive.read(wheel_metadata).decode()
+        executable_member = next(
+            name
+            for name in archive.namelist()
+            if name.endswith("opensquilla_tui_host/bin/opensquilla-tui-host")
+        )
+        executable_mode = archive.getinfo(executable_member).external_attr >> 16
+        archive.extractall(install_dir)
     assert "Root-Is-Purelib: false" in wheel_text
     assert "Tag: py3-none-macosx_13_0_arm64" in wheel_text
 
-    install_dir = tmp_path / "installed"
-    subprocess.run(
-        ["uv", "pip", "install", "--target", str(install_dir), str(wheels[0])],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
+    extracted_executable = install_dir / executable_member
+    if sys.platform != "win32":
+        assert executable_mode & stat.S_IXUSR
+        extracted_executable.chmod(executable_mode)
     sys.path.insert(0, str(install_dir))
     try:
         module = importlib.import_module("opensquilla_tui_host")

@@ -3,10 +3,10 @@
 Unlike the foreign-runtime migrators (OpenClaw, Hermes) this source is
 shape-identical to the target: a legacy CLI home, an orphaned Windows
 portable data dir, and the desktop Electron home all share the OpenSquilla
-home layout. The import is therefore a guarded whole-home copy — pre-flight
-checks, a transactional staged copy, and a small set of transforms (config
-path unpinning, inline-secret relocation, scheduler pause) — rather than a
-per-item semantic mapping.
+home layout. The import is therefore a guarded whole-home copy — excluding
+machine-local code-task run worktrees — with pre-flight checks, a transactional
+staged copy, and a small set of transforms (config path unpinning, inline-secret
+relocation, scheduler pause), rather than a per-item semantic mapping.
 
 The report dict returned by :meth:`OpenSquillaHomeMigrator.migrate` is a
 pinned wire contract covered by
@@ -131,6 +131,17 @@ _EXCLUDED_TOP_LEVEL_DIRS = frozenset(
         "recovery-profiles",
     }
 )
+#: Machine-local run worktrees are intentionally not portable profile data.
+#: They contain cloned repositories, virtual environments, native build output,
+#: and per-run provider snapshots.  The source is left untouched so operators
+#: can still recover a patch or transcript from the originating installation.
+_EXCLUDED_NONPORTABLE_TOP_LEVEL_DIRS = frozenset({"code-task"})
+#: The initial snapshot is inspection-only: it supplies bounded config/dotenv
+#: reads before data roots are classified, and is never copied.  On POSIX it may
+#: therefore record any relative link that stays lexically inside the source
+#: home.  The later role snapshots are the actual copy authority and permit
+#: links only inside workspace roots (including configured/agent workspaces).
+_INITIAL_INSPECTION_LINK_ROOTS = frozenset({Path()})
 #: Layout/import/recovery authority belongs to the source installation and may
 #: never become authoritative in the imported target.
 _EXCLUDED_AUTHORITY_NAMES = frozenset(
@@ -248,6 +259,17 @@ def _paths_overlap(first: Path, second: Path) -> bool:
     return resolved_first.is_relative_to(resolved_second) or resolved_second.is_relative_to(
         resolved_first
     )
+
+
+def _path_is_relative_to_lexical(path: Path, root: Path) -> bool:
+    """Return whether ``path`` is equal to or below ``root`` without following links."""
+
+    path_value = os.path.normcase(os.path.normpath(str(path.expanduser().absolute())))
+    root_value = os.path.normcase(os.path.normpath(str(root.expanduser().absolute())))
+    try:
+        return os.path.commonpath([path_value, root_value]) == root_value
+    except ValueError:
+        return False
 
 
 def is_valid_opensquilla_home(path: Path) -> bool:
@@ -733,6 +755,7 @@ class _ManifestEntry:
     size: int
     mtime_ns: int
     digest: str | None
+    link_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -746,6 +769,7 @@ class _SourceSnapshot:
     role: str
     excluded: frozenset[Path]
     excluded_leaf_suffixes: tuple[str, ...]
+    allowed_symlink_roots: frozenset[Path] = frozenset()
     windows_snapshot: WindowsSourceSnapshot | None = None
 
 
@@ -902,9 +926,17 @@ def _remove_matching_staging(path: Path, expected: object) -> None:
     """Delete only the UUID staging tree whose identity the journal recorded."""
     if not _object_identity_matches(path, expected):
         raise OSError("staging identity changed before cleanup")
-    from opensquilla.recovery import no_follow_manifest
+    from opensquilla.recovery.atomic import no_follow_manifest
 
-    no_follow_manifest(path)
+    # A current import never stages code-task.  Accept its link leaves only for
+    # cleanup compatibility with a candidate created by the earlier whole-home
+    # copier, while still inspecting every descendant and rejecting specials.
+    no_follow_manifest(
+        path,
+        link_leaf_directories=frozenset(
+            {"workspace", "state/workspace", "code-task"}
+        ),
+    )
     if not _object_identity_matches(path, expected):
         raise OSError("staging identity changed during cleanup validation")
     shutil.rmtree(_ext(path))
@@ -923,6 +955,65 @@ def _supported_entry_type(path: Path, result: os.stat_result) -> str:
     if stat.S_ISREG(result.st_mode):
         return "file"
     raise OSError(f"special file is not importable: {path}")
+
+
+def _allowed_symlink_root(
+    relative: Path,
+    allowed_roots: set[Path] | frozenset[Path],
+) -> Path | None:
+    """Return the narrowest workspace policy root containing ``relative``.
+
+    The root itself must remain a real directory.  Only descendants may be
+    represented by links, so an exchanged ``workspace`` entry is still rejected
+    before any link payload is inspected.
+    """
+
+    candidates = [
+        root
+        for root in allowed_roots
+        if relative != root and relative.is_relative_to(root)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: len(item.parts))
+
+
+def _validate_relative_symlink_target(
+    *,
+    source_path: Path,
+    relative: Path,
+    target: str,
+    policy_root: Path,
+) -> None:
+    """Validate a POSIX link lexically without resolving or reading its target.
+
+    Dangling links are valid workspace data.  What matters for import safety is
+    that the frozen relative payload can never address a location outside the
+    same workspace snapshot once recreated under the target profile.
+    """
+
+    raw = PurePosixPath(target)
+    if not target or raw.is_absolute():
+        raise OSError(f"source link target must be relative: {source_path}")
+
+    root_parts = tuple(policy_root.parts)
+    stack = list(relative.parent.parts)
+    if tuple(stack[: len(root_parts)]) != root_parts:
+        raise OSError(f"source link path escapes its allowed root: {source_path}")
+    for part in raw.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if len(stack) <= len(root_parts):
+                raise OSError(
+                    f"source link target escapes its allowed root: {source_path}"
+                )
+            stack.pop()
+            continue
+        stack.append(part)
+
+    if tuple(stack[: len(root_parts)]) != root_parts:
+        raise OSError(f"source link target escapes its allowed root: {source_path}")
 
 
 def _is_plain_directory(path: Path) -> bool:
@@ -1388,6 +1479,7 @@ def _scan_source_tree_posix(
     role: str,
     excluded: set[Path] | frozenset[Path],
     excluded_leaf_suffixes: tuple[str, ...] = (),
+    allowed_symlink_roots: set[Path] | frozenset[Path] = frozenset(),
 ) -> _SourceSnapshot:
     root_descriptor = _open_posix_directory_chain(root)
     try:
@@ -1416,7 +1508,19 @@ def _scan_source_tree_posix(
                     continue
                 source_path = root / relative
                 value = os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False)
-                entry_type = _supported_entry_type(source_path, value)
+                policy_root = _allowed_symlink_root(relative, allowed_symlink_roots)
+                link_target: str | None = None
+                if stat.S_ISLNK(value.st_mode) and policy_root is not None:
+                    entry_type = "symlink"
+                    link_target = os.readlink(name, dir_fd=directory_descriptor)
+                    _validate_relative_symlink_target(
+                        source_path=source_path,
+                        relative=relative,
+                        target=link_target,
+                        policy_root=policy_root,
+                    )
+                else:
+                    entry_type = _supported_entry_type(source_path, value)
                 entry = _ManifestEntry(
                     source=source_path,
                     relative=relative,
@@ -1426,6 +1530,7 @@ def _scan_source_tree_posix(
                     size=int(value.st_size),
                     mtime_ns=int(value.st_mtime_ns),
                     digest=None,
+                    link_target=link_target,
                 )
                 digest: str | None = None
                 if entry_type == "file":
@@ -1459,8 +1564,20 @@ def _scan_source_tree_posix(
                         size=entry.size,
                         mtime_ns=entry.mtime_ns,
                         digest=digest,
+                        link_target=entry.link_target,
                     )
                 )
+                if entry_type == "symlink":
+                    if (
+                        not _stat_matches_manifest(
+                            os.stat(name, dir_fd=directory_descriptor, follow_symlinks=False),
+                            entry,
+                        )
+                        or os.readlink(name, dir_fd=directory_descriptor) != link_target
+                    ):
+                        raise OSError(
+                            f"source link changed during enumeration: {source_path}"
+                        )
                 if entry_type == "directory":
                     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
                     flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -1512,6 +1629,7 @@ def _scan_source_tree_posix(
             role=role,
             excluded=frozenset(excluded),
             excluded_leaf_suffixes=tuple(excluded_leaf_suffixes),
+            allowed_symlink_roots=frozenset(allowed_symlink_roots),
         )
     finally:
         os.close(root_descriptor)
@@ -1611,6 +1729,7 @@ def _scan_source_tree(
     role: str,
     excluded: set[Path] | frozenset[Path] = frozenset(),
     excluded_leaf_suffixes: tuple[str, ...] = (),
+    allowed_symlink_roots: set[Path] | frozenset[Path] = frozenset(),
 ) -> _SourceSnapshot:
     """Create a stable manifest without path-following parent races."""
 
@@ -1654,6 +1773,7 @@ def _scan_source_tree(
             role=windows_snapshot.role,
             excluded=windows_snapshot.excluded,
             excluded_leaf_suffixes=windows_snapshot.excluded_leaf_suffixes,
+            allowed_symlink_roots=frozenset(allowed_symlink_roots),
             windows_snapshot=windows_snapshot,
         )
     if _supports_posix_handle_walk():
@@ -1663,6 +1783,7 @@ def _scan_source_tree(
             role=role,
             excluded=excluded,
             excluded_leaf_suffixes=excluded_leaf_suffixes,
+            allowed_symlink_roots=allowed_symlink_roots,
         )
     # There is no safe path-based fallback for source profile data. Platforms
     # without openat-style traversal or the native Windows handle primitive
@@ -1686,11 +1807,12 @@ def _source_snapshots_match(
         or current.role != expected.role
         or current.excluded != expected.excluded
         or current.excluded_leaf_suffixes != expected.excluded_leaf_suffixes
+        or current.allowed_symlink_roots != expected.allowed_symlink_roots
         or len(current.entries) != len(expected.entries)
     ):
         return False
     for current_entry, expected_entry in zip(current.entries, expected.entries, strict=True):
-        if expected_entry.entry_type == "file":
+        if expected_entry.entry_type in {"file", "symlink"}:
             if current_entry != expected_entry:
                 return False
             continue
@@ -1824,6 +1946,126 @@ def _copy_snapshot_file_posix(
             os.close(descriptor)
 
 
+def _copy_snapshot_symlink_posix(
+    snapshot: _SourceSnapshot,
+    entry: _ManifestEntry,
+    destination: Path,
+) -> str:
+    """Recreate one frozen workspace link without opening its target."""
+
+    if entry.entry_type != "symlink" or entry.link_target is None:
+        raise OSError(f"source manifest link payload is missing: {entry.source}")
+    root_descriptor = _open_posix_directory_chain(snapshot.root)
+    directory_descriptors = [root_descriptor]
+    directory_entries = {
+        item.relative: item for item in snapshot.entries if item.entry_type == "directory"
+    }
+    try:
+        root_stat = os.fstat(root_descriptor)
+        if (
+            _identity_from_stat(root_stat) != snapshot.identity
+            or int(root_stat.st_mode) != snapshot.root_mode
+            or (
+                not snapshot.excluded_leaf_suffixes
+                and int(root_stat.st_mtime_ns) != snapshot.root_mtime_ns
+            )
+        ):
+            raise OSError(f"source root changed before link copy: {snapshot.root}")
+        relative_parent = Path()
+        for part in entry.relative.parent.parts:
+            relative_parent /= part
+            expected_directory = directory_entries.get(relative_parent)
+            if expected_directory is None:
+                raise OSError(f"source manifest parent is missing: {relative_parent}")
+            parent_descriptor = directory_descriptors[-1]
+            before = os.stat(part, dir_fd=parent_descriptor, follow_symlinks=False)
+            if not _stat_matches_snapshot_entry(
+                before,
+                expected_directory,
+                ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+            ):
+                raise OSError(
+                    f"source directory changed before link copy: {expected_directory.source}"
+                )
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            child_descriptor = os.open(part, flags, dir_fd=parent_descriptor)
+            if not _stat_matches_snapshot_entry(
+                os.fstat(child_descriptor),
+                expected_directory,
+                ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+            ):
+                os.close(child_descriptor)
+                raise OSError(
+                    f"source directory changed while opened: {expected_directory.source}"
+                )
+            directory_descriptors.append(child_descriptor)
+
+        parent_descriptor = directory_descriptors[-1]
+        before_link = os.stat(
+            entry.relative.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not _stat_matches_manifest(before_link, entry)
+            or os.readlink(entry.relative.name, dir_fd=parent_descriptor)
+            != entry.link_target
+        ):
+            raise OSError(f"source link changed before copy: {entry.source}")
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(entry.link_target, destination)
+
+        if (
+            not _stat_matches_manifest(
+                os.stat(
+                    entry.relative.name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                ),
+                entry,
+            )
+            or os.readlink(entry.relative.name, dir_fd=parent_descriptor)
+            != entry.link_target
+        ):
+            destination.unlink(missing_ok=True)
+            raise OSError(f"source link changed during copy: {entry.source}")
+        for index, descriptor in enumerate(directory_descriptors):
+            current = os.fstat(descriptor)
+            if index == 0:
+                if (
+                    _identity_from_stat(current) != snapshot.identity
+                    or int(current.st_mode) != snapshot.root_mode
+                    or (
+                        not snapshot.excluded_leaf_suffixes
+                        and int(current.st_mtime_ns) != snapshot.root_mtime_ns
+                    )
+                ):
+                    destination.unlink(missing_ok=True)
+                    raise OSError(f"source root changed during link copy: {snapshot.root}")
+                continue
+            relative = Path(*entry.relative.parent.parts[:index])
+            expected_directory = directory_entries[relative]
+            if not _stat_matches_snapshot_entry(
+                current,
+                expected_directory,
+                ignore_directory_metadata=bool(snapshot.excluded_leaf_suffixes),
+            ):
+                destination.unlink(missing_ok=True)
+                raise OSError(
+                    f"source directory changed during link copy: "
+                    f"{expected_directory.source}"
+                )
+        return entry.link_target
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
+    finally:
+        for descriptor in reversed(directory_descriptors):
+            os.close(descriptor)
+
+
 def _copy_snapshot_file(
     snapshot: _SourceSnapshot,
     entry: _ManifestEntry,
@@ -1869,6 +2111,7 @@ def _supports_posix_handle_walk() -> bool:
         and os.open in os.supports_dir_fd
         and os.stat in os.supports_dir_fd
         and os.scandir in os.supports_fd
+        and os.readlink in os.supports_dir_fd
     )
 
 
@@ -2199,13 +2442,13 @@ def _bounded_tree_size_bytes(root: Path) -> int | None:
             return None
     except OSError:
         return None
-    pending: list[tuple[Path, int]] = [(root, 0)]
+    pending: list[tuple[Path, Path, int]] = [(root, Path(), 0)]
     root_identity = _advisory_identity(root_result)
     seen = {root_identity} if root_identity is not None else set()
     entries = 0
     total = 0
     while pending:
-        directory, depth = pending.pop()
+        directory, relative_directory, depth = pending.pop()
         if depth > _CANDIDATE_METADATA_MAX_DEPTH:
             return None
         try:
@@ -2217,12 +2460,41 @@ def _bounded_tree_size_bytes(root: Path) -> int | None:
         except OSError:
             return None
         for child in children:
+            if depth == 0 and child.name in (
+                _EXCLUDED_TOP_LEVEL_DIRS
+                | _EXCLUDED_NONPORTABLE_TOP_LEVEL_DIRS
+                | _EXCLUDED_AUTHORITY_NAMES
+            ):
+                continue
             entries += 1
             if entries > _CANDIDATE_METADATA_MAX_ENTRIES:
                 return None
             path = Path(child.path)
+            relative = relative_directory / child.name
             try:
                 result = child.stat(follow_symlinks=False)
+                if os.name != "nt" and stat.S_ISLNK(result.st_mode):
+                    policy_root = _allowed_symlink_root(
+                        relative,
+                        _INITIAL_INSPECTION_LINK_ROOTS,
+                    )
+                    if policy_root is None:
+                        return None
+                    target = os.readlink(path)
+                    _validate_relative_symlink_target(
+                        source_path=path,
+                        relative=relative,
+                        target=target,
+                        policy_root=policy_root,
+                    )
+                    if (
+                        _identity_from_stat(path.lstat()) != _identity_from_stat(result)
+                        or os.readlink(path) != target
+                    ):
+                        return None
+                    # Link payloads occupy no copied file bytes and are never
+                    # dereferenced by this advisory metadata walk.
+                    continue
                 entry_type = _supported_entry_type(path, result)
             except OSError:
                 return None
@@ -2234,7 +2506,7 @@ def _bounded_tree_size_bytes(root: Path) -> int | None:
                 return None
             if identity is not None:
                 seen.add(identity)
-            pending.append((path, depth + 1))
+            pending.append((path, relative, depth + 1))
         try:
             after = directory.lstat()
         except OSError:
@@ -2951,7 +3223,7 @@ class OpenSquillaHomeMigrator:
         return self._report()
 
     def _validate_source_tree_no_follow(self, source: Path) -> None:
-        """Reject every static link/reparse/special entry before reading config."""
+        """Capture the inspection-only source snapshot before reading config."""
 
         try:
             self._initial_source_snapshot = _scan_source_tree(
@@ -2959,9 +3231,20 @@ class OpenSquillaHomeMigrator:
                 destination_prefix=Path(),
                 role="initial-profile-safety",
                 excluded=frozenset(
-                    Path("state") / name for name in _EXCLUDED_STATE_FILES
+                    {
+                        *(Path("state") / name for name in _EXCLUDED_STATE_FILES),
+                        *(
+                            Path(name)
+                            for name in (
+                                _EXCLUDED_TOP_LEVEL_DIRS
+                                | _EXCLUDED_NONPORTABLE_TOP_LEVEL_DIRS
+                                | _EXCLUDED_AUTHORITY_NAMES
+                            )
+                        ),
+                    }
                 ),
                 excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
+                allowed_symlink_roots=_INITIAL_INSPECTION_LINK_ROOTS,
             )
         except (OSError, RuntimeError) as exc:
             self._record(
@@ -3510,8 +3793,17 @@ class OpenSquillaHomeMigrator:
         if self._blocked:
             return
         snapshots: list[_SourceSnapshot] = []
+        allowed_data_root_symlinks = {
+            "workspace": frozenset({Path()}),
+            "state": frozenset({Path("workspace")}),
+        }
         top_level_excluded = {
-            Path(name) for name in _EXCLUDED_TOP_LEVEL_DIRS | _EXCLUDED_AUTHORITY_NAMES
+            Path(name)
+            for name in (
+                _EXCLUDED_TOP_LEVEL_DIRS
+                | _EXCLUDED_NONPORTABLE_TOP_LEVEL_DIRS
+                | _EXCLUDED_AUTHORITY_NAMES
+            )
         }
         top_level_excluded.update(Path(name) for name in self._data_roots)
         for roots in self._data_roots.values():
@@ -3555,6 +3847,10 @@ class OpenSquillaHomeMigrator:
                             role=f"{name}:{index}",
                             excluded=frozenset(exclusions),
                             excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
+                            allowed_symlink_roots=allowed_data_root_symlinks.get(
+                                name,
+                                frozenset(),
+                            ),
                         )
                     )
             for agent_id, root in sorted(self._agent_workspace_roots.items()):
@@ -3564,6 +3860,7 @@ class OpenSquillaHomeMigrator:
                         destination_prefix=Path("workspace") / "agents" / agent_id,
                         role=f"agent-workspace:{agent_id}",
                         excluded_leaf_suffixes=_SQLITE_TRANSIENT_SIDECAR_SUFFIXES,
+                        allowed_symlink_roots=frozenset({Path()}),
                     )
                 )
         except OSError as exc:
@@ -3690,6 +3987,7 @@ class OpenSquillaHomeMigrator:
                 role=expected.role,
                 excluded=expected.excluded,
                 excluded_leaf_suffixes=expected.excluded_leaf_suffixes,
+                allowed_symlink_roots=expected.allowed_symlink_roots,
             )
             if not _source_snapshots_match(current, expected):
                 raise OSError(
@@ -3708,11 +4006,34 @@ class OpenSquillaHomeMigrator:
 
     def _copy_source_snapshots(self, staging: Path) -> None:
         """Materialize the frozen manifest into a source-only staging tree."""
+
+        def ensure_snapshot_destination(snapshot: _SourceSnapshot) -> Path:
+            current = staging
+            for component in snapshot.destination_prefix.parts:
+                current /= component
+                try:
+                    value = current.lstat()
+                except FileNotFoundError:
+                    current.mkdir()
+                    continue
+                try:
+                    entry_type = _supported_entry_type(current, value)
+                except OSError as exc:
+                    raise OSError(
+                        f"source roots collide on an unsafe destination: {current}"
+                    ) from exc
+                if entry_type != "directory":
+                    raise OSError(
+                        f"source roots collide on a non-directory: {current}"
+                    )
+            return current
+
         copied_files: dict[Path, str] = {}
+        copied_links: dict[Path, str] = {}
         for snapshot in self._source_snapshots:
             snapshot_destination = staging / snapshot.destination_prefix
             if snapshot.destination_prefix != Path():
-                snapshot_destination.mkdir(parents=True, exist_ok=True)
+                snapshot_destination = ensure_snapshot_destination(snapshot)
                 os.chmod(
                     snapshot_destination,
                     (snapshot.root_mode & 0o777) | 0o700,
@@ -3737,6 +4058,28 @@ class OpenSquillaHomeMigrator:
                     else:
                         destination.mkdir(parents=True, exist_ok=False)
                     os.chmod(destination, (entry.mode & 0o777) | 0o700)
+                    continue
+
+                if entry.entry_type == "symlink":
+                    assert entry.link_target is not None
+                    previous_target = copied_links.get(destination)
+                    if previous_target is not None:
+                        if previous_target != entry.link_target:
+                            raise OSError(
+                                f"source roots contain conflicting links for {destination}"
+                            )
+                        continue
+                    if destination.exists() or destination.is_symlink():
+                        raise OSError(f"staging destination already exists: {destination}")
+                    copied_target = _copy_snapshot_symlink_posix(
+                        snapshot,
+                        entry,
+                        destination,
+                    )
+                    if copied_target != entry.link_target:
+                        destination.unlink(missing_ok=True)
+                        raise OSError(f"source link changed while copied: {entry.source}")
+                    copied_links[destination] = copied_target
                     continue
 
                 assert entry.digest is not None
@@ -3958,10 +4301,9 @@ class OpenSquillaHomeMigrator:
 
         logical_files: dict[Path, tuple[str | None, int]] = {}
         physical_files: dict[_PathIdentity, int] = {}
-        snapshots = self._source_snapshots
-        if self._initial_source_snapshot is not None:
-            snapshots = (self._initial_source_snapshot, *snapshots)
-        for snapshot in snapshots:
+        # Only role snapshots authorize bytes in staging.  The broader initial
+        # snapshot exists solely for bounded config/dotenv inspection.
+        for snapshot in self._source_snapshots:
             for entry in snapshot.entries:
                 if entry.entry_type != "file":
                     continue
@@ -4606,6 +4948,18 @@ class OpenSquillaHomeMigrator:
                 if resolved in seen:
                     continue
                 seen.add(resolved)
+                if _path_is_relative_to_lexical(root, source / "code-task"):
+                    self._record(
+                        "preflight/data-root",
+                        root,
+                        self.target / name,
+                        "error",
+                        f"configured {name} root points inside source code-task; "
+                        "machine-local code-task runs are not portable",
+                        {"stable_code": "configured_code_task_root"},
+                    )
+                    self._blocked = True
+                    continue
                 # Target overlap is the publication hazard with the narrowest,
                 # most actionable diagnosis. A broad configured root can contain
                 # both source and target; report the target hazard first instead
@@ -4747,6 +5101,18 @@ class OpenSquillaHomeMigrator:
                         self.target / "workspace" / "agents" / agent_id,
                         "error",
                         f"configured workspace for agent {agent_id} is missing or unreadable",
+                    )
+                    self._blocked = True
+                    continue
+                if _path_is_relative_to_lexical(configured_workspace, source / "code-task"):
+                    self._record(
+                        "preflight/data-root",
+                        configured_workspace,
+                        self.target / "workspace" / "agents" / agent_id,
+                        "error",
+                        f"configured workspace for agent {agent_id} points inside "
+                        "source code-task; machine-local code-task runs are not portable",
+                        {"stable_code": "configured_code_task_root"},
                     )
                     self._blocked = True
                     continue
@@ -4922,6 +5288,15 @@ class OpenSquillaHomeMigrator:
                     None,
                     "skipped",
                     "nested profile or migration/recovery authority is not imported",
+                )
+                continue
+            if entry.name in _EXCLUDED_NONPORTABLE_TOP_LEVEL_DIRS:
+                self._record(
+                    "home-entry",
+                    entry,
+                    None,
+                    "skipped",
+                    "machine-local code-task runs remain unchanged in the source profile",
                 )
                 continue
             entries.append(entry)
@@ -5149,27 +5524,37 @@ class OpenSquillaHomeMigrator:
         )
         for snapshot in snapshots:
             for entry in snapshot.entries:
-                if entry.entry_type != "file":
-                    continue
                 relative = entry.relative
                 if name == "state" and relative.name in _EXCLUDED_STATE_FILES:
                     continue
-                if relative in sqlite_bundle_members:
+                if entry.entry_type == "file" and relative in sqlite_bundle_members:
                     continue
                 previous = seen.get(relative)
                 if previous is None:
                     seen[relative] = entry
                     continue
-                if previous.digest != entry.digest:
-                    self._record(
-                        "preflight/data-root",
-                        entry.source,
-                        self.target / name / relative,
-                        "error",
-                        f"conflicting {name} files exist in multiple source roots: "
-                        f"{previous.source} and {entry.source}",
+                same_entry = (
+                    previous.entry_type == entry.entry_type == "directory"
+                    or (
+                        previous.entry_type == entry.entry_type == "file"
+                        and previous.digest == entry.digest
                     )
-                    raise OSError(f"conflicting {name} source roots")
+                    or (
+                        previous.entry_type == entry.entry_type == "symlink"
+                        and previous.link_target == entry.link_target
+                    )
+                )
+                if same_entry:
+                    continue
+                self._record(
+                    "preflight/data-root",
+                    entry.source,
+                    self.target / name / relative,
+                    "error",
+                    f"conflicting {name} entries exist in multiple source roots: "
+                    f"{previous.source} and {entry.source}",
+                )
+                raise OSError(f"conflicting {name} source roots")
 
     @staticmethod
     def _unlink_staged_file_for_replacement(path: Path) -> None:

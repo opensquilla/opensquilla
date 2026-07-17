@@ -89,10 +89,10 @@ function onProviderSelect(event: Event) {
 }
 
 function useCombobox(field: FieldSpec): boolean {
-  // The discovered-model combobox only ever replaces the model field, and only
-  // when discovery actually returned models — otherwise the plain free-text
-  // field renders untouched (free text always works).
-  return field.name === 'model' && props.panel.connection.models.length > 0
+  // Keep one stable model-picker shell before, during, and after discovery.
+  // SetupModelCombobox degrades to a normal free-text input when no live
+  // catalog exists, so async discovery never swaps the focused DOM control.
+  return field.name === 'model'
 }
 
 // ---------------------------------------------------------------------------

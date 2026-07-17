@@ -132,15 +132,15 @@ describe('SetupModelCombobox', () => {
     expect(rows[1].textContent).toContain('vision')
   })
 
-  it('shows the discovered-model count on the trigger and in the live catalog readout', async () => {
+  it('keeps the model count in the catalog header instead of the input chrome', async () => {
     const { el } = await mountCombobox()
     const trigger = el.querySelector<HTMLButtonElement>('[data-testid="setup-model-options-toggle"]')
 
-    expect(trigger?.textContent).toContain('2')
+    expect(trigger?.textContent?.trim()).toBe('')
+    expect(trigger?.querySelector('.setup-model-combobox__count')).toBeNull()
     expect(trigger?.getAttribute('aria-label')).toBe('Model catalog · 2')
 
-    trigger!.click()
-    await nextTick()
+    await openList(el)
 
     const readout = document.querySelector('.setup-model-combobox__readout')?.textContent
     expect(readout).toContain('Available · 2')

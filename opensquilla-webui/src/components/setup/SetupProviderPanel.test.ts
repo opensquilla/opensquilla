@@ -213,14 +213,22 @@ describe('SetupProviderPanel — test connection', () => {
 })
 
 describe('SetupProviderPanel — model field', () => {
-  it('renders the plain text field when no models were discovered', async () => {
-    const { app, el } = await mountPanel()
-    expect(el.querySelector('.setup-model-combobox')).toBeNull()
-    expect(el.querySelector('input[name="setup_provider_model"]')).toBeTruthy()
+  it('keeps the shared model picker as a manual text input when no catalog is available', async () => {
+    const onUpdateProviderField = vi.fn()
+    const { app, el } = await mountPanel({}, { onUpdateProviderField })
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model"]')
+
+    expect(el.querySelector('.setup-model-combobox')).toBeTruthy()
+    expect(input?.getAttribute('role')).toBeNull()
+    expect(el.querySelector('[data-testid="setup-model-options-toggle"]')).toBeNull()
+
+    input!.value = 'my/manual-model'
+    input!.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(onUpdateProviderField).toHaveBeenCalledWith('model', 'my/manual-model')
     app.unmount()
   })
 
-  it('upgrades only the model field to the combobox when discovery returned models', async () => {
+  it('enables catalog behavior in the same model picker when discovery returned models', async () => {
     const { app, el } = await mountPanel({
       connection: connection({ phase: 'verified', models: DISCOVERED, modelSource: 'live' }),
     })

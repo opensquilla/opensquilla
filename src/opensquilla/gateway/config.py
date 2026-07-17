@@ -2179,10 +2179,10 @@ class GatewayConfig(BaseSettings):
     # Agent runtime timeout (whole turn lifecycle). ``None`` means use the
     # long built-in runtime default; ``0`` disables the runtime budget.
     agent_runtime_timeout_seconds: float | None = None
-    # Safety cap for ordinary interactive Web chat turns. Coding and meta
-    # turns retain the regular agent runtime budget. ``0`` disables this
-    # Web-specific cap; an explicit TurnRunner timeout still has priority.
-    web_chat_runtime_timeout_seconds: float = Field(default=1800.0, ge=0.0)
+    # Optional safety cap for ordinary interactive Web chat turns. Coding and
+    # meta turns retain the regular agent runtime budget. Disabled by default;
+    # an explicit TurnRunner timeout still has priority when the cap is enabled.
+    web_chat_runtime_timeout_seconds: float = Field(default=0.0, ge=0.0)
     # Per-iteration timeout: one LLM call + its tool executions. ``None``
     # means use the AgentConfig default.
     agent_iteration_timeout_seconds: float | None = None

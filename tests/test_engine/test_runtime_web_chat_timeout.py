@@ -45,18 +45,21 @@ def _override(
     )
 
 
-def test_web_chat_runtime_timeout_defaults_to_thirty_minutes() -> None:
+def test_web_chat_runtime_timeout_defaults_to_disabled() -> None:
     config = GatewayConfig()
     runner = TurnRunner(provider_selector=None, config=config)
 
-    assert config.web_chat_runtime_timeout_seconds == 1800.0
-    assert _override(runner) == 1800.0
+    assert config.web_chat_runtime_timeout_seconds == 0.0
+    assert _override(runner) is None
 
 
 def test_web_chat_runtime_timeout_keeps_shorter_existing_budget() -> None:
     runner = TurnRunner(
         provider_selector=None,
-        config=GatewayConfig(agent_runtime_timeout_seconds=900.0),
+        config=GatewayConfig(
+            agent_runtime_timeout_seconds=900.0,
+            web_chat_runtime_timeout_seconds=1800.0,
+        ),
     )
 
     assert _override(runner) == 900.0
@@ -65,7 +68,10 @@ def test_web_chat_runtime_timeout_keeps_shorter_existing_budget() -> None:
 def test_web_chat_runtime_timeout_preserves_disable_semantics() -> None:
     runtime_disabled = TurnRunner(
         provider_selector=None,
-        config=GatewayConfig(agent_runtime_timeout_seconds=0.0),
+        config=GatewayConfig(
+            agent_runtime_timeout_seconds=0.0,
+            web_chat_runtime_timeout_seconds=1800.0,
+        ),
     )
     cap_disabled = TurnRunner(
         provider_selector=None,
@@ -97,7 +103,10 @@ def test_explicit_runtime_timeout_has_priority_over_web_cap() -> None:
     ],
 )
 def test_web_chat_runtime_timeout_exemptions(case: str) -> None:
-    runner = TurnRunner(provider_selector=None, config=GatewayConfig())
+    runner = TurnRunner(
+        provider_selector=None,
+        config=GatewayConfig(web_chat_runtime_timeout_seconds=1800.0),
+    )
     context = _web_context()
     input_mode = "user"
     metadata: dict[str, Any] = {}
@@ -136,8 +145,17 @@ def test_web_chat_runtime_timeout_rejects_negative_config() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("config_kwargs", "expected_timeout"),
+    [
+        ({}, 48 * 60 * 60),
+        ({"web_chat_runtime_timeout_seconds": 1800.0}, 1800.0),
+    ],
+)
 async def test_web_chat_runtime_timeout_reaches_agent_config(
     monkeypatch: pytest.MonkeyPatch,
+    config_kwargs: dict[str, Any],
+    expected_timeout: float,
 ) -> None:
     seen_configs: list[dict[str, Any]] = []
     real_agent_config = AgentConfig
@@ -166,7 +184,7 @@ async def test_web_chat_runtime_timeout_reaches_agent_config(
     runner = TurnRunner(
         provider_selector=selector,
         session_manager=session_manager,
-        config=GatewayConfig(),
+        config=GatewayConfig(**config_kwargs),
     )
 
     async for _ in runner.run(
@@ -177,4 +195,4 @@ async def test_web_chat_runtime_timeout_reaches_agent_config(
     ):
         pass
 
-    assert any(config.get("timeout") == 1800.0 for config in seen_configs)
+    assert any(config.get("timeout") == expected_timeout for config in seen_configs)

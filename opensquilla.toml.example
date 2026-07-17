@@ -27,9 +27,9 @@
 # agent_stream_heartbeat_interval_seconds = 15.0
 # agent_stream_idle_timeout_seconds = 180.0
 # webui_stream_idle_grace_seconds = 210.0
-# Absolute Agent deadline for ordinary interactive Web chat turns. Coding and
-# meta turns keep the regular runtime budget; 0 disables this Web-only cap.
-# web_chat_runtime_timeout_seconds = 1800.0
+# Optional absolute Agent deadline for ordinary interactive Web chat turns.
+# Disabled by default; set a positive value such as 1800.0 to enable the cap.
+# web_chat_runtime_timeout_seconds = 0.0
 
 # WebSocket per-connection outbound writer queue. When enabled (default),
 # each WS connection gets a bounded asyncio queue + dedicated writer task.

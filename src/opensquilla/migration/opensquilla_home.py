@@ -264,12 +264,46 @@ def _paths_overlap(first: Path, second: Path) -> bool:
 def _path_is_relative_to_lexical(path: Path, root: Path) -> bool:
     """Return whether ``path`` is equal to or below ``root`` without following links."""
 
-    path_value = os.path.normcase(os.path.normpath(str(path.expanduser().absolute())))
-    root_value = os.path.normcase(os.path.normpath(str(root.expanduser().absolute())))
+    path_absolute = path.expanduser().absolute()
+    root_absolute = root.expanduser().absolute()
+    path_value = os.path.normcase(os.path.normpath(str(path_absolute)))
+    root_value = os.path.normcase(os.path.normpath(str(root_absolute)))
     try:
-        return os.path.commonpath([path_value, root_value]) == root_value
+        if os.path.commonpath([path_value, root_value]) == root_value:
+            return True
     except ValueError:
         return False
+
+    def plain_directory_identity(candidate: Path) -> tuple[int, int] | None:
+        try:
+            result = candidate.lstat()
+        except OSError:
+            return None
+        attributes = int(getattr(result, "st_file_attributes", 0) or 0)
+        if (
+            stat.S_ISLNK(result.st_mode)
+            or attributes & _REPARSE_POINT_ATTRIBUTE
+            or not stat.S_ISDIR(result.st_mode)
+        ):
+            return None
+        return int(result.st_dev), int(result.st_ino)
+
+    # Darwin's ``normcase`` is intentionally a no-op even on the usual
+    # case-insensitive APFS volume. Compare existing plain-directory identities
+    # so an alternate spelling such as CODE-TASK cannot bypass the lexical
+    # exclusion, while a distinct directory on a case-sensitive volume remains
+    # valid. Missing descendants are skipped until an existing ancestor is found.
+    root_identity = plain_directory_identity(root_absolute)
+    if root_identity is None:
+        return False
+    current = path_absolute
+    while True:
+        if plain_directory_identity(current) == root_identity:
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
 
 
 def is_valid_opensquilla_home(path: Path) -> bool:

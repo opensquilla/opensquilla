@@ -1074,6 +1074,60 @@ def test_hard_filter_records_availability_permission_modality_and_context_reason
     assert decision.proposers[0].model_id == "eligible"
 
 
+def _profile_with_history(*, positive: list[str], negative: list[str], count: int) -> dict:
+    profile = mock_user_profile()
+    profile["history"]["positive_model_ids"] = positive
+    profile["history"]["negative_model_ids"] = negative
+    profile["history"]["feedback_count"] = count
+    return profile
+
+
+def test_history_reorders_candidates_that_task_match_alone_would_not() -> None:
+    """The regression that matters: history must be able to change the order.
+
+    With an empty history every model gets the same neutral S_user, so the
+    0.15 * S_user term is a uniform offset and cannot reorder anything — the
+    profile is inert rather than approximate. A saturated history splits
+    S_user across models and the weaker-but-liked model wins.
+    """
+    liked = _model("liked", capability=0.80, aggregator_fit=0.80)
+    disliked = _model("disliked", capability=0.85, aggregator_fit=0.85)
+
+    neutral = _decision(liked, disliked, analysis=_analysis(tier=2))
+    assert [m.model_id for m in neutral.proposers][0] == "disliked"
+
+    opinionated = _decision(
+        liked,
+        disliked,
+        analysis=_analysis(tier=2),
+        user_profile=_profile_with_history(
+            positive=["liked"], negative=["disliked"], count=20
+        ),
+    )
+    assert [m.model_id for m in opinionated.proposers][0] == "liked"
+
+
+def test_history_confidence_ramps_in_with_feedback_count() -> None:
+    """One click must not swing the ranking to an extreme.
+
+    confidence = min(1, feedback_count / 20), so a single rating moves S_user
+    by 1/20th of the full signal — not enough to overturn a task-match gap
+    that a saturated history does overturn.
+    """
+    liked = _model("liked", capability=0.80, aggregator_fit=0.80)
+    disliked = _model("disliked", capability=0.85, aggregator_fit=0.85)
+
+    barely = _decision(
+        liked,
+        disliked,
+        analysis=_analysis(tier=2),
+        user_profile=_profile_with_history(
+            positive=["liked"], negative=["disliked"], count=1
+        ),
+    )
+    assert [m.model_id for m in barely.proposers][0] == "disliked"
+
+
 def test_ranking_without_user_profile_bypasses_all_profile_effects() -> None:
     preferred = _model("preferred", capability=0.95, aggregator_fit=0.95)
     backup = _model("backup", capability=0.80, aggregator_fit=0.80)

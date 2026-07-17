@@ -26,7 +26,10 @@ from pathlib import Path
 
 from opensquilla.squilla_router.self_learning.store import agent_data_dir
 
-FEEDBACK_SCHEMA_VERSION = 1
+# v2 adds ``model``: the id of the model whose text the user actually rated.
+# Rows written at v1 simply lack it and read back as ``None`` — the profile
+# skips them rather than guessing an attribution.
+FEEDBACK_SCHEMA_VERSION = 2
 FEEDBACK_FILENAME = "feedback.jsonl"
 
 RATINGS = frozenset({"up", "down", "neutral"})
@@ -39,6 +42,9 @@ class FeedbackEntry:
 
     rating: str  # "up" | "down"
     executed_kind: str  # "single" | "ensemble"
+    # The model the rating attributes to — the aggregator on an ensemble turn,
+    # since it authored the only text the user saw. None on v1 rows.
+    model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,7 @@ def write_feedback(
     turn_index: int,
     rating: str,
     executed_kind: str = "single",
+    model: str | None = None,
     decision_ts: str | None = None,
     home: Path | None = None,
     now: datetime | None = None,
@@ -101,6 +108,7 @@ def write_feedback(
         "turn_index": int(turn_index),
         "rating": rating,
         "executed_kind": kind,
+        "model": str(model) if model else None,
         "ts": stamp,
         "decision_ts": decision_ts or stamp,
         "schema_version": FEEDBACK_SCHEMA_VERSION,
@@ -165,9 +173,11 @@ def load_feedback_map(
         if rating not in ("up", "down"):
             continue
         kind = row.get("executed_kind")
+        model = row.get("model")
         out[decision_id] = FeedbackEntry(
             rating=str(rating),
             executed_kind=kind if kind in EXECUTED_KINDS else "single",
+            model=str(model) if isinstance(model, str) and model else None,
         )
     return out
 

@@ -12,7 +12,9 @@ of erroring.
 Privacy: the table stores enum tokens and numbers only — no prompt text
 (V017 contract, test-enforced) — so every value surfaced here is already
 operator-safe and, unlike ``meta.runs.list``, read-only principals need no
-per-session gating. These handlers observe routing; they never change it.
+per-session gating. The list and get surfaces observe routing without changing
+it. ``router.feedback.submit`` is the one handler that writes: its rating folds
+into the user profile ranking reads on the next turn — see its docstring.
 """
 
 from __future__ import annotations
@@ -130,8 +132,11 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     returns ``accepted: false`` rather than an error — clients surface it as
     "this message's routing record expired".
 
-    The rating never mutates the ``router_decisions`` table or routing state;
-    consumption happens offline at dataset-build time.
+    The rating never mutates the ``router_decisions`` table, and the trainer
+    still consumes the sidecar offline at dataset-build time. It does feed one
+    live path: the same rating folds into the global user profile, which
+    ranking reads on the next dynamic-routing turn, so a thumb here shifts
+    ``S_user`` there.
     """
     p = params if isinstance(params, dict) else {}
     decision_id = sanitize_token(p.get("decisionId") or p.get("decision_id"))
@@ -175,9 +180,17 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     )
 
     from opensquilla.session.keys import parse_agent_id
-    from opensquilla.squilla_router.self_learning.feedback import write_feedback
+    from opensquilla.squilla_router.self_learning.feedback import (
+        load_feedback_map,
+        write_feedback,
+    )
+    from opensquilla.squilla_router.self_learning.profile import (
+        profile_update_lock,
+        update_profile_for_rating,
+    )
 
     agent_id = parse_agent_id(session_key)
+    rated_model = str(record.get("model") or "") or None
     router_cfg = getattr(ctx.config, "squilla_router", None)
     sl_cfg = getattr(router_cfg, "self_learning", None)
     try:
@@ -186,16 +199,36 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
         retention_days = 30
 
     def _write() -> None:
-        write_feedback(
-            agent_id,
-            decision_id=decision_id,
-            session_key=session_key,
-            turn_index=turn_index,
-            rating=rating,
-            executed_kind=executed_kind,
-            decision_ts=decision_ts,
-            retention_days=retention_days,
-        )
+        with profile_update_lock():
+            # Read the effective rating BEFORE appending: the profile folds
+            # this thumb in as a delta and needs the rating it replaces.
+            # Reading after the append would return the new rating and the
+            # decrement would silently no-op, making a thumb unrevokable.
+            previous = load_feedback_map(agent_id).get(decision_id)
+            write_feedback(
+                agent_id,
+                decision_id=decision_id,
+                session_key=session_key,
+                turn_index=turn_index,
+                rating=rating,
+                executed_kind=executed_kind,
+                model=rated_model,
+                decision_ts=decision_ts,
+                retention_days=retention_days,
+            )
+            try:
+                update_profile_for_rating(
+                    model=rated_model,
+                    new_rating=rating,
+                    previous_rating=previous.rating if previous else None,
+                    previous_model=previous.model if previous else None,
+                )
+            except Exception as exc:  # noqa: BLE001 — a profile miss must not lose the rating
+                log.warning(
+                    "router_feedback.profile_update_failed",
+                    decision_id=decision_id,
+                    error=str(exc),
+                )
 
     try:
         await anyio.to_thread.run_sync(_write)

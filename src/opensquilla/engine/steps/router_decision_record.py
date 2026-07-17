@@ -240,6 +240,32 @@ def stage_router_decision(
         log.warning("router_decision_record.stage_failed", exc_info=True)
 
 
+def _final_request_model(ensemble_trace: Mapping[str, Any] | None) -> str | None:
+    """The configured id of the model whose text the user actually read.
+
+    Sourced from the final request's *execution* trace, which carries the
+    member's ``provider_config.model`` — the same namespace as
+    ``RankedModel.model_id``, which is what ``positive_model_ids`` /
+    ``negative_model_ids`` are matched against. The sibling ``usage.model``
+    reports what the provider says it ran and is forensics only: a provider
+    that resolves an alias to a dated snapshot would emit an id the registry
+    cannot join.
+
+    Returns ``None`` when the trace cannot name the model. Attribution then
+    fails closed — writing a guess would train the profile on the wrong model,
+    which is worse than not learning from this turn.
+    """
+    if not isinstance(ensemble_trace, Mapping):
+        return None
+    final_request = ensemble_trace.get("final_request")
+    if not isinstance(final_request, Mapping):
+        return None
+    execution = final_request.get("execution")
+    if not isinstance(execution, Mapping):
+        return None
+    return _token(execution.get("model"))
+
+
 def _complete_pending_record(
     metadata: dict[str, Any],
     *,
@@ -310,7 +336,14 @@ def _complete_pending_record(
                 or "ensemble_fallback_single"
             )
         record["fallback_reason"] = fallback_reason
-        if not ensemble_enabled and executed_model is not None:
+        if ensemble_enabled:
+            # Feedback attribution is deliberately stricter than the
+            # observability fallback above: only the configured identity of
+            # the final request can name the model whose text the user read.
+            # If that trace is absent, fail closed instead of crediting the
+            # classifier's requested model.
+            record["model"] = _final_request_model(ensemble_trace)
+        elif executed_model is not None:
             # Preserve the legacy model column's existing executed-model
             # semantics while the additive requested/executed fields expose
             # both sides explicitly.

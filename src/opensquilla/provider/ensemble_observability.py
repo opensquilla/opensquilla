@@ -312,6 +312,12 @@ def log_ensemble_decision_steps(
             effective_tier=plan.get("effective_tier"),
             routing_confidence=plan.get("routing_confidence"),
             user_profile_enabled=plan.get("user_profile_enabled"),
+            # Which profile, not just whether one was on: a learned profile
+            # changes with every thumb, so the enabled bit alone cannot
+            # explain a decision after the fact. Both are safe to log — a
+            # content hash and an enum.
+            user_profile_version=plan.get("user_profile_version"),
+            user_profile_source=plan.get("user_profile_source"),
             selected_P=selected_p,
             selected_A=selected_a,
             proposer_count=len(selected_p),

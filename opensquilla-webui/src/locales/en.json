@@ -909,6 +909,8 @@
       "presetApplied": "Routing preset applied.",
       "presetAppliedRestart": "Routing preset applied. Restart required.",
       "channelSaved": "Channel saved — configuration validated locally; use Test connection to verify credentials",
+      "channelSavedLive": "Channel saved and applied — running with the new configuration",
+      "channelStartFailed": "Channel saved, but it failed to start — open its status for the error, then retry with Restart",
       "searchSaved": "Search saved.",
       "memorySurface": "Memory embedding",
       "memorySaved": "Memory saved.",
@@ -923,8 +925,11 @@
       "copiedCommand": "Copied command",
       "copiedPath": "Copied path",
       "channelRemoved": "Channel removed. Restart required.",
+      "channelRemovedLive": "Channel removed and stopped.",
       "channelEnabled": "Channel enabled. Restart required.",
-      "channelDisabled": "Channel disabled. Restart required."
+      "channelEnabledLive": "Channel enabled and started.",
+      "channelDisabled": "Channel disabled. Restart required.",
+      "channelDisabledLive": "Channel disabled and stopped."
     },
     "needs": {
       "noApiKey": "No API key required.",

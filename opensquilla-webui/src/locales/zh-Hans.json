@@ -909,6 +909,8 @@
       "presetApplied": "路由预设已应用。",
       "presetAppliedRestart": "路由预设已应用。需要重启。",
       "channelSaved": "渠道已保存——本地校验通过；可点「测试连接」验证凭证",
+      "channelSavedLive": "渠道已保存并生效——正以新配置运行",
+      "channelStartFailed": "渠道已保存,但启动失败——请在状态中查看错误,然后用「重启」重试",
       "searchSaved": "搜索已保存。",
       "memorySurface": "记忆嵌入",
       "memorySaved": "记忆已保存。",
@@ -923,8 +925,11 @@
       "copiedCommand": "已复制命令",
       "copiedPath": "已复制路径",
       "channelRemoved": "渠道已移除。需要重启。",
+      "channelRemovedLive": "渠道已移除并停止。",
       "channelEnabled": "渠道已启用。需要重启。",
-      "channelDisabled": "渠道已禁用。需要重启。"
+      "channelEnabledLive": "渠道已启用并启动。",
+      "channelDisabled": "渠道已禁用。需要重启。",
+      "channelDisabledLive": "渠道已禁用并停止。"
     },
     "needs": {
       "noApiKey": "无需 API 密钥。",

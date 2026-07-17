@@ -909,6 +909,8 @@
       "presetApplied": "Préréglage de routage appliqué.",
       "presetAppliedRestart": "Préréglage de routage appliqué. Redémarrage requis.",
       "channelSaved": "Canal enregistré — configuration validée localement ; utilisez « Tester la connexion » pour vérifier les identifiants",
+      "channelSavedLive": "Canal enregistré et appliqué — actif avec la nouvelle configuration",
+      "channelStartFailed": "Canal enregistré, mais son démarrage a échoué — consultez son statut pour l'erreur, puis réessayez avec Redémarrer",
       "searchSaved": "Recherche enregistrée.",
       "memorySurface": "Embedding de mémoire",
       "memorySaved": "Mémoire enregistrée.",
@@ -923,8 +925,11 @@
       "copiedCommand": "Commande copiée",
       "copiedPath": "Chemin copié",
       "channelRemoved": "Canal supprimé. Redémarrage requis.",
+      "channelRemovedLive": "Canal supprimé et arrêté.",
       "channelEnabled": "Canal activé. Redémarrage requis.",
-      "channelDisabled": "Canal désactivé. Redémarrage requis."
+      "channelEnabledLive": "Canal activé et démarré.",
+      "channelDisabled": "Canal désactivé. Redémarrage requis.",
+      "channelDisabledLive": "Canal désactivé et arrêté."
     },
     "needs": {
       "noApiKey": "Aucune clé API requise.",

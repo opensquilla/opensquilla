@@ -46,6 +46,9 @@ def create_gateway_app(
     provider_selector: Any = None,
     tool_registry: Any = None,
     subscription_manager: Any = None,
+    # May be a manager instance OR a zero-arg callable resolving to one:
+    # live channel reconcile can create the manager after boot, so contexts
+    # must re-resolve it per request instead of freezing the boot-time value.
     channel_manager: Any = None,
     usage_tracker: Any = None,
     meta_run_writer: Any = None,
@@ -71,6 +74,9 @@ def create_gateway_app(
         diagnostics_state = DiagnosticsState.from_config(config)
 
     dispatcher = get_dispatcher()
+
+    def _resolve_channel_manager() -> Any:
+        return channel_manager() if callable(channel_manager) else channel_manager
 
     def _rpc_status_code(result: Any, default: int = 500) -> int:
         if result.error is None:
@@ -367,7 +373,7 @@ def create_gateway_app(
             provider_selector=provider_selector,
             tool_registry=tool_registry,
             subscription_manager=subscription_manager,
-            channel_manager=channel_manager,
+            channel_manager=_resolve_channel_manager(),
             usage_tracker=usage_tracker,
             meta_run_writer=meta_run_writer,
             skill_loader=skill_loader,
@@ -649,7 +655,7 @@ def create_gateway_app(
             provider_selector=provider_selector,
             tool_registry=tool_registry,
             subscription_manager=subscription_manager,
-            channel_manager=channel_manager,
+            channel_manager=_resolve_channel_manager,
             usage_tracker=usage_tracker,
             meta_run_writer=meta_run_writer,
             skill_loader=skill_loader,

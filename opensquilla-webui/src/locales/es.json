@@ -909,6 +909,8 @@
       "presetApplied": "Preajuste de enrutamiento aplicado.",
       "presetAppliedRestart": "Preajuste de enrutamiento aplicado. Se requiere reinicio.",
       "channelSaved": "Canal guardado: configuración validada localmente; usa «Probar conexión» para verificar las credenciales",
+      "channelSavedLive": "Canal guardado y aplicado — en ejecución con la nueva configuración",
+      "channelStartFailed": "Canal guardado, pero no pudo iniciarse — revisa su estado para ver el error y reintenta con Reiniciar",
       "searchSaved": "Búsqueda guardada.",
       "memorySurface": "Incrustación de memoria",
       "memorySaved": "Memoria guardada.",
@@ -923,8 +925,11 @@
       "copiedCommand": "Comando copiado",
       "copiedPath": "Ruta copiada",
       "channelRemoved": "Canal eliminado. Se requiere reiniciar.",
+      "channelRemovedLive": "Canal eliminado y detenido.",
       "channelEnabled": "Canal activado. Se requiere reiniciar.",
-      "channelDisabled": "Canal desactivado. Se requiere reiniciar."
+      "channelEnabledLive": "Canal habilitado e iniciado.",
+      "channelDisabled": "Canal desactivado. Se requiere reiniciar.",
+      "channelDisabledLive": "Canal deshabilitado y detenido."
     },
     "needs": {
       "noApiKey": "No se requiere clave API.",

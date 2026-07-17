@@ -812,7 +812,12 @@ async def _message_loop(
                 provider_selector=provider_selector,
                 tool_registry=tool_registry,
                 subscription_manager=subscription_manager,
-                channel_manager=channel_manager,
+                # Live reconcile can create the manager after this connection
+                # opened; a callable is re-resolved per request so long-lived
+                # console sockets see it.
+                channel_manager=(
+                    channel_manager() if callable(channel_manager) else channel_manager
+                ),
                 usage_tracker=usage_tracker,
                 meta_run_writer=meta_run_writer,
                 skill_loader=skill_loader,

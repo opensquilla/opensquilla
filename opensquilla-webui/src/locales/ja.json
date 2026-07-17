@@ -909,6 +909,8 @@
       "presetApplied": "ルーティングプリセットを適用しました。",
       "presetAppliedRestart": "ルーティングプリセットを適用しました。再起動が必要です。",
       "channelSaved": "チャンネルを保存しました — ローカル検証済み。「接続テスト」で認証情報を確認できます",
+      "channelSavedLive": "チャネルを保存して適用しました——新しい設定で稼働中",
+      "channelStartFailed": "チャネルは保存されましたが起動に失敗しました——ステータスでエラーを確認し、再起動で再試行してください",
       "searchSaved": "検索を保存しました。",
       "memorySurface": "メモリの埋め込み",
       "memorySaved": "メモリを保存しました。",
@@ -923,8 +925,11 @@
       "copiedCommand": "コマンドをコピーしました",
       "copiedPath": "パスをコピーしました",
       "channelRemoved": "チャンネルを削除しました。再起動が必要です。",
+      "channelRemovedLive": "チャネルを削除して停止しました。",
       "channelEnabled": "チャンネルを有効化しました。再起動が必要です。",
-      "channelDisabled": "チャンネルを無効化しました。再起動が必要です。"
+      "channelEnabledLive": "チャネルを有効化して起動しました。",
+      "channelDisabled": "チャンネルを無効化しました。再起動が必要です。",
+      "channelDisabledLive": "チャネルを無効化して停止しました。"
     },
     "needs": {
       "noApiKey": "API キーは不要です。",

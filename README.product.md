@@ -29,19 +29,7 @@ This guide is the product and usage entry point. The existing
    opensquilla gateway run
    ```
 
-4. Start terminal chat:
-
-   ```sh
-   opensquilla chat
-   ```
-
-   Bare chat uses `auto`: it starts the full-screen TUI when a compatible
-   same-version companion is installed and otherwise uses the minimal `plain`
-   renderer. Use `--ui tui` to require the host and `--ui plain` as the
-   explicit rescue path. The versioned core-wheel install above does not
-   install a companion.
-
-5. Open the control UI:
+4. Open the control UI:
 
    <http://127.0.0.1:18791/control/>
 

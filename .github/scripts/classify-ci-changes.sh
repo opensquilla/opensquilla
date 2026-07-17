@@ -115,7 +115,7 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_frontend_changed
       mark_runtime_changed
       ;;
-    src/opensquilla/cli/tui/opentui/package/*)
+    src/opensquilla/cli/tui/opentui/package/* | packages/opensquilla-tui-host/* | scripts/build_tui_host_companion.py | scripts/smoke_tui_host_companion.py)
       mark_tui_changed
       ;;
     .github/workflows/ci.yml | .github/scripts/classify-ci-changes.sh | .github/scripts/check_ci_results.py | .github/scripts/windows_test_shards.py)

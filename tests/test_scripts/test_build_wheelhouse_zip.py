@@ -53,7 +53,8 @@ def test_build_wheel_retries_once_after_transient_uv_failure(monkeypatch, tmp_pa
     monkeypatch.setattr(module, "find_built_wheel", lambda wheel_dir: wheel_path)
 
     assert (
-        module.build_wheel(tmp_path, tmp_path / "wheels", {"UV_CACHE_DIR": "cache"}) == wheel_path
+        module.build_wheel(tmp_path, tmp_path / "wheels", {"UV_CACHE_DIR": "cache"})
+        == wheel_path
     )
     assert len(calls) == 2
 
@@ -112,7 +113,9 @@ def test_python_runtime_asset_name_uses_platform_triple() -> None:
         platform_tag="windows-x64",
     )
 
-    assert macos == ("cpython-3.12.13+20260414-aarch64-apple-darwin-install_only_stripped.tar.gz")
+    assert macos == (
+        "cpython-3.12.13+20260414-aarch64-apple-darwin-install_only_stripped.tar.gz"
+    )
     assert windows == (
         "cpython-3.12.13+20260414-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
     )
@@ -153,17 +156,20 @@ def test_portable_recommended_wheelhouse_uses_recommended_extra_only(tmp_path: P
     assert str(wheel_path) + "[recommended]" in command
     assert str(wheel_path) + "[recommended,feishu]" not in command
 
-
 def test_release_wheel_allows_router_provenance_markdown() -> None:
     module = load_script()
     provenance = module.ROUTER_PROVENANCE_WHEEL_PATH
     tokenjuice_provenance = module.TOKENJUICE_PROVENANCE_WHEEL_PATH
     pptx_reference = "opensquilla/skills/bundled/pptx/references/python_pptx.md"
-    unrelated_skill_reference = "opensquilla/skills/bundled/example/references/private-notes.md"
+    unrelated_skill_reference = (
+        "opensquilla/skills/bundled/example/references/private-notes.md"
+    )
     skill_readme = "opensquilla/skills/bundled/filesystem/README.md"
     skill_license = "opensquilla/skills/bundled/filesystem/LICENSE.md"
     skill_card = "opensquilla/skills/bundled/filesystem/skill-card.md"
-    unrelated_router_doc = "opensquilla/squilla_router/models/v4.2_phase3_inference/README.md"
+    unrelated_router_doc = (
+        "opensquilla/squilla_router/models/v4.2_phase3_inference/README.md"
+    )
 
     violations = module.forbidden_release_wheel_entries(
         (
@@ -268,7 +274,7 @@ def test_install_scripts_install_from_local_wheelhouse_and_run_onboarding() -> N
     )
 
     assert 'PACKAGE_DIR="${SCRIPT_DIR}/packages"' in sh_script
-    assert "REQUIRED_PYTHON_MINOR=12" in sh_script
+    assert 'REQUIRED_PYTHON_MINOR=12' in sh_script
     assert "uv tool install" in sh_script
     assert '--find-links "${PACKAGE_DIR}"' in sh_script
     assert '"${PACKAGE_DIR}/opensquilla-0.1.0-py3-none-any.whl[recommended]"' in sh_script
@@ -310,15 +316,22 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
         'portable/${RELEASE_ID}}"' in sh_script
     )
     assert 'if [[ -z "${OPENSQUILLA_GATEWAY_CONFIG_PATH:-}" ]]; then' in sh_script
-    assert 'export OPENSQUILLA_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"' in sh_script
+    assert (
+        'export OPENSQUILLA_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"'
+        in sh_script
+    )
     assert (
         'if [[ -z "${OPENSQUILLA_LLM_API_KEY:-}" && -n "${OPENROUTER_API_KEY:-}" ]]; then'
         in sh_script
     )
     assert 'export OPENSQUILLA_STATE_DIR="${PORTABLE_DATA_DIR}"' in sh_script
-    assert 'export OPENSQUILLA_GATEWAY_STATE_DIR="${OPENSQUILLA_STATE_DIR}/state"' in sh_script
     assert (
-        'export OPENSQUILLA_GATEWAY_WORKSPACE_DIR="${OPENSQUILLA_STATE_DIR}/workspace"' in sh_script
+        'export OPENSQUILLA_GATEWAY_STATE_DIR="${OPENSQUILLA_STATE_DIR}/state"'
+        in sh_script
+    )
+    assert (
+        'export OPENSQUILLA_GATEWAY_WORKSPACE_DIR="${OPENSQUILLA_STATE_DIR}/workspace"'
+        in sh_script
     )
     assert 'mkdir -p "${OPENSQUILLA_STATE_DIR}"' in sh_script
     assert '"${PYTHON_BIN}" -m venv --without-pip "${VENV_DIR}"' in sh_script
@@ -342,7 +355,9 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert "else" in sh_script
     assert 'CONSOLE_LOG="${OPENSQUILLA_STATE_DIR}/logs/gateway-console.log"' in sh_script
     assert 'tee -a "${CONSOLE_LOG}"' in sh_script
-    assert sh_script.index("if [[ -t 1 ]]; then") < sh_script.index('tee -a "${CONSOLE_LOG}"')
+    assert sh_script.index("if [[ -t 1 ]]; then") < sh_script.index(
+        'tee -a "${CONSOLE_LOG}"'
+    )
     assert sh_script.index(
         'export OPENSQUILLA_GATEWAY_CONFIG_PATH="${PORTABLE_DATA_DIR}/config.toml"'
     ) < sh_script.index('"${OPENSQUILLA_BIN}" "${OPENSQUILLA_MODULE[@]}" onboard')
@@ -395,7 +410,7 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
     assert "& $VenvPython @OpenSquillaArgs gateway run" in ps_script
     assert "$ConsoleLog = Join-Path $LogDir 'gateway-console.log'" in ps_script
     assert "$PreviousErrorActionPreference = $ErrorActionPreference" in ps_script
-    assert '$ErrorActionPreference = "Continue"' in ps_script
+    assert "$ErrorActionPreference = \"Continue\"" in ps_script
     assert "$_ -is [System.Management.Automation.ErrorRecord]" in ps_script
     assert "Tee-Object -FilePath $ConsoleLog -Append" in ps_script
     assert ps_script.index("if (-not $OutputRedirected) {") < ps_script.index(
@@ -405,7 +420,8 @@ def test_start_scripts_use_bundled_python_runtime() -> None:
         "$env:OPENSQUILLA_GATEWAY_CONFIG_PATH = Join-Path $PortableDataDir 'config.toml'"
     ) < ps_script.index("& $VenvPython @OpenSquillaArgs onboard")
     assert ps_script.index(
-        "$env:OPENSQUILLA_GATEWAY_STATE_DIR = Join-Path $env:OPENSQUILLA_STATE_DIR 'state'"
+        "$env:OPENSQUILLA_GATEWAY_STATE_DIR = Join-Path "
+        "$env:OPENSQUILLA_STATE_DIR 'state'"
     ) < ps_script.index("& $VenvPython @OpenSquillaArgs onboard")
 
     assert cmd_script == (
@@ -431,7 +447,9 @@ def test_install_script_reexecs_under_bash_before_pipefail() -> None:
 
     assert script.startswith('#!/bin/sh\nif [ -z "${BASH_VERSION:-}" ]; then')
     assert 'exec /usr/bin/env bash "$0" "$@"' in script
-    assert script.index('exec /usr/bin/env bash "$0" "$@"') < script.index("set -euo pipefail")
+    assert script.index('exec /usr/bin/env bash "$0" "$@"') < script.index(
+        "set -euo pipefail"
+    )
 
 
 def test_render_readme_is_platform_specific_for_windows_portable() -> None:
@@ -580,7 +598,9 @@ def test_prepare_portable_release_tree_includes_runtime_and_start_scripts(tmp_pa
     assert (release_root / "start.sh").is_file()
     assert (release_root / "start.ps1").is_file()
     assert "opensquilla.cli.main" in (release_root / "start.sh").read_text(encoding="utf-8")
-    assert "opensquilla.cli.main" in (release_root / "start.ps1").read_text(encoding="utf-8")
+    assert "opensquilla.cli.main" in (release_root / "start.ps1").read_text(
+        encoding="utf-8"
+    )
     assert not (release_root / "Start OpenSquilla.cmd").exists()
     assert (release_root / "LICENSE").is_file()
     assert (release_root / "THIRD_PARTY_NOTICES.md").is_file()
@@ -673,7 +693,7 @@ def test_prepare_windows_portable_release_tree_includes_double_click_launcher(
     cli = release_root / "opensquilla.cmd"
     assert cli.is_file()
     cli_text = cli.read_text(encoding="utf-8")
-    assert 'start.ps1" -Cli %*' in cli_text
+    assert "start.ps1\" -Cli %*" in cli_text
     shell = release_root / "OpenSquilla Shell.cmd"
     assert shell.is_file()
     shell_text = shell.read_text(encoding="utf-8")
@@ -774,7 +794,8 @@ def test_create_zip_preserves_runtime_executable_mode(tmp_path: Path) -> None:
 
     with ZipFile(zip_path) as archive:
         python_info = archive.getinfo(
-            "OpenSquilla-0.1.0-macos-arm64-py312-recommended-portable/runtime/python/bin/python3"
+            "OpenSquilla-0.1.0-macos-arm64-py312-recommended-portable/"
+            "runtime/python/bin/python3"
         )
 
     assert stat.S_IMODE(python_info.external_attr >> 16) & stat.S_IXUSR
@@ -822,9 +843,6 @@ def test_release_workflow_publishes_wheel_and_electron_assets_without_portable()
     assert "timeout-minutes: 20" in workflow
     assert "build-desktop-macos:" in workflow
     assert "build-desktop-windows:" in workflow
-    assert "build-tui-host-macos:" in workflow
-    assert "runner: macos-15" in workflow
-    assert "runner: macos-15-intel" in workflow
     assert "Validate workflow inputs" in workflow
     assert "python_runtime_release" not in workflow
     assert "python_runtime_version" not in workflow
@@ -838,7 +856,7 @@ def test_release_workflow_publishes_wheel_and_electron_assets_without_portable()
     assert "uv build --wheel --out-dir dist" in workflow
     assert "expected one versioned portable zip" not in workflow
     assert "expected one versioned wheel" in workflow
-    assert 'manifest["portable"] is True' not in workflow
+    assert "manifest[\"portable\"] is True" not in workflow
     assert "SHA256SUMS" in workflow
     assert "manifest.version" not in workflow
     assert "GH_REPO: ${{ github.repository }}" in workflow
@@ -849,31 +867,18 @@ def test_release_workflow_publishes_wheel_and_electron_assets_without_portable()
     assert "OpenSquilla-{desktop_version}-mac-arm64.dmg" in workflow
     assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "opensquilla-latest-py3-none-any.whl" not in workflow
-    assert "opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl" in workflow
-    assert "opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl" in workflow
-    assert "--require-codesign-identity" in workflow
-    assert 'grep -F "Authority=Developer ID Application:"' in workflow
-    assert "xcrun notarytool submit" in workflow
-    assert "spctl --assess --type execute --verbose=4" in workflow
-    assert "Run packaged-host real-terminal release gate" in workflow
-    assert "OPENSQUILLA_TUI_PACKAGED_GATE=1" in workflow
-    assert "--tui-driver tmux" in workflow
-    assert "--tui-require-capabilities" in workflow
-    assert "test_packaged_gateway_e2e.py" in workflow
-    assert "opensquilla-tui-real-terminal-macos-${{ matrix.arch }}" in workflow
-    assert "pattern: opensquilla-tui-host-macos-*" in workflow
-    assert 'gh release upload "${TAG}" dist/* --clobber' in workflow
+    assert "gh release upload \"${TAG}\" dist/* --clobber" in workflow
     assert "dist/*.zip dist/*.zip.sha256 dist/SHA256SUMS" not in workflow
     assert "Git LFS pointer leaked into wheel" in workflow
     assert "Verify GitHub Release assets" in workflow
-    assert 'release", "delete-asset", tag, name, "--yes"' in workflow
-    assert 'name.endswith(".sha256")' in workflow
+    assert "release\", \"delete-asset\", tag, name, \"--yes\"" in workflow
+    assert "name.endswith(\".sha256\")" in workflow
     assert '["gh", "release", "view", tag, "--json", "assets"]' in workflow
     assert "Unexpected GitHub Release assets" in workflow
-    assert '"unexpected": unexpected' in workflow
+    assert "\"unexpected\": unexpected" in workflow
     assert "zip_path.stem" not in workflow
     assert "archive_roots =" not in workflow
-    assert 'root = archive_roots[0] + "/"' not in workflow
+    assert "root = archive_roots[0] + \"/\"" not in workflow
 
 
 def test_release_workflow_publishes_from_version_tags() -> None:

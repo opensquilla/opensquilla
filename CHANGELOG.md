@@ -8,27 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
-- macOS and Linux terminal distributions can ship a same-version,
-  architecture-specific `opensquilla-tui-host` companion. The self-contained
-  host does not require Bun, Node, a source checkout, or a first-run download.
-- The full-screen TUI hydrates canonical Gateway history, resumes shared
-  sessions, follows cross-surface turn and approval state, composes attachments,
-  and exposes Gateway-owned Direct/Router/Ensemble strategy controls.
+- Source checkouts can opt into the full-screen OpenTUI chat with shared
+  Gateway sessions, turn/tool/reasoning presentation, Router/Ensemble controls,
+  and guarded terminal restoration. Companion hosts remain development-only:
+  this change does not add release assets or alter the release installer.
 
 ### Changed
 
-- `opensquilla chat` selects `auto`: it prefers the packaged TUI when a
-  compatible host is installed and otherwise keeps the shared Gateway runtime
-  on the plain rescue renderer. Explicit `--ui tui` remains strict.
-- Core and host use one versioned compatibility contract. A missing or
-  mismatched companion is detected before the full-screen terminal surface
-  starts.
-
-### Fixed
-
-- Full-screen startup, resize, scrolling, and shutdown use one guarded terminal
-  surface and restoration path, preventing stale frames and returning a usable
-  shell after normal exit, interruption, host failure, or Gateway disconnect.
+- `opensquilla chat` uses automatic renderer selection without treating stale
+  internal backend environment state as a user request. Release installs keep
+  the Python-native chat when no compatible host is installed.
 
 ## [0.5.0rc4] - 2026-07-13
 

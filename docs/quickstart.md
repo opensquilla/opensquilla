@@ -105,13 +105,6 @@ Start terminal chat:
 opensquilla chat
 ```
 
-Bare `opensquilla chat` uses `auto`: it starts the full-screen OpenTUI host
-when a compatible same-version companion is installed and otherwise falls back
-to `plain` before the alternate screen begins. Use `--ui tui` to require the
-host and fail clearly if it is missing or incompatible. Use `--ui plain` as
-the minimal rescue renderer. The versioned core-wheel install above does not
-install a companion.
-
 Run one automation turn:
 
 ```sh

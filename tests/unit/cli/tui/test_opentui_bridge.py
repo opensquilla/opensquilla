@@ -36,6 +36,7 @@ from opensquilla.cli.tui.opentui.terminal import (
     TERMINAL_RESET_SEQUENCE,
     PosixTerminalGuardian,
 )
+from opensquilla.cli.tui.renderers.selection import RendererBackendUnavailableReason
 
 
 class _FakeConnection:
@@ -85,6 +86,7 @@ def test_missing_opentui_host_dependencies_report_install_command(tmp_path, monk
 
     assert availability.available is False
     assert availability.reason is not None
+    assert availability.reason_code is RendererBackendUnavailableReason.MISSING
     assert "@opentui/core" in availability.reason
     assert f"bun install --cwd {package_dir}" in availability.reason
 
@@ -112,6 +114,29 @@ def test_packaged_companion_is_available_without_bun(tmp_path, monkeypatch) -> N
 
     assert availability.available is True
     assert availability.reason is None
+
+
+def test_missing_companion_does_not_advertise_an_unpublished_installer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def missing_module(_name: str) -> None:
+        raise ModuleNotFoundError("opensquilla_tui_host")
+
+    monkeypatch.setattr(host_runtime_module.importlib, "import_module", missing_module)
+    resolver = HostArtifactResolver(
+        package_dir=tmp_path,
+        main_script=tmp_path / "main.mjs",
+    )
+
+    with pytest.raises(HostRuntimeError) as exc_info:
+        resolver.resolve()
+
+    message = str(exc_info.value)
+    assert exc_info.value.reason is HostFailureReason.MISSING
+    assert "does not publish one" in message
+    assert "--ui plain" in message
+    assert "Reinstall OpenSquilla" not in message
 
 
 def test_companion_version_mismatch_has_stable_failure_reason(tmp_path) -> None:

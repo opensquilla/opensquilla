@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Protocol
 
 OPENSQUILLA_TUI_BACKEND_ENV = "OPENSQUILLA_TUI_BACKEND"
@@ -17,10 +18,24 @@ DEFAULT_CHAT_UI_MODE = "auto"
 CHAT_UI_MODES = frozenset({"auto", "tui", "plain"})
 
 
+class RendererBackendUnavailableReason(StrEnum):
+    """Stable renderer-unavailability reasons safe for product decisions."""
+
+    MISSING = "missing"
+    VERSION_MISMATCH = "version_mismatch"
+    SPAWN = "spawn"
+    READY_TIMEOUT = "ready_timeout"
+    TRANSPORT = "transport"
+    TERMINAL_UNSUPPORTED = "terminal_unsupported"
+    RUNTIME_CRASH = "runtime_crash"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class RendererBackendAvailability:
     available: bool
     reason: str | None = None
+    reason_code: RendererBackendUnavailableReason | None = None
 
 
 class RendererBackendSelectionError(ValueError):
@@ -32,12 +47,26 @@ class RendererBackendUnavailableError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ChatUiFallback:
+    """Typed reason why ``auto`` selected the plain renderer."""
+
+    code: RendererBackendUnavailableReason
+    detail: str
+
+
+@dataclass(frozen=True)
 class ChatUiSelection:
     """Resolved renderer for the public ``--ui`` product contract."""
 
     requested_mode: str
     backend: TuiRendererBackend
-    fallback_reason: str | None = None
+    fallback: ChatUiFallback | None = None
+
+    @property
+    def fallback_reason(self) -> str | None:
+        """Compatibility text for existing diagnostics and callers."""
+
+        return self.fallback.detail if self.fallback is not None else None
 
 
 class TuiRendererBackend(Protocol):
@@ -107,22 +136,15 @@ def select_renderer_backend_from_env(
 
 def select_chat_ui_backend(
     ui_mode: str | None,
-    *,
-    env: Mapping[str, str] | None = None,
 ) -> ChatUiSelection:
     """Resolve ``auto|tui|plain`` without changing runtime ownership.
 
-    The legacy backend environment variable remains a strict developer
-    override only when the public CLI option was omitted.  ``auto`` may fall
-    back before the full-screen host starts; explicit ``tui`` never does.
+    Public selection is owned only by ``--ui``.  The internal backend
+    environment variable is written after this decision for runtime adapters;
+    a pre-existing value must not turn bare chat into strict ``tui``.
+    ``auto`` may fall back before the full-screen host starts; explicit ``tui``
+    never does.
     """
-
-    source = os.environ if env is None else env
-    legacy_backend = source.get(OPENSQUILLA_TUI_BACKEND_ENV)
-    if ui_mode is None and legacy_backend is not None:
-        backend = select_renderer_backend(legacy_backend)
-        requested = "tui" if backend.backend_id == "opentui" else "plain"
-        return ChatUiSelection(requested_mode=requested, backend=backend)
 
     requested = DEFAULT_CHAT_UI_MODE if ui_mode is None else ui_mode.strip().lower()
     if requested not in CHAT_UI_MODES:
@@ -142,7 +164,10 @@ def select_chat_ui_backend(
     return ChatUiSelection(
         requested_mode=requested,
         backend=select_renderer_backend("native"),
-        fallback_reason=availability.reason or "OpenTUI host is unavailable",
+        fallback=ChatUiFallback(
+            code=availability.reason_code or RendererBackendUnavailableReason.UNKNOWN,
+            detail=availability.reason or "OpenTUI host is unavailable",
+        ),
     )
 
 

@@ -322,12 +322,11 @@ class TestChatCommand:
             timeout=None,
         )
 
-    def test_chat_rejects_unknown_tui_backend_before_launch(self) -> None:
+    def test_chat_rejects_unknown_public_ui_mode_before_launch(self) -> None:
         result = runner.invoke(
             app,
-            ["chat"],
+            ["chat", "--ui", "bogus"],
             env={
-                "OPENSQUILLA_TUI_BACKEND": "bogus",
                 "COLUMNS": "120",
                 "NO_COLOR": "1",
                 "TERM": "dumb",
@@ -335,9 +334,9 @@ class TestChatCommand:
         )
 
         assert result.exit_code == 2
-        assert "Unsupported TUI backend" in result.output
+        assert "Unsupported chat UI" in result.output
         assert "bogus" in result.output
-        assert "opentui" in result.output
+        assert "auto, plain, tui" in result.output
 
     def test_chat_timeout_option_forwarded(self) -> None:
         """--timeout option is forwarded to run_chat."""

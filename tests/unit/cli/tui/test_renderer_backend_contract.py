@@ -8,6 +8,7 @@ from opensquilla.cli.tui.renderers.selection import (
     OPENSQUILLA_TUI_BACKEND_ENV,
     RendererBackendSelectionError,
     RendererBackendUnavailableError,
+    RendererBackendUnavailableReason,
     get_renderer_backend,
     renderer_backends,
     select_chat_ui_backend,
@@ -40,7 +41,7 @@ def test_bare_chat_auto_selects_opentui_when_host_is_available(
         lambda self: RendererBackendAvailability(available=True),
     )
 
-    selection = select_chat_ui_backend(None, env={})
+    selection = select_chat_ui_backend(None)
 
     assert DEFAULT_CHAT_UI_MODE == "auto"
     assert selection.requested_mode == "auto"
@@ -57,14 +58,20 @@ def test_bare_chat_auto_falls_back_to_plain_when_host_is_unavailable(
     monkeypatch.setattr(
         opentui_bridge.OpenTuiRendererBackend,
         "is_available",
-        lambda self: RendererBackendAvailability(available=False, reason="host missing"),
+        lambda self: RendererBackendAvailability(
+            available=False,
+            reason="host missing",
+            reason_code=RendererBackendUnavailableReason.MISSING,
+        ),
     )
 
-    selection = select_chat_ui_backend(None, env={})
+    selection = select_chat_ui_backend(None)
 
     assert selection.requested_mode == "auto"
     assert selection.backend.backend_id == "native"
     assert selection.fallback_reason == "host missing"
+    assert selection.fallback is not None
+    assert selection.fallback.code is RendererBackendUnavailableReason.MISSING
 
 
 def test_renderer_backend_lookup_rejects_unknown_ids() -> None:
@@ -128,7 +135,7 @@ def test_opentui_backend_is_registered_without_importing_legacy_backends() -> No
 
 
 def test_public_chat_ui_plain_selects_native() -> None:
-    selection = select_chat_ui_backend("plain", env={})
+    selection = select_chat_ui_backend("plain")
 
     assert selection.requested_mode == "plain"
     assert selection.backend.backend_id == "native"
@@ -147,7 +154,7 @@ def test_public_chat_ui_tui_selects_opentui_when_host_is_available(
         lambda self: RendererBackendAvailability(available=True),
     )
 
-    selection = select_chat_ui_backend("tui", env={})
+    selection = select_chat_ui_backend("tui")
 
     assert selection.requested_mode == "tui"
     assert selection.backend.backend_id == "opentui"
@@ -166,7 +173,7 @@ def test_public_chat_ui_auto_falls_back_before_launch(
         lambda self: RendererBackendAvailability(available=False, reason="host missing"),
     )
 
-    selection = select_chat_ui_backend("auto", env={})
+    selection = select_chat_ui_backend("auto")
 
     assert selection.backend.backend_id == "native"
     assert selection.fallback_reason == "host missing"
@@ -183,18 +190,19 @@ def test_public_chat_ui_tui_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     with pytest.raises(RendererBackendUnavailableError, match="host missing"):
-        select_chat_ui_backend("tui", env={})
+        select_chat_ui_backend("tui")
 
 
-def test_public_chat_ui_cli_mode_overrides_legacy_env() -> None:
-    selection = select_chat_ui_backend(
-        "plain",
-        env={OPENSQUILLA_TUI_BACKEND_ENV: "bogus"},
-    )
+def test_public_chat_ui_ignores_internal_backend_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(OPENSQUILLA_TUI_BACKEND_ENV, "bogus")
+
+    selection = select_chat_ui_backend("plain")
 
     assert selection.backend.backend_id == "native"
 
 
 def test_public_chat_ui_rejects_unknown_mode() -> None:
     with pytest.raises(RendererBackendSelectionError, match="auto, plain, tui"):
-        select_chat_ui_backend("visual", env={})
+        select_chat_ui_backend("visual")

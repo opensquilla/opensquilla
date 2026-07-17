@@ -12,16 +12,9 @@ until a signing workflow has been approved, enabled, and verified for the
 specific release artifact.
 
 macOS release packaging is handled separately through the Apple signing and
-notarization path configured by maintainers for desktop artifacts. The macOS
-TUI companion wheel contains a Developer ID-signed host executable; the release
-workflow signs it before embedding its checksum, submits those exact bytes to
-Apple's notarization service, and refuses to publish an ad-hoc-signed or
-unaccepted host. A bare executable inside a Python wheel has no
-stapler-supported container, so its notarization ticket is resolved online by
-Gatekeeper rather than stapled to the wheel. Release CI applies quarantine and
-requires `spctl` to accept the extracted host. This document's planned SignPath
-section applies to Windows code signing for open-source community release
-artifacts.
+notarization path configured by maintainers for macOS artifacts. This document's
+planned SignPath section applies to Windows code signing for open-source
+community release artifacts.
 
 ## User Verification
 

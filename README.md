@@ -60,9 +60,8 @@ Desktop installers and Quick terminal install give you a prebuilt **release** �
 no Git required. The other two — Install from source and
 Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
 
-Release install commands use published GitHub release assets.
-Python wheel installs use versioned wheel filenames because installers
-validate the version embedded in the wheel filename.
+Release install commands use published GitHub release assets. Python wheel installs use versioned wheel filenames because installers validate the version
+embedded in the wheel filename.
 
 For 0.5.0 Preview 4 desktop use, prefer the packaged desktop installers from
 the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
@@ -510,25 +509,24 @@ handling.
 ```sh
 opensquilla gateway run                # foreground, 127.0.0.1:18791
 opensquilla gateway start --json       # background + health wait
-opensquilla chat                       # interactive terminal chat
+opensquilla chat                       # interactive REPL
 opensquilla agent -m "your prompt"     # one-shot, automation-friendly
 ```
 
-> **Terminal UI.** Bare `opensquilla chat` uses `auto`: it starts the
-> full-screen OpenTUI host when a compatible same-version companion is
-> installed, and otherwise falls back to `plain` before entering the alternate
-> screen. Use `--ui tui` when the full-screen host is required and startup must
-> fail rather than fall back; use `--ui plain` as the minimal rescue renderer.
-> Both renderers use the same Gateway session runtime. The versioned core-wheel
-> install above does not install a companion. Maintainers can explicitly run
-> the source host with:
+> **Development-only OpenTUI terminal UI.** Release installs continue to use
+> the Python-native chat. The richer full-screen frontend currently runs only
+> from a [Develop from source](#develop-from-source) checkout; no companion host
+> is published in release assets or installed by the release installer. From
+> the checkout, install the pinned Bun dependencies once, then launch against
+> that same source tree:
 >
 > ```sh
 > bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 > OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 > ```
 >
-> See [docs/tui.md](docs/tui.md) for terminal chat usage and
+> Use `opensquilla chat --ui plain` to require the stable renderer. See
+> [docs/tui.md](docs/tui.md) for terminal chat usage and
 > [docs/features/tui-frontend.md](docs/features/tui-frontend.md) for backend
 > details.
 

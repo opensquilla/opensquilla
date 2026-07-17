@@ -58,25 +58,21 @@ Terminal chat:
 
 ```sh
 opensquilla chat
-opensquilla chat --ui tui
-opensquilla chat --ui plain
 opensquilla chat --model gpt-5.4-mini
 opensquilla chat --session <session-key>
 opensquilla chat --standalone --workspace /path/to/project
 ```
 
-The omitted `--ui` policy is `auto`. It starts the full-screen OpenTUI host when
-a compatible same-version companion is installed and may fall back to `plain`
-only before the alternate screen starts. `--ui tui` is strict and `--ui plain`
-is the minimal rescue renderer. The currently documented versioned core-wheel
-install does not install a companion. Source-host development is explicit:
+Release installs use the stable Python-native terminal backend. The full-screen
+OpenTUI host is development-only and is not published as a release asset. It
+can be evaluated from a source checkout with pinned Bun dependencies installed:
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-Invalid UI/backend values are rejected before launch. Read [`tui.md`](tui.md) for
+Use `--ui plain` to select the rescue renderer explicitly. Read [`tui.md`](tui.md) for
 terminal chat usage and [`features/tui-frontend.md`](features/tui-frontend.md)
 for backend architecture, plugin slots, Router HUD, and replay benchmark
 workflow.

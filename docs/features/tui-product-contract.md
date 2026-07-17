@@ -22,8 +22,9 @@ project the same Gateway-owned session rather than copying or owning it.
 `opensquilla chat --ui auto|tui|plain` selects presentation only:
 
 - Omitting `--ui` is equivalent to `auto`.
-- `auto` prefers the packaged, alternate-screen OpenTUI host and may fall back
-  to plain only before the alternate screen starts.
+- `auto` uses an installed, compatible OpenTUI host when one exists and may
+  fall back to plain only before the alternate screen starts. Current releases
+  do not publish that host.
 - `tui` requires OpenTUI and fails with a diagnostic when it is unavailable.
 - `plain` is a minimal terminal rescue surface over the same runtime contracts,
   not a separately evolving chat product.
@@ -73,26 +74,25 @@ immediate; accepted follow-ups are queued or steered according to the shared
 runtime contract. Explicit loading, attachment, approval, and terminal-safety
 states may still restrict input.
 
-## Default product and legacy policy
+## Development status and legacy policy
 
-The alternate-screen OpenTUI is the default terminal product on supported
-macOS and Linux installs. Legacy-only entrypoints, implementation,
-documentation, and tests are frozen pending their dedicated cleanup; they
-receive no new product features or parity work and are not maintained as a
-parallel chat product. `plain` is not legacy chat; it is the rescue
-presentation over the shared Gateway runtime.
+The alternate-screen OpenTUI is the intended terminal product, but remains a
+source-checkout development surface. Formal releases do not publish or install
+its companion host yet, so installed users continue on `plain`. Legacy-only
+entrypoints and implementation are frozen pending their dedicated cleanup;
+they receive no new product features or parity work. `plain` is the rescue
+presentation over the shared Gateway runtime, not a second product contract.
 
-## macOS and Linux distribution
+## Deferred platform distribution
 
-Release installs use self-contained, architecture-specific hosts and do not
-require Bun, source, or a first-run binary download. Upgrade, reinstall, and
-rollback keep core and host on the same version. A missing or incompatible host
-under `auto` may trigger the startup-only `plain` fallback; the same condition
-under strict `--ui tui` is an error. Existing redacted diagnostics, release test
-evidence, and issue reports remain the quality inputs; the TUI does not add
-anonymous runtime telemetry.
+The repository contains a self-contained companion package and macOS/Linux
+builders so distribution can be validated before rollout. They are not wired
+to the formal release workflow or installer. A future rollout must keep core
+and host on the same version and pass native platform gates before adding any
+release assets. A missing or incompatible host under `auto` triggers the
+startup-only `plain` fallback; under strict `--ui tui` it is an error.
 
-Native Windows remains a separate platform release for its host artifact,
+Native Windows remains separate work for its host artifact,
 ConPTY terminal lifecycle, process-tree cleanup, signing, installer, and native
 terminal evidence. It reuses these additive product and Gateway contracts and
 must not require macOS/Linux-specific behavior changes.

@@ -149,7 +149,7 @@ def test_prebuilt_companion_wheel_has_platform_tag_and_public_api(tmp_path: Path
         timeout=180,
     )
     assert result.returncode == 0, result.stderr
-    wheels = list(out.glob("opensquilla_tui_host-*-py3-none-macosx_11_0_arm64.whl"))
+    wheels = list(out.glob("opensquilla_tui_host-*-py3-none-macosx_13_0_arm64.whl"))
     assert len(wheels) == 1, list(out.iterdir())
     second_out = tmp_path / "dist-b"
     second = subprocess.run(
@@ -172,7 +172,7 @@ def test_prebuilt_companion_wheel_has_platform_tag_and_public_api(tmp_path: Path
         )
         wheel_text = archive.read(wheel_metadata).decode()
     assert "Root-Is-Purelib: false" in wheel_text
-    assert "Tag: py3-none-macosx_11_0_arm64" in wheel_text
+    assert "Tag: py3-none-macosx_13_0_arm64" in wheel_text
 
     install_dir = tmp_path / "installed"
     subprocess.run(

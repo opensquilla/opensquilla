@@ -12,7 +12,7 @@ root release README with task-oriented guides.
    memory, and permission configuration.
 5. [`cli.md`](cli.md) - command groups and common CLI workflows.
 6. [`tui.md`](tui.md) - terminal chat usage, slash commands, files, sessions,
-   and the packaged OpenTUI client.
+   and the development-only OpenTUI client.
 7. [`web-ui.md`](web-ui.md) - local control console and chat UI.
 8. [`sessions.md`](sessions.md) - session continuity, export, resume, abort,
    and cleanup.

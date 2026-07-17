@@ -10,13 +10,17 @@ import asyncio
 import os
 import sys
 from collections.abc import Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import typer
+from rich.markup import escape as markup_escape
 from rich.panel import Panel
 
 from opensquilla.cli.chat.launch import ChatCommandLaunchOverrides, ChatCommandRequest
 from opensquilla.cli.ui import ACCENT, console
+
+if TYPE_CHECKING:
+    from opensquilla.cli.tui.renderers.selection import ChatUiSelection
 
 ChatRunner = Callable[..., Coroutine[Any, Any, None]]
 # Backend id whose host renders its own full-screen UI, so the native launch
@@ -27,7 +31,7 @@ _INTERACTIVE_STDLIB_LOG_HANDLER: Any | None = None
 _INTERACTIVE_LOG_HANDLER_ATTR = "_opensquilla_interactive_log_handler"
 
 
-def validate_tui_backend_or_exit(ui_mode: str | None = None) -> str:
+def resolve_tui_backend_or_exit(ui_mode: str | None = None) -> ChatUiSelection:
     from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
         OPENSQUILLA_TUI_BACKEND_ENV,
         RendererBackendSelectionError,
@@ -44,12 +48,70 @@ def validate_tui_backend_or_exit(ui_mode: str | None = None) -> str:
     # environment contract.  Pin the already validated choice for this
     # short-lived CLI process so later factories cannot make a second choice.
     os.environ[OPENSQUILLA_TUI_BACKEND_ENV] = selection.backend.backend_id
-    if selection.fallback_reason:
-        typer.echo(
-            f"OpenTUI unavailable; using plain mode: {selection.fallback_reason}",
-            err=True,
+    return selection
+
+
+def validate_tui_backend_or_exit(ui_mode: str | None = None) -> str:
+    """Compatibility wrapper returning only the selected internal backend id."""
+
+    return resolve_tui_backend_or_exit(ui_mode).backend.backend_id
+
+
+def _print_tui_fallback_after_clear(
+    selection: ChatUiSelection,
+    *,
+    implicit_ui: bool,
+    output_console: Any,
+) -> None:
+    fallback = selection.fallback
+    if fallback is None:
+        return
+
+    if implicit_ui:
+        from opensquilla.cli.tui.renderers.selection import (  # noqa: PLC0415
+            RendererBackendUnavailableReason,
         )
-    return selection.backend.backend_id
+        from opensquilla.cli.tui.source_checkout import (  # noqa: PLC0415
+            resolve_tui_source_checkout_hint,
+        )
+
+        if fallback.code in {
+            RendererBackendUnavailableReason.MISSING,
+            RendererBackendUnavailableReason.VERSION_MISMATCH,
+        }:
+            hint = resolve_tui_source_checkout_hint()
+            if hint is not None:
+                output_console.print(
+                    "[cyan]Tip:[/cyan] Full-screen TUI source is available in this checkout."
+                )
+                output_console.print("[cyan]Exit chat, then run:[/cyan]")
+                output_console.print(
+                    f"[bold]{markup_escape(hint.install_command)}[/bold]",
+                    soft_wrap=True,
+                )
+                output_console.print(
+                    f"[bold]{markup_escape(hint.launch_command)}[/bold]",
+                    soft_wrap=True,
+                )
+                output_console.print("[dim]Continuing in plain mode for this launch.[/dim]")
+                return
+        # Installed packages and unsupported hosts stay quiet: this branch does
+        # not publish a companion, so only a verified source checkout gets an
+        # actionable development hint.
+        return
+
+    output_console.print(
+        "[dim]OpenTUI unavailable; using plain mode: "
+        f"{markup_escape(_safe_fallback_detail(fallback.detail))}[/dim]"
+    )
+
+
+def _safe_fallback_detail(detail: str) -> str:
+    from opensquilla.cli.tui.backend.render_summary import (  # noqa: PLC0415
+        sanitize_terminal_text,
+    )
+
+    return sanitize_terminal_text(detail).replace("\r", " ").replace("\n", " ")
 
 
 def quiet_logs_for_interactive_chat() -> None:
@@ -200,7 +262,8 @@ def launch_chat(
     ui: str | None = None,
 ) -> None:
     active_console = console if output_console is None else output_console
-    backend_id = validate_tui_backend_or_exit() if ui is None else validate_tui_backend_or_exit(ui)
+    selection = resolve_tui_backend_or_exit() if ui is None else resolve_tui_backend_or_exit(ui)
+    backend_id = selection.backend.backend_id
     validate_interactive_chat(
         input_stream=input_stream,
         output_console=active_console,
@@ -211,6 +274,11 @@ def launch_chat(
         input_stream=input_stream,
         output_console=active_console,
         validated=True,
+    )
+    _print_tui_fallback_after_clear(
+        selection,
+        implicit_ui=ui is None,
+        output_console=active_console,
     )
     if standalone:
         if standalone_runner is None:

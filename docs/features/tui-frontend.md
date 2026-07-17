@@ -4,8 +4,8 @@ OpenSquilla terminal chat exposes one public UI policy over two renderers:
 
 | Backend or target | Status | How to use | Requirements |
 | --- | --- | --- | --- |
-| `auto` | Default policy | `opensquilla chat` or `--ui auto` | Packaged host preferred; startup-only plain fallback |
-| `tui` | Strict full-screen TUI | `opensquilla chat --ui tui` | Same-version platform companion |
+| `auto` | Default policy | `opensquilla chat` or `--ui auto` | Installed host when available; startup-only plain fallback |
+| `tui` | Strict full-screen TUI | `opensquilla chat --ui tui` | Source override today; future same-version companion |
 | `plain` | Minimal rescue surface | `opensquilla chat --ui plain` | Python package only |
 | `live-opentui` | Manual harness target | Real-terminal harness only | tmux, OpenTUI deps, and live provider config |
 
@@ -19,10 +19,12 @@ The TUI contracts are renderer-independent and built around two separate planes:
 - **Structured UI plane:** sends normalized TUI domain events to plugins. Plugin
   snapshots can be rendered by capable TUI backends and by future renderers.
 
-The core wheel remains platform-neutral. A release may add a same-version
-`opensquilla-tui-host` companion containing a self-contained OpenTUI host; Bun,
-npm, node modules, and source files are not runtime requirements for that
-packaged host. Core-only installs use the `plain` fallback.
+The core wheel remains platform-neutral, and current releases do not publish a
+TUI companion. Source checkouts run the host through the explicit development
+override below. The repository also contains a builder that can produce a
+self-contained `opensquilla-tui-host` artifact for validation, but the formal release workflow
+and installer do not publish or install it. Release installs therefore use the
+`plain` fallback.
 
 ## Plugin Slots
 
@@ -161,26 +163,27 @@ The public selector is `--ui auto|tui|plain`, and omitted `--ui` means `auto`.
 clearly when the host is absent or incompatible. A host crash after startup
 restores the terminal and exits; it does not switch renderers during a turn.
 
-The internal `OPENSQUILLA_TUI_BACKEND` selector remains a compatibility and
-source-development override when `--ui` is omitted. New user instructions must
-use `--ui`.
+`OPENSQUILLA_TUI_BACKEND` is an internal handoff between the public selector and
+the runtime adapters. Bare `opensquilla chat` ignores any pre-existing value so
+a stale profile or workspace dotenv cannot disable the plain rescue path. New
+user and source-development instructions must use `--ui`.
 
 ```sh
 bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-The source backend is loaded only under an explicit developer override. A
-packaged host is resolved from an installed companion; core-only installs do
-not imply that the companion exists.
+The source backend is loaded only under an explicit developer override. The
+resolver can validate a same-version installed companion for future rollout,
+but current core-only release installs do not provide one.
 
 Do not add parallel terminal/frontend implementations without fresh product
 direction and replay plus real-terminal evidence.
 
 ## OpenTUI compatibility contract
 
-The companion pins one exact `@opentui/core` version (currently `0.4.3`) and one
-exact Bun toolchain. Product layout follows OpenTUI's documented
+The source host and development companion pin one exact `@opentui/core` version
+(currently `0.4.3`) and one exact Bun toolchain. Product layout follows OpenTUI's documented
 [renderer and resize contract](https://opentui.com/docs/core-concepts/renderer/),
 [absolute renderable, mouse, and z-index APIs](https://opentui.com/docs/core-concepts/renderables/),
 and public [ScrollBox contract](https://opentui.com/docs/components/scrollbox/).
@@ -202,7 +205,8 @@ Follow new OpenTUI releases deliberately rather than floating the dependency:
 3. run the styled framebuffer visual matrix at 80×24, 120×30, and 160×40;
 4. pass real-terminal streaming, wheel, resize, focus/remount, alternate-screen,
    cursor, and teardown gates on macOS and Linux;
-5. ship only after the packaged companion repeats the same gates.
+5. wire release assets only in a separate rollout after the packaged companion
+   repeats the same gates on native runners.
 
 An OpenTUI major version is eligible promptly, but it is never adopted solely
 because it exists: public API review and the visual/terminal gates are the
@@ -229,9 +233,8 @@ Summary fields include `renderer`, `fixture`, `available`, `skip_reason`,
 `visible_items`, `expanded_tools`, `projection_wall_ms`,
 `rendered_text_matches`, `plugin_error_count`, and `errors`.
 
-Use the OpenTUI results as renderer regression evidence. Release readiness
-also requires the packaged-host, real-terminal macOS gate; source-host results
-alone are not release evidence.
+Use the OpenTUI results as renderer regression evidence. They validate the
+development surface; they do not imply that a companion has been published.
 
 For terminal-level launch and rendering evidence, use the
 [real-terminal TUI harness](../tui-real-terminal-harness.md).

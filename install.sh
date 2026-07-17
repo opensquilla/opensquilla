@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # install.sh - OpenSquilla release installer for Linux and macOS.
 #
-# It installs uv if needed, installs a release wheel with uv tool, then prints
-# the explicit next steps. It does not run onboarding or start the gateway.
+# This script is safe to pipe from the public install URL. It installs uv if
+# needed, installs a release wheel with uv tool, then prints the explicit next
+# steps. It does not run onboarding or start the gateway.
 
 set -euo pipefail
 
@@ -71,31 +72,6 @@ dry_run="${OPENSQUILLA_INSTALL_DRY_RUN:-0}"
 
 is_release_version() {
     [[ "$1" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]
-}
-
-linux_supports_manylinux_2_28() {
-    local libc_version=""
-    libc_version="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
-    if [[ ! "${libc_version}" =~ ^glibc[[:space:]]+([0-9]+)\.([0-9]+) ]]; then
-        return 1
-    fi
-
-    local libc_major=$((10#${BASH_REMATCH[1]}))
-    local libc_minor=$((10#${BASH_REMATCH[2]}))
-    (( libc_major > 2 || (libc_major == 2 && libc_minor >= 28) ))
-}
-
-release_asset_exists() {
-    local url="$1"
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsIL --max-time 20 "${url}" >/dev/null 2>&1
-        return
-    fi
-    if command -v wget >/dev/null 2>&1; then
-        wget -q --spider --timeout=20 "${url}" >/dev/null 2>&1
-        return
-    fi
-    return 1
 }
 
 valid_extras=" matrix matrix-e2e document-extras "
@@ -186,13 +162,11 @@ case "${release_selector}" in
             exit 1
         fi
         release_version="${latest_tag#v}"
-        release_tag="${latest_tag}"
         wheel_url="https://github.com/${repo_slug}/releases/download/${latest_tag}/opensquilla-${release_version}-py3-none-any.whl"
         display_version="${latest_tag}"
         ;;
     v*)
         release_version="${release_selector#v}"
-        release_tag="${release_selector}"
         wheel_url="https://github.com/${repo_slug}/releases/download/${release_selector}/opensquilla-${release_version}-py3-none-any.whl"
         display_version="${release_selector}"
         ;;
@@ -205,70 +179,6 @@ case "${release_selector}" in
 esac
 
 install_spec="${package_name} @ ${wheel_url}"
-tui_host_spec=""
-tui_host_wheel_tag=""
-host_os="$(uname -s 2>/dev/null || true)"
-host_label="${host_os:-this platform}"
-if [[ "${host_os}" == "Darwin" ]]; then
-    host_label="macOS"
-fi
-if [[ "${host_os}" == "Darwin" || "${host_os}" == "Linux" ]]; then
-    host_arch="$(uname -m 2>/dev/null || true)"
-    if [[ "${host_os}" == "Darwin" ]]; then
-        case "${host_arch}" in
-            arm64|aarch64)
-                tui_host_wheel_tag="macosx_11_0_arm64"
-                ;;
-            x86_64|amd64)
-                tui_host_wheel_tag="macosx_11_0_x86_64"
-                ;;
-            *)
-                echo "install.sh: this macOS architecture does not have a TUI host release asset; installing core only." >&2
-                echo "install.sh: supported macOS TUI architectures: arm64, x86_64. Use '--ui plain' here." >&2
-                ;;
-        esac
-    else
-        case "${host_arch}" in
-            arm64|aarch64)
-                tui_host_wheel_tag="manylinux_2_28_aarch64"
-                ;;
-            x86_64|amd64)
-                tui_host_wheel_tag="manylinux_2_28_x86_64"
-                ;;
-            *)
-                echo "install.sh: this Linux architecture does not have a TUI host release asset; installing core only." >&2
-                echo "install.sh: supported Linux TUI architectures: aarch64, x86_64. Use '--ui plain' here." >&2
-                ;;
-        esac
-        if [[ -n "${tui_host_wheel_tag:-}" ]] && ! linux_supports_manylinux_2_28; then
-            echo "install.sh: this Linux libc cannot run the manylinux_2_28 TUI host; installing core only." >&2
-            echo "install.sh: glibc 2.28 or newer is required for the TUI host. Use '--ui plain' here." >&2
-            tui_host_wheel_tag=""
-        fi
-    fi
-    if [[ -n "${tui_host_wheel_tag:-}" ]]; then
-        tui_host_url="https://github.com/${repo_slug}/releases/download/${release_tag}/opensquilla_tui_host-${release_version}-py3-none-${tui_host_wheel_tag}.whl"
-        if release_asset_exists "${tui_host_url}"; then
-            tui_host_spec="opensquilla-tui-host @ ${tui_host_url}"
-        else
-            echo "install.sh: no matching ${host_label} TUI companion asset was found for ${display_version}; installing core only."
-        fi
-    fi
-fi
-
-install_args=(
-    tool install
-    --python "${python_version}"
-    --force
-    --reinstall-package opensquilla
-)
-if [[ -n "${tui_host_spec}" ]]; then
-    install_args+=(
-        --reinstall-package opensquilla-tui-host
-        --with "${tui_host_spec}"
-    )
-fi
-install_args+=("${install_spec}")
 
 install_uv() {
     if command -v curl >/dev/null 2>&1; then
@@ -300,9 +210,7 @@ resolve_uv() {
 
 if [[ "${dry_run}" == "1" ]]; then
     echo "install.sh: dry-run - would install OpenSquilla ${display_version}"
-    printf 'install.sh: dry-run - would run: uv'
-    printf ' %q' "${install_args[@]}"
-    printf '\n'
+    echo "install.sh: dry-run - would run: uv tool install --python ${python_version} --force --reinstall-package opensquilla \"${install_spec}\""
     exit 0
 fi
 
@@ -320,7 +228,7 @@ if [[ -z "${uv_bin}" ]]; then
 fi
 
 echo "install.sh: installing OpenSquilla ${display_version} (${profile})"
-"${uv_bin}" "${install_args[@]}"
+"${uv_bin}" tool install --python "${python_version}" --force --reinstall-package opensquilla "${install_spec}"
 
 tool_bin_dir="$("${uv_bin}" tool dir --bin 2>/dev/null || true)"
 
@@ -353,28 +261,7 @@ OpenSquilla installed from ${display_version}.
 Next steps:
   opensquilla onboard
   opensquilla gateway run
-DONE
 
-if [[ -n "${tui_host_spec}" ]]; then
-    cat <<TUI_DONE
-  opensquilla chat
-
-TUI companion: installed for ${host_label}.
-Bare chat automatically starts the packaged full-screen TUI.
-Use 'opensquilla chat --ui tui' to require it.
-Use 'opensquilla chat --ui plain' for the minimal rescue renderer.
-TUI_DONE
-else
-    cat <<PLAIN_DONE
-  opensquilla chat
-
-TUI companion: no matching packaged host installed for ${display_version} on ${host_label}.
-Bare chat uses the plain renderer when the full-screen host is unavailable.
-Use 'opensquilla chat --ui tui' to require a compatible packaged host.
-PLAIN_DONE
-fi
-
-cat <<DONE
 Default gateway bind: 127.0.0.1:18791 (loopback only).
 Do not expose the gateway on 0.0.0.0 unless it is behind a trusted reverse
 proxy or VPN.

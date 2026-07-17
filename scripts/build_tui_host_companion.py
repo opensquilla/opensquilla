@@ -25,8 +25,8 @@ MACOS_SIGNING_IDENTIFIER = "ai.opensquilla.tui-host"
 _PLATFORMS = {"darwin", "linux", "win32"}
 _ARCHES = {"arm64", "x64"}
 _WHEEL_TAGS = {
-    ("darwin", "arm64"): "py3-none-macosx_11_0_arm64",
-    ("darwin", "x64"): "py3-none-macosx_11_0_x86_64",
+    ("darwin", "arm64"): "py3-none-macosx_13_0_arm64",
+    ("darwin", "x64"): "py3-none-macosx_13_0_x86_64",
     ("linux", "arm64"): "py3-none-manylinux_2_28_aarch64",
     ("linux", "x64"): "py3-none-manylinux_2_28_x86_64",
     ("win32", "arm64"): "py3-none-win_arm64",

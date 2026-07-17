@@ -38,6 +38,7 @@ from opensquilla.cli.tui.opentui.terminal import create_terminal_guardian
 from opensquilla.cli.tui.opentui.transport import HostConnection
 from opensquilla.cli.tui.renderers.selection import (
     RendererBackendAvailability,
+    RendererBackendUnavailableReason,
 )
 
 DEFAULT_HOST_PACKAGE_DIR = Path(__file__).resolve().parent / "package"
@@ -130,7 +131,17 @@ def check_opentui_host_available(
     try:
         resolver.resolve()
     except HostRuntimeError as exc:
-        return RendererBackendAvailability(available=False, reason=str(exc))
+        try:
+            reason_code = RendererBackendUnavailableReason(exc.reason.value)
+        except ValueError:
+            # Keep a future host-runtime failure additive: an older core may
+            # still explain the failure without crashing its auto fallback.
+            reason_code = RendererBackendUnavailableReason.UNKNOWN
+        return RendererBackendAvailability(
+            available=False,
+            reason=str(exc),
+            reason_code=reason_code,
+        )
     return RendererBackendAvailability(available=True)
 
 

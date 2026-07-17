@@ -15,7 +15,6 @@ import yaml
 CURRENT_VERSION = "0.5.0rc4"
 CURRENT_DESKTOP_VERSION = "0.5.0-rc4"
 CURRENT_TAG = f"v{CURRENT_VERSION}"
-CURRENT_RELEASE_TITLE = "OpenSquilla 0.5.0 Preview 4"
 HISTORICAL_PREVIEW_VERSION = "0.2.0rc1"
 HISTORICAL_PREVIEW_TAG = f"v{HISTORICAL_PREVIEW_VERSION}"
 
@@ -33,14 +32,6 @@ def test_lockfile_version_matches_current_release() -> None:
     package = next(item for item in lock["package"] if item["name"] == "opensquilla")
 
     assert package["version"] == CURRENT_VERSION
-
-
-def test_macos_tui_companion_version_matches_current_release() -> None:
-    config = tomllib.loads(
-        Path("packages/opensquilla-tui-host/pyproject.toml").read_text(encoding="utf-8")
-    )
-
-    assert config["project"]["version"] == CURRENT_VERSION
 
 
 def test_desktop_electron_release_config_matches_current_release() -> None:
@@ -72,17 +63,10 @@ def test_desktop_electron_release_config_matches_current_release() -> None:
 
 def test_release_workflow_builds_desktop_installers() -> None:
     workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
-    release_jobs = yaml.safe_load(workflow)["jobs"]
-    macos_steps = {
-        step["name"]: step for step in release_jobs["build-tui-host-macos"]["steps"]
-    }
-    macos_gate = macos_steps["Run packaged-host real-terminal release gate"]["run"]
 
     assert "name: Release Assets" in workflow
     assert "build-desktop-macos:" in workflow
     assert "build-desktop-windows:" in workflow
-    assert "build-tui-host-macos:" in workflow
-    assert "build-tui-host-linux:" in workflow
     assert "npx electron-builder --mac --publish never" in workflow
     assert "npx electron-builder --win --publish never" in workflow
     assert "desktop_asset_version" in workflow
@@ -90,168 +74,29 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert "OpenSquilla-{desktop_version}-win-x64.exe" in workflow
     assert "latest-mac.yml" in workflow
     assert "latest.yml" in workflow
-    assert "opensquilla_tui_host-{version}-py3-none-macosx_11_0_arm64.whl" in workflow
-    assert "opensquilla_tui_host-{version}-py3-none-macosx_11_0_x86_64.whl" in workflow
-    assert "opensquilla_tui_host-{version}-py3-none-manylinux_2_28_aarch64.whl" in workflow
-    assert "opensquilla_tui_host-{version}-py3-none-manylinux_2_28_x86_64.whl" in workflow
-    assert "--require-codesign-identity" in workflow
-    assert 'grep -F "Authority=Developer ID Application:"' in workflow
-    assert "xcrun notarytool submit" in workflow
-    assert 'result.get("status") == "Accepted"' in workflow
-    assert "spctl --assess --type execute --verbose=4" in workflow
-    assert "scripts/smoke_tui_host_companion.py" in workflow
-    assert "command -v bun" in workflow
-    assert "-u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in workflow
-    assert "Packaged TUI host bridge smoke passed without Bun." in workflow
-    assert "Run packaged-host real-terminal release gate" in workflow
-    assert '"${core_wheel}[dev]"' in workflow
-    assert "brew install tmux" in workflow
-    assert "OPENSQUILLA_TUI_PACKAGED_GATE=1" in workflow
-    assert "--tui-require-capabilities" in workflow
-    for terminal_gate in (
-        "test_mouse_scroll_stability.py",
-        "test_framebuffer_recovery.py",
-        "test_idle_resize_round_trip.py",
-        "test_visual_layout_matrix.py",
-    ):
-        assert terminal_gate in macos_gate
-    assert "test_exit_restoration.py" in workflow
-    assert "test_packaged_gateway_e2e.py" in workflow
-    assert "env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in workflow
-    assert "Upload packaged-host real-terminal evidence" in workflow
-    assert "if: ${{ always() }}" in workflow
     assert 'NOTES_FILE="docs/releases/${TAG#v}.md"' in workflow
     assert '--notes-file "${NOTES_FILE}"' in workflow
     assert 'gh release upload "${TAG}" dist/* --clobber' in workflow
 
 
-def test_tui_ci_uses_the_same_pinned_bun_as_release_builds() -> None:
-    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-    version_file = "src/opensquilla/cli/tui/opentui/package/.bun-version"
+def test_tui_companion_remains_development_only() -> None:
+    """A normal version tag must not publish the in-repo development host."""
 
-    assert "bun-version: latest" not in workflow
-    assert workflow.count(f"bun-version-file: {version_file}") == 2
-
-
-def test_release_workflow_builds_and_gates_native_linux_tui_hosts() -> None:
-    path = Path(".github/workflows/wheelhouse-release.yml")
-    workflow_text = path.read_text(encoding="utf-8")
+    workflow_text = Path(".github/workflows/wheelhouse-release.yml").read_text(
+        encoding="utf-8"
+    )
     workflow = yaml.safe_load(workflow_text)
     jobs = workflow["jobs"]
-    linux_job = jobs["build-tui-host-linux"]
 
-    assert linux_job["needs"] == "build-release-assets"
-    assert linux_job["runs-on"] == "${{ matrix.runner }}"
-    assert linux_job["container"]["image"] == "${{ matrix.container_image }}"
-    assert linux_job["strategy"]["fail-fast"] is False
-    assert linux_job["strategy"]["matrix"]["include"] == [
-        {
-            "arch": "x64",
-            "runner": "ubuntu-24.04",
-            "container_image": (
-                "quay.io/pypa/manylinux_2_28_x86_64@sha256:"
-                "b04887b645dde99b9e955aeae3ff4da414992d0bd88259f046295b56361c5614"
-            ),
-            "native_machine": "x86_64",
-            "elf_machine": "Advanced Micro Devices X86-64",
-            "bun_target": "bun-linux-x64-baseline",
-            "wheel_tag": "manylinux_2_28_x86_64",
-        },
-        {
-            "arch": "arm64",
-            "runner": "ubuntu-24.04-arm",
-            "container_image": (
-                "quay.io/pypa/manylinux_2_28_aarch64@sha256:"
-                "d129a18d4aeecc9ce6db592474bdb127838339eed67cd7cd61617bb027b14c1e"
-            ),
-            "native_machine": "aarch64",
-            "elf_machine": "AArch64",
-            "bun_target": "bun-linux-arm64",
-            "wheel_tag": "manylinux_2_28_aarch64",
-        },
-    ]
-    for target in linux_job["strategy"]["matrix"]["include"]:
-        assert re.fullmatch(
-            r"quay[.]io/pypa/manylinux_2_28_(?:x86_64|aarch64)@sha256:[0-9a-f]{64}",
-            target["container_image"],
-        )
+    assert "build-tui-host-macos" not in jobs
+    assert "build-tui-host-linux" not in jobs
+    assert "opensquilla_tui_host-" not in workflow_text
+    assert "write_tui_release_manifest.py" not in workflow_text
+    assert "dist/install.sh" not in workflow_text
 
-    linux_steps = {step["name"]: step for step in linux_job["steps"]}
-    native_check = linux_steps["Verify native Linux runner"]["run"]
-    assert '[[ "$(uname -s)" == "Linux" ]]' in native_check
-    assert '[[ "$(uname -m)" == "${TUI_HOST_NATIVE_MACHINE}" ]]' in native_check
-    assert '[[ "$(getconf GNU_LIBC_VERSION)" == "glibc 2.28" ]]' in native_check
-
-    toolchain = linux_steps["Configure manylinux toolchain"]["run"]
-    assert "dnf install --assumeyes" in toolchain
-    assert 'python_bin="/opt/python/cp312-cp312/bin"' in toolchain
-
-    build = linux_steps["Build native Linux companion wheel"]["run"]
-    assert "--platform linux" in build
-    assert '--arch "${{ matrix.arch }}"' in build
-    assert '--build-id "${GITHUB_SHA}"' in build
-
-    verify = linux_steps["Verify manylinux companion wheel and ELF contract"]["run"]
-    for contract in (
-        'metadata["platform"] == "linux"',
-        'metadata["bun_target"] == os.environ["TUI_HOST_BUN_TARGET"]',
-        'metadata["wheel_tag"] == f"py3-none-{wheel_tag}"',
-        'file "${host}"',
-        'readelf -h "${host}"',
-        'readelf -d "${host}"',
-        'readelf --version-info "${host}"',
-        'ldd "${host}"',
-        "maximum <= (2, 28)",
-        "needed <= allowed",
-        '"ld-linux-x86-64.so.2"',
-        '"ld-linux-aarch64.so.1"',
-        "'(RPATH|RUNPATH)'",
-        "'not found'",
-    ):
-        assert contract in verify
-
-    smoke = linux_steps["Smoke clean core and companion install without Bun"]["run"]
-    assert "command -v bun" in smoke
-    assert "-u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in smoke
-    assert "scripts/smoke_tui_host_companion.py" in smoke
-    assert "TUI_HOST_BRIDGE_SMOKE_OK" in smoke
-
-    gate = linux_steps["Run packaged-host real-terminal release gate"]["run"]
-    assert '"${core_wheel}[dev]"' in gate
-    assert "OPENSQUILLA_TUI_PACKAGED_GATE=1" in gate
-    assert "--tui-require-capabilities" in gate
-    for terminal_gate in (
-        "test_mouse_scroll_stability.py",
-        "test_framebuffer_recovery.py",
-        "test_idle_resize_round_trip.py",
-        "test_visual_layout_matrix.py",
-    ):
-        assert terminal_gate in gate
-    assert "test_exit_restoration.py" in gate
-    assert "test_packaged_gateway_e2e.py" in gate
-    assert "env -u PYTHONPATH -u BUN_INSTALL -u OPENSQUILLA_TUI_DEV_SOURCE_HOST" in gate
-
-    evidence = linux_steps["Upload packaged-host real-terminal evidence"]
-    assert evidence["if"] == "${{ always() }}"
-    assert evidence["with"]["name"] == "opensquilla-tui-real-terminal-linux-${{ matrix.arch }}"
-    assert linux_steps["Upload Linux TUI host artifact"]["with"]["name"] == (
-        "opensquilla-tui-host-linux-${{ matrix.arch }}"
-    )
-
-    publish = jobs["publish-release"]
-    assert "build-tui-host-linux" in publish["needs"]
-    downloads = {step["name"]: step for step in publish["steps"]}
-    linux_download = downloads["Download Linux TUI host assets"]
-    assert linux_download["with"]["pattern"] == "opensquilla-tui-host-linux-*"
-    assert linux_download["with"]["merge-multiple"] is True
-
-    for wheel in (
-        "opensquilla_tui_host-{version}-py3-none-manylinux_2_28_aarch64.whl",
-        "opensquilla_tui_host-{version}-py3-none-manylinux_2_28_x86_64.whl",
-    ):
-        # Checksum generation, aggregate validation, and GitHub expected-assets
-        # validation must all agree on the two Linux companion filenames.
-        assert workflow_text.count(wheel) == 3
+    installer = Path("install.sh").read_text(encoding="utf-8")
+    assert "--tui-host-only" not in installer
+    assert "opensquilla_tui_host-" not in installer
 
 
 def _release_upload_script() -> str:
@@ -762,7 +607,6 @@ def test_releases_md_exists_and_references_current_and_preview_tags() -> None:
     )
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in text
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in text
-    assert CURRENT_RELEASE_TITLE in text
     assert "do not publish Windows portable zips" in text
     assert "legacy Windows portable downloads" in text
     assert "separately branded macOS or Linux portable bundles" in text
@@ -784,7 +628,6 @@ def test_changelog_has_current_release_section_and_unreleased() -> None:
 
 def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
-    normalized = " ".join(readme.split())
 
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.dmg" in readme
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in readme
@@ -796,7 +639,7 @@ def test_readme_release_install_uses_latest_assets_and_pinned_alternative() -> N
         f"releases/download/{CURRENT_TAG}/opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in readme
     )
     assert "opensquilla-latest-py3-none-any.whl" not in readme
-    assert "Python wheel installs use versioned wheel filenames" in normalized
+    assert "Python wheel installs use versioned wheel filenames" in readme
     assert "Release install commands use published GitHub release assets" in readme
 
 
@@ -854,28 +697,6 @@ def test_user_facing_install_docs_use_current_release_wheel() -> None:
         for match in wheel_urls:
             assert match.group("tag_version") == CURRENT_VERSION
             assert match.group("file_version") == CURRENT_VERSION
-
-
-def test_install_contract_does_not_infer_or_advertise_unpublished_tui_assets() -> None:
-    unpublished_prefix = f"opensquilla_tui_host-{CURRENT_VERSION}-"
-
-    for path in [
-        Path("README.md"),
-        Path("README.zh-Hans.md"),
-        Path("README.product.md"),
-        Path("docs/quickstart.md"),
-        Path(f"docs/releases/{CURRENT_VERSION}.md"),
-        Path("RELEASES.md"),
-    ]:
-        text = path.read_text(encoding="utf-8")
-        assert unpublished_prefix not in text, path
-        assert "https://opensquilla.ai/install.sh" not in text, path
-        assert "https://opensquilla.ai/install.ps1" not in text, path
-
-    installer = Path("install.sh").read_text(encoding="utf-8")
-    assert "release_asset_exists" in installer
-    assert "release_has_tui_host" not in installer
-    assert "v0.5.0rc5" not in installer
 
 
 def test_release_installers_default_to_current_tag() -> None:
@@ -941,7 +762,6 @@ def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() 
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-mac-arm64.zip" in notes
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
-    assert f"opensquilla_tui_host-{CURRENT_VERSION}-" not in notes
     assert notes.index("### Profile recovery and upgrade safety") < notes.index(
         "### Windows Portable transfer"
     )

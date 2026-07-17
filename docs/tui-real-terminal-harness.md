@@ -59,11 +59,13 @@ Full deterministic suite:
 uv run pytest tests/integration/cli/tui_real_terminal -q
 ```
 
-### Packaged release gate
+### Development packaged-host gate
 
-macOS and Linux companion releases rerun the deterministic OpenTUI scenarios from a
-clean environment containing only the built core and companion wheels plus test
-dependencies. The gate clears `PYTHONPATH`, source-host overrides, and Bun from
+Before any future distribution rollout, maintainers can locally rerun the
+deterministic OpenTUI scenarios on native macOS and Linux runners from a clean environment containing
+only the built core and companion wheels plus test dependencies. This gate is
+not currently wired into the formal `v*` release workflow and does not publish
+assets. It clears `PYTHONPATH`, source-host overrides, and Bun from
 `PATH`, forces the tmux driver, and passes `--tui-require-capabilities`; a
 missing terminal capability is therefore a failure rather than a skip. It
 covers launch/input, CJK, long streaming, complex tool UI, architecture replay,
@@ -82,7 +84,7 @@ approval convergence, queued-turn cancellation, alternate-screen recovery,
 and a usable echoed shell after exit.
 
 Scenario frames, scrollback, terminal logs, result files, pytest output, and
-JUnit output are retained as release evidence, including on failures. The real
+JUnit output are retained as development evidence, including on failures. The real
 Gateway scenario additionally retains Gateway logs, provider lifecycle JSONL,
 RPC/event snapshots, installed core/companion/host version provenance, and an
 explicit `fake_opentui_app: false` assertion. Normal
@@ -95,7 +97,7 @@ Manual lab:
 uv run python scripts/tui_real_terminal_lab.py --scenario long_streaming --backend opentui
 ```
 
-Run the architecture scenario through the supported full-screen renderer:
+Run the architecture scenario through the development full-screen renderer:
 
 ```bash
 uv run --extra dev python scripts/tui_real_terminal_lab.py \
@@ -158,7 +160,7 @@ The packaged Gateway scenario also writes `gateway.log`,
 `provider-events.jsonl`, and `gateway-rpc-events.json`.
 
 Capability misses are explicit skips in normal developer runs and hard failures
-when `--tui-require-capabilities` is set by the release gate. Deterministic
+when `--tui-require-capabilities` is set by the development packaged-host gate. Deterministic
 assertion failures block.
 Visual verdicts with `inspect` preserve evidence without blocking unrelated
 backend changes.

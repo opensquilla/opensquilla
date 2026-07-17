@@ -601,6 +601,23 @@ def test_ci_change_classifier_tracks_tui_changes_without_windows_full(tmp_path: 
     )
 
 
+def test_ci_change_classifier_tracks_development_companion_changes(tmp_path: Path) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        [
+            "packages/opensquilla-tui-host/src/opensquilla_tui_host/api.py",
+            "scripts/build_tui_host_companion.py",
+        ],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        runtime_changed="true",
+        tui_changed="true",
+        python_changed="true",
+        build_wheel_required="true",
+    )
+
+
 def test_ci_change_classifier_fails_closed_for_unclassified_runtime_paths(
     tmp_path: Path,
 ) -> None:

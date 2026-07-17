@@ -12,19 +12,16 @@ Start terminal chat:
 opensquilla chat
 ```
 
-Bare `opensquilla chat` uses `auto`: it starts the packaged alternate-screen
-TUI when a compatible same-version companion is installed and otherwise falls
-back to `plain` before entering the alternate screen. `--ui tui` is strict: a
-missing, incompatible, or wrong-architecture host is a clear startup error.
-`--ui plain` remains the minimal rescue renderer.
+Bare `opensquilla chat` uses `auto`: it can start a compatible full-screen host
+and otherwise falls back to `plain` before entering the alternate screen.
+Current releases do not publish or install the companion, so release-installed
+users remain on `plain`. `--ui tui` is strict: a missing or incompatible host
+is a clear startup error. `--ui plain` selects the rescue renderer explicitly.
 
-Companion builds target macOS arm64/x86_64 and Linux arm64/x86_64, but a
-published release supports the packaged TUI only when its release assets
-actually include the matching host. The currently documented core-wheel
-installation does not include one. A packaged host is self-contained and does
-not require Bun, npm, tmux, a source checkout, or a first-run download. Native
-Windows still needs its ConPTY host; the session, history, approval,
-attachment, and UI-selection contracts do not change for that platform.
+From a verified source checkout, bare chat can print the two development
+commands needed to prepare and launch the source host. Installed wheels,
+source archives without a Git worktree, Windows, and unsupported layouts stay
+quiet rather than advertising unavailable release assets.
 
 For the implicit local configuration, chat checks readiness before taking over
 the terminal and starts the lifecycle-managed Gateway when necessary. An
@@ -53,7 +50,7 @@ opensquilla chat --session <session-key>
 Choose the terminal presentation explicitly when diagnosing startup:
 
 ```sh
-opensquilla chat --ui tui    # require packaged OpenTUI
+opensquilla chat --ui tui    # require the full-screen host
 opensquilla chat --ui plain  # minimal rescue renderer
 ```
 
@@ -254,11 +251,10 @@ local file before sending the turn:
 
 ## TUI Host and Source Development
 
-When a release includes a platform-specific TUI host, install it alongside the
-same-version, platform-neutral OpenSquilla package. A missing or mismatched host
-is a strict error under `--ui tui`; bare chat and explicit `--ui auto` may fall
-back only before entering the alternate screen. Mixing core and host versions
-is unsupported.
+Current releases do not include the platform-specific TUI host. The companion
+package and builders in this repository are development validation machinery,
+not published assets. A future distribution rollout must keep core and host on
+the same version and land separately.
 
 Maintainers can explicitly use the source host while developing:
 
@@ -267,10 +263,11 @@ bun install --frozen-lockfile --cwd=src/opensquilla/cli/tui/opentui/package
 OPENSQUILLA_TUI_DEV_SOURCE_HOST=1 uv run opensquilla chat --ui tui
 ```
 
-`OPENSQUILLA_TUI_BACKEND` is a compatibility/development override when `--ui`
-is omitted. `OPENSQUILLA_TUI_DEV_SOURCE_HOST=1` is the explicit permission to
-run Bun/source instead of an installed companion. Users should prefer the
-public `--ui` option.
+`OPENSQUILLA_TUI_BACKEND` is an internal runtime handoff, not a public selector;
+bare chat ignores any pre-existing value so stale dotenv configuration cannot
+disable its plain fallback. `OPENSQUILLA_TUI_DEV_SOURCE_HOST=1` is the explicit
+permission to run Bun/source instead of an installed companion. Use the public
+`--ui` option to select the presentation.
 
 Read [`features/tui-frontend.md`](features/tui-frontend.md) for OpenTUI backend
 status, Router HUD details, and replay benchmarks. Read

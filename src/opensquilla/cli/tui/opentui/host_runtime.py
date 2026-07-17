@@ -80,8 +80,8 @@ class HostArtifactResolver:
             command = tuple(module.host_command())
         except (ImportError, ModuleNotFoundError) as exc:
             raise HostRuntimeError(
-                "OpenTUI companion is not installed. Reinstall OpenSquilla with "
-                "the platform TUI host companion.",
+                "OpenTUI companion is not installed. This release does not publish one; "
+                "use '--ui plain', or run the source host from a development checkout.",
                 reason=HostFailureReason.MISSING,
             ) from exc
         except Exception as exc:

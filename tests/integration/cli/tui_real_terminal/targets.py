@@ -44,7 +44,8 @@ def build_tui_target(backend_id: str, context: TargetContext) -> TuiTarget:
 def _base_env(context: TargetContext, *, isolate_state: bool = True) -> dict[str, str]:
     env = os.environ.copy()
     if env.get(PACKAGED_GATE_ENV) == "1":
-        # The release gate must prove the installed core+companion wheels. A
+        # The pre-rollout packaged-host gate must prove the installed core and
+        # companion wheels. A
         # checkout-local PYTHONPATH or source-host override would silently turn
         # this back into a source test.
         env.pop("PYTHONPATH", None)
@@ -103,7 +104,7 @@ def _opentui_target(context: TargetContext) -> TuiTarget:
     }:
         # Styled framebuffer assertions use the canonical surface colors as a
         # cell-level contract. Do not inherit a developer's local theme or
-        # NO_COLOR setting into this deterministic release gate.
+        # NO_COLOR setting into this deterministic pre-rollout gate.
         env.update(
             {
                 "OPENSQUILLA_TUI_THEME": "opensquilla-dark",

@@ -24,6 +24,7 @@ from opensquilla.session.models import (
     MemoryDurableReceipt,
     SessionContextState,
     SessionNode,
+    SessionStatus,
     SessionSummary,
     TranscriptEntry,
     TurnIngressReceipt,
@@ -1615,7 +1616,37 @@ class SessionStorage:
     async def mark_abandoned_agent_tasks(self, now_ms: int | None = None) -> int:
         """Mark non-terminal persisted tasks as abandoned after process restart."""
         ts = now_ms or _now_ms()
+        terminal_session_statuses = (
+            SessionStatus.DONE,
+            SessionStatus.FAILED,
+            SessionStatus.KILLED,
+            SessionStatus.TIMEOUT,
+        )
         async with self._write_transaction("mark_abandoned_agent_tasks") as conn:
+            async with conn.execute(
+                """
+                SELECT DISTINCT agent_tasks.session_key
+                FROM agent_tasks
+                JOIN sessions ON sessions.session_key = agent_tasks.session_key
+                WHERE sessions.status NOT IN (?, ?, ?, ?)
+                  AND (
+                    agent_tasks.status IN (?, ?)
+                    OR (
+                        agent_tasks.status = ?
+                        AND agent_tasks.terminal_reason = ?
+                    )
+                  )
+                """,
+                (
+                    *terminal_session_statuses,
+                    AgentTaskStatus.QUEUED,
+                    AgentTaskStatus.RUNNING,
+                    AgentTaskStatus.ABANDONED,
+                    "process_restart",
+                ),
+            ) as session_cur:
+                session_keys = [str(row[0]) for row in await session_cur.fetchall()]
+
             cur = await conn.execute(
                 """
                 UPDATE agent_tasks
@@ -1635,6 +1666,34 @@ class SessionStorage:
                 ),
             )
             count = int(cur.rowcount if cur.rowcount is not None else 0)
+            for index in range(0, len(session_keys), _SQLITE_VARIABLE_CHUNK_SIZE):
+                chunk = session_keys[index : index + _SQLITE_VARIABLE_CHUNK_SIZE]
+                placeholders = ", ".join("?" for _ in chunk)
+                await conn.execute(
+                f"""
+                UPDATE sessions
+                SET status = ?,
+                    updated_at = ?,
+                    ended_at = COALESCE(ended_at, ?),
+                    runtime_ms = CASE
+                        WHEN runtime_ms IS NOT NULL THEN runtime_ms
+                        WHEN started_at IS NULL THEN NULL
+                        WHEN ? >= started_at THEN ? - started_at
+                        ELSE 0
+                    END
+                WHERE session_key IN ({placeholders})
+                  AND status NOT IN (?, ?, ?, ?)
+                """,
+                (
+                    SessionStatus.FAILED,
+                    ts,
+                    ts,
+                    ts,
+                    ts,
+                    *chunk,
+                    *terminal_session_statuses,
+                ),
+            )
         return count
 
     # ── Transcript CRUD ──────────────────────────────────────────────────────

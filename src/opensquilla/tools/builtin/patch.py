@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import hashlib
 import json
 import os
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -300,6 +301,7 @@ def _validate_path(
     root: Path | None = None,
     *,
     allow_outside_root: bool | None = None,
+    authorized_paths: Collection[Path] = (),
 ) -> Path:
     """Resolve a patch path and enforce the active root unless already authorized."""
     root = root if root is not None else _default_patch_root()
@@ -307,6 +309,12 @@ def _validate_path(
     if allow_outside_root is None:
         allow_outside_root = full_host_access_active()
     if not resolved.is_relative_to(root) and not allow_outside_root:
+        if resolved in authorized_paths:
+            return resolved
+        from opensquilla.tools.builtin import filesystem
+
+        if filesystem._active_sandbox_mount_allows(resolved, write=True):
+            return resolved
         raise ValueError(f"Path traversal detected: {path!r} resolves outside patch root")
     return resolved
 
@@ -649,8 +657,14 @@ def _plan_add(
     root: Path | None = None,
     *,
     allow_outside_root: bool = False,
+    authorized_paths: Collection[Path] = (),
 ) -> PlannedPatchWrite:
-    resolved = _validate_path(op.path, root, allow_outside_root=allow_outside_root)
+    resolved = _validate_path(
+        op.path,
+        root,
+        allow_outside_root=allow_outside_root,
+        authorized_paths=authorized_paths,
+    )
     if resolved.exists():
         raise RetryableToolInputError(
             f"apply_patch Add File target already exists: {op.path}. "
@@ -670,8 +684,14 @@ def _plan_update(
     root: Path | None = None,
     *,
     allow_outside_root: bool = False,
+    authorized_paths: Collection[Path] = (),
 ) -> PlannedPatchWrite:
-    resolved = _validate_path(op.path, root, allow_outside_root=allow_outside_root)
+    resolved = _validate_path(
+        op.path,
+        root,
+        allow_outside_root=allow_outside_root,
+        authorized_paths=authorized_paths,
+    )
     if not resolved.exists():
         raise RetryableToolInputError(
             f"apply_patch could not find file to update: {op.path}. "
@@ -695,8 +715,14 @@ def _plan_delete(
     root: Path | None = None,
     *,
     allow_outside_root: bool = False,
+    authorized_paths: Collection[Path] = (),
 ) -> PlannedPatchWrite:
-    resolved = _validate_path(op.path, root, allow_outside_root=allow_outside_root)
+    resolved = _validate_path(
+        op.path,
+        root,
+        allow_outside_root=allow_outside_root,
+        authorized_paths=authorized_paths,
+    )
     if not resolved.exists():
         raise RetryableToolInputError(
             f"apply_patch could not find file to delete: {op.path}. "
@@ -716,6 +742,7 @@ def _plan_ops(
     root: Path | None = None,
     *,
     allow_outside_root: bool = False,
+    authorized_paths: Collection[Path] = (),
 ) -> list[PlannedPatchWrite]:
     planned: list[PlannedPatchWrite] = []
     virtual_content: dict[Path, str | None] = {}
@@ -724,14 +751,30 @@ def _plan_ops(
             op.path,
             root,
             allow_outside_root=allow_outside_root,
+            authorized_paths=authorized_paths,
         )
         if resolved not in virtual_content:
             if isinstance(op, AddFile):
-                item = _plan_add(op, root, allow_outside_root=allow_outside_root)
+                item = _plan_add(
+                    op,
+                    root,
+                    allow_outside_root=allow_outside_root,
+                    authorized_paths=authorized_paths,
+                )
             elif isinstance(op, UpdateFile):
-                item = _plan_update(op, root, allow_outside_root=allow_outside_root)
+                item = _plan_update(
+                    op,
+                    root,
+                    allow_outside_root=allow_outside_root,
+                    authorized_paths=authorized_paths,
+                )
             else:
-                item = _plan_delete(op, root, allow_outside_root=allow_outside_root)
+                item = _plan_delete(
+                    op,
+                    root,
+                    allow_outside_root=allow_outside_root,
+                    authorized_paths=authorized_paths,
+                )
         else:
             current_content = virtual_content[resolved]
             before = _fingerprint_content(current_content)
@@ -874,9 +917,15 @@ def _apply_ops(
     root: Path | None = None,
     *,
     allow_outside_root: bool = False,
+    authorized_paths: Collection[Path] = (),
 ) -> tuple[int, int, int, list[PlannedPatchWrite]]:
     """Execute all patch operations after planning them in memory."""
-    planned = _plan_ops(ops, root, allow_outside_root=allow_outside_root)
+    planned = _plan_ops(
+        ops,
+        root,
+        allow_outside_root=allow_outside_root,
+        authorized_paths=authorized_paths,
+    )
     added, modified, deleted = _commit_planned_writes(planned)
     return added, modified, deleted, planned
 
@@ -1017,7 +1066,11 @@ async def apply_patch(
             )
         return _apply_ops(ops, root)
 
-    added, modified, deleted, planned = await loop.run_in_executor(None, _run)
+    added, modified, deleted, planned = await loop.run_in_executor(
+        None,
+        contextvars.copy_context().run,
+        _run,
+    )
     if full_host:
         _notify_memory_source_writes(ops, root)
         _notify_bootstrap_source_writes(ops, root)

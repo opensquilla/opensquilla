@@ -234,6 +234,8 @@ export interface SessionMessagesSubscribeResponse extends SessionEventPayload {
   subscribed?: boolean
   replay_complete?: boolean
   current_stream_seq?: number
+  active_task_group_ids?: string[]
+  activeTaskGroupIds?: string[]
 }
 
 export interface ChatSendAttachmentPayload {

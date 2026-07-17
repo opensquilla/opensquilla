@@ -6,6 +6,8 @@ from typing import Any
 
 import pytest
 
+from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.tools.builtin import patch as patch_tool
 from opensquilla.tools.mutation_receipts import fingerprint_file
 from opensquilla.tools.types import ToolContext, current_tool_context
@@ -221,3 +223,84 @@ async def test_apply_patch_receipt_after_fingerprints_committed_file_bytes(
     planned_after = patch_tool._fingerprint_content("ALPHA\nBETA\n")
     assert after["size"] != planned_after["size"]
     assert ctx.workspace_mutation_receipts[0]["after"] == after
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_full_host_context_reaches_worker_thread(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "patch.txt"
+    outside.parent.mkdir()
+    outside.write_text("before-patch\n", encoding="utf-8")
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(workspace),
+            run_mode="full",
+            elevated="full",
+            session_key="agent:main:subagent:test",
+        )
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            patch=f"""*** Begin Patch
+*** Update File: {outside.as_posix()}
+@@ -1 +1 @@
+-before-patch
++after-patch
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert result.startswith("Applied patch: 1 file(s) modified")
+    assert outside.read_text(encoding="utf-8") == "after-patch\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_managed_mount_reaches_worker_thread(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside" / "patch.txt"
+    outside.parent.mkdir()
+    outside.write_text("before-patch\n", encoding="utf-8")
+    configure_runtime(
+        SandboxSettings(run_mode="trusted", backend="noop", allow_legacy_mode=True),
+        workspace=workspace,
+    )
+
+    async def run_direct(_operation: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.filesystem._run_sandbox_operation_if_required",
+        run_direct,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(workspace),
+            run_mode="trusted",
+            session_key="agent:main:subagent:test",
+        )
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            patch=f"""*** Begin Patch
+*** Update File: {outside.as_posix()}
+@@ -1 +1 @@
+-before-patch
++after-patch
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
+
+    assert result.startswith("Applied patch: 1 file(s) modified")
+    assert outside.read_text(encoding="utf-8") == "after-patch\n"

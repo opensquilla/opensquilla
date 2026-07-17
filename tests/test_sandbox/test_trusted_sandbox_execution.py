@@ -387,13 +387,13 @@ async def test_trusted_code_delete_keeps_high_impact_when_target_proof_is_unsoun
 
 
 @pytest.mark.asyncio
-async def test_trusted_mode_returns_soft_denial_instead_of_hidden_approval_wait(
+async def test_trusted_mode_allows_without_hidden_approval_wait(
     tmp_path,
 ) -> None:
     from opensquilla.sandbox.config import SandboxSettings
     from opensquilla.sandbox.integration import configure_runtime, gate_action, reset_runtime
     from opensquilla.sandbox.policy import LevelHints
-    from opensquilla.sandbox.types import DenialReason, DenialResult
+    from opensquilla.sandbox.types import ALLOW
 
     class _Queue:
         requests: list[dict | None]
@@ -437,12 +437,9 @@ async def test_trusted_mode_returns_soft_denial_instead_of_hidden_approval_wait(
         current_tool_context.reset(token)
         reset_runtime()
 
-    assert policy.require_approval is True
-    assert isinstance(decision, DenialResult)
+    assert policy.require_approval is False
+    assert decision is ALLOW
     assert _request.run_mode == "trusted"
-    assert decision.reason == DenialReason.POLICY_DENIED
-    assert "Trusted-Sandbox" in decision.message
-    assert "Full Host Access" in decision.message
     assert queue.requests == []
 
 

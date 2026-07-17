@@ -13246,7 +13246,20 @@ class Agent:
 
         parent_session_key = self._session_key or "unknown"
         subagent_label = spec.label or "subagent"
-        parent_tool_ctx = current_tool_context.get()
+        parent_ctx = current_tool_context.get() or self._tool_context
+        parent_run_context = getattr(parent_ctx, "sandbox_run_context", None)
+        parent_run_mode = getattr(parent_ctx, "run_mode", None)
+        if parent_run_mode is None:
+            run_context_mode = getattr(parent_run_context, "run_mode", None)
+            parent_run_mode = getattr(run_context_mode, "value", run_context_mode)
+        parent_elevated = getattr(parent_ctx, "elevated", None)
+        if parent_run_mode not in {"standard", "trusted", "full"}:
+            if parent_elevated == "full":
+                parent_run_mode = "full"
+            elif parent_elevated in {"on", "bypass"}:
+                parent_run_mode = "trusted"
+            else:
+                parent_run_mode = None
 
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
@@ -13257,26 +13270,15 @@ class Agent:
             subagent_depth=depth,
             agent_id=parse_agent_id(parent_session_key),
             workspace_dir=spec.workspace_dir or self.config.workspace_dir,
-            run_mode=getattr(parent_tool_ctx, "run_mode", None)
-            if parent_tool_ctx is not None
-            else None,
-            sandbox_mounts=[
-                dict(item)
-                for item in (
-                    getattr(parent_tool_ctx, "sandbox_mounts", None)
-                    if parent_tool_ctx is not None
-                    else None
-                )
-                or []
-            ],
-            sandbox_run_context=getattr(parent_tool_ctx, "sandbox_run_context", None)
-            if parent_tool_ctx is not None
-            else None,
             session_key=f"subagent:{parent_session_key}",
             channel_kind="subagent",
             channel_id=f"subagent:{parent_session_key}",
             sender_id=parent_session_key,
             denied_tools=set(SUBAGENT_TOOL_DENY),
+            run_mode=parent_run_mode,
+            sandbox_mounts=list(getattr(parent_ctx, "sandbox_mounts", None) or []),
+            sandbox_run_context=parent_run_context,
+            elevated=parent_elevated if parent_run_mode == "full" else None,
             tool_result_store_dir=self.config.tool_result_store_dir,
             tool_result_store_session_id=(
                 self.config.tool_result_store_session_id or parent_session_key
@@ -13286,9 +13288,6 @@ class Agent:
             tool_run_budget_key=(
                 f"subagent:{parent_session_key}:{subagent_label}:{depth}:{uuid.uuid4().hex}"
             ),
-            elevated=getattr(parent_tool_ctx, "elevated", None)
-            if parent_tool_ctx is not None
-            else None,
             on_runtime_event=self._record_tool_context_runtime_event
             if self.config.runtime_events_path
             else None,
@@ -13437,6 +13436,7 @@ class Agent:
             tool_definitions=filtered_defs,
             tool_handler=_subagent_tool_handler,
             subagent_manager=SubagentManager(spawn_depth=depth),
+            tool_context=subagent_ctx,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

@@ -26,6 +26,7 @@ from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
     current_tool_run_context,
+    grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
 from opensquilla.sandbox.integration import active_file_system_profile, get_runtime

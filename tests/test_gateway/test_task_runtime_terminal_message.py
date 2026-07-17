@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 from typing import Any
@@ -65,9 +66,10 @@ def _make_runtime(
     *,
     event_emitter: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None,
     terminal_listener: Callable[[SubagentCompletionEvent], Awaitable[None]] | None = None,
+    storage: Any | None = None,
 ) -> TaskRuntime:
     return TaskRuntime(
-        storage=_make_storage(),
+        storage=storage or _make_storage(),
         turn_handler=turn_handler,
         event_emitter=event_emitter,
         terminal_listener=terminal_listener,
@@ -104,6 +106,40 @@ async def test_mark_terminal_emits_additive_terminal_message_for_timeout_payload
     assert record.details is not None
     assert record.details["turn_outcome"]["kind"] == "interrupted"
     assert record.details["turn_outcome"]["error_class"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_still_emits_when_terminal_persistence_is_locked() -> None:
+    emitted: list[tuple[str, str, dict[str, Any]]] = []
+    storage = _make_storage()
+    base_update = storage.update_agent_task
+
+    async def _locked_terminal_update(task_id: str, **kwargs: Any) -> None:
+        if kwargs.get("finished_at") is not None:
+            raise sqlite3.OperationalError("database is locked")
+        await base_update(task_id, **kwargs)
+
+    storage.update_agent_task = _locked_terminal_update
+
+    async def _failing_handler(_run: Any) -> None:
+        raise RuntimeError("boom")
+
+    async def _emitter(session_key: str, event_name: str, payload: dict[str, Any]) -> None:
+        emitted.append((session_key, event_name, payload))
+
+    runtime = _make_runtime(_failing_handler, event_emitter=_emitter, storage=storage)
+    handle = await runtime.enqueue(_make_envelope(), "hello")
+
+    record = await runtime.wait(handle.task_id, timeout=2.0)
+
+    assert record.status == AgentTaskStatus.FAILED
+    assert record.terminal_reason == "error"
+    terminal_events = [event for event in emitted if event[1] == "task.failed"]
+    assert len(terminal_events) == 1
+    payload = terminal_events[0][2]
+    assert payload["task_id"] == handle.task_id
+    assert payload["terminal_reason"] == "error"
+    assert "failed" in payload["terminal_message"].lower()
 
 
 @pytest.mark.asyncio

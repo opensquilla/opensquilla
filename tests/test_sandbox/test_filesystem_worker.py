@@ -208,3 +208,54 @@ def test_list_dir_preserves_requested_directory_permission_error(
 
     with pytest.raises(PermissionError, match="directory denied for test"):
         filesystem_worker._list_dir({"path": str(tmp_path)})
+
+
+def test_apply_patch_accepts_explicit_target_outside_patch_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = tmp_path / "outside" / "target.txt"
+    target.parent.mkdir()
+    target.write_text("before\n", encoding="utf-8")
+
+    result = filesystem_worker._run(
+        {
+            "kind": "apply_patch",
+            "root": str(workspace),
+            "paths": [str(target)],
+            "patch": f"""*** Begin Patch
+*** Update File: {target.as_posix()}
+@@ -1,1 +1,1 @@
+-before
++after
+*** End Patch""",
+        }
+    )
+
+    assert result == {"message": "Applied patch: 1 file(s) modified", "created": False}
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+
+def test_apply_patch_rejects_target_missing_from_explicit_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    authorized = tmp_path / "outside" / "authorized.txt"
+    unauthorized = tmp_path / "outside" / "unauthorized.txt"
+    authorized.parent.mkdir()
+    unauthorized.write_text("before\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="outside patch root"):
+        filesystem_worker._run(
+            {
+                "kind": "apply_patch",
+                "root": str(workspace),
+                "paths": [str(authorized)],
+                "patch": f"""*** Begin Patch
+*** Update File: {unauthorized.as_posix()}
+@@ -1,1 +1,1 @@
+-before
++after
+*** End Patch""",
+            }
+        )
+
+    assert unauthorized.read_text(encoding="utf-8") == "before\n"

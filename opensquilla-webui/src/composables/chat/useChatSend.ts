@@ -156,6 +156,7 @@ export interface UseChatSendOptions {
   activeStreamSessionKey: Ref<string>
   autoScroll: Ref<boolean>
   stream: ChatRpcStreamApi
+  canStop?: () => boolean
   normalizeElevatedMode: (mode: string) => string
   persistSession: (key: string, options?: PersistSessionOptions) => void
   scheduleHistorySync: () => void
@@ -517,17 +518,15 @@ export function useChatSend(options: UseChatSendOptions) {
   }
 
   function onStop() {
-    if (!options.stream.isStreaming.value) return
+    if (!(options.canStop?.() ?? options.stream.isStreaming.value)) return
     options.aborted.value = true
     const abortSessionKey = options.activeStreamSessionKey.value || options.sessionKey.value
-    const abortTaskId = options.activeStreamTaskId.value
     activeFreshSendToken = null
     options.activeStreamTaskId.value = STOPPED_STREAM_TASK_ID
     // Be honest if the abort can't reach the gateway (e.g. the socket dropped):
     // we still tear the local stream down for responsiveness, but the user must
     // know the server-side run may keep going rather than trust a false "stopped".
     const abortParams: Record<string, string> = { sessionKey: abortSessionKey, source: 'webui_stop' }
-    if (abortTaskId && !abortTaskId.startsWith('__opensquilla_')) abortParams.taskId = abortTaskId
     options.rpc.call('chat.abort', abortParams).catch(() => {
       options.messages.value.push({
         role: 'system',

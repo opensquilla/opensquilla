@@ -81,6 +81,28 @@ def test_apply_patch_schema_exposes_optional_patch_file_path() -> None:
     assert "path" not in registered.spec.required
 
 
+def test_patch_request_preserves_absolute_target_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = tmp_path / "outside" / "target.txt"
+    token = current_tool_context.set(ToolContext(workspace_dir=str(workspace)))
+    try:
+        request = patch_tool._patch_request(
+            {
+                "patch": f"""*** Begin Patch
+*** Add File: {target.as_posix()}
++created
+*** End Patch"""
+            }
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    assert request.path == target
+    assert request.paths == (target,)
+    assert request.root == workspace
+
+
 @pytest.mark.asyncio
 async def test_apply_patch_blocks_sensitive_path(tmp_path: Path) -> None:
     token = current_tool_context.set(ToolContext(workspace_dir=str(tmp_path)))
@@ -508,6 +530,54 @@ async def test_apply_patch_full_host_accepts_absolute_path_outside_patch_root(
         )
     finally:
         current_tool_context.reset(token)
+
+    assert result.startswith("Applied patch: 1 file(s) modified")
+    assert outside.read_text(encoding="utf-8") == "new\n"
+    assert get_approval_queue().list_pending("exec") == []
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_trusted_auto_grants_absolute_user_path_before_root_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("old\n", encoding="utf-8")
+    configure_runtime(
+        SandboxSettings(run_mode="trusted", backend="noop", allow_legacy_mode=True),
+        workspace=workspace,
+    )
+
+    async def run_direct(_operation, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.filesystem._run_sandbox_operation_if_required",
+        run_direct,
+    )
+    token = current_tool_context.set(
+        ToolContext(
+            is_owner=True,
+            workspace_dir=str(workspace),
+            run_mode="trusted",
+            session_key="agent:main:trusted-patch",
+        )
+    )
+    apply_patch = _original_async(patch_tool.apply_patch)
+    try:
+        result = await apply_patch(
+            f"""*** Begin Patch
+*** Update File: {outside.as_posix()}
+@@ -1,1 +1,1 @@
+-old
++new
+*** End Patch"""
+        )
+    finally:
+        current_tool_context.reset(token)
+        reset_runtime()
 
     assert result.startswith("Applied patch: 1 file(s) modified")
     assert outside.read_text(encoding="utf-8") == "new\n"

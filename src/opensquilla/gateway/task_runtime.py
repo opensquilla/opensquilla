@@ -497,6 +497,7 @@ class TaskRuntime:
         # status updates behind external I/O.
         self._session_execution_locks: dict[str, asyncio.Lock] = {}
         self._tasks: dict[str, _RuntimeTask] = {}
+        self._terminal_fallback_records: dict[str, AgentTaskRecord] = {}
         self._pending_by_session: dict[str, list[_RuntimeTask]] = {}
         self._running_by_session: dict[str, _RuntimeTask] = {}
         self._reservations_by_session: dict[str, list[TaskReservation]] = {}
@@ -1089,6 +1090,9 @@ class TaskRuntime:
         )
 
     async def status(self, task_id: str) -> AgentTaskRecord:
+        fallback = self._terminal_fallback_records.get(task_id)
+        if fallback is not None:
+            return fallback
         record = await self._storage.get_agent_task(task_id)
         if record is None:
             raise KeyError(f"Agent task not found: {task_id}")
@@ -2523,22 +2527,49 @@ class TaskRuntime:
             )
             terminal_payload["error_class"] = error_class
             terminal_payload["error_message"] = error_message
+        terminal_update: dict[str, Any] = {
+            "status": status,
+            "finished_at": _epoch_time_ms(),
+            "terminal_reason": terminal_reason,
+            "error_class": error_class,
+            "error_message": error_message,
+        }
         try:
-            await self._storage.update_agent_task(
-                task.task_id,
-                status=status,
-                finished_at=_epoch_time_ms(),
-                terminal_reason=terminal_reason,
-                error_class=error_class,
-                error_message=error_message,
-                **await self._terminal_details_update(
+            terminal_update.update(
+                await self._terminal_details_update(
                     task,
                     status=status,
                     terminal_reason=terminal_reason,
                     error_class=error_class,
                     error_message=error_message,
-                ),
+                )
             )
+        except Exception as exc:  # noqa: BLE001 - terminal feedback still matters.
+            log.warning(
+                "task_runtime.terminal_details_failed",
+                task_id=task.task_id,
+                session_key=task.envelope.session_key,
+                error=str(exc),
+            )
+        try:
+            try:
+                await self._storage.update_agent_task(
+                    task.task_id,
+                    **terminal_update,
+                )
+            except Exception as exc:  # noqa: BLE001 - do not strand the UI in running.
+                log.warning(
+                    "task_runtime.terminal_persist_failed",
+                    task_id=task.task_id,
+                    session_key=task.envelope.session_key,
+                    status=status,
+                    error=str(exc),
+                )
+                await self._cache_terminal_fallback_record(
+                    task,
+                    status=status,
+                    terminal_update=terminal_update,
+                )
             payload: dict[str, Any] = {
                 "task_id": task.task_id,
                 "session_key": task.envelope.session_key,
@@ -2860,6 +2891,44 @@ class TaskRuntime:
             if disclosure_required is True:
                 details["runtime_partial_failure_disclosure_required"] = True
         return {"details": details}
+
+    async def _cache_terminal_fallback_record(
+        self,
+        task: _RuntimeTask,
+        *,
+        status: AgentTaskStatus,
+        terminal_update: dict[str, Any],
+    ) -> None:
+        try:
+            existing = await self._storage.get_agent_task(task.task_id)
+        except Exception as exc:  # noqa: BLE001 - fallback must not fail terminalization.
+            log.warning(
+                "task_runtime.terminal_fallback_read_failed",
+                task_id=task.task_id,
+                session_key=task.envelope.session_key,
+                error=str(exc),
+            )
+            existing = None
+        if existing is not None:
+            record = existing.model_copy(deep=True)
+        else:
+            now = _epoch_time_ms()
+            record = AgentTaskRecord(
+                task_id=task.task_id,
+                session_key=task.envelope.session_key,
+                agent_id=task.envelope.agent_id,
+                source_kind=task.envelope.source_kind.value,
+                queue_mode=task.queue_mode,
+                run_kind=task.run_kind,
+                status=status,
+                created_at=now,
+                updated_at=now,
+            )
+        for key, value in terminal_update.items():
+            if hasattr(record, key):
+                setattr(record, key, value)
+        self._terminal_fallback_records[task.task_id] = record
+
 
 def _subagent_group_outcome_from_provenance(
     input_provenance: dict[str, Any],

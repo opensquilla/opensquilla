@@ -869,6 +869,20 @@ async def test_list_dir_host_fallback_distinguishes_unreadable_symlink_target(
 
 
 @pytest.mark.asyncio
+async def test_list_dir_full_host_tolerates_broken_symlink(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    listing = tmp_path / "listing"
+    listing.mkdir()
+    _make_symlink(listing / ".VolumeIcon.icns", listing / "missing.icns")
+
+    with tool_context(workspace, run_mode="full"):
+        output = await fs.list_dir(str(listing))
+
+    assert "[link] .VolumeIcon.icns (broken symlink)" in output
+
+
+@pytest.mark.asyncio
 async def test_workspace_strict_surfaces_glob_and_grep_symlink_escape(
     tmp_path: Path,
 ) -> None:

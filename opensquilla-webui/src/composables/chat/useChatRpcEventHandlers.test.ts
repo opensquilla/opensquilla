@@ -1,13 +1,16 @@
 import { describe, expect, it, vi } from 'vitest'
 import { effectScope, ref } from 'vue'
 import { useChatRpcEventHandlers, type ChatRpcStreamApi } from './useChatRpcEventHandlers'
-import type { ChatMessage } from '@/types/chat'
+import type { ChatMessage, ChatRunStatus, ChatRunStatusSource } from '@/types/chat'
 
 function createHarness(options: {
   messages?: ChatMessage[]
   endStreaming?: (messages: ChatMessage[]) => void
+  sessionRunStatus?: (source: ChatRunStatusSource | null | undefined) => ChatRunStatus
 } = {}) {
   const messages = ref<ChatMessage[]>(options.messages ?? [])
+  const activeTaskGroups = ref(new Set<string>())
+  const applySessionRunState = vi.fn()
   const stream: ChatRpcStreamApi = {
     isStreaming: ref(true),
     streamBubble: ref(true),
@@ -35,7 +38,7 @@ function createHarness(options: {
     sessionKey: ref('agent:main:test'),
     currentEpoch: ref(0),
     lastStreamSeq: ref(0),
-    activeTaskGroups: ref(new Set<string>()),
+    activeTaskGroups,
     activeStreamTaskId: ref(''),
     aborted: ref(false),
     messages,
@@ -52,8 +55,8 @@ function createHarness(options: {
     usageModel: ref(''),
     stream,
     normalizeRunStatus: (status: string) => status,
-    sessionRunStatus: () => ({ status: 'idle', label: 'Idle', task: null }),
-    applySessionRunState: vi.fn(),
+    sessionRunStatus: options.sessionRunStatus || (() => ({ status: 'idle', label: 'Idle', task: null })),
+    applySessionRunState,
     queueRouterDecision: vi.fn(),
     appendEnsembleProgress: vi.fn(),
     markEnsembleHandoff,
@@ -69,8 +72,72 @@ function createHarness(options: {
     loadHistory: vi.fn(),
     loadCurrentSessionUsage: vi.fn(),
   }))!
-  return { api, messages, stream, markEnsembleHandoff, stop: () => scope.stop() }
+  return {
+    api,
+    messages,
+    stream,
+    activeTaskGroups,
+    applySessionRunState,
+    markEnsembleHandoff,
+    stop: () => scope.stop(),
+  }
 }
+
+describe('useChatRpcEventHandlers task group lifecycle', () => {
+  it('keeps an active child group when the yielding parent task ends normally', () => {
+    const { api, activeTaskGroups, applySessionRunState, stop } = createHarness()
+
+    try {
+      api.handlers.onTaskGroupWaiting({
+        session_key: 'agent:main:test',
+        stream_seq: 1,
+        group_id: 'group-live',
+      })
+      api.handlers.onSessionsChanged({
+        session_key: 'agent:main:test',
+        reason: 'task_terminal',
+        run_status: 'idle',
+        last_task: { status: 'succeeded' },
+      })
+
+      expect([...activeTaskGroups.value]).toEqual(['group-live'])
+      expect(applySessionRunState).toHaveBeenLastCalledWith(expect.objectContaining({
+        run_status: 'running',
+      }))
+    } finally {
+      stop()
+    }
+  })
+
+  it('clears active child groups when the parent session is explicitly cancelled', () => {
+    const { api, activeTaskGroups, stream, stop } = createHarness({
+      sessionRunStatus: source => ({
+        status: source?.run_status === 'cancelled' ? 'cancelled' : 'idle',
+        label: '',
+        task: null,
+      }),
+    })
+
+    try {
+      api.handlers.onTaskGroupWaiting({
+        session_key: 'agent:main:test',
+        stream_seq: 1,
+        group_id: 'group-live',
+      })
+      api.handlers.onSessionsChanged({
+        session_key: 'agent:main:test',
+        reason: 'task_terminal',
+        run_status: 'cancelled',
+        last_task: { status: 'cancelled' },
+      })
+
+      expect(activeTaskGroups.value.size).toBe(0)
+      expect(stream.endStreaming).toHaveBeenCalled()
+    } finally {
+      stop()
+    }
+  })
+})
 
 describe('useChatRpcEventHandlers done usage attachment', () => {
   it('distinguishes authoritative snapshots from legacy text fallback', () => {

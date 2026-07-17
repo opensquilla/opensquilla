@@ -9,10 +9,14 @@ Covers four gates:
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import pytest
 
+from opensquilla.gateway.routing import tool_context_from_envelope
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.builtin import sessions as sessions_tool
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -59,6 +63,24 @@ class _StubSessionManager:
     async def get_current_session(self):
         return None
 
+    async def get_session(self, session_key: str):
+        return SimpleSession(
+            session_key=session_key,
+            session_id="session-stub",
+            status="running",
+            model="model-stub",
+            model_provider="provider-stub",
+            input_tokens=3,
+            output_tokens=4,
+            cache_read=5,
+            cache_write=6,
+            compaction_count=1,
+            context_tokens=10,
+            spawn_depth=0,
+            started_at=100,
+            runtime_ms=200,
+        )
+
     async def list_sessions(self, agent_id=None, status=None, limit=100, offset=0):
         # Return ``self._active_children`` rows that look like running children
         # of ``agent:caller:main``.
@@ -90,6 +112,25 @@ class _StubTaskRuntime:
         return _Handle()
 
 
+@dataclass
+class SimpleSession:
+    session_key: str
+    session_id: str
+    status: str
+    model: str
+    model_provider: str
+    input_tokens: int
+    output_tokens: int
+    cache_read: int
+    cache_write: int
+    compaction_count: int
+    context_tokens: int
+    spawn_depth: int
+    started_at: int
+    runtime_ms: int
+    estimated_cost_usd: float = 0.0
+
+
 def _ctx(session_key: str = "agent:caller:main", agent_id: str = "caller") -> ToolContext:
     return ToolContext(
         is_owner=True,
@@ -99,6 +140,36 @@ def _ctx(session_key: str = "agent:caller:main", agent_id: str = "caller") -> To
         session_key=session_key,
         task_id="task-parent",
     )
+
+
+@pytest.mark.asyncio
+async def test_sessions_yield_does_not_end_turn_without_current_task_subagents() -> None:
+    class _NoChildrenSessionManager:
+        async def list_sessions(
+            self,
+            *,
+            spawned_by: str | None = None,
+            limit: int = 100,
+            offset: int = 0,
+        ) -> list[dict]:
+            assert spawned_by == "agent:caller:main"
+            return []
+
+    sessions_tool.set_session_manager(_NoChildrenSessionManager())
+    token = current_tool_context.set(_ctx())
+    try:
+        payload = json.loads(await sessions_tool.sessions_yield())
+    finally:
+        current_tool_context.reset(token)
+
+    assert payload == {
+        "status": "no_pending_subagents",
+        "waited": False,
+        "message": (
+            "No subagents were spawned by the current task. Continue the current turn; "
+            "do not wait for a previous task's subagents."
+        ),
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -135,6 +206,61 @@ async def test_allow_agents_unset_permits_cross_agent_spawn() -> None:
         current_tool_context.reset(token)
 
     assert len(rt.enqueued) == 1
+
+
+@pytest.mark.asyncio
+async def test_sessions_spawn_propagates_owner_full_host_context_to_child() -> None:
+    mgr = _StubSessionManager(
+        {
+            "caller": {"id": "caller", "enabled": True},
+            "worker": {"id": "worker", "enabled": True},
+        }
+    )
+    rt = _StubTaskRuntime()
+    sessions_tool.set_session_manager(mgr)
+    sessions_tool.set_task_runtime(rt)
+    parent_ctx = _ctx()
+    parent_ctx.run_mode = "full"
+    parent_ctx.elevated = "full"
+    parent_ctx.sandbox_run_context = RunContext(
+        run_mode=RunMode.FULL,
+        workspace="/tmp/opensquilla-workspace",
+    )
+
+    token = current_tool_context.set(parent_ctx)
+    try:
+        await sessions_tool.sessions_spawn(agent_id="worker", task="hi")
+    finally:
+        current_tool_context.reset(token)
+
+    envelope = rt.enqueued[0]["envelope"]
+    child_ctx = tool_context_from_envelope(envelope, is_owner=True)
+    assert envelope.metadata["principal_is_owner"] is True
+    assert envelope.metadata["run_mode"] == "full"
+    assert envelope.metadata["elevated"] == "full"
+    assert envelope.metadata["sandbox_run_context"]["run_mode"] == "full"
+    assert child_ctx.run_mode == "full"
+    assert child_ctx.elevated == "full"
+    assert child_ctx.sandbox_run_context is not None
+    assert child_ctx.sandbox_run_context.run_mode is RunMode.FULL
+
+
+@pytest.mark.asyncio
+async def test_session_status_falls_back_to_context_session_key() -> None:
+    mgr = _StubSessionManager({"caller": {"id": "caller", "enabled": True}})
+    sessions_tool.set_session_manager(mgr)
+    ctx = _ctx(session_key="agent:caller:webchat:status")
+
+    token = current_tool_context.set(ctx)
+    try:
+        payload = await sessions_tool.session_status()
+    finally:
+        current_tool_context.reset(token)
+
+    data = json.loads(payload)
+    assert data["session_key"] == "agent:caller:webchat:status"
+    assert data["total_tokens"] == 7
+    assert data["cache_read"] == 5
 
 
 @pytest.mark.asyncio

@@ -696,6 +696,37 @@ def _strip_context_summary_marker(content: str) -> str:
     return content
 
 
+def _subagent_terminal_history_notice(entry: Any) -> str | None:
+    """Render trusted non-success subagent completions for the next model turn."""
+    if getattr(entry, "role", None) != "system":
+        return None
+    if getattr(entry, "provenance_kind", None) != "internal_system":
+        return None
+    if getattr(entry, "provenance_source_tool", None) != "subagent_completion":
+        return None
+    content = getattr(entry, "content", None)
+    if not isinstance(content, str) or not content:
+        return None
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "subagent_completion":
+        return None
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"cancelled", "failed", "timeout", "abandoned"}:
+        return None
+    child_session_key = str(payload.get("child_session_key") or "unknown")[:200]
+    terminal_reason = str(payload.get("terminal_reason") or status)[:120]
+    return (
+        "[Trusted runtime status] "
+        f'Subagent {child_session_key} finished with status "{status}" '
+        f'(reason: "{terminal_reason}"). It is no longer running. '
+        "Do not wait for it or call sessions_yield for it. Continue from this terminal "
+        "state unless the user asks to start a replacement subagent."
+    )
+
+
 def _format_compaction_summary_context(summary_texts: list[str]) -> str | None:
     """Render durable summaries as request-scoped context, newest context preserved."""
     deduped: list[str] = []
@@ -7204,6 +7235,7 @@ class TurnRunner:
 
         history: list[Message] = []
         summary_markers: list[str] = []
+        subagent_terminal_notices: list[str] = []
         emergency_override = getattr(self, "_emergency_compaction_overrides", {}).pop(
             session_key,
             None,
@@ -7314,6 +7346,11 @@ class TurnRunner:
             ):
                 summary_markers.append(_strip_context_summary_marker(entry.content))
                 continue
+            subagent_notice = _subagent_terminal_history_notice(entry)
+            if subagent_notice is not None:
+                subagent_terminal_notices.append(subagent_notice)
+                last_entry_was_user = False
+                continue
             if entry.role not in ("user", "assistant"):
                 continue
             raw_content = entry.content or ""
@@ -7356,6 +7393,10 @@ class TurnRunner:
             and history[-1].role == "user"
         ):
             history.pop()
+        history.extend(
+            Message(role="assistant", content=notice)
+            for notice in dict.fromkeys(subagent_terminal_notices)
+        )
         context_states = await self._load_context_states(session_key)
         provider = getattr(agent, "provider", None)
         provider_context = build_provider_compaction_context(

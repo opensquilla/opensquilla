@@ -186,8 +186,6 @@ async def test_parent_wake_waits_out_of_band_and_delivers_final_channel_text() -
 
 @pytest.mark.asyncio
 async def test_parent_wake_preserves_captured_full_host_envelope_after_parent_finishes() -> None:
-    from opensquilla.gateway.routing import RouteEnvelope, SourceKind
-
     runtime = _TaskRuntime()
     envelope = RouteEnvelope(
         source_kind=SourceKind.WEB,
@@ -228,6 +226,38 @@ async def test_parent_wake_preserves_captured_full_host_envelope_after_parent_fi
 
     runtime.synthesis_released.set()
     await manager.drain(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_blocks_late_subagent_parent_wake() -> None:
+    runtime = _TaskRuntime()
+    manager = BackgroundCompletionManager(
+        session_manager=_SessionManager(parent=SimpleNamespace(last_channel=None, last_to=None)),
+    )
+
+    await manager.emit_waiting(
+        parent_session_key=PARENT,
+        parent_task_id=PARENT_TASK,
+        pending_count=1,
+    )
+    assert await manager.active_group_ids(PARENT) == [
+        f"subagent:{PARENT}:{PARENT_TASK}"
+    ]
+    cancelled = await manager.cancel_session(PARENT)
+    await manager.send_parent_wake(
+        parent_session_key=PARENT,
+        parent_task_id=PARENT_TASK,
+        payloads=[{"child_session_key": "child"}],
+        task_runtime=runtime,
+        message="wake",
+        provenance={"kind": "internal_system"},
+    )
+    runtime.parent_released.set()
+    await asyncio.sleep(0)
+
+    assert cancelled == 1
+    assert await manager.active_group_ids(PARENT) == []
+    assert runtime.sent == []
 
 
 @pytest.mark.asyncio

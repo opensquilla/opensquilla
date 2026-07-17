@@ -547,7 +547,8 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
         "source": raw_params.get("source") or "webui_abort",
     }
     task_id = raw_params.get("taskId") or raw_params.get("task_id")
-    if isinstance(task_id, str) and task_id.strip():
+    source = str(abort_params["source"])
+    if source != "webui_stop" and isinstance(task_id, str) and task_id.strip():
         abort_params["task_id"] = task_id.strip()
     result = await _handle_sessions_abort(
         abort_params,

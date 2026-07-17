@@ -83,6 +83,15 @@ def _required_string(payload: dict[str, Any], key: str) -> str:
     return value
 
 
+def _required_paths(payload: dict[str, Any], key: str) -> tuple[Path, ...]:
+    values = payload.get(key)
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"filesystem operation missing {key}")
+    if not all(isinstance(value, str) and value for value in values):
+        raise ValueError(f"filesystem operation {key} must contain paths")
+    return tuple(Path(value).resolve(strict=False) for value in values)
+
+
 def _optional_positive_int(payload: dict[str, Any], key: str) -> int | None:
     value = payload.get(key)
     if value is None:
@@ -230,8 +239,13 @@ def _apply_patch(payload: dict[str, Any]) -> dict[str, object]:
 
     patch = _required_string(payload, "patch")
     root = _required_path(payload, "root")
+    authorized_paths = _required_paths(payload, "paths")
     ops = patch_tool._parse_patch(patch)
-    added, modified, deleted, _planned = patch_tool._apply_ops(ops, root)
+    added, modified, deleted, _planned = patch_tool._apply_ops(
+        ops,
+        root,
+        authorized_paths=authorized_paths,
+    )
     return {
         "message": _patch_summary(added=added, modified=modified, deleted=deleted),
         "created": added > 0,

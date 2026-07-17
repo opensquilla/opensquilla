@@ -424,6 +424,7 @@
       :busy-send-mode="busySendMode"
       :has-send-content="hasSendContent"
       :is-streaming="isStreaming"
+      :can-stop="canStop"
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
@@ -781,7 +782,6 @@ const {
   appendInterruptFrame,
   ensureInterruptBubble,
 } = chatStream
-
 const chatAttachments = useChatAttachments()
 const {
   pendingAttachments,
@@ -1094,16 +1094,25 @@ const chatSessionSubscription = useChatSessionSubscription({
   isStreaming,
   hasActiveInterrupt: computed(() =>
     Array.from(interruptState.value.values()).some(state => !state.resolution)),
+  activeStreamTaskId,
+  activeTaskGroups,
   sessionRunStatus,
+  startStreaming,
   loadHistory,
   resetStreamIdleTimer,
   resetStreamLiveTurnState,
 })
 const {
+  isHydrating: isSessionHydrating,
   subscribeSession,
   unsubscribeSession,
 } = chatSessionSubscription
 applySessionRunState = chatSessionSubscription.applySessionRunState
+const canStop = computed(() => !isSessionHydrating.value && (
+  isStreaming.value
+  || activeTaskGroups.value.size > 0
+  || ['queued', 'running', 'approval_pending'].includes(runStatus.value.status)
+))
 
 const chatSessionRuntime = useChatSessionRuntime({
   sessionKey,
@@ -1202,6 +1211,7 @@ const chatSend = useChatSend({
   activeStreamSessionKey,
   autoScroll,
   stream: chatStream,
+  canStop: () => canStop.value,
   normalizeElevatedMode,
   persistSession,
   scheduleHistorySync,
@@ -2002,7 +2012,7 @@ function onDocumentKeydown(e: KeyboardEvent) {
     return
   }
 
-  if (isStreaming.value) {
+  if (canStop.value) {
     e.preventDefault()
     onStop()
     return

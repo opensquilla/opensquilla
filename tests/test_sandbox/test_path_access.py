@@ -1041,24 +1041,6 @@ def test_trusted_sandbox_system_write_path_does_not_auto_grant(
     assert get_approval_queue().list_pending("exec") == []
 
 
-def test_trusted_sandbox_system_write_path_does_not_auto_grant(
-    tmp_path: Path,
-) -> None:
-    workspace = tmp_path / "workspace"
-    workspace.mkdir(exist_ok=True)
-    target = Path("/usr/local/bin/opensquilla-system-write-probe")
-
-    with tool_context(workspace, run_mode="trusted") as ctx:
-        payload = fs._sandbox_path_access_envelope(target, write=True)
-
-    assert payload is not None
-    assert payload["status"] == "approval_required"
-    assert payload["path"] == str(target.resolve(strict=False))
-    assert payload["access"] == "rw"
-    assert ctx.sandbox_mounts == []
-    assert get_approval_queue().list_pending("exec")
-
-
 @pytest.mark.asyncio
 async def test_existing_rw_mount_allows_write_file_without_legacy_approval(
     tmp_path: Path,

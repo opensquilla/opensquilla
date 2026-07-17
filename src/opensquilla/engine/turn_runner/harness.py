@@ -12,6 +12,7 @@ the stage boundaries are ready to sequence.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -52,6 +53,7 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
 )
 from opensquilla.engine.turn_runner.provider_and_tools_stage import (
     ProviderResolverPort,
+    SkillCatalogResolverPort,
     ToolBuilderPort,
 )
 from opensquilla.engine.turn_runner.stream_consumer_stage import (
@@ -129,6 +131,17 @@ class _TurnRunnerProviderResolverAdapter(ProviderResolverPort):
     def resolve_provider(self) -> tuple[Any | None, Any | None]:
         return self._runner._resolve_provider()
 
+
+class _TurnRunnerSkillCatalogResolverAdapter(SkillCatalogResolverPort):
+    """Refresh and pin one immutable skill catalog for the turn."""
+
+    def __init__(self, runner: TurnRunner) -> None:
+        self._runner = runner
+
+    async def resolve_skill_catalog(self) -> Any | None:
+        return await asyncio.to_thread(self._runner._resolve_skill_catalog)
+
+
 class _TurnRunnerToolBuilderAdapter(ToolBuilderPort):
     """Bind ``TurnRunner._build_tools`` and the two ``ToolContext`` mutators.
 
@@ -158,6 +171,23 @@ class _TurnRunnerToolBuilderAdapter(ToolBuilderPort):
         metadata: dict[str, Any] | None = None,
     ) -> tuple[list[Any], ToolHandler | None]:
         return self._runner._build_tools(ctx, metadata=metadata)
+
+    def build_tools_for_catalog(
+        self,
+        ctx: ToolContext | None,
+        *,
+        skill_catalog: Any | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[list[Any], ToolHandler | None]:
+        if skill_catalog is None or "skill_catalog" not in inspect.signature(
+            self._runner._build_tools
+        ).parameters:
+            return self._runner._build_tools(ctx, metadata=metadata)
+        return self._runner._build_tools(
+            ctx,
+            metadata=metadata,
+            skill_catalog=skill_catalog,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +253,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             "tool_context": request.tool_context,
             "normalization_metadata": request.normalization_metadata,
             "input_provenance": request.input_provenance,
+            "skill_catalog": request.skill_catalog,
         }
         accepted_kwargs = {
             name: value

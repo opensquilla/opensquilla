@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 
@@ -168,3 +169,49 @@ def test_cli_gateway_catalog_exposes_strategy_and_hides_compatibility_entries() 
 
     standalone = asyncio.run(_list_for_surface("cli_standalone"))
     assert "/strategy" not in {cmd["name"] for cmd in standalone["commands"]}
+
+
+def test_dynamic_meta_choices_refresh_once_then_use_one_snapshot() -> None:
+    class _Loader:
+        def __init__(self) -> None:
+            self.refresh_calls: list[str] = []
+            self._snapshot = SimpleNamespace(
+                skills=(
+                    SimpleNamespace(
+                        name="fresh-meta",
+                        description="Fresh command choice",
+                        kind="meta",
+                        disable_model_invocation=False,
+                    ),
+                )
+            )
+
+        def refresh_if_changed(self, reason: str):
+            self.refresh_calls.append(reason)
+
+        def snapshot(self):
+            return self._snapshot
+
+        def load_all(self):
+            raise AssertionError("the command catalog must use its pinned snapshot")
+
+    loader = _Loader()
+
+    async def _dispatch() -> dict:
+        result = await get_dispatcher().dispatch(
+            "r-command-refresh",
+            "commands.list_for_surface",
+            {"surface": "web"},
+            RpcContext(conn_id="test", skill_loader=loader),
+        )
+        assert result.error is None, result.error
+        assert result.payload is not None
+        return result.payload
+
+    payload = asyncio.run(_dispatch())
+    meta = next(cmd for cmd in payload["commands"] if cmd["name"] == "/meta")
+
+    assert loader.refresh_calls == ["rpc:commands.list_for_surface"]
+    assert meta["argument_choices"] == [
+        {"value": "fresh-meta", "description": "Fresh command choice"}
+    ]

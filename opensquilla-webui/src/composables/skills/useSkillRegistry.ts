@@ -35,7 +35,7 @@ export interface SkillRegistry {
 
 export function useSkillRegistry(
   rpc: ReturnType<typeof useRpcStore>,
-  loadData: () => Promise<void>,
+  loadData: () => Promise<boolean>,
 ): SkillRegistry {
   const { pushToast } = useToasts()
   const t = i18n.global.t
@@ -90,7 +90,9 @@ export function useSkillRegistry(
       const res = await rpc.call<InstallResult>('skills.install', { identifier, source })
       if (res.success) {
         markRegistryResultInstalled(identifier, source, res.name)
-        await loadData()
+        if (!(await loadData())) {
+          pushToast(t('cronSkills.skillsView.reloadListFailed'), { tone: 'warn' })
+        }
       } else {
         pushToast(res.message || t('cronSkills.registry.installFailed'), { tone: 'danger' })
       }
@@ -110,7 +112,9 @@ export function useSkillRegistry(
         pushToast(res.message || t('cronSkills.registry.installed'), { tone: 'ok' })
         const still = res.missing_still || {}
         const stillMissing = (still.bins || []).length + (still.env || []).length
-        await loadData()
+        if (!(await loadData())) {
+          pushToast(t('cronSkills.skillsView.reloadListFailed'), { tone: 'warn' })
+        }
         return stillMissing === 0
       }
       pushToast(res.message || t('cronSkills.registry.installFailed'), { tone: 'danger' })
@@ -128,7 +132,9 @@ export function useSkillRegistry(
     try {
       const res = await rpc.call<InstallResult>('skills.uninstall', { name })
       if (res.success) {
-        await loadData()
+        if (!(await loadData())) {
+          pushToast(t('cronSkills.skillsView.reloadListFailed'), { tone: 'warn' })
+        }
         return true
       }
       pushToast(res.message || t('cronSkills.registry.uninstallFailed'), { tone: 'danger' })

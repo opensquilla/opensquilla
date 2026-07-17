@@ -101,6 +101,10 @@ class ToolContext:
     router_control_hold_store: Any | None = None
     router_control_replay_depth: int = 0
     router_control_turn_hold_applied: bool = False
+    # Read-only SkillCatalogSnapshot pinned at the start of this turn. Skill
+    # tools consult it so a concurrent catalog publish cannot change the
+    # definitions visible halfway through a tool loop.
+    skill_catalog: Any | None = None
     # Armed by the engine (mutated in place, same pattern as
     # router_control_turn_hold_applied) once the endgame git freeze margin is
     # reached; shell tools then block workspace-reverting git commands.

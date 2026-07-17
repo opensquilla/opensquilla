@@ -24,7 +24,7 @@ export interface SkillsCatalog {
   installedEmpty: ComputedRef<boolean>
   emptyMessage: ComputedRef<string>
   statTiles: ComputedRef<SkillStatTile[]>
-  loadData: () => Promise<void>
+  loadData: () => Promise<boolean>
   setStatusFilter: (key: string) => void
 }
 
@@ -173,14 +173,16 @@ export function useSkillsCatalog(
     try {
       await rpc.waitForConnection()
     } catch {
-      return
+      return false
     }
     try {
       const data = await rpc.call<SkillsListData>('skills.list')
       allSkills.value = data.skills || []
       await options.loadProposals()
+      return true
     } catch (err) {
       console.warn('Failed to load skills:', (err as Error).message)
+      return false
     }
   }
 

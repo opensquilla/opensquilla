@@ -144,6 +144,7 @@ from opensquilla.engine.turn_runner.harness import (
     _TurnRunnerRouterContextAdapter,
     _TurnRunnerSessionIdResolverAdapter,
     _TurnRunnerSessionTotalsAdapter,
+    _TurnRunnerSkillCatalogResolverAdapter,
     _TurnRunnerSystemPromptRefreshAdapter,
     _TurnRunnerT3UpgradeCompactionAdapter,
     _TurnRunnerTimeoutBudgetAdapter,
@@ -2366,6 +2367,7 @@ class TurnRunner:
         self._provider_and_tools_stage = ProviderAndToolsStage(
             provider_resolver=_TurnRunnerProviderResolverAdapter(self),
             tool_builder=_TurnRunnerToolBuilderAdapter(self),
+            skill_catalog_resolver=_TurnRunnerSkillCatalogResolverAdapter(self),
         )
         # TurnRunner stage decomposition PromptAssemblerStage instance. Holds no
         # per-turn state. Active unconditionally as of.
@@ -3019,6 +3021,7 @@ class TurnRunner:
             tool_handler = pt_out.tool_handler
             tool_context = pt_out.effective_tool_context
             tool_metadata = pt_out.tool_metadata
+            skill_catalog = pt_out.skill_catalog
 
             pa_outcome = await self._prompt_assembler_stage.run(
                 PromptAssemblerStageInput(
@@ -3049,6 +3052,7 @@ class TurnRunner:
                     ingress_pipeline_steps=ingress_pipeline_steps,
                     normalization_metadata=normalization_metadata,
                     input_provenance=input_provenance,
+                    skill_catalog=skill_catalog,
                 )
             )
             pa_out = pa_outcome.require_output()
@@ -4387,10 +4391,35 @@ class TurnRunner:
             return float(gw_timeout)
         return _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
 
+    def _resolve_skill_catalog(self) -> Any | None:
+        """Refresh and return the immutable catalog pinned to this turn.
+
+        Legacy/custom loaders that only expose ``load_all`` remain supported;
+        in that case ``_build_tools`` and the pipeline keep their compatibility
+        fallback instead of manufacturing a mutable pseudo-snapshot.
+        """
+        loader = self._skill_loader
+        if loader is None:
+            return None
+        refresh = getattr(loader, "refresh_if_changed", None)
+        snapshot = getattr(loader, "snapshot", None)
+        if not callable(refresh) or not callable(snapshot):
+            return None
+        try:
+            refresh(reason="turn")
+        except Exception as exc:  # noqa: BLE001 - preserve last-known-good catalog
+            log.warning("skills.catalog.turn_refresh_failed", error=str(exc))
+        try:
+            return snapshot()
+        except Exception as exc:  # noqa: BLE001 - legacy fail-open behavior
+            log.warning("skills.catalog.turn_snapshot_failed", error=str(exc))
+            return None
+
     def _build_tools(
         self,
         ctx: ToolContext | None = None,
         metadata: dict[str, Any] | None = None,
+        skill_catalog: Any | None = None,
     ) -> tuple[list, ToolHandler | None]:
         """Build tool definitions and handler from registry, filtered by ToolContext."""
         if self._tool_registry is None:
@@ -4404,7 +4433,9 @@ class TurnRunner:
         from opensquilla.tools.registry import filter_by_profile, resolve_profile
 
         loaded_skills: list[Any] = []
-        if self._skill_loader is not None:
+        if skill_catalog is not None:
+            loaded_skills = list(getattr(skill_catalog, "skills", ()))
+        elif self._skill_loader is not None:
             try:
                 loaded_skills = list(self._skill_loader.load_all())
             except Exception:
@@ -4425,6 +4456,10 @@ class TurnRunner:
                 ctx.denied_tools.add("meta_invoke")
         if metadata is not None:
             metadata["meta_skill_enabled"] = meta_skill_enabled
+            if skill_catalog is not None:
+                metadata["skill_catalog_generation"] = int(
+                    getattr(skill_catalog, "generation", 0)
+                )
 
         if ctx is not None:
             caller_ctx = ctx
@@ -5078,6 +5113,7 @@ class TurnRunner:
         tool_context: ToolContext | None = None,
         normalization_metadata: dict[str, Any] | None = None,
         input_provenance: dict[str, Any] | None = None,
+        skill_catalog: Any | None = None,
     ) -> tuple[Any, Any]:
         """Run the pre-turn pipeline and re-resolve provider if model changed.
 
@@ -5152,8 +5188,17 @@ class TurnRunner:
         _bounded_apply_squilla_router.__name__ = "apply_squilla_router"
 
         gate_chat, gate_model = self._make_vision_followup_gate_chat(cloned_selector)
+        agent_skill_loader = self._skill_loader
+        if skill_catalog is not None and self._skill_loader is not None:
+            from opensquilla.skills.loader import PinnedSkillLoader
+
+            agent_skill_loader = PinnedSkillLoader(skill_catalog, self._skill_loader)
         initial_metadata: dict[str, Any] = {
-            "skill_loader": self._skill_loader,
+            # Agent-side skill_view coercion, meta execution, and child
+            # orchestrators must resolve against the same generation used for
+            # prompt/tool selection. The pinned loader view preserves configured
+            # roots while keeping every catalog read free of filesystem probes.
+            "skill_loader": agent_skill_loader,
             "meta_run_writer": getattr(self, "_meta_run_writer", None),
             # PR9+: meta_resolution's awaiting branch calls this first when
             # the SKILL.md has ``nl_extract: true``. None keeps clarify reply
@@ -5183,6 +5228,10 @@ class TurnRunner:
                 )
             ),
         }
+        if skill_catalog is not None:
+            initial_metadata["skill_catalog_generation"] = int(
+                getattr(skill_catalog, "generation", 0)
+            )
         if gate_chat is not None:
             initial_metadata["router_vision_followup_gate_chat"] = gate_chat
         if gate_model:
@@ -5275,6 +5324,7 @@ class TurnRunner:
             attachments=attachments,
             metadata=initial_metadata,
             raw_message=semantic_message,
+            skill_catalog=skill_catalog,
         )
         turn = await run_pipeline(
             turn,

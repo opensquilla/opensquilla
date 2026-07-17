@@ -11,6 +11,7 @@ from opensquilla.engine.steps.skills_filter import filter_skills
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.skills.eligibility import EligibilityContext
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.types import SkillLayer, SkillSpec
 
 ROOT = Path(__file__).resolve().parents[1]
 BUNDLED = ROOT / "src" / "opensquilla" / "skills" / "bundled"
@@ -245,6 +246,29 @@ async def test_coding_mode_on_surfaces_code_task(
 
     prompt = ctx.system_prompt[1]
     assert "<name>code-task</name>" in prompt
+
+
+@pytest.mark.asyncio
+async def test_pinned_catalog_avoids_reloading_during_skill_injection() -> None:
+    spec = SkillSpec(
+        name="catalog-pinned",
+        description="Pinned catalog skill",
+        layer=SkillLayer.MANAGED,
+        always=True,
+        triggers=["pinned"],
+        content="Use the pinned catalog.",
+    )
+
+    class _FailingLoader:
+        def load_all(self):
+            raise AssertionError("loader must not be read after the turn snapshot is pinned")
+
+    ctx = _ctx(_FailingLoader())  # type: ignore[arg-type]
+    ctx.skill_catalog = SimpleNamespace(skills=(spec,), generation=7)
+
+    out = await filter_skills(ctx)
+
+    assert "<name>catalog-pinned</name>" in out.system_prompt[1]
 
 
 @pytest.mark.asyncio

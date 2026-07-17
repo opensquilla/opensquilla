@@ -62,6 +62,7 @@ from opensquilla.engine.turn_runner.provider_and_tools_stage import (
     ProviderAndToolsStageInput,
     ProviderAndToolsStageOutput,
     ProviderResolverPort,
+    SkillCatalogResolverPort,
     ToolBuilderPort,
 )
 from opensquilla.engine.turn_runner.stream_consumer_stage import (
@@ -124,6 +125,7 @@ __all__ = [
     "ProviderAndToolsStageInput",
     "ProviderAndToolsStageOutput",
     "ProviderResolverPort",
+    "SkillCatalogResolverPort",
     "RequestContextPrependPort",
     "RouterContextPort",
     "RunPipelineRequest",

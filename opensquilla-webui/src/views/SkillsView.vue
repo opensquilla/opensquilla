@@ -18,9 +18,17 @@
             autocomplete="off"
           />
         </div>
-        <button class="btn btn--ghost" :title="t('cronSkills.skillsView.refresh')" @click="loadData">
+        <button
+          class="btn btn--ghost"
+          data-testid="skills-reload"
+          type="button"
+          :disabled="reloading"
+          :aria-busy="reloading"
+          :title="t('cronSkills.skillsView.reload')"
+          @click="manualReload"
+        >
           <Icon name="refresh" :size="16" />
-          <span>{{ t('cronSkills.skillsView.refresh') }}</span>
+          <span>{{ reloading ? t('cronSkills.skillsView.refreshing') : t('cronSkills.skillsView.reload') }}</span>
         </button>
       </div>
     </header>
@@ -203,21 +211,42 @@ import SkillsStats from '@/components/skills/SkillsStats.vue'
 import { useSkillProposals } from '@/composables/skills/useSkillProposals'
 import { useSkillRegistry } from '@/composables/skills/useSkillRegistry'
 import { skillLayerHelp, skillLayerLabel, useSkillsCatalog } from '@/composables/skills/useSkillsCatalog'
+import { useToasts } from '@/composables/useToasts'
 import { useRpcStore } from '@/stores/rpc'
 import type { Proposal, Skill } from '@/types/skills'
 
+interface SkillReloadError {
+  name?: string
+  path?: string
+  message?: string
+  kept_previous?: boolean
+}
+
+interface SkillReloadResult {
+  success: boolean
+  changed: boolean
+  partial: boolean
+  generation: number
+  added?: string[]
+  removed?: string[]
+  modified?: string[]
+  errors?: SkillReloadError[]
+}
+
 const { t } = useI18n()
+const { pushToast } = useToasts()
 const rpc = useRpcStore()
 const activeTab = ref('installed')
+const reloading = ref(false)
 const selectedSkill = ref<Skill | null>(null)
 const selectedProposal = ref<Proposal | null>(null)
 const selectedSkillLoading = ref(false)
 const selectedSkillError = ref('')
 const proposalsPanelRef = ref<InstanceType<typeof PendingSkillProposals> | null>(null)
 
-let loadData: () => Promise<void>
+let loadData: () => Promise<boolean>
 
-const proposalsModel = useSkillProposals(rpc, async () => loadData())
+const proposalsModel = useSkillProposals(rpc, async () => { await loadData() })
 const {
   proposals,
   autoEnabledSkills,
@@ -251,6 +280,55 @@ const {
 } = catalog
 
 loadData = catalog.loadData
+
+function reloadSummary(result: SkillReloadResult): string {
+  return t('cronSkills.skillsView.reloadSummary', {
+    added: result.added?.length || 0,
+    removed: result.removed?.length || 0,
+    modified: result.modified?.length || 0,
+  })
+}
+
+async function manualReload() {
+  if (reloading.value) return
+  reloading.value = true
+  try {
+    await rpc.waitForConnection()
+    const result = await rpc.call<SkillReloadResult>('skills.reload')
+    // Always redraw from the catalog the Gateway is actually serving. On a
+    // failed publish this is the prior last-known-good generation.
+    const listed = await loadData()
+    if (listed === false) {
+      throw new Error(t('cronSkills.skillsView.reloadListFailed'))
+    }
+
+    if (!result.success) {
+      const error = result.errors?.[0]?.message || t('cronSkills.skillsView.reloadUnknownError')
+      pushToast(t('cronSkills.skillsView.reloadFailed', { error }), { tone: 'danger' })
+    } else if (result.partial) {
+      pushToast(t('cronSkills.skillsView.reloadPartial', {
+        generation: result.generation,
+        summary: reloadSummary(result),
+        errors: result.errors?.length || 0,
+      }), { tone: 'warn' })
+    } else if (!result.changed) {
+      pushToast(t('cronSkills.skillsView.reloadNoChanges', {
+        generation: result.generation,
+      }))
+    } else {
+      pushToast(t('cronSkills.skillsView.reloadSuccess', {
+        generation: result.generation,
+        summary: reloadSummary(result),
+      }), { tone: 'ok' })
+    }
+  } catch (err) {
+    pushToast(t('cronSkills.skillsView.reloadFailed', {
+      error: (err as Error).message,
+    }), { tone: 'danger' })
+  } finally {
+    reloading.value = false
+  }
+}
 
 const registry = useSkillRegistry(rpc, loadData)
 const {

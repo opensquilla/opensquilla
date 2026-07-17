@@ -74,6 +74,7 @@ class RunPipelineRequest:
     tool_context: ToolContext | None = None
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
+    skill_catalog: Any | None = None
 
 # ---------------------------------------------------------------------------
 # Ports — narrow Protocols so the stage is unit-testable without the full
@@ -240,6 +241,7 @@ class PromptAssemblerStageInput:
     ingress_pipeline_steps: list[PipelineStepRecord] | None = None
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
+    skill_catalog: Any | None = None
 
 @dataclass(frozen=True)
 class PromptAssemblerStageOutput:
@@ -432,6 +434,7 @@ class PromptAssemblerStage:
             tool_context=inp.effective_tool_context,
             normalization_metadata=inp.normalization_metadata,
             input_provenance=inp.input_provenance,
+            skill_catalog=inp.skill_catalog,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
 

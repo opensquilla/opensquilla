@@ -245,6 +245,7 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.install": ADMIN_SCOPE,
     "skills.update": ADMIN_SCOPE,
     "skills.uninstall": ADMIN_SCOPE,
+    "skills.reload": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
     "meta.runs.show": ADMIN_SCOPE,
     "meta.runs.draft": ADMIN_SCOPE,

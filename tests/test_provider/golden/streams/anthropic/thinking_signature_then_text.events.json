@@ -18,7 +18,7 @@
     "cost_source": "none",
     "ensemble_trace": null,
     "input_tokens": 15,
-    "model": "claude-test",
+    "model": "claude-test-1",
     "model_usage_breakdown": [],
     "output_tokens": 9,
     "provider": "anthropic",

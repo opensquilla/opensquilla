@@ -14,6 +14,18 @@ These lock the chat() protocol invariants (provider/protocol.py):
 - Text-to-tool-call synthesis only runs for provider kinds that leak the
   MiniMax text protocol (minimax, openrouter), never for e.g. plain openai.
 - A non-UTF-8 HTTP error body from Ollama yields an ErrorEvent, not a crash.
+- ``DoneEvent.model`` names the model the response reported, degrading to the
+  configured id when the upstream omits it. Its default of ``""``
+  (``provider/types.py``) makes an omission silent rather than loud, which is
+  why Anthropic and Ollama assert it here; the OpenAI family already reported
+  it and is covered by the stream goldens.
+
+  This field is *response space*: a dated snapshot such as
+  ``claude-sonnet-4-5-20250929``, which no registry entry joins against. It is
+  forensics — it answers "what actually ran", and feeds ``usage.model``.
+  Feedback attribution deliberately keys on a different field, the configured
+  id at ``final_request.execution.model``; see ``_final_request_model`` in
+  ``engine/steps/router_decision_record.py``.
 """
 
 from __future__ import annotations
@@ -456,3 +468,77 @@ def test_ollama_non_utf8_error_body_yields_error_event(monkeypatch: Any) -> None
     assert len(errors) == 1
     assert errors[0].code == "500"
     assert "boom" in errors[0].message
+
+
+# ---------------------------------------------------------------------------
+# DoneEvent.model is always populated
+# ---------------------------------------------------------------------------
+
+
+def _ollama_ndjson(chunks: list[dict[str, Any]]) -> bytes:
+    return b"".join(f"{json.dumps(chunk)}\n".encode() for chunk in chunks)
+
+
+def _done_of(events: list[Any]) -> DoneEvent:
+    dones = [e for e in events if isinstance(e, DoneEvent)]
+    assert len(dones) == 1
+    return dones[0]
+
+
+def test_anthropic_done_model_reports_what_the_response_named(monkeypatch: Any) -> None:
+    """The executed model, not the configured alias.
+
+    An alias like ``claude-sonnet-4-5`` resolves server-side to a dated
+    snapshot, and only the response knows which one answered. Reporting the
+    alias back would throw that away and make the field a restatement of
+    config the caller already had.
+
+    This is forensics, not an attribution key: the registry holds aliases, so
+    a dated snapshot joins against nothing. Attribution keys on the configured
+    id instead.
+    """
+    body = _anthropic_sse(
+        [
+            {
+                "type": "message_start",
+                "message": {"id": "msg_1", "model": "claude-sonnet-4-5-20250929", "usage": {}},
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    _patch_stream_body(monkeypatch, "anthropic", body)
+    provider = AnthropicProvider(model="claude-sonnet-4-5", api_key="k")
+    assert _done_of(_collect(provider)).model == "claude-sonnet-4-5-20250929"
+
+
+def test_anthropic_done_model_falls_back_to_configured_when_unreported(
+    monkeypatch: Any,
+) -> None:
+    body = _anthropic_sse(
+        [
+            {"type": "message_start", "message": {"id": "msg_1", "usage": {}}},
+            {"type": "message_stop"},
+        ]
+    )
+    _patch_stream_body(monkeypatch, "anthropic", body)
+    provider = AnthropicProvider(model="claude-sonnet-4-5", api_key="k")
+    assert _done_of(_collect(provider)).model == "claude-sonnet-4-5"
+
+
+def test_ollama_done_model_reports_what_the_response_named(monkeypatch: Any) -> None:
+    body = _ollama_ndjson(
+        [
+            {"model": "llama3:8b-instruct", "message": {"content": "hi"}},
+            {"model": "llama3:8b-instruct", "done": True, "eval_count": 2},
+        ]
+    )
+    _patch_stream_body(monkeypatch, "ollama", body)
+    provider = OllamaProvider(model="llama3")
+    assert _done_of(_collect(provider)).model == "llama3:8b-instruct"
+
+
+def test_ollama_done_model_falls_back_to_configured_when_unreported(monkeypatch: Any) -> None:
+    body = _ollama_ndjson([{"message": {"content": "hi"}}, {"done": True, "eval_count": 2}])
+    _patch_stream_body(monkeypatch, "ollama", body)
+    provider = OllamaProvider(model="llama3")
+    assert _done_of(_collect(provider)).model == "llama3"

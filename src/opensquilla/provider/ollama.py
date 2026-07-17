@@ -207,6 +207,7 @@ class OllamaProvider:
 
         input_tokens = 0
         output_tokens = 0
+        response_model = ""
         assistant_text_parts: list[str] = []
         # Ollama tool calls arrive whole inside stream frames. Validate and
         # assemble them as they arrive, but hold their public lifecycle events
@@ -300,6 +301,9 @@ class OllamaProvider:
                             yield ErrorEvent(message=error_message, code=error_code)
                             return
                         trace.record_chunk(chunk)
+                        reported_model = chunk.get("model")
+                        if isinstance(reported_model, str) and reported_model:
+                            response_model = reported_model
                         msg_chunk = chunk.get("message", {})
                         if not isinstance(msg_chunk, dict):
                             message = "Ollama stream contained a malformed message"
@@ -422,7 +426,7 @@ class OllamaProvider:
                             "output_tokens": output_tokens,
                         },
                         stop_reason="stop",
-                        actual_model=self._model,
+                        actual_model=response_model or self._model,
                         assistant_text="".join(assistant_text_parts),
                         tool_calls=[
                             {
@@ -438,7 +442,7 @@ class OllamaProvider:
                         stop_reason="stop",
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
-                        model=self._model,
+                        model=response_model or self._model,
                         provider=self.provider_id,
                     )
 

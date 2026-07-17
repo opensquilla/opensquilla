@@ -27,6 +27,21 @@ class ChannelSetupField:
 
 
 @dataclass(frozen=True)
+class ChannelSetupAid:
+    """A provider-console shortcut surfaced next to the setup form.
+
+    ``content`` is machine material only — a copyable blob or a URL template
+    with ``{app_id}`` placeholders; all display text is localized by the Web
+    UI from ``id``. Kinds: ``copy`` (clipboard blob), ``link`` (console deep
+    link), ``note`` (localized guidance with no machine content).
+    """
+
+    id: str
+    kind: Literal["copy", "link", "note"]
+    content: str = ""
+
+
+@dataclass(frozen=True)
 class ChannelSetupSpec:
     type: str
     label: str
@@ -41,6 +56,7 @@ class ChannelSetupSpec:
     blocking: bool = False
     can_probe: bool = True
     readme_scenarios: tuple[str, ...] = ("chat channels", "first-run setup")
+    setup_aids: tuple[ChannelSetupAid, ...] = ()
 
 
 def _common_fields() -> tuple[ChannelSetupField, ...]:
@@ -173,11 +189,64 @@ def _slack_spec() -> ChannelSetupSpec:
     )
 
 
+# Every tenant scope the Feishu adapter and its platform tools exercise.
+# The inbound read scopes cover the im.message.receive_v1 event for DMs and
+# group @-mentions; the rest are declared per-feature by the platform tools
+# (a conformance test holds the two lists together). The status-reaction
+# feature self-disables when unauthorized, so its scope is deliberately not
+# in the paste-once manifest.
+FEISHU_TENANT_SCOPES: tuple[str, ...] = (
+    "docx:document",
+    "docx:document:readonly",
+    "drive:drive",
+    "drive:file",
+    "drive:file:readonly",
+    "drive:file:upload",
+    "drive:permission:member",
+    "im:message",
+    "im:message.group_at_msg:readonly",
+    "im:message.p2p_msg:readonly",
+    "im:message:readonly",
+    "im:message:send_as_bot",
+    "im:message:update",
+    "im:resource",
+    "im:resource:upload",
+    "wiki:space:retrieve",
+    "wiki:wiki",
+    "wiki:wiki:readonly",
+)
+
+
+def _feishu_setup_aids() -> tuple[ChannelSetupAid, ...]:
+    import json as _json
+
+    scopes_json = _json.dumps(
+        {"scopes": {"tenant": list(FEISHU_TENANT_SCOPES), "user": []}},
+        indent=2,
+    )
+    quick_apply = (
+        "https://open.feishu.cn/app/{app_id}/auth?q="
+        + ",".join(FEISHU_TENANT_SCOPES)
+        + "&op_from=openapi&token_type=tenant"
+    )
+    return (
+        ChannelSetupAid(id="scopes_json", kind="copy", content=scopes_json),
+        ChannelSetupAid(
+            id="credentials_link",
+            kind="link",
+            content="https://open.feishu.cn/app/{app_id}/baseinfo",
+        ),
+        ChannelSetupAid(id="quick_apply_link", kind="link", content=quick_apply),
+        ChannelSetupAid(id="ws_order_note", kind="note"),
+    )
+
+
 def _feishu_spec() -> ChannelSetupSpec:
     return ChannelSetupSpec(
         type="feishu",
         label="Feishu / Lark",
         description="Feishu (or Lark) bot — webhook or websocket connection.",
+        setup_aids=_feishu_setup_aids(),
         transport="mixed",
         requires_public_url=False,
         dependency_extra=None,
@@ -501,6 +570,10 @@ def channel_catalog_payload() -> list[dict[str, Any]]:
             "canProbe": s.can_probe,
             "readmeScenarios": list(s.readme_scenarios),
             "whatYouNeed": _what_you_need(s),
+            "setupAids": [
+                {"id": aid.id, "kind": aid.kind, "content": aid.content}
+                for aid in s.setup_aids
+            ],
             "fields": [
                 {
                     "name": f.name,

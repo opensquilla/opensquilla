@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 from opensquilla.memory.dream.models import RawDreamCandidate
 from opensquilla.memory.dream.quarantine import is_quarantined_path, is_quarantined_text
 
 _SNIPPET_MAX_CHARS = 4000
+
+# Marker that tags a line as one independent routing-preference claim. Mirrors
+# ``preference_projection._MARKER_RE`` (the source of truth for the format); kept
+# local so the Dream scanner takes no import edge on ``squilla_router``. A memory
+# file whose every non-blank line carries this marker is an append-only preference
+# log, so each line is scanned as its own candidate rather than collapsed into one.
+_ROUTING_MARKER_RE = re.compile(r"`model:([A-Za-z0-9._:/@-]{1,200})`")
 
 
 def _workspace_relative(workspace: Path, path: Path) -> str:
@@ -54,6 +62,47 @@ def classify_signal(text: str) -> str:
     return "neutral"
 
 
+def _build_candidate(
+    *,
+    agent_id: str,
+    rel_path: str,
+    stat_mtime_ns: int,
+    source_size: int,
+    source_day: str | None,
+    text: str,
+) -> RawDreamCandidate | None:
+    snippet = _normalize_snippet(text)
+    if len(snippet) > _SNIPPET_MAX_CHARS:
+        snippet = snippet[:_SNIPPET_MAX_CHARS].rstrip()
+    if not snippet:
+        return None
+    return RawDreamCandidate(
+        agent_id=agent_id,
+        source_path=rel_path,
+        source_kind="memory_file",
+        source_mtime_ns=stat_mtime_ns,
+        source_size=source_size,
+        snippet=snippet,
+        snippet_sha256=_sha256(snippet),
+        claim_sha256=_sha256(_normalize_snippet(snippet).lower()),
+        source_day=source_day,
+        signal_kind=classify_signal(snippet),
+    )
+
+
+def _split_units(raw: str) -> list[str]:
+    """Yield the independent claim units of a memory file.
+
+    An append-only preference log — every non-blank line carrying the routing
+    marker — is split so each line is its own candidate (one thumb, one signal);
+    otherwise the whole file is a single narrative candidate as before.
+    """
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if lines and all(_ROUTING_MARKER_RE.search(line) for line in lines):
+        return lines
+    return [raw]
+
+
 def scan_dream_candidates(
     workspace: Path,
     *,
@@ -86,27 +135,17 @@ def scan_dream_candidates(
             continue
         if quarantine_enabled and is_quarantined_text(raw):
             continue
-        snippet = _normalize_snippet(raw)
-        if len(snippet) > _SNIPPET_MAX_CHARS:
-            snippet = snippet[:_SNIPPET_MAX_CHARS].rstrip()
-        if not snippet:
-            continue
-        candidates.append(
-            (
-                stat.st_mtime,
-                RawDreamCandidate(
-                    agent_id=agent_id,
-                    source_path=rel_path,
-                    source_kind="memory_file",
-                    source_mtime_ns=stat.st_mtime_ns,
-                    source_size=stat.st_size,
-                    snippet=snippet,
-                    snippet_sha256=_sha256(snippet),
-                    claim_sha256=_sha256(_normalize_snippet(snippet).lower()),
-                    source_day=_source_day(path),
-                    signal_kind=classify_signal(snippet),
-                ),
+        source_day = _source_day(path)
+        for unit in _split_units(raw):
+            candidate = _build_candidate(
+                agent_id=agent_id,
+                rel_path=rel_path,
+                stat_mtime_ns=stat.st_mtime_ns,
+                source_size=stat.st_size,
+                source_day=source_day,
+                text=unit,
             )
-        )
+            if candidate is not None:
+                candidates.append((stat.st_mtime, candidate))
     candidates.sort(key=lambda item: item[0])
     return [candidate for _mtime, candidate in candidates[: max(0, int(max_batch_size))]]

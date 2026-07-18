@@ -1,197 +1,186 @@
-"""The read seam: how a stored profile reaches ranking.
+"""The read seam: how the derived profile reaches ranking.
 
-``update_profile_for_rating`` writing a file and ranking reading one are only
-useful if they meet. The unit tests on either side both pass while the seam is
-disconnected, so these cover the join itself: a thumb goes in through the
-learning surface and comes back out of ``_resolve_user_profile`` as history
-that ``S_user`` can actually act on.
+``history`` is projected from Dream-consolidated global memory; ``permission``/
+``preference`` come from the hand-edited file, the only surface for
+``deny_models``. The projection and the ranking side each pass in isolation
+while the seam is disconnected, so these cover the join: a preference written
+into MEMORY.md the way Dream would consolidate it comes back out of
+``_resolve_user_profile`` as history ``S_user`` can act on, and a hand-edited
+``deny_models`` rides through beside it.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
+from opensquilla.agents.scope import resolve_agent_workspace_dir
 from opensquilla.engine.runtime import TurnRunner
-from opensquilla.squilla_router.self_learning.profile import (
-    profile_path,
-    update_profile_for_rating,
-)
+from opensquilla.squilla_router.self_learning.profile import profile_path
 
 _MODEL = "anthropic/claude-sonnet-4-5"
+_OTHER = "openai/gpt-5"
 
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point the profile's default home at a tmp dir.
+    """Point both sources' default home at a tmp dir.
 
-    The seam calls ``load_profile()`` with no argument on purpose — it reads
-    the operator's real profile — so redirecting the env is the only honest
-    way to exercise the path the runtime actually takes.
+    The seam resolves the global workspace with ``config=None`` here, so it
+    reads the same ``OPENSQUILLA_STATE_DIR`` the operator's real install would —
+    the only honest way to exercise the path the runtime takes.
     """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
     return tmp_path
 
 
-def test_absent_profile_resolves_to_the_mock_baseline(home: Path) -> None:
-    profile = TurnRunner._resolve_user_profile(None)
+def _memory_md(home: Path) -> Path:
+    return resolve_agent_workspace_dir("main", None) / "MEMORY.md"
+
+
+def _write_memory(home: Path, text: str) -> None:
+    path = _memory_md(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _write_profile(home: Path, payload: dict) -> None:
+    path = profile_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _resolve() -> dict:
+    return TurnRunner._resolve_user_profile(None, None)
+
+
+def test_no_memory_no_file_is_the_mock_baseline(home: Path) -> None:
+    profile = _resolve()
     assert profile["history"]["positive_model_ids"] == []
     assert profile["profile_source"] == "fallback_mock"
 
 
-def test_a_thumb_up_reaches_ranking_as_history(home: Path) -> None:
-    """The end-to-end claim: rating the model changes what ranking reads."""
-    update_profile_for_rating(model=_MODEL, new_rating="up")
+def test_present_but_empty_memory_is_a_derived_empty_profile(home: Path) -> None:
+    """A memory that exists but says nothing is an empty *derived* profile.
 
-    profile = TurnRunner._resolve_user_profile(None)
+    Distinct from "nothing read": ranking IS scoring against the operator's
+    memory, it just carries no preference yet, so the source is honest about
+    having read it.
+    """
+    _write_memory(home, "## Long-Term Memory\n- The user likes dark mode\n")
+    profile = _resolve()
+    assert profile["history"]["positive_model_ids"] == []
+    assert profile["profile_source"] == "dream_memory"
+
+
+def test_a_preference_memory_reaches_ranking_as_history(home: Path) -> None:
+    """The end-to-end claim: a consolidated preference changes what ranking reads."""
+    _write_memory(
+        home,
+        "## Routing preferences\n"
+        f"- The operator prefers routing to `model:{_MODEL}` for coding\n",
+    )
+    profile = _resolve()
     assert profile["history"]["positive_model_ids"] == [_MODEL]
     assert profile["history"]["feedback_count"] == 1
-    assert profile["profile_source"] == "global_json"
+    assert profile["profile_source"] == "dream_memory"
     assert profile["profile_version"].startswith("sha256:")
 
 
-def test_revoking_the_thumb_reaches_ranking_too(home: Path) -> None:
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-    update_profile_for_rating(
-        model=_MODEL,
-        new_rating="neutral",
-        previous_rating="up",
-        previous_model=_MODEL,
-    )
-
-    profile = TurnRunner._resolve_user_profile(None)
+def test_an_avoid_memory_reaches_ranking_as_negative(home: Path) -> None:
+    _write_memory(home, f"- we do not route to `model:{_OTHER}` anymore\n")
+    profile = _resolve()
+    assert profile["history"]["negative_model_ids"] == [_OTHER]
     assert profile["history"]["positive_model_ids"] == []
 
 
-def test_baseline_defaults_survive_the_overlay(home: Path) -> None:
-    """The stored file carries history only; the mock supplies the rest."""
-    baseline = TurnRunner._resolve_user_profile(None)
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-
-    merged = TurnRunner._resolve_user_profile(None)
+def test_baseline_defaults_survive_the_derivation(home: Path) -> None:
+    """Memory carries history only; the mock supplies permission/preference."""
+    baseline = _resolve()
+    _write_memory(home, f"- prefers routing to `model:{_MODEL}`\n")
+    merged = _resolve()
     for section in ("permission", "preference"):
         assert merged[section] == baseline[section], section
 
 
-def test_a_hand_edited_key_ranking_never_validated_is_not_overlaid(home: Path) -> None:
-    """Only keys the baseline already defines are allowed through."""
-    import json
+def test_a_valid_hand_edit_is_honored_beside_the_derived_history(home: Path) -> None:
+    """deny_models has no TOML key — the file is the whole surface for it."""
+    _write_memory(home, f"- prefers routing to `model:{_MODEL}`\n")
+    _write_profile(home, {"permission": {"deny_models": [_OTHER]}})
 
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-    path = profile_path(home)
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    stored["history"]["invented_key"] = "should not survive"
-    path.write_text(json.dumps(stored), encoding="utf-8")
-
-    profile = TurnRunner._resolve_user_profile(None)
-    assert "invented_key" not in profile["history"]
+    profile = _resolve()
+    assert profile["permission"]["deny_models"] == [_OTHER]
     assert profile["history"]["positive_model_ids"] == [_MODEL]
-
-
-def _edit_stored(home: Path, mutate) -> None:
-    import json
-
-    path = profile_path(home)
-    stored = json.loads(path.read_text(encoding="utf-8"))
-    mutate(stored)
-    path.write_text(json.dumps(stored), encoding="utf-8")
-
-
-def test_a_valid_hand_edit_is_honored(home: Path) -> None:
-    """deny_models has no TOML key — this file is the whole surface for it."""
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-    _edit_stored(home, lambda s: s.setdefault("permission", {}).update(
-        {"deny_models": ["openai/gpt-5"]}
-    ))
-
-    profile = TurnRunner._resolve_user_profile(None)
-    assert profile["permission"]["deny_models"] == ["openai/gpt-5"]
-    assert profile["profile_source"] == "global_json"
+    assert profile["profile_source"] == "dream_memory"
 
 
 def test_a_hand_edit_changes_the_version_ranking_reports(home: Path) -> None:
-    """The version has to cover the edit the file exists to make.
+    _write_memory(home, f"- prefers routing to `model:{_MODEL}`\n")
+    before = _resolve()["profile_version"]
 
-    ``deny_models`` is hard filtering and has no TOML key, so hand-editing it is
-    this file's primary purpose — and it is the one change that never runs the
-    write path. A version stamped only on a thumb would call two profiles with
-    different filtering the same profile, which is the failure a constant
-    version has, narrowed to the case that matters most.
-    """
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-    before = TurnRunner._resolve_user_profile(None)["profile_version"]
-
-    _edit_stored(home, lambda s: s.setdefault("permission", {}).update(
-        {"deny_models": ["openai/gpt-5"]}
-    ))
-    after = TurnRunner._resolve_user_profile(None)["profile_version"]
+    _write_profile(home, {"permission": {"deny_models": [_OTHER]}})
+    after = _resolve()["profile_version"]
 
     assert before != after
     assert after.startswith("sha256:")
 
 
-def test_the_file_cannot_pin_the_provenance_of_a_decision(home: Path) -> None:
-    """Provenance describes the read, so the file does not get a vote.
+def test_a_hand_edited_key_ranking_never_validated_is_not_overlaid(home: Path) -> None:
+    """Only keys the baseline already defines are allowed through the file."""
+    _write_profile(
+        home, {"permission": {"deny_models": [_OTHER], "invented_key": "no"}}
+    )
+    profile = _resolve()
+    assert "invented_key" not in profile["permission"]
+    assert profile["permission"]["deny_models"] == [_OTHER]
 
-    A stored ``profile_source``/``profile_version`` is the file describing
-    itself. Trusting it lets a hand-edited file claim ``fallback_mock`` while
-    ranking uses it, and stamp a version for content it does not have — the
-    forensic record saying the opposite of what happened.
+
+def test_an_invalid_enum_refuses_the_file_and_drops_derived_history(home: Path) -> None:
+    """A broken hand-edit means the operator's config is untrustworthy.
+
+    ``_cost_latency_weights`` silently falls back on an unknown
+    ``cost_sensitivity``, so a typo would route as if unmade. Refuse the whole
+    profile — including the memory-derived history — rather than route on half
+    of a config the operator got wrong.
     """
-    update_profile_for_rating(model=_MODEL, new_rating="up")
+    _write_memory(home, f"- prefers routing to `model:{_MODEL}`\n")
+    _write_profile(home, {"preference": {"cost_sensitivity": "very_high"}})
 
-    def _lie(stored: dict) -> None:
-        stored["profile_source"] = "fallback_mock"
-        stored["profile_version"] = "sha256:deadbeefdeadbeef"
-
-    _edit_stored(home, _lie)
-
-    profile = TurnRunner._resolve_user_profile(None)
-    # The file was used, so it must say so.
-    assert profile["history"]["positive_model_ids"] == [_MODEL]
-    assert profile["profile_source"] == "global_json"
-    assert profile["profile_version"] != "sha256:deadbeefdeadbeef"
-
-
-def test_an_invalid_enum_is_rejected_rather_than_silently_ignored(home: Path) -> None:
-    """The failure this closes: ranking swallows a bad enum via its default.
-
-    ``_cost_latency_weights`` falls back on an unknown ``cost_sensitivity``,
-    so before validation a typo routed exactly as if the edit had never been
-    made — and said nothing. Refusing the file at least tells the truth.
-    """
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-    _edit_stored(home, lambda s: s.setdefault("preference", {}).update(
-        {"cost_sensitivity": "very_high"}
-    ))
-
-    profile = TurnRunner._resolve_user_profile(None)
+    profile = _resolve()
     assert profile["profile_source"] == "fallback_mock"
-    # Refused whole: the history that parsed does not sneak through either.
     assert profile["history"]["positive_model_ids"] == []
 
 
-def test_an_invalid_risk_allowlist_is_rejected(home: Path) -> None:
-    update_profile_for_rating(model=_MODEL, new_rating="up")
-    _edit_stored(home, lambda s: s.setdefault("permission", {}).update(
-        {"risk_allowlist": ["not_a_risk_level"]}
-    ))
-
-    assert TurnRunner._resolve_user_profile(None)["profile_source"] == "fallback_mock"
+def test_an_invalid_risk_allowlist_refuses_the_file(home: Path) -> None:
+    _write_profile(home, {"permission": {"risk_allowlist": ["not_a_risk_level"]}})
+    assert _resolve()["profile_source"] == "fallback_mock"
 
 
-def test_a_raise_mid_overlay_reports_fallback_and_not_a_half_merge(
+def test_the_file_cannot_pin_the_provenance_of_a_decision(home: Path) -> None:
+    """Provenance describes the read, so the file does not get a vote."""
+    _write_memory(home, f"- prefers routing to `model:{_MODEL}`\n")
+    _write_profile(
+        home,
+        {
+            "permission": {"deny_models": [_OTHER]},
+            "profile_source": "fallback_mock",
+            "profile_version": "sha256:deadbeefdeadbeef",
+        },
+    )
+    profile = _resolve()
+    assert profile["history"]["positive_model_ids"] == [_MODEL]
+    assert profile["profile_source"] == "dream_memory"
+    assert profile["profile_version"] != "sha256:deadbeefdeadbeef"
+
+
+def test_a_raise_mid_resolution_reports_fallback_not_a_half_merge(
     home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The third degrade path, and the one the other two tests miss.
-
-    The overlay mutates ``base`` in place, so a raise partway through leaves it
-    half-merged. Ranking must hear ``fallback_mock`` here for the same reason it
-    does for a missing file — the spec's "any failure" — or a crashed load and
-    an absent one report differently for the same "not using your profile".
-    """
-    update_profile_for_rating(model=_MODEL, new_rating="up")
+    """Any failure degrades to the baseline, rebuilt clean, not half-merged."""
+    _write_memory(home, f"- prefers routing to `model:{_MODEL}`\n")
+    _write_profile(home, {"permission": {"deny_models": [_OTHER]}})
 
     def _boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("validator exploded")
@@ -199,19 +188,16 @@ def test_a_raise_mid_overlay_reports_fallback_and_not_a_half_merge(
     monkeypatch.setattr(
         "opensquilla.provider.ranking_router.validate_user_profile", _boom
     )
-
-    profile = TurnRunner._resolve_user_profile(None)
+    profile = _resolve()
     assert profile["profile_source"] == "fallback_mock"
     assert profile["history"]["positive_model_ids"] == []
 
 
-def test_unusable_profile_is_reported_not_passed_off_as_the_users_own(
-    home: Path,
-) -> None:
-    path = profile_path(home)
+def test_a_malformed_profile_file_with_no_memory_reports_fallback(home: Path) -> None:
+    path = profile_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("{not json", encoding="utf-8")
 
-    profile = TurnRunner._resolve_user_profile(None)
+    profile = _resolve()
     assert profile["profile_source"] == "fallback_mock"
     assert profile["history"]["positive_model_ids"] == []

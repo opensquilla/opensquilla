@@ -2436,25 +2436,56 @@ class TurnRunner:
         return copy.deepcopy(route)
 
     @staticmethod
-    def _resolve_user_profile(ranking_config: Any) -> dict[str, Any]:
-        """The learned profile over the mock baseline — the only real read seam.
+    def _read_global_memory_md(config: Any) -> str | None:
+        """The consolidated global MEMORY.md text, or ``None`` when there is none.
 
-        The mock supplies the shape and every default the learned file does not
-        carry (risk_allowlist, preferences). Only keys the baseline already
-        defines are overlaid, so a hand-edited file can add ``deny_models`` but
-        cannot introduce a key ranking never validated.
+        Pinned to the ``main`` agent's workspace because the profile is global
+        (one operator), and resolved the *same* way Dream resolves the workspace
+        it consolidates into — ``resolve_agent_workspace_dir("main", config)``,
+        exactly what ``build_dream`` uses — so the projection reads the file
+        Dream actually writes. Never raises: an absent or unreadable memory is
+        an empty preference, not a failed turn. ``None`` (absent/unreadable) is
+        kept distinct from ``""`` (present but empty) so the caller can tell
+        "nothing of the operator's was read" from "read, no preference yet".
+        """
+        from opensquilla.agents.scope import resolve_agent_workspace_dir
 
-        Degrades to the baseline on any failure. This is deliberately NOT
-        wired into ``ensemble.py``'s own fallback: that path serves benchmarks
-        and the experiment runner, which must stay reproducible rather than
-        read whatever the operator happens to have thumbed.
+        try:
+            workspace = resolve_agent_workspace_dir("main", config)
+            return (workspace / "MEMORY.md").read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _resolve_user_profile(ranking_config: Any, config: Any = None) -> dict[str, Any]:
+        """The resolved profile over the mock baseline — the only real read seam.
+
+        Two sources feed it, and neither is an accumulator of its own:
+
+        * ``history`` — which models the operator prefers or avoids — is a
+          read-time *projection* over Dream-consolidated memory. A thumb was
+          transcribed into a preference line, Dream promoted it into MEMORY.md,
+          and :func:`project_history` recovers the model ids here.
+        * ``permission``/``preference`` — ``deny_models`` and the tradeoff
+          enums — come from the hand-edited file, the only surface for them.
+
+        The mock supplies the shape and every default neither source carries.
+        Only keys the baseline already defines are overlaid, so a hand-edited
+        file can set ``deny_models`` but cannot introduce a key ranking never
+        validated. Degrades to the baseline on any failure. This is deliberately
+        NOT wired into ``ensemble.py``'s own fallback: that path serves
+        benchmarks and the experiment runner, which must stay reproducible
+        rather than read whatever the operator happens to have thumbed.
         """
         from opensquilla.provider.ranking_router import (
             mock_user_profile,
             validate_user_profile,
         )
-        from opensquilla.squilla_router.self_learning.profile import (
+        from opensquilla.squilla_router.self_learning.preference_projection import (
             PROFILE_SOURCE,
+            project_history,
+        )
+        from opensquilla.squilla_router.self_learning.profile import (
             content_version,
             load_profile,
             profile_path,
@@ -2462,37 +2493,54 @@ class TurnRunner:
 
         base = mock_user_profile(ranking_config)
         try:
+            # History: projected from Dream-consolidated global memory. Present
+            # but empty memory yields an empty projection — an operator who has
+            # expressed no preference, which is a real (empty) profile.
+            memory_text = TurnRunner._read_global_memory_md(config)
+            projected = project_history(memory_text or "")
+            history = dict(base.get("history") or {})
+            history.update({k: v for k, v in projected.items() if k in history})
+            base["history"] = history
+
+            # Permission/preference: the hand-edited file remains the only
+            # surface. Absent is fine — the mock baseline already stands in.
             stored = load_profile()
-            if stored is None:
-                # Missing or unreadable both mean the same thing to ranking:
-                # what it is about to score against is not the user's profile.
+            file_used = False
+            if stored is not None:
+                errors = validate_user_profile(stored, ranking_config)
+                if errors:
+                    # Refuse the whole file rather than route on the half of it
+                    # that parsed. This file is the only way to say deny_models,
+                    # so a typo that silently did nothing would be worse than one
+                    # that is loudly ignored.
+                    log.warning(
+                        "router_dynamic.user_profile_invalid",
+                        errors=errors,
+                        path=str(profile_path()),
+                    )
+                    fallback = mock_user_profile(ranking_config)
+                    fallback["profile_source"] = "fallback_mock"
+                    return fallback
+                file_used = True
+                for section in ("permission", "preference"):
+                    value = stored.get(section)
+                    if not isinstance(value, Mapping):
+                        continue
+                    merged = dict(base.get(section) or {})
+                    merged.update({k: v for k, v in value.items() if k in merged})
+                    base[section] = merged
+
+            if memory_text is None and not file_used:
+                # Neither source read: what ranking is about to score against is
+                # the bare mock, not the operator's profile. Say so, and stamp
+                # no version — there is no profile content to version.
                 base["profile_source"] = "fallback_mock"
                 return base
-            errors = validate_user_profile(stored, ranking_config)
-            if errors:
-                # Refuse the whole file rather than route on the half of it
-                # that parsed. This file is the only way to say deny_models,
-                # so a typo that silently did nothing would be worse than one
-                # that is loudly ignored.
-                log.warning(
-                    "router_dynamic.user_profile_invalid",
-                    errors=errors,
-                    path=str(profile_path()),
-                )
-                base["profile_source"] = "fallback_mock"
-                return base
-            for section in ("permission", "preference", "history"):
-                value = stored.get(section)
-                if not isinstance(value, Mapping):
-                    continue
-                merged = dict(base.get(section) or {})
-                merged.update({k: v for k, v in value.items() if k in merged})
-                base[section] = merged
-            # Provenance is what happened here, not what the file claims. Both
+            # Provenance is what happened here, not what any file claims. Both
             # fields are derived rather than read: the file is hand-editable, so
             # reading them would let it pin a source ranking never chose, and
             # would miss the one edit it exists for — ``deny_models`` has no TOML
-            # key, and editing it never touches the write path that stamps a
+            # key, and editing it never touches a write path that stamps a
             # version. Hash what was ranked with, after the overlay.
             base["profile_source"] = PROFILE_SOURCE
             base["profile_version"] = content_version(base)
@@ -5576,7 +5624,7 @@ class TurnRunner:
                             ranking_config=ranking_config,
                         )
                         user_profile = (
-                            self._resolve_user_profile(ranking_config)
+                            self._resolve_user_profile(ranking_config, self._config)
                             if ranking_user_profile_enabled
                             else None
                         )

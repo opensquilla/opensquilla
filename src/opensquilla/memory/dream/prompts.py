@@ -31,7 +31,11 @@ def promotion_patch_prompt(current_memory_md: str, candidates: list[PromotionCan
     return (
         "You are updating OpenSquilla MEMORY.md as curated long-term memory.\n"
         "Return JSON only with an operations array. Do not write dated logs, scores, "
-        "or source metadata into MEMORY.md.\n\n"
+        "or source metadata into MEMORY.md.\n"
+        "Preserve any inline-code token of the form `model:<id>` exactly as written, "
+        "backticks and all. The prose around it may be reworded or merged freely, but "
+        "that token is a machine-read marker: changing, splitting, or unquoting it "
+        "silently drops a routing preference.\n\n"
         "Allowed operations:\n"
         '- {"op":"upsert","candidate_ids":["..."],"section":"User Preferences",'
         '"memory_id":"mem_short_stable_id","text":"- durable memory"}\n'

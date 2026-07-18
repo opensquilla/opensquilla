@@ -1134,7 +1134,7 @@ def _windows_with_powershell_proxy_defaults(command: str) -> str:
     command = command.strip()
     if not command:
         return prelude
-    return f"{prelude}; {command}"
+    return f"{prelude.rstrip(';')}; {command}"
 
 
 def _windows_direct_powershell_argv(command: str) -> tuple[str, ...]:

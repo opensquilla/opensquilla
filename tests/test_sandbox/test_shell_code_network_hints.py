@@ -1022,6 +1022,7 @@ def test_windows_direct_powershell_argv_injects_proxy_defaults() -> None:
     assert "Invoke-WebRequest -UseBasicParsing https://example.com" in command
     assert "System.Net.Sockets.TcpClient" not in command
     assert "Invoke-OpenSquillaProxyNetworkFallback" not in command
+    assert ";;" not in command
 
 
 def test_windows_shell_host_handles_invoke_webrequest_status_via_managed_proxy(

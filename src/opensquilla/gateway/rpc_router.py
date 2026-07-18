@@ -133,10 +133,11 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     "this message's routing record expired".
 
     The rating never mutates the ``router_decisions`` table, and the trainer
-    still consumes the sidecar offline at dataset-build time. It does feed one
-    live path: the same rating folds into the global user profile, which
-    ranking reads on the next dynamic-routing turn, so a thumb here shifts
-    ``S_user`` there.
+    still consumes the sidecar offline at dataset-build time. It also rides one
+    slower live path: the thumb is transcribed into a routing-preference memory
+    line, Dream consolidates it into MEMORY.md, and ranking projects that back
+    into the global user profile on a later dynamic-routing turn — so a thumb
+    here shifts ``S_user`` there, once consolidation has run.
     """
     p = params if isinstance(params, dict) else {}
     decision_id = sanitize_token(p.get("decisionId") or p.get("decision_id"))
@@ -179,14 +180,12 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
         else None
     )
 
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
     from opensquilla.session.keys import parse_agent_id
-    from opensquilla.squilla_router.self_learning.feedback import (
-        load_feedback_map,
-        write_feedback,
-    )
-    from opensquilla.squilla_router.self_learning.profile import (
-        profile_update_lock,
-        update_profile_for_rating,
+    from opensquilla.squilla_router.self_learning.feedback import write_feedback
+    from opensquilla.squilla_router.self_learning.preference_projection import (
+        ROUTING_PREF_FILENAME,
+        transcribe_thumb,
     )
 
     agent_id = parse_agent_id(session_key)
@@ -199,36 +198,42 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
         retention_days = 30
 
     def _write() -> None:
-        with profile_update_lock():
-            # Read the effective rating BEFORE appending: the profile folds
-            # this thumb in as a delta and needs the rating it replaces.
-            # Reading after the append would return the new rating and the
-            # decrement would silently no-op, making a thumb unrevokable.
-            previous = load_feedback_map(agent_id).get(decision_id)
-            write_feedback(
-                agent_id,
+        write_feedback(
+            agent_id,
+            decision_id=decision_id,
+            session_key=session_key,
+            turn_index=turn_index,
+            rating=rating,
+            executed_kind=executed_kind,
+            model=rated_model,
+            decision_ts=decision_ts,
+            retention_days=retention_days,
+        )
+        # Transcribe the thumb into a routing-preference memory line, then let
+        # go: Dream consolidates memory/*.md into MEMORY.md on its own cadence,
+        # and _resolve_user_profile projects the consolidated lines back into
+        # history on a later turn. The note lands in the GLOBAL "main"
+        # workspace — the profile is global, so a thumb on any agent's decision
+        # shapes the one profile ranking reads — resolved the same way Dream
+        # resolves the workspace it scans (``resolve_agent_workspace_dir``).
+        line = transcribe_thumb(rated_model, rating)
+        if line is None:
+            # neutral revokes and an unresolvable model cannot be credited;
+            # either way there is nothing durable to append. The feedback row
+            # above still lands for the offline trainer.
+            return
+        try:
+            workspace = resolve_agent_workspace_dir("main", getattr(ctx, "config", None))
+            note = workspace / "memory" / ROUTING_PREF_FILENAME
+            note.parent.mkdir(parents=True, exist_ok=True)
+            with note.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception as exc:  # noqa: BLE001 — a memory-write miss must not lose the rating
+            log.warning(
+                "router_feedback.preference_memory_write_failed",
                 decision_id=decision_id,
-                session_key=session_key,
-                turn_index=turn_index,
-                rating=rating,
-                executed_kind=executed_kind,
-                model=rated_model,
-                decision_ts=decision_ts,
-                retention_days=retention_days,
+                error=str(exc),
             )
-            try:
-                update_profile_for_rating(
-                    model=rated_model,
-                    new_rating=rating,
-                    previous_rating=previous.rating if previous else None,
-                    previous_model=previous.model if previous else None,
-                )
-            except Exception as exc:  # noqa: BLE001 — a profile miss must not lose the rating
-                log.warning(
-                    "router_feedback.profile_update_failed",
-                    decision_id=decision_id,
-                    error=str(exc),
-                )
 
     try:
         await anyio.to_thread.run_sync(_write)

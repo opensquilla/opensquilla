@@ -1,7 +1,8 @@
 # Ranking User Profile Spec
 
-Date: 2026-07-17
-Status: Draft
+Date: 2026-07-18
+Status: Draft (revised — profile history is now derived from Dream-consolidated
+memory rather than a standalone tally; see Design)
 
 ## Problem
 
@@ -39,10 +40,12 @@ events are clean, but the analyzer request is not. It costs nothing today
 
 ## Goals
 
-- Replace the hardcoded mock with a single global profile stored as one local
-  JSON file.
-- Derive `history` from the feedback that is already being collected, so
-  `S_user` varies per candidate and can affect ordering.
+- Replace the hardcoded mock with a single global profile. Its `history` is
+  *derived* from Dream-consolidated memory (not a store of its own); its
+  hand-editable `permission`/`preference` live in one local JSON file.
+- Derive `history` from the thumbs feedback that is already being collected — by
+  transcribing each thumb into a preference memory that rides the Dream
+  pipeline — so `S_user` varies per candidate and can affect ordering.
 - Stop sending the profile to the task analyzer.
 - Preserve the existing fail-open contract: no profile failure may fail a turn
   or abort ranking.
@@ -118,208 +121,178 @@ File layout precedent — `self_learning/store.py:1-17`:
 ```
 
 `active` establishes that a global file at the router root is an existing
-convention. Conventions to copy from `feedback.py` / `store.py`: pure
-functions, injectable `home`, no raw prompt text, best-effort writes wrapped so
-a turn never fails, `_write_lock` serializing read-modify-write.
+convention — this is where `profile.json` lives, sibling of `active`. Conventions
+carried over from `feedback.py` / `store.py`: pure functions, injectable `home`,
+no raw prompt text, best-effort reads that never fail a turn. (The profile no
+longer *writes* on the turn path — its learned half is derived from memory — so
+there is no read-modify-write lock to copy; the append to the Dream scan note is
+`O_APPEND`-atomic and needs none.)
 
 ## Design
 
-Four changes. Changes 1-3 are one unit (the file, its writer, its reader).
-Change 4 depends on nothing here and ships first on its own.
+The learned half of the profile — `history` — is not stored. It is **derived at
+read time** from the same Dream-consolidated memory the rest of the system
+already keeps, so there is no second evidence store to keep reconciled with the
+first. A thumb becomes a preference *memory*; Dream promotes it into `MEMORY.md`
+like any other durable fact; and the read seam projects the consolidated lines
+back into the history shape ranking already consumes.
 
-### 1. The file
+Four changes. Changes 1-3 are one unit (the transcription, the projection, the
+hand-edit file). Change 4 depends on nothing here and ships first on its own.
 
-`~/.opensquilla/router/profile.json` — one global file, sibling of `active`.
-New module `self_learning/profile.py`, following `feedback.py`'s conventions
-exactly.
+Why derive instead of store: the earlier draft of this spec accumulated a
+standalone `model_counts` tally in `profile.json`, written on every thumb. That
+put a second system of record beside Dream's — one that could disagree with the
+operator's own consolidated memory, needed its own lock and atomic-write path,
+and its own retention story. Routing preference is a *memory* ("this operator
+prefers Sonnet for coding"), and the codebase already has a component whose job
+is to accumulate, deduplicate, and consolidate memories. Reusing it means the
+preference the operator can read in `MEMORY.md` and the preference ranking acts
+on are the *same* sentence, not two representations that drift.
 
-```json
-{
-  "schema_version": 1,
-  "permission": {
-    "allow_models": [],
-    "deny_models": [],
-    "risk_allowlist": ["low", "medium", "high"]
-  },
-  "preference": {
-    "quality_latency_tradeoff": "balanced",
-    "cost_sensitivity": "medium"
-  },
-  "model_counts": {"<model_id>": {"up": 0, "down": 0}},
-  "history": {
-    "positive_model_ids": [],
-    "negative_model_ids": [],
-    "feedback_count": 0,
-    "last_updated_at": "<iso8601>"
-  }
-}
-```
+### 1. Transcribing a thumb into a preference memory
 
-`permission` and `preference` are hand-editable — this file *is* the
-configuration surface, so no new TOML keys are needed. `history` is
-machine-written.
+On `router.feedback.submit`, after `write_feedback()` succeeds, the handler
+transcribes the thumb into one preference line and appends it to the Dream scan
+note. New module `self_learning/preference_projection.py`,
+`transcribe_thumb(model, rating) -> str | None`:
 
-`model_counts` is the raw per-model tally and the only new field. It is written
-and read only by `profile.py` and stripped before the profile reaches ranking,
-so what ranking receives is exactly the mapping shape its consumers already
-expect. `positive_model_ids` / `negative_model_ids` / `feedback_count` are
-derived from the tally on write. Keeping the raw tally is what lets a rating be
-revised or revoked without replaying the whole JSONL.
+- `up`   → `` - prefers routing to `model:<id>` ``
+- `down` → `` - do not route to `model:<id>` ``
+- `neutral`, or a model that cannot be resolved → `None` (write nothing).
 
-**The tally is the system of record, not a cache of the log.** Replay is not
-merely unimplemented, it is impossible: `feedback.jsonl` is pruned by
-`retention_days` (default 30) while `model_counts` accumulates forever, so the
-log is lossy by design and cannot rebuild the tally. Nothing reconciles the two
-because nothing can. This is the right trade — replay would mean retaining the
-log indefinitely, against the same retention and privacy posture that makes the
-file storable — but it is what puts the whole weight of correctness on the delta
-path: a lost or double-counted delta is permanent. That is why the merge-then-
-filter order in `load_feedback_map` and the lock spanning read-append-fold are
-tested rather than merely documented.
+The line is appended to `<global-workspace>/memory/routing-preferences.md`
+(`ROUTING_PREF_FILENAME`). That directory is exactly where Dream scans for
+evidence; the file is **not** `MEMORY.md`, which Dream treats as the
+consolidation *target* and skips as a scan source — a preference written
+straight there would never become evidence.
 
-**Validation.** `profile.py` needs its own loader-validator: the existing
-checks at `ranking_router.py:851-913` read
-`config["mock_user_profile"][...]` and validate the *ranking config*, not a
-free-standing profile file. The new validator must enforce the same
-vocabularies — `risk_allowlist` values, `quality_latency_tradeoff`,
-`cost_sensitivity` — and a test must pin both to the same enum sources so the
-two cannot drift apart. Drift here is not a crash; it is a hand-edited value
-that one validator accepts and the other silently ignores.
+**Two contracts make the line survive the pipeline.** Both are load-bearing and
+both are covered by tests:
 
-**Provenance is not in the file.** `profile_version` and `profile_source`
-describe a *read* — which profile ranking got, and what was in it — so the read
-seam derives both and the writer stores neither. `profile_version` is a content
-hash of the resolved profile, taken after the overlay, so it changes exactly
-when what ranking ranked with changes; `profile_source` is `global_json`, or
-`fallback_mock` when the file is missing or unusable.
+1. **The verb lands in Dream's classifier.** Dream's `classify_signal`
+   (`memory/dream/candidates.py`) buckets a line by keyword — `"prefers"` →
+   positive, `"do not"`/`"don't"` → correction. `transcribe_thumb` picks its
+   verbs to match, so a transcribed thumb is classified as evidence Dream will
+   promote rather than discarded as chatter.
+2. **The model id rides in a backticked marker.** Dream promotes by an LLM patch
+   that may reword a bullet, so the id cannot live in prose — it lives in an
+   inline-code token `` `model:<id>` ``. `promotion_patch_prompt`
+   (`memory/dream/prompts.py`) is instructed to preserve that token verbatim,
+   backticks and all, because splitting or unquoting it silently drops a routing
+   preference. The projection matches the marker, never the prose.
 
-Storing them would be worse than redundant. The file is hand-editable, so a
-stored `profile_source` lets it claim `fallback_mock` while ranking uses it, and
-a stored `profile_version` misses the one edit the file exists for: `deny_models`
-has no TOML key, and editing it never runs the write path that would stamp a new
-version. A stored hash would also be computed over a different body than the
-emitted one — two values under one name, so an operator matching a decision's
-version against the file finds a mismatch for an unchanged profile.
+**Which model the thumb names is still the load-bearing detail** — attributing
+to the wrong one trains on a model the user never read. The rated model is
+resolved exactly as before: on an ensemble turn it is the **aggregator**, in
+**config space** (`RankedModel.model_id`), the namespace `_user_score` matches
+against — not `usage.model` (response space, forensics only). When the model
+cannot be resolved, `transcribe_thumb` returns `None` and no line is written:
+fail closed, never credit a guess. (`executed_kind = "ensemble"` still credits
+the aggregator alone — provisional, see "Revisit".)
 
-Writes are atomic (`tmp` + `os.replace`) under a module-level `_write_lock`,
-mirroring `feedback.py:_write_lock` — RPC submissions run on worker threads and
-a lost rating is a defect.
+**No lock, no read-before-write, no decrement.** This is the whole payoff of
+deriving. Appending a line is `O_APPEND`-atomic for a short bullet, so
+concurrent submits need no `profile_update_lock` — the entire race class the
+standalone tally required is gone. A thumb toggled to `neutral` does not
+decrement anything: neutral simply writes nothing. A revocation is expressed the
+way memory expresses everything else — a later, contradicting line ("do not
+route to X" after "prefers X"), which the projection collapses to *neither*
+list. The tradeoff: a neutral cannot cleanly un-say a past `prefers`; only an
+explicit opposite thumb, or Dream consolidating the contradiction away, retracts
+it. For a single-operator preference nudge that is the honest behavior, and it
+buys the deletion of the lock, the ordering contract, and the "impossible
+replay" problem the tally had.
+
+**`feedback.jsonl` is untouched.** `write_feedback()` / `load_feedback_map()`
+still record the raw thumb stream for the offline trainer
+(`alignment`/`dataset`); this change only *adds* the transcription beside it. The
+effective-rating semantics that trainer relies on (merge-then-filter,
+last-write-wins) are unchanged and still tested.
 
 **Privacy contract.** Model identity tokens, enum tokens, and integers only. No
-prompt text, no response text. Same bar as `feedback.jsonl`.
+prompt text, no response text. The transcribed line carries a model id and a
+fixed verb, nothing from the request or reply — same bar as `feedback.jsonl`.
 
-### 2. Updating history on feedback
+### 2. Projecting memory into history
 
-`router.feedback.submit` **already resolves the decision row it needs**
-(`rpc_router.py:144-158`):
+`project_history(memory_text) -> {positive_model_ids, negative_model_ids,
+feedback_count}` (also in `preference_projection.py`) is a pure string function:
+it scans consolidated `MEMORY.md` text for `` `model:<id>` `` markers, reads each
+line's direction from the same verbs Dream classified on, and folds them into the
+history shape.
 
-```python
-record = await anyio.to_thread.run_sync(writer.get_decision, decision_id)
-if record is None:
-    return {"accepted": False, "reason": "decision_not_found"}
+Rules, chosen to say the same thing `_user_score` would compute anyway:
+
+- A model asserted in **both** directions lands in **neither** list. `_user_score`
+  computes `signal = int(in_positive) - int(in_negative)` (`:3000-3002`), so
+  membership in both cancels to zero; excluding it says so honestly and matches
+  how a consolidated contradiction reads.
+- `feedback_count` is the number of preference lines seen. It drives
+  `confidence = min(1.0, feedback_count / 20)`, so `S_user` ramps with how much
+  the memory actually says about routing rather than swinging to an extreme on
+  one line.
+- A line with no marker, or no preference verb, contributes nothing — ordinary
+  memories (`- The user likes dark mode`) are invisible to the projection.
+
+The projection imports only the standard library — no `provider`, `agents`, or
+`memory` — so it stays on the clean side of the `self_learning` layering rule
+and the engine seam owns path resolution.
+
+### 3. The hand-edit file and reading the profile
+
+`profile.json` **survives, but only as the hand-edit surface** for
+`permission`/`preference` — `deny_models` has no TOML key, so the file is the
+only place to set it. Its write path is deleted: `update_profile_for_rating`,
+`_apply`, `_derive_history`, `_atomic_write`, `profile_update_lock`, and the
+`model_counts` field are all gone. What remains in `self_learning/profile.py` is
+a read surface: `load_profile()` (absent/malformed/non-object → `None`), a
+mtime-keyed cache handing out copies, `content_version()`, and `profile_path()`.
+
+The read seam is `_resolve_user_profile` in `engine/runtime.py`, called from the
+runtime injection point (formerly `mock_user_profile(...)` at `runtime.py:5508`).
+It composes the two sources:
+
+```
+base      = mock_user_profile(ranking_config)          # deterministic skeleton
+memory    = read <global-workspace>/MEMORY.md          # None if absent/unreadable
+history   = project_history(memory or "")              # overlaid into base["history"]
+stored    = load_profile()                             # hand-edit permission/preference
 ```
 
-`get_decision` (`router_decision_writer.py:411`) selects every column of
-`_COLUMNS`, which includes `model` (`:65`) — already a sanitized token column
-(`_TEXT_TOKEN_COLUMNS`, `:81`). Its docstring names this exact use: "Reverse-
-lookup surface for **feedback attribution**".
+- The **global workspace** is `resolve_agent_workspace_dir("main", config)` —
+  the same resolution Dream uses at both its wiring sites, so the note Dream
+  scans, the `MEMORY.md` Dream writes, and the `MEMORY.md` this seam reads are
+  guaranteed the same file with no manager logic duplicated.
+- Projected history overlays **only keys the base already defines**. A hand-edit
+  file overlays **only** `permission`/`preference`, and only after passing
+  `validate_user_profile`; an invented key is dropped, an invalid enum
+  (`cost_sensitivity: "very_high"`) **refuses the whole file and drops the
+  derived history too** — a config the operator got half-wrong is untrustworthy
+  whole, and `_cost_latency_weights` would silently route as if the typo were
+  unmade.
 
-The lookup needs no new query and no new schema, and it is already off the event
-loop and already fail-open. **But the column does not yet hold the right value.**
-On ensemble turns `record["model"]` names the *classifier's* pick, not the model
-that authored the reply: `router_decision_record.py:227` stages the classifier's
-choice, and the realignment at `:268-273` is guarded `if not ensemble_enabled:`.
-Attributing feedback to it would train the profile on a model the user never
-read. Unit 2.A fixes the writer first; only then is the column a valid key.
+**Provenance describes the read, never the file.** `profile_source` is
+`"dream_memory"` when memory was read (even if it was present-but-empty) or a
+valid hand-edit file was used; `"fallback_mock"` only when neither source was
+read (memory absent *and* no valid file) or on any exception. Distinguishing
+present-empty from absent is why the memory read returns `None` (absent) vs `""`
+(present, says nothing about routing). `profile_version` is a content hash taken
+*after* the overlay, so it changes exactly when what ranking ranked with changes;
+a `profile_source`/`profile_version` written *into* the file is ignored, because
+a hand-editable file could otherwise claim `fallback_mock` while ranking uses it.
 
-The corrected key is `final_request["execution"]["model"]`, staged by
-`_member_execution_trace` (`ensemble.py:1457`) from `cfg.model`.
+Any failure — unreadable memory, malformed file, failed validation, an exception
+mid-resolution — degrades to a freshly rebuilt `mock_user_profile(...)` with
+`profile_source = "fallback_mock"` and logs a warning. Never raises, never fails
+a turn, never returns a half-merge.
 
-**Which namespace the key inhabits is the load-bearing detail**, and getting it
-wrong survived three review rounds. The key must live in **config space** — the
-same namespace as `RankedModel.model_id`, which is what `_user_score` matches
-`positive_model_ids`/`negative_model_ids` against. `cfg.model ≡
-RankedModel.model_id` holds by construction (`ensemble.py:1830` sets
-`model=decision.aggregator.model_id`; `_member_provider_config` only strips), so
-the join is safe. `usage.model` (`:1520`) is **response space** — what the
-provider reports it actually ran — and is forensics only. Sourcing the key there
-would silently mismatch the registry on any provider that renames or versions a
-model in its response. When the key cannot be resolved, fail **closed**: write
-`None` and skip the update rather than attribute to a guess.
-
-The change is: after `write_feedback()` succeeds, increment
-`model_counts[<key>][rating]` and rewrite the derived fields.
-
-Rules:
-
-- **Read `load_feedback_map()` before `write_feedback()` appends.** The
-  decrement rule below needs the *previous* effective rating for this
-  `decision_id`; reading after the append returns the new one and the decrement
-  silently becomes a no-op. Ordering is part of the contract, not an
-  implementation detail.
-- Use the effective rating, not the raw append. `load_feedback_map()`
-  (`feedback.py:149`) already resolves last-write-wins, so a thumb toggled back
-  to `neutral` must **decrement** the previous rating rather than be ignored.
-  Getting this wrong makes revocation impossible.
-- `neutral` contributes to neither list and does not count toward
-  `feedback_count`.
-- A model goes in `positive_model_ids` when `up > down`, `negative_model_ids`
-  when `down > up`, and **neither when equal**. `_user_score` computes `signal`
-  as `int(in_positive) - int(in_negative)` (`:3000-3002`), so membership in both
-  would silently cancel to zero — excluding it says the same thing honestly.
-- `feedback_count` is the total of non-neutral ratings. It drives
-  `confidence = min(1.0, feedback_count / 20)`, so `S_user` ramps in gradually
-  instead of swinging to an extreme on the first click.
-- `executed_kind = "ensemble"` attributes to the aggregator only. It authored
-  the text the user actually read; the proposers' drafts were never shown. This
-  is **provisional** — see "Revisit" below.
-- The whole update is wrapped `try/except` → `log.warning`. The RPC already
-  refuses to fail a client on a feedback write error (`rpc_router.py:194-198`);
-  a profile update failure must be no louder.
-
-Because counts accumulate in the file, they do not decay when
-`router_decision_writer` prunes at 30 days — the decision row only needs to
-exist at the moment the thumb is clicked. A thumb on a pruned decision already
-returns `decision_not_found` and writes no feedback at all
-(`rpc_router.py:151-158`); that is pre-existing behavior this spec neither
-worsens nor fixes.
-
-### 3. Reading it
-
-`runtime.py:5508` becomes:
-
-```python
-user_profile = load_profile() if ranking_user_profile_enabled else None
-```
-
-Cached in-process, **invalidated on mtime change** — not on write alone.
-
-The packaged ranking config is cached and requires a restart to pick up edits
-(design doc §3.9), but copying that here would be wrong. `profile.json` is
-unlike that file in one decisive way: it *rewrites itself* while the process
-runs, every time a thumb is clicked. So an invalidation path has to exist
-regardless. Keying it on write alone produces genuinely confusing behavior —
-the file updates itself when you click a thumb, but ignores you when you
-hand-edit `deny_models`. An `os.stat` per turn is microseconds against a turn
-that already spends seconds in LLM calls, and it makes the file behave the way
-its being hand-editable implies.
-
-Any failure — missing file, malformed JSON, failed validation — degrades to
-`mock_user_profile(ranking_config)` with `profile_source = "fallback_mock"` and
-logs a warning. Never raises, never fails a turn.
-
-`ensemble.py:1718` already prefers `inputs["user_profile"]`, so the runtime path
-needs no change there. Its `:1724` fallback **stays on `mock_user_profile()`**.
-Pointing it at `load_profile()` would be actively harmful: that fallback is what
-callers with no `inputs["user_profile"]` get — benchmarks and the routing
-experiment runner among them — and it would silently feed the operator's
-personal profile into runs that must stay deterministic and reproducible. The
-two seams *should* disagree: `runtime.py:5508` is the one place a real user's
-profile enters, and it is the only read seam this spec adds.
-
-`mock_user_profile()` and its JSON block **stay** — they are the deterministic
-test fixture and the `enabled = false` ablation baseline, and removing them
-would churn the config validator's exact-key-set contract for no benefit.
+`ensemble.py`'s fallback **stays on `mock_user_profile()`**. Pointing it at the
+derived profile would silently feed the operator's personal memory into
+benchmarks and the routing experiment runner, which must stay reproducible. The
+runtime seam is the one place a real profile enters. `mock_user_profile()` and
+its JSON block **stay** — the deterministic fixture and the `enabled = false`
+ablation baseline.
 
 ### 4. Analyzer de-exposure
 
@@ -411,50 +384,74 @@ Existing coverage to preserve:
   `test_task_analyzer_omits_user_profile_and_correlates_logs`; it keeps the
   `user_profile_enabled is False` log assertion for the `None` case.
 
-New coverage:
+New coverage, grouped by the seam each covers:
 
-- **Ordering changes.** The regression that matters most, and the one that
-  would fail today: a profile with non-empty history must produce a *different*
-  proposer set than the same turn with empty history. This is the entire point.
-- Revocation: `up` then `neutral` on one `decision_id` returns `model_counts` to
-  its prior state; `up` then `down` moves the model between lists.
-- Equal up/down lands in neither list.
-- `feedback_count` counts only non-neutral ratings; confidence clamps at 20.
-- Fail-open: missing file, malformed JSON, and a profile failing validation each
-  degrade to the mock and complete the turn. An unresolvable `decision_id` never
-  reaches the profile code — `rpc_router.py:151-158` returns early — so the
-  profile update must tolerate a `record["model"]` that is `NULL` or absent
-  rather than assume the row is well-formed.
-- Concurrency: parallel `router.feedback.submit` calls do not lose a rating
-  (the `feedback.py` read-rewrite-replace precedent).
-- Privacy: no prompt or response text can reach `profile.json`.
-- Seam agreement: `runtime.py` and `ensemble.py` resolve the same profile.
-- Hand-edit reload: writing a new `deny_models` to the file takes effect on the
-  next turn without a restart, and the mtime check does not re-read an unchanged
-  file.
-- Dropped fields fail loudly: a ranking config still carrying
-  `capability_prior`, `allow_tools`, `preferred_formats`, or
-  `preferred_format_bonus` is rejected by the exact-key-set validator; a
-  `profile.json` carrying them is rejected by the new loader rather than
-  silently ignored. This is what stops a stale hand-edited file from looking
-  like it still works.
-- Validator agreement: the `profile.py` loader and
-  `ranking_router.py:851-913` accept and reject the same vocabularies, pinned to
-  shared enum sources.
+*Transcription* (`test_gateway/test_rpc_router_decisions.py`):
+
+- A thumb-up submit writes a `prefers routing to \`model:<id>\`` line into
+  `memory/routing-preferences.md`, and `project_history` over that line yields
+  the model as positive — the end-to-end join from click to ranking-visible
+  history.
+- A neutral thumb appends nothing.
+- A down-after-up reads back through the projection as a contradiction (neither
+  list) — revocation without a decrement path.
+- Concurrent submits need no lock: N parallel appends all land, and the
+  projection folds them correctly.
+- The transcription is additive — the `feedback.jsonl` sidecar write still
+  happens (existing sidecar test unchanged).
+
+*Projection* (`test_router_self_learning_preference_projection.py`): direction
+by verb; the backticked marker is required (prose id ignored); both-directions →
+neither list; `feedback_count` = lines seen; non-preference memories invisible.
+
+*Read seam* (`test_engine/test_resolve_user_profile.py`):
+
+- **Ordering changes.** The point of the feature: memory carrying a preference
+  produces a different history than empty memory.
+- No memory and no file → `fallback_mock`; present-but-empty memory →
+  `dream_memory` (the honest "read it, it said nothing" case).
+- A valid hand-edited `deny_models` rides through beside the derived history; an
+  invented key is not overlaid; an invalid enum or risk level refuses the file
+  *and* drops the derived history to `fallback_mock`.
+- The file cannot pin provenance: a `profile_source`/`profile_version` written
+  into the file is ignored.
+- A hand-edit moves `profile_version`; a raise mid-resolution reports
+  `fallback_mock`, not a half-merge; a malformed file with no memory reports
+  `fallback_mock`.
+
+*Read surface* (`test_router_self_learning_profile.py`): absent/malformed/
+non-object file → `None`; `load_profile` hands out a copy; a hand-edit is picked
+up on mtime without a restart; `content_version` moves with the body and ignores
+the timestamp and its own stamped output.
+
+*Layering* (`test_router_self_learning_layering.py`): `preference_projection`
+imports only the standard library, so `self_learning` never reaches into
+`opensquilla.provider`.
+
+- Privacy: no prompt or response text can reach the transcribed line or
+  `profile.json`.
+- Dropped fields still fail loudly: a ranking config still carrying
+  `capability_prior`, `allow_tools`, or `preferred_formats` is rejected by the
+  exact-key-set validator.
 
 ## Rollout
 
 1. Change 4 (analyzer de-exposure) ships first, alone. It is a pure deletion,
    depends on nothing else here, and closes the exposure before any real data
    can flow.
-2. Changes 1-3 ship together. On first run there is no `profile.json`, so the
-   fallback is the mock and behavior is identical to today.
-3. The profile only starts affecting routing as feedback accumulates, and only
-   gradually — `confidence` saturates at 20 ratings, so early history moves
-   `S_user` very little by design.
+2. Changes 1-3 ship together. On first run there is no preference memory and no
+   `profile.json`, so memory reads empty, the projection is empty, and behavior
+   is identical to today.
+3. The profile only starts affecting routing after thumbs accumulate **and Dream
+   consolidates them into `MEMORY.md`** — the derivation is deliberately slower
+   than a direct write, trading immediacy for a single system of record. It also
+   ramps gradually: `confidence` saturates at 20 preference lines, so early
+   history moves `S_user` very little by design.
 
-No migration, no backfill. Existing installs have no `profile.json` and resolve
-to `fallback_mock` until the first thumb is clicked.
+No migration, no backfill. Existing installs have no preference memory and
+resolve to `fallback_mock` until the first thumb is clicked and consolidated. A
+transcribed line becomes ranking-visible only once Dream promotes it; between the
+click and the next consolidation the preference is pending, not lost.
 
 `docs/features/LLM-ensemble-design.md` §3.1 item 3, §3.9, and the
 `mock_user_profile` row of the §3.9 JSON table describe the mock as the
@@ -484,8 +481,8 @@ one click into N signals and would drive `feedback_count` toward its saturation
 of 20 on a handful of real clicks, making the profile look far more confident
 than the evidence supports.
 
-Revisit once `model_counts` holds real data. The signal to watch: an aggregator
-accumulating down-votes while its own single-model turns rate well suggests the
-blame is misplaced and proposer-level attribution is worth the complexity.
-Recording proposer-level counts as a separate, unscored field would make that
-diagnosable without changing `S_user`.
+Revisit once real preference memory accumulates. The signal to watch: an
+aggregator collecting `do not route` lines while its own single-model turns rate
+well suggests the blame is misplaced and proposer-level attribution is worth the
+complexity. Transcribing proposer-level preferences into a separate, unscored
+memory would make that diagnosable without changing `S_user`.

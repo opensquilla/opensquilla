@@ -406,10 +406,24 @@ async def test_feedback_submit_records_to_sidecar(
     assert fb["d" * 32].executed_kind == "single"
 
 
-async def test_feedback_submit_attributes_the_rating_to_the_recorded_model(
+def _routing_pref_note(tmp_path: Path) -> Path:
+    from opensquilla.agents.scope import resolve_agent_workspace_dir
+    from opensquilla.squilla_router.self_learning.preference_projection import (
+        ROUTING_PREF_FILENAME,
+    )
+
+    return resolve_agent_workspace_dir("main", None) / "memory" / ROUTING_PREF_FILENAME
+
+
+async def test_feedback_submit_transcribes_the_thumb_into_a_preference_memory(
     writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
 ) -> None:
-    """A thumb reaches the profile keyed on the model that authored the reply."""
+    """A thumb becomes a routing-preference line keyed on the model that replied.
+
+    The line rides the Dream pipeline from here, so the seam's job is only to
+    write something ``classify_signal`` will promote and ``project_history`` can
+    read back — checked here by projecting the raw note.
+    """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
     writer.record_decision(_base_record())
 
@@ -419,51 +433,74 @@ async def test_feedback_submit_attributes_the_rating_to_the_recorded_model(
     )
 
     from opensquilla.squilla_router.self_learning.feedback import load_feedback_map
-    from opensquilla.squilla_router.self_learning.profile import load_profile
+    from opensquilla.squilla_router.self_learning.preference_projection import (
+        project_history,
+    )
 
+    # The sidecar still attributes to the model that authored the reply.
     assert load_feedback_map("main", home=tmp_path)["d" * 32].model == (
         "deepseek/deepseek-chat"
     )
-    profile = load_profile(tmp_path)
-    assert profile is not None
-    assert profile["history"]["positive_model_ids"] == ["deepseek/deepseek-chat"]
-    assert profile["history"]["feedback_count"] == 1
+    note = _routing_pref_note(tmp_path)
+    text = note.read_text(encoding="utf-8")
+    assert "`model:deepseek/deepseek-chat`" in text
+    projected = project_history(text)
+    assert projected["positive_model_ids"] == ["deepseek/deepseek-chat"]
 
 
-async def test_feedback_revocation_removes_the_model_from_the_profile(
+async def test_a_neutral_thumb_appends_nothing(
     writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
 ) -> None:
-    """Revocation only works if the previous rating is read before the append.
+    """Neutral revokes, and a memory-append model cannot un-say a prior line.
 
-    Reading after would return the row just written and the decrement would
-    silently no-op, leaving the thumb permanently baked into the profile.
+    So a neutral writes no preference: the ``up`` above stays until Dream
+    reconsolidates, and reversing a preference is done by thumbing ``down`` (a
+    contradiction the projection collapses), not by toggling to neutral. This is
+    the deliberate consequence of deriving from consolidated memory rather than
+    folding a delta into a file.
     """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
     writer.record_decision(_base_record())
     ctx = RpcContext(conn_id="test")
 
-    await _handle_router_feedback_submit({"decisionId": "d" * 32, "rating": "up"}, ctx)
     await _handle_router_feedback_submit(
         {"decisionId": "d" * 32, "rating": "neutral"}, ctx
     )
-
-    from opensquilla.squilla_router.self_learning.profile import load_profile
-
-    profile = load_profile(tmp_path)
-    assert profile is not None
-    assert profile["history"]["positive_model_ids"] == []
-    assert profile["history"]["feedback_count"] == 0
+    # Accepted and logged, but no durable preference line was written.
+    assert not _routing_pref_note(tmp_path).exists()
 
 
-async def test_concurrent_submits_on_one_decision_stay_consistent(
+async def test_a_down_after_up_reads_back_as_a_contradiction(
     writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
 ) -> None:
-    """One decision cannot become two ratings, however the clicks interleave.
+    """Reversing a preference: thumb down, and the projection cancels it out."""
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(_base_record())
+    ctx = RpcContext(conn_id="test")
 
-    A double-click sends two submits onto worker threads. Unless the read of
-    the previous rating, the append, and the fold are one atomic step, both
-    read "no previous rating" and both increment: feedback_count 2 for a
-    single decision, and up==down so the model lands in neither list.
+    await _handle_router_feedback_submit({"decisionId": "d" * 32, "rating": "up"}, ctx)
+    await _handle_router_feedback_submit({"decisionId": "d" * 32, "rating": "down"}, ctx)
+
+    from opensquilla.squilla_router.self_learning.preference_projection import (
+        project_history,
+    )
+
+    projected = project_history(_routing_pref_note(tmp_path).read_text(encoding="utf-8"))
+    # Asserted both ways → neither list, the same zero a +1/-1 signal computes.
+    assert projected["positive_model_ids"] == []
+    assert projected["negative_model_ids"] == []
+    assert projected["feedback_count"] == 2
+
+
+async def test_concurrent_submits_need_no_lock(
+    writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
+) -> None:
+    """The append model has no read-modify-write, so a double-click cannot tear.
+
+    Four rapid submits land four independent lines; the projection is a pure
+    function of what is on disk, so the outcome is the same however the threads
+    interleave. No profile lock is needed — that whole class of races is gone
+    with the delta fold it protected.
     """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
     writer.record_decision(_base_record())
@@ -476,24 +513,18 @@ async def test_concurrent_submits_on_one_decision_stay_consistent(
         )
     )
 
-    from opensquilla.squilla_router.self_learning.feedback import load_feedback_map
-    from opensquilla.squilla_router.self_learning.profile import load_profile
-
-    effective = load_feedback_map("main", home=tmp_path)["d" * 32].rating
-    profile = load_profile(tmp_path)
-    assert profile is not None
-
-    # One decision, one user: exactly one rating is in force, whichever
-    # thumb landed last, and the profile must agree with the log.
-    assert profile["history"]["feedback_count"] == 1
-    counts = profile["model_counts"]["deepseek/deepseek-chat"]
-    assert counts == {"up": 1, "down": 0} if effective == "up" else {"up": 0, "down": 1}
-    listed = (
-        profile["history"]["positive_model_ids"]
-        if effective == "up"
-        else profile["history"]["negative_model_ids"]
+    from opensquilla.squilla_router.self_learning.preference_projection import (
+        project_history,
     )
-    assert listed == ["deepseek/deepseek-chat"]
+
+    text = _routing_pref_note(tmp_path).read_text(encoding="utf-8")
+    marker = "`model:deepseek/deepseek-chat`"
+    # Every append landed intact (O_APPEND is atomic for a short line).
+    assert text.count(marker) == 4
+    projected = project_history(text)
+    # 2 prefers + 2 do-not → the model is asserted both ways → neither list.
+    assert projected["positive_model_ids"] == []
+    assert projected["negative_model_ids"] == []
 
 
 async def test_feedback_submit_uses_configured_retention_days(
@@ -638,12 +669,12 @@ def test_feedback_handler_is_dormant_static() -> None:
         # Feedback intake is this module's own job: append-only sidecar writes,
         # still nothing that routes, calibrates, or trains.
         "squilla_router.self_learning.feedback",
-        # The user profile is the second half of that same intake: a thumb is
-        # only worth recording if it folds into the profile ranking reads. It
-        # is a derived preference sidecar, not loop state — it trains nothing
-        # and promotes nothing, and it does not route here (runtime.py reads
-        # it at the ranking seam; this handler only writes).
-        "squilla_router.self_learning.profile",
+        # Transcribing a thumb into a routing-preference memory line is the
+        # second half of that same intake. It is a pure string function over
+        # the rating — it trains nothing, promotes nothing, and does not route
+        # here (runtime.py projects the consolidated memory at the ranking seam;
+        # this handler only writes the line the pipeline later reads).
+        "squilla_router.self_learning.preference_projection",
     )
     forbidden = ("smart_routing", "router_control", "squilla_router", "calibration", "routing")
     for line in import_lines:

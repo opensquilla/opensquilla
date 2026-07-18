@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any
 
 from opensquilla.memory.dream.models import (
@@ -12,7 +11,42 @@ from opensquilla.memory.dream.models import (
     PromotionPatchOperation,
 )
 
-_JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
+
+def _iter_json_objects(text: str) -> list[str]:
+    """Yield every brace-balanced ``{...}`` span in ``text``, outermost only.
+
+    A depth counter that ignores braces inside JSON strings (respecting ``\\``
+    escapes) isolates each top-level object. Unlike a greedy ``\\{.*\\}`` regex,
+    trailing prose or a second block after the payload does not get swallowed into
+    one unparseable span — the source of the recurrent "Extra data" apply errors
+    when the promotion model appends commentary after its JSON.
+    """
+    spans: list[str] = []
+    depth = 0
+    start = -1
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                spans.append(text[start : index + 1])
+                start = -1
+    return spans
 
 
 def promotion_patch_prompt(current_memory_md: str, candidates: list[PromotionCandidate]) -> str:
@@ -50,13 +84,21 @@ def promotion_patch_prompt(current_memory_md: str, candidates: list[PromotionCan
 
 
 def _json_payload(text: str) -> dict[str, Any]:
-    match = _JSON_BLOCK_RE.search(text)
-    if not match:
+    dicts: list[dict[str, Any]] = []
+    for span in _iter_json_objects(text):
+        try:
+            parsed = json.loads(span)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            dicts.append(parsed)
+    if not dicts:
         raise ValueError(f"Dream response did not contain JSON: {text[:300]}")
-    payload = json.loads(match.group(0))
-    if not isinstance(payload, dict):
-        raise ValueError("Dream response JSON must be an object")
-    return payload
+    # Prefer the patch object; preamble examples or trailing notes may parse too.
+    for parsed in dicts:
+        if "operations" in parsed:
+            return parsed
+    return dicts[0]
 
 
 def parse_promotion_patch(text: str, candidates: list[PromotionCandidate]) -> PromotionPatch:

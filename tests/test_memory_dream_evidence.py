@@ -128,3 +128,37 @@ def test_scan_dream_candidates_extracts_top_level_memory_files(tmp_path: Path) -
     assert candidates[0].signal_kind == "positive"
     assert candidates[0].snippet_sha256
     assert candidates[0].claim_sha256
+
+
+def test_scan_splits_routing_preference_log_per_line(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    (memory_dir / "routing-preferences.md").write_text(
+        "- prefers routing to `model:x-ai/grok-4.5`\n"
+        "- do not route to `model:openai/gpt-6`\n",
+        encoding="utf-8",
+    )
+
+    candidates = scan_dream_candidates(tmp_path, cursor=0.0, max_batch_size=10, agent_id="main")
+
+    # Each thumb is its own candidate with its own signal, not one collapsed blob.
+    assert len(candidates) == 2
+    by_signal = {candidate.signal_kind for candidate in candidates}
+    assert by_signal == {"positive", "correction"}
+    # Distinct claims → distinct dedup keys, so they accrue evidence independently.
+    assert len({candidate.claim_sha256 for candidate in candidates}) == 2
+
+
+def test_scan_keeps_narrative_note_whole(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    # A multi-line prose note has no routing marker: it stays one narrative candidate.
+    (memory_dir / "2026-05-22-note.md").write_text(
+        "User prefers real benchmark runs.\n"
+        "They do not want toy simulations in the report.\n",
+        encoding="utf-8",
+    )
+
+    candidates = scan_dream_candidates(tmp_path, cursor=0.0, max_batch_size=10, agent_id="main")
+
+    assert len(candidates) == 1

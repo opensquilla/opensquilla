@@ -2,9 +2,7 @@
   <template v-for="(message, index) in messages" :key="chatMessageKey(message, index)">
     <slot
       v-if="message.isRouterStrip"
-      name="router-strip"
-      :message="message"
-      :index="index"
+      name="router-strip-placeholder"
     />
     <UserMessage
       v-else-if="message.displayRole === 'user'"
@@ -24,6 +22,7 @@
       v-else-if="message.displayRole === 'assistant'"
       :message="message"
       :index="index"
+      :turn-elapsed-seconds="turnElapsedSeconds(index)"
       :share-mode="shareMode"
       :share-selected="selectedMessageIds.has(chatMessageKey(message, index))"
       :share-message-id="chatMessageKey(message, index)"
@@ -52,7 +51,15 @@
       @extend-interrupt="id => $emit('extendInterrupt', id)"
       @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
       @clarify-dismiss="$emit('clarifyDismiss')"
-    />
+    >
+      <template v-if="routerStripForAssistant(index)" #router-strip>
+        <slot
+          name="router-strip"
+          :message="routerStripForAssistant(index)!"
+          :index="index"
+        />
+      </template>
+    </AssistantMessage>
     <SystemMessage
       v-else
       :message="message"
@@ -124,4 +131,43 @@ const lastAssistantIndex = computed(() => {
   }
   return -1
 })
+
+/** A router decision belongs to the assistant turn that follows it. Keep the
+ * synthetic routing message in the render list for parity/navigation, but
+ * project its UI into OpenSquilla's answer instead of leaving it beside the
+ * user's prompt. */
+function routerStripForAssistant(assistantIndex: number): ChatRenderedMessage | null {
+  for (let i = assistantIndex - 1; i >= 0; i--) {
+    const candidate = props.messages[i]
+    if (candidate.isRouterStrip) return candidate
+    if (candidate.displayRole === 'user' || candidate.displayRole === 'assistant') return null
+  }
+  return null
+}
+
+function timestampMs(value: string | number | null | undefined): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value < 1_000_000_000_000 ? value * 1000 : value
+  }
+  if (typeof value !== 'string' || !value.trim()) return null
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return numeric < 1_000_000_000_000 ? numeric * 1000 : numeric
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** History timestamps bracket the whole turn: user send → assistant completion.
+ * This remains available after reload, unlike live-only phase timers. */
+function turnElapsedSeconds(assistantIndex: number): number {
+  const completedAt = timestampMs(props.messages[assistantIndex]?.ts)
+  if (completedAt === null) return 0
+  for (let i = assistantIndex - 1; i >= 0; i--) {
+    const candidate = props.messages[i]
+    if (candidate.displayRole !== 'user') continue
+    const startedAt = timestampMs(candidate.ts)
+    if (startedAt === null || completedAt <= startedAt) return 0
+    return Math.max(1, Math.floor((completedAt - startedAt) / 1000))
+  }
+  return 0
+}
 </script>

@@ -821,5 +821,28 @@ test('live ensemble routing shows the strip alongside the work card', async ({ p
   // reserve, before any member arrives — instead of being hidden behind it.
   await expect(page.locator('.router-fx[data-panel="llm-ensemble"]')).toHaveCount(1)
   // It is live, not settled.
+  const strip = page.locator('.router-fx[data-panel="llm-ensemble"]')
   await expect(page.locator('.router-fx[data-panel="llm-ensemble"][data-settled="true"]')).toHaveCount(0)
+
+  // Routing is part of the OpenSquilla turn: identity first, router second,
+  // execution details after it. It must never sit below the user bubble as a
+  // standalone conversation row.
+  const placement = await strip.evaluate(el => {
+    const assistant = el.closest('.msg-ai')
+    const main = el.parentElement
+    const children = main ? Array.from(main.children) : []
+    return {
+      insideAssistant: !!assistant,
+      hasAvatar: !!assistant?.querySelector('.msg-ai-author .msg-ai-avatar img'),
+      hasAuthorName: !!assistant?.querySelector('.msg-ai-author__name'),
+      authorIndex: children.findIndex(child => child.classList.contains('msg-ai-author')),
+      routerIndex: children.indexOf(el),
+      workIndex: children.findIndex(child => child.classList.contains('work-card')),
+    }
+  })
+  expect(placement.insideAssistant).toBe(true)
+  expect(placement.hasAvatar).toBe(true)
+  expect(placement.hasAuthorName).toBe(false)
+  expect(placement.authorIndex).toBeLessThan(placement.routerIndex)
+  expect(placement.routerIndex).toBeLessThan(placement.workIndex)
 })

@@ -140,6 +140,7 @@ test.describe('Sources row and thinking disclosure', () => {
 
     await expect(page.locator('.sources-row')).toHaveCount(0)
     await expect(page.locator('.thinking-fold')).toHaveCount(0)
+    await expect(page.locator('.activity-fold')).toHaveCount(0)
   })
 
   test('replayed web_search results render a sources row with links', async ({ page }) => {
@@ -147,6 +148,7 @@ test.describe('Sources row and thinking disclosure', () => {
     await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(RESEARCH_SESSION_KEY))
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
 
+    await page.locator('.msg-ai .activity-fold__summary').first().click()
     await expect(page.locator('.msg-ai .tool-row[data-op="web.search"]').first()).toBeVisible({ timeout: 10000 })
 
     const sourcesRow = page.locator('.msg-ai .sources-row').first()
@@ -164,6 +166,7 @@ test.describe('Sources row and thinking disclosure', () => {
     await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(RESEARCH_SESSION_KEY))
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
 
+    await page.locator('.msg-ai .activity-fold__summary').first().click()
     await expect(page.locator('.msg-ai .tool-row[data-op="web.search"]').first()).toBeVisible({ timeout: 10000 })
 
     const sourcesRow = page.locator('.msg-ai .sources-row').first()
@@ -181,6 +184,7 @@ test.describe('Sources row and thinking disclosure', () => {
     await page.goto(CONTROL_URL + 'chat?session=' + encodeURIComponent(RESEARCH_SESSION_KEY))
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
 
+    await page.locator('.msg-ai .activity-fold__summary').first().click()
     await expect(page.locator('.msg-ai .tool-row[data-op="web.discover"]').first()).toBeVisible({ timeout: 10000 })
     await expect(page.locator('.msg-ai .sources-row')).toHaveCount(0)
   })
@@ -233,7 +237,7 @@ test.describe('Sources row and thinking disclosure', () => {
 
     // Thinking disclosure only renders when the routed model emitted
     // reasoning; when present it must default to collapsed.
-    const folds = page.locator('.thinking-fold')
+    const folds = page.locator('.activity-fold')
     if (await folds.count() > 0) {
       for (const isOpen of await folds.evaluateAll(nodes => nodes.map(node => node.hasAttribute('open')))) {
         expect(isOpen).toBe(false)
@@ -288,7 +292,7 @@ test.describe('Sources row and thinking disclosure', () => {
     // seconds >= 1 and degrades to "Thought process" when seconds is 0 — the
     // latter is what a snapshot that drops the measured seconds would produce.
     // Bind the real summary element, not the illustrative .__elapsed node.
-    const summary = page.locator('.msg-ai .thinking-fold .thinking-fold__summary').first()
+    const summary = page.locator('.msg-ai .activity-fold .activity-fold__summary').first()
     await expect(summary).toBeVisible({ timeout: 30000 })
     await expect(summary).toHaveText(/Thought for \d+/)
     await expect(summary).not.toHaveText(/Thought process/)

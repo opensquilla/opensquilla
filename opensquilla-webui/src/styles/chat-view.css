@@ -4,11 +4,14 @@
   flex-direction: column;
   height: 100%;
   overflow: hidden;
-  background: var(--bg-surface);
+  background:
+    radial-gradient(circle at 8% 8%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 32%),
+    radial-gradient(circle at 92% 92%, color-mix(in srgb, var(--info) 4%, transparent), transparent 30%),
+    var(--bg);
   color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   /* The one conversation column. Every turn-content box — user bubbles,
      assistant messages, the live work card, the composer — aligns to this
      same column so streaming and settled content share a left edge. Widens
@@ -27,14 +30,72 @@
   padding: 2rem 0 6rem;
 }
 
+/* Artifact-bearing conversations become a true three-pane workspace: the app
+   navigation remains on the left, the conversation owns the centre, and this
+   view contributes a persistent context rail on the right. */
+.chat--with-context-rail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(230px, 22vw, 300px);
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+  column-gap: 0.75rem;
+}
+
+.chat--with-context-rail.chat--context-rail-collapsed {
+  grid-template-columns: minmax(0, 1fr) 3.25rem;
+  column-gap: 0.5rem;
+}
+
+.chat--with-context-rail > .chat-header {
+  grid-column: 1 / -1;
+  grid-row: 1;
+}
+
+.chat--with-context-rail > .chat-body {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat--with-context-rail > .chat-pending-dock {
+  grid-column: 1;
+  grid-row: 3;
+}
+
+.chat--with-context-rail > .chat-compact-status {
+  grid-column: 1;
+  grid-row: 4;
+}
+
+.chat--with-context-rail > .chat-composer-dock {
+  grid-column: 1;
+  grid-row: 5;
+}
+
+.chat--with-context-rail > .chat-context-rail {
+  grid-column: 2;
+  grid-row: 2 / 6;
+  min-width: 0;
+  min-height: 0;
+  margin: 0.5rem 0.75rem 0.75rem 0;
+}
+
 .chat-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 48px;
-  padding: 0 20px;
-  border-bottom: 0;
-  background: var(--bg-surface);
+  width: calc(100% - 1.5rem);
+  min-height: 48px;
+  margin: 0.75rem auto 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-surface) 74%, transparent);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--bg-surface) 82%, transparent),
+    0 12px 36px color-mix(in srgb, var(--text) 7%, transparent);
   flex-shrink: 0;
   /* The absolutely-positioned topbar right cluster (connection pill + language
      switcher + theme) floats over this band's right edge at every width and
@@ -44,6 +105,20 @@
      connection state and the locale's language-label width instead of a brittle
      constant; the fallback only covers the first paint before measurement. */
   padding-right: var(--topbar-right-reserve, 224px);
+}
+
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .chat-header {
+    background: var(--bg-surface);
+  }
+}
+
+@media (forced-colors: active), (prefers-contrast: more) {
+  .chat-header {
+    background: var(--bg-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 .chat-header-left {
@@ -194,6 +269,12 @@
   color: var(--accent);
 }
 
+/* Desktop artifacts are already present in the right rail. This button only
+   survives as the narrow-screen drawer fallback. */
+.chat-deliverables-btn--mobile {
+  display: none;
+}
+
 .chat-share-btn--save {
   border-color: color-mix(in srgb, var(--accent) 22%, transparent);
   background: linear-gradient(180deg, var(--accent), var(--accent-deep));
@@ -324,7 +405,7 @@
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--bg-surface);
+  background: transparent;
 }
 
 .chat-thread-shell {
@@ -354,7 +435,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  background: var(--bg-surface);
+  background: transparent;
   /* Reserve the gutter even when content fits, so the column width (and the
      content's left edge) does not shift when the conversation grows a
      scrollbar mid-stream. */
@@ -440,10 +521,41 @@
   padding-top: 0.0625rem;
 }
 
-/* Run-state work card: the live turn is promoted from a thin ribbon into a
-   centered, substantial card that owns the focus while the agent works.
-   `.stream-activity` co-classes the head purely as a run-state marker hook;
-   its layout lives in the work-card rules below. */
+/* Live turns are rendered directly by ChatView (settled turns use
+   AssistantMessage), so their OpenSquilla identity needs the same treatment. */
+.msg-ai-author {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+.msg-ai-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ok) 18%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg-surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--bg-surface) 78%, transparent);
+}
+
+.msg-ai-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+}
+
+/* The live run uses the same lightweight vertical activity language as the
+   settled answer. `.stream-activity` co-classes the head purely as a run-state
+   marker hook; the wrapper deliberately contributes no card chrome. */
 .stream-activity {
   display: block;
 }
@@ -451,17 +563,14 @@
 .work-card {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  /* Fill the message column it lives in: the streaming card and the settled
-     answer keep the exact same left edge, so completion never shifts content
-     sideways. The card look comes from the frame, not a narrower width. */
+  gap: 0.25rem;
   width: 100%;
   margin: 0.25rem 0 0.75rem;
-  padding: 0.875rem 1rem;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  padding: 0 0 0.25rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
   animation: workCardEnter var(--dur-base) var(--ease-out) both;
 }
 
@@ -470,6 +579,7 @@
   align-items: center;
   gap: 0.5rem;
   min-height: 1.625rem;
+  padding: 0 0.25rem;
 }
 
 .work-card__dot {
@@ -517,7 +627,7 @@
 }
 
 .work-card__timeline {
-  margin-top: 0.125rem;
+  margin-top: 0;
 }
 
 /* The thinking indicator reuses the run-state dot. */
@@ -876,9 +986,9 @@
      padding), so the input panel's edges line up with the thread content. */
   width: min(100%, calc(var(--chat-col) + 3rem));
   margin: 0 auto;
-  padding: 0.75rem 1.5rem 1.875rem;
+  padding: 0.75rem 1.5rem 1.25rem;
   border-top: 0;
-  background: var(--bg-surface);
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -1263,6 +1373,19 @@
 
 /* Mobile */
 @media (max-width: 768px) {
+  .chat--with-context-rail {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .chat-context-rail {
+    display: none;
+  }
+
+  .chat-deliverables-btn--mobile {
+    display: inline-flex;
+  }
+
   .chat--new-landing {
     padding: clamp(3.25rem, 13vh, 5.5rem) 0.75rem 1.25rem;
     gap: 0.875rem;

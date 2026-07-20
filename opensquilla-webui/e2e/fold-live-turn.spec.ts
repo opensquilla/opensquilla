@@ -78,26 +78,27 @@ test.describe('Fold-authoritative live turn', () => {
     await textarea.fill('Use your web search tool to find one recent headline about space exploration, then answer in one sentence.')
     await page.locator('.chat-send-btn[aria-label="Send"]').click()
 
-    // The fold-driven work card renders the same checklist body the legacy path
-    // does: a visible card with the step chip and at least one checklist row.
+    // The fold-driven live turn uses the same ordered activity body as history:
+    // a lightweight wrapper with the step chip and numbered activity rows.
     const workCard = page.locator('.work-card')
     await expect(workCard).toBeVisible({ timeout: 30000 })
     await expect(workCard.locator('.work-card__step')).toHaveText(/^Step \d+$/)
 
-    const sawChecklistRow = await page.evaluate(async () => {
+    const sawActivityRow = await page.evaluate(async () => {
       const t0 = Date.now()
       while (Date.now() - t0 < 180000) {
-        const rows = document.querySelectorAll('.work-card .tool-timeline--checklist .tool-row').length
+        const rows = document.querySelectorAll('.work-card .tool-timeline--activity .tool-row').length
         if (rows > 0) return true
         if (document.querySelector('.work-card') === null) return false
         await new Promise(resolve => setTimeout(resolve, 150))
       }
       return false
     })
-    expect(sawChecklistRow).toBe(true)
+    expect(sawActivityRow).toBe(true)
 
     // Run completes: the work card collapses, the transcript keeps the rows.
     await expect(workCard).toHaveCount(0, { timeout: 180000 })
+    await page.locator('.msg-ai .activity-fold__summary').first().click()
     const searchRow = page.locator('.msg-ai .tool-row[data-op="web.search"]').first()
     await expect(searchRow).toBeVisible()
     await expect(searchRow).toHaveAttribute('aria-expanded', 'false')

@@ -1,6 +1,8 @@
 <template>
   <div v-if="artifacts.length" class="msg-artifacts">
-    <!-- Image artifacts: one unified media card (thumbnail hero + caption bar). -->
+    <!-- Image artifacts are media-first: the generated image itself is the
+         message. File chrome stays off the reading path and the one secondary
+         action appears only as a quiet hover affordance. -->
     <TransitionGroup v-if="visualArtifacts.length" name="artifact-card" tag="div" class="msg-media-cards">
       <figure
         v-for="artifact in visualArtifacts"
@@ -14,7 +16,7 @@
         <button
           v-if="previewStateFor(artifact) === 'loaded' && thumbUrlFor(artifact)"
           type="button"
-          class="msg-media-card__img"
+          class="msg-media-card__img msg-media-card__img--loaded"
           :aria-label="t('chat.openTitle', { title: artifactFileTitle(artifact) })"
           @click="openPreview(artifact)"
         >
@@ -27,6 +29,16 @@
           <span class="msg-media-card__zoom" aria-hidden="true">
             <Icon name="externalLink" :size="16" />
           </span>
+        </button>
+
+        <button
+          v-if="previewStateFor(artifact) === 'loaded' && thumbUrlFor(artifact)"
+          type="button"
+          class="msg-media-card__download"
+          :aria-label="t('chat.downloadTitle', { title: artifactFileTitle(artifact) })"
+          @click="$emit('download', artifact)"
+        >
+          <Icon name="download" :size="16" />
         </button>
 
         <div
@@ -81,19 +93,6 @@
           <span v-else class="msg-media-card__skeleton" aria-hidden="true" />
         </div>
 
-        <figcaption class="msg-media-card__cap">
-          <span class="msg-media-card__name">{{ artifactFileTitle(artifact) }}</span>
-          <span class="msg-media-card__meta">{{ artifactFileSubtitle(artifact) }}</span>
-          <span class="msg-media-card__spacer" />
-          <button
-            type="button"
-            class="msg-media-card__download"
-            :aria-label="t('chat.downloadTitle', { title: artifactFileTitle(artifact) })"
-            @click="$emit('download', artifact)"
-          >
-            <Icon name="download" :size="16" />
-          </button>
-        </figcaption>
       </figure>
     </TransitionGroup>
 
@@ -596,18 +595,16 @@ onUnmounted(() => {
 .msg-media-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: var(--sp-2);
+  gap: var(--sp-3);
+  width: min(100%, 36rem);
   margin-bottom: var(--sp-2);
 }
 
 .msg-media-card {
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  display: block;
   margin: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: var(--bg-elevated);
+  min-width: 0;
 }
 
 .msg-media-card__img {
@@ -618,12 +615,19 @@ onUnmounted(() => {
   width: 100%;
   /* Reserved box so the large image decode never causes layout shift. */
   aspect-ratio: 4 / 3;
-  max-height: 320px;
+  max-height: 24rem;
   padding: 0;
   border: 0;
-  background: var(--bg);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--bg-elevated) 56%, transparent);
   cursor: zoom-in;
   overflow: hidden;
+}
+
+.msg-media-card__img--loaded {
+  aspect-ratio: auto;
+  min-height: 0;
+  background: transparent;
 }
 
 .msg-media-card__img--loading,
@@ -636,8 +640,11 @@ onUnmounted(() => {
 .msg-media-card__img img {
   display: block;
   width: 100%;
-  height: 100%;
+  height: auto;
+  max-height: 24rem;
   object-fit: contain;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--text) 8%, transparent);
 }
 
 .msg-media-card__skeleton {
@@ -710,22 +717,25 @@ onUnmounted(() => {
 .msg-media-card__zoom {
   position: absolute;
   top: var(--sp-2);
-  right: var(--sp-2);
+  right: calc(var(--sp-2) + var(--sp-8) + var(--sp-1));
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: var(--sp-8);
   height: var(--sp-8);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bg-surface) 68%, transparent);
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
   color: var(--text);
   /* Faint at rest so touch devices (no hover) still see the tap affordance. */
-  opacity: 0.3;
+  opacity: 0;
   transition: opacity var(--dur-fast) var(--ease-standard);
 }
 
-.msg-media-card__img:hover .msg-media-card__zoom,
-.msg-media-card__img:focus-visible .msg-media-card__zoom {
+.msg-media-card:hover .msg-media-card__zoom,
+.msg-media-card:focus-within .msg-media-card__zoom {
   opacity: 1;
 }
 
@@ -734,50 +744,31 @@ onUnmounted(() => {
   box-shadow: var(--focus-ring-inset);
 }
 
-.msg-media-card__cap {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border-top: 1px solid var(--border);
-}
-
-.msg-media-card__name {
-  color: var(--text);
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.msg-media-card__meta {
-  flex-shrink: 0;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  font-size: var(--fs-xs);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-
-.msg-media-card__spacer {
-  flex: 1;
-}
-
 .msg-media-card__download {
+  position: absolute;
+  z-index: 2;
+  top: var(--sp-2);
+  right: var(--sp-2);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   width: var(--sp-8);
   height: var(--sp-8);
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--bg-surface) 68%, transparent);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  background: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+  backdrop-filter: blur(16px) saturate(135%);
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
   color: var(--text-muted);
+  opacity: 0;
   cursor: pointer;
-  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+  transition: opacity var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+
+.msg-media-card:hover .msg-media-card__download,
+.msg-media-card:focus-within .msg-media-card__download {
+  opacity: 1;
 }
 
 .msg-media-card__download:hover {
@@ -829,6 +820,13 @@ onUnmounted(() => {
   .artifact-card-enter-active,
   .artifact-chip-enter-active {
     transition: none;
+  }
+}
+
+@media (hover: none) {
+  .msg-media-card__zoom,
+  .msg-media-card__download {
+    opacity: 0.72;
   }
 }
 </style>

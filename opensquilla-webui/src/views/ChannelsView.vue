@@ -97,7 +97,7 @@
     <section v-else class="ch-workspace" :class="{ 'has-detail': selectedChannel }">
       <p v-if="queryMissing" class="ch-query-missing" role="status">
         <span>{{ t('console.channels.queryNotFound', { name: selectedName }) }}</span>
-        <button type="button" class="btn btn--ghost" @click="closeDetail">{{ t('console.channels.queryNotFoundDismiss') }}</button>
+        <button type="button" class="btn btn--ghost" @click="requestCloseDetail">{{ t('console.channels.queryNotFoundDismiss') }}</button>
       </p>
       <div class="ch-table-wrap">
         <table class="ch-table">
@@ -160,8 +160,8 @@
 
       <!-- Below the split-view breakpoint the detail becomes a fixed overlay;
            the scrim dismisses it and gives the modal a backdrop. -->
-      <div v-if="selectedChannel" class="ch-scrim" @click="closeDetail"></div>
-      <aside v-if="selectedChannel" ref="detailRef" class="ch-detail" :aria-label="t('console.channels.detailLabel', { name: selectedChannel.name })" @keydown.esc="closeDetail">
+      <div v-if="selectedChannel" class="ch-scrim" @click="requestCloseDetail"></div>
+      <aside v-if="selectedChannel" ref="detailRef" class="ch-detail" :aria-label="t('console.channels.detailLabel', { name: selectedChannel.name })">
         <header class="ch-detail__header">
           <div class="ch-detail__identity">
             <span class="ch-provider-mark is-large" aria-hidden="true">{{ providerInitial(selectedChannel.type) }}</span>
@@ -173,7 +173,7 @@
               <p>{{ providerLabel(selectedChannel.type) }} · {{ transportLabel(selectedChannel) }}</p>
             </div>
           </div>
-          <button class="ch-icon-btn" type="button" :title="t('common.close')" @click="closeDetail"><Icon name="x" :size="18" /></button>
+          <button class="ch-icon-btn" type="button" :title="t('common.close')" @click="requestCloseDetail"><Icon name="x" :size="18" /></button>
         </header>
 
         <!-- Actions grouped by consequence — observe/runtime ops, then
@@ -199,7 +199,7 @@
           </div>
           <span class="ch-detail__actionsep" aria-hidden="true"></span>
           <div class="ch-detail__actiongroup" role="group" :aria-label="t('console.channels.configActionsLabel')">
-            <button class="btn btn--ghost" type="button" :title="t('console.channels.editActionHint')" @click="openChannelEdit(selectedChannel)">
+            <button class="btn btn--ghost" type="button" :title="t('console.channels.editActionHint')" @click="enterEdit">
               <Icon name="edit" :size="15" aria-hidden="true" />
               <span>{{ t('console.channels.edit') }}</span>
             </button>
@@ -216,6 +216,7 @@
           <button v-for="tab in DETAIL_TABS" :key="tab" type="button" role="tab" :aria-selected="detailTab === tab" :class="{ 'is-active': detailTab === tab }" @click="setDetailTab(tab)">
             {{ t(`console.channels.tabs.${tab}`) }}
             <span v-if="tab === 'pairings' && pendingPairingCount > 0" class="ch-tab-badge" :aria-label="t('console.channels.pairings.pendingBadge', { count: pendingPairingCount })">{{ pendingPairingCount }}</span>
+            <span v-if="tab === 'configuration' && draftDirty" class="ch-tab-dirty" :title="t('console.channels.editor.unsavedAria')" :aria-label="t('console.channels.editor.unsavedAria')">●</span>
           </button>
         </nav>
 
@@ -226,7 +227,7 @@
               <div>
                 <strong>{{ probeTitle(selectedProbe) }}</strong>
                 <p>{{ probeResultDetail(selectedChannel) }}</p>
-                <button v-if="selectedProbe.status === 'failed'" class="btn btn--ghost ch-probe-result__edit" type="button" @click="openChannelEdit(selectedChannel)">
+                <button v-if="selectedProbe.status === 'failed'" class="btn btn--ghost ch-probe-result__edit" type="button" @click="enterEdit">
                   <Icon name="edit" :size="13" aria-hidden="true" />
                   <span>{{ t('console.channels.editCredentials') }}</span>
                 </button>
@@ -286,183 +287,11 @@
             </details>
           </template>
 
-          <template v-else-if="detailTab === 'pairings'">
-            <section class="ch-panel ch-pairings" :aria-busy="pairingsLoading">
-              <div class="ch-panel__heading">
-                <div>
-                  <h3>{{ t('console.channels.pairings.title') }}</h3>
-                  <p>{{ t('console.channels.pairings.description') }}</p>
-                </div>
-                <button
-                  class="btn btn--ghost"
-                  type="button"
-                  :disabled="pairingsLoading"
-                  @click="loadPairings(selectedChannel)"
-                >
-                  <Icon name="refresh" :size="14" aria-hidden="true" />
-                  {{ t('console.channels.pairings.refresh') }}
-                </button>
-              </div>
-
-              <div class="ch-pairing-summary" :aria-label="t('console.channels.pairings.summaryLabel')">
-                <span><strong>{{ pendingPairings.length }}</strong> {{ t('console.channels.pairings.pending') }}</span>
-                <span><strong>{{ approvedPairings.length }}</strong> {{ t('console.channels.pairings.approved') }}</span>
-                <span v-if="revokedPairings.length"><strong>{{ revokedPairings.length }}</strong> {{ t('console.channels.pairings.revoked') }}</span>
-              </div>
-              <label v-if="pairings.length > 0" class="ch-pairing-search">
-                <span class="ch-sr-only">{{ t('console.channels.pairings.searchLabel') }}</span>
-                <Icon name="search" :size="15" aria-hidden="true" />
-                <input v-model="pairingSearch" type="search" :placeholder="t('console.channels.pairings.searchPlaceholder')" />
-              </label>
-
-              <div v-if="pairingsLoading && pairings.length === 0" class="ch-pairing-state" role="status">
-                <LoadingSpinner />
-                <span>{{ t('console.channels.pairings.loading') }}</span>
-              </div>
-              <div v-else-if="pairingsError" class="ch-pairing-state is-error" role="alert">
-                <Icon name="info" :size="17" aria-hidden="true" />
-                <span>{{ pairingsError }}</span>
-                <button class="btn btn--ghost" type="button" @click="loadPairings(selectedChannel)">
-                  {{ t('console.channels.pairings.tryAgain') }}
-                </button>
-              </div>
-              <div v-else-if="pairings.length === 0 && adminOnlySenders.length === 0" class="ch-pairing-state">
-                <Icon name="shield" :size="20" aria-hidden="true" />
-                <strong>{{ t('console.channels.pairings.emptyTitle') }}</strong>
-                <span>{{ t('console.channels.pairings.emptyDescription') }}</span>
-              </div>
-              <div v-else class="ch-pairing-groups">
-                <section v-if="pendingPairings.length" :aria-label="t('console.channels.pairings.pendingRequests')">
-                  <h4>{{ t('console.channels.pairings.pendingRequests') }}</h4>
-                  <article v-for="(pairing, index) in pendingPairings" :key="pairing.pairingId" class="ch-pairing-row">
-                    <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
-                    <div class="ch-pairing-identity">
-                      <strong>{{ pairing.senderName || pairing.senderId }}</strong>
-                      <span class="ch-mono">{{ pairing.senderId }}</span>
-                      <span v-if="pairing.pairingCode" class="ch-mono ch-pairing-code">{{ t('console.channels.pairings.requestCode', { code: pairing.pairingCode }) }}</span>
-                      <time v-if="pairing.createdAt" :datetime="pairing.createdAt">{{ t('console.channels.pairings.requestedAt', { time: formatSince(pairing.createdAt) }) }}</time>
-                    </div>
-                    <span class="ch-pairing-status is-pending">{{ t('console.channels.pairings.pending') }}</span>
-                    <div class="ch-pairing-actions">
-                      <label class="ch-pairing-asadmin" :title="t('console.channels.pairings.asAdminHint')">
-                        <input
-                          type="checkbox"
-                          :checked="asAdminChecked(pairing, index)"
-                          :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pairing.senderName || pairing.senderId })"
-                          @change="setAsAdminChecked(pairing, ($event.target as HTMLInputElement).checked)"
-                        />
-                        <span>{{ t('console.channels.pairings.asAdmin') }}</span>
-                      </label>
-                      <button
-                        class="btn btn--primary"
-                        type="button"
-                        :disabled="pairingActionPending(selectedChannel, pairing, 'approve')"
-                        :aria-label="t('console.channels.pairings.approveLabel', { sender: pairing.senderName || pairing.senderId })"
-                        @click="approvePairing(selectedChannel, pairing, asAdminChecked(pairing, index))"
-                      >
-                        {{ pairingActionPending(selectedChannel, pairing, 'approve') ? t('console.channels.pairings.approving') : t('console.channels.pairings.approve') }}
-                      </button>
-                    </div>
-                  </article>
-                </section>
-
-                <section v-if="approvedPairings.length" :aria-label="t('console.channels.pairings.approvedAccess')">
-                  <h4>{{ t('console.channels.pairings.approvedAccess') }}</h4>
-                  <article v-for="pairing in approvedPairings" :key="pairing.pairingId" class="ch-pairing-row">
-                    <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
-                    <div class="ch-pairing-identity">
-                      <strong>{{ pairing.senderName || pairing.senderId }}</strong>
-                      <span class="ch-mono">{{ pairing.senderId }}</span>
-                      <time v-if="pairing.approvedAt" :datetime="pairing.approvedAt">{{ t('console.channels.pairings.approvedAt', { time: formatSince(pairing.approvedAt) }) }}</time>
-                    </div>
-                    <span
-                      class="ch-pairing-status"
-                      :class="isChannelAdmin(pairing.senderId) ? 'is-admin' : 'is-approved'"
-                    >
-                      {{ isChannelAdmin(pairing.senderId) ? t('console.channels.pairings.adminPill') : t('console.channels.pairings.approved') }}
-                    </span>
-                    <div class="ch-pairing-actions">
-                      <button
-                        v-if="isChannelAdmin(pairing.senderId)"
-                        class="btn btn--ghost"
-                        type="button"
-                        :disabled="pairingActionPending(selectedChannel, pairing, 'admin')"
-                        :aria-label="t('console.channels.pairings.removeAdminLabel', { sender: pairing.senderName || pairing.senderId })"
-                        @click="setPairingAdmin(selectedChannel, pairing, false)"
-                      >
-                        {{ pairingActionPending(selectedChannel, pairing, 'admin') ? t('console.channels.pairings.updatingAdmin') : t('console.channels.pairings.removeAdmin') }}
-                      </button>
-                      <button
-                        v-else
-                        class="btn btn--ghost"
-                        type="button"
-                        :disabled="pairingActionPending(selectedChannel, pairing, 'admin')"
-                        :aria-label="t('console.channels.pairings.setAsAdminLabel', { sender: pairing.senderName || pairing.senderId })"
-                        @click="setPairingAdmin(selectedChannel, pairing, true)"
-                      >
-                        {{ pairingActionPending(selectedChannel, pairing, 'admin') ? t('console.channels.pairings.updatingAdmin') : t('console.channels.pairings.setAsAdmin') }}
-                      </button>
-                      <button
-                        class="btn btn--ghost ch-pairing-revoke"
-                        type="button"
-                        :disabled="pairingActionPending(selectedChannel, pairing, 'revoke')"
-                        :aria-label="t('console.channels.pairings.revokeLabel', { sender: pairing.senderName || pairing.senderId })"
-                        @click="revokePairing(selectedChannel, pairing)"
-                      >
-                        {{ pairingActionPending(selectedChannel, pairing, 'revoke') ? t('console.channels.pairings.revoking') : t('console.channels.pairings.revoke') }}
-                      </button>
-                    </div>
-                  </article>
-                </section>
-
-                <section v-if="adminOnlySenders.length" :aria-label="t('console.channels.pairings.adminsSubtitle')">
-                  <h4>{{ t('console.channels.pairings.adminsSubtitle') }}</h4>
-                  <article v-for="senderId in adminOnlySenders" :key="senderId" class="ch-pairing-row">
-                    <div class="ch-pairing-avatar" aria-hidden="true">{{ senderInitial(senderId) }}</div>
-                    <div class="ch-pairing-identity">
-                      <strong>{{ senderId }}</strong>
-                      <span class="ch-mono">{{ t('console.channels.pairings.adminOnlyHint') }}</span>
-                    </div>
-                    <span class="ch-pairing-status is-admin">{{ t('console.channels.pairings.adminPill') }}</span>
-                    <div class="ch-pairing-actions">
-                      <button
-                        class="btn btn--ghost ch-pairing-revoke"
-                        type="button"
-                        :disabled="adminOnlyActionPending(senderId)"
-                        :aria-label="t('console.channels.pairings.removeAdminLabel', { sender: senderId })"
-                        @click="removeAdminOnly(selectedChannel, senderId)"
-                      >
-                        {{ adminOnlyActionPending(senderId) ? t('console.channels.pairings.updatingAdmin') : t('console.channels.pairings.removeAdmin') }}
-                      </button>
-                    </div>
-                  </article>
-                </section>
-
-                <section v-if="revokedPairings.length" :aria-label="t('console.channels.pairings.revokedAccess')">
-                  <h4>{{ t('console.channels.pairings.revokedAccess') }}</h4>
-                  <article v-for="pairing in revokedPairings" :key="pairing.pairingId" class="ch-pairing-row">
-                    <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
-                    <div class="ch-pairing-identity">
-                      <strong>{{ pairing.senderName || pairing.senderId }}</strong>
-                      <span class="ch-mono">{{ pairing.senderId }}</span>
-                    </div>
-                    <span class="ch-pairing-status is-revoked">{{ t('console.channels.pairings.revoked') }}</span>
-                    <button
-                      class="btn btn--ghost"
-                      type="button"
-                      :disabled="pairingActionPending(selectedChannel, pairing, 'reapprove')"
-                      :aria-label="t('console.channels.pairings.reapproveLabel', { sender: pairing.senderName || pairing.senderId })"
-                      @click="approvePairing(selectedChannel, pairing)"
-                    >
-                      {{ pairingActionPending(selectedChannel, pairing, 'reapprove') ? t('console.channels.pairings.approving') : t('console.channels.pairings.reapprove') }}
-                    </button>
-                  </article>
-                </section>
-              </div>
-              <p v-if="pairings.length > 0 || adminOnlySenders.length" class="ch-pairing-hint">{{ t('console.channels.pairings.membersHint') }}</p>
-              <p class="ch-sr-only" role="status" aria-live="polite">{{ pairingAnnouncement }}</p>
-            </section>
-          </template>
+          <ChannelMembersPanel
+            v-else-if="detailTab === 'pairings'"
+            :members="members"
+            :channel-name="selectedName"
+          />
 
           <template v-else-if="detailTab === 'diagnostics'">
             <section v-if="lastError(selectedChannel)" class="ch-alert is-danger">
@@ -488,17 +317,38 @@
 
           <template v-else>
             <section class="ch-panel">
-              <div class="ch-panel__heading"><h3>{{ t('console.channels.savedConfiguration') }}</h3><button class="btn btn--ghost" type="button" @click="openChannelEdit(selectedChannel)"><Icon name="edit" :size="14" />{{ t('console.channels.editInSettings') }}</button></div>
-              <p class="ch-panel__intro">{{ t('console.channels.secretRedactionHint') }}</p>
-              <LoadingSpinner v-if="configLoading" />
-              <p v-else-if="configError" class="ch-alert-text">{{ configError }}</p>
-              <dl v-else-if="selectedConfig" class="ch-config-list">
-                <div v-for="field in configRows(selectedConfig)" :key="field.key"><dt>{{ humanize(field.key) }}</dt><dd :class="{ 'is-secret': field.secret }">{{ field.value }}</dd></div>
-              </dl>
-              <p v-else class="ch-muted">{{ t('console.channels.selectConfigurationHint') }}</p>
+              <div class="ch-panel__heading">
+                <h3>{{ t('console.channels.savedConfiguration') }}</h3>
+                <button v-if="!editMode && canEditConfig" class="btn btn--ghost" type="button" @click="enterEdit"><Icon name="edit" :size="14" />{{ t('console.channels.edit') }}</button>
+              </div>
+              <p class="ch-panel__intro">{{ editMode ? t('console.channels.editor.editIntro') : t('console.channels.secretRedactionHint') }}</p>
+              <ChannelConfigEditor
+                :editor="editor"
+                :mode="editMode ? 'edit' : 'read'"
+                @save-anyway="saveDraftAnyway"
+                @retry="ensureConfigurationLoaded"
+              />
             </section>
           </template>
         </div>
+
+        <!-- Sticky editor bar: slides up from the aside bottom while a draft
+             is dirty; also hosts the inline discard confirmation for every
+             guarded exit. Reduced motion collapses the slide to instant. -->
+        <Transition name="ceb-slide">
+          <ChannelEditorActionBar
+            v-if="editorBarVisible"
+            :changed-labels="editedLabels"
+            :confirm-pending="discardRequest !== null"
+            :testing="probeRunning"
+            :saving="editorSaving"
+            @test="testDraft"
+            @discard="discardDraftAndExitEdit"
+            @save="saveDraft"
+            @keep-editing="resolveDiscard(false)"
+            @confirm-discard="resolveDiscard(true)"
+          />
+        </Transition>
       </aside>
     </section>
   </div>
@@ -507,10 +357,12 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
+import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
+import ChannelEditorActionBar from '@/components/channels/ChannelEditorActionBar.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import PendingRestartBanner from '@/components/PendingRestartBanner.vue'
@@ -518,6 +370,9 @@ import { useRequest } from '@/composables/useRequest'
 import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
+import { useChannelEditor } from '@/composables/channels/useChannelEditor'
+import { useChannelMembers } from '@/composables/channels/useChannelMembers'
+import ChannelMembersPanel from '@/components/channels/ChannelMembersPanel.vue'
 import {
   CHANNEL_STATUS_ORDER,
   CHANNEL_STATUS_TONES,
@@ -567,18 +422,6 @@ interface ProbeResult {
 }
 
 interface ChannelsStatusResponse { channels?: Channel[] }
-interface ChannelPairing {
-  pairingId: string
-  pairingCode?: string
-  channelName: string
-  senderId: string
-  senderName?: string | null
-  status: 'pending' | 'approved' | string
-  createdAt?: string | null
-  approvedAt?: string | null
-}
-
-interface PairingsResponse { pairings?: ChannelPairing[] }
 type DetailTab = 'overview' | 'pairings' | 'capabilities' | 'diagnostics' | 'configuration'
 type StatusFilter = 'all' | ChannelStatusKey
 
@@ -586,7 +429,6 @@ const STATUS_SEVERITY = Object.fromEntries(
   CHANNEL_STATUS_ORDER.map((key, index) => [key, index]),
 ) as Record<ChannelStatusKey, number>
 const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'capabilities', 'diagnostics', 'configuration']
-const SECRET_MARKER = '***'
 
 const { t } = useI18n()
 const rpc = useRpcStore()
@@ -605,22 +447,17 @@ const detailRef = ref<HTMLElement | null>(null)
 let detailInvoker: HTMLElement | null = null
 const pendingActions = ref(new Set<string>())
 const probeResults = ref<Record<string, ProbeResult>>({})
-const selectedConfig = ref<Record<string, unknown> | null>(null)
-const selectedSecretFields = ref<string[]>([])
-const configLoading = ref(false)
-const configError = ref('')
-const pairings = ref<ChannelPairing[]>([])
-const pairingsLoading = ref(false)
-const pairingsError = ref('')
-const pairingAnnouncement = ref('')
-let pairingsRequestId = 0
-// Channel admins for the selected channel (channel_admin_senders[name]). Members
-// can chat + use safe tools; admins get the full tool surface. Refetched with
-// every pairing load so a grant/revoke reflects immediately.
-const adminSenders = ref<string[]>([])
-// Per-pairing "approve as admin" checkbox state; an entry here is an explicit
-// operator choice that overrides the first-pairing bootstrap default.
-const pairingAdminOverrides = ref<Record<string, boolean>>({})
+// In-place configuration editor: draft state is owned by the view (not the
+// tab body), so switching to Members/Diagnostics keeps an unsaved draft
+// alive and the Configuration tab dot stays lit.
+const editor = useChannelEditor()
+const editMode = ref(false)
+const editorSaving = ref(false)
+// Pending inline discard confirmation (the centralized guard's UI state).
+const discardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
+// Members (pairings + channel admins) for the selected channel — state owned
+// here so it survives tab switches; ChannelMembersPanel renders it.
+const members = useChannelMembers()
 
 const { data: channelsData, loading, error, execute, refresh } = useRequest<ChannelsStatusResponse>(
   'channels.status', undefined, { immediate: false, errorLabel: t('console.channels.loadFailed') },
@@ -672,64 +509,25 @@ const filteredChannels = computed(() => {
     return !query || [ch.name, ch.id, ch.type, ch.status].some(value => String(value || '').toLowerCase().includes(query))
   })
 })
-const pairingSearch = ref('')
-function matchesPairingSearch(pairing: ChannelPairing): boolean {
-  const query = pairingSearch.value.trim().toLowerCase()
-  if (!query) return true
-  return [pairing.senderName, pairing.senderId, pairing.pairingCode]
-    .some(value => String(value || '').toLowerCase().includes(query))
-}
-const pendingPairings = computed(() =>
-  pairings.value.filter(pairing => pairing.status === 'pending' && matchesPairingSearch(pairing)))
-const approvedPairings = computed(() =>
-  pairings.value.filter(pairing => pairing.status === 'approved' && matchesPairingSearch(pairing)))
-const revokedPairings = computed(() =>
-  pairings.value.filter(pairing => pairing.status === 'revoked' && matchesPairingSearch(pairing)))
-
-function isChannelAdmin(senderId?: string | null): boolean {
-  return Boolean(senderId) && adminSenders.value.includes(String(senderId))
-}
-// Admins configured directly (added to channel_admin_senders in TOML) who have
-// no approved pairing row — surfaced so the members list is complete and the
-// grant is still removable from the UI.
-const adminOnlySenders = computed(() => {
-  const approvedIds = new Set(
-    pairings.value.filter(pairing => pairing.status === 'approved').map(pairing => pairing.senderId),
-  )
-  const query = pairingSearch.value.trim().toLowerCase()
-  return adminSenders.value.filter(id =>
-    !approvedIds.has(id) && (!query || id.toLowerCase().includes(query)))
-})
-// First-pairing bootstrap: default the "as admin" checkbox on only when the
-// channel has no approved members and no admins yet, so the very first person
-// approved becomes an admin unless the operator opts out.
-const noApprovedOrAdmins = computed(() =>
-  !pairings.value.some(pairing => pairing.status === 'approved') && adminSenders.value.length === 0)
-function asAdminChecked(pairing: ChannelPairing, index: number): boolean {
-  if (pairing.pairingId in pairingAdminOverrides.value) return pairingAdminOverrides.value[pairing.pairingId]
-  return index === 0 && noApprovedOrAdmins.value
-}
-function setAsAdminChecked(pairing: ChannelPairing, value: boolean): void {
-  pairingAdminOverrides.value = { ...pairingAdminOverrides.value, [pairing.pairingId]: value }
-}
-function senderInitial(senderId: string): string { return String(senderId || '?').slice(0, 1).toUpperCase() }
 // Unfiltered pending count drives the tab badge (a filtered-out request still
 // awaits the operator).
 const totalPendingPairings = computed(() =>
   channels.value.reduce((sum, ch) => sum + (ch.pendingPairings || 0), 0))
 
-function openPairings(ch: Channel): void {
-  if (selectedName.value !== channelKey(ch)) selectChannel(ch)
+async function openPairings(ch: Channel): Promise<void> {
+  if (selectedName.value !== channelKey(ch)) {
+    if (draftDirty.value && !(await confirmDiscardDraft())) return
+    applySelection(channelKey(ch))
+  }
   setDetailTab('pairings')
 }
 
-function openFirstPendingPairings(): void {
+async function openFirstPendingPairings(): Promise<void> {
   const target = channels.value.find(ch => (ch.pendingPairings || 0) > 0)
-  if (target) openPairings(target)
+  if (target) await openPairings(target)
 }
 
-const pendingPairingCount = computed(() =>
-  pairings.value.filter(pairing => pairing.status === 'pending').length)
+const pendingPairingCount = computed(() => members.pendingCount.value)
 
 const loadData = refresh
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -758,13 +556,32 @@ function teardownLive() {
   document.removeEventListener('keydown', onDocumentKeydown)
 }
 
+// Esc is two-stage while editing: the first press blurs the focused field,
+// the second acts as Cancel (guarded). Outside edit mode it closes the aside.
+// Handled once at the document level so a press can never skip a stage.
 function onDocumentKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape' && selectedName.value) closeDetail()
+  if (event.key !== 'Escape' || !selectedName.value) return
+  if (editMode.value) {
+    const active = document.activeElement
+    if (
+      active instanceof HTMLElement && detailRef.value?.contains(active) &&
+      (active instanceof HTMLInputElement || active instanceof HTMLSelectElement || active instanceof HTMLTextAreaElement)
+    ) {
+      active.blur()
+      return
+    }
+    void requestExitEdit()
+    return
+  }
+  void requestCloseDetail()
 }
 
 onActivated(() => {
   applyDetailQuery()
   if (!activatedOnce) { activatedOnce = true; void execute() } else { void refresh() }
+  // Background catalog refresh: the module-scope cache keeps rendering while
+  // a newer field-spec snapshot lands.
+  void editor.refreshCatalog()
   unsubs = [rpc.on('channel.status', () => { void refresh() })]
   pollTimer = setInterval(() => {
     void refresh().then(() => { if (!error.value) lastUpdatedAt.value = Date.now() })
@@ -775,16 +592,18 @@ onActivated(() => {
 onDeactivated(teardownLive)
 onUnmounted(teardownLive)
 
+// Route leave is one of the guarded exits: an unsaved draft raises the inline
+// confirm in the bar and the navigation waits on the operator's verdict.
+onBeforeRouteLeave(async () => {
+  if (!(await confirmDiscardDraft())) return false
+  if (editMode.value) discardDraftAndExitEdit()
+  return true
+})
+
 function openChannelCompose(): void {
   void router.push({ path: '/settings/channels', hash: '#channel-new' })
 }
 
-function openChannelEdit(ch: Channel): void {
-  const name = channelKey(ch)
-  // A channel literally named "new" collides with the reserved compose hash.
-  if (name === 'new') { void router.push('/settings/channels'); return }
-  void router.push({ path: '/settings/channels', hash: `#channel-${encodeURIComponent(name)}` })
-}
 function channelKey(ch: Channel): string { return String(ch.name || ch.id || ch.type || 'unknown') }
 
 function presentationFor(ch: Channel) {
@@ -808,27 +627,149 @@ watch(channelsData, data => {
   pendingRestart.reconcile(data?.channels || [])
 })
 
-function selectChannel(ch: Channel): void {
+// ---------------------------------------------------------------------------
+// Configuration editor: dirty state, centralized discard guard, save/test.
+// ---------------------------------------------------------------------------
+
+const draftDirty = computed(() => editor.form.isDirty.value)
+const canEditConfig = computed(() => editor.canEdit.value)
+const editedLabels = computed(() => editor.editedFieldLabels.value)
+const probeRunning = computed(() => editor.probe.value.phase === 'running')
+const editorBarVisible = computed(() =>
+  (editMode.value && draftDirty.value) || discardRequest.value !== null)
+
+/**
+ * THE guard. Every draft-destroying exit — selecting another channel, closing
+ * the aside, scrim click, route leave, Esc-cancel — runs through this one
+ * gate. A clean draft passes straight through (synchronously, via the
+ * `draftDirty` short-circuit at each call site); a dirty one raises the
+ * inline destructive-ghost pair in the bar and resolves with the operator's
+ * verdict.
+ */
+function confirmDiscardDraft(): Promise<boolean> {
+  if (!draftDirty.value) return Promise.resolve(true)
+  // A newer guarded action supersedes a pending one, which resolves as "keep".
+  if (discardRequest.value) discardRequest.value.resolve(false)
+  return new Promise<boolean>(resolve => {
+    discardRequest.value = { resolve }
+  })
+}
+
+function resolveDiscard(ok: boolean): void {
+  discardRequest.value?.resolve(ok)
+  discardRequest.value = null
+}
+
+function discardDraftAndExitEdit(): void {
+  editor.discard()
+  editMode.value = false
+}
+
+function enterEdit(): void {
+  if (!selectedChannel.value) return
+  detailTab.value = 'configuration'
+  editMode.value = true
+  ensureConfigurationLoaded()
+  void nextTick(() => {
+    detailRef.value
+      ?.querySelector<HTMLElement>('.cfge input:not([readonly]):not([type="checkbox"]), .cfge select')
+      ?.focus()
+  })
+}
+
+async function requestExitEdit(): Promise<void> {
+  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  discardDraftAndExitEdit()
+}
+
+function ensureConfigurationLoaded(): void {
+  const name = selectedName.value
+  if (!name) return
+  if (editor.loadedName.value === name && editor.phase.value === 'active') return
+  if (editor.phase.value === 'loading') return
+  void editor.open(name)
+}
+
+// Draft Test probes the CURRENT DRAFT (onboarding.channel.probe {entry});
+// the read-mode action-row Test keeps probing the SAVED channel live.
+function testDraft(): void {
+  void editor.testDraft()
+}
+
+async function saveDraft(): Promise<void> {
+  if (editorSaving.value) return
+  editorSaving.value = true
+  try {
+    handleSaveResult(await editor.save())
+  } finally {
+    editorSaving.value = false
+  }
+}
+
+async function saveDraftAnyway(): Promise<void> {
+  if (editorSaving.value) return
+  editorSaving.value = true
+  try {
+    handleSaveResult(await editor.saveAnyway())
+  } finally {
+    editorSaving.value = false
+  }
+}
+
+function handleSaveResult(result: Awaited<ReturnType<typeof editor.save>>): void {
+  if (result.status === 'invalid') {
+    pushToast(t('setup.channels.fixRequired'), { tone: 'danger' })
+    return
+  }
+  // Probe failure keeps the draft: inline failure rows + [Save anyway].
+  if (result.status === 'probe-failed') return
+  if (result.status === 'error') {
+    pushToast(t('console.channels.editor.saveFailed', { error: result.message || '' }), { tone: 'danger' })
+    return
+  }
+  const outcome = result.outcome
+  if (outcome) {
+    if (outcome.name && outcome.changed && outcome.restartRequired) {
+      const row = channels.value.find(ch => channelKey(ch) === outcome.name)
+      pendingRestart.record(outcome.name, 'upsert', { wasLoaded: row ? adapterLoaded(row) : false })
+    }
+    if (outcome.liveApplyFailed) {
+      pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
+    } else {
+      pushToast(t(outcome.restartRequired ? 'setup.toast.channelSaved' : 'setup.toast.channelSavedLive'), { tone: 'ok' })
+    }
+  }
+  // Baseline already reset by the reseed; drop edit=1 → back to read mode.
+  editMode.value = false
+  void refresh()
+}
+
+// ---------------------------------------------------------------------------
+// Selection + aside lifecycle (all draft-destroying paths run the guard)
+// ---------------------------------------------------------------------------
+
+async function selectChannel(ch: Channel): Promise<void> {
   // Re-clicking the selected row toggles the aside closed instead of silently
   // resetting the tab and discarding loaded pairings/config.
   if (selectedName.value === channelKey(ch)) {
-    closeDetail()
+    await requestCloseDetail()
     return
   }
-  pairingsRequestId += 1
+  // The dirty short-circuit keeps the clean path synchronous (no microtask
+  // gap between click and selection) while every dirty exit hits the guard.
+  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  applySelection(channelKey(ch))
+}
+
+// The state wipe lives BEHIND the guard: nothing here runs until a dirty
+// draft is explicitly discarded. edit=1 never carries over to a new channel.
+function applySelection(name: string): void {
   detailInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null
-  selectedName.value = channelKey(ch)
+  selectedName.value = name
   detailTab.value = 'overview'
-  selectedConfig.value = null
-  selectedSecretFields.value = []
-  configError.value = ''
-  pairings.value = []
-  pairingSearch.value = ''
-  pairingsLoading.value = false
-  pairingsError.value = ''
-  pairingAnnouncement.value = ''
-  adminSenders.value = []
-  pairingAdminOverrides.value = {}
+  editMode.value = false
+  editor.reset()
+  members.reset()
   // When the detail is an overlay (narrow viewport), move focus into it so a
   // keyboard user lands in the dialog; the scrim + Esc close it.
   void nextTick(() => {
@@ -838,40 +779,67 @@ function selectChannel(ch: Channel): void {
   })
 }
 
-function closeDetail(): void {
+async function requestCloseDetail(): Promise<void> {
+  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  forceCloseDetail()
+}
+
+function forceCloseDetail(): void {
   const invoker = detailInvoker
   selectedName.value = ''
+  editMode.value = false
+  editor.reset()
   detailInvoker = null
   void nextTick(() => invoker?.focus())
 }
 
-// ?channel=<name>&tab=<tab> keeps the aside URL-addressable: F5/relaunch
-// restores the selection, and links can target a specific channel and tab.
+// ---------------------------------------------------------------------------
+// Query reducer: ?channel=<name>&tab=<tab>&edit=1 keeps the aside (and the
+// editor mode) URL-addressable. One inbound parser (applyDetailQuery) and one
+// outbound writer (the watcher below, always router.replace) own the params —
+// no other code touches them, which is what keeps edit=1 from leaking across
+// channels or feeding back into itself.
+// ---------------------------------------------------------------------------
 const queryMissing = computed(() =>
   Boolean(selectedName.value) && !loading.value && channels.value.length > 0 && !selectedChannel.value)
 
 function applyDetailQuery(): void {
   const name = typeof route.query.channel === 'string' ? route.query.channel : ''
   const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
+  const edit = route.query.edit === '1'
   if (name && name !== selectedName.value) {
-    selectedName.value = name
+    applySelection(name)
     detailTab.value = DETAIL_TABS.includes(tab as DetailTab) ? (tab as DetailTab) : 'overview'
   } else if (name && DETAIL_TABS.includes(tab as DetailTab)) {
     detailTab.value = tab as DetailTab
   }
+  if (name && edit) {
+    // A deep link straight into edit mode always lands on Configuration.
+    detailTab.value = 'configuration'
+    editMode.value = true
+  }
 }
 
-watch([selectedName, detailTab], () => {
+watch([selectedName, detailTab, editMode], () => {
   if (route.path !== '/channels') return
   const query = { ...route.query }
   if (selectedName.value) {
     query.channel = selectedName.value
     query.tab = detailTab.value
+    if (editMode.value) query.edit = '1'
+    else delete query.edit
   } else {
     delete query.channel
     delete query.tab
+    delete query.edit
   }
   void router.replace({ query })
+})
+
+// Opening Configuration (by click, deep link, or edit entry) hydrates the
+// editor exactly once per selected channel.
+watch([selectedName, detailTab], ([name, tab]) => {
+  if (name && tab === 'configuration') ensureConfigurationLoaded()
 })
 
 async function removeChannel(ch: Channel): Promise<void> {
@@ -887,7 +855,8 @@ async function removeChannel(ch: Channel): Promise<void> {
       const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean }>('onboarding.channel.remove', { name })
       if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(name, 'remove')
       pushToast(t(res?.restartRequired === false ? 'setup.toast.channelRemovedLive' : 'setup.toast.channelRemoved'), { tone: 'ok' })
-      closeDetail()
+      // The entry is gone; any in-flight draft is moot — close without guard.
+      forceCloseDetail()
       await refresh()
     } catch (err) {
       pushToast(errorMessage(err), { tone: 'danger' })
@@ -896,12 +865,11 @@ async function removeChannel(ch: Channel): Promise<void> {
 }
 
 function setDetailTab(tab: DetailTab): void {
+  // Switching tabs keeps an unsaved configuration draft alive (the editor is
+  // owned by the view); only the guarded exits can destroy it.
   detailTab.value = tab
-  if (tab === 'configuration' && selectedChannel.value && !selectedConfig.value && !configLoading.value) {
-    void loadConfiguration(selectedChannel.value)
-  }
-  if (tab === 'pairings' && selectedChannel.value && !pairingsLoading.value) {
-    void loadPairings(selectedChannel.value)
+  if (tab === 'pairings' && selectedChannel.value && !members.loading.value) {
+    void members.load(channelKey(selectedChannel.value))
   }
 }
 
@@ -917,180 +885,6 @@ async function withAction(ch: Channel, action: string, run: () => Promise<void>)
 }
 
 function actionPending(ch: Channel, action: string): boolean { return pendingActions.value.has(`${channelKey(ch)}:${action}`) }
-
-function pairingActionKey(ch: Channel, pairing: ChannelPairing, action: string): string {
-  return `pairing:${channelKey(ch)}:${pairing.pairingId}:${action}`
-}
-
-function pairingActionPending(ch: Channel, pairing: ChannelPairing, action: string): boolean {
-  return pendingActions.value.has(pairingActionKey(ch, pairing, action))
-}
-
-async function withPairingAction(ch: Channel, pairing: ChannelPairing, action: string, run: () => Promise<void>): Promise<void> {
-  const key = pairingActionKey(ch, pairing, action)
-  if (pendingActions.value.has(key)) return
-  pendingActions.value = new Set(pendingActions.value).add(key)
-  try { await run() } finally {
-    const next = new Set(pendingActions.value)
-    next.delete(key)
-    pendingActions.value = next
-  }
-}
-
-// Bounded config read: fetch only channel_admin_senders (config.get supports a
-// dot path, so we never pull the whole config into this view) and keep just the
-// list for the selected channel.
-async function loadChannelAdmins(name: string, requestId: number): Promise<void> {
-  try {
-    const map = await rpc.call<Record<string, unknown> | null>('config.get', {
-      path: 'channel_admin_senders',
-    })
-    if (selectedName.value !== name || requestId !== pairingsRequestId) return
-    const list = map && typeof map === 'object' ? (map as Record<string, unknown>)[name] : undefined
-    adminSenders.value = Array.isArray(list) ? list.map(String) : []
-  } catch {
-    // Admin standing is supplementary; a failed fetch leaves members visible
-    // without admin pills rather than breaking the whole members view.
-    if (selectedName.value === name && requestId === pairingsRequestId) adminSenders.value = []
-  }
-}
-
-async function loadPairings(ch: Channel): Promise<void> {
-  const name = channelKey(ch)
-  const requestId = ++pairingsRequestId
-  pairingsLoading.value = true
-  pairingsError.value = ''
-  try {
-    const result = await rpc.call<PairingsResponse>('channels.pairings', { channelName: name })
-    if (selectedName.value !== name || requestId !== pairingsRequestId) return
-    pairings.value = (result.pairings || []).filter(pairing => pairing.channelName === name)
-    await loadChannelAdmins(name, requestId)
-  } catch (err) {
-    if (selectedName.value === name && requestId === pairingsRequestId) {
-      pairingsError.value = t('console.channels.pairings.loadFailed', { error: errorMessage(err) })
-    }
-  } finally {
-    if (selectedName.value === name && requestId === pairingsRequestId) pairingsLoading.value = false
-  }
-}
-
-async function approvePairing(ch: Channel, pairing: ChannelPairing, asAdmin = false): Promise<void> {
-  const sender = pairing.senderName || pairing.senderId
-  const confirmed = await confirm({
-    title: t('console.channels.pairings.approveConfirmTitle'),
-    body: asAdmin
-      ? t('console.channels.pairings.approveAdminConfirmBody', { sender, channel: channelKey(ch) })
-      : t('console.channels.pairings.approveConfirmBody', { sender, channel: channelKey(ch) }),
-    primaryLabel: t('console.channels.pairings.approve'),
-    primaryClass: 'btn--primary',
-  })
-  if (!confirmed) return
-  await withPairingAction(ch, pairing, pairing.status === 'revoked' ? 'reapprove' : 'approve', async () => {
-    pairingsError.value = ''
-    try {
-      // Only include asAdmin when set: a plain approval keeps its minimal
-      // payload and never touches channel_admin_senders.
-      const params: Record<string, unknown> = { channelName: channelKey(ch), pairingId: pairing.pairingId }
-      if (asAdmin) params.asAdmin = true
-      await rpc.call('channels.pairing.approve', params)
-      pairingAnnouncement.value = asAdmin
-        ? t('console.channels.pairings.approveAdminSuccess', { sender })
-        : t('console.channels.pairings.approveSuccess', { sender })
-      pushToast(pairingAnnouncement.value, { tone: 'ok' })
-      await loadPairings(ch)
-    } catch (err) {
-      pairingsError.value = t('console.channels.pairings.approveFailed', { sender, error: errorMessage(err) })
-    }
-  })
-}
-
-async function setPairingAdmin(ch: Channel, pairing: ChannelPairing, admin: boolean): Promise<void> {
-  const sender = pairing.senderName || pairing.senderId
-  const confirmed = await confirm({
-    title: admin
-      ? t('console.channels.pairings.setAsAdminConfirmTitle')
-      : t('console.channels.pairings.removeAdminConfirmTitle'),
-    body: admin
-      ? t('console.channels.pairings.setAsAdminConfirmBody', { sender, channel: channelKey(ch) })
-      : t('console.channels.pairings.removeAdminConfirmBody', { sender, channel: channelKey(ch) }),
-    primaryLabel: admin
-      ? t('console.channels.pairings.setAsAdmin')
-      : t('console.channels.pairings.removeAdmin'),
-    primaryClass: admin ? 'btn--primary' : undefined,
-  })
-  if (!confirmed) return
-  await withPairingAction(ch, pairing, 'admin', async () => {
-    pairingsError.value = ''
-    try {
-      await rpc.call('channels.admin.set', {
-        channelName: channelKey(ch),
-        senderId: pairing.senderId,
-        admin,
-      })
-      pairingAnnouncement.value = admin
-        ? t('console.channels.pairings.adminGrantedSuccess', { sender })
-        : t('console.channels.pairings.adminRemovedSuccess', { sender })
-      pushToast(pairingAnnouncement.value, { tone: 'ok' })
-      await loadPairings(ch)
-    } catch (err) {
-      pairingsError.value = t('console.channels.pairings.adminUpdateFailed', { sender, error: errorMessage(err) })
-    }
-  })
-}
-
-function adminOnlyActionKey(ch: Channel, senderId: string): string {
-  return `admin:${channelKey(ch)}:${senderId}`
-}
-function adminOnlyActionPending(senderId: string): boolean {
-  return Boolean(selectedChannel.value) &&
-    pendingActions.value.has(adminOnlyActionKey(selectedChannel.value as Channel, senderId))
-}
-
-async function removeAdminOnly(ch: Channel, senderId: string): Promise<void> {
-  const confirmed = await confirm({
-    title: t('console.channels.pairings.removeAdminConfirmTitle'),
-    body: t('console.channels.pairings.removeAdminConfirmBody', { sender: senderId, channel: channelKey(ch) }),
-    primaryLabel: t('console.channels.pairings.removeAdmin'),
-  })
-  if (!confirmed) return
-  const key = adminOnlyActionKey(ch, senderId)
-  if (pendingActions.value.has(key)) return
-  pendingActions.value = new Set(pendingActions.value).add(key)
-  pairingsError.value = ''
-  try {
-    await rpc.call('channels.admin.set', { channelName: channelKey(ch), senderId, admin: false })
-    pairingAnnouncement.value = t('console.channels.pairings.adminRemovedSuccess', { sender: senderId })
-    pushToast(pairingAnnouncement.value, { tone: 'ok' })
-    await loadPairings(ch)
-  } catch (err) {
-    pairingsError.value = t('console.channels.pairings.adminUpdateFailed', { sender: senderId, error: errorMessage(err) })
-  } finally {
-    const next = new Set(pendingActions.value)
-    next.delete(key)
-    pendingActions.value = next
-  }
-}
-
-async function revokePairing(ch: Channel, pairing: ChannelPairing): Promise<void> {
-  const sender = pairing.senderName || pairing.senderId
-  const confirmed = await confirm({
-    title: t('console.channels.pairings.revokeConfirmTitle'),
-    body: t('console.channels.pairings.revokeConfirmBody', { sender, channel: channelKey(ch) }),
-    primaryLabel: t('console.channels.pairings.revoke'),
-  })
-  if (!confirmed) return
-  await withPairingAction(ch, pairing, 'revoke', async () => {
-    pairingsError.value = ''
-    try {
-      await rpc.call('channels.pairing.revoke', { channelName: channelKey(ch), pairingId: pairing.pairingId })
-      pairingAnnouncement.value = t('console.channels.pairings.revokeSuccess', { sender })
-      pushToast(pairingAnnouncement.value, { tone: 'ok' })
-      await loadPairings(ch)
-    } catch (err) {
-      pairingsError.value = t('console.channels.pairings.revokeFailed', { sender, error: errorMessage(err) })
-    }
-  })
-}
 
 // Branch on the probe's three-way status, not the connected boolean: a bad
 // token must read as a failure, not as "probe unavailable".
@@ -1154,22 +948,8 @@ async function toggleChannel(ch: Channel): Promise<void> {
   })
 }
 
-async function loadConfiguration(ch: Channel): Promise<void> {
-  configLoading.value = true
-  configError.value = ''
-  try {
-    const result = await rpc.call<{ entry: Record<string, unknown>; secretFields?: string[] }>('channels.get', { name: channelKey(ch) })
-    if (selectedName.value !== channelKey(ch)) return
-    selectedConfig.value = result.entry
-    selectedSecretFields.value = result.secretFields || []
-  } catch (err) {
-    configError.value = t('console.channels.configurationUnavailable', { error: errorMessage(err) })
-  } finally { configLoading.value = false }
-}
-
 function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
 function providerInitial(type?: string): string { return String(type || '?').slice(0, 1).toUpperCase() }
-function pairingInitial(pairing: ChannelPairing): string { return String(pairing.senderName || pairing.senderId || '?').slice(0, 1).toUpperCase() }
 // Curated per-type labels and a static transport, so a not-yet-loaded channel
 // (no runtime capability_profile) still reads with the platform's real name
 // and transport instead of a title-cased type slug.
@@ -1279,14 +1059,6 @@ function probeResultDetail(ch: Channel): string {
   if (result.latencyMs != null) return t('console.channels.probeLatency', { ms: result.latencyMs })
   return t('console.channels.probeNoDetail')
 }
-
-function configRows(config: Record<string, unknown>): Array<{ key: string; value: string; secret: boolean }> {
-  return Object.entries(config).filter(([key]) => !['name', 'type'].includes(key)).map(([key, value]) => {
-    const secret = value === SECRET_MARKER || selectedSecretFields.value.includes(key)
-    const display = secret ? t('console.channels.secretStored') : Array.isArray(value) ? value.join(', ') || '—' : String(value ?? '—')
-    return { key, value: display, secret }
-  })
-}
 </script>
 
 <style scoped>
@@ -1361,9 +1133,18 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-detail__tabs button:hover, .ch-detail__tabs button.is-active { color: var(--text); }
 .ch-detail__tabs button.is-active::after { background: var(--accent); bottom: 0; content: ''; height: 2px; left: 10px; position: absolute; right: 10px; }
 .ch-row-badge { cursor: pointer; margin-left: 8px; }
+/* Unsaved-draft dot on the Configuration tab: typographic, not chromatic. */
+.ch-tab-dirty { color: var(--text); display: inline-block; font-size: 8px; line-height: 1; margin-left: 6px; vertical-align: 2px; }
+/* The editor bar slides up from the aside bottom; reduced motion gets it
+   instantly. */
+.ceb-slide-enter-active, .ceb-slide-leave-active { transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out); }
+.ceb-slide-enter-from, .ceb-slide-leave-to { opacity: 0; transform: translateY(100%); }
+@media (prefers-reduced-motion: reduce) {
+  .ceb-slide-enter-active, .ceb-slide-leave-active { transition: none; }
+}
 .ch-summary__item.tone-warn .dot { background: var(--warn); }
 .ch-tab-badge { background: color-mix(in srgb, var(--warn) 20%, transparent); border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: var(--radius-full); color: var(--warn); font-size: 10px; font-weight: 700; margin-left: 6px; padding: 0 6px; }
-.ch-detail__body { display: grid; gap: var(--sp-3); overflow-y: auto; padding: var(--sp-4); }
+.ch-detail__body { display: grid; flex: 1 1 auto; gap: var(--sp-3); overflow-y: auto; padding: var(--sp-4); align-content: start; }
 .ch-panel, .ch-alert { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; }
 .ch-panel > h3, .ch-panel__heading { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; margin: 0; padding: 12px 14px; }
 .ch-panel h3 { font-size: var(--fs-sm); margin: 0; }
@@ -1378,12 +1159,11 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .is-ok { color: var(--ok); }
 .is-muted { color: var(--text-dim); }
 .is-warn { color: var(--warn); }
-.ch-facts dl, .ch-config-list { margin: 0; }
-.ch-facts dl > div, .ch-config-list > div { align-items: baseline; border-top: 1px solid var(--border); display: flex; gap: var(--sp-3); justify-content: space-between; padding: 11px 14px; }
-.ch-facts dl > div:first-child, .ch-config-list > div:first-child { border-top: 0; }
-.ch-facts dt, .ch-config-list dt { color: var(--text-dim); font-size: var(--fs-sm); }
-.ch-facts dd, .ch-config-list dd { font-family: var(--font-mono); font-size: 11px; margin: 0; max-width: 64%; overflow-wrap: anywhere; text-align: right; }
-.ch-config-list dd.is-secret { color: var(--ok); font-family: var(--font-sans); }
+.ch-facts dl { margin: 0; }
+.ch-facts dl > div { align-items: baseline; border-top: 1px solid var(--border); display: flex; gap: var(--sp-3); justify-content: space-between; padding: 11px 14px; }
+.ch-facts dl > div:first-child { border-top: 0; }
+.ch-facts dt { color: var(--text-dim); font-size: var(--fs-sm); }
+.ch-facts dd { font-family: var(--font-mono); font-size: 11px; margin: 0; max-width: 64%; overflow-wrap: anywhere; text-align: right; }
 .ch-probe-result, .ch-alert { align-items: flex-start; display: flex; gap: 10px; padding: 12px 14px; }
 .ch-probe-result { background: color-mix(in srgb, var(--ok) 8%, var(--bg)); border: 1px solid color-mix(in srgb, var(--ok) 36%, var(--border)); border-radius: var(--radius-md); color: var(--ok); }
 .ch-probe-result.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 36%, var(--border)); color: var(--danger); }
@@ -1400,35 +1180,6 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-capability strong { font-size: var(--fs-sm); }
 .ch-capability span:not(.ch-proof) { color: var(--text-dim); font-size: 11px; }
 .ch-proof.is-declared { color: var(--text-dim); }
-.ch-pairings .ch-panel__heading { align-items: flex-start; gap: var(--sp-3); }
-.ch-pairings .ch-panel__heading > div { min-width: 0; }
-.ch-pairings .ch-panel__heading p { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin: 4px 0 0; }
-.ch-pairing-summary { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-muted); display: flex; flex-wrap: wrap; font-size: 11px; gap: 6px var(--sp-4); padding: 9px 14px; }
-.ch-pairing-summary strong { color: var(--text); font-family: var(--font-mono); }
-.ch-pairing-state { align-items: center; color: var(--text-dim); display: flex; flex-direction: column; gap: 8px; justify-content: center; min-height: 180px; padding: var(--sp-4); text-align: center; }
-.ch-pairing-state.is-error { color: var(--danger); }
-.ch-pairing-groups > section + section { border-top: 1px solid var(--border); }
-.ch-pairing-groups h4 { color: var(--text-dim); font-size: 11px; letter-spacing: .04em; margin: 0; padding: 11px 14px 7px; text-transform: uppercase; }
-.ch-pairing-row { align-items: center; display: grid; gap: 10px; grid-template-columns: 32px minmax(0, 1fr) auto auto; padding: 10px 14px; }
-.ch-pairing-row + .ch-pairing-row { border-top: 1px solid var(--border); }
-.ch-pairing-avatar { align-items: center; background: var(--bg-surface-2); border: 1px solid var(--border); border-radius: 50%; color: var(--text-muted); display: flex; font-size: 12px; font-weight: 800; height: 32px; justify-content: center; width: 32px; }
-.ch-pairing-identity { display: grid; gap: 2px; min-width: 0; }
-.ch-pairing-identity strong, .ch-pairing-identity span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ch-pairing-identity strong { font-size: var(--fs-sm); }
-.ch-pairing-identity .ch-pairing-code { color: var(--warn); font-size: 10px; }
-.ch-pairing-identity time { color: var(--text-dim); font-size: 10px; }
-.ch-pairing-status { border: 1px solid var(--border); border-radius: var(--radius-full); font-size: 10px; font-weight: 700; padding: 3px 8px; text-transform: uppercase; }
-.ch-pairing-status.is-pending { border-color: color-mix(in srgb, var(--warn) 42%, var(--border)); color: var(--warn); }
-.ch-pairing-status.is-approved { border-color: color-mix(in srgb, var(--ok) 42%, var(--border)); color: var(--ok); }
-.ch-pairing-status.is-revoked { border-color: color-mix(in srgb, var(--danger) 42%, var(--border)); color: var(--danger); }
-.ch-pairing-status.is-admin { background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
-.ch-pairing-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-.ch-pairing-asadmin { align-items: center; color: var(--text-dim); cursor: pointer; display: inline-flex; font-size: 11px; gap: 5px; user-select: none; white-space: nowrap; }
-.ch-pairing-asadmin input { accent-color: var(--accent); cursor: pointer; margin: 0; }
-.ch-pairing-hint { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin: 0; padding: 10px 14px 12px; }
-.ch-pairing-search { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-dim); display: flex; gap: 8px; padding: 8px 14px; }
-.ch-pairing-search input { background: transparent; border: 0; color: var(--text); font: inherit; outline: 0; width: 100%; }
-.ch-pairing-revoke { color: var(--danger); }
 .ch-metrics { display: grid; grid-template-columns: repeat(2, 1fr); }
 .ch-metrics > div { border-right: 1px solid var(--border); border-top: 1px solid var(--border); display: grid; gap: 4px; padding: 14px; }
 .ch-metrics > div:nth-child(even) { border-right: 0; }
@@ -1497,8 +1248,5 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
   .ch-check-row > b, .ch-check-row > .ch-inline-link { grid-column: 2; justify-self: start; white-space: nowrap; }
   .ch-capability { grid-template-columns: 18px minmax(0, 1fr); }
   .ch-proof { grid-column: 2; width: fit-content; }
-  .ch-pairing-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
-  .ch-pairing-row > .btn { grid-column: 2 / -1; justify-self: start; }
-  .ch-pairing-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 </style>

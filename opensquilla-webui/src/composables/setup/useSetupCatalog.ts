@@ -1,6 +1,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import i18n from '@/i18n'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
+import { parseUpsertOutcome, probeChannelEntry, upsertChannelEntry } from '@/composables/setup/channelRpc'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import {
@@ -1920,22 +1921,23 @@ async function saveChannel() {
   const entry = channelsForm.payload()
   const wasEditing = channelEditActive.value
   try {
-    await rpc.call('onboarding.channel.probe', { entry })
-    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean; liveApply?: Record<string, string> | null; entry?: { name?: string } }>('onboarding.channel.upsert', { entry })
-    const name = String(entry.name || res?.entry?.name || '')
-    if (name && res?.changed !== false && res?.restartRequired !== false) {
+    await probeChannelEntry(rpc, entry)
+    const res = await upsertChannelEntry(rpc, entry)
+    const outcome = parseUpsertOutcome(entry.name, res)
+    const name = outcome.name
+    if (name && outcome.changed && outcome.restartRequired) {
       // Restart-gated outcome (webhook-mode entry or no live reconciler):
       // an upsert over a live adapter has no observable post-restart signal,
       // so flag it and let the pending entry clear only manually.
       const row = (channelStatus.value.channels || []).find(r => r.name === name)
       pendingRestart.record(name, 'upsert', { wasLoaded: row ? adapterLoaded(row) : false })
     }
-    if (name && res?.liveApply?.[name] === 'failed') {
+    if (outcome.liveApplyFailed) {
       // Saved, applied — and the adapter failed to start. Success wording
       // here would hide a down channel; channels.restart is the retry path.
       pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
     } else {
-      pushToast(t(res?.restartRequired === false ? 'setup.toast.channelSavedLive' : 'setup.toast.channelSaved'))
+      pushToast(t(outcome.restartRequired ? 'setup.toast.channelSaved' : 'setup.toast.channelSavedLive'))
     }
     await loadData()
     // Stay in edit mode after an edit save: re-seed from the server so a

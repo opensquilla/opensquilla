@@ -1,4 +1,5 @@
 import { computed, ref, type ComputedRef } from 'vue'
+import { stripRedactionSentinels } from '@/composables/setup/channelRpc'
 
 interface ChannelSpec {
   type: string
@@ -41,8 +42,10 @@ interface ChannelsPanelContext {
   channelSpecFields: ComputedRef<ChannelFieldSpec[]>
 }
 
-/** The redaction placeholder channels.get uses for stored secrets. */
-export const REDACTED_SENTINEL = '***'
+// Sentinel handling lives in the shared channel RPC module so this form and
+// the RPC wrappers can never disagree about redaction; re-exported here for
+// the existing consumers of this module's contract.
+export { REDACTED_SENTINEL } from '@/composables/setup/channelRpc'
 
 export function buildChannelEntry(type: string, values: Record<string, unknown>): Record<string, unknown> {
   const entry: Record<string, unknown> = { type }
@@ -50,17 +53,6 @@ export function buildChannelEntry(type: string, values: Record<string, unknown>)
     if (value !== '' && value !== undefined) entry[key] = value
   })
   return entry
-}
-
-// Terminal scrub: the literal redaction placeholder must never reach an
-// upsert payload — the backend would persist it verbatim as the credential.
-function stripRedactionSentinels(entry: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(entry)) {
-    if (value === REDACTED_SENTINEL) continue
-    out[key] = value
-  }
-  return out
 }
 
 export function useSetupChannelsForm() {

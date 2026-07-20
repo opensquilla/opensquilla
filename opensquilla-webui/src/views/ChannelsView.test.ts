@@ -75,10 +75,12 @@ function channelRow(root: ParentNode, name: string): HTMLTableRowElement {
 async function mountChannelsView(options: {
   loadPairings?: (params?: Record<string, unknown>) => Promise<unknown>
   adminSenders?: Record<string, string[]>
+  /** When set, onboarding.channel.probe rejects with this message. */
+  draftProbeError?: { message: string }
 } = {}) {
   vi.resetModules()
 
-  const { createApp, defineComponent, h, nextTick, ref } = await import('vue')
+  const { KeepAlive, createApp, defineComponent, h, nextTick, ref } = await import('vue')
   const i18n = (await import('@/i18n')).default
   i18n.global.locale.value = 'en'
 
@@ -123,7 +125,33 @@ async function mountChannelsView(options: {
   const adminSendersMap: Record<string, string[]> = { ...(options.adminSenders || {}) }
   const execute = vi.fn(async () => ({ channels: channelRows }))
   const refresh = vi.fn(async () => ({ channels: channelRows }))
+  // Catalog slice mirroring the backend field-spec shape (groups, secrets,
+  // show_when, advanced) for the in-place configuration editor.
+  const slackSpec = {
+    type: 'slack',
+    label: 'Slack',
+    setupAids: [],
+    fields: [
+      { name: 'name', label: 'Channel name', type: 'text', required: true },
+      { name: 'connection_mode', label: 'Connection mode', type: 'select', default: 'socket', choices: ['socket', 'webhook'] },
+      { name: 'slack_channel_id', label: 'Default channel id', type: 'text', default: '' },
+      { name: 'token', label: 'Bot token', type: 'password', required: true, secret: true, group: 'credentials' },
+      { name: 'signing_secret', label: 'Signing secret', type: 'password', required: true, secret: true, group: 'credentials', showWhen: { connection_mode: 'webhook' } },
+      { name: 'reply_in_thread', label: 'Reply in thread', type: 'bool', default: false, advanced: true },
+    ],
+  }
   const rpcCall = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+    if (method === 'onboarding.catalog') {
+      return { channels: [slackSpec] }
+    }
+    if (method === 'onboarding.channel.probe') {
+      if (options.draftProbeError) throw new Error(options.draftProbeError.message)
+      return { status: 'validated', connected: false, restartRequired: true, warnings: [] }
+    }
+    if (method === 'onboarding.channel.upsert') {
+      const entry = params?.entry as Record<string, unknown> | undefined
+      return { changed: true, restartRequired: true, entry: { name: entry?.name } }
+    }
     if (method === 'channels.probe') {
       return { status: 'verified', connected: true, latencyMs: 17 }
     }
@@ -197,10 +225,11 @@ async function mountChannelsView(options: {
     },
   })
 
-  const replace = vi.fn(async () => {})
+  const replace = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
   vi.doMock('vue-router', () => ({
     useRouter: () => ({ push, replace }),
     useRoute: () => ({ path: '/channels', query: {}, hash: '' }),
+    onBeforeRouteLeave: vi.fn(),
   }))
   vi.doMock('@/stores/rpc', () => ({
     useRpcStore: () => ({
@@ -230,7 +259,13 @@ async function mountChannelsView(options: {
   const Component = (await import('./ChannelsView.vue')).default
   const el = document.createElement('div')
   document.body.appendChild(el)
-  const app = createApp(Component)
+  // KeepAlive matches the production mount (MonitorHubView) and makes
+  // onActivated run — the document Esc listener and catalog refresh live there.
+  const app = createApp(defineComponent({
+    setup() {
+      return () => h(KeepAlive, null, [h(Component)])
+    },
+  }))
   app.use(i18n)
   app.mount(el)
   await nextTick()
@@ -240,7 +275,7 @@ async function mountChannelsView(options: {
     await nextTick()
   }
 
-  return { app, el, flush, nextTick, rpcCall, refresh, confirm, pushToast }
+  return { app, el, flush, nextTick, rpcCall, refresh, confirm, pushToast, push, replace }
 }
 
 beforeEach(() => {
@@ -306,9 +341,10 @@ describe('ChannelsView channel operations', () => {
       buttonWithText(detail, 'Configuration').click()
       await flush()
       expect(rpcCall).toHaveBeenCalledWith('channels.get', { name: 'ops-slack' })
-      const storedSecrets = detail.querySelectorAll<HTMLElement>('.ch-config-list dd.is-secret')
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.catalog')).toBe(true)
+      const storedSecrets = detail.querySelectorAll<HTMLElement>('.cfge__value--secret')
       expect(storedSecrets).toHaveLength(2)
-      expect(Array.from(storedSecrets).every(field => field.textContent === 'Stored securely'))
+      expect(Array.from(storedSecrets).every(field => field.textContent?.trim() === 'Stored ······'))
         .toBe(true)
 
       buttonWithText(detail, 'Capabilities').click()
@@ -554,6 +590,269 @@ describe('ChannelsView channel operations', () => {
       })
     } finally {
       app.unmount()
+    }
+  })
+})
+
+describe('ChannelsView in-place configuration editor', () => {
+  type Ctx = Awaited<ReturnType<typeof mountChannelsView>>
+
+  async function openConfiguration(ctx: Ctx): Promise<HTMLElement> {
+    const { el, flush, nextTick } = ctx
+    channelRow(el, 'ops-slack').click()
+    await nextTick()
+    const detail = el.querySelector<HTMLElement>('.ch-detail')!
+    buttonWithText(detail, 'Configuration').click()
+    await flush()
+    return detail
+  }
+
+  async function enterEditMode(ctx: Ctx, detail: HTMLElement): Promise<void> {
+    buttonWithText(detail, 'Edit').click()
+    await ctx.flush()
+  }
+
+  function fieldNames(detail: HTMLElement): string[] {
+    return Array.from(detail.querySelectorAll<HTMLElement>('.cfge [data-field]'))
+      .map(node => node.getAttribute('data-field') || '')
+  }
+
+  function setField(detail: HTMLElement, name: string, value: string): void {
+    const input = detail.querySelector<HTMLInputElement>(`[data-field="${name}"] input`)!
+    input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  function bar(el: HTMLElement): HTMLElement {
+    const node = el.querySelector<HTMLElement>('.ceb')
+    if (!node) throw new Error('editor action bar not found')
+    return node
+  }
+
+  it('flips read → edit onto the same field skeleton, name locked', async () => {
+    const ctx = await mountChannelsView()
+    try {
+      const detail = await openConfiguration(ctx)
+      const readFields = fieldNames(detail)
+      // Spec-driven read rows: same set the edit form will own, secrets masked.
+      expect(readFields).toEqual(
+        ['name', 'connection_mode', 'slack_channel_id', 'token', 'signing_secret', 'reply_in_thread'])
+      expect(detail.querySelectorAll('.cfge input')).toHaveLength(0)
+
+      await enterEditMode(ctx, detail)
+      expect(fieldNames(detail)).toEqual(readFields)
+      // Rows became live fields in place; the name stays locked text.
+      expect(detail.querySelector('[data-field="slack_channel_id"] input')).toBeTruthy()
+      expect(detail.querySelector('[data-field="name"] input')).toBeNull()
+      expect(detail.querySelector('[data-field="name"] .cfge__value--locked')).toBeTruthy()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('owns the edit=1 query contract: enter, two-stage Esc exit, never carries across channels', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, replace } = ctx
+    const lastQuery = () => {
+      const calls = replace.mock.calls
+      return calls[calls.length - 1]?.[0]?.query
+    }
+    try {
+      const detail = await openConfiguration(ctx)
+      await enterEditMode(ctx, detail)
+      expect(lastQuery()).toMatchObject({
+        channel: 'ops-slack', tab: 'configuration', edit: '1',
+      })
+
+      // First Esc only blurs the autofocused field — still editing.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await flush()
+      expect(detail.querySelector('[data-field="slack_channel_id"] input')).toBeTruthy()
+
+      // Second Esc cancels back to read mode and drops edit=1.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await flush()
+      expect(detail.querySelector('[data-field="slack_channel_id"] input')).toBeNull()
+      const afterExit = lastQuery()
+      expect(afterExit).toMatchObject({ channel: 'ops-slack', tab: 'configuration' })
+      expect(afterExit?.edit).toBeUndefined()
+
+      // Re-enter edit, then switch channels (clean draft): the new channel's
+      // query must never inherit edit=1.
+      await enterEditMode(ctx, detail)
+      channelRow(el, 'alerts-telegram').click()
+      await flush()
+      const telegramWrites = replace.mock.calls
+        .map(call => call[0]?.query)
+        .filter(query => query?.channel === 'alerts-telegram')
+      expect(telegramWrites.length).toBeGreaterThan(0)
+      expect(telegramWrites.every(query => query?.edit === undefined)).toBe(true)
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('names the changed fields in the dirty bar and probes the current draft', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, rpcCall } = ctx
+    try {
+      const detail = await openConfiguration(ctx)
+      await enterEditMode(ctx, detail)
+      expect(el.querySelector('.ceb')).toBeNull()
+
+      setField(detail, 'slack_channel_id', 'C123')
+      await flush()
+      expect(bar(el).textContent).toContain('Unsaved — Default channel id')
+      expect(detail.querySelector('.ch-tab-dirty')).toBeTruthy()
+
+      buttonWithText(bar(el), 'Test connection').click()
+      await flush()
+      const probeCall = rpcCall.mock.calls.find(([method]) => method === 'onboarding.channel.probe')
+      expect(probeCall).toBeTruthy()
+      const entry = (probeCall![1] as { entry: Record<string, unknown> }).entry
+      expect(entry).toMatchObject({
+        type: 'slack', name: 'ops-slack', connection_mode: 'webhook', slack_channel_id: 'C123',
+      })
+      // Untouched stored secrets stay out of the draft probe entirely.
+      expect('token' in entry).toBe(false)
+      expect(JSON.stringify(entry)).not.toContain('***')
+      expect(detail.textContent).toContain('Configuration checks passed')
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('saves via probe → upsert, resets the baseline, and drops edit mode', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, rpcCall, pushToast } = ctx
+    try {
+      const detail = await openConfiguration(ctx)
+      await enterEditMode(ctx, detail)
+      setField(detail, 'slack_channel_id', 'C123')
+      await flush()
+
+      buttonWithText(bar(el), 'Save changes').click()
+      await flush()
+      await flush()
+
+      const methods = rpcCall.mock.calls.map(([method]) => method)
+      expect(methods.indexOf('onboarding.channel.probe'))
+        .toBeLessThan(methods.indexOf('onboarding.channel.upsert'))
+      const upsertCall = rpcCall.mock.calls.find(([method]) => method === 'onboarding.channel.upsert')!
+      const entry = (upsertCall[1] as { entry: Record<string, unknown> }).entry
+      expect(entry).toMatchObject({ name: 'ops-slack', slack_channel_id: 'C123' })
+      expect(JSON.stringify(entry)).not.toContain('***')
+      expect(pushToast).toHaveBeenCalledWith(
+        'Channel saved — configuration validated locally; use Test connection to verify credentials',
+        { tone: 'ok' },
+      )
+      // Baseline reset from the reseed: read mode, no dirty dot, no bar.
+      expect(detail.querySelector('[data-field="slack_channel_id"] input')).toBeNull()
+      expect(detail.querySelector('.ch-tab-dirty')).toBeNull()
+      expect(el.querySelector('.ceb')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('blocks Save on a failed probe with inline rows and offers Save anyway', async () => {
+    const ctx = await mountChannelsView({
+      draftProbeError: { message: 'invalid channel entry: token: Field required' },
+    })
+    const { el, flush, rpcCall } = ctx
+    try {
+      const detail = await openConfiguration(ctx)
+      await enterEditMode(ctx, detail)
+      setField(detail, 'slack_channel_id', 'C123')
+      await flush()
+
+      buttonWithText(bar(el), 'Save changes').click()
+      await flush()
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(false)
+      expect(detail.textContent).toContain('invalid channel entry: token: Field required')
+
+      buttonWithText(detail, 'Save anyway').click()
+      await flush()
+      await flush()
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(true)
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('guards channel switching behind the inline discard confirm', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, rpcCall } = ctx
+    try {
+      const detail = await openConfiguration(ctx)
+      await enterEditMode(ctx, detail)
+      setField(detail, 'slack_channel_id', 'C123')
+      await flush()
+
+      channelRow(el, 'alerts-telegram').click()
+      await flush()
+      // The wipe waited: still on ops-slack, confirm pair raised in the bar.
+      expect(detail.querySelector('h2')?.textContent).toBe('ops-slack')
+      expect(bar(el).textContent).toContain('Discard unsaved changes?')
+
+      buttonWithText(bar(el), 'Keep editing').click()
+      await flush()
+      expect(detail.querySelector('h2')?.textContent).toBe('ops-slack')
+      const input = detail.querySelector<HTMLInputElement>('[data-field="slack_channel_id"] input')!
+      expect(input.value).toBe('C123')
+      expect(bar(el).textContent).toContain('Unsaved — Default channel id')
+
+      channelRow(el, 'alerts-telegram').click()
+      await flush()
+      buttonWithText(bar(el), 'Discard').click()
+      await flush()
+      expect(el.querySelector('.ch-detail h2')?.textContent).toBe('alerts-telegram')
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(false)
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('never round-trips the redaction sentinel through secret Replace/Cancel', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, nextTick, rpcCall } = ctx
+    try {
+      const detail = await openConfiguration(ctx)
+      await enterEditMode(ctx, detail)
+
+      // Replace → type → cancel: the stored value stays authoritative.
+      const tokenRow = detail.querySelector<HTMLElement>('[data-field="token"]')!
+      buttonWithText(tokenRow, 'Replace').click()
+      await nextTick()
+      setField(detail, 'token', 'xoxb-typed-then-cancelled')
+      await nextTick()
+      buttonWithText(tokenRow, 'Keep stored value').click()
+      await nextTick()
+      expect(tokenRow.textContent).toContain('Stored ······')
+
+      // Replace the other secret for real and save.
+      const signingRow = detail.querySelector<HTMLElement>('[data-field="signing_secret"]')!
+      buttonWithText(signingRow, 'Replace').click()
+      await nextTick()
+      setField(detail, 'signing_secret', 'shhh-new-secret')
+      await flush()
+
+      buttonWithText(bar(el), 'Save changes').click()
+      await flush()
+      await flush()
+
+      for (const method of ['onboarding.channel.probe', 'onboarding.channel.upsert']) {
+        const call = rpcCall.mock.calls.find(([m]) => m === method)!
+        const entry = (call[1] as { entry: Record<string, unknown> }).entry
+        expect(entry.signing_secret).toBe('shhh-new-secret')
+        expect('token' in entry).toBe(false)
+        expect(JSON.stringify(entry)).not.toContain('***')
+      }
+      // The reseed masks the replaced secret again.
+      expect(detail.querySelector<HTMLElement>('[data-field="signing_secret"]')?.textContent)
+        .toContain('Stored ······')
+    } finally {
+      ctx.app.unmount()
     }
   })
 })

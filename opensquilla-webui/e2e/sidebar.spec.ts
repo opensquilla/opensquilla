@@ -406,29 +406,16 @@ test.describe('Sidebar', () => {
     }
   })
 
-  test('Console auto-expands on console routes and collapses on leaving', async ({ page }) => {
-    // Deep-loading a console page opens the fold with the active trail.
+  test('Agent administration deep links without reappearing in the primary rail', async ({ page }) => {
     await openControl(page, 'agents')
-    const consoleRow = page.locator('.sidebar-core').getByRole('button', { name: 'Console' })
-    await expect(consoleRow).toHaveAttribute('aria-expanded', 'true')
-    await expect(
-      page.locator('#sidebar-console-list .sidebar-fn-item.is-active .sidebar-fn-label'),
-    ).toHaveText('Agents')
-
-    // Leaving the console area folds it back down.
-    await page.locator('.sidebar-core').getByText('Sessions', { exact: true }).click()
-    await expect(page).toHaveURL(/\/sessions/)
-    await expect(consoleRow).toHaveAttribute('aria-expanded', 'false')
-    await expect(page.locator('#sidebar-console-list')).toHaveCount(0)
+    await expect(page).toHaveURL(/\/agents$/)
+    await expect(page.locator('.sidebar-core').getByText('Agents', { exact: true })).toHaveCount(0)
+    await expect(page.locator('.sidebar-nav-group-toggle')).toHaveCount(0)
   })
 
   test('only the Recents list scrolls at a 900px viewport', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
     await openControl(page)
-
-    // Expand the Console fold to put the core under maximum height pressure.
-    await page.locator('.sidebar-core').getByRole('button', { name: 'Console' }).click()
-    await expect(page.locator('#sidebar-console-list')).toBeVisible()
 
     const metrics = await page.evaluate(() => {
       const pick = (selector: string) => {

@@ -77,6 +77,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     llmTimeoutSeconds: 120,
     contextWindowTokens: '',
     contextWindowGlobal: null,
+    effectiveMaxTokens: null,
     providerIsLocal: false,
     connection: connection(),
     providerFieldValue: () => '',
@@ -212,14 +213,22 @@ describe('SetupProviderPanel — test connection', () => {
 })
 
 describe('SetupProviderPanel — model field', () => {
-  it('renders the plain text field when no models were discovered', async () => {
-    const { app, el } = await mountPanel()
-    expect(el.querySelector('.setup-model-combobox')).toBeNull()
-    expect(el.querySelector('input[name="setup_provider_model"]')).toBeTruthy()
+  it('keeps the shared model picker as a manual text input when no catalog is available', async () => {
+    const onUpdateProviderField = vi.fn()
+    const { app, el } = await mountPanel({}, { onUpdateProviderField })
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model"]')
+
+    expect(el.querySelector('.setup-model-combobox')).toBeTruthy()
+    expect(input?.getAttribute('role')).toBeNull()
+    expect(el.querySelector('[data-testid="setup-model-options-toggle"]')).toBeNull()
+
+    input!.value = 'my/manual-model'
+    input!.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(onUpdateProviderField).toHaveBeenCalledWith('model', 'my/manual-model')
     app.unmount()
   })
 
-  it('upgrades only the model field to the combobox when discovery returned models', async () => {
+  it('enables catalog behavior in the same model picker when discovery returned models', async () => {
     const { app, el } = await mountPanel({
       connection: connection({ phase: 'verified', models: DISCOVERED, modelSource: 'live' }),
     })
@@ -485,6 +494,29 @@ describe('SetupProviderPanel — TokenRhythm recommendation', () => {
     ])
     expect(card?.querySelector('a')?.textContent?.trim()).toBe('注册并获取 API Key')
     expect(card?.querySelector('a')?.getAttribute('aria-label')).toContain('在新标签页中打开')
+    app.unmount()
+  })
+})
+
+describe('SetupProviderPanel — effective output limit', () => {
+  it('shows the exact effective limit and its catalog source', async () => {
+    const { app, el } = await mountPanel({
+      effectiveMaxTokens: { value: 131072, source: 'catalog' },
+    })
+
+    const readout = el.querySelector('[data-testid="setup-effective-max-tokens"]')
+    expect(readout?.textContent).toContain('131,072 tokens')
+    expect(readout?.textContent).toContain('model catalog')
+    expect(readout?.getAttribute('aria-live')).toBe('polite')
+
+    app.unmount()
+  })
+
+  it('hides the readout when no identity-matched effective value is supplied', async () => {
+    const { app, el } = await mountPanel({ effectiveMaxTokens: null })
+
+    expect(el.querySelector('[data-testid="setup-effective-max-tokens"]')).toBeNull()
+
     app.unmount()
   })
 })

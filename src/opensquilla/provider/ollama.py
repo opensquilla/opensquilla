@@ -12,7 +12,7 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
-from .stream_assembly import ToolStreamAccumulator
+from .stream_assembly import ToolStreamAccumulator, ToolStreamProtocolError
 from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
@@ -201,8 +201,15 @@ class OllamaProvider:
         input_tokens = 0
         output_tokens = 0
         assistant_text_parts: list[str] = []
-        # Ollama tool calls accumulate in the full response (not streamed per-chunk)
-        pending_tool_calls: list[dict[str, Any]] = []
+        # Ollama tool calls arrive whole inside stream frames. Validate and
+        # assemble them as they arrive, but hold their public lifecycle events
+        # until done=true supplies successful terminal evidence. This applies
+        # response-local call/identity/argument limits before retaining an
+        # attacker-controlled number of calls or bytes.
+        tools_acc = ToolStreamAccumulator()
+        prepared_tool_events: list[StreamEvent] = []
+        prepared_tool_calls: list[dict[str, Any]] = []
+        saw_done = False
 
         try:
             async with httpx.AsyncClient(
@@ -237,10 +244,42 @@ class OllamaProvider:
                         try:
                             chunk = json.loads(line)
                         except json.JSONDecodeError:
-                            continue
+                            message = "Ollama stream contained an invalid JSON frame"
+                            trace.record_error(
+                                code="invalid_stream_frame",
+                                message=message,
+                                metadata={"phase": "stream"},
+                            )
+                            yield ErrorEvent(message=message, code="invalid_stream_frame")
+                            return
 
+                        if not isinstance(chunk, dict):
+                            message = "Ollama stream contained a non-object JSON frame"
+                            trace.record_error(code="invalid_stream_frame", message=message)
+                            yield ErrorEvent(message=message, code="invalid_stream_frame")
+                            return
                         trace.record_chunk(chunk)
+                        if "error" in chunk and chunk["error"] is not None:
+                            top_level_error = chunk["error"]
+                            error_message = (
+                                str(top_level_error.get("message") or "Ollama stream error")
+                                if isinstance(top_level_error, dict)
+                                else str(top_level_error).strip() or "Ollama stream error"
+                            )
+                            error_code = (
+                                str(top_level_error.get("code") or "stream_error")
+                                if isinstance(top_level_error, dict)
+                                else "stream_error"
+                            )
+                            trace.record_error(code=error_code, message=error_message)
+                            yield ErrorEvent(message=error_message, code=error_code)
+                            return
                         msg_chunk = chunk.get("message", {})
+                        if not isinstance(msg_chunk, dict):
+                            message = "Ollama stream contained a malformed message"
+                            trace.record_error(code="invalid_stream_frame", message=message)
+                            yield ErrorEvent(message=message, code="invalid_stream_frame")
+                            return
 
                         # Text content
                         text = msg_chunk.get("content", "")
@@ -249,39 +288,107 @@ class OllamaProvider:
                             yield TextDeltaEvent(text=text)
 
                         # Ollama delivers tool_calls in a single chunk (non-streaming)
-                        for tc in msg_chunk.get("tool_calls", []):
+                        raw_tool_calls = msg_chunk.get("tool_calls", [])
+                        if not isinstance(raw_tool_calls, list):
+                            message = "Ollama stream contained malformed tool calls"
+                            trace.record_error(code="incomplete_tool_call", message=message)
+                            yield ErrorEvent(message=message, code="incomplete_tool_call")
+                            return
+                        for tc in raw_tool_calls:
+                            if not isinstance(tc, dict):
+                                message = "Ollama stream contained a malformed tool call"
+                                trace.record_error(code="incomplete_tool_call", message=message)
+                                yield ErrorEvent(message=message, code="incomplete_tool_call")
+                                return
                             fn = tc.get("function", {})
-                            pending_tool_calls.append(
+                            if not isinstance(fn, dict):
+                                message = "Ollama stream contained a malformed tool function"
+                                trace.record_error(code="incomplete_tool_call", message=message)
+                                yield ErrorEvent(message=message, code="incomplete_tool_call")
+                                return
+                            raw_tool_id = tc.get("id")
+                            if "id" in tc and (
+                                not isinstance(raw_tool_id, str)
+                                or not raw_tool_id.strip()
+                            ):
+                                message = "Ollama stream contained an invalid tool call id"
+                                trace.record_error(code="incomplete_tool_call", message=message)
+                                yield ErrorEvent(message=message, code="incomplete_tool_call")
+                                return
+                            key = tools_acc.next_int_key()
+                            tool_use_id = (
+                                raw_tool_id
+                                if isinstance(raw_tool_id, str)
+                                else f"call_{key}"
+                            )
+                            tool_name = fn.get("name", "")
+                            arguments = fn.get("arguments", {})
+                            try:
+                                arguments_json = json.dumps(arguments, allow_nan=False)
+                                call_events = [
+                                    *tools_acc.start(
+                                        key,
+                                        tool_use_id=tool_use_id,
+                                        tool_name=tool_name,
+                                    ),
+                                    *tools_acc.append(key, arguments_json),
+                                    *tools_acc.finish_with_arguments(key, arguments),
+                                ]
+                            except (
+                                OverflowError,
+                                RecursionError,
+                                TypeError,
+                                ValueError,
+                                ToolStreamProtocolError,
+                            ) as exc:
+                                message = (
+                                    "Ollama response contained an invalid tool lifecycle"
+                                )
+                                reason = (
+                                    exc.reason
+                                    if isinstance(exc, ToolStreamProtocolError)
+                                    else "invalid_tool_arguments"
+                                )
+                                trace.record_error(
+                                    code="incomplete_tool_call",
+                                    message=message,
+                                    metadata={"reason": reason, "phase": "stream"},
+                                )
+                                yield ErrorEvent(
+                                    message=message,
+                                    code="incomplete_tool_call",
+                                )
+                                return
+                            prepared_tool_events.extend(call_events)
+                            prepared_tool_calls.append(
                                 {
-                                    "id": tc.get("id", f"call_{len(pending_tool_calls)}"),
-                                    "name": fn.get("name", ""),
-                                    "arguments": fn.get("arguments", {}),
+                                    "id": tool_use_id,
+                                    "name": tool_name,
+                                    "arguments": arguments,
                                 }
                             )
 
                         # Final chunk carries usage stats
-                        if chunk.get("done"):
+                        if chunk.get("done") is True:
+                            saw_done = True
                             input_tokens = chunk.get("prompt_eval_count", 0)
                             output_tokens = chunk.get("eval_count", 0)
+                            break
 
-                    # Emit tool events after streaming completes
-                    tools_acc = ToolStreamAccumulator()
-                    for key, call in enumerate(pending_tool_calls):
-                        for tool_event in tools_acc.start(
-                            key,
-                            tool_use_id=call["id"],
-                            tool_name=call["name"],
-                        ):
-                            yield tool_event
-                        for tool_event in tools_acc.append(key, json.dumps(call["arguments"])):
-                            yield tool_event
-                        # Ollama already delivers parsed arguments — they are
-                        # authoritative, not reassembled from fragments.
-                        for tool_event in tools_acc.finish_with_arguments(
-                            key,
-                            call["arguments"],
-                        ):
-                            yield tool_event
+                    if not saw_done:
+                        message = "Ollama stream ended before done=true"
+                        trace.record_error(
+                            code="incomplete_stream",
+                            message=message,
+                            metadata={"phase": "stream", "terminal_field": "done"},
+                        )
+                        yield ErrorEvent(message=message, code="incomplete_stream")
+                        return
+
+                    # Commit the already-validated lifecycle only after the
+                    # response's explicit done=true terminal.
+                    for tool_event in prepared_tool_events:
+                        yield tool_event
 
                     trace.record_response(
                         usage={
@@ -298,7 +405,7 @@ class OllamaProvider:
                                 "arguments": call["arguments"],
                                 "arguments_json_valid": True,
                             }
-                            for call in pending_tool_calls
+                            for call in prepared_tool_calls
                         ],
                     )
                     yield DoneEvent(

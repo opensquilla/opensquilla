@@ -31,6 +31,9 @@ class TurnContext:
     attachments: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
     raw_message: str | None = None
+    # Immutable catalog pinned at the provider/tools boundary. Selection
+    # steps use this instead of probing the loader again mid-turn.
+    skill_catalog: Any | None = None
     # PR3 (design §14): surface origin so PR4's clarify reply parser
     # can adapt its tolerance per surface. Defaults to "unknown" so
     # the gateway/CLI/channel adapters can set it post-construction.

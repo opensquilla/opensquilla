@@ -5,6 +5,9 @@ import ControlSwitch from '@/components/ControlSwitch.vue'
 import MemoryLearningGroup from '@/components/settings/MemoryLearningGroup.vue'
 
 const { t } = useI18n()
+const emit = defineEmits<{
+  'open-agent-configuration': []
+}>()
 
 // Client-only "Labs" preferences. Each row reads/writes ONE localStorage key
 // directly. The chat composables that consume these read the value once at
@@ -14,7 +17,6 @@ const { t } = useI18n()
 
 // --- boolean '1'/'0' flags (absent => off) ---
 const APPROVAL_KEY = 'opensquilla.chat.approvalPoll'
-const HISTORY_KEY = 'opensquilla.chat.historyMerge'
 const RUNTRACE_KEY = 'opensquilla.logs.runTrace'
 
 function readBool(key: string): boolean {
@@ -25,10 +27,8 @@ function writeBool(key: string, on: boolean) {
 }
 
 const approvalPoll = ref(readBool(APPROVAL_KEY))
-const historyMerge = ref(readBool(HISTORY_KEY))
 const runTrace = ref(readBool(RUNTRACE_KEY))
 function setApprovalPoll(on: boolean) { approvalPoll.value = on; writeBool(APPROVAL_KEY, on) }
-function setHistoryMerge(on: boolean) { historyMerge.value = on; writeBool(HISTORY_KEY, on) }
 function setRunTrace(on: boolean) { runTrace.value = on; writeBool(RUNTRACE_KEY, on) }
 
 // --- foldLiveTurn: default ON; '0' is the only OFF value ---
@@ -69,6 +69,10 @@ function commitReveal() {
 function localStorageGet(key: string): string | null {
   try { return localStorage.getItem(key) } catch { return null }
 }
+
+const agentConfigAriaLabel = computed(() =>
+  `${t('setup.advanced.agentConfigAction')}: ${t('setup.advanced.agentConfigLabel')}`,
+)
 </script>
 
 <template>
@@ -130,17 +134,6 @@ function localStorageGet(key: string): string | null {
       </div>
     </label>
 
-    <label class="control-row">
-      <div class="control-row__label-block">
-        <span class="control-row__label">{{ t('setup.advanced.historyMergeLabel') }} <span class="labs-exp">{{ t('setup.advanced.experimental') }}</span></span>
-        <span class="control-row__desc">{{ t('setup.advanced.historyMergeDesc') }}</span>
-      </div>
-      <div class="control-row__control">
-        <span class="labs-hint">{{ t('setup.advanced.reload') }}</span>
-        <ControlSwitch name="labs_history_merge" :checked="historyMerge" :aria-label="t('setup.advanced.historyMergeAria')" @change="setHistoryMerge" />
-      </div>
-    </label>
-
     <MemoryLearningGroup />
 
     <label class="control-row">
@@ -153,6 +146,23 @@ function localStorageGet(key: string): string | null {
         <ControlSwitch name="labs_run_trace" :checked="runTrace" :aria-label="t('setup.advanced.runTraceAria')" @change="setRunTrace" />
       </div>
     </label>
+
+    <div class="control-row">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('setup.advanced.agentConfigLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.agentConfigDesc') }}</span>
+      </div>
+      <div class="control-row__control">
+        <button
+          type="button"
+          class="btn btn--ghost"
+          :aria-label="agentConfigAriaLabel"
+          @click="emit('open-agent-configuration')"
+        >
+          {{ t('setup.advanced.agentConfigAction') }}
+        </button>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -165,18 +175,6 @@ function localStorageGet(key: string): string | null {
   font-weight: 600;
   letter-spacing: 0.03em;
   padding: 1px 7px;
-  text-transform: uppercase;
-}
-
-.labs-exp {
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-  border-radius: var(--radius-full);
-  color: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-  margin-left: var(--sp-1);
-  padding: 1px 6px;
   text-transform: uppercase;
 }
 

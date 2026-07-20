@@ -46,8 +46,8 @@
       </button>
     </div>
 
-    <!-- New chat opens a draft instantly against the preferred agent; the agent
-         can still be switched from the draft landing. -->
+    <!-- New chat opens a draft instantly against the default agent; the
+         landing intentionally does not interrupt the flow with a picker. -->
     <div class="sidebar-actions">
       <button
         class="sidebar-new-session"
@@ -75,20 +75,19 @@
       </button>
     </div>
 
-    <!-- Always-visible grouped nav index. Bounded and self-scrolling under a
+    <!-- Always-visible flat nav index. Bounded and self-scrolling under a
          short viewport so it never squeezes Recents, which owns the elastic
          space below; every destination stays a labelled text row. -->
     <div class="sidebar-section sidebar-core" role="navigation" :aria-label="t('chrome.controlNav')">
-      <!-- Pinned level-1 rows (Sessions / Cron / Skills), single-sourced from the
-           Work band of the route taxonomy so promoting a route is a one-line meta
-           edit and the rail, the mobile drawer, and the palette never drift. -->
+      <!-- Sessions / Overview / Skills / Cron, single-sourced from route
+           metadata so the rail, mobile drawer, and palette never drift. -->
       <router-link
         v-for="item in workNav"
         :key="item.path"
         :to="item.path"
         class="sidebar-fn-item"
-        :class="{ 'is-active': isNavActive(item.path) }"
-        :aria-current="isNavActive(item.path) ? 'page' : undefined"
+        :class="{ 'is-active': isPrimaryNavActive(item.path) }"
+        :aria-current="isPrimaryNavActive(item.path) ? 'page' : undefined"
         @click="handleNavClick"
       >
         <Icon :name="item.icon" :size="16" />
@@ -101,48 +100,6 @@
           class="sidebar-count-badge"
         >{{ appStore.approvalCount }}</span>
       </router-link>
-      <!-- Build / Monitor bands: labeled, collapsible, remembered. The rail
-           serves two products at once — a chat client's history and a console
-           index — so the console bands yield vertical space to Recents unless
-           the operator opens them. A band holding the active route auto-expands
-           so navigation can never hide "where am I". -->
-      <div class="sidebar-core__managed">
-        <template v-for="section in consoleSections" :key="section.group">
-          <button
-            type="button"
-            class="sidebar-nav-group-toggle"
-            :aria-expanded="!isBandCollapsed(section.group)"
-            @click="toggleBand(section.group)"
-          >
-            <span class="sidebar-nav-group-label">{{ section.label }}</span>
-            <span
-              v-if="isBandCollapsed(section.group) && bandHasActive(section)"
-              class="sidebar-band-active-dot"
-              aria-hidden="true"
-            ></span>
-            <Icon
-              name="chevronDown"
-              :size="12"
-              class="sidebar-band-chevron"
-              :class="{ 'is-collapsed': isBandCollapsed(section.group) }"
-            />
-          </button>
-          <template v-if="!isBandCollapsed(section.group)">
-            <router-link
-              v-for="route in section.items"
-              :key="route.path"
-              :to="route.path"
-              class="sidebar-fn-item"
-              :class="{ 'is-active': isNavActive(route.path) }"
-              :aria-current="isNavActive(route.path) ? 'page' : undefined"
-              @click="handleNavClick"
-            >
-              <Icon :name="route.icon" :size="16" />
-              <span class="sidebar-fn-label">{{ route.title }}</span>
-            </router-link>
-          </template>
-        </template>
-      </div>
     </div>
 
     <SidebarSetupBanner />
@@ -344,12 +301,9 @@
     </main>
   </div>
 
-  <!-- Mobile bottom tab bar (<=768px only; hides while the keyboard is up).
-       Surfaces the primary destinations directly instead of burying them in
-       "More": Chat + Sessions (the two chat-product tabs), Overview (the Monitor
-       hub — Overview/Channels/Usage/Logs live as its tabs), Agents (the core
-       Build concept), then More for the rest (Skills / Cron / Settings) via the
-       full organized drawer. -->
+  <!-- Mobile bottom tab bar (<=768px only; hides while the keyboard is up):
+       Chat, Sessions, Overview, then More for the flat drawer containing
+       Sessions / Overview / Skills / Cron and Settings. -->
   <nav
     class="mobile-tabbar"
     :class="{ 'is-keyboard-open': mobileKeyboardOpen }"
@@ -383,15 +337,6 @@
     >
       <Icon name="home" :size="20" />
       <span class="mobile-tab__label">{{ t('nav.overview') }}</span>
-    </router-link>
-    <router-link
-      to="/agents"
-      class="mobile-tab"
-      :class="{ 'is-active': isNavActive('/agents') }"
-      @click="handleNavClick"
-    >
-      <Icon name="agents" :size="20" />
-      <span class="mobile-tab__label">{{ t('nav.agents') }}</span>
     </router-link>
     <button
       type="button"
@@ -519,7 +464,7 @@ watch(() => appStore.locale, () => {
   void nextTick(syncTopbarReserve)
 })
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
-const { consoleSections, bottomRoutes, workNav } = useNavigation()
+const { bottomRoutes, workNav } = useNavigation()
 // Axis-B: the active expressive skin for the routed content area (meta.skin).
 const { skinId, variants } = useSurfaceSkin()
 const { pushToast } = useToasts()
@@ -530,8 +475,7 @@ const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 
 installSessionNavigationDiagConsole()
 
-// Shared agents.list state + fetch (singleton): App.vue and ChatView's
-// in-draft switcher use the same list and one fetch.
+// Shared agents.list state + fetch (singleton) for sidebar session metadata.
 const { agents, loadAgents } = useAgentOptions()
 const mobileKeyboardOpen = ref(false)
 const commandPaletteOpen = ref(false)
@@ -727,49 +671,9 @@ function isNavActive(path: string): boolean {
 const MONITOR_HUB_PATHS = new Set(['/overview', '/channels', '/usage', '/logs'])
 const isMonitorHubActive = computed(() => MONITOR_HUB_PATHS.has($route.path))
 
-// ── Collapsible console bands ────────────────────────────────────────────
-// Collapsed state per NavGroup, persisted so the rail keeps the user's chosen
-// balance between the console index and the Recents list. Chat-first default:
-// both bands start collapsed, giving the vertical budget to conversation
-// history until the operator opens a band.
-const NAV_BANDS_STORAGE_KEY = 'opensquilla-nav-bands'
-function readCollapsedBands(): Record<string, boolean> {
-  // With the console consolidated to a handful of destinations the bands fit
-  // comfortably, so they default open; collapsing is a per-user space tradeoff
-  // (more visible chat history) that persists once made.
-  const defaults: Record<string, boolean> = {}
-  try {
-    const raw = localStorage.getItem(NAV_BANDS_STORAGE_KEY)
-    if (!raw) return defaults
-    return { ...defaults, ...JSON.parse(raw) }
-  } catch {
-    return defaults
-  }
+function isPrimaryNavActive(path: string): boolean {
+  return path === '/overview' ? isMonitorHubActive.value : isNavActive(path)
 }
-const collapsedBands = ref<Record<string, boolean>>(readCollapsedBands())
-
-function isBandCollapsed(group: string): boolean {
-  return collapsedBands.value[group] === true
-}
-
-function toggleBand(group: string) {
-  collapsedBands.value = { ...collapsedBands.value, [group]: !isBandCollapsed(group) }
-  try { localStorage.setItem(NAV_BANDS_STORAGE_KEY, JSON.stringify(collapsedBands.value)) } catch {}
-}
-
-function bandHasActive(section: { items: Array<{ path: string }> }): boolean {
-  return section.items.some((item) => isNavActive(item.path))
-}
-
-// A collapsed band never hides the current page: navigating into a band opens
-// it (session-only — the persisted preference is what the user last toggled).
-watch(() => $route.path, () => {
-  for (const section of consoleSections.value) {
-    if (bandHasActive(section) && isBandCollapsed(section.group)) {
-      collapsedBands.value = { ...collapsedBands.value, [section.group]: false }
-    }
-  }
-}, { immediate: true })
 
 function agentDisplayName(agentId: string): string {
   const agent = agents.value.find(a => a.id === agentId)
@@ -989,23 +893,16 @@ watch(sidebarDynamicMaximum, () => {
   void nextTick(syncTopbarReserve)
 })
 
-function preferredAgentId(): string {
-  if (currentSessionKey.value) {
-    const current = allSessions.value.find(item => item.key === currentSessionKey.value)
-    if (current?.effectiveAgentId && current.effectiveAgentId !== 'unknown') return normalizeAgentId(current.effectiveAgentId)
-    const local = localChatSessions.value[currentSessionKey.value]
-    if (local?.effectiveAgentId) return normalizeAgentId(local.effectiveAgentId)
-  }
-  const chats = sidebarSections.value.find(section => section.family === 'chats')
-  const latest = chats?.rows.find(row => row.effectiveAgentId !== 'unknown')?.effectiveAgentId
-  return latest || 'main'
+// Primary new-chat path: ordinary tasks always start against the default Agent.
+// Explicit custom-Agent launches still receive their Agent-scoped session key
+// from advanced Agent administration.
+function openDefaultDraft() {
+  return router.push({ path: '/chat/new', query: { agent: 'main' } })
 }
 
-// Primary new-chat path: open a draft instantly against the preferred agent
-// (last-used, or main). The agent can still be switched from the draft landing.
 function startNewChatInstant() {
   handleNavClick()
-  router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
+  void openDefaultDraft()
 }
 
 // Command palette: ⌘K / Ctrl+K and the rail "Search / Go to…" row both open it.
@@ -1121,7 +1018,7 @@ async function onBulkDeleteSessions(keys: string[]) {
   }
   await loadSessions()
   if (wasCurrentDeleted && deleted.has(currentKey)) {
-    router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
+    void openDefaultDraft()
   }
 }
 
@@ -1140,7 +1037,7 @@ async function onDeleteSession(key: string) {
   dispatchLocalSessionsDeleted(deleted, APP_SESSION_SYNC_SOURCE)
   await loadSessions()
   if (wasCurrent) {
-    router.push({ path: '/chat/new', query: { agent: preferredAgentId() } })
+    void openDefaultDraft()
   }
 }
 

@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from opensquilla.gateway.config_secrets import inherit_runtime_secrets
+from opensquilla.gateway.model_routing import broadcast_model_routing_changed
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
@@ -414,6 +415,12 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     _sync_image_generation(res.config)
+    # Provider saves are an explicit retry boundary for registry-declared
+    # public model listings. Await the bounded best-effort refresh so the next
+    # turn observes the new catalog without requiring a gateway restart.
+    from opensquilla.gateway.model_catalog_refresh import refresh_live_model_catalog
+
+    await refresh_live_model_catalog(ctx.config if ctx.config is not None else res.config)
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -558,6 +565,11 @@ async def _router_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
+    await broadcast_model_routing_changed(
+        ctx,
+        source="onboarding.router.configure",
+        config=res.config,
+    )
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,
@@ -592,6 +604,11 @@ async def _ensemble_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=res.restart_required)
     _apply_inplace(ctx, res.config)
+    await broadcast_model_routing_changed(
+        ctx,
+        source="onboarding.ensemble.configure",
+        config=res.config,
+    )
     return {
         "changed": res.changed,
         "restartRequired": res.restart_required,

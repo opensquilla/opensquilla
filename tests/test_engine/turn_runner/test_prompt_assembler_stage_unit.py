@@ -222,6 +222,7 @@ def _make_input(
     bound_user_message_id=None,
     ingress_pipeline_steps=None,
     input_provenance=None,
+    skill_catalog=None,
 ):
     return PromptAssemblerStageInput(
         runtime_message=runtime_message,
@@ -244,6 +245,7 @@ def _make_input(
         bound_user_message_id=bound_user_message_id,
         ingress_pipeline_steps=ingress_pipeline_steps,
         input_provenance=input_provenance,
+        skill_catalog=skill_catalog,
     )
 
 
@@ -588,6 +590,17 @@ async def test_no_cloned_selector_skips_selector_block() -> None:
     # Provider is the post-pipeline provider unchanged (no wrap)
     assert type(out.output.provider).__name__ == "_StubProvider"
     assert out.output.selector_model == ""
+
+
+@pytest.mark.asyncio
+async def test_skill_catalog_is_forwarded_to_pipeline_unchanged() -> None:
+    catalog = object()
+    executor = _RecordingPipelineExecutor(turn=_make_turn(), provider=_StubProvider("pp"))
+    stage = _make_stage(executor=executor)
+
+    await stage.run(_make_input(skill_catalog=catalog))
+
+    assert executor.requests[0].skill_catalog is catalog
 
 
 def test_run_pipeline_request_is_frozen() -> None:

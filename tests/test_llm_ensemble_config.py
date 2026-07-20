@@ -50,7 +50,7 @@ def test_llm_ensemble_defaults_to_disabled_for_model_router_first_install() -> N
     assert provider.proposer_timeout_seconds == 300.0
     assert provider.aggregator_timeout_seconds == 480.0
     assert provider.shuffle_candidates is False
-    assert provider.quorum_grace_seconds == 30.0
+    assert provider.quorum_grace_seconds == 5.0
 
 
 def test_static_openrouter_b5_does_not_need_model_options() -> None:
@@ -119,7 +119,7 @@ def test_static_tokenrhythm_b5_mirrors_the_openrouter_lineup() -> None:
     assert provider.proposer_timeout_seconds == 300.0
     assert provider.aggregator_timeout_seconds == 480.0
     assert provider.shuffle_candidates is False
-    assert provider.quorum_grace_seconds == 30.0
+    assert provider.quorum_grace_seconds == 5.0
 
 
 def test_static_b5_mode_tables_agree_across_gateway_and_provider() -> None:
@@ -451,13 +451,13 @@ def test_static_openrouter_b5_ensemble_locks_members_across_routed_tiers() -> No
             "effective_aggregator_timeout_seconds": 480.0,
             "configured_shuffle_candidates": False,
             "effective_shuffle_candidates": False,
-            "quorum_grace_seconds": 30.0,
+            "quorum_grace_seconds": 5.0,
         }
         assert provider.min_successful_proposers == 4
         assert provider.proposer_timeout_seconds == 300.0
         assert provider.aggregator_timeout_seconds == 480.0
         assert provider.shuffle_candidates is False
-        assert provider.quorum_grace_seconds == 30.0
+        assert provider.quorum_grace_seconds == 5.0
         members = [*provider.proposers, provider.aggregator]
         assert all(member.provider_config.provider == "openrouter" for member in members)
         assert all(member.provider_config.api_key == "fake" for member in members)
@@ -498,7 +498,7 @@ def test_static_openrouter_b5_ensemble_uses_profile_effective_defaults() -> None
     assert provider.proposer_timeout_seconds == 300.0
     assert provider.aggregator_timeout_seconds == 480.0
     assert provider.shuffle_candidates is False
-    assert provider.quorum_grace_seconds == 30.0
+    assert provider.quorum_grace_seconds == 5.0
 
 
 def test_static_openrouter_b5_ensemble_preserves_custom_effective_values() -> None:
@@ -590,7 +590,7 @@ def test_custom_b5_uses_fixed_lineup_effective_defaults_with_auto_quorum() -> No
     assert provider.proposer_timeout_seconds == 300.0
     assert provider.aggregator_timeout_seconds == 480.0
     assert provider.shuffle_candidates is False
-    assert provider.quorum_grace_seconds == 30.0
+    assert provider.quorum_grace_seconds == 5.0
 
 
 def test_custom_b5_preserves_explicit_quorum_and_timeouts() -> None:

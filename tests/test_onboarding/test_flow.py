@@ -1483,9 +1483,11 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeyp
     assert "Portable zip:" in out
     assert "latest recommended portable package" in out
     assert "OPENSQUILLA_INSTALL_EXTRAS" not in normalized_out
-    assert "https://opensquilla.ai/install.ps1" in normalized_out
-    assert "https://opensquilla.ai/install.sh" in normalized_out
-    assert "bash -s --" in normalized_out
+    assert "uv tool install --python 3.12 --force" in normalized_out
+    assert "opensquilla[recommended]" in normalized_out
+    assert "https://github.com/opensquilla/opensquilla/releases/download/" in out
+    assert "v0.5.0rc4" in out
+    assert "opensquilla.ai/install." not in normalized_out
     assert "uv sync --extra recommended" in normalized_out
     assert "--extra feishu" not in normalized_out
     assert "Restarting alone will not install Python packages." in out

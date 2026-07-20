@@ -120,9 +120,12 @@ export function taskTerminalAsSessionEvent(event: string, payload: SessionEventP
   }
   if (!['task.failed', 'task.timeout', 'task.abandoned'].includes(event)) return null
   const status = event.replace('task.', '')
+  const rawReason = payload?.terminal_reason
+  const terminalReason = typeof rawReason === 'string' ? rawReason.trim().toLowerCase() : ''
+  const code = /^[a-z][a-z0-9_.-]*$/.test(terminalReason) ? terminalReason : status
   return {
     event: 'session.event.error',
-    payload: { ...(payload || {}), message: taskTerminalMessage(status, payload), code: status },
+    payload: { ...(payload || {}), message: taskTerminalMessage(status, payload), code },
   }
 }
 

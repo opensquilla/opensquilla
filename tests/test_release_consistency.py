@@ -79,6 +79,26 @@ def test_release_workflow_builds_desktop_installers() -> None:
     assert 'gh release upload "${TAG}" dist/* --clobber' in workflow
 
 
+def test_tui_companion_remains_development_only() -> None:
+    """A normal version tag must not publish the in-repo development host."""
+
+    workflow_text = Path(".github/workflows/wheelhouse-release.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert "build-tui-host-macos" not in jobs
+    assert "build-tui-host-linux" not in jobs
+    assert "opensquilla_tui_host-" not in workflow_text
+    assert "write_tui_release_manifest.py" not in workflow_text
+    assert "dist/install.sh" not in workflow_text
+
+    installer = Path("install.sh").read_text(encoding="utf-8")
+    assert "--tui-host-only" not in installer
+    assert "opensquilla_tui_host-" not in installer
+
+
 def _release_upload_script() -> str:
     workflow = yaml.safe_load(
         Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")

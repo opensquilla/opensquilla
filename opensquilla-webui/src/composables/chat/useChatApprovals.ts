@@ -134,6 +134,14 @@ interface ApprovalsSnapshotResponse {
   mode?: string
 }
 
+export interface ApprovalResolveResponse {
+  approved?: boolean
+  resolved?: boolean
+  pending?: boolean
+  resolution?: string
+  resolutionInProgress?: boolean
+}
+
 /**
  * The `*.approval.requested|resolved` push payload (build_approval_event_payload).
  * A subset of the snapshot: it carries identity + command but omits `args`,
@@ -271,6 +279,24 @@ function pushPayloadToInterruptData(payload: ApprovalPushPayload): InterruptAppr
 export function resolutionFromPayload(payload: ApprovalPushPayload): InterruptResolution {
   if (payload.resolution === 'expired') return 'expired'
   return payload.approved === false ? 'denied' : 'approved'
+}
+
+/**
+ * Read the canonical result returned by `*.approval.resolve`.
+ *
+ * A cross-surface loser can receive a still-pending response while the winning
+ * surface finishes applying sandbox side effects. In that state the caller must
+ * keep the approval open and must not present its own click as the outcome. Once
+ * resolved, the Gateway's `approved` field is authoritative even when it is the
+ * opposite of the local decision.
+ */
+export function resolutionFromResolveResponse(
+  payload: ApprovalResolveResponse,
+): ChatApprovalResolution | null {
+  if (payload.pending === true || payload.resolutionInProgress === true) return null
+  if (payload.resolved !== true || typeof payload.approved !== 'boolean') return null
+  if (payload.resolution === 'expired') return 'expired'
+  return payload.approved ? 'approved' : 'denied'
 }
 
 function parseClarifyRequest(payload: ToolResultPayload): ChatClarifyRequest | null {
@@ -463,8 +489,12 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error('HTTP ' + res.status)
-      entry.resolution = decision === 'deny' ? 'denied' : 'approved'
-      if (decision === 'deny' && note.trim()) options.onDenyFeedback?.(note.trim())
+      const result = await res.json() as ApprovalResolveResponse
+      const resolution = resolutionFromResolveResponse(result)
+      if (resolution !== null) entry.resolution = resolution
+      if (resolution === 'denied' && decision === 'deny' && note.trim()) {
+        options.onDenyFeedback?.(note.trim())
+      }
     } catch (err) {
       entry.error = 'Could not resolve — ' + (err instanceof Error ? err.message : String(err))
     } finally {
@@ -494,9 +524,12 @@ export function useChatApprovals(options: UseChatApprovalsOptions) {
         body: JSON.stringify(body),
       })
       if (!res.ok) throw new Error('HTTP ' + res.status)
-      const resolution: InterruptResolution = decision === 'deny' ? 'denied' : 'approved'
+      const result = await res.json() as ApprovalResolveResponse
+      const resolution = resolutionFromResolveResponse(result)
       setInterruptState(id, { resolution, busy: false })
-      if (decision === 'deny' && note.trim()) options.onDenyFeedback?.(note.trim())
+      if (resolution === 'denied' && decision === 'deny' && note.trim()) {
+        options.onDenyFeedback?.(note.trim())
+      }
     } catch (err) {
       setInterruptState(id, {
         busy: false,

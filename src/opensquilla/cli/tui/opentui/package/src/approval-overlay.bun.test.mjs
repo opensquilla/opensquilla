@@ -24,8 +24,8 @@ class FakeNode {
     this.children.push(node);
     return this.children.length;
   }
-  remove(id) {
-    this.children = this.children.filter((child) => child.id !== id);
+  remove(node) {
+    this.children = this.children.filter((child) => child !== node);
   }
   getChildren() {
     return this.children;
@@ -37,6 +37,7 @@ function makeHarness({ terminalWidth = 100, terminalHeight = 24 } = {}) {
   const keypressHandlers = [];
   const pasteHandlers = [];
   const sent = [];
+  let renderRequests = 0;
   const renderer = {
     terminalWidth,
     terminalHeight,
@@ -47,7 +48,7 @@ function makeHarness({ terminalWidth = 100, terminalHeight = 24 } = {}) {
       },
     },
     setCursorPosition() {},
-    requestRender() {},
+    requestRender() { renderRequests += 1; },
   };
   const conversationBox = new FakeNode(renderer, { id: "conversation" });
   conversationBox.scrollBy = () => {};
@@ -70,7 +71,15 @@ function makeHarness({ terminalWidth = 100, terminalHeight = 24 } = {}) {
   const type = (text) => {
     for (const ch of text) press({ name: ch === " " ? "space" : ch, sequence: ch });
   };
-  return { composer, press, paste, type, overlayLayer, sent };
+  return {
+    composer,
+    press,
+    paste,
+    type,
+    overlayLayer,
+    sent,
+    renderRequests: () => renderRequests,
+  };
 }
 
 function findDeep(node, id) {
@@ -257,11 +266,10 @@ test("Ctrl+C keeps its cancel path while the overlay is open", () => {
   expect(findDeep(overlayLayer, "approval-overlay")).not.toBeNull();
 });
 
-test("the overlay survives footer re-renders (pulse ticks) instead of flashing away", () => {
+test("the overlay survives ordinary footer re-renders instead of flashing away", () => {
   const { composer, overlayLayer } = makeHarness();
   composer.openApprovalOverlay(request({ choices: CHOICES }));
 
-  composer.tickPulse(1);
   composer.rerender();
 
   const overlays = overlayLayer
@@ -299,18 +307,21 @@ test("an approval request closes an open theme picker instead of stacking overla
   });
 });
 
-test("approval.dismiss closes the overlay only for the matching request id", () => {
-  const { composer, press, overlayLayer, sent } = makeHarness();
+test("approval.dismiss closes the overlay with one footer redraw", () => {
+  const { composer, press, overlayLayer, sent, renderRequests } = makeHarness();
   composer.openApprovalOverlay(request());
+  const beforeDismiss = renderRequests();
 
   // A dismiss for some other (older) request must not touch the live overlay.
   composer.dismissApprovalOverlay("appr-0");
   expect(findDeep(overlayLayer, "approval-overlay")).not.toBeNull();
+  expect(renderRequests()).toBe(beforeDismiss);
 
   // The matching dismiss closes the overlay without emitting a decision:
   // Python already resolved the request, so a response would only be dropped.
   composer.dismissApprovalOverlay("appr-1");
   expect(findDeep(overlayLayer, "approval-overlay")).toBeNull();
+  expect(renderRequests()).toBe(beforeDismiss + 1);
   expect(sent.filter((m) => m.type === "approval.response")).toEqual([]);
 
   // Keys reach the composer again once the modal is gone: a bare "y" is

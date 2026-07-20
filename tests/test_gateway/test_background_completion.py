@@ -7,13 +7,40 @@ from typing import Any
 import pytest
 
 from opensquilla.engine.types import DoneEvent, TextDeltaEvent
-from opensquilla.gateway.background_completion import BackgroundCompletionManager
+from opensquilla.gateway.background_completion import (
+    BackgroundCompletionManager,
+    _SynthesisStreamCollector,
+)
 from opensquilla.gateway.boot import GatewayServer
 from opensquilla.gateway.routing import ReplyTarget, RouteEnvelope, SourceKind
 from opensquilla.session.models import AgentTaskStatus
 
 PARENT = "agent:main:channel:parent"
 PARENT_TASK = "task-parent"
+
+
+@pytest.mark.asyncio
+async def test_synthesis_collector_prefers_present_terminal_snapshot() -> None:
+    collector = _SynthesisStreamCollector()
+
+    await collector(TextDeltaEvent(text="stale"))
+    await collector(DoneEvent(text="canonical", text_snapshot="canonical"))
+
+    assert collector.text() == "canonical"
+
+
+@pytest.mark.asyncio
+async def test_synthesis_collector_distinguishes_empty_snapshot_from_legacy_fallback() -> None:
+    explicit_empty = _SynthesisStreamCollector()
+    await explicit_empty(TextDeltaEvent(text="stale"))
+    await explicit_empty(DoneEvent(text="", text_snapshot=""))
+
+    legacy_partial = _SynthesisStreamCollector()
+    await legacy_partial(TextDeltaEvent(text="partial"))
+    await legacy_partial(DoneEvent())
+
+    assert explicit_empty.text() == ""
+    assert legacy_partial.text() == "partial"
 
 
 class _SessionManager:

@@ -84,6 +84,46 @@ async def test_exec_approval_extend_rpc_rejects_non_positive_seconds(
         queue.close()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("first_decision", "stale_decision"), [(True, False), (False, True)])
+async def test_plugin_approval_resolve_returns_first_cross_surface_decision(
+    monkeypatch: pytest.MonkeyPatch,
+    first_decision: bool,
+    stale_decision: bool,
+) -> None:
+    queue = ApprovalQueue(db_path=":memory:")
+    monkeypatch.setattr(rpc_approvals, "get_approval_queue", lambda: queue)
+    try:
+        approval_id = queue.request(
+            "plugin",
+            {"pluginId": "demo", "version": "1.0.0", "permissions": ["read"]},
+        )
+        ctx = RpcContext(conn_id="test")
+
+        first = await get_dispatcher().dispatch(
+            "r1",
+            "plugin.approval.resolve",
+            {"id": approval_id, "approved": first_decision},
+            ctx,
+        )
+        stale = await get_dispatcher().dispatch(
+            "r2",
+            "plugin.approval.resolve",
+            {"id": approval_id, "approved": stale_decision},
+            ctx,
+        )
+
+        assert first.error is None, first.error
+        assert stale.error is None, stale.error
+        assert first.payload["approved"] is first_decision
+        assert stale.payload["approved"] is first_decision
+        assert stale.payload["resolved"] is True
+        assert stale.payload["pending"] is False
+        assert queue.get(approval_id).approved is first_decision
+    finally:
+        queue.close()
+
+
 def test_gateway_rpc_approvals_keeps_payload_logic_out_of_gateway_boundary() -> None:
     source = Path(rpc_approvals.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)

@@ -1,8 +1,16 @@
-import { describe, expect, it, vi } from 'vitest'
+// @vitest-environment happy-dom
+
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
 
 import { useChatMessageActions, type UseChatMessageActionsOptions } from './useChatMessageActions'
+import { useChatTextRendering } from './useChatTextRendering'
 import type { ChatMessage, ChatRenderedMessage } from '@/types/chat'
+import { copyTextWithFallback } from '@/utils/browser'
+
+vi.mock('@/utils/browser', () => ({
+  copyTextWithFallback: vi.fn().mockResolvedValue(undefined),
+}))
 
 function renderedMessage(overrides: Partial<ChatRenderedMessage>): ChatRenderedMessage {
   return {
@@ -16,13 +24,16 @@ function renderedMessage(overrides: Partial<ChatRenderedMessage>): ChatRenderedM
   }
 }
 
-function makeOptions(messages: ChatMessage[]) {
+function makeOptions(
+  messages: ChatMessage[],
+  sanitizeCopyText: (text: string) => string = text => text,
+) {
   const pendingForkBeforeMessageId = ref<string | null>(null)
   const options: UseChatMessageActionsOptions = {
     messages: ref(messages),
     inputText: ref(''),
     isStreaming: ref(false),
-    sanitizeCopyText: text => text,
+    sanitizeCopyText,
     stripTimePrefix: text => text,
     autoResizeTextarea: vi.fn(),
     sendCurrentInput: vi.fn(),
@@ -31,6 +42,10 @@ function makeOptions(messages: ChatMessage[]) {
   }
   return { api: useChatMessageActions(options), options, pendingForkBeforeMessageId }
 }
+
+beforeEach(() => {
+  vi.mocked(copyTextWithFallback).mockClear()
+})
 
 describe('useChatMessageActions branching edits', () => {
   it('records the edited user message id before trimming local history', () => {
@@ -77,5 +92,26 @@ describe('useChatMessageActions branching edits', () => {
     expect(options.messages.value.map(message => message.text)).toEqual(['A', 'ack A'])
     expect(options.inputText.value).toBe('B')
     expect(options.sendCurrentInput).toHaveBeenCalledOnce()
+  })
+})
+
+describe('useChatMessageActions protocol-shaped copy text', () => {
+  it.each([
+    'Document the literal `<tool_calls>` marker and keep this suffix.',
+    '```xml\n<tool_calls><invoke name="demo"></invoke></tool_calls>\n```\nAfter the fence.',
+    'Keep `<｜DSML｜tool_calls><｜DSML｜invoke name="demo">` and continue.',
+    '<details><summary>View areas around line 10</summary>Visible note.</details>\n\nAfter details.',
+  ])('copies the canonical assistant text: %s', async (text) => {
+    const { sanitizeCopyText } = useChatTextRendering()
+    const { api } = makeOptions([], sanitizeCopyText)
+
+    const copied = await api.copyMessage(renderedMessage({
+      role: 'assistant',
+      displayRole: 'assistant',
+      text,
+    }))
+
+    expect(copied).toBe(true)
+    expect(copyTextWithFallback).toHaveBeenCalledWith(text)
   })
 })

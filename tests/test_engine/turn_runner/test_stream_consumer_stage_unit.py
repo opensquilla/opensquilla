@@ -337,7 +337,7 @@ def test_text_delta_handler_appends_to_both_buffers() -> None:
     assert state.current_text_parts == ["hi"]
 
 
-def test_text_delta_handler_suppresses_malformed_tool_protocol_html() -> None:
+def test_text_delta_handler_preserves_protocol_like_html_as_canonical_text() -> None:
     state = _make_state()
     handler = _TextDeltaHandler()
     payload = (
@@ -350,34 +350,26 @@ def test_text_delta_handler_suppresses_malformed_tool_protocol_html() -> None:
 
     out = handler.handle(TextDeltaEvent(text=payload), state)
 
-    assert out.text == "Let me write the dashboard now."
-    assert state.final_text_parts == ["Let me write the dashboard now."]
-    assert state.current_text_parts == ["Let me write the dashboard now."]
-    assert "<!DOCTYPE html>" not in "".join(state.final_text_parts)
+    assert out.text == payload
+    assert state.final_text_parts == [payload]
+    assert state.current_text_parts == [payload]
 
 
-def test_text_delta_handler_holds_split_malformed_tool_protocol_html() -> None:
+def test_text_delta_handler_preserves_split_protocol_like_html() -> None:
     state = _make_state()
     handler = _TextDeltaHandler()
 
-    first = handler.handle(
-        TextDeltaEvent(text="Let me write the dashboard now.\n\n<tvoe"),
-        state,
+    first_chunk = "Let me write the dashboard now.\n\n<tvoe"
+    second_chunk = (
+        '_calls><invoke name="write_file">'
+        '<parameter name="content"><!DOCTYPE html><html></html>'
     )
-    second = handler.handle(
-        TextDeltaEvent(
-            text=(
-                '_calls><invoke name="write_file">'
-                '<parameter name="content"><!DOCTYPE html><html></html>'
-            )
-        ),
-        state,
-    )
+    first = handler.handle(TextDeltaEvent(text=first_chunk), state)
+    second = handler.handle(TextDeltaEvent(text=second_chunk), state)
 
-    assert first.text == "Let me write the dashboard now."
-    assert second.text == ""
-    assert state.final_text_parts == ["Let me write the dashboard now."]
-    assert "<tvoe" not in "".join(state.final_text_parts)
+    assert first.text == first_chunk
+    assert second.text == second_chunk
+    assert "".join(state.final_text_parts) == first_chunk + second_chunk
 
 
 def test_text_delta_handler_strips_cumulative_post_tool_snapshot() -> None:
@@ -452,7 +444,7 @@ def test_text_delta_handler_drops_duplicate_post_tool_snapshot() -> None:
     assert state.current_text_parts == []
 
 
-def test_tool_use_start_handler_drops_tool_scaffold_text_segment() -> None:
+def test_tool_use_start_handler_preserves_canonical_details_text_segment() -> None:
     state = _make_state()
     text_handler = _TextDeltaHandler()
     tool_handler = _ToolUseStartHandler()
@@ -484,14 +476,18 @@ def test_tool_use_start_handler_drops_tool_scaffold_text_segment() -> None:
         state,
     )
 
-    assert first.text == "Let me read the specific problematic areas to fix them."
-    assert second.text == ""
+    expected = (
+        "Let me read the specific problematic areas to fix them.\n\n"
+        "<details><summary>View areas around line 10393, 14751, and nearby"
+        "</summary>"
+    )
+    assert first.text == expected[: expected.index("<summary>")]
+    assert second.text == expected[expected.index("<summary>") :]
     assert state.turn_segments[0] == {
         "type": "text",
-        "text": "Let me read the specific problematic areas to fix them.",
+        "text": expected,
     }
-    assert "<details>" not in "".join(state.final_text_parts)
-    assert "<summary>" not in "".join(state.final_text_parts)
+    assert "".join(state.final_text_parts) == expected
 
 
 def test_tool_use_start_handler_flushes_text_and_appends_segment() -> None:
@@ -579,6 +575,303 @@ def test_tool_result_handler_keeps_small_write_file_arguments() -> None:
     )
 
     assert state.turn_segments[0]["input"] is arguments
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("publish_artifact", {"path": "deck.pptx"}),
+        ("create_pptx", {"name": "deck.pptx", "slides": [{"title": "Deck"}]}),
+    ],
+)
+def test_tool_result_handler_clears_delivery_failure_after_same_target_succeeds(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    state = _make_state()
+    handler = _ToolResultHandler()
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="failed",
+            tool_name=tool_name,
+            result=(
+                '{"status":"error","error_class":"RetryableToolInputError",'
+                '"user_message":"regenerate","retry_allowed":true}'
+            ),
+            is_error=True,
+            arguments=arguments,
+        ),
+        state,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded",
+            tool_name=tool_name,
+            result='{"status":"published"}',
+            arguments=arguments,
+        ),
+        state,
+    )
+
+    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures_by_target == {}
+
+
+def test_tool_result_handler_keeps_unrelated_delivery_failure_after_retry() -> None:
+    state = _make_state()
+    handler = _ToolResultHandler()
+    for target in ("first.pptx", "second.pptx"):
+        handler.handle(
+            ToolResultEvent(
+                tool_use_id=f"failed-{target}",
+                tool_name="publish_artifact",
+                result='{"status":"error","user_message":"regenerate"}',
+                is_error=True,
+                arguments={"path": target},
+            ),
+            state,
+        )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded-first",
+            tool_name="publish_artifact",
+            result='{"status":"published"}',
+            arguments={"path": "first.pptx"},
+        ),
+        state,
+    )
+
+    assert state.artifact_delivery_failures == ["regenerate"]
+    assert set(state.artifact_delivery_failures_by_target) == {"path:second.pptx"}
+
+
+@pytest.mark.parametrize(
+    "failed_path",
+    [
+        "/workspace/reports/deck.pptx",
+        r"C:\workspace\reports\deck.pptx",
+        "reports/deck.pptx",
+    ],
+)
+def test_tool_result_handler_matches_publish_target_across_workspace_path_forms(
+    tmp_path,
+    failed_path: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    canonical_path = workspace / "reports" / "deck.pptx"
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"path": failed_path},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded",
+            tool_name="publish_artifact",
+            result='{"status":"published"}',
+            arguments={"path": str(canonical_path)},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures_by_target == {}
+
+
+def test_tool_result_handler_uses_create_pptx_effective_basename_and_suffix() -> None:
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="failed",
+            tool_name="create_pptx",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"name": "reports/deck"},
+        ),
+        state,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded",
+            tool_name="create_pptx",
+            result='{"status":"published"}',
+            arguments={"name": "deck.pptx"},
+        ),
+        state,
+    )
+
+    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures_by_target == {}
+
+
+def test_publish_success_clears_create_name_failure_but_not_other_path_failure(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="create-failed",
+            tool_name="create_pptx",
+            result='{"status":"error","user_message":"create failed"}',
+            is_error=True,
+            arguments={"name": "deck.pptx"},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="root-publish-failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"root path failed"}',
+            is_error=True,
+            arguments={"path": "deck.pptx"},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="nested-publish-succeeded",
+            tool_name="publish_artifact",
+            result='{"status":"published","artifact":{"name":"deck.pptx"}}',
+            arguments={"path": "reports/deck.pptx"},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    assert state.artifact_delivery_failures == ["root path failed"]
+    assert len(state.artifact_delivery_failures_by_target) == 1
+    assert next(iter(state.artifact_delivery_failures_by_target)).startswith("path:")
+
+
+@pytest.mark.parametrize(
+    ("failed_path_factory", "cleared"),
+    [
+        (lambda workspace: "deck.pptx", True),
+        (lambda workspace: str(workspace / "deck.pptx"), True),
+        (lambda workspace: "/workspace/deck.pptx", True),
+        (lambda workspace: "reports/deck.pptx", False),
+    ],
+)
+def test_create_pptx_success_only_clears_matching_root_publish_failure(
+    tmp_path,
+    failed_path_factory,
+    cleared: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    state = _make_state()
+    handler = _ToolResultHandler()
+    failed_path = failed_path_factory(workspace)
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="publish-failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"path": failed_path},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="create-succeeded",
+            tool_name="create_pptx",
+            result='{"status":"published","artifact":{"name":"deck.pptx"}}',
+            arguments={"name": "deck.pptx", "slides": [{"title": "Deck"}]},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    if cleared:
+        assert state.artifact_delivery_failures == []
+        assert state.artifact_delivery_failures_by_target == {}
+    else:
+        assert state.artifact_delivery_failures == ["regenerate"]
+        assert len(state.artifact_delivery_failures_by_target) == 1
+
+
+@pytest.mark.parametrize(
+    ("source_path", "explicit_name", "created_name", "cleared"),
+    [
+        ("reports/source.bin", "deck.pptx", "deck.pptx", True),
+        ("reports/source.pptx", "deck", "deck.pptx", True),
+        ("reports/source.bin", "deck", "deck.pptx", False),
+        ("reports/source.pptx", "  deck  ", "deck.pptx", True),
+        ("reports/deck.pptx", "", "deck.pptx", True),
+        ("reports/source.pptx", "de:ck", "de_ck.pptx", True),
+    ],
+)
+def test_explicit_publish_name_is_the_single_logical_failure_identity(
+    tmp_path,
+    source_path: str,
+    explicit_name: str,
+    created_name: str,
+    cleared: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="publish-failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"path": source_path, "name": explicit_name},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    assert len(state.artifact_delivery_failures_by_target) == 1
+    assert next(iter(state.artifact_delivery_failures_by_target)).startswith("name:")
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="create-succeeded",
+            tool_name="create_pptx",
+            result=(
+                '{"status":"published","artifact":{"name":"'
+                + created_name
+                + '"}}'
+            ),
+            arguments={"name": created_name, "slides": [{"title": "Deck"}]},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    if cleared:
+        assert state.artifact_delivery_failures == []
+        assert state.artifact_delivery_failures_by_target == {}
+    else:
+        assert state.artifact_delivery_failures == ["regenerate"]
+        assert len(state.artifact_delivery_failures_by_target) == 1
 
 
 def test_tool_result_handler_updates_tool_use_name_after_runtime_coercion() -> None:
@@ -707,6 +1000,38 @@ def test_error_handler_drops_unpaired_tool_use_on_output_truncation() -> None:
     )
     assert result is _SUPPRESS
     assert state.turn_segments == [{"type": "text", "text": "partial"}]
+
+
+def test_error_handler_drops_unpaired_tool_use_for_provider_specific_error() -> None:
+    state = _make_state()
+    state.turn_segments[:] = [
+        {"type": "tool_use", "tool_use_id": "t1", "name": "x", "input": "{"},
+    ]
+    handler = _ErrorHandler()
+    result = handler.handle(
+        ErrorEvent(message="stream ended before terminal evidence", code="incomplete_stream"),
+        state,
+    )
+    assert result is _SUPPRESS
+    assert state.turn_segments == []
+
+
+def test_error_handler_preserves_tool_use_already_paired_with_result() -> None:
+    state = _make_state()
+    state.turn_segments[:] = [
+        {"type": "tool_use", "tool_use_id": "t1", "name": "x", "input": "{}"},
+        {"type": "tool_result", "tool_use_id": "t1", "result": "ok"},
+    ]
+    handler = _ErrorHandler()
+    result = handler.handle(
+        ErrorEvent(message="later provider failure", code="provider_error"),
+        state,
+    )
+    assert result is _SUPPRESS
+    assert [segment["type"] for segment in state.turn_segments] == [
+        "tool_use",
+        "tool_result",
+    ]
 
 
 def test_warning_handler_forwards_through_transformer() -> None:
@@ -948,6 +1273,45 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
     assert len(recs["memory_sync_notify"].calls) == 1
     assert recs["memory_sync_notify"].calls[0]["runtime_message"] == "hello there"
     assert recs["memory_sync_notify"].calls[0]["sync_manager_present"] is True
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_persists_literal_text_before_native_tool_segment() -> None:
+    literal = (
+        '<tool_call>{"name":"search","arguments":{"query":"synthetic"}}'
+        "</tool_call>"
+    )
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text=literal),
+            ToolUseStartEvent(
+                tool_use_id="native-1",
+                tool_name="search",
+                synthetic_from_text=False,
+            ),
+            ToolResultEvent(
+                tool_use_id="native-1",
+                tool_name="search",
+                result="synthetic result",
+                arguments={"query": "native"},
+            ),
+            DoneEvent(text=literal),
+        ]
+    )
+    state = _make_state()
+    stage, _ = _make_stage(agent_run=agent_run)
+
+    await _drain(stage, _make_input(state=state))
+
+    assert state.turn_segments[:2] == [
+        {"type": "text", "text": literal},
+        {
+            "type": "tool_use",
+            "tool_use_id": "native-1",
+            "name": "search",
+            "input": {"query": "native"},
+        },
+    ]
 
 
 @pytest.mark.asyncio

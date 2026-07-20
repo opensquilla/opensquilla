@@ -152,6 +152,51 @@ describe('useSetupCatalog privacy settings', () => {
   })
 })
 
+describe('useSetupCatalog effective model limits', () => {
+  it('exposes only the effective value matching the current form identity', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') {
+        return {
+          providers: [{
+            providerId: 'tokenrhythm',
+            label: 'TokenRhythm',
+            runtimeSupported: true,
+            fields: [{ name: 'model', label: 'Model' }],
+          }],
+        }
+      }
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return { llm: { provider: 'tokenrhythm', model: 'qwen3.7-max' } }
+      }
+      if (method === 'config.effective') {
+        return {
+          fields: {
+            'llm.provider': { value: 'tokenrhythm', source: 'config' },
+            'llm.model': { value: 'qwen3.7-max', source: 'config' },
+            'llm.max_tokens': { value: 131072, source: 'catalog' },
+          },
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await vi.waitFor(() => {
+      expect(api.providerPanel.value.effectiveMaxTokens).toEqual({
+        value: 131072,
+        source: 'catalog',
+      })
+    })
+
+    api.updateProviderField('model', 'glm-5')
+    expect(api.providerPanel.value.effectiveMaxTokens).toBeNull()
+
+    app.unmount()
+  })
+})
+
 describe('useSetupCatalog model strategy IA', () => {
   it('discovers the active provider model catalog when Model Strategy opens', async () => {
     rpcCall.mockImplementation(async (method: string) => {

@@ -18,6 +18,7 @@ class FakeGatewayClient:
     model_rows: list[dict[str, Any]] = []
     sessions_payload: dict[str, Any] = {"sessions": [], "count": 0}
     cost_payload: dict[str, Any] = {"breakdown": [], "totalCostUsd": 0.0}
+    history_pages: dict[str | None, dict[str, Any]] = {}
 
     async def connect(self, url: str, *, token=None) -> None:
         type(self).calls.append(("connect", url))
@@ -59,6 +60,27 @@ class FakeGatewayClient:
         type(self).calls.append(("sessions.abort", {"key": key}))
         return type(self).rpc_payloads.get("sessions.abort", {"aborted": False, "key": key})
 
+    async def session_history(
+        self,
+        session_key: str,
+        limit: int = 1000,
+        *,
+        before: str | None = None,
+        after: str | None = None,
+        include_canonical: bool | None = None,
+        include_summaries: bool | None = None,
+    ) -> dict[str, Any]:
+        params = {
+            "sessionKey": session_key,
+            "limit": limit,
+            "before": before,
+            "after": after,
+            "includeCanonical": include_canonical,
+            "includeSummaries": include_summaries,
+        }
+        type(self).calls.append(("chat.history", params))
+        return dict(type(self).history_pages.get(before, {"messages": [], "has_more": False}))
+
     async def usage_cost(self) -> dict[str, Any]:
         type(self).calls.append(("usage.cost", {}))
         return type(self).cost_payload
@@ -88,6 +110,7 @@ def _install_fake_gateway(monkeypatch, cls=FakeGatewayClient) -> type[FakeGatewa
     cls.model_rows = []
     cls.sessions_payload = {"sessions": [], "count": 0}
     cls.cost_payload = {"breakdown": [], "totalCostUsd": 0.0}
+    cls.history_pages = {}
     monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", cls)
     return cls
 
@@ -219,6 +242,47 @@ def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
     check = runner.invoke(app, ["config", "get", "log_file_enabled", "--config", str(target)])
     assert check.exit_code == 0, check.stdout
     assert "True" in check.stdout
+
+
+def test_config_set_legacy_ensemble_toggle_persists_canonical_router_mode(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "routing.toml"
+    target.write_text(
+        "\n".join(
+            [
+                "[llm_ensemble]",
+                "enabled = false",
+                'selection_mode = "router_dynamic"',
+                "",
+                "[squilla_router]",
+                "enabled = false",
+                'rollout_phase = "observe"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "llm_ensemble.enabled",
+            "true",
+            "--config",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    from opensquilla.gateway.config import GatewayConfig
+
+    reloaded = GatewayConfig.load(str(target))
+    assert reloaded.llm_ensemble.enabled is True
+    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.rollout_phase == "full"
 
 
 def test_config_set_get_privacy_network_observability_round_trips(tmp_path: Path):
@@ -623,6 +687,75 @@ def test_sessions_abort_resolves_then_aborts(monkeypatch):
     assert payload["aborted"] is True
     assert ("sessions.resolve", {"key": "abc"}) in fake.calls
     assert ("sessions.abort", {"key": "agent:main:abc"}) in fake.calls
+
+
+def test_sessions_export_reads_more_than_gateway_page_limit(tmp_path: Path, monkeypatch) -> None:
+    fake = _install_fake_gateway(monkeypatch)
+    fake.rpc_payloads = {
+        "sessions.resolve": {
+            "session_key": "agent:main:long",
+            "status": "done",
+            "model": "openai/test",
+        },
+        "sessions.preview": {"previews": []},
+    }
+
+    def messages(start: int, end: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "message_id": f"message-{idx}",
+                "role": "user" if idx % 2 else "assistant",
+                "text": f"message {idx}",
+            }
+            for idx in range(start, end + 1)
+        ]
+
+    fake.history_pages = {
+        None: {
+            "messages": messages(202, 401),
+            "has_more": True,
+            "oldest_cursor": "202|202",
+            "newest_cursor": "401|401",
+        },
+        "202|202": {
+            "messages": messages(2, 201),
+            "has_more": True,
+            "oldest_cursor": "2|2",
+            "newest_cursor": "201|201",
+        },
+        "2|2": {
+            "messages": messages(1, 1),
+            "has_more": False,
+            "oldest_cursor": "1|1",
+            "newest_cursor": "1|1",
+        },
+    }
+    target = tmp_path / "long-session.json"
+
+    result = runner.invoke(
+        app,
+        [
+            "sessions",
+            "export",
+            "long",
+            "--format",
+            "json",
+            "--output",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    exported = payload["history"]["messages"]
+    assert len(exported) == 401
+    assert exported[0]["message_id"] == "message-1"
+    assert exported[-1]["message_id"] == "message-401"
+    history_calls = [params for method, params in fake.calls if method == "chat.history"]
+    assert [params["before"] for params in history_calls] == [None, "202|202", "2|2"]
+    assert all(params["limit"] == 200 for params in history_calls)
+    assert all(params["includeCanonical"] is True for params in history_calls)
+    assert all(params["includeSummaries"] is False for params in history_calls)
 
 
 def test_memory_status_json_reuses_doctor_rpc(monkeypatch):

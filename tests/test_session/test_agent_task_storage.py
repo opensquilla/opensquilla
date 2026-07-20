@@ -101,6 +101,7 @@ async def test_list_agent_tasks_for_sessions_groups_visible_session_tasks(tmp_pa
                 status=AgentTaskStatus.RUNNING,
                 created_at=200,
                 updated_at=200,
+                details={"terminal_assistant_message_content": "x" * 100_000},
             )
         )
         await storage.create_agent_task(
@@ -132,12 +133,16 @@ async def test_list_agent_tasks_for_sessions_groups_visible_session_tasks(tmp_pa
             ["agent:main:webchat:one", "agent:main:webchat:two"],
             limit_per_session=1,
         )
+        exact = await storage.get_agent_task("one-new")
     finally:
         await storage.close()
 
     assert set(grouped) == {"agent:main:webchat:one", "agent:main:webchat:two"}
     assert [row.task_id for row in grouped["agent:main:webchat:one"]] == ["one-new"]
     assert [row.task_id for row in grouped["agent:main:webchat:two"]] == ["two-task"]
+    assert grouped["agent:main:webchat:one"][0].details is None
+    assert exact is not None
+    assert exact.details == {"terminal_assistant_message_content": "x" * 100_000}
 
 
 @pytest.mark.asyncio

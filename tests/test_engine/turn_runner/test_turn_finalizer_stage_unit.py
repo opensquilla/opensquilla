@@ -20,6 +20,7 @@ import pytest
 
 from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     CostRollupResult,
+    TranscriptAppendResult,
     TurnFinalizerStage,
     TurnFinalizerStageInput,
 )
@@ -32,7 +33,12 @@ from opensquilla.engine.types import DoneEvent, ErrorEvent
 
 @dataclass
 class _RecordingTranscriptAppend:
-    return_value: bool = True
+    return_value: TranscriptAppendResult | bool = field(
+        default_factory=lambda: TranscriptAppendResult(
+            appended=True,
+            message_id="assistant-message-1",
+        )
+    )
     raises: type[BaseException] | None = None
     calls: list[dict[str, Any]] = field(default_factory=list)
 
@@ -46,7 +52,7 @@ class _RecordingTranscriptAppend:
         reasoning_content: str | None,
         turn_usage: dict[str, Any] | None,
         token_count: int | None,
-    ) -> bool:
+    ) -> TranscriptAppendResult | bool:
         self.calls.append(
             {
                 "session_key": session_key,
@@ -227,6 +233,8 @@ async def test_simple_text_no_done_event_appends_and_captures() -> None:
     out = outcome.output
     assert out.final_text == "hi"
     assert out.transcript_appended is True
+    assert out.assistant_message_id == "assistant-message-1"
+    assert out.assistant_message_content == "hi"
     assert out.memory_captured is True
     assert out.cost_rollup is None
     assert len(recs["transcript_append"].calls) == 1
@@ -238,6 +246,20 @@ async def test_simple_text_no_done_event_appends_and_captures() -> None:
     assert len(recs["turn_memory_capture"].calls) == 1
     assert recs["turn_error_persist"].calls == []
     assert recs["session_totals"].calls == []
+
+
+@pytest.mark.asyncio
+async def test_legacy_boolean_transcript_port_remains_compatible() -> None:
+    stage, _ = _make_stage(
+        transcript_append=_RecordingTranscriptAppend(return_value=True),
+    )
+
+    outcome = await stage.run(_make_input(final_text_parts=["legacy adapter reply"]))
+
+    assert outcome.output.transcript_appended is True
+    assert outcome.output.assistant_message_id is None
+    assert outcome.output.assistant_message_content == "legacy adapter reply"
+    assert outcome.output.memory_captured is True
 
 
 @pytest.mark.asyncio
@@ -565,7 +587,9 @@ async def test_reasoning_content_excluded_for_non_deepseek_model() -> None:
 @pytest.mark.asyncio
 async def test_no_session_manager_skips_all_writes() -> None:
     stage, recs = _make_stage(
-        transcript_append=_RecordingTranscriptAppend(return_value=False),
+        transcript_append=_RecordingTranscriptAppend(
+            return_value=TranscriptAppendResult(appended=False)
+        ),
     )
     done = DoneEvent(text="hi", input_tokens=1, output_tokens=1)
     inp = _make_input(
@@ -577,6 +601,8 @@ async def test_no_session_manager_skips_all_writes() -> None:
     outcome = await stage.run(inp)
     out = outcome.output
     assert out.transcript_appended is False
+    assert out.assistant_message_id is None
+    assert out.assistant_message_content is None
     # Memory NOT captured because transcript port returned False (no manager).
     assert out.memory_captured is False
     assert recs["turn_memory_capture"].calls == []

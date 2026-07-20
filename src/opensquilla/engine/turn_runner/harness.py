@@ -12,6 +12,7 @@ the stage boundaries are ready to sequence.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -52,6 +53,7 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
 )
 from opensquilla.engine.turn_runner.provider_and_tools_stage import (
     ProviderResolverPort,
+    SkillCatalogResolverPort,
     ToolBuilderPort,
 )
 from opensquilla.engine.turn_runner.stream_consumer_stage import (
@@ -65,6 +67,7 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     CostRollupResult,
     SessionTotalsPort,
     TranscriptAppendPort,
+    TranscriptAppendResult,
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
     UsageTelemetryPort,
@@ -93,7 +96,6 @@ def _coerce_flush_triggers(value: Any) -> list[str]:
 # Input stage adapters
 # ---------------------------------------------------------------------------
 
-
 class _TurnRunnerExtraContextAdapter(ExtraContextResolver):
     """Bind ``TurnRunner``'s two static extra-context helpers as a Protocol.
 
@@ -121,7 +123,6 @@ class _TurnRunnerExtraContextAdapter(ExtraContextResolver):
 # Provider/tools stage adapters
 # ---------------------------------------------------------------------------
 
-
 class _TurnRunnerProviderResolverAdapter(ProviderResolverPort):
     """Bind ``TurnRunner._resolve_provider`` as a Protocol-shaped port."""
 
@@ -132,8 +133,20 @@ class _TurnRunnerProviderResolverAdapter(ProviderResolverPort):
         return self._runner._resolve_provider()
 
 
+class _TurnRunnerSkillCatalogResolverAdapter(SkillCatalogResolverPort):
+    """Refresh and pin one immutable skill catalog for the turn."""
+
+    def __init__(self, runner: TurnRunner) -> None:
+        self._runner = runner
+
+    async def resolve_skill_catalog(self) -> Any | None:
+        return await asyncio.to_thread(self._runner._resolve_skill_catalog)
+
+
 class _TurnRunnerToolBuilderAdapter(ToolBuilderPort):
-    """Bind ``TurnRunner._build_tools`` and the two ``ToolContext`` mutators."""
+    """Bind ``TurnRunner._build_tools`` and the two ``ToolContext`` mutators.
+
+        """
 
     def __init__(self, runner: TurnRunner) -> None:
         self._runner = runner
@@ -160,11 +173,27 @@ class _TurnRunnerToolBuilderAdapter(ToolBuilderPort):
     ) -> tuple[list[Any], ToolHandler | None]:
         return self._runner._build_tools(ctx, metadata=metadata)
 
+    def build_tools_for_catalog(
+        self,
+        ctx: ToolContext | None,
+        *,
+        skill_catalog: Any | None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[list[Any], ToolHandler | None]:
+        if skill_catalog is None or "skill_catalog" not in inspect.signature(
+            self._runner._build_tools
+        ).parameters:
+            return self._runner._build_tools(ctx, metadata=metadata)
+        return self._runner._build_tools(
+            ctx,
+            metadata=metadata,
+            skill_catalog=skill_catalog,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Prompt assembler stage adapters
 # ---------------------------------------------------------------------------
-
 
 class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
     """Bind ``TurnRunner._assemble_prompt`` as a Protocol-shaped port."""
@@ -195,9 +224,10 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
             fresh_user_session=fresh_user_session,
         )
 
-
 class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
-    """Bind ``TurnRunner._run_pipeline`` and unpack ``RunPipelineRequest``."""
+    """Bind ``TurnRunner._run_pipeline`` and unpack ``RunPipelineRequest``.
+
+        """
 
     def __init__(self, runner: TurnRunner) -> None:
         self._runner = runner
@@ -224,6 +254,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             "tool_context": request.tool_context,
             "normalization_metadata": request.normalization_metadata,
             "input_provenance": request.input_provenance,
+            "skill_catalog": request.skill_catalog,
         }
         accepted_kwargs = {
             name: value
@@ -240,7 +271,6 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             request.attachments,
             **accepted_kwargs,
         )
-
 
 class _TurnRunnerRouterContextAdapter(RouterContextPort):
     """Bind ``TurnRunner._router_previous_assistant_context``."""
@@ -261,7 +291,6 @@ class _TurnRunnerRouterContextAdapter(RouterContextPort):
             bound_user_message_id=bound_user_message_id,
         )
 
-
 class _TurnRunnerPromptConfigResolverAdapter(PromptConfigResolverPort):
     """Bind ``TurnRunner._resolve_prompt_config``."""
 
@@ -273,7 +302,6 @@ class _TurnRunnerPromptConfigResolverAdapter(PromptConfigResolverPort):
         turn: Any,
     ) -> tuple[str, list[Any] | None, str | None]:
         return self._runner._resolve_prompt_config(turn)
-
 
 class _PromptReportBuilderAdapter(PromptReportBuilderPort):
     """Pure shim around the module-level ``build_prompt_report`` helper.
@@ -307,7 +335,6 @@ class _PromptReportBuilderAdapter(PromptReportBuilderPort):
             tool_profile=tool_profile,
         )
 
-
 class _TurnRunnerSessionIdResolverAdapter(SessionIdResolverPort):
     """Bind ``TurnRunner._resolve_session_id_for_log``."""
 
@@ -319,7 +346,6 @@ class _TurnRunnerSessionIdResolverAdapter(SessionIdResolverPort):
         session_key: str,
     ) -> str | None:
         return await self._runner._resolve_session_id_for_log(session_key)
-
 
 class _TurnRunnerMemoryFingerprintAdapter(MemoryFingerprintPort):
     """Bind ``TurnRunner._config.memory_mode_fingerprint`` defensively.
@@ -347,7 +373,6 @@ class _TurnRunnerMemoryFingerprintAdapter(MemoryFingerprintPort):
 # ---------------------------------------------------------------------------
 # Agent bootstrap stage adapters
 # ---------------------------------------------------------------------------
-
 
 class _TurnRunnerTimeoutBudgetAdapter(TimeoutBudgetPort):
     """Bind the five ``TurnRunner._resolve_agent_*`` helpers as a single port.
@@ -394,7 +419,9 @@ class _TurnRunnerTimeoutBudgetAdapter(TimeoutBudgetPort):
             iteration_timeout=self._runner._resolve_agent_iteration_timeout(
                 session_key, iteration_timeout
             ),
-            tool_timeout=self._runner._resolve_agent_tool_timeout(session_key, tool_timeout),
+            tool_timeout=self._runner._resolve_agent_tool_timeout(
+                session_key, tool_timeout
+            ),
             request_timeout=self._runner._resolve_agent_request_timeout(
                 session_key, request_timeout
             ),
@@ -402,7 +429,6 @@ class _TurnRunnerTimeoutBudgetAdapter(TimeoutBudgetPort):
                 session_key, max_provider_retries
             ),
         )
-
 
 def _positive_int_or_zero(value: Any) -> int:
     """Coerce a config value to a positive int, treating junk/negatives as 0."""
@@ -433,7 +459,9 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
         # catalog does not know (e.g. direct DashScope ids) — this feeds the
         # provider-context budget ladder, so a wrong default here makes
         # compaction fire far too early or too late.
-        user_context_window = _positive_int_or_zero(getattr(llm_cfg, "context_window_tokens", 0))
+        user_context_window = _positive_int_or_zero(
+            getattr(llm_cfg, "context_window_tokens", 0)
+        )
         # Explicit provider-request proof budget (chars). Positive values bypass
         # the derived context-budget ladder in ContextBudgetGovernor.from_values.
         user_proof_max_chars = _positive_int_or_zero(
@@ -469,7 +497,6 @@ class _TurnRunnerModelCatalogAdapter(ModelCatalogPort):
             provider_request_proof_max_chars=user_proof_max_chars,
         )
 
-
 class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
     """Bind the five ``TurnRunner`` helpers AgentConfig assembly needs.
 
@@ -497,25 +524,41 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
         runner = self._runner
         mem_cfg = getattr(runner._config, "memory", None) if runner._config else None
         agent_token_cfg = (
-            getattr(runner._config, "agent_token_saving", None) if runner._config else None
+            getattr(runner._config, "agent_token_saving", None)
+            if runner._config
+            else None
         )
-        compaction_cfg = getattr(runner._config, "compaction", None) if runner._config else None
+        compaction_cfg = (
+            getattr(runner._config, "compaction", None)
+            if runner._config
+            else None
+        )
         thinking = runner._resolve_turn_thinking(turn)
         return _AgentConfigAuxiliaries(
             thinking=thinking,
             flush_workspace_dir=str(runner._resolve_memory_source_dir(agent_id)),
-            tool_result_store_dir=str(media_root_from_config(runner._config) / "tool-results"),
+            tool_result_store_dir=str(
+                media_root_from_config(runner._config) / "tool-results"
+            ),
             tool_result_store_session_id=session_id_for_log or session_key,
             flush_enabled=getattr(mem_cfg, "flush_enabled", False),
-            flush_triggers=_coerce_flush_triggers(getattr(mem_cfg, "flush_triggers", None)),
+            flush_triggers=_coerce_flush_triggers(
+                getattr(mem_cfg, "flush_triggers", None)
+            ),
             flush_pre_compaction=getattr(mem_cfg, "flush_pre_compaction", False),
             flush_timeout_seconds=getattr(mem_cfg, "flush_timeout_seconds", 15.0),
             flush_background_timeout_seconds=getattr(
                 mem_cfg, "flush_background_timeout_seconds", 120.0
             ),
-            flush_backoff_initial_seconds=getattr(mem_cfg, "flush_backoff_initial_seconds", 30.0),
-            flush_backoff_max_seconds=getattr(mem_cfg, "flush_backoff_max_seconds", 300.0),
-            flush_archive_max_bytes=getattr(mem_cfg, "flush_archive_max_bytes", 800_000),
+            flush_backoff_initial_seconds=getattr(
+                mem_cfg, "flush_backoff_initial_seconds", 30.0
+            ),
+            flush_backoff_max_seconds=getattr(
+                mem_cfg, "flush_backoff_max_seconds", 300.0
+            ),
+            flush_archive_max_bytes=getattr(
+                mem_cfg, "flush_archive_max_bytes", 800_000
+            ),
             flush_compaction_requires_safe_receipt=getattr(
                 mem_cfg,
                 "flush_compaction_requires_safe_receipt",
@@ -615,7 +658,6 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
             ),
         )
 
-
 class _TurnRunnerMemorySnapshotAdapter(MemorySnapshotPort):
     """Bind the per-agent memory warm + per-(agent_id, session_key) snapshot capture.
 
@@ -644,7 +686,9 @@ class _TurnRunnerMemorySnapshotAdapter(MemorySnapshotPort):
 
         runner = self._runner
         sync_manager = (
-            runner._memory_sync_managers.get(agent_id) if runner._memory_sync_managers else None
+            runner._memory_sync_managers.get(agent_id)
+            if runner._memory_sync_managers
+            else None
         )
         if sync_manager is not None:
             await sync_manager.warm_session(session_key)
@@ -661,7 +705,6 @@ class _TurnRunnerMemorySnapshotAdapter(MemorySnapshotPort):
             sync_manager=sync_manager,
             private_memory_allowed=private_memory_allowed,
         )
-
 
 class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
     """Bind the typed ``Agent(...)`` constructor.
@@ -707,7 +750,6 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
 # Compaction/history stage adapters
 # ---------------------------------------------------------------------------
 
-
 class _TurnRunnerT3UpgradeCompactionAdapter(T3UpgradeCompactionPort):
     """Bind ``TurnRunner._maybe_compact_on_t3_upgrade`` as a Protocol port.
 
@@ -737,7 +779,6 @@ class _TurnRunnerT3UpgradeCompactionAdapter(T3UpgradeCompactionPort):
             compaction_model=compaction_model,
         )
 
-
 class _TurnRunnerPreflightCompactionAdapter(PreflightCompactionPort):
     """Bind ``TurnRunner._maybe_preflight_compact`` as a Protocol port.
 
@@ -762,7 +803,6 @@ class _TurnRunnerPreflightCompactionAdapter(PreflightCompactionPort):
             compaction_provider=compaction_provider,
             compaction_model=compaction_model,
         )
-
 
 class _TurnRunnerHistoryLoaderAdapter(HistoryLoaderPort):
     """Bind ``TurnRunner._load_history`` as a Protocol port.
@@ -791,7 +831,6 @@ class _TurnRunnerHistoryLoaderAdapter(HistoryLoaderPort):
             bound_user_message_id=bound_user_message_id,
         )
 
-
 class _RequestContextPrependAdapter(RequestContextPrependPort):
     """Pure shim around the module-level ``_prepend_request_context_prompt``.
 
@@ -813,7 +852,6 @@ class _RequestContextPrependAdapter(RequestContextPrependPort):
 # ---------------------------------------------------------------------------
 # Stream consumer stage adapters
 # ---------------------------------------------------------------------------
-
 
 class _TurnRunnerAgentRunAdapter(AgentRunPort):
     """Bind ``agent.run_turn(turn_input, extra_messages=..., **kwargs)``.
@@ -846,7 +884,6 @@ class _TurnRunnerAgentRunAdapter(AgentRunPort):
             extra_messages=extra_messages,
             **kwargs,
         )
-
 
 class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
     """Bind ``SessionManager.persist_compaction_result`` + ``notify_compaction``.
@@ -913,7 +950,6 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
             ),
         )
 
-
 class _TurnRunnerMemorySnapshotRefreshAdapter(MemorySnapshotRefreshPort):
     """Refresh ``runner._memory_snapshots[(agent_id, session_key)]`` after compaction.
 
@@ -941,7 +977,6 @@ class _TurnRunnerMemorySnapshotRefreshAdapter(MemorySnapshotRefreshPort):
                 memory_md=runner._load_memory_md(workspace),
                 daily_notes=runner._load_daily_notes(workspace),
             )
-
 
 class _TurnRunnerSystemPromptRefreshAdapter(SystemPromptRefreshPort):
     """Rebuild + apply the cacheable system-prompt base after compaction.
@@ -971,9 +1006,10 @@ class _TurnRunnerSystemPromptRefreshAdapter(SystemPromptRefreshPort):
             session_key=session_key,
             bootstrap_context_mode=bootstrap_context_mode,
         )
-        refreshed_prompt = assembled[0] if isinstance(assembled, tuple) else assembled
+        refreshed_prompt = (
+            assembled[0] if isinstance(assembled, tuple) else assembled
+        )
         agent.refresh_system_prompt(refreshed_prompt)
-
 
 class _TurnRunnerMemorySyncNotifyAdapter(MemorySyncNotifyPort):
     """Notify ``sync_manager.notify_message(byte_count)`` post-stream.
@@ -997,7 +1033,6 @@ class _TurnRunnerMemorySyncNotifyAdapter(MemorySyncNotifyPort):
 # ---------------------------------------------------------------------------
 # Attachment stage adapters
 # ---------------------------------------------------------------------------
-
 
 class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
     """Bind ``TurnRunner._build_attachment_messages`` + media-root lookup.
@@ -1028,7 +1063,8 @@ class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
             message,
             attachments,
             media_root=self._runner._attachment_media_root(),
-            workspace_dir=workspace_dir or getattr(self._runner._config, "workspace_dir", None),
+            workspace_dir=workspace_dir
+            or getattr(self._runner._config, "workspace_dir", None),
             session_id=session_id,
             workspace_attachment_budget_bytes=(
                 workspace_attachment_budget_from_config(self._runner._config)
@@ -1039,7 +1075,6 @@ class _TurnRunnerAttachmentMessageBuilderAdapter(AttachmentMessageBuilderPort):
 # ---------------------------------------------------------------------------
 # Turn finalizer stage adapters
 # ---------------------------------------------------------------------------
-
 
 class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
     """Bind ``SessionManager.append_message`` for the assistant turn persist.
@@ -1072,12 +1107,12 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
         reasoning_content: str | None,
         turn_usage: dict[str, Any] | None,
         token_count: int | None,
-    ) -> bool:
+    ) -> TranscriptAppendResult:
         from opensquilla.engine.runtime import _accepts_keyword_arg
 
         session_manager = self._runner._session_manager
         if session_manager is None:
-            return False
+            return TranscriptAppendResult(appended=False)
         append_kwargs: dict[str, Any] = {
             "role": role,
             "content": content,
@@ -1085,15 +1120,21 @@ class _TurnRunnerTranscriptAppendAdapter(TranscriptAppendPort):
         }
         if reasoning_content is not None:
             append_kwargs["reasoning_content"] = reasoning_content
-        if turn_usage is not None and _accepts_keyword_arg(
-            session_manager.append_message, "turn_usage"
+        if (
+            turn_usage is not None
+            and _accepts_keyword_arg(session_manager.append_message, "turn_usage")
         ):
             append_kwargs["turn_usage"] = turn_usage
         if _accepts_keyword_arg(session_manager.append_message, "token_count"):
             append_kwargs["token_count"] = token_count
-        await self._runner._append_session_message(session_key, **append_kwargs)
-        return True
-
+        entry = await self._runner._append_session_message(session_key, **append_kwargs)
+        raw_message_id = getattr(entry, "message_id", None)
+        message_id = (
+            raw_message_id
+            if isinstance(raw_message_id, str) and raw_message_id
+            else None
+        )
+        return TranscriptAppendResult(appended=True, message_id=message_id)
 
 class _TurnRunnerTurnMemoryCaptureAdapter(TurnMemoryCapturePort):
     """Bind ``TurnRunner._capture_turn_memory`` as a Protocol port.
@@ -1130,7 +1171,6 @@ class _TurnRunnerTurnMemoryCaptureAdapter(TurnMemoryCapturePort):
             run_kind=run_kind,
             no_memory_capture=no_memory_capture,
         )
-
 
 class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
     """Roll up session token + cost + cache totals from a DoneEvent.
@@ -1193,7 +1233,9 @@ class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
                     0.0,
                     done_event.cost_usd - done_event.billed_cost,
                 )
-            next_missing_entries = getattr(current_session, "missing_cost_entries", 0) or 0
+            next_missing_entries = (
+                getattr(current_session, "missing_cost_entries", 0) or 0
+            )
             if event_cost_source == "unavailable":
                 next_missing_entries += 1
             next_cost_source = rollup_cost_source(
@@ -1256,7 +1298,6 @@ class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
             cache_write=next_cache_write,
             model_override=next_model_override,
         )
-
 
 class _TurnRunnerTurnErrorPersistAdapter(TurnErrorPersistPort):
     """Bind ``TurnRunner._persist_turn_error`` as a Protocol port.

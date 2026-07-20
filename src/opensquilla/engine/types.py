@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal
@@ -65,7 +65,7 @@ class TextDeltaEvent:
     text: str = ""
     # Whether this text is the turn's final answer (render as a card) or
     # intermediate narration between tool calls (render as a lightweight purple
-    # ✱ line). Decided by the agent from whether the producing provider call
+    # ✻ line). Decided by the agent from whether the producing provider call
     # ended up making tool calls — see agent.py. Defaults to "answer" so any
     # producer that does not set it keeps the pre-existing card behavior.
     presentation: Literal["intermediate", "answer"] = "answer"
@@ -212,11 +212,37 @@ class DoneEvent:
     # exact routing decision. None when the router is disabled, the turn
     # bypassed classification, or no decision writer is registered.
     decision_id: str | None = None
+    # Explicit presence distinguishes an authoritative empty final answer from
+    # legacy/partial producers whose empty ``text`` means "fall back to the
+    # streamed deltas".  Appended last for positional-construction compatibility.
+    text_snapshot: str | None = None
 
     @property
     def upstream_cost_usd(self) -> float:
         """Backward-compatible alias for earlier OpenRouter cost consumers."""
         return self.billed_cost
+
+
+def done_text_snapshot(event_or_mapping: object) -> tuple[bool, str]:
+    """Resolve an engine Done event's terminal-text presence and value.
+
+    New producers set ``text_snapshot`` even when the authoritative value is
+    empty.  Legacy producers remain compatible: a nonempty ``text`` is treated
+    as an authoritative snapshot, while an empty value means consumers should
+    retain whatever text deltas they already collected.
+    """
+
+    if isinstance(event_or_mapping, Mapping):
+        explicit = event_or_mapping.get("text_snapshot")
+        legacy = event_or_mapping.get("text")
+    else:
+        explicit = getattr(event_or_mapping, "text_snapshot", None)
+        legacy = getattr(event_or_mapping, "text", None)
+    if isinstance(explicit, str):
+        return True, explicit
+    if isinstance(legacy, str) and legacy:
+        return True, legacy
+    return False, ""
 
 
 @dataclass
@@ -317,9 +343,9 @@ class MetaStepStateEvent:
     kind: Literal["meta_step_state"] = field(default="meta_step_state", init=False)
     run_id: str = ""
     step_id: str = ""
-    state: Literal[
-        "pending", "running", "succeeded", "failed", "skipped", "substituted"
-    ] = "pending"
+    state: Literal["pending", "running", "succeeded", "failed", "skipped", "substituted"] = (
+        "pending"
+    )
     status_text: str | None = None
     error: str | None = None
     substitute_for: str | None = None

@@ -15,10 +15,8 @@ interface ThreadFixture {
 interface MountOptions {
   sessionKey?: string
   historyHasMore?: boolean
-  historyLoading?: boolean
   onNavigate?: ReturnType<typeof vi.fn>
   onNavigateEnd?: ReturnType<typeof vi.fn>
-  onLoadEarlier?: ReturnType<typeof vi.fn>
 }
 
 interface ThreadDimensions {
@@ -131,10 +129,8 @@ async function mountMinimap(
     stripTimePrefix: (value: string) => value,
     sessionKey: options.sessionKey,
     historyHasMore: options.historyHasMore,
-    historyLoading: options.historyLoading,
     onNavigate: options.onNavigate,
     onNavigateEnd: options.onNavigateEnd,
-    onLoadEarlier: options.onLoadEarlier,
   })
   app.use(i18n)
   app.mount(host)
@@ -325,15 +321,12 @@ describe('ConversationMinimap', () => {
     expect(document.activeElement).toBe(thread.container.querySelector('[data-chat-turn-key="user-3"]'))
   })
 
-  it('labels a partial history window and exposes loading earlier messages', async () => {
-    const onLoadEarlier = vi.fn()
-    const { host } = await mountMinimap(8, { historyHasMore: true, onLoadEarlier })
+  it('labels the loaded range without exposing a manual load-earlier control', async () => {
+    const { host } = await mountMinimap(8, { historyHasMore: true })
 
     expect(host.querySelector('nav')?.getAttribute('aria-label')).toContain('earlier messages available')
     expect(markers(host)[0].getAttribute('aria-label')).toContain('Loaded prompt 1 of 8')
-    const loadButton = host.querySelector<HTMLButtonElement>('[data-testid="conversation-minimap-load-earlier"]')!
-    loadButton.click()
-    expect(onLoadEarlier).toHaveBeenCalledOnce()
+    expect(host.querySelector('[data-testid="conversation-minimap-load-earlier"]')).toBeNull()
   })
 
   it('keeps a focused prompt keyed correctly when earlier history is prepended', async () => {
@@ -368,76 +361,6 @@ describe('ConversationMinimap', () => {
     expect(host.querySelector('[role="tooltip"]')?.textContent).toContain('prompt 2')
     expect(markers(host)[3].tabIndex).toBe(0)
     expect(document.activeElement).toBe(markers(host)[3])
-  })
-
-  it('keeps the load-earlier control focusable while loading and restores focus when it disappears', async () => {
-    const rendered = messages(8)
-    const hasMore = ref(true)
-    const loading = ref(false)
-    const thread = makeThread(rendered)
-    const host = document.createElement('div')
-    document.body.appendChild(host)
-    const Root = defineComponent(() => () => h(ConversationMinimap, {
-      messages: rendered,
-      scrollContainer: thread.container,
-      stripTimePrefix: (value: string) => value,
-      historyHasMore: hasMore.value,
-      historyLoading: loading.value,
-    }))
-    const app = createApp(Root)
-    app.use(i18n)
-    app.mount(host)
-    mountedApps.push(app)
-    await vi.waitFor(() => expect(markers(host)).toHaveLength(8))
-
-    const loadButton = host.querySelector<HTMLButtonElement>('[data-testid="conversation-minimap-load-earlier"]')!
-    loadButton.focus()
-    loadButton.click()
-    loading.value = true
-    await nextTick()
-    expect(loadButton.getAttribute('aria-disabled')).toBe('true')
-    expect(document.activeElement).toBe(loadButton)
-
-    hasMore.value = false
-    loading.value = false
-    await nextTick()
-    await nextTick()
-    expect(document.activeElement).toBe(markers(host)[0])
-  })
-
-  it('does not steal focus when the reader leaves the load-earlier control during loading', async () => {
-    const rendered = messages(8)
-    const hasMore = ref(true)
-    const loading = ref(false)
-    const thread = makeThread(rendered)
-    const host = document.createElement('div')
-    const outsideButton = document.createElement('button')
-    document.body.append(host, outsideButton)
-    const Root = defineComponent(() => () => h(ConversationMinimap, {
-      messages: rendered,
-      scrollContainer: thread.container,
-      stripTimePrefix: (value: string) => value,
-      historyHasMore: hasMore.value,
-      historyLoading: loading.value,
-    }))
-    const app = createApp(Root)
-    app.use(i18n)
-    app.mount(host)
-    mountedApps.push(app)
-    await vi.waitFor(() => expect(markers(host)).toHaveLength(8))
-
-    const loadButton = host.querySelector<HTMLButtonElement>('[data-testid="conversation-minimap-load-earlier"]')!
-    loadButton.focus()
-    loadButton.click()
-    loading.value = true
-    await nextTick()
-    outsideButton.focus()
-
-    hasMore.value = false
-    loading.value = false
-    await nextTick()
-    await nextTick()
-    expect(document.activeElement).toBe(outsideButton)
   })
 
   it('stays hidden below the prompt and scroll-range thresholds', async () => {

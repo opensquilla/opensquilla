@@ -115,59 +115,12 @@
           ref="threadRef"
           class="chat-thread"
           role="region"
+          tabindex="0"
           :aria-label="t('chat.conversation')"
           :aria-busy="isStreaming"
           @scroll="onThreadScroll"
         >
         <template v-if="isNewChatLanding">
-          <div ref="agentSwitcherRef" class="chat-landing-agent">
-            <button
-              type="button"
-              class="chat-landing-agent__btn"
-              aria-haspopup="menu"
-              :aria-expanded="agentSwitcherOpen"
-              :title="t('chat.agentLabel', { name: landingAgentName })"
-              @click.stop="toggleAgentSwitcher"
-            >
-              <Icon name="agents" :size="14" />
-              <span class="chat-landing-agent__name">{{ landingAgentName }}</span>
-              <Icon class="chat-landing-agent__chevron" name="chevronDown" :size="13" />
-            </button>
-            <div
-              v-if="agentSwitcherOpen"
-              class="chat-landing-agent__menu"
-              role="menu"
-              :aria-label="t('chat.chooseAgent')"
-              @keydown="onAgentSwitcherKeydown"
-            >
-              <button
-                v-for="agent in selectableAgents"
-                :key="agent.id"
-                type="button"
-                class="chat-landing-agent__item"
-                role="menuitemradio"
-                :aria-checked="agent.id === landingAgentId"
-                @click.stop="pickDraftAgent(agent.id)"
-              >
-                <span class="chat-landing-agent__item-name">{{ agent.name }}</span>
-                <Icon
-                  v-if="agent.id === landingAgentId"
-                  class="chat-landing-agent__check"
-                  name="check"
-                  :size="14"
-                />
-              </button>
-              <button
-                type="button"
-                class="chat-landing-agent__item chat-landing-agent__item--create"
-                role="menuitem"
-                @click.stop="createAgentFromSwitcher"
-              >
-                <Icon name="plus" :size="14" />
-                <span>{{ t('chat.createAgent') }}</span>
-              </button>
-            </div>
-          </div>
           <div class="chat-landing-brand" :aria-label="t('chat.newChatBrand')">
             <EmptyStateChips
               :key="landingAgentId"
@@ -178,10 +131,19 @@
           </div>
         </template>
         <div v-else-if="messages.length === 0 && !isStreaming" class="chat-empty">{{ t('chat.noMessagesYet') }}</div>
-        <ChatHistoryScopeRow
+        <HistoryLoadSentinel
           v-if="!isNewChatLanding"
-          :state="historyState"
+          :scroll-container="threadRef"
+          :has-more="historyState.hasMore"
+          :loading="historyState.loadingEarlier"
+          :blocked="historyState.loading"
+          :error="historyState.loadEarlierError"
+          :canonical-available="historyState.canonicalAvailable"
+          :canonical-complete="historyState.canonicalComplete"
+          :cursor="historyState.oldestCursor"
+          :session-key="sessionKey"
           @load-earlier="loadEarlierHistory"
+          @retry="retryHistory"
         />
 
         <ChatMessageList
@@ -383,10 +345,8 @@
           :strip-time-prefix="stripTimePrefix"
           :session-key="sessionKey"
           :history-has-more="historyState.hasMore"
-          :history-loading="historyState.loading"
           @navigate="onHistoryNavigate"
           @navigate-end="onHistoryNavigateEnd"
-          @load-earlier="loadEarlierHistory"
         />
       </div>
     </div>
@@ -548,7 +508,6 @@ import ApprovalCard from '@/components/chat/ApprovalCard.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import DeliverablesDrawer from '@/components/chat/DeliverablesDrawer.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
-import ChatHistoryScopeRow from '@/components/chat/ChatHistoryScopeRow.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
 import ChatStallNotice from '@/components/chat/ChatStallNotice.vue'
 import ClarifyCard from '@/components/chat/ClarifyCard.vue'
@@ -564,6 +523,7 @@ import SharePreviewModal from '@/components/chat/SharePreviewModal.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import ToolResultModal from '@/components/chat/ToolResultModal.vue'
 import Icon from '@/components/Icon.vue'
+import HistoryLoadSentinel from '@/components/HistoryLoadSentinel.vue'
 import { useChatApprovals } from '@/composables/chat/useChatApprovals'
 import { useChatAttachments } from '@/composables/chat/useChatAttachments'
 import { useChatCompaction } from '@/composables/chat/useChatCompaction'
@@ -591,7 +551,6 @@ import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscripti
 import { useChatSend } from '@/composables/chat/useChatSend'
 import { useChatStallWatchdog } from '@/composables/chat/useChatStallWatchdog'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
-import { useAgentOptions } from '@/composables/useAgentOptions'
 import { runStatusLabelText as sessionRunStatusLabelText } from '@/composables/useSessions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
@@ -633,7 +592,7 @@ import {
 } from '@/utils/chat/toolDisplay'
 import { isSendableAttachment } from '@/utils/chat/attachments'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
-import { agentIdFromSessionKey, normalizeAgentId } from '@/utils/chat/sessionKeys'
+import { agentIdFromSessionKey } from '@/utils/chat/sessionKeys'
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -755,6 +714,7 @@ const activeTaskGroups = ref<Set<string>>(new Set())
 // current turn so a prior task can't leak into it (issue 344).
 const activeStreamTaskId = ref<string>('')
 const activeStreamSessionKey = ref<string>('')
+let bindActiveStreamTask = (taskId: string) => { activeStreamTaskId.value = taskId }
 
 // Pending session intent
 const pendingSessionIntent = ref<string | null>(null)
@@ -768,7 +728,6 @@ const {
   sanitizeCopyText,
   stripDirectiveTags,
   stripGeneratedArtifactMarkers,
-  stripProtocolTextLeak,
   stripTimePrefix,
 } = chatTextRendering
 
@@ -787,7 +746,6 @@ const chatStream = useChatStream({
   renderMarkdown,
   stripDirectiveTags,
   stripGeneratedArtifactMarkers,
-  stripProtocolTextLeak,
   scrollToBottom,
   interruptState,
   rpcPolicy: () => rpc.policy,
@@ -973,86 +931,6 @@ const {
   resolveInitialSession,
 } = chatSessionRoute
 
-// In-draft agent switcher (new-chat landing): lets the user swap the draft's
-// agent before the first message. Shares one agents.list path with the sidebar.
-const { selectableAgents, loadAgents: loadAgentOptions } = useAgentOptions()
-const agentSwitcherOpen = ref(false)
-const agentSwitcherRef = ref<HTMLElement | null>(null)
-
-const landingAgentName = computed(() => {
-  const id = landingAgentId.value
-  const match = selectableAgents.value.find(agent => agent.id === id)
-  return match?.name || (id === 'main' ? t('chat.mainAgent') : id)
-})
-
-function toggleAgentSwitcher() {
-  agentSwitcherOpen.value = !agentSwitcherOpen.value
-  if (agentSwitcherOpen.value && selectableAgents.value.length <= 1) {
-    void loadAgentOptions()
-  }
-  if (agentSwitcherOpen.value) {
-    // Land focus on the checked agent if present, else the first item, so the
-    // menu is keyboard-operable the moment it opens.
-    nextTick(() => {
-      const menu = agentSwitcherRef.value?.querySelector('.chat-landing-agent__menu')
-      const items = menu?.querySelectorAll<HTMLElement>('.chat-landing-agent__item')
-      if (!items?.length) return
-      const checked = menu?.querySelector<HTMLElement>('[aria-checked="true"]')
-      ;(checked ?? items[0]).focus()
-    })
-  }
-}
-
-function closeAgentSwitcher() {
-  agentSwitcherOpen.value = false
-}
-
-// Arrow keys rove between the agent items (including "Create agent…"), wrapping
-// at the ends; Escape closes and restores focus to the switcher trigger.
-function onAgentSwitcherKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    closeAgentSwitcher()
-    nextTick(() => agentSwitcherRef.value?.querySelector<HTMLElement>('.chat-landing-agent__btn')?.focus())
-    return
-  }
-  // Tab must dismiss the open menu (WAI-ARIA menu pattern) and let focus move on
-  // naturally — the outside-click handler does not fire on a keyboard Tab.
-  if (e.key === 'Tab') {
-    closeAgentSwitcher()
-    return
-  }
-  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
-  const menu = agentSwitcherRef.value?.querySelector('.chat-landing-agent__menu')
-  const items = Array.from(menu?.querySelectorAll<HTMLElement>('.chat-landing-agent__item') ?? [])
-  if (!items.length) return
-  e.preventDefault()
-  const current = items.indexOf(document.activeElement as HTMLElement)
-  const delta = e.key === 'ArrowDown' ? 1 : -1
-  const next = (current + delta + items.length) % items.length
-  items[next]?.focus()
-}
-
-// Selecting an agent re-enters the draft for it. The draft carries no messages
-// yet, so swapping with replace semantics is safe and leaves no history entry.
-function pickDraftAgent(agentId: string) {
-  closeAgentSwitcher()
-  const id = normalizeAgentId(agentId)
-  if (id === landingAgentId.value) return
-  goToDraft({ agentId: id, replace: true })
-}
-
-function createAgentFromSwitcher() {
-  closeAgentSwitcher()
-  router.push('/agents')
-}
-
-useDocumentEvent('click', (e) => {
-  if (!agentSwitcherOpen.value) return
-  const host = agentSwitcherRef.value
-  if (host && e.target instanceof Node && !host.contains(e.target)) closeAgentSwitcher()
-})
-
 const renderSourceMessages = computed(() =>
   messagesWithStoppedOutputNotice(
     messages.value,
@@ -1169,7 +1047,9 @@ const {
   historyState,
   loadHistory,
   loadEarlierHistory,
+  retryHistory,
   scheduleHistorySync,
+  cancelAnchorStabilization,
   cleanup: cleanupHistory,
 } = chatHistory
 
@@ -1263,7 +1143,7 @@ const chatSlashCommands = useChatSlashCommands({
   inputText,
   sessionKey,
   autoResizeTextarea,
-  newSession: () => goToDraft({ agentId: agentIdFromSessionKey(sessionKey.value) }),
+  newSession: () => goToDraft({ agentId: 'main' }),
   resetCurrentSession: resetCurrentSessionAfterSlash,
   setCompactInFlight,
   showCompactStatus,
@@ -1324,6 +1204,8 @@ const chatSend = useChatSend({
   stream: chatStream,
   normalizeElevatedMode,
   persistSession,
+  scheduleHistorySync,
+  bindActiveStreamTask: taskId => bindActiveStreamTask(taskId),
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,
   prepareAttachmentsForSend,
@@ -1409,6 +1291,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   loadHistory,
   loadCurrentSessionUsage,
 })
+bindActiveStreamTask = rpcEventHandlers.bindActiveStreamTask
 const {
   streamThinkingText,
   streamThinkingElapsedText,
@@ -2004,6 +1887,7 @@ function onThreadScroll() {
 }
 
 function onHistoryNavigate() {
+  cancelAnchorStabilization()
   historyNavigationScrollLock.start()
 }
 
@@ -2019,6 +1903,7 @@ function onHistoryNavigateEnd() {
 // Re-pinning autoScroll lets the stream resume following the bottom.
 const showJumpToLatest = computed(() => !autoScroll.value && messages.value.length > 0)
 function jumpToLatest() {
+  cancelAnchorStabilization()
   historyNavigationScrollLock.finish()
   autoScroll.value = true
   scrollToBottom()
@@ -2106,14 +1991,6 @@ function onDocumentKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (e.defaultPrevented) return
 
-  // The landing agent switcher closes first and hands focus back to its trigger.
-  if (agentSwitcherOpen.value) {
-    e.preventDefault()
-    closeAgentSwitcher()
-    nextTick(() => agentSwitcherRef.value?.querySelector<HTMLElement>('.chat-landing-agent__btn')?.focus())
-    return
-  }
-
   // The share preview modal owns Escape while it is open: it closes only the
   // preview (share mode stays active) via its own handler, so bail here and let
   // it run rather than tearing down the whole share mode underneath it.
@@ -2185,9 +2062,6 @@ onMounted(async () => {
 
   // Load elevated mode
   loadElevatedMode()
-
-  // Resolve agent display names for the in-draft switcher.
-  void loadAgentOptions()
 
   // Load feature toggles
   await loadFeatureToggles()

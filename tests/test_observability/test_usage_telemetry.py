@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from opensquilla.engine.types import DoneEvent
-from opensquilla.observability import install_telemetry, usage_telemetry
+from opensquilla.observability import install_telemetry, network_policy, usage_telemetry
 from opensquilla.session.storage import SessionStorage
 
 
@@ -32,8 +32,23 @@ def _done(**values: Any) -> DoneEvent:
     return DoneEvent(**defaults)
 
 
-async def test_records_only_completed_interactive_turns(tmp_path, monkeypatch):
+def _enable_telemetry_for_test(monkeypatch) -> None:
+    monkeypatch.delenv(
+        network_policy.NETWORK_OBSERVABILITY_DISABLED_ENV,
+        raising=False,
+    )
+    monkeypatch.delenv(install_telemetry.TELEMETRY_DISABLED_ENV, raising=False)
+    monkeypatch.delenv(
+        network_policy.LEGACY_UPDATE_CHECK_DISABLED_ENV,
+        raising=False,
+    )
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv(install_telemetry.TELEMETRY_TESTING_ENV, raising=False)
+
+
+async def test_records_only_completed_interactive_turns(tmp_path, monkeypatch):
+    _enable_telemetry_for_test(monkeypatch)
     storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
     config = _config(tmp_path)
     now = datetime(2026, 7, 19, 12, tzinfo=UTC)
@@ -100,7 +115,7 @@ async def test_records_only_completed_interactive_turns(tmp_path, monkeypatch):
 
 
 async def test_opt_out_does_not_create_daily_row(tmp_path, monkeypatch):
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _enable_telemetry_for_test(monkeypatch)
     storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
     try:
         recorded = await usage_telemetry.record_completed_turn(
@@ -116,7 +131,7 @@ async def test_opt_out_does_not_create_daily_row(tmp_path, monkeypatch):
 
 
 async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_path, monkeypatch):
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _enable_telemetry_for_test(monkeypatch)
     endpoint = "https://example.test/v1/usage"
     monkeypatch.setenv(usage_telemetry.USAGE_TELEMETRY_ENDPOINT_ENV, endpoint)
     config = _config(tmp_path)
@@ -183,7 +198,7 @@ async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_pa
 
 
 async def test_new_turn_keeps_snapshot_pending_when_upload_is_in_flight(tmp_path, monkeypatch):
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _enable_telemetry_for_test(monkeypatch)
     monkeypatch.setenv(
         usage_telemetry.USAGE_TELEMETRY_ENDPOINT_ENV,
         "https://example.test/v1/usage",
@@ -228,7 +243,7 @@ async def test_new_turn_keeps_snapshot_pending_when_upload_is_in_flight(tmp_path
 
 
 async def test_hourly_snapshots_reuse_event_id_with_latest_cumulative_totals(tmp_path, monkeypatch):
-    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    _enable_telemetry_for_test(monkeypatch)
     monkeypatch.setenv(
         usage_telemetry.USAGE_TELEMETRY_ENDPOINT_ENV,
         "https://example.test/v1/usage",

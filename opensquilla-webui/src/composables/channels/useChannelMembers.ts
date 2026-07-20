@@ -155,6 +155,9 @@ export function useChannelMembers() {
     loading.value = true
     error.value = ''
     try {
+      // Cold-load guard: a deep-linked Members tab can fire before the WS
+      // handshake completes; wait instead of hard-failing with a Retry.
+      await rpc.waitForConnection()
       const result = await rpc.call<PairingsResponse>('channels.pairings', { channelName: name })
       if (activeName.value !== name || id !== requestId) return
       pairings.value = (result.pairings || []).filter(pairing => pairing.channelName === name)

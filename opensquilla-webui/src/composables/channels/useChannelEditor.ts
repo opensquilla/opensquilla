@@ -148,6 +148,9 @@ export function useChannelEditor() {
   })
 
   async function ensureCatalog(refresh = false): Promise<ChannelEditorSpec[]> {
+    // Cold-load guard: panels can mount before the WS handshake completes;
+    // waiting here turns a hard "not connected" error into a short defer.
+    await rpc.waitForConnection()
     const channels = await ensureChannelCatalog(rpc, { refresh })
     catalog.value = channels
     return channels
@@ -202,6 +205,7 @@ export function useChannelEditor() {
     fieldErrors.value = {}
     resetProbe()
     try {
+      await rpc.waitForConnection()
       const [channels, res] = await Promise.all([
         ensureCatalog(),
         rpc.call<{ entry?: Record<string, unknown>; secretFields?: string[] }>('channels.get', {

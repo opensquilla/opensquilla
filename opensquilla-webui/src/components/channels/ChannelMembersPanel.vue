@@ -85,7 +85,7 @@ function formatSince(since?: string | number | null): string {
           <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
           <div class="ch-pairing-identity">
             <strong>{{ pairing.senderName || pairing.senderId }}</strong>
-            <span class="ch-members-mono">{{ pairing.senderId }}</span>
+            <span v-if="pairing.senderName" class="ch-members-mono">{{ pairing.senderId }}</span>
             <span v-if="pairing.pairingCode" class="ch-members-mono ch-pairing-code">{{ t('console.channels.pairings.requestCode', { code: pairing.pairingCode }) }}</span>
             <time v-if="pairing.createdAt" :datetime="pairing.createdAt">{{ t('console.channels.pairings.requestedAt', { time: formatSince(pairing.createdAt) }) }}</time>
           </div>
@@ -119,7 +119,7 @@ function formatSince(since?: string | number | null): string {
           <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
           <div class="ch-pairing-identity">
             <strong>{{ pairing.senderName || pairing.senderId }}</strong>
-            <span class="ch-members-mono">{{ pairing.senderId }}</span>
+            <span v-if="pairing.senderName" class="ch-members-mono">{{ pairing.senderId }}</span>
             <time v-if="pairing.approvedAt" :datetime="pairing.approvedAt">{{ t('console.channels.pairings.approvedAt', { time: formatSince(pairing.approvedAt) }) }}</time>
           </div>
           <span
@@ -191,7 +191,7 @@ function formatSince(since?: string | number | null): string {
           <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
           <div class="ch-pairing-identity">
             <strong>{{ pairing.senderName || pairing.senderId }}</strong>
-            <span class="ch-members-mono">{{ pairing.senderId }}</span>
+            <span v-if="pairing.senderName" class="ch-members-mono">{{ pairing.senderId }}</span>
           </div>
           <span class="ch-pairing-status is-revoked">{{ t('console.channels.pairings.revoked') }}</span>
           <button

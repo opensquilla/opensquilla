@@ -190,6 +190,7 @@
       "keyboard": "Keyboard",
       "advanced": "Advanced",
       "groups": {
+        "basic": "Basic",
         "gateway": "Gateway",
         "ai": "AI configuration",
         "delivery": "Delivery",
@@ -997,6 +998,16 @@
       "secretComposePlaceholder": "Paste the token or secret"
     },
     "channelCatalog": {
+      "fields": {
+        "name": { "label": "Channel name", "description": "Unique identifier for this channel entry." },
+        "agent_id": { "label": "Agent id" },
+        "enabled": { "label": "Enabled" },
+        "default_chat_id": { "label": "Default chat id" },
+        "connection_mode": { "label": "Connection mode" },
+        "app_id": { "label": "App id" },
+        "app_secret": { "label": "App secret" },
+        "debounce_window_s": { "label": "Debounce window (s)" }
+      },
       "groups": {
         "credentials": "Credentials",
         "webhook": "Webhook",
@@ -1454,6 +1465,7 @@
         "configuration": "Configuration"
       },
       "editor": {
+        "editConfiguration": "Edit configuration",
         "edited": "Edited",
         "unsavedAria": "Unsaved changes",
         "unsavedSummary": "Unsaved — {fields}",
@@ -1518,7 +1530,7 @@
       "networkProbe": "Network probe",
       "savedConfiguration": "Saved configuration",
       "editInSettings": "Edit in Settings",
-      "secretRedactionHint": "Secrets stay hidden. Re-enter a secret in Settings only when you need to replace it.",
+      "secretRedactionHint": "Stored secrets are never shown. Press Edit and use Replace to enter a new value.",
       "secretStored": "Stored securely",
       "selectConfigurationHint": "Open this tab to load the redacted configuration.",
       "configurationUnavailable": "Configuration unavailable: {error}",

@@ -190,6 +190,7 @@
       "keyboard": "Tastatur",
       "advanced": "Erweitert",
       "groups": {
+        "basic": "Allgemein",
         "gateway": "Gateway",
         "ai": "AI-Konfiguration",
         "delivery": "Zustellung",
@@ -997,6 +998,16 @@
       "secretComposePlaceholder": "Token oder Secret einfügen"
     },
     "channelCatalog": {
+      "fields": {
+        "name": { "label": "Kanalname", "description": "Eindeutiger Bezeichner für diesen Kanaleintrag." },
+        "agent_id": { "label": "Agent-ID" },
+        "enabled": { "label": "Aktiviert" },
+        "default_chat_id": { "label": "Standard-Chat-ID" },
+        "connection_mode": { "label": "Verbindungsmodus" },
+        "app_id": { "label": "App-ID" },
+        "app_secret": { "label": "App-Secret" },
+        "debounce_window_s": { "label": "Entprellfenster (s)" }
+      },
       "groups": {
         "credentials": "Zugangsdaten",
         "webhook": "Webhook",
@@ -1454,6 +1465,7 @@
         "configuration": "Konfiguration"
       },
       "editor": {
+        "editConfiguration": "Konfiguration bearbeiten",
         "edited": "Geändert",
         "unsavedAria": "Nicht gespeicherte Änderungen",
         "unsavedSummary": "Nicht gespeichert — {fields}",
@@ -1518,7 +1530,7 @@
       "networkProbe": "Netzwerkprüfung",
       "savedConfiguration": "Gespeicherte Konfiguration",
       "editInSettings": "In den Einstellungen bearbeiten",
-      "secretRedactionHint": "Geheimnisse bleiben verborgen. Geben Sie ein Geheimnis in den Einstellungen nur erneut ein, wenn Sie es ersetzen möchten.",
+      "secretRedactionHint": "Gespeicherte Geheimnisse werden nie angezeigt. Nutze Bearbeiten und dann Ersetzen, um einen neuen Wert einzugeben.",
       "secretStored": "Sicher gespeichert",
       "selectConfigurationHint": "Öffnen Sie diesen Tab, um die geschwärzte Konfiguration zu laden.",
       "configurationUnavailable": "Konfiguration nicht verfügbar: {error}",

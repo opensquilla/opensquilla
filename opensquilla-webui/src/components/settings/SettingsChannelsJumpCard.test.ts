@@ -24,7 +24,7 @@ async function mountJumpCard(options: {
     useRouter: () => ({ push }),
   }))
   vi.doMock('@/stores/rpc', () => ({
-    useRpcStore: () => ({ call: rpcCall }),
+    useRpcStore: () => ({ call: rpcCall, waitForConnection: async () => {} }),
   }))
 
   const Component = (await import('./SettingsChannelsJumpCard.vue')).default

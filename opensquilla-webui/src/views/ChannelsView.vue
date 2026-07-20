@@ -310,7 +310,7 @@
           <template v-else>
             <section class="ch-panel">
               <div class="ch-panel__heading">
-                <h3>{{ t('console.channels.savedConfiguration') }}</h3>
+                <h3>{{ editMode ? t('console.channels.editor.editConfiguration') : t('console.channels.savedConfiguration') }}</h3>
                 <button v-if="!editMode && canEditConfig" class="btn btn--ghost" type="button" @click="enterEdit"><Icon name="edit" :size="14" />{{ t('console.channels.edit') }}</button>
               </div>
               <p class="ch-panel__intro">{{ editMode ? t('console.channels.editor.editIntro') : t('console.channels.secretRedactionHint') }}</p>
@@ -384,6 +384,7 @@ import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { useChannelEditor } from '@/composables/channels/useChannelEditor'
 import { useChannelMembers } from '@/composables/channels/useChannelMembers'
+import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
 import ChannelMembersPanel from '@/components/channels/ChannelMembersPanel.vue'
 import {
   CHANNEL_STATUS_ORDER,
@@ -682,7 +683,14 @@ watch(channelsData, data => {
 
 const draftDirty = computed(() => editor.form.isDirty.value)
 const canEditConfig = computed(() => editor.canEdit.value)
-const editedLabels = computed(() => editor.editedFieldLabels.value)
+// The bar names changed fields with the same localized labels the rail shows.
+const { localizeFieldLabel } = useChannelCatalogI18n()
+const editedLabels = computed(() => {
+  const type = editor.entryType.value
+  const labels = new Map(editor.specFields.value.map(field => [field.name, field.label]))
+  return editor.editedFields.value.map(name =>
+    localizeFieldLabel(type, name, labels.get(name) || name))
+})
 const probeRunning = computed(() => editor.probe.value.phase === 'running')
 const editorBarVisible = computed(() =>
   (editMode.value && draftDirty.value) || discardRequest.value !== null)
@@ -1029,10 +1037,14 @@ watch(() => route.query, () => {
   if (route.path === '/channels') applyDetailQuery()
 })
 
-// Opening Configuration (by click, deep link, or edit entry) hydrates the
-// editor exactly once per selected channel.
+// The ONE lazy-load path for tab bodies. Click-driven tab switches and
+// query-driven activation (deep links, Back/forward, F5 restore) all mutate
+// [selectedName, detailTab], so hydrating here means a cold
+// ?channel=<name>&tab=pairings loads exactly like clicking the tab.
 watch([selectedName, detailTab], ([name, tab]) => {
-  if (name && tab === 'configuration') ensureConfigurationLoaded()
+  if (!name) return
+  if (tab === 'configuration') ensureConfigurationLoaded()
+  if (tab === 'pairings' && !members.loading.value) void members.load(name)
 })
 
 async function removeChannel(ch: Channel): Promise<void> {
@@ -1059,11 +1071,10 @@ async function removeChannel(ch: Channel): Promise<void> {
 
 function setDetailTab(tab: DetailTab): void {
   // Switching tabs keeps an unsaved configuration draft alive (the editor is
-  // owned by the view); only the guarded exits can destroy it.
+  // owned by the view); only the guarded exits can destroy it. The per-tab
+  // lazy loads live in the [selectedName, detailTab] watcher so click-driven
+  // and query-driven (deep link / Back) activation share one load path.
   detailTab.value = tab
-  if (tab === 'pairings' && selectedChannel.value && !members.loading.value) {
-    void members.load(channelKey(selectedChannel.value))
-  }
 }
 
 async function withAction(ch: Channel, action: string, run: () => Promise<void>): Promise<void> {
@@ -1305,7 +1316,12 @@ function probeResultDetail(ch: Channel): string {
 .ch-capability > svg.is-muted { color: var(--text-dim); }
 .ch-tech { border: 1px solid var(--border); border-radius: var(--radius-md); margin-top: var(--sp-3); padding: 0 var(--sp-2); }
 .ch-tech > summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-sm); padding: 10px 6px; }
-.ch-detail { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; min-height: 620px; min-width: 0; overflow: hidden; }
+/* Desktop split view: the aside sticks within the grid and caps at the
+   viewport so its BODY scrolls internally — which is what keeps the unsaved
+   action bar pinned and visible at the aside bottom instead of drifting
+   below the fold, and keeps detail text from sliding under the floating
+   topbar. align-self:start is required: a stretched grid item cannot stick. */
+.ch-detail { align-self: start; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; max-height: calc(100vh - 76px); min-height: min(620px, calc(100vh - 76px)); min-width: 0; overflow: hidden; position: sticky; top: 64px; }
 .ch-detail__header { align-items: flex-start; display: flex; gap: var(--sp-3); justify-content: space-between; padding: var(--sp-4); }
 .ch-detail__identity { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }
 .ch-detail__identity > div { min-width: 0; }
@@ -1395,8 +1411,9 @@ function probeResultDetail(ch: Channel): string {
 @media (max-width: 1180px) {
   .ch-workspace.has-detail { grid-template-columns: minmax(0, 1fr); }
   /* min-height:0 resets the desktop split-pane floor so the fixed overlay
-     never extends past the viewport on short/landscape screens. */
-  .ch-detail { bottom: 12px; box-shadow: var(--elev-3); max-width: 560px; min-height: 0; position: fixed; right: 12px; top: 64px; width: calc(100vw - 24px); z-index: 40; }
+     never extends past the viewport on short/landscape screens; max-height
+     yields to the explicit top/bottom geometry. */
+  .ch-detail { bottom: 12px; box-shadow: var(--elev-3); max-height: none; max-width: 560px; min-height: 0; position: fixed; right: 12px; top: 64px; width: calc(100vw - 24px); z-index: 40; }
   .ch-detail__body { overscroll-behavior: contain; }
   .ch-scrim { background: color-mix(in srgb, var(--bg) 60%, transparent); display: block; inset: 0; overscroll-behavior: contain; position: fixed; z-index: 39; }
 }

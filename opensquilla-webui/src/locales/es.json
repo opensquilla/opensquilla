@@ -190,6 +190,7 @@
       "keyboard": "Teclado",
       "advanced": "Avanzado",
       "groups": {
+        "basic": "Básico",
         "gateway": "Puerta de enlace",
         "ai": "Configuración de IA",
         "delivery": "Entrega",
@@ -997,6 +998,16 @@
       "secretComposePlaceholder": "Pega el token o el secreto"
     },
     "channelCatalog": {
+      "fields": {
+        "name": { "label": "Nombre del canal", "description": "Identificador único de esta entrada de canal." },
+        "agent_id": { "label": "Id de agente" },
+        "enabled": { "label": "Habilitado" },
+        "default_chat_id": { "label": "Id de chat predeterminado" },
+        "connection_mode": { "label": "Modo de conexión" },
+        "app_id": { "label": "App id" },
+        "app_secret": { "label": "App secret" },
+        "debounce_window_s": { "label": "Ventana de agrupación (s)" }
+      },
       "groups": {
         "credentials": "Credenciales",
         "webhook": "Webhook",
@@ -1454,6 +1465,7 @@
         "configuration": "Configuración"
       },
       "editor": {
+        "editConfiguration": "Editar configuración",
         "edited": "Modificado",
         "unsavedAria": "Cambios sin guardar",
         "unsavedSummary": "Sin guardar — {fields}",
@@ -1518,7 +1530,7 @@
       "networkProbe": "Prueba de red",
       "savedConfiguration": "Configuración guardada",
       "editInSettings": "Editar en Ajustes",
-      "secretRedactionHint": "Los secretos permanecen ocultos. Vuelve a introducir un secreto en Ajustes solo cuando necesites reemplazarlo.",
+      "secretRedactionHint": "Los secretos almacenados nunca se muestran. Usa Editar y luego Reemplazar para introducir un nuevo valor.",
       "secretStored": "Guardado de forma segura",
       "selectConfigurationHint": "Abre esta pestaña para cargar la configuración censurada.",
       "configurationUnavailable": "Configuración no disponible: {error}",

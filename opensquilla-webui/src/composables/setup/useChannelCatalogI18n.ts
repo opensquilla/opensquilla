@@ -27,8 +27,19 @@ export function useChannelCatalogI18n() {
     return fallback || []
   }
 
+  // Field labels/descriptions: a per-type key wins, else the shared key
+  // (common fields like name/agent_id/enabled appear in every channel type),
+  // else the backend English fallback.
   function localizeFieldLabel(type: string, name: string, fallback: string): string {
-    return tr(`setup.channelCatalog.${type}.fields.${name}.label`, fallback)
+    const typed = `setup.channelCatalog.${type}.fields.${name}.label`
+    if (te(typed)) return t(typed)
+    return tr(`setup.channelCatalog.fields.${name}.label`, fallback)
+  }
+
+  function localizeFieldDescription(type: string, name: string, fallback: string): string {
+    const typed = `setup.channelCatalog.${type}.fields.${name}.description`
+    if (te(typed)) return t(typed)
+    return tr(`setup.channelCatalog.fields.${name}.description`, fallback)
   }
 
   // Group headers are shared vocabulary across channel types (credentials,
@@ -40,5 +51,11 @@ export function useChannelCatalogI18n() {
     return tr(`setup.channelCatalog.groups.${group}`, fallback)
   }
 
-  return { localizeDescription, localizeNeeds, localizeFieldLabel, localizeGroupLabel }
+  return {
+    localizeDescription,
+    localizeNeeds,
+    localizeFieldLabel,
+    localizeFieldDescription,
+    localizeGroupLabel,
+  }
 }

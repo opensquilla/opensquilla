@@ -8,7 +8,7 @@ import {
 // Module-level rpc mock: every editor instance in this file talks to this fake.
 const rpcCall = vi.fn()
 vi.mock('@/stores/rpc', () => ({
-  useRpcStore: () => ({ call: rpcCall }),
+  useRpcStore: () => ({ call: rpcCall, waitForConnection: async () => {} }),
 }))
 
 const SLACK_SPEC = {

@@ -23,7 +23,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { localizeFieldLabel, localizeGroupLabel } = useChannelCatalogI18n()
+const { localizeFieldDescription, localizeFieldLabel, localizeGroupLabel } = useChannelCatalogI18n()
 
 // "editing" = any live-field mode (edit-in-place or compose); "edit" alone
 // still gates edit-only affordances like the locked name row.
@@ -57,6 +57,7 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
       kind: isEdit.value && row.field.name === 'name' ? 'name' : 'field',
       field: row.field,
       label: localizeFieldLabel(type, row.field.name, row.field.label),
+      description: localizeFieldDescription(type, row.field.name, String(row.field.description || '')),
       value: String(row.value ?? ''),
       edited: edited.has(row.field.name),
     })
@@ -66,6 +67,7 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
       kind: 'secret',
       field: row.field,
       label: localizeFieldLabel(type, row.field.name, row.field.label),
+      description: localizeFieldDescription(type, row.field.name, String(row.field.description || '')),
       value: row.value,
       edited: edited.has(row.field.name),
       hasStored: row.hasStored,
@@ -119,6 +121,23 @@ const domainIsLark = computed(() => {
 
 function humanize(value: string): string {
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
+}
+
+// Extras keys are raw config identifiers; a trailing unit suffix must read
+// as a unit, not a stray capitalized word ("debounce_window_s" →
+// "Debounce Window (s)", never "Debounce Window S").
+const UNIT_SUFFIXES: Array<[string, string]> = [['_ms', 'ms'], ['_s', 's']]
+function humanizeKey(key: string): string {
+  for (const [suffix, unit] of UNIT_SUFFIXES) {
+    if (key.endsWith(suffix) && key.length > suffix.length) {
+      return `${humanize(key.slice(0, -suffix.length))} (${unit})`
+    }
+  }
+  return humanize(key)
+}
+
+function extraLabel(key: string): string {
+  return localizeFieldLabel(props.editor.entryType.value, key, humanizeKey(key))
 }
 
 function groupTitle(name: string): string {
@@ -204,7 +223,7 @@ function onCancelReplace(name: string) {
       <section v-if="extraRows.length" class="cfge__group" :aria-label="t('console.channels.editor.otherSettings')">
         <h4 class="cfge__group-title">{{ t('console.channels.editor.otherSettings') }}</h4>
         <div v-for="row in extraRows" :key="row.key" class="cfge__row cfge__row--extra">
-          <div class="cfge__rail"><span class="cfge__label">{{ humanize(row.key) }}</span></div>
+          <div class="cfge__rail"><span class="cfge__label">{{ extraLabel(row.key) }}</span></div>
           <div class="cfge__control">
             <span class="cfge__value" :class="{ 'cfge__value--secret': row.secret }">
               {{ row.secret ? t('console.channels.editor.storedSecret') : row.value }}
@@ -246,7 +265,7 @@ function onCancelReplace(name: string) {
          it just is not editable from here. -->
     <template v-else>
       <div v-for="row in extraRows" :key="row.key" class="cfge__row cfge__row--extra">
-        <div class="cfge__rail"><span class="cfge__label">{{ humanize(row.key) }}</span></div>
+        <div class="cfge__rail"><span class="cfge__label">{{ extraLabel(row.key) }}</span></div>
         <div class="cfge__control">
           <span class="cfge__value" :class="{ 'cfge__value--secret': row.secret }">
             {{ row.secret ? t('console.channels.editor.storedSecret') : row.value }}

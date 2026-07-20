@@ -71,11 +71,17 @@ const summary = computed(() => {
   align-items: center;
   background: var(--bg-surface);
   border-top: 1px solid var(--border);
+  /* Pinned to the bottom of the aside's scroll container: the flex column
+     places it there and sticky keeps it there even if an ancestor turns
+     into a scrollport — tab-body content scrolls under the hairline. */
+  bottom: 0;
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   gap: var(--sp-2) var(--sp-3);
   justify-content: space-between;
   padding: var(--sp-2) var(--sp-4);
+  position: sticky;
 }
 .ceb__summary, .ceb__question { color: var(--text-muted); font-size: var(--fs-sm); min-width: 0; overflow-wrap: anywhere; }
 .ceb__question { color: var(--text); font-weight: 600; }

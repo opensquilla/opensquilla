@@ -190,6 +190,7 @@
       "keyboard": "Clavier",
       "advanced": "Avancé",
       "groups": {
+        "basic": "Général",
         "gateway": "Passerelle",
         "ai": "Configuration IA",
         "delivery": "Diffusion",
@@ -997,6 +998,16 @@
       "secretComposePlaceholder": "Collez le jeton ou le secret"
     },
     "channelCatalog": {
+      "fields": {
+        "name": { "label": "Nom du canal", "description": "Identifiant unique de cette entrée de canal." },
+        "agent_id": { "label": "Id d'agent" },
+        "enabled": { "label": "Activé" },
+        "default_chat_id": { "label": "Id de discussion par défaut" },
+        "connection_mode": { "label": "Mode de connexion" },
+        "app_id": { "label": "App id" },
+        "app_secret": { "label": "App secret" },
+        "debounce_window_s": { "label": "Fenêtre de regroupement (s)" }
+      },
       "groups": {
         "credentials": "Identifiants",
         "webhook": "Webhook",
@@ -1454,6 +1465,7 @@
         "configuration": "Configuration"
       },
       "editor": {
+        "editConfiguration": "Modifier la configuration",
         "edited": "Modifié",
         "unsavedAria": "Modifications non enregistrées",
         "unsavedSummary": "Non enregistré — {fields}",
@@ -1518,7 +1530,7 @@
       "networkProbe": "Test réseau",
       "savedConfiguration": "Configuration enregistrée",
       "editInSettings": "Modifier dans les Paramètres",
-      "secretRedactionHint": "Les secrets restent masqués. Saisissez à nouveau un secret dans les Paramètres uniquement lorsque vous devez le remplacer.",
+      "secretRedactionHint": "Les secrets stockés ne sont jamais affichés. Utilisez Modifier puis Remplacer pour saisir une nouvelle valeur.",
       "secretStored": "Stocké de manière sécurisée",
       "selectConfigurationHint": "Ouvrez cet onglet pour charger la configuration expurgée.",
       "configurationUnavailable": "Configuration indisponible : {error}",

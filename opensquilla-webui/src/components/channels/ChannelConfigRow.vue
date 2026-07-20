@@ -14,6 +14,8 @@ export interface ConfigRowModel {
   field: ChannelEditorFieldSpec
   /** Display label (catalog-i18n overlay applied; falls back to the spec label). */
   label: string
+  /** Display helper line (catalog-i18n overlay applied; may be empty). */
+  description: string
   value: string
   edited: boolean
   hasStored?: boolean
@@ -165,7 +167,7 @@ function onInput(event: Event) {
         />
       </template>
 
-      <span v-if="row.field.description" class="cfge__desc">{{ row.field.description }}</span>
+      <span v-if="row.description" class="cfge__desc">{{ row.description }}</span>
       <p v-if="edit && error" class="cfge__field-error" role="alert">{{ error }}</p>
     </div>
   </div>

@@ -257,6 +257,7 @@ async function mountChannelsView(options: {
     useRpcStore: () => ({
       call: rpcCall,
       on: vi.fn(() => () => {}),
+      waitForConnection: vi.fn(async () => {}),
     }),
   }))
   vi.doMock('@/composables/useRequest', () => ({
@@ -726,6 +727,10 @@ describe('ChannelsView in-place configuration editor', () => {
       await flush()
       expect(bar(el).textContent).toContain('Unsaved — Default channel id')
       expect(detail.querySelector('.ch-tab-dirty')).toBeTruthy()
+      // Sticky contract: the bar is pinned as a direct child of the aside
+      // (the flex footer slot the sticky CSS targets), not buried in a tab
+      // body that scrolls away.
+      expect(bar(el).parentElement?.classList.contains('ch-detail')).toBe(true)
 
       buttonWithText(bar(el), 'Test connection').click()
       await flush()
@@ -1084,6 +1089,54 @@ describe('ChannelsView compose takeover', () => {
       expect(surface.textContent).toContain('Feishu console shortcuts')
     } finally {
       ctx.app.unmount()
+    }
+  })
+})
+
+describe('ChannelsView tab deep links', () => {
+  it('a cold ?channel&tab=pairings deep link loads members like a tab click', async () => {
+    const ctx = await mountChannelsView({
+      routeQuery: { channel: 'ops-slack', tab: 'pairings' },
+    })
+    const { el, flush, rpcCall, app } = ctx
+    try {
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairings', { channelName: 'ops-slack' })
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      expect(detail.textContent).toContain('Pending User')
+      expect(detail.textContent).toContain('Approved User')
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('a cold ?channel&tab=configuration deep link hydrates the editor', async () => {
+    const ctx = await mountChannelsView({
+      routeQuery: { channel: 'ops-slack', tab: 'configuration' },
+    })
+    const { el, flush, rpcCall, app } = ctx
+    try {
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.get', { name: 'ops-slack' })
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      expect(detail.querySelectorAll('.cfge [data-field]').length).toBeGreaterThan(0)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('a cold edit deep link lands editable with the editor loaded', async () => {
+    const ctx = await mountChannelsView({
+      routeQuery: { channel: 'ops-slack', tab: 'configuration', edit: '1' },
+    })
+    const { el, flush, rpcCall, app } = ctx
+    try {
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.get', { name: 'ops-slack' })
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      expect(detail.querySelector('[data-field="slack_channel_id"] input')).toBeTruthy()
+    } finally {
+      app.unmount()
     }
   })
 })

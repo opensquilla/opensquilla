@@ -22,6 +22,7 @@ const rows = ref<StatusRow[] | null>(null)
 
 onMounted(async () => {
   try {
+    await rpc.waitForConnection()
     const res = await rpc.call<{ channels?: StatusRow[] }>('channels.status')
     rows.value = (res?.channels || []).filter(row => row.configured !== false)
   } catch {

@@ -190,6 +190,7 @@
       "keyboard": "キーボード",
       "advanced": "詳細設定",
       "groups": {
+        "basic": "基本",
         "gateway": "ゲートウェイ",
         "ai": "AI 設定",
         "delivery": "配信",
@@ -997,6 +998,16 @@
       "secretComposePlaceholder": "トークンまたはシークレットを貼り付け"
     },
     "channelCatalog": {
+      "fields": {
+        "name": { "label": "チャンネル名", "description": "このチャンネルエントリの一意の識別子。" },
+        "agent_id": { "label": "エージェント ID" },
+        "enabled": { "label": "有効" },
+        "default_chat_id": { "label": "既定のチャット ID" },
+        "connection_mode": { "label": "接続モード" },
+        "app_id": { "label": "アプリ ID（App ID）" },
+        "app_secret": { "label": "アプリシークレット" },
+        "debounce_window_s": { "label": "デバウンス期間（秒）" }
+      },
       "groups": {
         "credentials": "認証情報",
         "webhook": "Webhook",
@@ -1454,6 +1465,7 @@
         "configuration": "設定"
       },
       "editor": {
+        "editConfiguration": "設定を編集",
         "edited": "変更あり",
         "unsavedAria": "未保存の変更があります",
         "unsavedSummary": "未保存 — {fields}",
@@ -1518,7 +1530,7 @@
       "networkProbe": "ネットワークプローブ",
       "savedConfiguration": "保存済みの設定",
       "editInSettings": "設定で編集",
-      "secretRedactionHint": "シークレットは非表示のままです。置き換える場合にのみ、設定でシークレットを再入力してください。",
+      "secretRedactionHint": "保存済みのシークレットは表示されません。「編集」から「置き換え」で新しい値を入力してください。",
       "secretStored": "安全に保存済み",
       "selectConfigurationHint": "このタブを開いて、機密情報が伏せられた設定を読み込みます。",
       "configurationUnavailable": "設定を利用できません: {error}",

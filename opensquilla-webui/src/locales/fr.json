@@ -1454,6 +1454,13 @@
         "entryMissing": "Canal {name} introuvable dans la configuration.",
         "editIntro": "Les modifications s'appliquent à l'enregistrement. Un champ secret vide conserve la valeur stockée."
       },
+      "compose": {
+        "back": "Canaux",
+        "galleryLabel": "Choisir une plateforme",
+        "change": "Changer",
+        "discardQuestion": "Abandonner le brouillon {platform} ?",
+        "catalogFailed": "Impossible de charger le catalogue de plateformes : {error}"
+      },
       "probeVerified": "Connexion vérifiée",
       "probeUnsupported": "Test de connexion en direct indisponible",
       "probeLatency": "Fournisseur vérifié en {ms} ms.",

@@ -1454,6 +1454,13 @@
         "entryMissing": "配置中找不到渠道 {name}。",
         "editIntro": "更改在保存后生效。密钥留空则保留已存储的值。"
       },
+      "compose": {
+        "back": "渠道",
+        "galleryLabel": "选择平台",
+        "change": "更换",
+        "discardQuestion": "丢弃 {platform} 草稿？",
+        "catalogFailed": "无法加载平台目录：{error}"
+      },
       "probeVerified": "连接已验证",
       "probeUnsupported": "无法进行在线探测",
       "probeLatency": "提供商验证耗时 {ms} 毫秒。",

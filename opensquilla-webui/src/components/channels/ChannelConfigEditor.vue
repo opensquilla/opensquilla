@@ -13,7 +13,7 @@ import type { ChannelEditorApi } from '@/composables/channels/useChannelEditor'
 
 const props = defineProps<{
   editor: ChannelEditorApi
-  mode: 'read' | 'edit'
+  mode: 'read' | 'edit' | 'compose'
 }>()
 
 const emit = defineEmits<{
@@ -23,6 +23,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+// "editing" = any live-field mode (edit-in-place or compose); "edit" alone
+// still gates edit-only affordances like the locked name row.
+const editing = computed(() => props.mode !== 'read')
 const isEdit = computed(() => props.mode === 'edit')
 const phase = computed(() => props.editor.phase.value)
 const spec = computed(() => props.editor.spec.value)
@@ -46,7 +49,9 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
   const byName = new Map<string, ConfigRowModel>()
   for (const row of view.channelFields) {
     byName.set(row.field.name, {
-      kind: row.field.name === 'name' ? 'name' : 'field',
+      // The name is locked text only when editing an existing entry; a
+      // compose draft's name is an ordinary editable field.
+      kind: isEdit.value && row.field.name === 'name' ? 'name' : 'field',
       field: row.field,
       value: String(row.value ?? ''),
       edited: edited.has(row.field.name),
@@ -94,7 +99,7 @@ const transportFieldName = computed(() => {
   return fields.some(f => f.name === 'connection_mode') ? 'connection_mode' : ''
 })
 function notesBefore(row: ConfigRowModel) {
-  if (!isEdit.value) return []
+  if (!editing.value) return []
   return transportFieldName.value && row.field.name === transportFieldName.value ? noteAids.value : []
 }
 
@@ -123,7 +128,7 @@ function onCancelReplace(name: string) {
 </script>
 
 <template>
-  <div class="cfge" :class="{ 'is-edit': isEdit }">
+  <div class="cfge" :class="{ 'is-edit': editing }">
     <!-- Skeleton rail: catalog/config still loading — the geometry the real
          rows will occupy, so opening Configuration never blocks or jumps. -->
     <div v-if="phase === 'loading' || phase === 'idle'" class="cfge__skeleton" aria-hidden="true">
@@ -154,7 +159,7 @@ function onCancelReplace(name: string) {
           </p>
           <ChannelConfigRow
             :row="row"
-            :edit="isEdit"
+            :edit="editing"
             :error="fieldErrors[row.field.name]"
             @update="onUpdate"
             @replace="onReplace"
@@ -164,7 +169,7 @@ function onCancelReplace(name: string) {
       </section>
 
       <FeishuSetupAids
-        v-if="isEdit && inlineAids.length"
+        v-if="editing && inlineAids.length"
         class="cfge__group"
         :aids="inlineAids"
         :app-id="currentAppId"
@@ -178,7 +183,7 @@ function onCancelReplace(name: string) {
             v-for="row in grouped.advanced"
             :key="row.field.name"
             :row="row"
-            :edit="isEdit"
+            :edit="editing"
             :error="fieldErrors[row.field.name]"
             @update="onUpdate"
             @replace="onReplace"
@@ -201,7 +206,7 @@ function onCancelReplace(name: string) {
 
       <!-- Draft probe transcript: pass/fail rows in the Diagnostics idiom,
            never a toast-only error. Renders above the sticky action bar. -->
-      <div v-if="isEdit && probe.phase !== 'idle'" class="cfge__transcript" role="status">
+      <div v-if="editing && probe.phase !== 'idle'" class="cfge__transcript" role="status">
         <div v-if="probe.phase === 'running'" class="cfge__transcript-row is-info">
           <Icon name="gauge" :size="14" aria-hidden="true" />
           <span>{{ t('console.channels.editor.probeRunning') }}</span>

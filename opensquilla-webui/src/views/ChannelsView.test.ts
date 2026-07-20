@@ -77,6 +77,8 @@ async function mountChannelsView(options: {
   adminSenders?: Record<string, string[]>
   /** When set, onboarding.channel.probe rejects with this message. */
   draftProbeError?: { message: string }
+  /** Initial route query (deep-link scenarios). */
+  routeQuery?: Record<string, string>
 } = {}) {
   vi.resetModules()
 
@@ -84,7 +86,7 @@ async function mountChannelsView(options: {
   const i18n = (await import('@/i18n')).default
   i18n.global.locale.value = 'en'
 
-  const push = vi.fn(async () => {})
+  const push = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
   const pushToast = vi.fn()
   const confirm = vi.fn(async () => true)
   let pairings: Array<{
@@ -130,6 +132,8 @@ async function mountChannelsView(options: {
   const slackSpec = {
     type: 'slack',
     label: 'Slack',
+    description: 'Slack workspace bot.',
+    transport: 'mixed',
     setupAids: [],
     fields: [
       { name: 'name', label: 'Channel name', type: 'text', required: true },
@@ -140,9 +144,27 @@ async function mountChannelsView(options: {
       { name: 'reply_in_thread', label: 'Reply in thread', type: 'bool', default: false, advanced: true },
     ],
   }
+  const feishuSpec = {
+    type: 'feishu',
+    label: 'Feishu / Lark',
+    description: 'Feishu (or Lark) bot.',
+    transport: 'mixed',
+    setupAids: [
+      { id: 'scopes_json', kind: 'copy', content: '{"scopes":{}}' },
+      { id: 'credentials_link', kind: 'link', content: 'https://open.feishu.cn/app/{app_id}/baseinfo' },
+      { id: 'ws_order_note', kind: 'note' },
+    ],
+    fields: [
+      { name: 'name', label: 'Channel name', type: 'text', required: true },
+      { name: 'app_id', label: 'App id', type: 'text', required: true, group: 'credentials' },
+      { name: 'app_secret', label: 'App secret', type: 'password', required: true, secret: true, group: 'credentials' },
+      { name: 'connection_mode', label: 'Connection mode', type: 'select', default: 'websocket', choices: ['webhook', 'websocket'] },
+      { name: 'domain', label: 'Domain', type: 'select', default: 'feishu', choices: ['feishu', 'lark'] },
+    ],
+  }
   const rpcCall = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     if (method === 'onboarding.catalog') {
-      return { channels: [slackSpec] }
+      return { channels: [slackSpec, feishuSpec] }
     }
     if (method === 'onboarding.channel.probe') {
       if (options.draftProbeError) throw new Error(options.draftProbeError.message)
@@ -228,7 +250,7 @@ async function mountChannelsView(options: {
   const replace = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
   vi.doMock('vue-router', () => ({
     useRouter: () => ({ push, replace }),
-    useRoute: () => ({ path: '/channels', query: {}, hash: '' }),
+    useRoute: () => ({ path: '/channels', query: { ...(options.routeQuery || {}) }, hash: '' }),
     onBeforeRouteLeave: vi.fn(),
   }))
   vi.doMock('@/stores/rpc', () => ({
@@ -851,6 +873,215 @@ describe('ChannelsView in-place configuration editor', () => {
       // The reseed masks the replaced secret again.
       expect(detail.querySelector<HTMLElement>('[data-field="signing_secret"]')?.textContent)
         .toContain('Stored ······')
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+})
+
+describe('ChannelsView compose takeover', () => {
+  type Ctx = Awaited<ReturnType<typeof mountChannelsView>>
+
+  async function enterCompose(ctx: Ctx): Promise<HTMLElement> {
+    buttonWithText(ctx.el, 'Add channel').click()
+    await ctx.flush()
+    const surface = ctx.el.querySelector<HTMLElement>('.chc')
+    if (!surface) throw new Error('compose surface not found')
+    return surface
+  }
+
+  async function pickType(ctx: Ctx, surface: HTMLElement, type: string): Promise<void> {
+    surface.querySelector<HTMLButtonElement>(`[data-channel-type="${type}"]`)!.click()
+    await settle(ctx)
+  }
+
+  // The gallery ⇄ form swap rides a <Transition mode="out-in">, whose enter
+  // side waits on animation frames — give the DOM real frame time to settle.
+  async function settle(ctx: Ctx): Promise<void> {
+    for (let i = 0; i < 4; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      await ctx.nextTick()
+    }
+  }
+
+  function setComposeField(surface: HTMLElement, name: string, value: string): void {
+    const input = surface.querySelector<HTMLInputElement>(`[data-field="${name}"] input`)!
+    input.value = value
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }
+
+  function lastQuery(ctx: Ctx): Record<string, unknown> | undefined {
+    const calls = ctx.replace.mock.calls
+    return calls[calls.length - 1]?.[0]?.query
+  }
+
+  it('enters compose with history PUSH, closes the aside, and exits clean via back', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, nextTick } = ctx
+    try {
+      // Open a channel first so compose provably closes the aside.
+      channelRow(el, 'ops-slack').click()
+      await nextTick()
+      expect(el.querySelector('.ch-detail')).toBeTruthy()
+
+      const surface = await enterCompose(ctx)
+      // The one PUSH transition: Back returns to browse.
+      expect(ctx.push).toHaveBeenCalledWith(
+        expect.objectContaining({ query: expect.objectContaining({ compose: '1' }) }))
+      expect(el.querySelector('.ch-detail')).toBeNull()
+      // Gallery shows the catalog platforms as real buttons.
+      expect(surface.querySelector('[data-channel-type="slack"]')).toBeTruthy()
+      expect(surface.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
+
+      surface.querySelector<HTMLButtonElement>('.chc__back')!.click()
+      await flush()
+      expect(el.querySelector('.chc')).toBeNull()
+      const query = lastQuery(ctx)
+      expect(query?.compose).toBeUndefined()
+      expect(query?.type).toBeUndefined()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('collapses the gallery to a receipt chip on pick and restores it via Change', async () => {
+    const ctx = await mountChannelsView()
+    try {
+      const surface = await enterCompose(ctx)
+      await pickType(ctx, surface, 'slack')
+
+      expect(surface.querySelector('.ctg__grid')).toBeNull()
+      expect(surface.querySelector('.chc__chipname')?.textContent).toBe('Slack')
+      // The picked-type form is the shared editor in compose mode: name editable.
+      expect(surface.querySelector('[data-field="name"] input')).toBeTruthy()
+      expect(lastQuery(ctx)).toMatchObject({ compose: '1', type: 'slack' })
+
+      buttonWithText(surface, 'Change').click()
+      await settle(ctx)
+      expect(surface.querySelector('[data-channel-type="slack"]')).toBeTruthy()
+      const query = lastQuery(ctx)
+      expect(query?.compose).toBe('1')
+      expect(query?.type).toBeUndefined()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('guards exit behind the inline confirm while the compose draft is dirty', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, rpcCall } = ctx
+    try {
+      const surface = await enterCompose(ctx)
+      await pickType(ctx, surface, 'slack')
+      setComposeField(surface, 'name', 'my-slack')
+      await flush()
+
+      surface.querySelector<HTMLButtonElement>('.chc__back')!.click()
+      await flush()
+      expect(surface.querySelector('.chc__footer--confirm')?.textContent)
+        .toContain('Discard the Slack draft?')
+      expect(el.querySelector('.chc')).toBeTruthy()
+
+      buttonWithText(surface, 'Keep editing').click()
+      await flush()
+      expect(el.querySelector('.chc')).toBeTruthy()
+      expect(surface.querySelector<HTMLInputElement>('[data-field="name"] input')?.value)
+        .toBe('my-slack')
+
+      surface.querySelector<HTMLButtonElement>('.chc__back')!.click()
+      await flush()
+      buttonWithText(surface, 'Discard').click()
+      await flush()
+      expect(el.querySelector('.chc')).toBeNull()
+      expect(lastQuery(ctx)?.compose).toBeUndefined()
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(false)
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('saves a new channel sentinel-free and selects it on success', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush, rpcCall, pushToast } = ctx
+    try {
+      const surface = await enterCompose(ctx)
+      await pickType(ctx, surface, 'slack')
+      setComposeField(surface, 'name', 'new-slack')
+      // Socket mode: token is the one required secret, rendered as a password box.
+      const tokenInput = surface.querySelector<HTMLInputElement>('[data-field="token"] input')!
+      expect(tokenInput.type).toBe('password')
+      setComposeField(surface, 'token', 'xoxb-fresh-token')
+      await flush()
+
+      buttonWithText(surface, 'Save Channel').click()
+      await flush()
+      await flush()
+
+      const methods = rpcCall.mock.calls.map(([method]) => method)
+      expect(methods.indexOf('onboarding.channel.probe'))
+        .toBeLessThan(methods.indexOf('onboarding.channel.upsert'))
+      for (const method of ['onboarding.channel.probe', 'onboarding.channel.upsert']) {
+        const call = rpcCall.mock.calls.find(([m]) => m === method)!
+        const entry = (call[1] as { entry: Record<string, unknown> }).entry
+        expect(entry).toMatchObject({ type: 'slack', name: 'new-slack', token: 'xoxb-fresh-token' })
+        expect(JSON.stringify(entry)).not.toContain('***')
+      }
+      expect(pushToast).toHaveBeenCalledWith(
+        'Channel saved — configuration validated locally; use Test connection to verify credentials',
+        { tone: 'ok' },
+      )
+      // Takeover dismissed; the new channel is selected on its Overview tab.
+      expect(el.querySelector('.chc')).toBeNull()
+      expect(lastQuery(ctx)).toMatchObject({ channel: 'new-slack', tab: 'overview' })
+      expect(lastQuery(ctx)?.compose).toBeUndefined()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('offers Save anyway inline when the compose probe fails', async () => {
+    const ctx = await mountChannelsView({
+      draftProbeError: { message: 'invalid channel entry: token: Field required' },
+    })
+    const { el, flush, rpcCall } = ctx
+    try {
+      const surface = await enterCompose(ctx)
+      await pickType(ctx, surface, 'slack')
+      setComposeField(surface, 'name', 'new-slack')
+      setComposeField(surface, 'token', 'xoxb-fresh-token')
+      await flush()
+
+      buttonWithText(surface, 'Save Channel').click()
+      await flush()
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(false)
+      expect(surface.textContent).toContain('invalid channel entry: token: Field required')
+      expect(el.querySelector('.chc')).toBeTruthy()
+
+      buttonWithText(surface, 'Save anyway').click()
+      await flush()
+      await flush()
+      expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(true)
+      expect(el.querySelector('.chc')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('direct-lands in the picked-type form from ?compose=1&type=feishu', async () => {
+    const ctx = await mountChannelsView({ routeQuery: { compose: '1', type: 'feishu' } })
+    const { el } = ctx
+    try {
+      await settle(ctx)
+      const surface = el.querySelector<HTMLElement>('.chc')!
+      expect(surface).toBeTruthy()
+      expect(surface.querySelector('.ctg__grid')).toBeNull()
+      expect(surface.querySelector('.chc__chipname')?.textContent).toBe('Feishu / Lark')
+      // Empty draft, editable fields, aids beside the credentials they unblock.
+      expect(surface.querySelector('[data-field="app_id"] input')).toBeTruthy()
+      const appSecret = surface.querySelector<HTMLInputElement>('[data-field="app_secret"] input')!
+      expect(appSecret.type).toBe('password')
+      expect(appSecret.value).toBe('')
+      expect(surface.textContent).toContain('Feishu console shortcuts')
     } finally {
       ctx.app.unmount()
     }

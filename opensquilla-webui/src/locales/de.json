@@ -1454,6 +1454,13 @@
         "entryMissing": "Kanal {name} wurde in der Konfiguration nicht gefunden.",
         "editIntro": "Änderungen gelten nach dem Speichern. Leere Geheimnisfelder behalten die gespeicherten Werte."
       },
+      "compose": {
+        "back": "Kanäle",
+        "galleryLabel": "Plattform wählen",
+        "change": "Ändern",
+        "discardQuestion": "Entwurf für {platform} verwerfen?",
+        "catalogFailed": "Der Plattformkatalog konnte nicht geladen werden: {error}"
+      },
       "probeVerified": "Verbindung verifiziert",
       "probeUnsupported": "Live-Prüfung nicht verfügbar",
       "probeLatency": "Anbieter in {ms} ms verifiziert.",

@@ -34,9 +34,19 @@ const { t } = useI18n()
 
 const fieldType = computed(() => String(props.row.field.type || 'text'))
 const inputId = computed(() => `cfge-${props.row.field.name.replace(/[^a-zA-Z0-9_-]+/g, '-')}`)
+// Compose mode routes secret fields through here as plain rows (nothing is
+// stored yet) — they must still render as password inputs, never text.
+const isSecretInput = computed(
+  () => props.row.field.secret === true || fieldType.value === 'password',
+)
 const inputType = computed(() => {
+  if (isSecretInput.value) return 'password'
   if (fieldType.value === 'int' || fieldType.value === 'float') return 'number'
   return 'text'
+})
+const placeholder = computed(() => {
+  if (props.row.field.placeholder) return props.row.field.placeholder
+  return isSecretInput.value ? t('setup.field.secretComposePlaceholder') : ''
 })
 const displayValue = computed(() => (props.row.value === '' ? '—' : props.row.value))
 
@@ -145,8 +155,10 @@ function onInput(event: Event) {
           class="cfge__input"
           :type="inputType"
           :value="row.value"
-          :placeholder="row.field.placeholder || ''"
+          :placeholder="placeholder"
           :name="`setup_channel_${row.field.name}`"
+          :autocomplete="isSecretInput ? 'new-password' : undefined"
+          :data-secret="isSecretInput ? 'true' : undefined"
           @input="onInput"
         />
       </template>

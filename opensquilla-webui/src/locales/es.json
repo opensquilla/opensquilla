@@ -1454,6 +1454,13 @@
         "entryMissing": "No se encontró el canal {name} en la configuración.",
         "editIntro": "Los cambios se aplican al guardar. Un campo secreto vacío conserva el valor almacenado."
       },
+      "compose": {
+        "back": "Canales",
+        "galleryLabel": "Elige una plataforma",
+        "change": "Cambiar",
+        "discardQuestion": "¿Descartar el borrador de {platform}?",
+        "catalogFailed": "No se pudo cargar el catálogo de plataformas: {error}"
+      },
       "probeVerified": "Conexión verificada",
       "probeUnsupported": "Prueba en vivo no disponible",
       "probeLatency": "Proveedor verificado en {ms} ms.",

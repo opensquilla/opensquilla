@@ -185,6 +185,48 @@ describe('useChannelEditor', () => {
     expect(JSON.stringify(entry)).not.toContain('***')
   })
 
+  it('startCompose seeds an empty draft from spec defaults and saves without reseeding', async () => {
+    const editor = useChannelEditor()
+    await editor.startCompose('slack')
+    expect(editor.phase.value).toBe('active')
+    expect(editor.canEdit.value).toBe(true)
+    expect(editor.form.isDirty.value).toBe(false)
+    expect(editor.form.isEditing.value).toBe(false)
+    expect(editor.extraRows.value).toEqual([])
+
+    editor.updateField('name', 'fresh-slack')
+    editor.updateField('token', 'xoxb-new')
+    expect(editor.form.isDirty.value).toBe(true)
+
+    const result = await editor.save()
+    expect(result.status).toBe('saved')
+    expect(result.outcome?.name).toBe('fresh-slack')
+    const upsert = rpcCall.mock.calls.find(([method]) => method === 'onboarding.channel.upsert')!
+    const entry = (upsert[1] as { entry: Record<string, unknown> }).entry
+    expect(entry).toMatchObject({ type: 'slack', name: 'fresh-slack', token: 'xoxb-new' })
+    expect(JSON.stringify(entry)).not.toContain('***')
+    // Compose commits never reseed from the server (the caller dismisses the
+    // takeover and selects the new channel instead).
+    expect(rpcCall.mock.calls.some(([method]) => method === 'channels.get')).toBe(false)
+  })
+
+  it('loadCatalog tracks a failure and recovers on retry', async () => {
+    mockRpc({
+      'onboarding.catalog': () => {
+        throw new Error('catalog down')
+      },
+    })
+    const editor = useChannelEditor()
+    await editor.loadCatalog()
+    expect(editor.catalogError.value).toContain('catalog down')
+    expect(editor.catalog.value).toEqual([])
+
+    mockRpc()
+    await editor.loadCatalog()
+    expect(editor.catalogError.value).toBe('')
+    expect(editor.catalog.value.map(spec => spec.type)).toEqual(['slack'])
+  })
+
   it('an unknown catalog type stays readable but not editable', async () => {
     mockRpc({
       'channels.get': () => ({

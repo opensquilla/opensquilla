@@ -1454,6 +1454,13 @@
         "entryMissing": "Channel {name} was not found in the configuration.",
         "editIntro": "Changes apply on Save. Blank secret fields keep their stored values."
       },
+      "compose": {
+        "back": "Channels",
+        "galleryLabel": "Choose a platform",
+        "change": "Change",
+        "discardQuestion": "Discard the {platform} draft?",
+        "catalogFailed": "The platform catalog could not be loaded: {error}"
+      },
       "probeVerified": "Connection verified",
       "probeUnsupported": "Live probe unavailable",
       "probeLatency": "Provider verified in {ms} ms.",

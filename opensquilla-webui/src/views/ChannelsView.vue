@@ -351,6 +351,25 @@
         </Transition>
       </aside>
     </section>
+
+    <!-- Add-channel takeover: centered surface over a scrim; gallery pre-pick,
+         receipt chip + the shared config editor (compose mode) post-pick. -->
+    <ChannelComposeSurface
+      v-if="composeMode"
+      :editor="composeEditor"
+      :picked-type="composeType"
+      :confirm-pending="composeDiscardRequest !== null"
+      :saving="composeSaving"
+      @exit="requestExitCompose"
+      @pick="pickComposeType"
+      @change="requestComposeRepick"
+      @test="composeTest"
+      @save="composeSave"
+      @save-anyway="composeSaveAnyway"
+      @keep-editing="resolveComposeDiscard(false)"
+      @confirm-discard="resolveComposeDiscard(true)"
+      @load-catalog="composeEditor.loadCatalog"
+    />
   </div>
 </template>
 
@@ -361,6 +380,7 @@ import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import Icon from '@/components/Icon.vue'
 import ChannelStatusPill from '@/components/ChannelStatusPill.vue'
+import ChannelComposeSurface from '@/components/channels/ChannelComposeSurface.vue'
 import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
 import ChannelEditorActionBar from '@/components/channels/ChannelEditorActionBar.vue'
 import ErrorState from '@/components/ErrorState.vue'
@@ -455,6 +475,13 @@ const editMode = ref(false)
 const editorSaving = ref(false)
 // Pending inline discard confirmation (the centralized guard's UI state).
 const discardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
+// Compose takeover: a SECOND editor instance so an add-channel draft can
+// never cross-contaminate the selected channel's edit draft.
+const composeEditor = useChannelEditor()
+const composeMode = ref(false)
+const composeType = ref('')
+const composeSaving = ref(false)
+const composeDiscardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
 // Members (pairings + channel admins) for the selected channel — state owned
 // here so it survives tab switches; ChannelMembersPanel renders it.
 const members = useChannelMembers()
@@ -556,11 +583,25 @@ function teardownLive() {
   document.removeEventListener('keydown', onDocumentKeydown)
 }
 
-// Esc is two-stage while editing: the first press blurs the focused field,
-// the second acts as Cancel (guarded). Outside edit mode it closes the aside.
-// Handled once at the document level so a press can never skip a stage.
+// Esc is two-stage while a draft surface is up: the first press blurs the
+// focused field, the second acts as Cancel/exit (guarded). Outside those it
+// closes the aside. Handled once at the document level so a press can never
+// skip a stage.
 function onDocumentKeydown(event: KeyboardEvent): void {
-  if (event.key !== 'Escape' || !selectedName.value) return
+  if (event.key !== 'Escape') return
+  if (composeMode.value) {
+    const active = document.activeElement
+    if (
+      active instanceof HTMLElement && active.closest('.chc') &&
+      (active instanceof HTMLInputElement || active instanceof HTMLSelectElement || active instanceof HTMLTextAreaElement)
+    ) {
+      active.blur()
+      return
+    }
+    void requestExitCompose()
+    return
+  }
+  if (!selectedName.value) return
   if (editMode.value) {
     const active = document.activeElement
     if (
@@ -592,16 +633,32 @@ onActivated(() => {
 onDeactivated(teardownLive)
 onUnmounted(teardownLive)
 
-// Route leave is one of the guarded exits: an unsaved draft raises the inline
-// confirm in the bar and the navigation waits on the operator's verdict.
+// Route leave is a guarded exit for BOTH drafts: an unsaved edit or compose
+// draft raises its inline confirm and the navigation waits on the verdict.
+// Drafts are not persisted, so a confirmed leave discards them.
 onBeforeRouteLeave(async () => {
-  if (!(await confirmDiscardDraft())) return false
+  if (draftDirty.value && !(await confirmDiscardDraft())) return false
   if (editMode.value) discardDraftAndExitEdit()
+  if (composeDirty.value && !(await confirmDiscardCompose())) return false
+  if (composeMode.value) exitCompose()
   return true
 })
 
-function openChannelCompose(): void {
-  void router.push({ path: '/settings/channels', hash: '#channel-new' })
+/**
+ * Enter the compose takeover. The ONLY history-PUSH transition the reducer
+ * makes: Back from ?compose=1 returns to browse. Guarded against a dirty
+ * edit draft; the aside closes behind the guard.
+ */
+async function openChannelCompose(): Promise<void> {
+  if (composeMode.value) return
+  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (editMode.value) discardDraftAndExitEdit()
+  if (selectedName.value) forceCloseDetail()
+  composeMode.value = true
+  composeType.value = ''
+  composeEditor.reset()
+  void composeEditor.loadCatalog()
+  syncQuery('push')
 }
 
 function channelKey(ch: Channel): string { return String(ch.name || ch.id || ch.type || 'unknown') }
@@ -745,6 +802,107 @@ function handleSaveResult(result: Awaited<ReturnType<typeof editor.save>>): void
 }
 
 // ---------------------------------------------------------------------------
+// Compose takeover: pick a platform, fill an empty draft, probe, save.
+// ---------------------------------------------------------------------------
+
+const composeDirty = computed(() => composeEditor.form.isDirty.value)
+
+/** Compose twin of confirmDiscardDraft(): the inline destructive-ghost pair
+ *  renders in the takeover footer, never a modal. */
+function confirmDiscardCompose(): Promise<boolean> {
+  if (!composeDirty.value) return Promise.resolve(true)
+  if (composeDiscardRequest.value) composeDiscardRequest.value.resolve(false)
+  return new Promise<boolean>(resolve => {
+    composeDiscardRequest.value = { resolve }
+  })
+}
+
+function resolveComposeDiscard(ok: boolean): void {
+  composeDiscardRequest.value?.resolve(ok)
+  composeDiscardRequest.value = null
+}
+
+function exitCompose(): void {
+  composeMode.value = false
+  composeType.value = ''
+  composeSaving.value = false
+  resolveComposeDiscard(false)
+  composeEditor.reset()
+}
+
+async function requestExitCompose(): Promise<void> {
+  if (composeDirty.value && !(await confirmDiscardCompose())) return
+  exitCompose()
+}
+
+function pickComposeType(type: string): void {
+  composeType.value = type
+  void composeEditor.startCompose(type)
+}
+
+/** [Change] on the receipt chip: back to the gallery, guarded when dirty. */
+async function requestComposeRepick(): Promise<void> {
+  if (composeDirty.value && !(await confirmDiscardCompose())) return
+  composeType.value = ''
+  composeEditor.reset()
+  void composeEditor.loadCatalog()
+}
+
+function composeTest(): void {
+  void composeEditor.testDraft()
+}
+
+async function composeSave(): Promise<void> {
+  if (composeSaving.value) return
+  composeSaving.value = true
+  try {
+    await handleComposeSaveResult(await composeEditor.save())
+  } finally {
+    composeSaving.value = false
+  }
+}
+
+async function composeSaveAnyway(): Promise<void> {
+  if (composeSaving.value) return
+  composeSaving.value = true
+  try {
+    await handleComposeSaveResult(await composeEditor.saveAnyway())
+  } finally {
+    composeSaving.value = false
+  }
+}
+
+async function handleComposeSaveResult(result: Awaited<ReturnType<typeof composeEditor.save>>): Promise<void> {
+  if (result.status === 'invalid') {
+    pushToast(t('setup.channels.fixRequired'), { tone: 'danger' })
+    return
+  }
+  // Probe failure keeps the draft: inline failure rows + [Save anyway].
+  if (result.status === 'probe-failed') return
+  if (result.status === 'error') {
+    pushToast(t('console.channels.editor.saveFailed', { error: result.message || '' }), { tone: 'danger' })
+    return
+  }
+  const outcome = result.outcome
+  if (outcome) {
+    if (outcome.name && outcome.changed && outcome.restartRequired) {
+      pendingRestart.record(outcome.name, 'upsert', { wasLoaded: false })
+    }
+    if (outcome.liveApplyFailed) {
+      pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
+    } else {
+      pushToast(t(outcome.restartRequired ? 'setup.toast.channelSaved' : 'setup.toast.channelSavedLive'), { tone: 'ok' })
+    }
+  }
+  // Dismiss the takeover and land on the new channel's Overview.
+  composeMode.value = false
+  composeType.value = ''
+  composeEditor.reset()
+  await refresh()
+  if (outcome?.name) applySelection(outcome.name)
+}
+
+// ---------------------------------------------------------------------------
 // Selection + aside lifecycle (all draft-destroying paths run the guard)
 // ---------------------------------------------------------------------------
 
@@ -795,15 +953,63 @@ function forceCloseDetail(): void {
 
 // ---------------------------------------------------------------------------
 // Query reducer: ?channel=<name>&tab=<tab>&edit=1 keeps the aside (and the
-// editor mode) URL-addressable. One inbound parser (applyDetailQuery) and one
-// outbound writer (the watcher below, always router.replace) own the params —
-// no other code touches them, which is what keeps edit=1 from leaking across
-// channels or feeding back into itself.
+// editor mode) URL-addressable; ?compose=1&type=<id> does the same for the
+// add-channel takeover, and the two are mutually exclusive. One inbound
+// parser (applyDetailQuery) and one outbound writer (syncQuery) own the
+// params — push only for entering compose, replace everywhere else — which
+// is what keeps edit=1 from leaking across channels and prevents
+// inbound/outbound feedback loops (the parser is idempotent).
 // ---------------------------------------------------------------------------
 const queryMissing = computed(() =>
   Boolean(selectedName.value) && !loading.value && channels.value.length > 0 && !selectedChannel.value)
 
+const OWNED_QUERY_KEYS = ['channel', 'tab', 'edit', 'compose', 'type'] as const
+
+function detailQuery(): Record<string, string> {
+  if (composeMode.value) {
+    const query: Record<string, string> = { compose: '1' }
+    if (composeType.value) query.type = composeType.value
+    return query
+  }
+  const query: Record<string, string> = {}
+  if (selectedName.value) {
+    query.channel = selectedName.value
+    query.tab = detailTab.value
+    if (editMode.value) query.edit = '1'
+  }
+  return query
+}
+
+function syncQuery(mode: 'push' | 'replace'): void {
+  if (route.path !== '/channels') return
+  const query: Record<string, string | null | (string | null)[]> = { ...route.query }
+  for (const key of OWNED_QUERY_KEYS) delete query[key]
+  Object.assign(query, detailQuery())
+  void router[mode]({ query })
+}
+
 function applyDetailQuery(): void {
+  if (route.query.compose === '1') {
+    const type = typeof route.query.type === 'string' ? route.query.type : ''
+    if (!composeMode.value || composeType.value !== type) {
+      // Entering (or re-typing) compose from the URL: the aside closes and
+      // the picked-type form — or the gallery — restores with an empty draft.
+      selectedName.value = ''
+      editMode.value = false
+      editor.reset()
+      members.reset()
+      composeMode.value = true
+      composeType.value = type
+      composeEditor.reset()
+      if (type) void composeEditor.startCompose(type)
+      else void composeEditor.loadCatalog()
+    }
+    return
+  }
+  if (composeMode.value) {
+    // Back (or a bare /channels URL) exits compose; drafts are not persisted.
+    exitCompose()
+  }
   const name = typeof route.query.channel === 'string' ? route.query.channel : ''
   const tab = typeof route.query.tab === 'string' ? route.query.tab : ''
   const edit = route.query.edit === '1'
@@ -820,20 +1026,15 @@ function applyDetailQuery(): void {
   }
 }
 
-watch([selectedName, detailTab, editMode], () => {
-  if (route.path !== '/channels') return
-  const query = { ...route.query }
-  if (selectedName.value) {
-    query.channel = selectedName.value
-    query.tab = detailTab.value
-    if (editMode.value) query.edit = '1'
-    else delete query.edit
-  } else {
-    delete query.channel
-    delete query.tab
-    delete query.edit
-  }
-  void router.replace({ query })
+watch([selectedName, detailTab, editMode, composeMode, composeType], () => {
+  syncQuery('replace')
+})
+
+// Back/forward and hand-edited URLs re-enter through the same parser the
+// mount path uses; because it is idempotent, the writer's own replace calls
+// cycle through here as no-ops.
+watch(() => route.query, () => {
+  if (route.path === '/channels') applyDetailQuery()
 })
 
 // Opening Configuration (by click, deep link, or edit entry) hydrates the

@@ -119,6 +119,8 @@ export function useChannelEditor() {
   const form = useSetupChannelsForm()
 
   const catalog = ref<ChannelEditorSpec[]>(catalogCache || [])
+  const catalogPending = ref(false)
+  const catalogError = ref('')
   const phase = ref<ChannelEditorPhase>('idle')
   const loadedName = ref('')
   const loadError = ref('')
@@ -157,6 +159,23 @@ export function useChannelEditor() {
       await ensureCatalog(true)
     } catch {
       // Keep the cached copy; the next open() surfaces a real failure.
+    }
+  }
+
+  /**
+   * Foreground catalog load for the type gallery: tracks pending/error so an
+   * empty gallery can distinguish "loading" from "failed, offer retry".
+   */
+  async function loadCatalog(): Promise<void> {
+    if (catalogPending.value) return
+    catalogPending.value = true
+    catalogError.value = ''
+    try {
+      await ensureCatalog()
+    } catch (err) {
+      catalogError.value = errorMessage(err)
+    } finally {
+      catalogPending.value = false
     }
   }
 
@@ -214,6 +233,34 @@ export function useChannelEditor() {
     form.initFromEntry(s, loadedEntry.value, loadedSecretFields.value)
     fieldErrors.value = {}
     resetProbe()
+  }
+
+  /**
+   * Seed a fresh compose draft for a picked platform type: spec defaults,
+   * everything editable (secrets as plain password inputs — nothing stored
+   * yet). Drafts are deliberately not persisted; re-running this after a
+   * refresh yields the same empty draft.
+   */
+  async function startCompose(type: string): Promise<void> {
+    phase.value = 'loading'
+    loadError.value = ''
+    fieldErrors.value = {}
+    resetProbe()
+    loadedName.value = ''
+    loadedEntry.value = null
+    loadedSecretFields.value = []
+    try {
+      const channels = await ensureCatalog()
+      entryType.value = type
+      const found = channels.find(s => s.type === type) || null
+      form.selectChannelType(type)
+      form.resetForSpec(found)
+      captureBaseline(found?.fields ?? [], {})
+      phase.value = 'active'
+    } catch (err) {
+      phase.value = 'error'
+      loadError.value = errorMessage(err)
+    }
   }
 
   /** Full clear when the selection changes or the aside closes. */
@@ -334,9 +381,15 @@ export function useChannelEditor() {
     try {
       const res = await upsertChannelEntry(rpc, entry)
       const outcome = parseUpsertOutcome(entry.name, res)
-      // Reseed from the server so a just-replaced secret flips back to its
-      // masked row, the plaintext leaves memory, and the baseline resets.
-      await open(outcome.name || loadedName.value, { quiet: true })
+      if (form.isEditing.value) {
+        // Reseed from the server so a just-replaced secret flips back to its
+        // masked row, the plaintext leaves memory, and the baseline resets.
+        await open(outcome.name || loadedName.value, { quiet: true })
+      } else {
+        // Compose: the caller dismisses the takeover and selects the new
+        // channel — no reseed, just drop the stale probe verdict.
+        resetProbe()
+      }
       return { status: 'saved', outcome }
     } catch (err) {
       return { status: 'error', message: errorMessage(err) }
@@ -377,6 +430,9 @@ export function useChannelEditor() {
     panel,
     spec,
     specFields,
+    catalog,
+    catalogPending,
+    catalogError,
     phase,
     canEdit,
     loadedName,
@@ -389,7 +445,9 @@ export function useChannelEditor() {
     probe,
     saving,
     open,
+    startCompose,
     refreshCatalog,
+    loadCatalog,
     discard,
     reset,
     updateField,

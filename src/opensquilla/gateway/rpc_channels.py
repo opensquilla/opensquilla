@@ -660,14 +660,32 @@ async def _handle_channels_pairing_approve(
         # mark the sender they are approving RIGHT NOW as an admin of the
         # channel they are approving them on — never an arbitrary config
         # write. This is the "this is me" shortcut in the pairing flow.
+        #
+        # The approval above already committed, so a failed admin grant is
+        # NON-fatal: the caller learns adminGranted=false (plus a warning)
+        # and the approved-sender notice below still goes out — raising here
+        # would suppress the notice forever, because a retry would see the
+        # pairing as already approved.
         sender_id = str(getattr(record, "sender_id", "") or "")
-        admins = _set_channel_admin_sender(
-            ctx,
-            channel_name=channel_name,
-            sender_id=sender_id,
-            admin=True,
-        )
-        payload["adminGranted"] = sender_id.strip() in admins
+        try:
+            admins = _set_channel_admin_sender(
+                ctx,
+                channel_name=channel_name,
+                sender_id=sender_id,
+                admin=True,
+            )
+            payload["adminGranted"] = sender_id.strip() in admins
+        except Exception as exc:  # noqa: BLE001 - the approval already committed
+            log.warning(
+                "channel.pairing_admin_grant_failed",
+                channel=channel_name,
+                error_type=type(exc).__name__,
+            )
+            payload["adminGranted"] = False
+            payload["warnings"] = [
+                "The pairing was approved, but granting channel-admin standing "
+                f"failed ({type(exc).__name__}). Retry from the members view."
+            ]
     if not was_approved:
         await _send_pairing_approved_notice(ctx, record)
     return payload
@@ -743,11 +761,21 @@ async def _handle_channels_admin_set(
     data = params or {}
     channel_name = str(data.get("channelName") or "").strip()
     sender_id = str(data.get("senderId") or "").strip()
-    admin = bool(data.get("admin", False))
+    admin_param = data.get("admin")
     if not channel_name:
         raise ValueError("channelName required")
     if not sender_id:
         raise ValueError("senderId required")
+    # An omitted admin flag must never default to a silent revoke.
+    if not isinstance(admin_param, bool):
+        raise ValueError("admin required (boolean)")
+    admin = admin_param
+    # Grants are channel-bound: a typo'd channel name would persist a dormant
+    # admin entry that silently activates if a channel with that name is ever
+    # created. Revokes stay unvalidated on purpose — TOML-added admins on
+    # removed channels must remain demotable.
+    if admin and _channel_entry(ctx, channel_name) is None:
+        raise ValueError(f"unknown channel: {channel_name}")
     admins = _set_channel_admin_sender(
         ctx,
         channel_name=channel_name,
@@ -773,4 +801,34 @@ async def _handle_channels_pairing_revoke(
         pairing_id=pairing_id,
         status="revoked",
     )
-    return {"pairing": _pairing_payload(record)}
+    payload: dict[str, Any] = {"pairing": _pairing_payload(record)}
+    # Revoking access also withdraws channel-admin standing: leaving the
+    # grant dormant would let a plain Reapprove silently restore the full
+    # admin tool surface the operator believed was withdrawn.
+    sender_id = str(getattr(record, "sender_id", "") or "").strip()
+    current = (
+        getattr(ctx.config, "channel_admin_senders", None) if ctx.config is not None else None
+    )
+    existing = [str(item) for item in ((current or {}).get(channel_name) or [])]
+    if sender_id and sender_id in existing:
+        try:
+            _set_channel_admin_sender(
+                ctx,
+                channel_name=channel_name,
+                sender_id=sender_id,
+                admin=False,
+            )
+            payload["adminRemoved"] = True
+        except Exception as exc:  # noqa: BLE001 - the revoke already committed
+            log.warning(
+                "channel.pairing_revoke_admin_removal_failed",
+                channel=channel_name,
+                error_type=type(exc).__name__,
+            )
+            payload["adminRemoved"] = False
+            payload["warnings"] = [
+                "The pairing was revoked, but the sender's channel-admin "
+                f"standing could not be removed ({type(exc).__name__}). "
+                "Remove it from the members view."
+            ]
+    return payload

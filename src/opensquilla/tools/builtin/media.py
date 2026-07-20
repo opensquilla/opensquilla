@@ -76,6 +76,7 @@ _MAX_REDIRECTS = 5
 _VISION_ANALYSIS_TIMEOUT_SECONDS = 180.0
 _image_generation_config: Any | None = None
 _audio_config: Any | None = None
+_media_gateway_config: Any | None = None
 _media_llm_config: Any | None = None
 _media_squilla_router_config: Any | None = None
 
@@ -83,11 +84,14 @@ _media_squilla_router_config: Any | None = None
 def configure_image_generation(
     config: Any | None,
     *,
+    gateway_config: Any | None = None,
     llm_config: Any | None = None,
     squilla_router_config: Any | None = None,
 ) -> None:
-    global _image_generation_config, _media_llm_config, _media_squilla_router_config
+    global _image_generation_config, _media_gateway_config
+    global _media_llm_config, _media_squilla_router_config
     _image_generation_config = config
+    _media_gateway_config = gateway_config
     _media_llm_config = llm_config
     _media_squilla_router_config = squilla_router_config
     reset_image_generation_providers(config, llm_config=llm_config)
@@ -854,6 +858,34 @@ def _configured_provider_config(provider_name: str, model: str):
     from opensquilla.provider.selector import ProviderConfig
 
     provider_name = str(provider_name or "").strip().lower() or "openrouter"
+    if _media_gateway_config is not None:
+        from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
+        from opensquilla.provider.deployment import resolve_provider_deployment
+
+        # Resolve the active provider on a throwaway copy so environment
+        # materialization and provenance tracking cannot mutate the live
+        # gateway config from a media-tool lookup. The shared deployment
+        # resolver then uses this as the inherited primary or independently
+        # resolves a demoted provider from ``llm_profiles``.
+        scratch = _media_gateway_config.model_copy(deep=True)
+        runtime = resolve_llm_runtime_config(scratch)
+        inherited = ProviderConfig(
+            provider=runtime.provider,
+            model=model,
+            api_key=runtime.api_key,
+            base_url=runtime.base_url,
+            proxy=runtime.proxy,
+            provider_routing=runtime.provider_routing,
+        )
+        resolution = resolve_provider_deployment(
+            _media_gateway_config,
+            provider_name,
+            model,
+            inherited_provider_config=inherited,
+        )
+        if resolution.provider_config is not None:
+            return resolution.provider_config
+
     llm_provider = str(_config_value(_media_llm_config, "provider", "") or "").strip().lower()
     use_llm_config = provider_name == llm_provider
 

@@ -562,6 +562,9 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
         events.append("runtime")
         return SimpleNamespace(effective=SimpleNamespace(as_dict=lambda: {}))
 
+    def fake_reset_runtime() -> None:
+        events.append("runtime_reset")
+
     def fake_create_background_task(coro: Any) -> Any:
         scheduled.append(coro)
         close = getattr(coro, "close", None)
@@ -572,6 +575,7 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
     monkeypatch.setattr(boot, "_ensure_sandbox_setup_on_boot", fake_setup)
     monkeypatch.setattr(boot, "create_background_task", fake_create_background_task)
     monkeypatch.setattr("opensquilla.sandbox.integration.configure_runtime", fake_configure_runtime)
+    monkeypatch.setattr("opensquilla.sandbox.integration.reset_runtime", fake_reset_runtime)
 
     config = GatewayConfig(
         state_dir=str(tmp_path / "state"),
@@ -598,6 +602,7 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
         assert len(scheduled) == 1
     finally:
         await services.close()
+    assert events == ["runtime", "runtime_reset"]
 
 
 @pytest.mark.asyncio

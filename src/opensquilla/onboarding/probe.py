@@ -41,7 +41,9 @@ from opensquilla.provider.types import (
     ErrorEvent,
     Message,
     ModelInfo,
+    ReasoningDeltaEvent,
     StreamEvent,
+    TextDeltaEvent,
 )
 from opensquilla.redaction import redact_error_text
 
@@ -60,9 +62,17 @@ class ProviderProbeResult:
     failure_kind: str = ""
     message: str = ""
     code: str = ""
-    # Wall time of the network round-trip; 0 when the probe never reached the
+    # Legacy end-to-end probe duration; 0 when the probe never reached the
     # network (missing key, build failure).
     latency_ms: int = 0
+    # Time to the first non-empty model response. ``None`` means no text or
+    # reasoning delta arrived before the probe completed or failed.
+    first_response_ms: int | None = None
+
+    @property
+    def total_ms(self) -> int:
+        """Explicit name for the legacy end-to-end ``latency_ms`` value."""
+        return self.latency_ms
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -73,6 +83,8 @@ class ProviderProbeResult:
             "message": self.message,
             "code": self.code,
             "latencyMs": self.latency_ms,
+            "firstResponseMs": self.first_response_ms,
+            "totalMs": self.total_ms,
         }
 
 
@@ -147,12 +159,13 @@ async def probe_llm_provider(
             provider_id=provider_id,
             model=model,
             failure_kind=ProviderFailureKind.BAD_REQUEST.value,
-            message=str(exc),
+            message=redact_error_text(str(exc), known_secrets=(resolved_key,)),
         )
 
     cfg = ChatConfig(max_tokens=1, timeout=timeout, thinking=False)
     messages = [Message(role="user", content="ping")]
     start = time.monotonic()
+    first_response_ms: int | None = None
     try:
         stream = (
             chat_stream_factory(provider, messages, cfg)
@@ -161,6 +174,12 @@ async def probe_llm_provider(
         )
         try:
             async for event in stream:
+                if (
+                    first_response_ms is None
+                    and isinstance(event, (TextDeltaEvent, ReasoningDeltaEvent))
+                    and event.text
+                ):
+                    first_response_ms = int((time.monotonic() - start) * 1000)
                 if isinstance(event, ErrorEvent):
                     status_code = int(event.code) if str(event.code).isdigit() else None
                     kind = classify_provider_error(
@@ -176,9 +195,16 @@ async def probe_llm_provider(
                         failure_kind=kind.value,
                         # Provider error bodies can echo credentials (bad keys,
                         # signed URLs) — never repeat them verbatim.
-                        message=redact_error_text(event.message),
-                        code=str(event.code),
+                        message=redact_error_text(
+                            event.message,
+                            known_secrets=(resolved_key,),
+                        ),
+                        code=redact_error_text(
+                            str(event.code),
+                            known_secrets=(resolved_key,),
+                        ),
                         latency_ms=int((time.monotonic() - start) * 1000),
+                        first_response_ms=first_response_ms,
                     )
                 if isinstance(event, DoneEvent):
                     return ProviderProbeResult(
@@ -186,6 +212,7 @@ async def probe_llm_provider(
                         provider_id=provider_id,
                         model=model,
                         latency_ms=int((time.monotonic() - start) * 1000),
+                        first_response_ms=first_response_ms,
                     )
         finally:
             aclose = getattr(stream, "aclose", None)
@@ -195,15 +222,16 @@ async def probe_llm_provider(
         log.warning(
             "onboarding.provider_probe_failed",
             provider=provider_id,
-            error=redact_error_text(str(exc)),
+            error=redact_error_text(str(exc), known_secrets=(resolved_key,)),
         )
         return ProviderProbeResult(
             ok=False,
             provider_id=provider_id,
             model=model,
             failure_kind=ProviderFailureKind.TRANSPORT_TRANSIENT.value,
-            message=redact_error_text(str(exc)),
+            message=redact_error_text(str(exc), known_secrets=(resolved_key,)),
             latency_ms=int((time.monotonic() - start) * 1000),
+            first_response_ms=first_response_ms,
         )
 
     return ProviderProbeResult(
@@ -213,6 +241,7 @@ async def probe_llm_provider(
         failure_kind=ProviderFailureKind.MALFORMED_RESPONSE.value,
         message="Provider stream ended without a completion event.",
         latency_ms=int((time.monotonic() - start) * 1000),
+        first_response_ms=first_response_ms,
     )
 
 
@@ -378,7 +407,7 @@ async def discover_provider_models(
             ok=False,
             provider_id=provider_id,
             failure_kind=ProviderFailureKind.BAD_REQUEST.value,
-            detail=str(exc),
+            detail=redact_error_text(str(exc), known_secrets=(resolved_key,)),
         )
 
     try:
@@ -398,7 +427,7 @@ async def discover_provider_models(
             "onboarding.models_discover_failed",
             provider=provider_id,
             kind=kind.value,
-            error=redact_error_text(str(exc)),
+            error=redact_error_text(str(exc), known_secrets=(resolved_key,)),
         )
         return ProviderModelsDiscoverResult(
             ok=False,
@@ -406,7 +435,7 @@ async def discover_provider_models(
             failure_kind=kind.value,
             # Provider error bodies can echo credentials (bad keys, signed
             # URLs) — never repeat them verbatim.
-            detail=redact_error_text(str(exc)),
+            detail=redact_error_text(str(exc), known_secrets=(resolved_key,)),
         )
 
     if not provider_models:

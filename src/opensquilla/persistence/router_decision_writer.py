@@ -63,8 +63,13 @@ _COLUMNS = (
     "probs",
     "flags",
     "final_tier",
+    "requested_provider",
+    "requested_model",
     "provider",
     "model",
+    "executed_provider",
+    "executed_model",
+    "fallback_reason",
     "thinking_level",
     "source",
     "trail",
@@ -79,8 +84,13 @@ _TEXT_TOKEN_COLUMNS = (
     "classifier",
     "proposed_tier",
     "final_tier",
+    "requested_provider",
+    "requested_model",
     "provider",
     "model",
+    "executed_provider",
+    "executed_model",
+    "fallback_reason",
     "thinking_level",
     "source",
     "baseline_model",
@@ -221,6 +231,24 @@ class RouterDecisionWriter:
         self._prune_batch = max(1, int(prune_batch))
         self._clock = clock
         self._insert_count = 0
+        self._schema_columns: tuple[str, ...] | None = None
+
+    def _compatible_columns_unlocked(self) -> tuple[str, ...]:
+        """Return columns present in both the runtime and persisted schema.
+
+        Some standalone CLI paths open a pre-V021 decisions database without
+        running gateway migrations first.  The additive deployment telemetry
+        must not make those older databases unreadable or unwritable; missing
+        fields simply remain ``None`` until normal migration runs.
+        """
+        if self._schema_columns is not None:
+            return self._schema_columns
+        rows = self._conn.execute("PRAGMA table_info(router_decisions)").fetchall()
+        present = {str(row["name"] if isinstance(row, sqlite3.Row) else row[1]) for row in rows}
+        columns = tuple(column for column in _COLUMNS if column in present)
+        if columns:
+            self._schema_columns = columns
+        return columns
 
     def close(self) -> None:
         with self._lock:
@@ -240,14 +268,15 @@ class RouterDecisionWriter:
             return False
         if row is None:
             return False
-        placeholders = ", ".join("?" for _ in _COLUMNS)
-        sql = (
-            f"INSERT OR REPLACE INTO router_decisions ({', '.join(_COLUMNS)}) "
-            f"VALUES ({placeholders})"
-        )
         try:
             with self._lock:
-                self._conn.execute(sql, tuple(row[column] for column in _COLUMNS))
+                columns = self._compatible_columns_unlocked()
+                placeholders = ", ".join("?" for _ in columns)
+                sql = (
+                    f"INSERT OR REPLACE INTO router_decisions ({', '.join(columns)}) "
+                    f"VALUES ({placeholders})"
+                )
+                self._conn.execute(sql, tuple(row[column] for column in columns))
                 self._conn.commit()
                 self._insert_count += 1
                 should_prune = self._insert_count % self._prune_every == 0
@@ -402,20 +431,24 @@ class RouterDecisionWriter:
             clauses.append("ts_ms < ?")
             args.append(int(before_ts_ms))
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = (
-            f"SELECT {', '.join(_COLUMNS)} FROM router_decisions"
-            f"{where} ORDER BY ts_ms DESC, decision_id DESC LIMIT ?"
-        )
         args.append(bound)
         try:
             with self._lock:
+                columns = self._compatible_columns_unlocked()
+                sql = (
+                    f"SELECT {', '.join(columns)} FROM router_decisions"
+                    f"{where} ORDER BY ts_ms DESC, decision_id DESC LIMIT ?"
+                )
                 rows = self._conn.execute(sql, tuple(args)).fetchall()
         except Exception as exc:  # noqa: BLE001
             log.warning("router_decision_writer.list_failed: %s", exc)
             return []
         out: list[dict[str, Any]] = []
         for row in rows:
-            record: dict[str, Any] = {column: row[column] for column in _COLUMNS}
+            record: dict[str, Any] = {
+                column: row[column] if column in columns else None
+                for column in _COLUMNS
+            }
             for json_column in ("probs", "flags", "trail"):
                 record[json_column] = _load_json_list(record.get(json_column))
             out.append(record)
@@ -433,16 +466,23 @@ class RouterDecisionWriter:
         token = sanitize_token(decision_id)
         if token is None:
             return None
-        sql = f"SELECT {', '.join(_COLUMNS)} FROM router_decisions WHERE decision_id = ?"
         try:
             with self._lock:
+                columns = self._compatible_columns_unlocked()
+                sql = (
+                    f"SELECT {', '.join(columns)} FROM router_decisions "
+                    "WHERE decision_id = ?"
+                )
                 row = self._conn.execute(sql, (token,)).fetchone()
         except Exception as exc:  # noqa: BLE001
             log.warning("router_decision_writer.get_failed: %s", exc)
             return None
         if row is None:
             return None
-        record: dict[str, Any] = {column: row[column] for column in _COLUMNS}
+        record: dict[str, Any] = {
+            column: row[column] if column in columns else None
+            for column in _COLUMNS
+        }
         for json_column in ("probs", "flags", "trail"):
             record[json_column] = _load_json_list(record.get(json_column))
         return record

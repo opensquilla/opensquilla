@@ -11,10 +11,12 @@ from pydantic import ValidationError
 
 from opensquilla.channels.registry import discover_all, parse_channel_entry
 from opensquilla.gateway.config import (
+    STATIC_B5_SELECTION_MODE_PROVIDERS,
     ChannelsConfig,
     GatewayConfig,
     LlmEnsembleConfig,
     LlmProviderConfig,
+    LlmProviderProfile,
     MemoryEmbeddingConfig,
     SquillaRouterConfig,
     _default_tiers,
@@ -55,6 +57,12 @@ from opensquilla.secrets import clean_header_secret
 
 SearchFallbackPolicy = Literal["off", "network"]
 RouterMode = Literal["recommended", "openrouter-mix", "custom", "disabled"]
+RouterConflictAction = Literal[
+    "preserve",
+    "use_recommended",
+    "enable_cross_provider",
+    "disable",
+]
 _TEXT_ROUTER_TIERS = TEXT_TIERS
 _ROUTER_TIER_KEYS = set(_TEXT_ROUTER_TIERS) | {"image_model"}
 _TIER_KEY_ALIASES = {
@@ -74,6 +82,21 @@ class MutationResult:
     restart_required: bool
     warnings: list[str] = field(default_factory=list)
     public_payload: dict[str, Any] = field(default_factory=dict)
+
+
+class LlmProfileActivationError(ValueError):
+    """Stable, secret-free validation failure for profile promotion."""
+
+    def __init__(
+        self,
+        reason: str,
+        message: str | None = None,
+        *,
+        details: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.reason = reason
+        self.details = dict(details or {})
+        super().__init__(message or reason)
 
 
 def _clone(cfg: GatewayConfig) -> GatewayConfig:
@@ -109,16 +132,18 @@ def _preset_tiers_with_model(preset: ProviderPreset, model: str) -> dict[str, di
 def _reconcile_router_profile_for_provider(
     cfg: GatewayConfig,
     provider_id: str,
+    *,
+    preset: ProviderPreset | None = None,
 ) -> None:
     router_enabled = bool(getattr(cfg.squilla_router, "enabled", True))
-    preset = get_preset(provider_id)
+    preset = preset or get_preset(provider_id)
+    if preset is None:
+        raise ValueError(f"provider {provider_id!r} has no managed router preset")
     router_payload = cfg.squilla_router.model_dump(mode="python")
     router_payload.pop("tiers", None)
     router_payload["enabled"] = router_enabled
-    if preset is None:
-        router_payload["enabled"] = False
-        router_payload["tier_profile"] = None
-    elif preset.persistable and router_enabled:
+    router_payload["preset_binding"] = "follow_primary"
+    if preset.persistable and router_enabled:
         router_payload["tier_profile"] = provider_id
     else:
         router_payload["tier_profile"] = None
@@ -127,11 +152,6 @@ def _reconcile_router_profile_for_provider(
             str(getattr(cfg.llm, "model", "") or "").strip(),
         )
     cfg.squilla_router = SquillaRouterConfig(**router_payload)
-
-
-def _default_text_tier(default_tier: str | None) -> str:
-    tier = normalize_text_tier(default_tier or DEFAULT_TEXT_TIER)
-    return tier if tier in _TEXT_ROUTER_TIERS else DEFAULT_TEXT_TIER
 
 
 def _normalize_explicit_text_tier(default_tier: str | None) -> str | None:
@@ -145,15 +165,6 @@ def _normalize_explicit_text_tier(default_tier: str | None) -> str | None:
     if tier not in _TEXT_ROUTER_TIERS:
         raise ValueError("defaultTier must reference a text tier")
     return tier
-
-
-def _router_default_model_for_provider(provider_id: str, default_tier: str | None) -> str:
-    preset = get_preset(provider_id)
-    if preset is None or preset.synthesized:
-        return ""
-    tiers = preset.tier_defaults()
-    tier = tiers.get(_default_text_tier(default_tier)) or tiers.get("c1") or {}
-    return str(tier.get("model") or "").strip()
 
 
 def _normalize_tier_payload(name: str, payload: Any) -> dict[str, Any]:
@@ -229,25 +240,26 @@ def _tiers_equal_after_canonical_normalization(
     return _canonical_tier_map(candidate) == _canonical_tier_map(preset_tiers)
 
 
-def _router_tiers_hand_customized(config: GatewayConfig, *, explicit_model: str = "") -> bool:
-    """True when squilla_router carries an inline, hand-edited tier ladder.
+def _router_tiers_hand_customized(
+    config: GatewayConfig,
+    *,
+    explicit_model: str = "",
+) -> bool:
+    """Return whether an interactive save must preserve the inline ladder.
 
-    A set ``tier_profile`` means the ladder is profile-derived (reconciling
-    rewrites the same compact form, which is not destructive). Inline tiers
-    that canonically equal the model default or the active provider's preset
-    seeded with a machine-known model are reconcile-refreshable states a
-    previous save produced — only anything else is an operator-authored
-    ladder that a same-provider re-save must not overwrite.
-
-    The seeded comparison runs against several candidate models, not just
-    the currently stored ``llm.model``: after an out-of-band ``llm.model``
-    change (config.set RPC, TOML hand-edit) the stored ladder still carries
-    the model of the save that seeded it, so testing the save's explicit
-    model and each model the ladder itself names keeps machine-seeded
-    ladders recognizable — otherwise a re-save naming the new model would
-    skip reconciliation and leave every tier pinned to the old model.
+    Explicit ownership is authoritative.  Historical configs without a
+    binding retain the previous shape comparison so upgrades do not turn a
+    machine-seeded preset into a hand-authored ladder (or overwrite a real
+    custom ladder).  This helper remains part of the onboarding-flow contract:
+    the CLI uses it before offering to replace a ladder with a preset.
     """
+
     router = config.squilla_router
+    binding = str(getattr(router, "preset_binding", "") or "").strip().lower()
+    if binding == "custom":
+        return True
+    if binding == "follow_primary":
+        return False
     if getattr(router, "tier_profile", None):
         return False
     tiers = getattr(router, "tiers", {}) or {}
@@ -318,14 +330,17 @@ def _cross_provider_tier_warnings(
     active_provider: str,
     *,
     cross_provider_enabled: bool = False,
+    tier_provider_mismatch: str = "route",
     llm_profiles: dict[str, Any] | None = None,
 ) -> list[str]:
     """Warn about tiers naming a provider other than the active LLM provider.
 
-    Flag off: such a tier's model id is silently requested from the active
-    provider with the active credentials — warn about the misroute. Flag on:
-    the tier executes on its own provider, so the check flips to credential
-    resolvability (profile or env; secrets are never guessed).
+    With cross-provider execution off, the warning mirrors the configured
+    mismatch policy: ``veto`` stays on the active deployment, while legacy
+    ``route`` runs the foreign model id against the active credentials. With
+    cross-provider execution on, the tier executes on its own provider, so the
+    check flips to credential resolvability (profile or env; secrets are never
+    guessed).
     """
     if not active_provider:
         return []
@@ -338,12 +353,21 @@ def _cross_provider_tier_warnings(
         if not tier_provider or tier_provider == active_provider:
             continue
         if not cross_provider_enabled:
-            warnings.append(
-                f"Router tier '{tier_name}' names provider '{tier_provider}', but the "
-                f"active LLM provider is '{active_provider}'. Cross-provider routing is "
-                f"not enabled (squilla_router.cross_provider_tiers), so this tier's "
-                f"model will be requested from '{active_provider}'."
-            )
+            if str(tier_provider_mismatch or "route").strip().lower() == "veto":
+                warnings.append(
+                    f"Router tier '{tier_name}' names provider '{tier_provider}', but the "
+                    f"active LLM provider is '{active_provider}'. Cross-provider routing is "
+                    f"not enabled (squilla_router.cross_provider_tiers), so this tier's "
+                    f"provider/model choice is vetoed and execution stays on the current "
+                    f"'{active_provider}' deployment."
+                )
+            else:
+                warnings.append(
+                    f"Router tier '{tier_name}' names provider '{tier_provider}', but the "
+                    f"active LLM provider is '{active_provider}'. Cross-provider routing is "
+                    f"not enabled (squilla_router.cross_provider_tiers), so this tier's "
+                    f"model will be requested from '{active_provider}'."
+                )
         elif not _tier_provider_credentials_resolvable(tier_provider, llm_profiles):
             warnings.append(
                 f"Router tier '{tier_name}' routes to provider '{tier_provider}' but no "
@@ -352,18 +376,6 @@ def _cross_provider_tier_warnings(
                 f"until then the tier falls back to '{active_provider}'."
             )
     return warnings
-
-
-def _sync_llm_model_to_router_default(cfg: GatewayConfig) -> None:
-    router = cfg.squilla_router
-    if not getattr(router, "enabled", True):
-        return
-    default_tier = _default_text_tier(getattr(router, "default_tier", DEFAULT_TEXT_TIER))
-    _validate_router_tiers(router.tiers, default_tier)
-    tier = router.tiers[default_tier]
-    model = str(tier.get("model") or "").strip()
-    if model:
-        cfg.llm.model = model
 
 
 def _resolve_provider_preset(preset_id: str, provider_id: str) -> ProviderPreset | None:
@@ -385,35 +397,196 @@ def _resolve_provider_preset(preset_id: str, provider_id: str) -> ProviderPreset
     return preset
 
 
-def _apply_provider_preset(cfg: GatewayConfig, preset: ProviderPreset, model: str) -> None:
-    """Apply an explicitly requested registry preset to the router config.
+def _normalize_router_conflict_action(value: str | None) -> RouterConflictAction:
+    action = str(value or "preserve").strip().lower()
+    allowed = {
+        "preserve",
+        "use_recommended",
+        "enable_cross_provider",
+        "disable",
+    }
+    if action not in allowed:
+        raise LlmProfileActivationError(
+            "invalid_router_action",
+            "routerAction must be preserve, use_recommended, "
+            "enable_cross_provider, or disable",
+        )
+    return cast(RouterConflictAction, action)
 
-    D18: this runs ONLY for an explicit ``presetId`` — a plain provider save
-    goes through ``_reconcile_router_profile_for_provider`` unchanged, so save
-    paths stay pinned to the legacy nine unless the user asked for a preset.
 
-    Persistable (legacy-nine) preset → exactly today's recommended write
-    shape: ``enabled=True`` with the persisted ``tier_profile`` id and no
-    inline tiers, so ``to_toml_dict`` keeps persisting the compact profile
-    form.
+def _implicit_primary_and_router(config: GatewayConfig) -> bool:
+    """True only for an untouched built-in primary/router pair.
 
-    Curated-inline or synthesized preset → the custom-mode write shape:
-    ``enabled=True``, ``tier_profile=None`` (non-legacy ids must never
-    persist — downgrade contract) plus the preset's expanded tiers. A
-    synthesized preset carries no curated model ladder (its ``default_model``
-    may be empty), so empty tier model slots are completed with this save's
-    effective model — the operator's explicit model is the only model binding
-    this save knows; a curated-inline ladder is already fully bound.
+    Missing ``preset_binding`` is legacy/unclassified and therefore custom by
+    default.  The safe exceptions are a genuinely fresh config whose LLM
+    provider and Router sections carry no authored fields at all, and that
+    same pristine built-in pair after a runtime resolver or public-config
+    round-trip has materialized its defaults as explicit fields.  The latter
+    is recognized by value, conservatively: the primary must still be the
+    credential-less built-in deployment with every provider setting at its
+    default, and the inline Router ladder must still exactly match the
+    built-in provider preset.  An explicit ``custom`` binding or any authored
+    provider/ladder value therefore remains an ownership boundary.
     """
+
+    llm_fields = set(getattr(config.llm, "model_fields_set", set()))
+    router_fields = set(getattr(config.squilla_router, "model_fields_set", set()))
+    if "provider" not in llm_fields and not router_fields:
+        return True
+
+    llm = config.llm
+    llm_defaults = LlmProviderConfig.model_fields
+    default_provider = str(llm_defaults["provider"].default or "").strip().lower()
+    default_model = str(llm_defaults["model"].default or "").strip()
+    default_base_url = str(llm_defaults["base_url"].default or "").strip()
+    if (
+        str(getattr(llm, "provider", "") or "").strip().lower() != default_provider
+        or str(getattr(llm, "model", "") or "").strip() != default_model
+        or str(getattr(llm, "api_key", "") or "").strip()
+        or str(getattr(llm, "api_key_env", "") or "").strip()
+        or str(getattr(llm, "base_url", "") or "").strip() != default_base_url
+        or str(getattr(llm, "proxy", "") or "").strip()
+        or int(getattr(llm, "max_tokens", 0) or 0) != 0
+        or int(getattr(llm, "context_window_tokens", 0) or 0) != 0
+        or getattr(llm, "temperature", None) is not None
+        or getattr(llm, "top_p", None) is not None
+        or getattr(llm, "thinking", None) is not None
+        or int(getattr(llm, "provider_request_proof_max_chars", 0) or 0) != 0
+        or bool(getattr(llm, "provider_routing", {}) or {})
+    ):
+        return False
+
+    router = config.squilla_router
+    if (
+        getattr(router, "preset_binding", None) is not None
+        or getattr(router, "tier_profile", None) is not None
+    ):
+        return False
+    preset = get_preset(default_provider)
+    return preset is not None and _tiers_equal_after_canonical_normalization(
+        getattr(router, "tiers", {}) or {},
+        preset.tier_defaults(),
+    )
+
+
+def _router_provider_conflicts(
+    config: GatewayConfig,
+    target_provider: str,
+) -> tuple[str, ...]:
+    """Foreign providers that would be vetoed/misrouted after a primary swap."""
+
+    router = config.squilla_router
+    if not bool(getattr(router, "enabled", False)):
+        return ()
+    if bool(getattr(router, "cross_provider_tiers", False)):
+        return ()
+    target = str(target_provider or "").strip().lower()
+    conflicts: set[str] = set()
+    tiers = getattr(router, "tiers", {}) or {}
+    if isinstance(tiers, Mapping):
+        for tier in tiers.values():
+            if not isinstance(tier, Mapping):
+                continue
+            provider = str(tier.get("provider") or "").strip().lower()
+            if provider and provider != target:
+                conflicts.add(provider)
+    return tuple(sorted(conflicts))
+
+
+def _preserve_router_as_custom(
+    cfg: GatewayConfig,
+    *,
+    enabled: bool | None = None,
+    enable_cross_provider: bool = False,
+) -> None:
+    """Materialize the effective ladder and mark explicit operator ownership."""
+
     router_payload = cfg.squilla_router.model_dump(mode="python")
-    router_payload.pop("tiers", None)
-    router_payload["enabled"] = True
-    if preset.persistable:
-        router_payload["tier_profile"] = preset.preset_id
-    else:
-        router_payload["tier_profile"] = None
-        router_payload["tiers"] = _preset_tiers_with_model(preset, model)
+    router_payload["tier_profile"] = None
+    router_payload["preset_binding"] = "custom"
+    router_payload["tiers"] = {
+        name: (dict(tier) if isinstance(tier, Mapping) else tier)
+        for name, tier in (getattr(cfg.squilla_router, "tiers", {}) or {}).items()
+    }
+    if enabled is not None:
+        router_payload["enabled"] = enabled
+    if enable_cross_provider:
+        router_payload["cross_provider_tiers"] = True
     cfg.squilla_router = SquillaRouterConfig(**router_payload)
+
+
+def _apply_primary_provider_router_policy(
+    source: GatewayConfig,
+    candidate: GatewayConfig,
+    *,
+    target_provider: str,
+    router_action: str | None = None,
+    explicit_preset: ProviderPreset | None = None,
+) -> None:
+    """Apply the single Router contract for every primary-provider switch.
+
+    Managed ladders follow the target provider while retaining Router enabled
+    state and all orthogonal settings.  Explicit custom and unclassified
+    legacy ladders are byte-preserved unless the caller selects one of the
+    conflict-resolution actions.  Ensemble state is intentionally outside
+    this helper and is never touched.
+    """
+
+    action = _normalize_router_conflict_action(router_action)
+    binding = getattr(source.squilla_router, "preset_binding", None)
+    source_provider = str(getattr(source.llm, "provider", "") or "").strip().lower()
+    target = str(target_provider or "").strip().lower()
+    primary_changed = source_provider != target
+
+    if action == "use_recommended":
+        _reconcile_router_profile_for_provider(candidate, target_provider)
+        return
+
+    if action == "enable_cross_provider":
+        _preserve_router_as_custom(candidate, enable_cross_provider=True)
+        return
+
+    if action == "disable":
+        _preserve_router_as_custom(candidate, enabled=False)
+        return
+
+    if explicit_preset is not None:
+        _reconcile_router_profile_for_provider(
+            candidate,
+            target_provider,
+            preset=explicit_preset,
+        )
+        return
+
+    if binding == "follow_primary" or (
+        binding is None and _implicit_primary_and_router(source)
+    ):
+        _reconcile_router_profile_for_provider(candidate, target_provider)
+        return
+
+    # A credential rotation or direct-model edit is not a provider switch.
+    # Preserve operator-owned/legacy ladders even when they intentionally
+    # contain foreign tiers with cross-provider execution disabled; the save
+    # neither introduces nor worsens that pre-existing state.
+    if not primary_changed:
+        return
+
+    conflicts = _router_provider_conflicts(source, target_provider)
+    if conflicts:
+        joined = ", ".join(conflicts)
+        raise LlmProfileActivationError(
+            "router_provider_conflict",
+            "custom Router tiers reference provider(s) that differ from the "
+            f"new primary: {joined}",
+            details={
+                "conflictProviders": list(conflicts),
+                "allowedRouterActions": [
+                    "use_recommended",
+                    "enable_cross_provider",
+                    "disable",
+                ],
+            },
+        )
 
 
 def upsert_llm_provider(
@@ -428,6 +601,7 @@ def upsert_llm_provider(
     proxy: str | None = None,
     provider_routing: dict[str, str] | None = None,
     preset_id: str | None = None,
+    router_action: str | None = None,
 ) -> MutationResult:
     """Save the active LLM provider configuration.
 
@@ -446,11 +620,12 @@ def upsert_llm_provider(
     carried over except the caller's values; optional credentials never
     follow ``preserve_api_key`` across providers or endpoint origins.
 
-    A same-provider re-save also never overwrites an operator-authored
-    inline router ladder: the router profile is reconciled only when the
-    provider id actually changes or when the current router state is one a
-    previous save produced (compact ``tier_profile`` form, the packaged
-    default, or the provider preset seeded with the stored model).
+    Router ownership is explicit and shared with profile activation:
+    ``follow_primary`` reconciles to this provider while preserving Router
+    enabled state and orthogonal settings; ``custom`` and legacy/unclassified
+    ladders are preserved.  A cross-provider custom ladder that cannot execute
+    with cross-provider routing off is rejected unless ``router_action``
+    resolves it explicitly.
     """
     spec = get_provider_setup_spec(provider_id)
     if not spec.runtime_supported:
@@ -471,10 +646,11 @@ def upsert_llm_provider(
         # provider's direct model when the caller gave none.
         model_clean = preset.default_model.strip()
     if not model_clean:
-        model_clean = _router_default_model_for_provider(
-            provider_id,
-            getattr(config.squilla_router, "default_tier", "c1"),
-        )
+        # The primary model is the provider's direct/fallback deployment. It
+        # must not track SquillaRouter's independently selectable default
+        # tier: changing the route only changes routed turns, while direct
+        # mode and fail-closed fallback keep using this provider default.
+        model_clean = str(spec.default_direct_model or "").strip()
     if not model_clean:
         raise ValueError("model is required")
     effective_base_url = base_url or ""
@@ -557,19 +733,13 @@ def upsert_llm_provider(
         }
     )
     new_cfg.llm = LlmProviderConfig(**llm_payload)
-    if preset is not None:
-        # Explicit user action only — a plain save (no presetId) must keep
-        # today's reconcile behavior byte-for-byte (D18).
-        _apply_provider_preset(new_cfg, preset, model_clean)
-    elif same_provider and _router_tiers_hand_customized(
-        config, explicit_model=model_clean
-    ):
-        # Same-provider re-save over a hand-edited inline ladder: the router
-        # state already belongs to this provider, and reconciling would only
-        # replace the operator's tiers with the packaged profile. Leave it.
-        pass
-    else:
-        _reconcile_router_profile_for_provider(new_cfg, provider_id)
+    _apply_primary_provider_router_policy(
+        config,
+        new_cfg,
+        target_provider=provider_id,
+        router_action=router_action,
+        explicit_preset=preset,
+    )
     if api_key:
         clear_runtime_secret_paths(new_cfg, {"llm.api_key"})
     # Explicit endpoint/proxy values override any boot-time env resolution:
@@ -697,11 +867,16 @@ def upsert_router(
                     f"<id>) or disable the router (opensquilla onboard configure "
                     f"router --router disabled)."
                 )
-        writes_packaged_profile = (
+        follows_managed_preset = (
             router_mode in {"recommended", "openrouter-mix"}
             and preset is not None
-            and preset.persistable
             and _tiers_equal_after_canonical_normalization(merged_tiers, base_tiers)
+        )
+        router_payload["preset_binding"] = (
+            "follow_primary" if follows_managed_preset else "custom"
+        )
+        writes_packaged_profile = (
+            follows_managed_preset and preset is not None and preset.persistable
         )
         if writes_packaged_profile:
             router_payload["enabled"] = True
@@ -713,7 +888,7 @@ def upsert_router(
             router_payload["enabled"] = True
             router_payload["tier_profile"] = None
             router_payload["tiers"] = merged_tiers
-            public_payload["mode"] = "custom"
+            public_payload["mode"] = "recommended" if follows_managed_preset else "custom"
             public_payload.update({"enabled": True, "tier_profile": None})
     warnings: list[str] = []
     if router_payload.get("enabled"):
@@ -725,6 +900,9 @@ def upsert_router(
             cast(dict[str, Any], router_payload.get("tiers") or {}),
             provider,
             cross_provider_enabled=bool(router_payload.get("cross_provider_tiers")),
+            tier_provider_mismatch=str(
+                router_payload.get("tier_provider_mismatch") or "route"
+            ),
             llm_profiles=getattr(config, "llm_profiles", None),
         )
 
@@ -734,11 +912,13 @@ def upsert_router(
         new_cfg,
         "direct" if router_mode == "disabled" else "router",
     )
-    _sync_llm_model_to_router_default(new_cfg)
     public_payload["default_tier"] = new_cfg.squilla_router.default_tier
     public_payload["tiers"] = redact_router_tiers_payload(new_cfg.squilla_router.tiers)
     public_payload["cross_provider_tiers"] = bool(new_cfg.squilla_router.cross_provider_tiers)
     public_payload["tier_provider_mismatch"] = new_cfg.squilla_router.tier_provider_mismatch
+    public_payload["router_binding"] = (
+        new_cfg.squilla_router.preset_binding or "legacy"
+    )
     return MutationResult(
         config=new_cfg,
         changed=True,
@@ -1367,6 +1547,360 @@ def upsert_memory_embedding(
         restart_required=changed,
         warnings=[],
         public_payload=redact_memory_embedding_payload(payload),
+    )
+
+
+def _llm_profile_storage_keys(
+    config: GatewayConfig,
+    provider_id: str,
+) -> tuple[str, ...]:
+    """Find exact and historical case-variant keys for one provider profile."""
+    provider = str(provider_id or "").strip().lower()
+    profiles = getattr(config, "llm_profiles", None) or {}
+    exact = [key for key in profiles if str(key) == provider]
+    variants = [
+        key
+        for key in profiles
+        if str(key) != provider and str(key).strip().lower() == provider
+    ]
+    return tuple(exact + variants)
+
+
+def _profile_reference_labels(config: GatewayConfig, provider_id: str) -> list[str]:
+    """Return stable, non-secret config paths that reference a provider profile."""
+    provider = str(provider_id or "").strip().lower()
+    references: list[str] = []
+    tiers = getattr(getattr(config, "squilla_router", None), "tiers", {}) or {}
+    if isinstance(tiers, Mapping):
+        for tier_name, tier in tiers.items():
+            if not isinstance(tier, Mapping):
+                continue
+            tier_provider = str(tier.get("provider") or "").strip().lower()
+            if tier_provider == provider:
+                references.append(f"squilla_router.tiers.{tier_name}")
+
+    ensemble = getattr(config, "llm_ensemble", None)
+    if ensemble is not None:
+        for index, candidate in enumerate(getattr(ensemble, "candidates", None) or []):
+            candidate_provider = str(getattr(candidate, "provider", "") or "").strip().lower()
+            if candidate_provider == provider:
+                references.append(f"llm_ensemble.candidates.{index}")
+
+        selection_mode = str(getattr(ensemble, "selection_mode", "") or "")
+        static_provider = STATIC_B5_SELECTION_MODE_PROVIDERS.get(selection_mode, "")
+        if static_provider == provider:
+            references.append("llm_ensemble.selection_mode")
+    return references
+
+
+def upsert_llm_profile(
+    config: GatewayConfig,
+    *,
+    provider_id: str,
+    model: str | None = None,
+    api_key: str | None = None,
+    api_key_env: str | None = None,
+    api_key_env_pool: list[str] | tuple[str, ...] | None = None,
+    preserve_api_key: bool = False,
+    base_url: str | None = None,
+    proxy: str | None = None,
+) -> MutationResult:
+    """Create or update one non-primary provider deployment profile.
+
+    This additive mutation deliberately permits credential-less drafts.  An
+    omitted field keeps its current value, while an explicit empty value
+    clears it.  ``preserve_api_key`` is the password-field keep-current
+    affordance.  Stored credentials never follow a changed endpoint origin;
+    on such a change every omitted credential source is cleared fail-closed.
+    """
+    provider = str(provider_id or "").strip().lower()
+    spec = get_provider_setup_spec(provider)
+    if not spec.runtime_supported:
+        raise ValueError(
+            f"provider {provider!r} is not runtime-supported and cannot be configured"
+        )
+
+    profile_keys = _llm_profile_storage_keys(config, provider)
+    existing_key = profile_keys[0] if profile_keys else None
+    existing = (
+        (getattr(config, "llm_profiles", None) or {}).get(existing_key)
+        if existing_key is not None
+        else None
+    )
+    effective_model = (
+        str(getattr(existing, "model", "") or "").strip()
+        if model is None
+        else str(model or "").strip()
+    )
+    existing_base_url = str(getattr(existing, "base_url", "") or "").strip()
+    if base_url is None:
+        effective_base_url = existing_base_url
+    else:
+        effective_base_url = str(base_url or "").strip()
+    if spec.requires_base_url and not (effective_base_url or spec.default_base_url):
+        raise ValueError(f"provider {provider!r} requires a base_url")
+
+    old_endpoint = existing_base_url or str(spec.default_base_url or "").strip()
+    next_endpoint = effective_base_url or str(spec.default_base_url or "").strip()
+    endpoint_allows_reuse = existing is not None and base_url_allows_credential_reuse(
+        old_endpoint,
+        next_endpoint,
+    )
+
+    if api_key is None:
+        effective_api_key = (
+            str(getattr(existing, "api_key", "") or "")
+            if endpoint_allows_reuse and preserve_api_key
+            else ""
+        )
+    else:
+        effective_api_key = clean_header_secret(api_key, label="LLM profile API key")
+
+    if api_key_env is None:
+        effective_api_key_env = (
+            str(getattr(existing, "api_key_env", "") or "").strip()
+            if endpoint_allows_reuse
+            else ""
+        )
+    else:
+        effective_api_key_env = str(api_key_env or "").strip()
+
+    if api_key_env_pool is None:
+        effective_pool = (
+            list(getattr(existing, "api_key_env_pool", None) or [])
+            if endpoint_allows_reuse
+            else []
+        )
+    else:
+        effective_pool = []
+        seen_pool_names: set[str] = set()
+        for value in api_key_env_pool:
+            name = str(value or "").strip()
+            if name and name not in seen_pool_names:
+                seen_pool_names.add(name)
+                effective_pool.append(name)
+
+    if proxy is None:
+        effective_proxy = str(getattr(existing, "proxy", "") or "")
+    else:
+        effective_proxy = str(proxy or "").strip()
+
+    profile = LlmProviderProfile(
+        model=effective_model,
+        api_key=effective_api_key,
+        api_key_env=effective_api_key_env,
+        api_key_env_pool=effective_pool,
+        base_url=effective_base_url,
+        proxy=effective_proxy,
+    )
+    new_cfg = _clone(config)
+    new_cfg.llm_profiles = dict(new_cfg.llm_profiles)
+    for key in profile_keys:
+        new_cfg.llm_profiles.pop(key, None)
+    new_cfg.llm_profiles[provider] = profile
+    old_runtime_paths = {
+        path
+        for path in getattr(new_cfg, "_runtime_secret_paths", set())
+        if any(
+            path == f"llm_profiles.{key}"
+            or path.startswith(f"llm_profiles.{key}.")
+            for key in profile_keys
+        )
+    }
+    preserve_runtime_api_key = bool(
+        api_key is None
+        and effective_api_key
+        and existing_key is not None
+        and f"llm_profiles.{existing_key}.api_key"
+        in getattr(config, "_runtime_secret_paths", set())
+    )
+    clear_runtime_secret_paths(new_cfg, old_runtime_paths)
+    if preserve_runtime_api_key:
+        new_cfg.mark_runtime_secret(f"llm_profiles.{provider}.api_key")
+    # An explicitly supplied secret is operator-authored and must persist;
+    # an explicit clear likewise invalidates any inherited runtime marker.
+    if api_key is not None:
+        clear_runtime_secret_paths(new_cfg, {f"llm_profiles.{provider}.api_key"})
+
+    public_payload = profile.model_dump(mode="python")
+    public_payload["provider"] = provider
+    return MutationResult(
+        config=new_cfg,
+        changed=new_cfg.llm_profiles != config.llm_profiles,
+        restart_required=False,
+        public_payload=redact_provider_payload(public_payload),
+    )
+
+
+def remove_llm_profile(config: GatewayConfig, *, provider_id: str) -> MutationResult:
+    """Remove an unused provider profile, refusing dangling route references."""
+    provider = str(provider_id or "").strip().lower()
+    profile_keys = _llm_profile_storage_keys(config, provider)
+    if not profile_keys:
+        raise KeyError(f"LLM profile {provider!r} does not exist")
+    references = _profile_reference_labels(config, provider)
+    if references:
+        joined = ", ".join(references)
+        raise ValueError(f"LLM profile {provider!r} is still referenced by: {joined}")
+
+    new_cfg = _clone(config)
+    new_cfg.llm_profiles = dict(new_cfg.llm_profiles)
+    for key in profile_keys:
+        new_cfg.llm_profiles.pop(key, None)
+    runtime_paths = {
+        path
+        for path in getattr(new_cfg, "_runtime_secret_paths", set())
+        if any(
+            path == f"llm_profiles.{key}"
+            or path.startswith(f"llm_profiles.{key}.")
+            for key in profile_keys
+        )
+    }
+    clear_runtime_secret_paths(new_cfg, runtime_paths)
+    return MutationResult(
+        config=new_cfg,
+        changed=True,
+        restart_required=False,
+        public_payload={"provider": provider, "removed": True},
+    )
+
+
+def _stored_runtime_field(config: GatewayConfig, path: str, current: str) -> str:
+    """Return the persisted value behind an in-place runtime env override."""
+    overrides = config.runtime_field_overrides()
+    stored_applied = overrides.get(path)
+    if stored_applied is None:
+        return current
+    stored, applied = stored_applied
+    return str(stored or "") if current == applied else current
+
+
+def activate_llm_profile(
+    config: GatewayConfig,
+    *,
+    provider_id: str,
+    model: str | None = None,
+    router_action: str | None = None,
+) -> MutationResult:
+    """Atomically promote a stored profile and demote the current primary.
+
+    The mutation is pure: callers must persist the returned candidate before
+    applying it to the running gateway.  Managed Router presets follow the new
+    primary; custom/legacy Router state and all Ensemble fields remain intact
+    unless ``router_action`` explicitly resolves a provider conflict.
+    """
+    from opensquilla.provider.deployment import resolve_provider_deployment
+
+    provider = str(provider_id or "").strip().lower()
+    previous_provider = str(config.llm.provider or "").strip().lower()
+    if provider == previous_provider:
+        raise LlmProfileActivationError(
+            "already_active", f"provider {provider!r} is already active"
+        )
+
+    profile_keys = _llm_profile_storage_keys(config, provider)
+    if not profile_keys:
+        raise LlmProfileActivationError(
+            "profile_not_found", f"LLM profile {provider!r} does not exist"
+        )
+    profile_key = profile_keys[0]
+    profile = config.llm_profiles[profile_key]
+    if list(getattr(profile, "api_key_env_pool", None) or []):
+        raise LlmProfileActivationError(
+            "primary_pool_unsupported",
+            "primary_pool_unsupported: the primary provider does not support api_key_env_pool",
+        )
+
+    spec = get_provider_setup_spec(provider)
+    model_id = (
+        str(model or "").strip()
+        or str(getattr(profile, "model", "") or "").strip()
+        or str(spec.default_direct_model or "").strip()
+    )
+    if not model_id:
+        raise LlmProfileActivationError(
+            "missing_model",
+            f"LLM profile {provider!r} has no direct/fallback model",
+        )
+
+    resolution = resolve_provider_deployment(config, provider, model_id)
+    if not resolution.ready:
+        reason = resolution.reason or "not_executable"
+        raise LlmProfileActivationError(
+            reason,
+            f"LLM profile {provider!r} is not executable: {reason}",
+        )
+
+    new_cfg = _clone(config)
+    profiles = dict(new_cfg.llm_profiles)
+    for key in profile_keys:
+        profiles.pop(key, None)
+
+    previous_keys = _llm_profile_storage_keys(config, previous_provider)
+    for key in previous_keys:
+        profiles.pop(key, None)
+    if previous_provider:
+        profiles[previous_provider] = LlmProviderProfile(
+            model=str(config.llm.model or ""),
+            api_key=str(config.llm.api_key or ""),
+            api_key_env=str(config.llm.api_key_env or ""),
+            api_key_env_pool=[],
+            base_url=_stored_runtime_field(
+                config, "llm.base_url", str(config.llm.base_url or "")
+            ),
+            proxy=_stored_runtime_field(config, "llm.proxy", str(config.llm.proxy or "")),
+        )
+    new_cfg.llm_profiles = profiles
+    new_cfg.llm = LlmProviderConfig(
+        provider=provider,
+        model=model_id,
+        api_key=str(profile.api_key or ""),
+        api_key_env=str(profile.api_key_env or ""),
+        base_url=str(profile.base_url or spec.default_base_url or ""),
+        proxy=str(profile.proxy or ""),
+    )
+    _apply_primary_provider_router_policy(
+        config,
+        new_cfg,
+        target_provider=provider,
+        router_action=router_action,
+    )
+
+    # Move, rather than copy, secret provenance. A runtime-resolved env key
+    # stays live in memory but remains absent from TOML after promotion or
+    # demotion. Historical case-variant profile paths are removed as well.
+    old_runtime = set(getattr(config, "_runtime_secret_paths", set()))
+    old_explicit = set(getattr(config, "_explicit_secret_paths", set()))
+    affected_paths = {"llm.api_key"}
+    affected_paths.update(f"llm_profiles.{key}.api_key" for key in profile_keys)
+    affected_paths.update(f"llm_profiles.{key}.api_key" for key in previous_keys)
+    next_runtime = old_runtime - affected_paths
+    next_explicit = old_explicit - affected_paths
+    target_source_paths = {f"llm_profiles.{key}.api_key" for key in profile_keys}
+    if target_source_paths & old_runtime:
+        next_runtime.add("llm.api_key")
+    if target_source_paths & old_explicit:
+        next_explicit.add("llm.api_key")
+    if previous_provider and "llm.api_key" in old_runtime:
+        next_runtime.add(f"llm_profiles.{previous_provider}.api_key")
+    if previous_provider and "llm.api_key" in old_explicit:
+        next_explicit.add(f"llm_profiles.{previous_provider}.api_key")
+    new_cfg._runtime_secret_paths = next_runtime
+    new_cfg._explicit_secret_paths = next_explicit
+    new_cfg.clear_runtime_override("llm.base_url")
+    new_cfg.clear_runtime_override("llm.proxy")
+
+    return MutationResult(
+        config=new_cfg,
+        changed=True,
+        restart_required=False,
+        public_payload={
+            "provider": provider,
+            "model": new_cfg.llm.model,
+            "previousProvider": previous_provider,
+            "active": True,
+            "routerBinding": new_cfg.squilla_router.preset_binding or "legacy",
+        },
     )
 
 

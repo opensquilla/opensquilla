@@ -117,7 +117,7 @@ def test_setup_engine_passes_preset_id_through_to_provider_upsert(tmp_path):
     assert tier["model"] == "llama-3.3-70b"
 
 
-def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_path):
+def test_setup_engine_router_tier_override_keeps_direct_fallback_model(tmp_path):
     target = tmp_path / "config.toml"
     engine = SetupEngine(path=target)
 
@@ -128,6 +128,7 @@ def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_pat
             "apiKeyEnv": "OPENAI_API_KEY",
         },
     )
+    assert engine.config.llm.model == "gpt-5.4-mini"
     engine.apply(
         "router",
         {
@@ -142,10 +143,11 @@ def test_setup_engine_router_tier_override_updates_direct_fallback_model(tmp_pat
             },
         },
     )
+    assert engine.config.llm.model == "gpt-5.4-mini"
     engine.persist()
 
     data = tomllib.loads(target.read_text())
-    assert data["llm"]["model"] == "gpt-5.5-custom"
+    assert data["llm"]["model"] == "gpt-5.4-mini"
     assert "tier_profile" not in data["squilla_router"]
     assert data["squilla_router"]["default_tier"] == "c2"
     assert data["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"

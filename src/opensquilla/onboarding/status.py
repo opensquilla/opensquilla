@@ -16,6 +16,7 @@ from opensquilla.gateway.config import (
     LEGACY_OPENROUTER_MODEL_OPTIONS,
     STATIC_B5_SELECTION_MODE_PROVIDERS,
     GatewayConfig,
+    LlmProviderProfile,
 )
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.config_store import default_config_path
@@ -41,6 +42,7 @@ from opensquilla.onboarding.section_status import (
 from opensquilla.onboarding.section_status import (
     needs_onboarding as _needs_onboarding,
 )
+from opensquilla.provider.preset_registry import get_preset
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class OnboardingStatus:
     channels_configured: bool
     needs_onboarding: bool
     llm_credential_status: dict[str, object] = field(default_factory=dict)
+    llm_profile_status: tuple[dict[str, object], ...] = ()
     ensemble_credential_status: tuple[dict[str, object], ...] = ()
     sections: dict[str, SectionStatus] = field(default_factory=dict)
     section_details: dict[str, dict[str, object]] = field(default_factory=dict)
@@ -423,17 +426,224 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
     }
 
 
-def _ensemble_credential_status(cfg: GatewayConfig) -> tuple[dict[str, object], ...]:
-    return tuple(
-        _llm_provider_credential_status(cfg, provider)
-        for provider in _ensemble_candidate_provider_ids(cfg)
+def _llm_profile_for(cfg: GatewayConfig, provider_id: str) -> LlmProviderProfile | None:
+    """Return a profile by normalized provider id without mutating old config."""
+    provider = str(provider_id or "").strip().lower()
+    profiles = cfg.llm_profiles
+    profile = profiles.get(provider)
+    if profile is not None:
+        return profile
+    for key, candidate in profiles.items():
+        if str(key or "").strip().lower() == provider:
+            return candidate
+    return None
+
+
+def _ensemble_credential_status(
+    cfg: GatewayConfig,
+    deployment_statuses: tuple[dict[str, object], ...] | None = None,
+) -> tuple[dict[str, object], ...]:
+    """Project deployment readiness onto the legacy ensemble status shape.
+
+    The legacy status is still consumed by older WebUI builds.  Resolve it
+    from the same profile-aware deployment rows as ``llmProfileStatus`` so a
+    profile key, key pool, or profile env cannot be reported as missing here
+    while the runtime considers the deployment ready.
+    """
+    if deployment_statuses is None:
+        deployment_statuses = _llm_profile_status(cfg)
+    by_provider = {
+        str(row.get("provider") or "").strip().lower(): row
+        for row in deployment_statuses
+    }
+    source_map = {
+        "profile": "explicit",
+        "member": "explicit",
+        "profile_pool": "env",
+        "profile_pool_env": "env",
+        "profile_env": "env",
+        "registry_env": "env",
+        "member_env": "env",
+        "keyless": "not_required",
+    }
+    rows: list[dict[str, object]] = []
+    for provider in _ensemble_candidate_provider_ids(cfg):
+        baseline = _llm_provider_credential_status(cfg, provider)
+        deployment = by_provider.get(provider)
+        if deployment is None:
+            rows.append(baseline)
+            continue
+
+        credential_source = str(deployment.get("credentialSource") or "")
+        source = source_map.get(credential_source, str(baseline["source"]))
+        if str(deployment.get("reason") or "") == "runtime_unsupported":
+            source = "unsupported"
+
+        env_key = str(deployment.get("credentialEnv") or "").strip()
+        if not env_key:
+            profile = _llm_profile_for(cfg, provider)
+            pool = list(getattr(profile, "api_key_env_pool", None) or [])
+            profile_env = str(getattr(profile, "api_key_env", "") or "").strip()
+            env_key = next(
+                (str(name).strip() for name in pool if str(name).strip()),
+                profile_env or str(baseline["envKey"]),
+            )
+
+        rows.append(
+            {
+                "provider": provider,
+                "available": bool(deployment.get("ready")),
+                "source": source,
+                "envKey": env_key,
+            }
+        )
+    return tuple(rows)
+
+
+def _provider_deployment_models(cfg: GatewayConfig) -> dict[str, str]:
+    """Collect one representative model for every configured/referenced provider."""
+    models: dict[str, str] = {}
+
+    def add(provider: object, model: object) -> None:
+        provider_id = str(provider or "").strip().lower()
+        model_id = str(model or "").strip()
+        if provider_id and model_id and provider_id not in models:
+            models[provider_id] = model_id
+
+    llm = getattr(cfg, "llm", None)
+    add(getattr(llm, "provider", ""), getattr(llm, "model", ""))
+    for provider, profile in (getattr(cfg, "llm_profiles", None) or {}).items():
+        add(provider, getattr(profile, "model", ""))
+    tiers = getattr(getattr(cfg, "squilla_router", None), "tiers", {}) or {}
+    if isinstance(tiers, dict):
+        for tier in tiers.values():
+            if isinstance(tier, dict):
+                add(tier.get("provider"), tier.get("model"))
+    ensemble = getattr(cfg, "llm_ensemble", None)
+    for candidate in getattr(ensemble, "candidates", None) or []:
+        if _candidate_field(candidate, "enabled") is False:
+            continue
+        add(_candidate_field(candidate, "provider"), _candidate_field(candidate, "model"))
+    return models
+
+
+def _profile_direct_model(cfg: GatewayConfig, provider: str) -> str:
+    profile = _llm_profile_for(cfg, provider)
+    saved = str(getattr(profile, "model", "") or "").strip()
+    if saved:
+        return saved
+    try:
+        return str(get_provider_setup_spec(provider).default_direct_model or "").strip()
+    except KeyError:
+        return ""
+
+
+def _llm_profile_status(cfg: GatewayConfig) -> tuple[dict[str, object], ...]:
+    """Resolve all configured/referenced deployments into a secret-free status view."""
+    from opensquilla.gateway.llm_runtime import (
+        NoCredentialsAvailable,
+        profile_credential_pools,
+        resolve_llm_runtime_config,
     )
+    from opensquilla.provider.deployment import (
+        CredentialPoolExhaustedError,
+        resolve_provider_deployment,
+    )
+    from opensquilla.provider.selector import ProviderConfig
+
+    def peek_profile_credential(
+        provider_id: str,
+        pool_names: list[str],
+        _session_key: str,
+    ) -> object | None:
+        """Inspect readiness without importing the engine execution layer."""
+        try:
+            return profile_credential_pools().peek_available(provider_id, pool_names)
+        except NoCredentialsAvailable as exc:
+            raise CredentialPoolExhaustedError from exc
+
+    models = _provider_deployment_models(cfg)
+    provider_ids = set(models)
+    provider_ids.update(
+        str(provider or "").strip().lower()
+        for provider in (getattr(cfg, "llm_profiles", None) or {})
+        if str(provider or "").strip()
+    )
+    provider_ids.update(_ensemble_candidate_provider_ids(cfg))
+    active_provider = str(getattr(cfg.llm, "provider", "") or "").strip().lower()
+    if active_provider:
+        provider_ids.add(active_provider)
+
+    inherited: ProviderConfig | None = None
+    if active_provider:
+        scratch = cfg.model_copy(deep=True)
+        runtime = resolve_llm_runtime_config(scratch)
+        inherited = ProviderConfig(
+            provider=active_provider,
+            model=str(getattr(runtime, "model", "") or getattr(cfg.llm, "model", "")),
+            api_key=str(getattr(runtime, "api_key", "") or ""),
+            base_url=str(getattr(runtime, "base_url", "") or ""),
+            proxy=str(getattr(runtime, "proxy", "") or ""),
+            provider_routing=dict(getattr(runtime, "provider_routing", {}) or {}),
+            replay_provider_state=bool(
+                getattr(runtime, "replay_provider_state", True)
+            ),
+        )
+
+    ordered = ([active_provider] if active_provider else []) + sorted(
+        provider for provider in provider_ids if provider != active_provider
+    )
+    statuses: list[dict[str, object]] = []
+    fallback_model = str(getattr(cfg.llm, "model", "") or "profile-status")
+    for provider in ordered:
+        resolution = resolve_provider_deployment(
+            cfg,
+            provider,
+            models.get(provider) or fallback_model,
+            inherited_provider_config=inherited,
+            session_key="onboarding-status",
+            credential_pool_acquirer=peek_profile_credential,
+        )
+        profile = _llm_profile_for(cfg, provider)
+        if provider == active_provider:
+            primary_eligible = False
+            primary_block_reason = "already_active"
+        elif profile is None:
+            primary_eligible = False
+            primary_block_reason = "profile_not_found"
+        elif list(getattr(profile, "api_key_env_pool", None) or []):
+            primary_eligible = False
+            primary_block_reason = "primary_pool_unsupported"
+        elif not _profile_direct_model(cfg, provider):
+            primary_eligible = False
+            primary_block_reason = "missing_model"
+        elif not resolution.ready:
+            primary_eligible = False
+            primary_block_reason = resolution.reason or "not_executable"
+        else:
+            primary_eligible = True
+            primary_block_reason = ""
+        statuses.append(
+            {
+                "provider": resolution.provider,
+                "ready": resolution.ready,
+                "credentialSource": resolution.credential_source,
+                "credentialEnv": resolution.credential_env,
+                "endpointSource": resolution.endpoint_source,
+                "proxySource": resolution.proxy_source,
+                "reason": resolution.reason,
+                "primaryEligible": primary_eligible,
+                "primaryBlockReason": primary_block_reason,
+            }
+        )
+    return tuple(statuses)
 
 
 def _router_mode(cfg: GatewayConfig) -> str:
-    """Compute the effective router mode the Web UI infers client-side today.
+    """Compute the effective Router editing mode for compatibility clients.
 
-    The mode is a pure function of ``(enabled, provider, tier_profile)``:
+    Explicit ownership wins over shape inference.  Shape inference remains
+    only for legacy configs that predate ``preset_binding``:
 
     - ``disabled`` when the router is off;
     - ``openrouter-mix`` when enabled, provider is ``openrouter``, and no
@@ -446,10 +656,62 @@ def _router_mode(cfg: GatewayConfig) -> str:
     if router is None or not bool(getattr(router, "enabled", False)):
         return "disabled"
     provider = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
+    binding = str(getattr(router, "preset_binding", "") or "").strip().lower()
+    if binding == "custom":
+        return "custom"
+    if binding == "follow_primary":
+        return "recommended"
     tier_profile = str(getattr(router, "tier_profile", "") or "").strip()
     if not tier_profile:
         return "openrouter-mix" if provider == "openrouter" else "custom"
     return "recommended"
+
+
+def _router_binding(cfg: GatewayConfig) -> str:
+    """Return explicit ownership or the conservative legacy sentinel.
+
+    A disabled, sparse Router section has no authored ladder to preserve, but
+    its settings model still materializes the built-in OpenRouter tiers.  Mark
+    that one provenance-backed case as follow-primary so clients re-enable the
+    current provider's managed preset instead of adopting those defaults as a
+    custom cross-provider route.  Explicit historical tiers remain legacy.
+    """
+
+    router = getattr(cfg, "squilla_router", None)
+    value = str(getattr(router, "preset_binding", "") or "").strip().lower()
+    if value in {"follow_primary", "custom"}:
+        return value
+    fields_set = set(getattr(router, "model_fields_set", set()))
+    provider = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
+    if (
+        router is not None
+        and not bool(getattr(router, "enabled", False))
+        and not fields_set.intersection({"tiers", "tier_profile", "preset_binding"})
+        and get_preset(provider) is not None
+    ):
+        return "follow_primary"
+    return "legacy"
+
+
+def _router_provider_conflicts(cfg: GatewayConfig) -> tuple[str, ...]:
+    """Secret-free foreign-provider summary relative to the active primary."""
+
+    router = getattr(cfg, "squilla_router", None)
+    if router is None or not bool(getattr(router, "enabled", False)):
+        return ()
+    if bool(getattr(router, "cross_provider_tiers", False)):
+        return ()
+    active = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
+    conflicts: set[str] = set()
+    tiers = getattr(router, "tiers", {}) or {}
+    if isinstance(tiers, dict):
+        for tier in tiers.values():
+            if not isinstance(tier, dict):
+                continue
+            provider = str(tier.get("provider") or "").strip().lower()
+            if provider and provider != active:
+                conflicts.add(provider)
+    return tuple(sorted(conflicts))
 
 
 def _llm_source(cfg: GatewayConfig, status: SectionStatus) -> tuple[str, str]:
@@ -699,7 +961,12 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
         # (provider, tier_profile) pairs. Contract-frozen in
         # tests/test_contracts/test_onboarding_status.py.
         section_details["router"]["routerMode"] = _router_mode(config)
+        section_details["router"]["routerBinding"] = _router_binding(config)
+        section_details["router"]["routerProviderConflicts"] = list(
+            _router_provider_conflicts(config)
+        )
 
+    llm_profile_status = _llm_profile_status(config)
     return OnboardingStatus(
         config_path=str(path),
         has_config=has_config,
@@ -729,7 +996,11 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
         channels_configured=bool(enabled_channels),
         needs_onboarding=_needs_onboarding(sections) or bool(runtime_blocking),
         llm_credential_status=_llm_credential_status(config),
-        ensemble_credential_status=_ensemble_credential_status(config),
+        llm_profile_status=llm_profile_status,
+        ensemble_credential_status=_ensemble_credential_status(
+            config,
+            llm_profile_status,
+        ),
         sections=sections,
         section_details=section_details,
     )

@@ -129,6 +129,7 @@ export interface EnsembleCredentialStatus {
   available: boolean
   source: 'explicit' | 'env' | 'missing_env' | 'not_required' | 'none' | string
   envKey?: string
+  reason?: string
 }
 
 export interface EnsembleCandidateView {
@@ -254,7 +255,7 @@ export function normalizeCandidateRole(value: unknown): EnsembleCandidateRole {
 
 function normalizeCandidates(value: unknown): EnsembleCandidateConfig[] {
   if (!Array.isArray(value)) return []
-  const seen = new Set<string>()
+  const seen = new Map<string, number>()
   const out: EnsembleCandidateConfig[] = []
   for (const entry of value) {
     if (!entry || typeof entry !== 'object') continue
@@ -265,18 +266,30 @@ function normalizeCandidates(value: unknown): EnsembleCandidateConfig[] {
     const source = normalizeCandidateSource(raw.source)
     const role = normalizeCandidateRole(raw.role)
     // The aggregator row may legitimately duplicate a proposer row (the same
-    // model can both draft and fuse), so the identity includes the
-    // aggregator/proposer distinction.
-    const key = `${provider}\n${model}\n${source}\n${role === 'aggregator' ? 'aggregator' : 'proposer'}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    out.push({
+    // model can both draft and fuse), so the identity includes only the
+    // aggregator/proposer distinction -- provenance is metadata, not identity.
+    const key = `${provider}\n${model}\n${role === 'aggregator' ? 'aggregator' : 'proposer'}`
+    const normalized: EnsembleCandidateConfig = {
       provider,
       model,
       source,
       enabled: raw.enabled === false ? false : true,
       role,
-    })
+    }
+    const existingIndex = seen.get(key)
+    if (existingIndex === undefined) {
+      seen.set(key, out.length)
+      out.push(normalized)
+      continue
+    }
+    // Historical configs may contain a disabled row before an enabled row for
+    // the same deployment. Explicit add/import/replace actions append or
+    // produce the enabled row, which must win instead of being swallowed by a
+    // first-wins dedupe pass. Otherwise the UI reports success while the member
+    // silently remains disabled (or the replaced proposer disappears).
+    if (out[existingIndex]?.enabled === false && normalized.enabled) {
+      out[existingIndex] = normalized
+    }
   }
   return out
 }
@@ -361,7 +374,11 @@ function uniqueCandidateViews(candidates: EnsembleCandidateView[]): EnsembleCand
   const seen = new Set<string>()
   const out: EnsembleCandidateView[] = []
   for (const candidate of candidates) {
-    const key = `${candidate.provider}\n${candidate.model}`
+    // One deployment may legitimately occupy both a proposer slot and the
+    // aggregator slot. Keep those views distinct while still collapsing
+    // duplicate proposer rows from legacy + structured inputs.
+    const slot = candidate.role === 'aggregator' ? 'aggregator' : 'proposer'
+    const key = `${candidate.provider}\n${candidate.model}\n${slot}`
     if (seen.has(key)) continue
     seen.add(key)
     out.push(candidate)
@@ -530,21 +547,30 @@ export function useSetupEnsembleForm() {
 
   function replaceCandidate(
     candidate: { provider: string; model: string; source?: string; role?: string },
+    provider: string,
     model: string,
   ) {
-    const provider = normalizeProvider(candidate.provider)
+    const currentProvider = normalizeProvider(candidate.provider)
     const currentModel = normalizeModel(candidate.model)
+    const nextProvider = normalizeProvider(provider)
     const nextModel = normalizeModel(model)
     const source = normalizeCandidateSource(candidate.source)
     const slot = normalizeCandidateRole(candidate.role) === 'aggregator' ? 'aggregator' : 'proposer'
-    if (!provider || !currentModel || !nextModel || currentModel === nextModel || slot === 'aggregator') {
+    if (
+      !currentProvider
+      || !currentModel
+      || !nextProvider
+      || !nextModel
+      || (currentProvider === nextProvider && currentModel === nextModel)
+      || slot === 'aggregator'
+    ) {
       return
     }
 
     const duplicate = candidates.value.some(entry => (
       entry.enabled !== false
       && normalizeCandidateRole(entry.role) !== 'aggregator'
-      && normalizeProvider(entry.provider) === provider
+      && normalizeProvider(entry.provider) === nextProvider
       && normalizeModel(entry.model) === nextModel
     ))
     if (duplicate) return
@@ -553,14 +579,14 @@ export function useSetupEnsembleForm() {
     const next = candidates.value.map((entry) => {
       const matches = (
         !replaced
-        && normalizeProvider(entry.provider) === provider
+        && normalizeProvider(entry.provider) === currentProvider
         && normalizeModel(entry.model) === currentModel
         && normalizeCandidateSource(entry.source) === source
         && normalizeCandidateRole(entry.role) !== 'aggregator'
       )
       if (!matches) return entry
       replaced = true
-      return { ...entry, model: nextModel }
+      return { ...entry, provider: nextProvider, model: nextModel }
     })
     if (!replaced) return
 
@@ -596,8 +622,11 @@ export function useSetupEnsembleForm() {
     next.push({
       provider: cleanProvider,
       model: cleanModel,
-      source: 'custom',
-      enabled: true,
+      // Replacing the model in an existing aggregator slot must not rewrite
+      // its provenance. An inherited aggregator has no stored row, so a newly
+      // materialized slot is custom by definition.
+      source: currentAggregator?.source || 'custom',
+      enabled: currentAggregator?.enabled !== false,
       role: 'aggregator',
     })
     candidates.value = normalizeCandidates(next)
@@ -712,24 +741,41 @@ export function useSetupEnsembleForm() {
     }
     selectionMode.value = CUSTOM_B5_SELECTION_MODE
     if (!candidates.value.some(candidate => candidate.enabled !== false)) {
-      importTierCandidates(tierCandidates, provider)
+      importTierCandidates(tierCandidates)
     }
   }
 
   // One-click migration off the hidden legacy router_dynamic mode: fold the
   // legacy inputs (structured candidates + model_options + tier rows) into an
   // explicit custom lineup, capped at the proposer maximum.
-  function migrateLegacyToCustom(tierCandidates: readonly EnsembleTierCandidate[] = []) {
+  function migrateLegacyToCustom(
+    tierCandidates: readonly EnsembleTierCandidate[] = [],
+    activeProvider: unknown = '',
+  ) {
     const rows: EnsembleCandidateConfig[] = []
     const seen = new Set<string>()
+    let proposerCount = 0
+    const legacyProvider = normalizeProvider(activeProvider)
     const push = (provider: string, model: string, role: EnsembleCandidateRole = '') => {
       const cleanProvider = normalizeProvider(provider)
       const cleanModel = normalizeModel(model)
       if (!cleanProvider || !cleanModel) return
-      const key = `${cleanProvider}\n${cleanModel}`
-      if (seen.has(key) || rows.length >= CUSTOM_B5_MAX_PROPOSERS) return
+      const cleanRole = normalizeCandidateRole(role)
+      const slot = cleanRole === 'aggregator' ? 'aggregator' : 'proposer'
+      const key = `${cleanProvider}\n${cleanModel}\n${slot}`
+      if (seen.has(key)) return
+      // The ceiling is for proposer calls. The structurally separate
+      // aggregator remains valid in addition to all six proposers.
+      if (slot === 'proposer' && proposerCount >= CUSTOM_B5_MAX_PROPOSERS) return
       seen.add(key)
-      rows.push({ provider: cleanProvider, model: cleanModel, source: 'custom', enabled: true, role })
+      if (slot === 'proposer') proposerCount += 1
+      rows.push({
+        provider: cleanProvider,
+        model: cleanModel,
+        source: 'custom',
+        enabled: true,
+        role: cleanRole,
+      })
     }
     for (const candidate of candidates.value) {
       if (candidate.enabled === false) continue
@@ -737,7 +783,7 @@ export function useSetupEnsembleForm() {
     }
     if (!legacyDefaultModelOptions(modelOptions.value)) {
       for (const model of modelOptions.value) {
-        push(model.includes('/') ? 'openrouter' : '', model)
+        push(model.includes('/') ? 'openrouter' : legacyProvider, model)
       }
     }
     for (const row of tierCandidates || []) {

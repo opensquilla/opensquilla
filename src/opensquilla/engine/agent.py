@@ -4320,10 +4320,36 @@ class Agent:
             _positive_float(getattr(self.config, "max_turn_cost_usd", 0.0)) is not None
         )
         total_cost_usd_accum = 0.0
+        total_cost_usd_accum_has_billed = False
         # Tracks whether any component of total_cost_usd_accum came from the
         # estimator (as opposed to a provider-reported billed cost), so the
         # gate's error message can report "billed" / "estimated" / "mixed".
         total_cost_usd_accum_has_estimate = False
+
+        def _accumulate_turn_cost(
+            event: object,
+            *,
+            default_provider: str,
+            default_model: str,
+        ) -> None:
+            nonlocal total_cost_usd_accum
+            nonlocal total_cost_usd_accum_has_billed
+            nonlocal total_cost_usd_accum_has_estimate
+
+            if not turn_cost_budget_enabled:
+                return
+            budget_usage = normalize_provider_usage(
+                event,
+                default_provider=default_provider,
+                default_model=default_model,
+                completed_at_ms=0,
+            )
+            total_cost_usd_accum += (
+                budget_usage.billed_cost_nanos + budget_usage.estimated_cost_nanos
+            ) / 1_000_000_000
+            total_cost_usd_accum_has_billed |= budget_usage.billed_cost_nanos > 0
+            total_cost_usd_accum_has_estimate |= budget_usage.estimated_cost_nanos > 0
+
         usage_turn_baseline = (
             self._usage_tracker.session_checkpoint(self._session_key)
             if self._usage_tracker and self._session_key
@@ -4343,6 +4369,7 @@ class Agent:
         if self._tool_context is not None:
             self._tool_context.on_sandbox_auto_review = _review_inflight_sandbox_request
         last_actual_model = ""
+        last_actual_provider = ""
         turn_model_usage_breakdown: list[dict[str, Any]] = []
         last_ensemble_trace: dict[str, Any] | None = None
         turn_ensemble_request_count = 0
@@ -4565,7 +4592,7 @@ class Agent:
                 )
             max_total = _positive_float(getattr(self.config, "max_turn_cost_usd", 0.0))
             if max_total is not None and total_cost_usd_accum > max_total:
-                if total_billed_cost > 0 and total_cost_usd_accum_has_estimate:
+                if total_cost_usd_accum_has_billed and total_cost_usd_accum_has_estimate:
                     cost_basis = "mixed"
                 elif total_cost_usd_accum_has_estimate:
                     cost_basis = "estimated"
@@ -4838,6 +4865,7 @@ class Agent:
                     attempt_reasoning_stream_chars = 0
                     provider_done_for_log: ProviderDoneEvent | None = None
                     provider_error_for_log: ProviderErrorEvent | None = None
+                    cost_receipt_counted = False
                     call_id = f"{iterations}.{_call_attempt}"
                     call_started_at = time.monotonic()
                     provider_tools_for_call = (
@@ -5481,6 +5509,15 @@ class Agent:
                                     or self.config.model_id
                                     or ""
                                 )
+                                executed_provider_id = str(
+                                    physical_usage_provider
+                                    or getattr(raw_ev, "provider", "")
+                                    or getattr(self.provider, "active_provider_id", "")
+                                    or self.config.provider_id
+                                    or getattr(self.provider, "provider_id", "")
+                                    or getattr(self.provider, "provider_name", "")
+                                    or ""
+                                )
                                 if usage_call is not None and not usage_call_terminal:
                                     # A malformed provider that emits duplicate Done
                                     # events still finalizes this call envelope once.
@@ -5497,33 +5534,6 @@ class Agent:
                                 total_reasoning_tokens += raw_ev.reasoning_tokens
                                 total_cached_tokens += raw_ev.cached_tokens
                                 total_cache_write_tokens += raw_ev.cache_write_tokens
-                                if turn_cost_budget_enabled:
-                                    if raw_ev.billed_cost > 0:
-                                        total_cost_usd_accum += raw_ev.billed_cost
-                                    else:
-                                        from opensquilla.engine.pricing import (
-                                            estimate_cost,
-                                            resolve_model_price,
-                                        )
-
-                                        total_cost_usd_accum += estimate_cost(
-                                            input_tokens=raw_ev.input_tokens,
-                                            output_tokens=raw_ev.output_tokens,
-                                            cache_read_tokens=raw_ev.cached_tokens,
-                                            cache_write_tokens=raw_ev.cache_write_tokens,
-                                            price=resolve_model_price(
-                                                physical_usage_model,
-                                                physical_usage_provider
-                                                or self.config.provider_id,
-                                            ).entry,
-                                        ).cost_usd
-                                        total_cost_usd_accum_has_estimate = True
-                                if physical_usage_model:
-                                    last_actual_model = physical_usage_model
-                                # Usage/cost accounting is billed-attempt based: discarded
-                                # invalid responses still consumed provider tokens, but
-                                # they must not be appended to conversation history or the
-                                # live context-window gauge below.
                                 usage_breakdown = getattr(
                                     raw_ev,
                                     "model_usage_breakdown",
@@ -5538,6 +5548,19 @@ class Agent:
                                     if isinstance(usage_breakdown, list)
                                     else []
                                 )
+                                _accumulate_turn_cost(
+                                    raw_ev,
+                                    default_provider=executed_provider_id,
+                                    default_model=physical_usage_model,
+                                )
+                                cost_receipt_counted = True
+                                if physical_usage_model:
+                                    last_actual_model = physical_usage_model
+                                last_actual_provider = executed_provider_id
+                                # Usage/cost accounting is billed-attempt based: discarded
+                                # invalid responses still consumed provider tokens, but
+                                # they must not be appended to conversation history or the
+                                # live context-window gauge below.
                                 if valid_usage_breakdown:
                                     turn_model_usage_breakdown.extend(valid_usage_breakdown)
                                 if self._usage_tracker and self._session_key:
@@ -5578,9 +5601,7 @@ class Agent:
                                                 provider=str(
                                                     usage_row.get("provider")
                                                     or physical_usage_provider
-                                                    or self.config.provider_id
-                                                    or getattr(self.provider, "provider_name", "")
-                                                    or ""
+                                                    or executed_provider_id
                                                 ),
                                             )
                                     else:
@@ -5592,11 +5613,7 @@ class Agent:
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             billed_cost=raw_ev.billed_cost,
-                                            provider=(
-                                                physical_usage_provider
-                                                or self.config.provider_id
-                                                or getattr(self.provider, "provider_name", "")
-                                            ),
+                                            provider=executed_provider_id,
                                         )
                                 ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
                                 if isinstance(ensemble_trace, dict):
@@ -5610,13 +5627,37 @@ class Agent:
                                 usage_unknown_reason = provider_error_usage_reason(
                                     raw_ev.code
                                 )
+                                known_usage_receipt = has_known_provider_usage_receipt(raw_ev)
                                 if (
                                     usage_call is not None
                                     and not usage_call_terminal
-                                    and has_known_provider_usage_receipt(raw_ev)
+                                    and known_usage_receipt
                                 ):
                                     usage_call_terminal = True
                                     await self._usage_call_finalize(usage_call, raw_ev)
+                                if known_usage_receipt and not cost_receipt_counted:
+                                    _accumulate_turn_cost(
+                                        raw_ev,
+                                        default_provider=(
+                                            usage_call.provider
+                                            if usage_call is not None
+                                            else str(
+                                                self.config.provider_id
+                                                or getattr(
+                                                    self.provider,
+                                                    "provider_name",
+                                                    "",
+                                                )
+                                                or ""
+                                            )
+                                        ),
+                                        default_model=(
+                                            usage_call.model
+                                            if usage_call is not None
+                                            else str(self.config.model_id or "")
+                                        ),
+                                    )
+                                    cost_receipt_counted = True
                                 # One-shot thinking/reasoning fallback
                                 _err_lower = raw_ev.message.lower()
                                 if (
@@ -5734,6 +5775,14 @@ class Agent:
                             "billed_cost": provider_done_for_log.billed_cost,
                             "cost_source": getattr(provider_done_for_log, "cost_source", "none"),
                             "model": provider_done_for_log.model,
+                            "provider": str(
+                                getattr(provider_done_for_log, "provider", "")
+                                or getattr(self.provider, "active_provider_id", "")
+                                or self.config.provider_id
+                                or getattr(self.provider, "provider_id", "")
+                                or getattr(self.provider, "provider_name", "")
+                                or ""
+                            ),
                         }
                         response_payload["usage"] = usage_payload
                         model_usage_breakdown = getattr(
@@ -8702,6 +8751,13 @@ class Agent:
                 done_model = su.model_id
         if not done_model:
             done_model = self.config.model_id or ""
+        done_provider = (
+            last_actual_provider
+            or self.config.provider_id
+            or getattr(self.provider, "provider_id", "")
+            or getattr(self.provider, "provider_name", "")
+            or ""
+        )
         from opensquilla.engine.pricing import estimate_cost, resolve_model_price
 
         turn_estimate = estimate_cost(
@@ -8709,7 +8765,7 @@ class Agent:
             output_tokens=total_output_tokens,
             cache_read_tokens=total_cached_tokens,
             cache_write_tokens=total_cache_write_tokens,
-            price=resolve_model_price(done_model, self.config.provider_id).entry,
+            price=resolve_model_price(done_model, done_provider).entry,
         )
         estimated_cost = turn_estimate.cost_usd
         estimate_basis: str | None
@@ -8852,6 +8908,7 @@ class Agent:
                 billed_cost=done_billed_cost,
                 cost_source=cost_source,
                 model=done_model,
+                provider=done_provider,
                 runtime_context_hash=runtime_context_hash,
                 runtime_context_chars=len(runtime_context),
                 reasoning_content=(

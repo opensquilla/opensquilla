@@ -30,6 +30,7 @@ RPC_STATUS_KEYS = frozenset(
         "llmSource",
         "llmEnvKey",
         "llmCredentialStatus",
+        "llmProfileStatus",
         "imageGenerationConfigured",
         "imageGenerationEnabled",
         "imageGenerationSource",
@@ -119,6 +120,12 @@ def test_status_json_new_keys_carry_the_expected_values(tmp_path, monkeypatch):
     assert credential["available"] is False
     assert credential["source"] == "missing_env"
     assert credential["envKey"] == "DUMMY_UNSET_LLM_KEY"
+    profiles = payload["llmProfileStatus"]
+    assert len(profiles) == 1
+    assert profiles[0]["provider"] == "openrouter"
+    assert profiles[0]["ready"] is False
+    assert profiles[0]["credentialSource"] == "none"
+    assert "apiKey" not in profiles[0]
     assert payload["audioConfigured"] is False
     assert payload["audioEnabled"] is False
     # Default search provider (duckduckgo) needs no key, so the section is

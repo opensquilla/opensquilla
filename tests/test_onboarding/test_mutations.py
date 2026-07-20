@@ -7,6 +7,7 @@ import pytest
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.onboarding.mutations import (
+    LlmProfileActivationError,
     MutationResult,
     list_channel_entries,
     remove_channel,
@@ -259,6 +260,27 @@ def test_tokenrhythm_provider_save_seeds_curated_inline_ladder():
     persisted = res.config.to_toml_dict()["squilla_router"]
     assert "tier_profile" not in persisted
     assert persisted["tiers"]["c3"]["model"] == "glm-5.2"
+
+
+def test_provider_default_direct_model_does_not_follow_existing_router_tier():
+    cfg = GatewayConfig(
+        llm={"provider": "openrouter", "model": "", "api_key": "sk-test"},
+        squilla_router={
+            "default_tier": "c2",
+            "tier_profile": "openrouter",
+            "preset_binding": "follow_primary",
+        },
+    )
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="openrouter",
+        model="",
+    )
+
+    assert res.config.llm.model == "deepseek/deepseek-v4-pro"
+    assert res.config.squilla_router.default_tier == "c2"
+    assert res.config.squilla_router.tiers["c2"]["model"] == "z-ai/glm-5.2"
 
 
 def test_upsert_channel_appends_new():
@@ -707,7 +729,8 @@ def test_upsert_llm_provider_optional_preserve_never_crosses_providers():
             "model": "model-a",
             "api_key": "sk-custom",
             "base_url": "https://llm.example.test/v1",
-        }
+        },
+        squilla_router={"enabled": False},
     )
 
     res = upsert_llm_provider(
@@ -778,7 +801,10 @@ def test_upsert_llm_provider_can_use_env_key_without_secret():
 
 
 def test_upsert_llm_provider_recomputes_router_preset_on_provider_switch():
-    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+    cfg = GatewayConfig(
+        llm={"provider": "openrouter", "model": "deepseek/x"},
+        squilla_router={"preset_binding": "follow_primary"},
+    )
     assert cfg.squilla_router.enabled is True
     # Fresh OpenRouter configs remain the openrouter-mix/direct-router shape.
     # Saving a different packaged provider below should still recompute that
@@ -799,12 +825,11 @@ def test_upsert_llm_provider_recomputes_router_preset_on_provider_switch():
     assert "tiers" not in res.config.to_toml_dict()["squilla_router"]
 
 
-def test_upsert_llm_provider_without_preset_matches_todays_reconcile_behavior():
-    # D18-intact: a plain provider save (no presetId) must behave exactly as
-    # before — the reconcile path assigns the legacy tier_profile and writes
-    # no inline tiers. This freezes that the preset feature did not change the
-    # no-preset default.
-    cfg = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+def test_upsert_llm_provider_without_preset_follows_managed_router_binding():
+    cfg = GatewayConfig(
+        llm={"provider": "openrouter", "model": "deepseek/x"},
+        squilla_router={"preset_binding": "follow_primary"},
+    )
 
     res = upsert_llm_provider(cfg, provider_id="deepseek", model="deepseek-chat",
                               api_key_env="DEEPSEEK_API_KEY")
@@ -812,6 +837,136 @@ def test_upsert_llm_provider_without_preset_matches_todays_reconcile_behavior():
     persisted = res.config.to_toml_dict()["squilla_router"]
     assert persisted["tier_profile"] == "deepseek"
     assert "tiers" not in persisted
+
+
+def test_first_provider_save_establishes_follow_primary_binding():
+    cfg = GatewayConfig()
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="deepseek",
+        model="deepseek-chat",
+        api_key_env="DEEPSEEK_API_KEY",
+    )
+
+    assert res.config.squilla_router.preset_binding == "follow_primary"
+    assert res.config.squilla_router.tier_profile == "deepseek"
+    assert res.config.to_toml_dict()["squilla_router"]["preset_binding"] == (
+        "follow_primary"
+    )
+
+
+def test_first_provider_save_recognizes_materialized_pristine_defaults():
+    pristine = GatewayConfig()
+    # Runtime resolution and config.get -> config.apply both materialize the
+    # otherwise implicit defaults. Rebuilding from the public-shaped payload
+    # reproduces that loss of pydantic field-presence provenance without any
+    # network or credential dependency.
+    cfg = GatewayConfig(
+        llm=pristine.llm.model_dump(mode="python"),
+        squilla_router=pristine.squilla_router.model_dump(mode="python"),
+    )
+    assert "provider" in cfg.llm.model_fields_set
+    assert cfg.squilla_router.model_fields_set
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="deepseek",
+        model="deepseek-chat",
+        api_key_env="DEEPSEEK_API_KEY",
+    )
+
+    assert res.config.llm.provider == "deepseek"
+    assert res.config.llm.model == "deepseek-chat"
+    assert res.config.squilla_router.preset_binding == "follow_primary"
+    assert res.config.squilla_router.tier_profile == "deepseek"
+
+
+def test_materialized_default_with_explicit_custom_binding_still_conflicts():
+    pristine = GatewayConfig()
+    router_payload = pristine.squilla_router.model_dump(mode="python")
+    router_payload["preset_binding"] = "custom"
+    cfg = GatewayConfig(
+        llm=pristine.llm.model_dump(mode="python"),
+        squilla_router=router_payload,
+    )
+
+    with pytest.raises(LlmProfileActivationError) as error:
+        upsert_llm_provider(
+            cfg,
+            provider_id="deepseek",
+            model="deepseek-chat",
+            api_key_env="DEEPSEEK_API_KEY",
+        )
+
+    assert error.value.reason == "router_provider_conflict"
+    assert error.value.details["conflictProviders"] == ["tokenrhythm"]
+
+
+def test_managed_provider_switch_preserves_router_controls_and_ensemble():
+    cfg = GatewayConfig(
+        llm={"provider": "openrouter", "model": "deepseek/x"},
+        squilla_router={
+            "enabled": False,
+            "preset_binding": "follow_primary",
+            "default_tier": "c2",
+            "visual_mode": "legacy_grid",
+            "cross_provider_tiers": True,
+            "tier_provider_mismatch": "veto",
+            "confidence_threshold": 0.73,
+        },
+        llm_ensemble={
+            "enabled": False,
+            "candidate_max_chars": 12_345,
+            "record_candidates": True,
+        },
+    )
+    ensemble_before = cfg.llm_ensemble.model_dump(mode="python")
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="deepseek",
+        model="deepseek-chat",
+        api_key_env="DEEPSEEK_API_KEY",
+    )
+
+    router = res.config.squilla_router
+    assert router.enabled is False
+    assert router.preset_binding == "follow_primary"
+    assert router.tier_profile is None
+    assert router.default_tier == "c2"
+    assert router.visual_mode == "legacy_grid"
+    assert router.cross_provider_tiers is True
+    assert router.tier_provider_mismatch == "veto"
+    assert router.confidence_threshold == 0.73
+    assert {router.tiers[name]["provider"] for name in ("c0", "c1", "c2", "c3")} == {
+        "deepseek"
+    }
+    assert res.config.llm_ensemble.model_dump(mode="python") == ensemble_before
+
+
+def test_same_provider_save_does_not_reject_existing_custom_foreign_tier():
+    cfg = GatewayConfig(
+        llm={"provider": "openai", "model": "gpt-test", "api_key": "old-key"},
+        squilla_router={
+            "preset_binding": "custom",
+            "cross_provider_tiers": False,
+        },
+    )
+    cfg.squilla_router.tiers["c0"] = {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+    }
+    router_before = cfg.squilla_router.model_dump(mode="python")
+
+    res = upsert_llm_provider(
+        cfg,
+        provider_id="openai",
+        model="gpt-test",
+        api_key="new-key",
+    )
+
+    assert res.config.squilla_router.model_dump(mode="python") == router_before
 
 
 def test_upsert_llm_provider_preset_id_legacy_writes_recommended_shape():
@@ -1077,18 +1232,39 @@ def test_upsert_router_custom_accepts_explicit_tiers_for_synthesized_presets():
         ),
         "supports_image": False,
     }
-    # The default tier's model syncs into llm.model (same as the other
-    # enabled modes).
-    assert res.config.llm.model == "groq-mid"
+    # Router tier selection is independent from the direct/fallback model.
+    assert res.config.llm.model == "m"
 
 
-def test_upsert_router_custom_sync_llm_model_from_default_tier():
+def test_upsert_router_custom_preserves_direct_fallback_model():
     cfg = GatewayConfig(llm={"provider": "deepseek", "model": "deepseek-chat"})
 
     res = upsert_router(cfg, mode="custom", default_tier="c2")
 
     assert res.config.squilla_router.default_tier == "c2"
-    assert res.config.llm.model == "deepseek-v4-pro"
+    assert res.config.llm.model == "deepseek-chat"
+
+
+def test_upsert_router_mixed_default_does_not_copy_foreign_model_to_primary():
+    cfg = GatewayConfig(llm={"provider": "openai", "model": "gpt-4o-mini"})
+
+    res = upsert_router(
+        cfg,
+        mode="custom",
+        default_tier="c0",
+        cross_provider_tiers=True,
+        tier_provider_mismatch="veto",
+        tiers={
+            "c0": {"provider": "deepseek", "model": "deepseek-chat"},
+            "c1": {"provider": "openai", "model": "gpt-4o-mini"},
+            "c2": {"provider": "openai", "model": "gpt-4o-mini"},
+            "c3": {"provider": "openai", "model": "gpt-4o-mini"},
+        },
+    )
+
+    assert res.config.squilla_router.tiers["c0"]["model"] == "deepseek-chat"
+    assert res.config.llm.provider == "openai"
+    assert res.config.llm.model == "gpt-4o-mini"
 
 
 def test_upsert_llm_provider_keeps_runtime_secret_marker_when_reusing_key():
@@ -1590,6 +1766,7 @@ def test_router_reconcile_still_preserves_hand_authored_ladder():
         api_key="sk-old",
     ).config
     router_payload = seeded.squilla_router.model_dump(mode="python")
+    router_payload["preset_binding"] = "custom"
     router_payload["tiers"]["c0"]["model"] = "model-cheap"
     router_payload["tiers"]["c3"]["model"] = "model-big"
     from opensquilla.gateway.config import SquillaRouterConfig

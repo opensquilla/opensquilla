@@ -69,6 +69,27 @@ describe('useSetupModelStrategyForm', () => {
     expect(strategy.activeStrategy.value).toBe('router')
   })
 
+  it('re-enables a follow-primary router as the managed provider preset', () => {
+    const router = useSetupRouterForm()
+    const ensemble = useSetupEnsembleForm()
+    router.initFromConfig(
+      { enabled: false },
+      { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+      'deepseek',
+      'follow_primary',
+    )
+    ensemble.initFromConfig({ enabled: false })
+    const strategy = useSetupModelStrategyForm(router, ensemble, computed(() => 'deepseek'))
+
+    strategy.setStrategy('router')
+
+    expect(router.mode.value).toBe('recommended')
+    expect(router.payload()).toMatchObject({
+      mode: 'recommended',
+      tiers: { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+    })
+  })
+
   it('selecting model router coerces openrouter mix to a custom editable table', () => {
     const router = useSetupRouterForm()
     const ensemble = useSetupEnsembleForm()

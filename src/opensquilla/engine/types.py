@@ -216,6 +216,9 @@ class DoneEvent:
     # legacy/partial producers whose empty ``text`` means "fall back to the
     # streamed deltas".  Appended last for positional-construction compatibility.
     text_snapshot: str | None = None
+    # Configured registry identity that served the terminal model response.
+    # Appended for compatibility with existing positional construction.
+    provider: str = ""
 
     @property
     def upstream_cost_usd(self) -> float:

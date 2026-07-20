@@ -12,6 +12,7 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.execution_status import derive_is_error
 
+from .error_redaction import redact_upstream_error_code, redact_upstream_error_text
 from .failures import retry_after_from_headers
 from .model_catalog import shared_catalog
 from .registry import AuthHeaderStyle
@@ -291,6 +292,7 @@ class AnthropicProvider:
         proxy: str | None = None,
         replay_provider_state: bool = True,
         auth_header_style: AuthHeaderStyle = "x-api-key",
+        provider_id: str | None = None,
     ) -> None:
         # The default auth style matches Anthropic proper so direct
         # construction (tests, embedding) against the default host behaves
@@ -302,6 +304,10 @@ class AnthropicProvider:
         self._proxy = proxy or None
         self._replay_provider_state = replay_provider_state
         self._auth_header_style = auth_header_style
+        # ``provider_name`` remains the Anthropic adapter family.  Registry
+        # profiles such as MiniMax carry their own configured identity for
+        # response attribution without changing Anthropic-shaped behavior.
+        self.provider_id = (provider_id or self.provider_name).strip()
 
     @property
     def model(self) -> str:
@@ -311,6 +317,11 @@ class AnthropicProvider:
         the underlying model without prying at private state.
         """
         return self._model
+
+    def disable_provider_state_replay(self) -> None:
+        """Prevent provider-private thinking/signature replay for this turn."""
+
+        self._replay_provider_state = False
 
     def _api_url(self, path: str) -> str:
         """Build an API URL without duplicating the version prefix."""
@@ -494,18 +505,26 @@ class AnthropicProvider:
                     if response.status_code != 200:
                         body = await response.aread()
                         body_text = body.decode("utf-8", errors="replace")
+                        safe_body_text = redact_upstream_error_text(
+                            body_text,
+                            api_key=self._api_key,
+                            max_len=4000,
+                        )
+                        message = redact_upstream_error_text(
+                            f"HTTP {response.status_code}: {body_text}",
+                            api_key=self._api_key,
+                            max_len=2000,
+                        )
                         if request_has_document:
                             _increment_document_block_rejected(str(response.status_code))
                         trace.record_error(
                             code=str(response.status_code),
-                            message=f"HTTP {response.status_code}: {body_text}",
+                            message=message,
                             status_code=response.status_code,
-                            response_body=body_text,
+                            response_body=safe_body_text,
                         )
                         yield ErrorEvent(
-                            message=(
-                                f"HTTP {response.status_code}: " f"{body_text}"
-                            ),
+                            message=message,
                             code=str(response.status_code),
                             retry_after_s=retry_after_from_headers(
                                 response.status_code,
@@ -555,8 +574,12 @@ class AnthropicProvider:
                             trace.record_error(code="invalid_stream_frame", message=message)
                             yield ErrorEvent(message=message, code="invalid_stream_frame")
                             return
-                        trace.record_chunk(event)
                         etype = event.get("type", "")
+                        # Error frames may echo the active credential.  They
+                        # are represented by the sanitized llm.error record
+                        # below, never by a raw response-chunk trace.
+                        if etype != "error":
+                            trace.record_chunk(event)
 
                         if message_terminal_seen and etype not in {
                             "message_stop",
@@ -758,10 +781,19 @@ class AnthropicProvider:
                                 if isinstance(error, dict)
                                 else "Anthropic stream error"
                             )
+                            error_message = redact_upstream_error_text(
+                                error_message,
+                                api_key=self._api_key,
+                                max_len=2000,
+                            )
                             error_code = (
                                 str(error.get("type") or "stream_error")
                                 if isinstance(error, dict)
                                 else "stream_error"
+                            )
+                            error_code = redact_upstream_error_code(
+                                error_code,
+                                api_key=self._api_key,
                             )
                             trace.record_error(code=error_code, message=error_message)
                             yield ErrorEvent(message=error_message, code=error_code)
@@ -810,26 +842,45 @@ class AnthropicProvider:
                         thinking_signature=thinking_signature,
                         cached_tokens=cached_tokens,
                         cache_write_tokens=cache_creation_tokens,
+                        model=self._model,
+                        provider=self.provider_id,
                     )
 
         except httpx.TimeoutException as exc:
-            trace.record_error(code="timeout", message=f"Request timed out: {exc}")
-            yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
+            message = redact_upstream_error_text(
+                f"Request timed out: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(code="timeout", message=message)
+            yield ErrorEvent(message=message, code="timeout")
         except httpx.RequestError as exc:
-            trace.record_error(code="request_error", message=f"Request error: {exc}")
-            yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+            message = redact_upstream_error_text(
+                f"Request error: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(code="request_error", message=message)
+            yield ErrorEvent(message=message, code="request_error")
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
-            log.exception(
+            message = redact_upstream_error_text(
+                f"Provider response handling failed: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            log.error(
                 "provider.stream_internal_error",
                 provider=self.provider_name,
                 model=self._model,
+                error=message,
+                exception_type=type(exc).__name__,
             )
             trace.record_error(
                 code="provider_internal",
-                message=f"Provider response handling failed: {exc}",
+                message=message,
             )
             yield ErrorEvent(
-                message=f"Provider response handling failed: {exc}",
+                message=message,
                 code="provider_internal",
             )
 

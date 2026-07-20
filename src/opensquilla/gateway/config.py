@@ -1077,6 +1077,16 @@ class SquillaRouterConfig(BaseSettings):
     rollout_phase: str = "full"  # "observe" | "prompt_only" | "full"
     strategy: str = "v4_phase3"
     tier_profile: str | None = None
+    # Explicit ownership for the router ladder.  ``follow_primary`` means
+    # OpenSquilla owns the ladder and may replace it with the active
+    # provider's preset when the primary provider changes.  ``custom`` means
+    # the operator owns the ladder and provider switches must preserve it.
+    # ``None`` is deliberately retained for pre-field configs: treating an
+    # unclassified historical ladder as custom is the only non-destructive
+    # upgrade behavior.  A later explicit Router save records one of the two
+    # concrete values.  Additive and downgrade-safe because this settings
+    # section ignores unknown fields in older gateways.
+    preset_binding: Literal["follow_primary", "custom"] | None = None
     visual_mode: str = "real_candidates"
     # Preview: execute router tiers whose provider differs from llm.provider,
     # resolving credentials from [llm_profiles.<id>] or the provider's env
@@ -1847,6 +1857,10 @@ class LlmProviderProfile(BaseSettings):
 
     model_config = SettingsConfigDict(extra="ignore")
 
+    # Remember the provider-scoped direct/fallback model while this deployment
+    # is not primary.  Older configs omit it and continue to resolve the
+    # provider catalog default; older binaries ignore this additive field.
+    model: str = ""
     api_key: str = ""
     api_key_env: str = ""
     # Rotation pool of env-var NAMES (never key values) for this profile,
@@ -2115,6 +2129,10 @@ class GatewayConfig(BaseSettings):
         router = self.squilla_router
         if not router or not getattr(router, "enabled", False):
             return self
+        # An explicit custom binding is an operator ownership boundary.  Do
+        # not turn a sparse custom ladder into a provider preset at load time.
+        if getattr(router, "preset_binding", None) == "custom":
+            return self
         if getattr(router, "tier_profile", None):
             return self
         provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
@@ -2162,6 +2180,17 @@ class GatewayConfig(BaseSettings):
         provider = str(getattr(self.llm, "provider", "") or "").strip().lower()
         normalized_profile = str(profile).strip().lower()
         if provider != normalized_profile:
+            # An atomic primary/profile swap deliberately leaves the router's
+            # preset and switches untouched while demoting its old provider
+            # into llm_profiles. That is a valid mixed-provider deployment:
+            # keep rejecting stale mismatches unless the profile provider has
+            # an actual stored deployment to execute against.
+            has_profile_deployment = any(
+                str(key or "").strip().lower() == normalized_profile
+                for key in (getattr(self, "llm_profiles", None) or {})
+            )
+            if has_profile_deployment:
+                return self
             raise ValueError(
                 "squilla_router.tier_profile requires llm.provider to match "
                 f"({normalized_profile!r} != {provider!r})"

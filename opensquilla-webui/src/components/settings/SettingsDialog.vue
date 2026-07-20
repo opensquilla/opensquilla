@@ -169,6 +169,11 @@
               @apply-preset="applyProviderPreset"
               @copy="copyCommand"
               @go-to-section="selectSection"
+              @select-configured-provider="requestSelectConfiguredProvider"
+              @remove-provider-profile="removeProviderProfile"
+              @add-provider="requestAddProvider"
+              @probe-configured-provider="probeConfiguredProvider"
+              @activate-provider="activateProvider"
             />
             <SetupBehaviorPanel
               v-else-if="section === 'behavior'"
@@ -192,6 +197,7 @@
               @remove-ensemble-candidate="removeEnsembleCandidate"
               @replace-ensemble-candidate="replaceEnsembleCandidate"
               @set-ensemble-aggregator="setEnsembleAggregator"
+              @request-provider-models="discoverModelStrategyProviderModels"
               @import-ensemble-tier-candidates="importEnsembleTierCandidates"
               @migrate-ensemble-legacy="migrateEnsembleLegacy"
               @update-ensemble-min-successful="setEnsembleMinSuccessful"
@@ -232,12 +238,12 @@
         </div>
       </div>
 
-      <div v-if="loaded && hasUnsavedChanges" class="settings-dirtybar" aria-live="polite">
+      <div v-if="loaded && hasUnsavedChanges" class="settings-dirtybar">
         <span class="settings-dirtybar__pulse" aria-hidden="true"></span>
-        <span class="settings-dirtybar__text">{{ t('settings.dialog.unsavedIn', { sections: dirtySectionNames }) }}</span>
+        <span class="settings-dirtybar__text" role="status" aria-live="polite" aria-atomic="true">{{ dirtyBarText }}</span>
         <span class="settings-dirtybar__spacer"></span>
-        <button type="button" class="btn" @click="discardChanges">{{ t('common.discard') }}</button>
-        <button type="button" class="btn btn--primary" @click="saveDirtySections">{{ t('common.save') }}</button>
+        <button type="button" class="btn" @click="discardChanges">{{ dirtyDiscardLabel }}</button>
+        <button type="button" class="btn btn--primary" @click="saveDirtySections">{{ dirtySaveLabel }}</button>
       </div>
 
       <footer class="settings-foot">
@@ -323,6 +329,8 @@ const {
   saveDirtySections,
   discardChanges,
   selectProvider,
+  requestSelectConfiguredProvider,
+  requestAddProvider,
   setAutoSessionTitles,
   setDisableNetworkObservability,
   setModelStrategy,
@@ -332,6 +340,7 @@ const {
   removeEnsembleCandidate,
   replaceEnsembleCandidate,
   setEnsembleAggregator,
+  discoverModelStrategyProviderModels,
   importEnsembleTierCandidates,
   migrateEnsembleLegacy,
   setEnsembleScheme,
@@ -343,6 +352,9 @@ const {
   updateLlmTimeout,
   updateContextWindow,
   probeProviderConnection,
+  probeConfiguredProvider,
+  activateProvider,
+  removeProviderProfile,
   updateTierField,
   updateChannelField,
   updateCapabilityField,
@@ -397,6 +409,43 @@ let userNavigated = false
 
 const railOrientation = computed(() => (isMobile.value ? 'horizontal' : 'vertical'))
 const dirtySectionNames = computed(() => dirtySections.value.map(s => s.label).join(' · '))
+const dirtyProviderLabel = computed(() => (
+  providerPanel.value.credentialPanel?.providerLabel
+  || providerPanel.value.providerSelected
+  || t('settings.rail.provider')
+))
+const onlyDirtySection = computed(() => (
+  dirtySections.value.length === 1 ? dirtySections.value[0]?.id : ''
+))
+const dirtyBarText = computed(() => {
+  if (dirtySections.value.length > 1) {
+    return t('settings.dialog.unsavedCount', { count: dirtySections.value.length })
+  }
+  if (onlyDirtySection.value === 'provider') {
+    return t('settings.dialog.unsavedProvider', { provider: dirtyProviderLabel.value })
+  }
+  return t('settings.dialog.unsavedIn', { sections: dirtySectionNames.value })
+})
+const dirtySaveLabel = computed(() => {
+  if (dirtySections.value.length > 1) {
+    return t('settings.dialog.saveAll', { count: dirtySections.value.length })
+  }
+  if (onlyDirtySection.value === 'provider') {
+    return t('settings.dialog.saveProvider', { provider: dirtyProviderLabel.value })
+  }
+  if (onlyDirtySection.value === 'modelStrategy') return t('settings.dialog.saveRouting')
+  return t('common.save')
+})
+const dirtyDiscardLabel = computed(() => {
+  if (dirtySections.value.length > 1) {
+    return t('settings.dialog.discardAll', { count: dirtySections.value.length })
+  }
+  if (onlyDirtySection.value === 'provider') {
+    return t('settings.dialog.discardProvider', { provider: dirtyProviderLabel.value })
+  }
+  if (onlyDirtySection.value === 'modelStrategy') return t('settings.dialog.discardRouting')
+  return t('common.discard')
+})
 const displayConfigPath = computed(() => configPath.value || '~/.opensquilla/config.toml')
 
 // Where to return when the overlay closes. Captured on open from the route the
@@ -592,6 +641,7 @@ const removeLeaveGuard = router.beforeEach(async (to) => {
 })
 
 function onDocumentKeydown(event: KeyboardEvent) {
+  if (event.defaultPrevented) return
   // The confirm modal owns the keyboard while it is open; let it handle Escape
   // so a single keypress cannot both dismiss the prompt and re-open it.
   if (confirmState.value) return

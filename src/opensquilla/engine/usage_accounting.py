@@ -388,9 +388,7 @@ def _raw_nonnegative_number(value: Any) -> bool:
 def _breakdown_reconciles(event: object, rows: list[dict[str, Any]]) -> bool:
     """Return whether every additive Done envelope field equals its rows."""
 
-    partial_error = str(getattr(event, "kind", "") or "") == "error" and bool(
-        _usage_int(getattr(event, "usage_missing_count", 0))
-    )
+    is_error = str(getattr(event, "kind", "") or "") == "error"
     additive_keys = (
         ("input_tokens", "input_tokens"),
         ("output_tokens", "output_tokens"),
@@ -409,7 +407,7 @@ def _breakdown_reconciles(event: object, rows: list[dict[str, Any]]) -> bool:
         if not all(_raw_nonnegative_number(value) for value in row_values):
             return False
         if (
-            not partial_error
+            not is_error
             and sum(_usage_int(value) for value in row_values)
             != _usage_int(getattr(event, event_key, 0))
         ):
@@ -418,7 +416,7 @@ def _breakdown_reconciles(event: object, rows: list[dict[str, Any]]) -> bool:
     billed_values = [row.get("billed_cost", 0.0) for row in rows]
     if not all(_raw_nonnegative_number(value) for value in billed_values):
         return False
-    return partial_error or sum(
+    return is_error or sum(
         usd_to_nanos(value) for value in billed_values
     ) == usd_to_nanos(getattr(event, "billed_cost", 0.0))
 

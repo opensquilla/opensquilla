@@ -30,6 +30,11 @@ from .compat_policy import (
     compat_policy_for_kind,
 )
 from .context_capabilities import supports_openrouter_explicit_prompt_cache
+from .error_redaction import (
+    redact_upstream_error_code,
+    redact_upstream_error_text,
+    redacted_httpx_error,
+)
 from .failures import retry_after_from_headers
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .reasoning_dialects import (
@@ -102,7 +107,25 @@ _OPENAI_STREAM_NOOP_CHOICE_KEYS = frozenset(
     {"index", "delta", "finish_reason", "native_finish_reason"}
 )
 _OPENAI_STREAM_NOOP_DELTA_KEYS = frozenset({"content", "role"})
-_VERSIONED_BASE_URL_RE = re.compile(r"/v\d+$")
+# Some OpenAI-compatible API roots carry a non-integer version segment before
+# an adapter namespace.  Gemini's documented compatibility root is
+# ``/v1beta/openai``: appending our canonical ``/v1`` again produces the
+# nonexistent ``/v1beta/openai/v1/chat/completions`` endpoint.  Treat these
+# roots exactly like the existing ``/v1`` ... ``/vN`` forms.
+_VERSIONED_BASE_URL_RE = re.compile(
+    r"/v\d+(?:(?:alpha|beta)\d*)?(?:/openai)?$",
+)
+
+
+def _versioned_api_url(base_url: str, path: str) -> str:
+    """Join a canonical ``/v1/...`` path to an API root without duplication."""
+
+    base = base_url.rstrip("/")
+    if path.startswith("/v1/") and _VERSIONED_BASE_URL_RE.search(base):
+        return f"{base}{path[3:]}"
+    return f"{base}{path}"
+
+
 _EPHEMERAL_CACHE_CONTROL: dict[str, str] = {"type": "ephemeral"}
 _DASHSCOPE_MAX_CACHE_MARKERS = 4
 _DASHSCOPE_CACHE_MARKER_ROLES = {"system", "user", "assistant", "tool"}
@@ -2115,11 +2138,13 @@ def _build_openai_wire_messages(
     """Build the exact OpenAI-compatible wire-message array, without I/O."""
     openai_messages: list[dict[str, Any]] = []
     caps = cfg.model_capabilities
-    include_reasoning_content = _should_replay_reasoning_content(
-        policy=policy,
-        model=model,
-        caps=caps,
-        thinking=cfg.thinking,
+    include_reasoning_content = replay_provider_state and (
+        _should_replay_reasoning_content(
+            policy=policy,
+            model=model,
+            caps=caps,
+            thinking=cfg.thinking,
+        )
     )
     explicit_cache_supported = False
     if cfg.system:
@@ -2194,6 +2219,7 @@ class OpenAIProvider:
         provider_routing: Mapping[str, str] | None = None,
         compat: OpenAICompatPolicy | None = None,
         replay_provider_state: bool = True,
+        provider_id: str | None = None,
     ) -> None:
         self._api_key = clean_header_secret(api_key, label="LLM API key")
         self._model = model
@@ -2209,6 +2235,11 @@ class OpenAIProvider:
             # the OpenRouter dialect instead of silently degrading.
             provider_kind = "openrouter" if "openrouter.ai" in self._base_url else "openai"
         self._provider_kind = provider_kind
+        # Keep configured deployment identity separate from the adapter family
+        # (``provider_name``) and wire dialect (``_provider_kind``).  A
+        # DashScope or DeepSeek instance still needs OpenAI-family behavior,
+        # but must never be attributed to OpenAI in telemetry.
+        self.provider_id = (provider_id or self.provider_name).strip()
         self._compat = compat or compat_policy_for_kind(self._provider_kind)
         self._replay_provider_state = replay_provider_state
         self._provider_routing: Mapping[str, str] = provider_routing or {}
@@ -2236,6 +2267,11 @@ class OpenAIProvider:
         """
         return self._model
 
+    def disable_provider_state_replay(self) -> None:
+        """Prevent provider-private reasoning/signature replay for this turn."""
+
+        self._replay_provider_state = False
+
     def provider_metadata(self) -> ProviderMetadata:
         """Return read-only non-secret provider metadata for consumers."""
         return ProviderMetadata(
@@ -2243,6 +2279,7 @@ class OpenAIProvider:
             provider_kind=self._provider_kind,
             model=self._model,
             base_url=self._base_url,
+            provider_id=self.provider_id,
         )
 
     def provider_connection_config(self) -> ProviderConnectionConfig:
@@ -2261,9 +2298,7 @@ class OpenAIProvider:
         Qianfan's ``/v2``, Volcengine's ``/api/v3``, Zhipu's ``/paas/v4``)
         absorbs the canonical ``/v1`` path prefix.
         """
-        if path.startswith("/v1/") and _VERSIONED_BASE_URL_RE.search(self._base_url):
-            return f"{self._base_url}{path[3:]}"
-        return f"{self._base_url}{path}"
+        return _versioned_api_url(self._base_url, path)
 
     def project_message_count(
         self,
@@ -2698,10 +2733,24 @@ class OpenAIProvider:
                             )
                     if response.status_code != 200:
                         body = await response.aread()
-                        message = _format_chat_http_error(
-                            self._compat.display_name,
-                            response.status_code,
-                            body,
+                        body_text = (
+                            body.decode("utf-8", errors="replace")
+                            if isinstance(body, bytes)
+                            else str(body)
+                        )
+                        safe_body_text = redact_upstream_error_text(
+                            body_text,
+                            api_key=self._api_key,
+                            max_len=4000,
+                        )
+                        message = redact_upstream_error_text(
+                            _format_chat_http_error(
+                                self._compat.display_name,
+                                response.status_code,
+                                body,
+                            ),
+                            api_key=self._api_key,
+                            max_len=2000,
                         )
                         message_limit_evidence = _tokenrhythm_message_limit_evidence(
                             provider_kind=self._provider_kind,
@@ -2719,6 +2768,11 @@ class OpenAIProvider:
                                 response.status_code,
                                 body,
                                 validation_message,
+                            )
+                            message = redact_upstream_error_text(
+                                message,
+                                api_key=self._api_key,
+                                max_len=2000,
                             )
                             proof_fields = asdict(message_limit_proof)
                             log.warning(
@@ -2747,11 +2801,6 @@ class OpenAIProvider:
                         # Diagnostic: dump payload head (no auth headers)
                         # so 400s from picky upstreams are debuggable. Truncated
                         # to keep memory low.
-                        _body_text = (
-                            body.decode("utf-8", errors="replace")
-                            if isinstance(body, bytes)
-                            else str(body)
-                        )
                         try:
                             _payload_head = json.dumps(
                                 payload,
@@ -2765,14 +2814,14 @@ class OpenAIProvider:
                             model=self._model,
                             status_code=response.status_code,
                             message=message,
-                            response_body=_body_text[:2000],
+                            response_body=safe_body_text[:2000],
                             request_payload_head=_payload_head,
                         )
                         trace.record_error(
                             code=str(response.status_code),
                             message=message,
                             status_code=response.status_code,
-                            response_body=_body_text,
+                            response_body=safe_body_text,
                             metadata={"cache_shape": cache_shape},
                         )
                         yield ErrorEvent(
@@ -2819,13 +2868,17 @@ class OpenAIProvider:
                             )
                             continue
 
-                        trace.record_chunk(chunk)
                         if "error" in chunk and chunk["error"] is not None:
                             error_obj = chunk["error"]
                             err_message = (
                                 str(error_obj.get("message") or "stream error frame")
                                 if isinstance(error_obj, Mapping)
                                 else str(error_obj).strip() or "stream error frame"
+                            )
+                            err_message = redact_upstream_error_text(
+                                err_message,
+                                api_key=self._api_key,
+                                max_len=2000,
                             )
                             raw_code = (
                                 error_obj.get("code")
@@ -2836,6 +2889,10 @@ class OpenAIProvider:
                                 str(raw_code)
                                 if raw_code not in (None, "")
                                 else "stream_error"
+                            )
+                            err_code = redact_upstream_error_code(
+                                err_code,
+                                api_key=self._api_key,
                             )
                             log.warning(
                                 "provider.stream_error_frame",
@@ -2864,6 +2921,7 @@ class OpenAIProvider:
                                 code=err_code,
                             )
                             return
+                        trace.record_chunk(chunk)
                         chunk_id = chunk.get("id")
                         if isinstance(chunk_id, str) and chunk_id:
                             response_ids.add(chunk_id)
@@ -3712,12 +3770,18 @@ class OpenAIProvider:
                         billed_cost=billed_cost,
                         model=actual_model,
                         cost_source=cost_source,
+                        provider=self.provider_id,
                     )
 
         except httpx.TimeoutException as exc:
+            safe_error = redact_upstream_error_text(
+                f"Request timed out: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
             trace.record_error(
                 code="timeout",
-                message=f"Request timed out: {exc}",
+                message=safe_error,
                 metadata={"phase": "stream", "cache_shape": cache_shape},
             )
             if self._compat.stream_timeout_fallback and not emitted_stream_event:
@@ -3731,7 +3795,7 @@ class OpenAIProvider:
                     model=self._model,
                     timeout_seconds=cfg.timeout,
                     timeout_phase=type(exc).__name__,
-                    error=str(exc) or repr(exc),
+                    error=safe_error,
                 )
                 yield ProviderHeartbeatEvent(
                     phase="llm_fallback",
@@ -3763,13 +3827,22 @@ class OpenAIProvider:
                         code="provider_protocol_error",
                     )
                 except Exception as fallback_exc:  # noqa: BLE001 - see contract note below
-                    log.exception(
+                    fallback_error = redact_upstream_error_text(
+                        f"Provider response handling failed: "
+                        f"{str(fallback_exc) or repr(fallback_exc)}",
+                        api_key=self._api_key,
+                        max_len=2000,
+                    )
+                    log.error(
                         "provider.stream_internal_error",
                         provider=self._provider_kind,
                         model=self._model,
+                        error=fallback_error,
+                        exception_type=type(fallback_exc).__name__,
                     )
+                    trace.record_error(code="provider_internal", message=fallback_error)
                     yield ErrorEvent(
-                        message=f"Provider response handling failed: {fallback_exc}",
+                        message=fallback_error,
                         code="provider_internal",
                     )
                 return
@@ -3788,11 +3861,16 @@ class OpenAIProvider:
                     visible_assistant_text_parts.append(deferred_event.text)
                 yield deferred_event
             deferred_post_native_events.clear()
-            yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
+            yield ErrorEvent(message=safe_error, code="timeout")
         except httpx.RequestError as exc:
+            safe_error = redact_upstream_error_text(
+                f"Request error: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
             trace.record_error(
                 code="request_error",
-                message=f"Request error: {exc}",
+                message=safe_error,
                 metadata={"phase": "stream", "cache_shape": cache_shape},
             )
             for pending_event in _segment_text_tool_events(
@@ -3810,7 +3888,7 @@ class OpenAIProvider:
                     visible_assistant_text_parts.append(deferred_event.text)
                 yield deferred_event
             deferred_post_native_events.clear()
-            yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+            yield ErrorEvent(message=safe_error, code="request_error")
         except ToolStreamProtocolError as exc:
             message = "Provider returned an invalid tool lifecycle"
             log.warning(
@@ -3841,10 +3919,22 @@ class OpenAIProvider:
             deferred_post_native_events.clear()
             yield ErrorEvent(message=message, code="provider_protocol_error")
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
-            log.exception(
+            safe_error = redact_upstream_error_text(
+                f"Provider response handling failed: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            log.error(
                 "provider.stream_internal_error",
                 provider=self._provider_kind,
                 model=self._model,
+                error=safe_error,
+                exception_type=type(exc).__name__,
+            )
+            trace.record_error(
+                code="provider_internal",
+                message=safe_error,
+                metadata={"phase": "stream", "cache_shape": cache_shape},
             )
             for pending_event in _segment_text_tool_events(
                 text_tool_normalizer.finish(successful_text_tool_terminal=False),
@@ -3862,7 +3952,7 @@ class OpenAIProvider:
                 yield deferred_event
             deferred_post_native_events.clear()
             yield ErrorEvent(
-                message=f"Provider response handling failed: {exc}",
+                message=safe_error,
                 code="provider_internal",
             )
 
@@ -3897,7 +3987,11 @@ class OpenAIProvider:
                 "timeout_seconds": cfg.timeout,
                 "tools_count": len(tools or []),
                 "fallback_from": "stream_timeout",
-                "stream_error": str(timeout_exc),
+                "stream_error": redact_upstream_error_text(
+                    str(timeout_exc) or repr(timeout_exc),
+                    api_key=self._api_key,
+                    max_len=2000,
+                ),
             },
         )
 
@@ -3913,46 +4007,62 @@ class OpenAIProvider:
                     json=fallback_payload,
                 )
         except httpx.TimeoutException:
+            safe_error = redact_upstream_error_text(
+                f"Request timed out: {str(timeout_exc) or repr(timeout_exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
             log.warning(
                 "openrouter.non_stream_fallback_timeout",
                 model=self._model,
                 timeout_seconds=cfg.timeout,
-                stream_error=str(timeout_exc),
+                stream_error=safe_error,
             )
             trace.record_error(
                 code="timeout",
-                message=f"Request timed out: {timeout_exc}",
+                message=safe_error,
                 metadata={"phase": "non_stream_fallback", "cache_shape": cache_shape},
             )
-            yield ErrorEvent(message=f"Request timed out: {timeout_exc}", code="timeout")
+            yield ErrorEvent(message=safe_error, code="timeout")
             return
         except httpx.RequestError as exc:
+            safe_error = redact_upstream_error_text(
+                f"Request error: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
             trace.record_error(
                 code="request_error",
-                message=f"Request error: {exc}",
+                message=safe_error,
                 metadata={"phase": "non_stream_fallback", "cache_shape": cache_shape},
             )
-            yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+            yield ErrorEvent(message=safe_error, code="request_error")
             return
 
         if response.status_code != 200:
-            trace.record_error(
-                code=str(response.status_code),
-                message=_format_chat_http_error(
+            safe_response_body = redact_upstream_error_text(
+                response.text,
+                api_key=self._api_key,
+                max_len=4000,
+            )
+            safe_message = redact_upstream_error_text(
+                _format_chat_http_error(
                     self._compat.display_name,
                     response.status_code,
                     response.text,
                 ),
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(
+                code=str(response.status_code),
+                message=safe_message,
                 status_code=response.status_code,
-                response_body=response.text,
+                response_body=safe_response_body,
                 metadata={"cache_shape": cache_shape},
             )
             yield ErrorEvent(
-                message=_format_chat_http_error(
-                    self._compat.display_name,
-                    response.status_code,
-                    response.text,
-                ),
+                message=safe_message,
                 code=str(response.status_code),
                 retry_after_s=retry_after_from_headers(
                     response.status_code,
@@ -3964,10 +4074,15 @@ class OpenAIProvider:
         try:
             data = response.json()
         except json.JSONDecodeError:
+            safe_response_body = redact_upstream_error_text(
+                response.text,
+                api_key=self._api_key,
+                max_len=4000,
+            )
             trace.record_error(
                 code="invalid_json",
                 message="Invalid JSON response from provider",
-                response_body=response.text,
+                response_body=safe_response_body,
                 metadata={"cache_shape": cache_shape},
             )
             yield ErrorEvent(message="Invalid JSON response from provider", code="invalid_json")
@@ -3986,10 +4101,29 @@ class OpenAIProvider:
                 if isinstance(top_level_error, Mapping)
                 else str(top_level_error).strip() or "provider error response"
             )
+            error_message = redact_upstream_error_text(
+                error_message,
+                api_key=self._api_key,
+                max_len=2000,
+            )
             error_code = (
                 str(top_level_error.get("code") or "response_error")
                 if isinstance(top_level_error, Mapping)
                 else "response_error"
+            )
+            error_code = redact_upstream_error_code(
+                error_code,
+                api_key=self._api_key,
+            )
+            trace.record_error(
+                code=error_code,
+                message=error_message,
+                response_body=redact_upstream_error_text(
+                    response.text,
+                    api_key=self._api_key,
+                    max_len=4000,
+                ),
+                metadata={"cache_shape": cache_shape},
             )
             yield ErrorEvent(message=error_message, code=error_code)
             return
@@ -4383,6 +4517,7 @@ class OpenAIProvider:
             billed_cost=billed_cost,
             model=actual_model,
             cost_source=cost_source,
+            provider=self.provider_id,
         )
 
     async def list_models(self, *, raise_on_error: bool = False) -> list[ModelInfo]:
@@ -4416,6 +4551,10 @@ class OpenAIProvider:
                     )
                     for m in data.get("data", [])
                 ]
+        except httpx.HTTPError as exc:
+            if raise_on_error:
+                raise redacted_httpx_error(exc, api_key=self._api_key) from None
+            return []
         except Exception:
             if raise_on_error:
                 raise

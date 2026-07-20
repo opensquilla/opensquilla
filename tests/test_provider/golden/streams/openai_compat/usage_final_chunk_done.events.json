@@ -13,6 +13,7 @@
     "model": "gpt-test-1",
     "model_usage_breakdown": [],
     "output_tokens": 2,
+    "provider": "openai",
     "reasoning_content": null,
     "reasoning_tokens": 0,
     "stop_reason": "stop",

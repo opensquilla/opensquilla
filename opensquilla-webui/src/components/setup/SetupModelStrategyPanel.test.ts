@@ -57,6 +57,12 @@ function panel(overrides: Record<string, unknown> = {}) {
         { name: 'c1', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro', thinkingLevel: 'high', supportsImage: false },
       ],
       tierLabel: (tier: string) => tier,
+      providerOptions: [
+        { providerId: 'openrouter', label: 'OpenRouter' },
+        { providerId: 'deepseek', label: 'DeepSeek' },
+        { providerId: 'tokenrhythm', label: 'TokenRhythm' },
+      ],
+      providerCredentialStatus: [],
       discoveredModelsByProvider: {},
       hasMixedTierProviders: false,
     },
@@ -366,6 +372,7 @@ describe('SetupModelStrategyPanel', () => {
   it('adds and imports proposers without assigning an advisory role', async () => {
     const onAddEnsembleCandidate = vi.fn()
     const onImportEnsembleTierCandidates = vi.fn()
+    const onRequestProviderModels = vi.fn()
     const customCandidate = {
       key: 'custom:proposer:deepseek:deepseek-v4-pro',
       provider: 'deepseek',
@@ -387,6 +394,7 @@ describe('SetupModelStrategyPanel', () => {
       {
         onAddEnsembleCandidate,
         onImportEnsembleTierCandidates,
+        onRequestProviderModels,
       },
     )
 
@@ -396,9 +404,12 @@ describe('SetupModelStrategyPanel', () => {
     el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate-trigger"]')?.click()
     await nextTick()
 
-    const provider = el.querySelector<HTMLElement>('[aria-label="Candidate provider"]')
-    expect(provider?.getAttribute('aria-readonly')).toBe('true')
-    expect(provider?.textContent).toContain('OpenRouter')
+    const provider = el.querySelector<HTMLSelectElement>('[aria-label="Candidate provider"]')!
+    expect(provider.value).toBe('openrouter')
+    provider.value = 'deepseek'
+    provider.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+    expect(onRequestProviderModels).toHaveBeenCalledWith('deepseek')
     const add = el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate"]')
     expect(add?.disabled).toBe(true)
 
@@ -409,7 +420,7 @@ describe('SetupModelStrategyPanel', () => {
     expect(add?.disabled).toBe(false)
     add?.click()
     await nextTick()
-    expect(onAddEnsembleCandidate).toHaveBeenCalledWith('openrouter', 'claude-opus', '')
+    expect(onAddEnsembleCandidate).toHaveBeenCalledWith('deepseek', 'claude-opus', '')
 
     el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-import-tiers"]')?.click()
     await nextTick()
@@ -475,6 +486,7 @@ describe('SetupModelStrategyPanel', () => {
 
     expect(onReplaceEnsembleCandidate).toHaveBeenCalledWith(
       customCandidate,
+      'deepseek',
       'deepseek-v4-next',
     )
     expect(onRemoveEnsembleCandidate).not.toHaveBeenCalled()
@@ -539,6 +551,65 @@ describe('SetupModelStrategyPanel', () => {
     await nextTick()
     expect(onReplaceEnsembleCandidate).not.toHaveBeenCalled()
 
+    app.unmount()
+  })
+
+  it('shows an unconfigured historical proposer without allowing it to be reused', async () => {
+    const onReplaceEnsembleCandidate = vi.fn()
+    const historical = {
+      key: 'custom:proposer:private-gateway:archived-model',
+      provider: 'private-gateway',
+      model: 'archived-model',
+      source: 'custom',
+      enabled: true,
+      role: '',
+    }
+    const { app, el } = await mountPanel(
+      {
+        activeStrategy: 'ensemble',
+        ensemble: {
+          enabled: true,
+          scheme: 'custom',
+          custom: customLineup({
+            proposers: [historical],
+            proposerCount: 1,
+          }),
+        },
+      },
+      { onReplaceEnsembleCandidate },
+    )
+
+    const actions = el.querySelector<HTMLDetailsElement>('.setup-model-strategy__candidate-actions')!
+    actions.open = true
+    expect(actions.querySelector<HTMLButtonElement>(
+      '[data-testid="ensemble-promote-aggregator"]',
+    )?.disabled).toBe(true)
+    actions.querySelector<HTMLButtonElement>('[data-testid="ensemble-replace-proposer"]')?.click()
+    await nextTick()
+
+    const provider = el.querySelector<HTMLSelectElement>(
+      'select[name="setup_model_strategy_replace_candidate_provider"]',
+    )!
+    const historicalOption = Array.from(provider.options).find(option => (
+      option.value === 'private-gateway'
+    ))
+    expect(provider.value).toBe('private-gateway')
+    expect(historicalOption?.disabled).toBe(true)
+    expect(historicalOption?.textContent).toBe('private-gateway (not configured)')
+
+    const model = el.querySelector<HTMLInputElement>(
+      'input[name="setup_provider_ensemble_candidate_replacement"]',
+    )!
+    model.value = 'another-archived-model'
+    model.dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+
+    const confirm = el.querySelector<HTMLButtonElement>(
+      '[data-testid="ensemble-replace-proposer-confirm"]',
+    )!
+    expect(confirm.disabled).toBe(true)
+    confirm.click()
+    expect(onReplaceEnsembleCandidate).not.toHaveBeenCalled()
     app.unmount()
   })
 
@@ -681,6 +752,12 @@ describe('SetupModelStrategyPanel', () => {
 
     el.querySelector<HTMLButtonElement>('[data-testid="ensemble-replace-aggregator"]')?.click()
     await nextTick()
+    const provider = el.querySelector<HTMLSelectElement>(
+      'select[name="setup_model_strategy_aggregator_provider"]',
+    )!
+    provider.value = 'tokenrhythm'
+    provider.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
     const model = el.querySelector<HTMLInputElement>(
       'input[name="setup_provider_ensemble_aggregator_model"]',
     )!
@@ -820,13 +897,26 @@ describe('SetupModelStrategyPanel', () => {
     await nextTick()
     expect(onUpdateEnsembleScheme).toHaveBeenCalledWith('custom')
     expect(el.textContent).not.toContain('legacy OpenRouter candidate template')
-    expect(el.querySelector('.setup-model-strategy__candidate-provider-lock')).toBeNull()
+    expect(el.querySelector('.setup-model-strategy__candidate-provider')).toBeNull()
 
     app.unmount()
   })
 
-  it('shows a migration banner for a stored legacy dynamic config', async () => {
+  it('shows the stored legacy lineup read-only beside its migration banner', async () => {
     const onMigrateEnsembleLegacy = vi.fn()
+    const sharedProposer = {
+      key: 'legacy:proposer:deepseek:shared-model',
+      provider: 'deepseek',
+      model: 'shared-model',
+      source: 'legacy_model_options',
+      enabled: true,
+      role: '',
+    }
+    const sharedAggregator = {
+      ...sharedProposer,
+      key: 'legacy:aggregator:deepseek:shared-model',
+      role: 'aggregator',
+    }
     const { app, el } = await mountPanel(
       {
         activeStrategy: 'ensemble',
@@ -835,6 +925,18 @@ describe('SetupModelStrategyPanel', () => {
           selectionMode: 'router_dynamic',
           scheme: 'legacy',
           schemeCardsAvailable: true,
+          customCandidates: [
+            sharedProposer,
+            {
+              key: 'legacy:proposer:tokenrhythm:glm-5.2',
+              provider: 'tokenrhythm',
+              model: 'glm-5.2',
+              source: 'legacy_model_options',
+              enabled: true,
+              role: '',
+            },
+            sharedAggregator,
+          ],
         },
       },
       { onMigrateEnsembleLegacy },
@@ -846,6 +948,13 @@ describe('SetupModelStrategyPanel', () => {
     // read-only until the user explicitly migrates to a custom lineup.
     expect(el.querySelector('[data-testid="ensemble-scheme-preset"]')).toBeNull()
     expect(el.querySelector('[data-testid="ensemble-custom-lineup"]')).toBeNull()
+    const lineup = el.querySelector<HTMLElement>('[data-testid="ensemble-legacy-lineup"]')!
+    expect(lineup).toBeTruthy()
+    expect(lineup.textContent).toContain('DeepSeek · shared-model')
+    expect(lineup.textContent).toContain('TokenRhythm · glm-5.2')
+    expect(lineup.querySelectorAll('[role="listitem"]')).toHaveLength(3)
+    expect(lineup.querySelector('.setup-model-strategy__candidate-actions')).toBeNull()
+    expect(lineup.querySelector('[data-testid="ensemble-replace-aggregator"]')).toBeNull()
     expect(el.querySelector('[data-testid="ensemble-effective-summary"]')).toBeNull()
     expect(el.querySelector('[data-testid="ensemble-runtime-strategy"]')).toBeNull()
     el.querySelector<HTMLButtonElement>('[data-testid="ensemble-migrate-legacy"]')?.click()
@@ -871,12 +980,11 @@ describe('SetupModelStrategyPanel', () => {
     expect(el.querySelector('[data-testid="ensemble-scheme-preset"]')).toBeNull()
     expect(el.textContent).not.toContain('OpenRouter fixed ensemble')
     expect(el.textContent).toContain('Proposers')
-    expect(el.querySelector('.setup-model-strategy__candidate-provider-lock')).toBeNull()
+    expect(el.querySelector('.setup-model-strategy__candidate-provider')).toBeNull()
     el.querySelector<HTMLButtonElement>('[data-testid="setup-model-strategy-add-candidate-trigger"]')?.click()
     await nextTick()
-    const provider = el.querySelector<HTMLElement>('.setup-model-strategy__candidate-provider-lock')
-    expect(provider?.textContent).toContain('DeepSeek')
-    expect(el.querySelector('input[name="setup_model_strategy_add_candidate_provider"]')).toBeNull()
+    const provider = el.querySelector<HTMLSelectElement>('.setup-model-strategy__candidate-provider')
+    expect(provider?.value).toBe('deepseek')
 
     app.unmount()
   })

@@ -112,11 +112,13 @@ class OpenAICodexProvider:
         proxy: str | None = None,
         auth_path: str | None = None,
         api_key: str = "",  # accepted for constructor parity; OAuth ignores it
+        provider_id: str | None = None,
     ) -> None:
         self._model = model
         self._base_url = self._normalize_base_url(base_url)
         self._proxy = _resolve_llm_proxy(proxy)
         self._auth_path = Path(auth_path).expanduser() if auth_path else None
+        self.provider_id = (provider_id or self.provider_name).strip()
 
     @staticmethod
     def _normalize_base_url(base_url: str) -> str:
@@ -139,6 +141,7 @@ class OpenAICodexProvider:
             provider_kind="openai_codex",
             model=self._model,
             base_url=self._base_url,
+            provider_id=self.provider_id,
         )
 
     def provider_connection_config(self) -> ProviderConnectionConfig:
@@ -566,6 +569,7 @@ class OpenAICodexProvider:
             reasoning_tokens=reasoning_tokens,
             cached_tokens=cached_tokens,
             model=actual_model,
+            provider=self.provider_id,
         )
 
     async def list_models(self) -> list[ModelInfo]:

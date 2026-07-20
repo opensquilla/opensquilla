@@ -1664,7 +1664,26 @@
       "configActionsLabel": "Configuration actions",
       "configActionHint": "Writes configuration — takes effect after a gateway restart",
       "editActionHint": "Opens the editor in Channel setup",
-      "pendingApproval": "Pending approval"
+      "pendingApproval": "Pending approval",
+      "home": {
+        "connectedFor": "Uptime",
+        "membersFact": "Members",
+        "adminsFact": "Admins",
+        "pendingCount": "{count} pending",
+        "details": "Details",
+        "pendingRequest": "{sender} requests pairing · code {code}",
+        "reject": "Reject",
+        "rejectLabel": "Reject the pairing request from {sender}",
+        "rejectSuccess": "Rejected the pairing request from {sender}",
+        "rejectFailed": "Could not reject {sender}: {error}",
+        "fixCredentials": "Fix credentials"
+      },
+      "detail": {
+        "bot": "Bot {id}",
+        "connectedFor": "Connected {duration}",
+        "restarts": "{count} restarts",
+        "capabilityReference": "Capability reference"
+      }
     },
     "overview": {
       "channelsChip": "Channels",

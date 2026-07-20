@@ -1664,7 +1664,26 @@
       "configActionsLabel": "Actions de configuration",
       "configActionHint": "Écrit la configuration — prend effet après un redémarrage de la passerelle",
       "editActionHint": "Ouvre l'éditeur dans Config. des canaux",
-      "pendingApproval": "En attente d'approbation"
+      "pendingApproval": "En attente d'approbation",
+      "home": {
+        "connectedFor": "Durée active",
+        "membersFact": "Membres",
+        "adminsFact": "Admins",
+        "pendingCount": "{count} en attente",
+        "details": "Détails",
+        "pendingRequest": "{sender} demande un appairage · code {code}",
+        "reject": "Refuser",
+        "rejectLabel": "Refuser la demande d'appairage de {sender}",
+        "rejectSuccess": "Demande d'appairage de {sender} refusée",
+        "rejectFailed": "Impossible de refuser {sender} : {error}",
+        "fixCredentials": "Corriger les identifiants"
+      },
+      "detail": {
+        "bot": "Bot {id}",
+        "connectedFor": "Connecté depuis {duration}",
+        "restarts": "{count} redémarrages",
+        "capabilityReference": "Référence des capacités"
+      }
     },
     "overview": {
       "channelsChip": "Canaux",

@@ -30,10 +30,10 @@ test.describe.serial('channel workspace compose + edit', () => {
     await surface.locator('input[name="setup_channel_token"]').fill('0000:e2e-dummy-token')
     await surface.getByRole('button', { name: 'Save Channel' }).click()
 
-    // Save dismisses the takeover and selects the new channel.
+    // Save dismisses the takeover and selects the new channel's page.
     await expect(surface).toHaveCount(0, { timeout: 15000 })
     await expect(page).toHaveURL(new RegExp(`channel=${NAME}`), { timeout: 15000 })
-    await expect(page.locator('.ch-detail h2')).toHaveText(NAME)
+    await expect(page.locator('.chd h2')).toHaveText(NAME)
   })
 
   test('legacy settings hash redirects into the in-place editor', async ({ page }) => {
@@ -83,14 +83,14 @@ test.describe.serial('channel workspace compose + edit', () => {
 
   test('cleanup: remove the e2e channel', async ({ page }) => {
     await openChannels(page, `?channel=${NAME}`)
-    const detail = page.locator('.ch-detail')
+    const detail = page.locator('.chd')
     if (await detail.count()) {
-      await detail.getByRole('button', { name: 'Remove channel' }).click()
+      await detail.locator('.chd__remove').click()
       await page
         .getByRole('dialog', { name: 'Remove this channel?' })
         .getByRole('button', { name: 'Remove' })
         .click()
-      await expect(page.locator('.ch-table').getByText(NAME)).toHaveCount(0, { timeout: 15000 })
+      await expect(page.locator('.chb__grid').getByText(NAME)).toHaveCount(0, { timeout: 15000 })
     }
   })
 })

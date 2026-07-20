@@ -1664,7 +1664,26 @@
       "configActionsLabel": "Konfigurations-Aktionen",
       "configActionHint": "Schreibt die Konfiguration — wirksam nach einem Gateway-Neustart",
       "editActionHint": "Öffnet den Editor in der Kanal-Einrichtung",
-      "pendingApproval": "Wartet auf Freigabe"
+      "pendingApproval": "Wartet auf Freigabe",
+      "home": {
+        "connectedFor": "Laufzeit",
+        "membersFact": "Mitglieder",
+        "adminsFact": "Admins",
+        "pendingCount": "{count} ausstehend",
+        "details": "Details",
+        "pendingRequest": "{sender} bittet um Kopplung · Code {code}",
+        "reject": "Ablehnen",
+        "rejectLabel": "Kopplungsanfrage von {sender} ablehnen",
+        "rejectSuccess": "Kopplungsanfrage von {sender} abgelehnt",
+        "rejectFailed": "{sender} konnte nicht abgelehnt werden: {error}",
+        "fixCredentials": "Zugangsdaten korrigieren"
+      },
+      "detail": {
+        "bot": "Bot {id}",
+        "connectedFor": "Verbunden seit {duration}",
+        "restarts": "{count} Neustarts",
+        "capabilityReference": "Funktionsreferenz"
+      }
     },
     "overview": {
       "channelsChip": "Kanäle",

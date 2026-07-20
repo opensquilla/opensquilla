@@ -1664,7 +1664,26 @@
       "configActionsLabel": "配置动作",
       "configActionHint": "写入配置——网关重启后生效",
       "editActionHint": "在渠道设置中打开编辑器",
-      "pendingApproval": "待审批"
+      "pendingApproval": "待审批",
+      "home": {
+        "connectedFor": "已连接",
+        "membersFact": "成员",
+        "adminsFact": "管理员",
+        "pendingCount": "待批 {count}",
+        "details": "详情",
+        "pendingRequest": "{sender} 请求配对 · 配对码 {code}",
+        "reject": "拒绝",
+        "rejectLabel": "拒绝 {sender} 的配对请求",
+        "rejectSuccess": "已拒绝 {sender} 的配对请求",
+        "rejectFailed": "无法拒绝 {sender}：{error}",
+        "fixCredentials": "修复凭证"
+      },
+      "detail": {
+        "bot": "机器人 {id}",
+        "connectedFor": "已连接 {duration}",
+        "restarts": "重启 {count} 次",
+        "capabilityReference": "能力参考"
+      }
     },
     "overview": {
       "channelsChip": "渠道",

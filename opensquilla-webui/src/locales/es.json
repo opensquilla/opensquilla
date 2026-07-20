@@ -1664,7 +1664,26 @@
       "configActionsLabel": "Acciones de configuración",
       "configActionHint": "Escribe la configuración: se aplica tras reiniciar el gateway",
       "editActionHint": "Abre el editor en Config. de canales",
-      "pendingApproval": "Pendiente de aprobación"
+      "pendingApproval": "Pendiente de aprobación",
+      "home": {
+        "connectedFor": "Tiempo activo",
+        "membersFact": "Miembros",
+        "adminsFact": "Admins",
+        "pendingCount": "{count} pendientes",
+        "details": "Detalles",
+        "pendingRequest": "{sender} solicita emparejamiento · código {code}",
+        "reject": "Rechazar",
+        "rejectLabel": "Rechazar la solicitud de emparejamiento de {sender}",
+        "rejectSuccess": "Solicitud de emparejamiento de {sender} rechazada",
+        "rejectFailed": "No se pudo rechazar a {sender}: {error}",
+        "fixCredentials": "Corregir credenciales"
+      },
+      "detail": {
+        "bot": "Bot {id}",
+        "connectedFor": "Conectado {duration}",
+        "restarts": "{count} reinicios",
+        "capabilityReference": "Referencia de capacidades"
+      }
     },
     "overview": {
       "channelsChip": "Canales",

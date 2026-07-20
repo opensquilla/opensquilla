@@ -1664,7 +1664,26 @@
       "configActionsLabel": "設定操作",
       "configActionHint": "設定に書き込みます — ゲートウェイ再起動後に反映されます",
       "editActionHint": "チャンネル設定でエディタを開きます",
-      "pendingApproval": "承認待ち"
+      "pendingApproval": "承認待ち",
+      "home": {
+        "connectedFor": "稼働時間",
+        "membersFact": "メンバー",
+        "adminsFact": "管理者",
+        "pendingCount": "承認待ち {count} 件",
+        "details": "詳細",
+        "pendingRequest": "{sender} がペアリングを申請 · コード {code}",
+        "reject": "拒否",
+        "rejectLabel": "{sender} のペアリング申請を拒否",
+        "rejectSuccess": "{sender} のペアリング申請を拒否しました",
+        "rejectFailed": "{sender} を拒否できませんでした: {error}",
+        "fixCredentials": "認証情報を修正"
+      },
+      "detail": {
+        "bot": "ボット {id}",
+        "connectedFor": "接続 {duration}",
+        "restarts": "再起動 {count} 回",
+        "capabilityReference": "機能リファレンス"
+      }
     },
     "overview": {
       "channelsChip": "チャンネル",

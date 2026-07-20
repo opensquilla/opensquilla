@@ -157,7 +157,11 @@ def _collect_executed_lines() -> set[int]:
                     parameters={},
                     runtime_only_arguments=(
                         frozenset({"approval_id"})
-                        if tool_name == "coverage_runtime_approval_id"
+                        if tool_name
+                        in {
+                            "coverage_runtime_approval_id",
+                            "coverage_runtime_continuation",
+                        }
                         else frozenset()
                     ),
                     result_budget_class="external",
@@ -208,6 +212,16 @@ def _collect_executed_lines() -> set[int]:
                 handler_exc=RuntimeError("must not execute"),
                 hooks=hooks,
                 arguments={"approval_id": "provider-supplied"},
+            )
+            await _run_coverage_only(
+                tool_name="coverage_runtime_continuation",
+                handler_exc=RuntimeError("continuation reached handler"),
+                hooks=hooks,
+                continuation=ToolContinuation(
+                    approval_id="approval-runtime",
+                    tool_use_id="tc-coverage_runtime_continuation",
+                    session_key="",
+                ),
             )
             await _run_coverage_only(
                 tool_name="coverage_continuation_mismatch",

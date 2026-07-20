@@ -245,6 +245,7 @@ async def test_dispatch_injects_continuation_after_model_schema_validation() -> 
             description="Execute one command.",
             parameters={"command": {"type": "string"}},
             required=["command"],
+            runtime_only_arguments=frozenset({"approval_id"}),
         ),
         handler,
     )
@@ -287,6 +288,7 @@ async def test_dispatch_rejects_continuation_from_another_call_or_session() -> N
             description="Execute one command.",
             parameters={"command": {"type": "string"}},
             required=["command"],
+            runtime_only_arguments=frozenset({"approval_id"}),
         ),
         handler,
     )

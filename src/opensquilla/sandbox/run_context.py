@@ -111,6 +111,21 @@ class RunContext:
         }
 
 
+def run_context_for_subagent(context: RunContext) -> RunContext:
+    """Keep durable grants while dropping authority scoped to one parent action."""
+
+    return replace(
+        context,
+        mounts=tuple(grant for grant in context.mounts if grant.scope != "once"),
+        domains=tuple(grant for grant in context.domains if grant.scope != "once"),
+        bundles=tuple(grant for grant in context.bundles if grant.scope != "once"),
+        public_network=tuple(
+            grant for grant in context.public_network if grant.scope != "once"
+        ),
+        temporary_grants=(),
+    )
+
+
 async def _get_session_node(session_manager: Any, session_key: str) -> Any | None:
     get_session = getattr(session_manager, "get_session", None)
     if callable(get_session):
@@ -590,5 +605,6 @@ __all__ = [
     "normalize_workspace_path",
     "persist_run_context",
     "run_context_from_origin_payload",
+    "run_context_for_subagent",
     "set_run_mode",
 ]

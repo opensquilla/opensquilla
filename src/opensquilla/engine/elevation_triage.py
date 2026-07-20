@@ -157,6 +157,13 @@ def _normalize_path(path: str) -> str:
 
 def _is_protected_system_path(path: str) -> bool:
     normalized = _normalize_path(path)
+    # macOS exposes these policy paths through /private aliases.  Tool path
+    # discovery resolves the real path before review, so compare the canonical
+    # spelling to the same policy roots the user-facing path uses.
+    for alias in ("/private/etc", "/private/var", "/private/tmp"):
+        if normalized == alias or normalized.startswith(f"{alias}/"):
+            normalized = normalized.removeprefix("/private")
+            break
     roots = (
         "/boot",
         "/dev",
@@ -165,6 +172,7 @@ def _is_protected_system_path(path: str) -> bool:
         "/sbin",
         "/sys",
         "/usr",
+        "/var",
         "c:/windows",
         "c:/boot",
         "c:/efi",

@@ -132,6 +132,58 @@ async def test_exec_approval_resolution_mirrors_resolved_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_auto_review_promotion_pushes_one_human_approval_request() -> None:
+    approvals_conn = _FakeConn("c-approvals", frozenset({"operator.approvals"}))
+    queue, scheduled, remove = _build_bridge([approvals_conn])
+    try:
+        approval_id = queue.request(
+            namespace="exec",
+            params={
+                "toolName": "exec_command",
+                "command": "critical operation",
+                "sessionKey": "agent:main:webchat:demo",
+                "reviewer": "auto_review",
+                "humanActionable": False,
+            },
+        )
+        assert scheduled == []
+
+        queue.update_params(
+            approval_id,
+            {
+                "toolName": "exec_command",
+                "command": "critical operation",
+                "sessionKey": "agent:main:webchat:demo",
+                "reviewer": "user",
+                "humanActionable": True,
+            },
+        )
+
+        assert len(scheduled) == 1
+        await scheduled.pop()
+        assert [name for name, _payload in approvals_conn.events] == [
+            "exec.approval.requested"
+        ]
+        assert approvals_conn.events[0][1]["approval_id"] == approval_id
+
+        queue.update_params(
+            approval_id,
+            {
+                "toolName": "exec_command",
+                "command": "critical operation",
+                "sessionKey": "agent:main:webchat:demo",
+                "reviewer": "user",
+                "humanActionable": True,
+                "reviewStatus": "still_waiting",
+            },
+        )
+        assert scheduled == []
+    finally:
+        remove()
+        queue.close()
+
+
+@pytest.mark.asyncio
 async def test_plugin_approval_events_use_plugin_namespace() -> None:
     approvals_conn = _FakeConn("c-approvals", frozenset({"operator.approvals"}))
     queue, scheduled, remove = _build_bridge([approvals_conn])

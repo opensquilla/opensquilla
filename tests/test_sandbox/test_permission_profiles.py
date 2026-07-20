@@ -81,6 +81,19 @@ def test_denied_read_glob_takes_precedence_over_writable_root(tmp_path: Path) ->
     assert profile.resolve(tmp_path / "keys" / "identity.pub") is FileSystemAccess.WRITE
 
 
+def test_denied_read_glob_matches_canonical_symlink_path(tmp_path: Path) -> None:
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(real_root, target_is_directory=True)
+    profile = FileSystemPermissionProfile.workspace(
+        workspace=tmp_path / "workspace",
+        denied_read_globs=(str(alias_root / "**" / "*.pem"),),
+    )
+
+    assert profile.resolve(real_root / "keys" / "identity.pem") is FileSystemAccess.DENY
+
+
 def test_build_policy_carries_the_canonical_workspace_profile(tmp_path: Path) -> None:
     workspace = tmp_path / "repo"
     cache = tmp_path / "cache"

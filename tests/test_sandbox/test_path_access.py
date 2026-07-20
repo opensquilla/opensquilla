@@ -728,6 +728,27 @@ async def test_direct_and_shell_explicit_denies_share_blocked_category(
 
 
 @pytest.mark.asyncio
+async def test_trusted_direct_read_still_honors_explicit_denied_root(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    sentinel = denied / "sentinel.txt"
+    sentinel.write_text("must-not-appear", encoding="utf-8")
+    runtime = get_runtime()
+    assert runtime is not None
+    runtime.settings.denied_read_roots = [str(denied)]
+
+    with tool_context(workspace, run_mode="trusted"):
+        direct = json.loads(await fs.read_file(str(sentinel)))
+
+    assert direct["status"] == "blocked"
+    assert direct["reason"] == "denied_read"
+
+
+@pytest.mark.asyncio
 async def test_default_profile_allows_direct_filesystem_write_under_slash_tmp(
     tmp_path: Path,
 ) -> None:

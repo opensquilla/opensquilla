@@ -631,6 +631,129 @@ def _referenced_powershell_file_digest(
     return str(script_path), digest.hexdigest()
 
 
+_SCRIPT_INTERPRETER_INLINE_FLAGS: dict[str, frozenset[str]] = {
+    "shell": frozenset({"-c", "--command"}),
+    "python": frozenset({"-c", "-m"}),
+    "node": frozenset({"-e", "--eval", "-p", "--print"}),
+    "ruby": frozenset({"-e"}),
+    "perl": frozenset({"-e", "-E"}),
+    "php": frozenset({"-r"}),
+}
+_SCRIPT_INTERPRETER_OPTIONS_WITH_VALUES: dict[str, frozenset[str]] = {
+    "python": frozenset({"-W", "-X", "--check-hash-based-pycs"}),
+    "node": frozenset({"--require", "-r", "--loader", "--import"}),
+    "ruby": frozenset({"-I", "-r"}),
+    "perl": frozenset({"-I", "-M", "-m"}),
+    "php": frozenset({"-d", "-c"}),
+}
+
+
+def _script_interpreter_family(executable: str) -> str | None:
+    name = _shell_command_basename(executable)
+    if name in {"sh", "bash", "dash", "fish", "ksh", "zsh"}:
+        return "shell"
+    if re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|pypy\d*)", name):
+        return "python"
+    if name in {"node", "nodejs", "deno", "bun"}:
+        return "node"
+    if name in {"ruby", "jruby"}:
+        return "ruby"
+    if name == "perl":
+        return "perl"
+    if name == "php":
+        return "php"
+    return None
+
+
+def _script_argument_for_interpreter(
+    tokens: list[str],
+    *,
+    family: str,
+) -> str | None:
+    inline_flags = _SCRIPT_INTERPRETER_INLINE_FLAGS.get(family, frozenset())
+    options_with_values = _SCRIPT_INTERPRETER_OPTIONS_WITH_VALUES.get(
+        family, frozenset()
+    )
+    cursor = 1
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token == "--":
+            return tokens[cursor + 1] if cursor + 1 < len(tokens) else None
+        if token in inline_flags:
+            return None
+        if family == "shell" and token.startswith("-") and "c" in token[1:]:
+            return None
+        if family == "python" and token.startswith(("-c", "-m")):
+            return None
+        if token in options_with_values:
+            cursor += 2
+            continue
+        if token.startswith("-"):
+            cursor += 1
+            continue
+        return token
+    return None
+
+
+def _script_file_digest(
+    raw_path: str,
+    *,
+    interpreter: str,
+    workdir: str | None,
+) -> dict[str, str | None]:
+    script_path = _resolve_shell_script_path(raw_path, workdir=workdir)
+    digest_value: str | None = None
+    try:
+        digest = hashlib.sha256()
+        with script_path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                digest.update(chunk)
+        digest_value = digest.hexdigest()
+    except OSError:
+        pass
+    return {
+        "interpreter": interpreter,
+        "path": str(script_path),
+        "sha256": digest_value,
+    }
+
+
+def _referenced_script_file_digests(
+    command: str,
+    *,
+    workdir: str | None = None,
+) -> list[dict[str, str | None]]:
+    referenced: list[dict[str, str | None]] = []
+    seen: set[tuple[str, str]] = set()
+    for tokens in _iter_shell_command_tokens(command):
+        if not tokens:
+            continue
+        family = _script_interpreter_family(tokens[0])
+        raw_path = (
+            _script_argument_for_interpreter(tokens, family=family)
+            if family is not None
+            else None
+        )
+        interpreter = tokens[0]
+        if raw_path is None and family is None:
+            executable = tokens[0].strip().strip("'\"")
+            if executable.startswith(("/", "./", "../", "~/", "\\", ".\\")):
+                raw_path = executable
+                interpreter = "direct"
+        if raw_path is None:
+            continue
+        record = _script_file_digest(
+            raw_path,
+            interpreter=interpreter,
+            workdir=workdir,
+        )
+        key = (str(record["interpreter"]), str(record["path"]))
+        if key not in seen:
+            seen.add(key)
+            referenced.append(record)
+    return referenced
+
+
 def _shell_command_basename(value: str) -> str:
     name = value.strip().strip("'\"").rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
     for suffix in (".exe", ".cmd", ".bat"):
@@ -4022,6 +4145,7 @@ def _shell_elevation_action(
             hashlib.sha256(stdin.encode("utf-8")).hexdigest() if stdin is not None else None
         ),
         "powershell_file": _referenced_powershell_file_digest(command, workdir=cwd),
+        "script_files": _referenced_script_file_digests(command, workdir=cwd),
     }
     content_digest = hashlib.sha256(
         json.dumps(

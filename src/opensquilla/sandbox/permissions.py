@@ -335,7 +335,20 @@ def _deduplicate_paths(paths: Iterable[PurePath]) -> tuple[PurePath, ...]:
 
 
 def _canonical_glob(pattern: str) -> str:
-    return os.path.expanduser(pattern).replace("\\", "/")
+    expanded = os.path.expanduser(pattern)
+    path = Path(expanded)
+    parts = path.parts
+    wildcard_index = next(
+        (index for index, part in enumerate(parts) if any(char in part for char in "*?[")),
+        len(parts),
+    )
+    if wildcard_index == 0:
+        return expanded.replace("\\", "/")
+    prefix = Path(*parts[:wildcard_index]).resolve(strict=False)
+    if wildcard_index == len(parts):
+        return prefix.as_posix()
+    suffix = "/".join(parts[wildcard_index:])
+    return f"{prefix.as_posix().rstrip('/')}/{suffix}"
 
 
 def _matches_denied_read_glob(candidate: PurePath, pattern: str) -> bool:

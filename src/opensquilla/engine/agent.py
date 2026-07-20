@@ -1000,19 +1000,11 @@ async def _wait_for_pending_approval_resolution(
     approval_id = payload.get("approval_id")
     if not isinstance(approval_id, str) or not approval_id:
         return
-    deadline = time.monotonic() + max(0.0, timeout)
     try:
         from opensquilla.gateway.approval_queue import get_approval_queue
 
         queue = get_approval_queue()
-        while True:
-            entry = queue.get(approval_id)
-            if entry.resolved:
-                return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return
-            await asyncio.sleep(min(0.05, remaining))
+        await queue.wait(approval_id, timeout=max(0.0, timeout))
     except KeyError:
         return
 
@@ -7862,6 +7854,8 @@ class Agent:
                                 arguments=tc.arguments,
                                 execution_status=projected_result.execution_status,
                             )
+                            if approval_entry.resolution == "expired":
+                                turn_yielded = True
                         else:
                             resumed_call = suspended.approve(
                                 str(pending_approval["approval_id"])
@@ -13235,6 +13229,11 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _make_child_agent(self, spec: SubagentSpec, depth: int) -> Agent:
+        from opensquilla.sandbox.run_context import (
+            RunContext,
+            normalize_scope,
+            run_context_for_subagent,
+        )
         from opensquilla.session.keys import parse_agent_id
         from opensquilla.tools.types import (
             SUBAGENT_TOOL_DENY,
@@ -13248,6 +13247,14 @@ class Agent:
         subagent_label = spec.label or "subagent"
         parent_ctx = current_tool_context.get() or self._tool_context
         parent_run_context = getattr(parent_ctx, "sandbox_run_context", None)
+        if isinstance(parent_run_context, RunContext):
+            parent_run_context = run_context_for_subagent(parent_run_context)
+        parent_sandbox_mounts = [
+            dict(item)
+            for item in (getattr(parent_ctx, "sandbox_mounts", None) or [])
+            if isinstance(item, dict)
+            and normalize_scope(item.get("scope"), "chat") != "once"
+        ]
         parent_run_mode = getattr(parent_ctx, "run_mode", None)
         if parent_run_mode is None:
             run_context_mode = getattr(parent_run_context, "run_mode", None)
@@ -13276,7 +13283,7 @@ class Agent:
             sender_id=parent_session_key,
             denied_tools=set(SUBAGENT_TOOL_DENY),
             run_mode=parent_run_mode,
-            sandbox_mounts=list(getattr(parent_ctx, "sandbox_mounts", None) or []),
+            sandbox_mounts=parent_sandbox_mounts,
             sandbox_run_context=parent_run_context,
             elevated=parent_elevated if parent_run_mode == "full" else None,
             tool_result_store_dir=self.config.tool_result_store_dir,

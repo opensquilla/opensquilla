@@ -48,36 +48,19 @@ Read: [`approvals-and-permissions.md`](approvals-and-permissions.md)
 
 ## Approval Flow
 
-With the default `approvals_reviewer = "auto_review"`, an explicit
-`require_escalated` tool call is reviewed by a local deterministic rules engine.
-The review record is internal and does not appear as an actionable Web UI
-approval. Configure `approvals_reviewer = "user"` only when a human approval
-surface is intentionally required.
+Sensitive actions may pause for human approval depending on permission mode,
+tool policy, channel surface, and runtime configuration.
 
-Elevation review covers:
+Approvals are most important for:
 
-- out-of-root filesystem writes and patches;
-- exact shell commands and background processes;
-- exact Python code execution;
-- unknown managed-network targets;
+- filesystem writes;
+- shell commands;
 - external channel or webhook delivery;
 - generated artifacts that will be published;
 - actions that affect another service.
 
-The normal tool call uses `sandbox_permissions = "use_default"`. If it needs a
-capability outside the active sandbox, the tool returns `elevation_required`
-without queueing a review. The agent may then submit the exact same operation
-with `sandbox_permissions = "require_escalated"` and a precise
-`justification`. The runtime suspends that request during review and resumes
-the same request exactly once after approval. Fingerprints provide integrity
-and audit checks; they are not a substitute for continuation identity.
-
-Automatic review makes no provider or model call. Unknown operations default to
-allow. High-confidence rules stop broad or critical deletion, system damage,
-security weakening, mass encryption, direct download-to-interpreter chains,
-obvious encoded execution, and sensitive-data transfer to external targets.
-Critical matches require exact human confirmation on interactive surfaces;
-high-confidence sensitive upload shell commands are blocked before execution.
+Use the Web UI approvals page when you want durable review outside the chat
+scrollback.
 
 ## Workspace Controls
 
@@ -100,27 +83,6 @@ opensquilla agent \
 `--workspace-lockdown` is intended for automation where writes must stay inside
 the workspace or scratch directory.
 
-With the sandbox enabled, shell commands and direct filesystem tools use the
-same filesystem permission profile. Linux and macOS expose the host filesystem
-read-only except for explicit denied reads and normal OS permission failures.
-Windows follows Codex's restricted-account projection: Windows and Program
-Files roots, ProgramData, non-sensitive direct USERPROFILE children, the
-operation working directory, helper runtime roots, and declared writable roots.
-
-Only declared writable roots are writable without review. A write outside those
-roots returns elevation_required. require_escalated submits the exact action to
-the configured reviewer; an allow executes that fingerprint once. A changed command, path,
-content, create, or delete is a separate approval decision.
-
-On Linux Bubblewrap, host `/` is mounted read-only by default. The workspace,
-`/tmp`, `$TMPDIR`, and configured writable roots are overlaid read-write, with
-top-level `.git`, `.agents`, and `.codex` carved back to read-only. There is no
-default sensitive-path name blacklist in sandbox-on mode. Explicit denied-read
-policy remains authoritative and prevents an unsandboxed override. On Windows,
-the projection does not make every volume globally readable and excludes Codex's
-sensitive profile children, including `.ssh`, `.gnupg`, `.aws`, `.azure`,
-`.kube`, `.docker`, and `.config`.
-
 ## Sandbox Commands
 
 ```sh
@@ -133,36 +95,6 @@ opensquilla sandbox reset
 
 Sandbox behavior is platform-dependent. Treat `sandbox status` and `doctor` as
 the source of truth for the current machine.
-
-Default Codex-aligned settings:
-
-```toml
-[sandbox]
-sandbox = true
-security_grading = true
-host_root_readonly = true
-approvals_reviewer = "auto_review"
-exclude_slash_tmp = false
-exclude_tmpdir_env_var = false
-denied_read_roots = []
-denied_read_globs = []
-```
-
-Automatic rule review is synchronous and local. It has no provider deadline,
-model retry loop, or reviewer-session failure mode.
-
-The denied-read lists are optional explicit exceptions to global reads;
-relative entries are workspace-relative, and active denies prevent an
-unsandboxed override.
-
-`require_escalated` is not a persistent permission mode, `approval_id` is not
-model-visible, and automatic review never persists a proposed prefix rule.
-Disabling the sandbox or selecting full host access retains the existing
-full-host behavior.
-
-The normal tool schema deliberately omits Codex features that are experimental
-and disabled at the source baseline: additive permissions, a model-visible
-permission-request tool, and patched-zsh child `execve` interception.
 
 ## Recommended Patterns
 

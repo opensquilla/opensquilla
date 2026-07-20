@@ -321,6 +321,10 @@ class ApprovalQueue:
         if entry.resolved or entry.claim_token:
             self._conn.rollback()
             raise ValueError(f"Approval is not pending: {approval_id}")
+        became_human_actionable = (
+            entry.params.get("humanActionable") is False
+            and params.get("humanActionable") is True
+        )
         cursor = self._conn.execute(
             "UPDATE approval_queue SET params = ? "
             "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
@@ -330,7 +334,10 @@ class ApprovalQueue:
             self._conn.rollback()
             raise ValueError(f"Approval params could not be updated: {approval_id}")
         self._conn.commit()
-        self._pending[approval_id] = self.get(approval_id)
+        updated_entry = self.get(approval_id)
+        self._pending[approval_id] = updated_entry
+        if became_human_actionable:
+            self._notify_event("requested", updated_entry)
 
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
         entry = self.get(approval_id)

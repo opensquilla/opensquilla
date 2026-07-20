@@ -833,7 +833,7 @@ async def test_agent_waits_for_approval_resolution_before_retry_result_reaches_m
 
 
 @pytest.mark.asyncio
-async def test_unresolved_approval_pauses_turn_without_model_fallback(
+async def test_timed_out_approval_expires_and_pauses_turn_without_model_fallback(
     tmp_path: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -896,7 +896,17 @@ async def test_unresolved_approval_pauses_turn_without_model_fallback(
         isinstance(event, ToolResultEvent) and "approval_required" in event.result
         for event in events
     )
-    assert len(get_approval_queue().list_pending("exec")) == 1
+    required_event = next(
+        event
+        for event in events
+        if isinstance(event, ToolResultEvent) and "approval_required" in event.result
+    )
+    approval_id = str(json.loads(required_event.result)["approval_id"])
+    entry = get_approval_queue().get(approval_id)
+    assert get_approval_queue().list_pending("exec") == []
+    assert entry.resolved is True
+    assert entry.approved is False
+    assert entry.resolution == "expired"
 
 
 @pytest.mark.asyncio

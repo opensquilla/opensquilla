@@ -5,7 +5,7 @@ import pytest
 from opensquilla.engine import Agent, AgentConfig, ToolResult
 from opensquilla.engine.subagent import SubagentSpec
 from opensquilla.engine.types import ToolCall
-from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_context import MountGrant, RunContext, TemporaryGrant
 from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.tools.types import CallerKind, ToolContext, current_tool_context
 
@@ -47,7 +47,17 @@ async def test_direct_subagent_tool_context_inherits_full_host_run_mode() -> Non
         session_key="agent:main:parent",
         run_mode="full",
         elevated="full",
-        sandbox_run_context=RunContext(run_mode=RunMode.FULL, source="request"),
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.FULL,
+            mounts=(
+                MountGrant("/durable", scope="chat"),
+                MountGrant("/one-shot", access="rw", scope="once"),
+            ),
+            temporary_grants=(
+                TemporaryGrant("mount", "/temporary", "fingerprint-1"),
+            ),
+            source="request",
+        ),
     )
 
     token = current_tool_context.set(parent_ctx)
@@ -69,3 +79,5 @@ async def test_direct_subagent_tool_context_inherits_full_host_run_mode() -> Non
     child_run_context = captured["sandbox_run_context"]
     assert isinstance(child_run_context, RunContext)
     assert child_run_context.run_mode == RunMode.FULL
+    assert {grant.path for grant in child_run_context.mounts} == {"/durable"}
+    assert child_run_context.temporary_grants == ()

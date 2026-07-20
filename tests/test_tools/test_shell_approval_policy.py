@@ -51,6 +51,41 @@ def test_audit_command_preserves_long_commands_until_cap() -> None:
     assert audited.endswith("...[truncated]")
 
 
+@pytest.mark.parametrize(
+    ("interpreter", "script_name"),
+    (("bash", "job.sh"), ("python3", "job.py")),
+)
+def test_shell_approval_fingerprint_changes_when_script_content_changes(
+    tmp_path: Path,
+    interpreter: str,
+    script_name: str,
+) -> None:
+    script = tmp_path / script_name
+    script.write_text("print('before')\n", encoding="utf-8")
+    command = f"{interpreter} {script_name}"
+    profile = shell._profile_shell_command(command, workdir=str(tmp_path))
+
+    before = shell._shell_elevation_action(
+        tool_name="exec_command",
+        action_kind="shell.exec",
+        command=command,
+        cwd=str(tmp_path),
+        profile=profile,
+        justification="Run the requested script.",
+    )
+    script.write_text("print('after')\n", encoding="utf-8")
+    after = shell._shell_elevation_action(
+        tool_name="exec_command",
+        action_kind="shell.exec",
+        command=command,
+        cwd=str(tmp_path),
+        profile=profile,
+        justification="Run the requested script.",
+    )
+
+    assert before.fingerprint() != after.fingerprint()
+
+
 @pytest.mark.asyncio
 async def test_exec_approval_deny_pattern_blocks_shell_command(tmp_path: Path) -> None:
     get_approval_queue().set_settings("prompt", deny_patterns=["rm *"])

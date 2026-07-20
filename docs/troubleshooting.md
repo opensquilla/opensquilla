@@ -237,15 +237,6 @@ opensquilla agent --permissions restricted -m "Read only"
 opensquilla agent --permissions full -m "Trusted local automation"
 ```
 
-When sandboxing is enabled on Linux, a read failure is not normally caused by
-the workspace boundary: host `/` is read-only-visible and OS permissions still
-apply. Check whether the path has an explicit denied-read rule or whether the
-gateway user itself lacks access. A write outside the active writable roots
-should return `elevation_required`; `require_escalated` then starts an exact
-one-shot local rule review. Automatic review does not call a model or provider.
-In Managed Execution, an unavailable subprocess backend follows the same exact
-reviewed host-retry path; Standard mode remains fail-closed.
-
 ## The Agent Seems to Forget Old Context
 
 Long sessions may compact old history. This is expected under context pressure.

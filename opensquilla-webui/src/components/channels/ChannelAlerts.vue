@@ -4,7 +4,7 @@
 // the red unhealthy banner (last error snippet + restart + jump to credential
 // edit). Rendered identically on the dashboard card and at the top of the
 // drill-in page so the two surfaces cannot drift.
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ChannelPairing } from '@/composables/channels/useChannelMembers'
 
@@ -29,8 +29,14 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
-// An entry here is an explicit operator choice overriding the bootstrap default.
+// An entry here is an explicit operator choice overriding the bootstrap
+// default — for THIS pairing only. When the banner moves on to a different
+// pairing request the override resets, so a choice made for one sender can
+// never silently apply to the next.
 const adminOverride = ref<boolean | null>(null)
+watch(() => props.pendingPairing?.pairingId, () => {
+  adminOverride.value = null
+})
 function asAdminChecked(): boolean {
   return adminOverride.value ?? Boolean(props.defaultAsAdmin)
 }
@@ -60,14 +66,14 @@ function asAdminChecked(): boolean {
         class="btn btn--primary chal__btn"
         :disabled="busy"
         :aria-label="t('console.channels.pairings.approveLabel', { sender: pendingPairing.senderName || pendingPairing.senderId })"
-        @click="emit('approve', asAdminChecked())"
+        @click.stop="emit('approve', asAdminChecked())"
       >{{ t('console.channels.pairings.approve') }}</button>
       <button
         type="button"
         class="btn btn--ghost chal__btn"
         :disabled="busy"
         :aria-label="t('console.channels.home.rejectLabel', { sender: pendingPairing.senderName || pendingPairing.senderId })"
-        @click="emit('reject')"
+        @click.stop="emit('reject')"
       >{{ t('console.channels.home.reject') }}</button>
     </span>
   </div>
@@ -75,14 +81,14 @@ function asAdminChecked(): boolean {
   <div v-if="errorText" class="chal chal--error" role="alert" @click.stop>
     <span class="chal__text">{{ errorText }}</span>
     <span class="chal__actions">
-      <button type="button" class="btn btn--ghost chal__btn" :disabled="busy" @click="emit('restart')">
+      <button type="button" class="btn btn--ghost chal__btn" :disabled="busy" @click.stop="emit('restart')">
         {{ t('console.channels.restart') }}
       </button>
       <button
         v-if="showFixCredentials"
         type="button"
         class="btn btn--primary chal__btn"
-        @click="emit('fixCredentials')"
+        @click.stop="emit('fixCredentials')"
       >{{ t('console.channels.home.fixCredentials') }}</button>
     </span>
   </div>

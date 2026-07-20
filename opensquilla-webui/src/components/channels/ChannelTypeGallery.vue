@@ -24,10 +24,14 @@ const emit = defineEmits<{
 }>()
 
 const { t, locale } = useI18n()
-const { localizeFieldLabel } = useChannelCatalogI18n()
+const { localizeFieldLabel, localizeLabel } = useChannelCatalogI18n()
 
 const ZH_ORDER = ['feishu', 'wecom', 'dingtalk', 'qq', 'slack', 'telegram', 'discord', 'matrix']
 const DEFAULT_ORDER = ['slack', 'telegram', 'discord', 'matrix', 'feishu', 'wecom', 'dingtalk', 'qq']
+
+function displayLabel(spec: ChannelEditorSpec): string {
+  return localizeLabel(spec.type, spec.label)
+}
 
 const sorted = computed(() => {
   const order = String(locale.value).toLowerCase().startsWith('zh') ? ZH_ORDER : DEFAULT_ORDER
@@ -35,18 +39,24 @@ const sorted = computed(() => {
   return [...props.channels].sort((a, b) => {
     const rankA = rank.get(a.type) ?? order.length
     const rankB = rank.get(b.type) ?? order.length
-    return rankA - rankB || a.label.localeCompare(b.label)
+    return rankA - rankB || displayLabel(a).localeCompare(displayLabel(b))
   })
 })
 
 // The one-line footnote: localized labels of the required credential/secret
-// fields ("App ID · App Secret", "Bot token"). Derived from the catalog spec,
-// never invented here.
+// fields ("App ID · App Secret", "Bot token"). Platforms without dedicated
+// credential fields (Matrix authenticates with homeserver + user id) fall
+// back to their required fields, so no card ships blank. Derived from the
+// catalog spec, never invented here.
 function credentialSummary(spec: ChannelEditorSpec): string {
-  const fields = (spec.fields || []).filter(
-    field => field.required === true && (field.secret === true || field.group === 'credentials'),
+  const required = (spec.fields || []).filter(field => field.required === true)
+  const credentials = required.filter(
+    field => field.secret === true || field.group === 'credentials',
   )
-  return fields
+  const source = credentials.length > 0
+    ? credentials
+    : required.filter(field => field.name !== 'name')
+  return source
     .slice(0, 3)
     .map(field => localizeFieldLabel(spec.type, field.name, field.label))
     .join(' · ')
@@ -71,8 +81,8 @@ function credentialSummary(spec: ChannelEditorSpec): string {
         :data-channel-type="c.type"
         @click="emit('pick', c.type)"
       >
-        <ChannelBrandMark class="ctg__mark" :type="c.type" :label="c.label" />
-        <strong class="ctg__name">{{ c.label }}</strong>
+        <ChannelBrandMark class="ctg__mark" :type="c.type" :label="displayLabel(c)" />
+        <strong class="ctg__name">{{ displayLabel(c) }}</strong>
         <span v-if="credentialSummary(c)" class="ctg__cred">{{ credentialSummary(c) }}</span>
       </button>
     </div>

@@ -14,7 +14,7 @@ const props = defineProps<{
   channelName: string
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 
 function reload() {
   void props.members.load(props.channelName)
@@ -26,10 +26,11 @@ function pairingInitial(pairing: ChannelPairing): string {
 function senderInitial(senderId: string): string {
   return String(senderId || '?').slice(0, 1).toUpperCase()
 }
+// Timestamps follow the UI locale, not the browser default.
 function formatSince(since?: string | number | null): string {
   if (!since) return '—'
   const date = new Date(since)
-  return Number.isNaN(date.getTime()) ? String(since) : date.toLocaleString()
+  return Number.isNaN(date.getTime()) ? String(since) : date.toLocaleString(locale.value)
 }
 </script>
 
@@ -81,7 +82,7 @@ function formatSince(since?: string | number | null): string {
     <div v-else class="ch-pairing-groups">
       <section v-if="members.pendingPairings.value.length" :aria-label="t('console.channels.pairings.pendingRequests')">
         <h4>{{ t('console.channels.pairings.pendingRequests') }}</h4>
-        <article v-for="(pairing, index) in members.pendingPairings.value" :key="pairing.pairingId" class="ch-pairing-row">
+        <article v-for="pairing in members.pendingPairings.value" :key="pairing.pairingId" class="ch-pairing-row">
           <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
           <div class="ch-pairing-identity">
             <strong>{{ pairing.senderName || pairing.senderId }}</strong>
@@ -94,7 +95,7 @@ function formatSince(since?: string | number | null): string {
             <label class="ch-pairing-asadmin" :title="t('console.channels.pairings.asAdminHint')">
               <input
                 type="checkbox"
-                :checked="members.asAdminChecked(pairing, index)"
+                :checked="members.asAdminChecked(pairing)"
                 :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pairing.senderName || pairing.senderId })"
                 @change="members.setAsAdminChecked(pairing, ($event.target as HTMLInputElement).checked)"
               />
@@ -105,7 +106,7 @@ function formatSince(since?: string | number | null): string {
               type="button"
               :disabled="members.actionPending(pairing, 'approve')"
               :aria-label="t('console.channels.pairings.approveLabel', { sender: pairing.senderName || pairing.senderId })"
-              @click="members.approve(pairing, members.asAdminChecked(pairing, index))"
+              @click="members.approve(pairing, members.asAdminChecked(pairing))"
             >
               {{ members.actionPending(pairing, 'approve') ? t('console.channels.pairings.approving') : t('console.channels.pairings.approve') }}
             </button>

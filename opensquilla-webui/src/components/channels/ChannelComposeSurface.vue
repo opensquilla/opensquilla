@@ -9,6 +9,7 @@ import { computed, nextTick, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
 import ChannelTypeGallery from '@/components/channels/ChannelTypeGallery.vue'
+import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
 import type { ChannelEditorApi } from '@/composables/channels/useChannelEditor'
 
 const props = defineProps<{
@@ -31,10 +32,12 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { localizeLabel } = useChannelCatalogI18n()
 
 const picked = computed(() => Boolean(props.pickedType))
 const spec = computed(() => props.editor.spec.value)
-const specLabel = computed(() => spec.value?.label || props.pickedType)
+const specLabel = computed(() =>
+  localizeLabel(props.pickedType, spec.value?.label || props.pickedType))
 const transportLabel = computed(() => {
   const transport = spec.value?.transport || ''
   if (!transport || transport === 'unknown') return ''

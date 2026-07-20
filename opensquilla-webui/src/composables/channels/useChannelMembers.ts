@@ -45,6 +45,9 @@ export function useChannelMembers() {
   // Members can chat + use safe tools; admins get the full tool surface.
   // Refetched with every pairing load so a grant/revoke reflects immediately.
   const adminSenders = ref<string[]>([])
+  // KNOWN-empty vs unknown: a failed config read leaves the admin list
+  // unknown, and the first-pairing bootstrap must never arm on unknown.
+  const adminsKnown = ref(false)
   // Per-pairing "approve as admin" checkbox state; an entry here is an
   // explicit operator choice that overrides the first-pairing bootstrap.
   const adminOverrides = ref<Record<string, boolean>>({})
@@ -59,6 +62,7 @@ export function useChannelMembers() {
     error.value = ''
     announcement.value = ''
     adminSenders.value = []
+    adminsKnown.value = false
     adminOverrides.value = {}
   }
 
@@ -97,14 +101,23 @@ export function useChannelMembers() {
   })
 
   // First-pairing bootstrap: default the "as admin" checkbox on only when the
-  // channel has no approved members and no admins yet, so the very first
-  // person approved becomes an admin unless the operator opts out.
+  // channel is KNOWN to have no approved members and no admins yet, so the
+  // very first person approved becomes an admin unless the operator opts out.
+  // An unknown admin list (failed config read) must never arm the default.
   const noApprovedOrAdmins = computed(() =>
-    !pairings.value.some(pairing => pairing.status === 'approved') && adminSenders.value.length === 0)
+    adminsKnown.value &&
+    !pairings.value.some(pairing => pairing.status === 'approved') &&
+    adminSenders.value.length === 0)
 
-  function asAdminChecked(pairing: ChannelPairing, index: number): boolean {
+  // The bootstrap default is anchored to the UNFILTERED first pending request:
+  // a search query must not move the pre-checked default onto whichever row
+  // happens to match first.
+  const firstPendingId = computed(() =>
+    pairings.value.find(pairing => pairing.status === 'pending')?.pairingId ?? '')
+
+  function asAdminChecked(pairing: ChannelPairing): boolean {
     if (pairing.pairingId in adminOverrides.value) return adminOverrides.value[pairing.pairingId]
-    return index === 0 && noApprovedOrAdmins.value
+    return pairing.pairingId === firstPendingId.value && noApprovedOrAdmins.value
   }
 
   function setAsAdminChecked(pairing: ChannelPairing, value: boolean): void {
@@ -142,10 +155,15 @@ export function useChannelMembers() {
       if (activeName.value !== name || id !== requestId) return
       const list = map && typeof map === 'object' ? (map as Record<string, unknown>)[name] : undefined
       adminSenders.value = Array.isArray(list) ? list.map(String) : []
+      adminsKnown.value = true
     } catch {
       // Admin standing is supplementary; a failed fetch leaves members
-      // visible without admin pills rather than breaking the whole view.
-      if (activeName.value === name && id === requestId) adminSenders.value = []
+      // visible without admin pills rather than breaking the whole view —
+      // but the list stays UNKNOWN, not known-empty.
+      if (activeName.value === name && id === requestId) {
+        adminSenders.value = []
+        adminsKnown.value = false
+      }
     }
   }
 
@@ -295,6 +313,7 @@ export function useChannelMembers() {
     error,
     announcement,
     adminSenders,
+    adminsKnown,
     pendingPairings,
     approvedPairings,
     revokedPairings,

@@ -1012,6 +1012,14 @@
         "connection_mode": { "label": "Connection mode" },
         "app_id": { "label": "App id" },
         "app_secret": { "label": "App secret" },
+        "signing_secret": { "label": "Signing secret" },
+        "client_id": { "label": "Client id" },
+        "client_secret": { "label": "Client secret" },
+        "bot_id": { "label": "Bot ID" },
+        "bot_secret": { "label": "Bot secret" },
+        "corp_secret": { "label": "Corp secret" },
+        "homeserver_url": { "label": "Homeserver URL" },
+        "user_id": { "label": "User id ({'@'}user:server)" },
         "debounce_window_s": { "label": "Debounce window (s)" }
       },
       "groups": {
@@ -1023,6 +1031,7 @@
         "polling": "Polling"
       },
       "dingtalk": {
+        "label": "DingTalk",
         "description": "DingTalk corp robot via stream connection.",
         "needs": [
           "Client id.",
@@ -1030,12 +1039,14 @@
         ]
       },
       "discord": {
+        "fields": { "token": { "label": "Bot token" } },
         "description": "Discord bot using gateway websocket.",
         "needs": [
           "Bot token."
         ]
       },
       "feishu": {
+        "label": "Feishu / Lark",
         "fields": {
           "domain": {
             "label": "Domain"
@@ -1056,6 +1067,7 @@
         ]
       },
       "qq": {
+        "label": "QQ Bot",
         "description": "Tencent QQ Bot via websocket.",
         "needs": [
           "App id.",
@@ -1063,6 +1075,7 @@
         ]
       },
       "slack": {
+        "fields": { "token": { "label": "Bot token" } },
         "description": "Slack workspace bot — Socket Mode (websocket) or Events API webhook.",
         "needs": [
           "Bot token (xoxb-…).",
@@ -1070,12 +1083,14 @@
         ]
       },
       "telegram": {
+        "fields": { "token": { "label": "Bot token" } },
         "description": "Telegram Bot API — polling or webhook transport.",
         "needs": [
           "Bot token."
         ]
       },
       "wecom": {
+        "label": "WeCom",
         "description": "Enterprise WeChat AI Bot over websocket, or corp-app webhook callback.",
         "needs": [
           "Corp id.",
@@ -1681,7 +1696,7 @@
       "detail": {
         "bot": "Bot {id}",
         "connectedFor": "Connected {duration}",
-        "restarts": "{count} restarts",
+        "restarts": "{count} restart | {count} restarts",
         "capabilityReference": "Capability reference"
       }
     },
@@ -2775,7 +2790,8 @@
       "contract_violation": "adapter contract violation",
       "transport_transient": "network issue — retrying",
       "rate_limited": "rate limited by the provider",
-      "channel_degraded": "channel degraded"
+      "channel_degraded": "channel degraded",
+      "startup_failed": "failed to start — check credentials and configuration"
     },
     "banner": {
       "label": "Pending gateway restart",

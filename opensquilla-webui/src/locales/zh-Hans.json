@@ -613,7 +613,7 @@
         "credentials_link": "打开凭证页(App id / App secret)",
         "quick_apply_link": "一键预填全部所需权限的申请",
         "needAppId": "先填写 App id",
-        "ws_order_note": "长连接顺序:先保存本渠道让长连接建立,再到 事件与回调 切换为「使用长连接接收事件」——控制台仅在有活跃连接时才能保存该选项。"
+        "ws_order_note": "长连接顺序：先保存本渠道让长连接建立，再到「事件与回调」切换为「使用长连接接收事件」——控制台仅在有活跃连接时才能保存该选项。"
       }
     },
     "search": {
@@ -1012,6 +1012,14 @@
         "connection_mode": { "label": "连接方式" },
         "app_id": { "label": "应用 ID（App ID）" },
         "app_secret": { "label": "应用密钥（App Secret）" },
+        "signing_secret": { "label": "签名密钥（Signing secret）" },
+        "client_id": { "label": "客户端 ID（Client ID）" },
+        "client_secret": { "label": "客户端密钥（Client Secret）" },
+        "bot_id": { "label": "机器人 ID（Bot ID）" },
+        "bot_secret": { "label": "机器人密钥（Bot Secret）" },
+        "corp_secret": { "label": "企业应用密钥（Corp Secret）" },
+        "homeserver_url": { "label": "服务器地址（Homeserver URL）" },
+        "user_id": { "label": "用户 ID（{'@'}user:server）" },
         "debounce_window_s": { "label": "去抖窗口（秒）" }
       },
       "groups": {
@@ -1023,6 +1031,7 @@
         "polling": "轮询"
       },
       "dingtalk": {
+        "label": "钉钉",
         "description": "钉钉企业机器人，基于 stream 长连接。",
         "needs": [
           "Client id。",
@@ -1030,12 +1039,14 @@
         ]
       },
       "discord": {
+        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
         "description": "Discord 机器人，使用 gateway websocket。",
         "needs": [
           "Bot token。"
         ]
       },
       "feishu": {
+        "label": "飞书（Lark）",
         "fields": {
           "domain": {
             "label": "服务域名"
@@ -1056,6 +1067,7 @@
         ]
       },
       "qq": {
+        "label": "QQ 机器人",
         "description": "腾讯 QQ 机器人，基于 websocket。",
         "needs": [
           "App id。",
@@ -1063,6 +1075,7 @@
         ]
       },
       "slack": {
+        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
         "description": "Slack 工作区机器人——Socket 模式（websocket）或 Events API webhook。",
         "needs": [
           "Bot token（xoxb-…）。",
@@ -1070,12 +1083,14 @@
         ]
       },
       "telegram": {
+        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
         "description": "Telegram Bot API——轮询或 webhook 传输。",
         "needs": [
           "Bot token。"
         ]
       },
       "wecom": {
+        "label": "企业微信",
         "description": "企业微信 AI 机器人，基于 websocket，或企业应用 webhook 回调。",
         "needs": [
           "Corp id。",
@@ -1666,7 +1681,7 @@
       "editActionHint": "在渠道设置中打开编辑器",
       "pendingApproval": "待审批",
       "home": {
-        "connectedFor": "已连接",
+        "connectedFor": "在线时长",
         "membersFact": "成员",
         "adminsFact": "管理员",
         "pendingCount": "待批 {count}",
@@ -1680,7 +1695,7 @@
       },
       "detail": {
         "bot": "机器人 {id}",
-        "connectedFor": "已连接 {duration}",
+        "connectedFor": "在线 {duration}",
         "restarts": "重启 {count} 次",
         "capabilityReference": "能力参考"
       }
@@ -2775,7 +2790,8 @@
       "contract_violation": "适配器契约违规",
       "transport_transient": "网络问题——自动重试中",
       "rate_limited": "被平台限流",
-      "channel_degraded": "渠道已降级"
+      "channel_degraded": "渠道已降级",
+      "startup_failed": "启动失败——请检查凭证与配置"
     },
     "banner": {
       "label": "等待网关重启",

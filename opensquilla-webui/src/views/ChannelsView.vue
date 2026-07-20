@@ -73,14 +73,15 @@
               :enabled="selectedChannel.enabled"
               :pending-restart="pendingRestart.isPending(selectedName)"
               :error-class="lastErrorClass(selectedChannel.diagnostics)"
+              :startup-failed="startupFailure(selectedChannel.diagnostics)"
               show-cause
             />
             <span class="chd__fact">{{ transportLabel(selectedChannel, t('console.channels.notReported')) }}</span>
             <span v-if="selectedChannel.bot_user_id" class="chd__fact chd__fact--mono">{{ t('console.channels.detail.bot', { id: selectedChannel.bot_user_id }) }}</span>
-            <span v-if="selectedChannel.connected_since" class="chd__fact" :title="formatSince(selectedChannel.connected_since)">
+            <span v-if="selectedChannel.connected_since" class="chd__fact" :title="formatSince(selectedChannel.connected_since, locale)">
               {{ t('console.channels.detail.connectedFor', { duration: formatConnectedDuration(selectedChannel.connected_since) }) }}
             </span>
-            <span class="chd__fact">{{ t('console.channels.detail.restarts', { count: selectedChannel.restart_attempts ?? 0 }) }}</span>
+            <span class="chd__fact">{{ restartsLabel(selectedChannel) }}</span>
           </p>
         </div>
         <!-- Runtime ops first, then configuration writes, destructive Remove
@@ -253,6 +254,7 @@
               :enabled="ch.enabled"
               :pending-restart="pendingRestart.isPending(channelKey(ch))"
               :error-class="lastErrorClass(ch.diagnostics)"
+              :startup-failed="startupFailure(ch.diagnostics)"
             />
           </div>
           <div class="chb-card__facts">
@@ -415,6 +417,7 @@ import {
   CHANNEL_STATUS_ORDER,
   adapterLoaded,
   lastErrorClass,
+  startupFailure,
   statusPresentation,
   type ChannelStatusKey,
 } from '@/lib/channelStatus'
@@ -429,7 +432,7 @@ const STATUS_SEVERITY = Object.fromEntries(
 const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'configuration', 'diagnostics']
 const SECTIONS: SectionId[] = ['pairings', 'configuration', 'diagnostics']
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const rpc = useRpcStore()
 const router = useRouter()
 const route = useRoute()
@@ -547,19 +550,31 @@ onActivated(() => {
     void refresh().then(() => { if (!error.value) lastUpdatedAt.value = Date.now() })
   }, 30000)
   document.addEventListener('keydown', onDocumentKeydown)
+  // Returning to /channels while still drilled in: teardownLive removed the
+  // scrollspy on deactivate and the selectedChannel watcher will not re-fire
+  // (the value never changed), so the listener must be re-armed here.
+  if (selectedChannel.value) void nextTick(attachScrollSpy)
   lastUpdatedAt.value = Date.now()
 })
-onDeactivated(teardownLive)
+onDeactivated(() => {
+  teardownLive()
+  // Draft surfaces are dropped only AFTER the navigation finalizes: the
+  // route-leave guard below must not mutate watched state while vue-router
+  // still has a pending navigation, because the query watcher's replace
+  // would supersede (and silently cancel) the user's navigation. By the
+  // time onDeactivated runs, route.path has moved on, so syncQuery no-ops.
+  if (editMode.value) discardDraftAndExitEdit()
+  if (composeMode.value) exitCompose()
+})
 onUnmounted(teardownLive)
 
 // Route leave is a guarded exit for BOTH drafts: an unsaved edit or compose
 // draft raises its inline confirm and the navigation waits on the verdict.
-// Drafts are not persisted, so a confirmed leave discards them.
+// The guard only answers the confirm — the actual draft teardown happens in
+// onDeactivated, after the navigation has finalized (see above).
 onBeforeRouteLeave(async () => {
   if (draftDirty.value && !(await confirmDiscardDraft())) return false
-  if (editMode.value) discardDraftAndExitEdit()
   if (composeDirty.value && !(await confirmDiscardCompose())) return false
-  if (composeMode.value) exitCompose()
   return true
 })
 
@@ -586,6 +601,7 @@ function presentationFor(ch: Channel) {
     connected: ch.connected,
     pendingRestart: pendingRestart.isPending(channelKey(ch)),
     errorClass: lastErrorClass(ch.diagnostics),
+    startupFailed: startupFailure(ch.diagnostics),
   })
 }
 
@@ -598,49 +614,71 @@ function statusText(ch: Channel): string {
 // restart happened. Reconcile against RAW rows (incl. configured:false).
 watch(channelsData, data => {
   pendingRestart.reconcile(data?.channels || [])
+  // The 30s poll (and channel.status events) must surface new pairing
+  // requests: refetch facts for exactly the channels whose freshly reported
+  // pending count no longer matches the cached facts (or whose facts fetch
+  // previously failed).
+  const stale = channels.value
+    .filter(ch => {
+      if (typeof ch.pendingPairings !== 'number') return false
+      const facts = homeFacts.value[channelKey(ch)]
+      if (!facts) return false
+      return facts.pending == null || facts.pending.length !== ch.pendingPairings
+    })
+    .map(channelKey)
+  if (stale.length > 0) void loadHomeFacts(stale)
 })
 
 // ---------------------------------------------------------------------------
 // Home facts: the card grid renders REAL data only — per-channel pairings
 // (member counts + the inline pending request) fetched in parallel, plus ONE
-// bounded config read for channel_admin_senders. Nothing here is invented.
+// bounded config read for channel_admin_senders. Nothing here is invented;
+// a failed fetch degrades to "unknown" (rendered as —), never to hard zeros.
 // ---------------------------------------------------------------------------
 
 interface HomeFacts {
-  members: number
-  admins: number
-  pending: ChannelPairing[]
+  /** null = the pairings fetch for this channel failed (unknown). */
+  members: number | null
+  /** null = the admin map could not be read (unknown). */
+  admins: number | null
+  /** null = the pairings fetch for this channel failed (unknown). */
+  pending: ChannelPairing[] | null
 }
 
 const homeFacts = ref<Record<string, HomeFacts>>({})
 let homeFactsRequest = 0
 
-async function loadHomeFacts(): Promise<void> {
-  const names = channels.value.map(channelKey)
+async function loadHomeFacts(only?: string[]): Promise<void> {
+  const known = new Set(channels.value.map(channelKey))
+  const names = (only ?? [...known]).filter(name => known.has(name))
   if (names.length === 0) return
   const id = ++homeFactsRequest
   try {
     await rpc.waitForConnection()
-    const adminsPromise = rpc
+    // {} = known-empty (no admins configured anywhere); null = unknown (the
+    // read failed) — the two must not be conflated, or a transient failure
+    // would zero the admin count and re-arm the first-pairing bootstrap.
+    const adminsPromise: Promise<Record<string, unknown> | null> = rpc
       .call<Record<string, unknown> | null>('config.get', { path: 'channel_admin_senders' })
+      .then(map => record(map))
       .catch(() => null)
     const pairingsByName = await Promise.all(names.map(async name => {
       try {
         const res = await rpc.call<{ pairings?: ChannelPairing[] }>('channels.pairings', { channelName: name })
         return [name, (res?.pairings || []).filter(pairing => pairing.channelName === name)] as const
       } catch {
-        return [name, [] as ChannelPairing[]] as const
+        return [name, null] as const
       }
     }))
-    const adminsMap = record(await adminsPromise)
+    const adminsMap = await adminsPromise
     if (id !== homeFactsRequest) return
-    const next: Record<string, HomeFacts> = {}
+    const next: Record<string, HomeFacts> = { ...homeFacts.value }
     for (const [name, rows] of pairingsByName) {
-      const adminList = adminsMap[name]
+      const adminList = adminsMap ? adminsMap[name] : null
       next[name] = {
-        members: rows.filter(pairing => pairing.status === 'approved').length,
-        admins: Array.isArray(adminList) ? adminList.length : 0,
-        pending: rows.filter(pairing => pairing.status === 'pending'),
+        members: rows ? rows.filter(pairing => pairing.status === 'approved').length : null,
+        admins: adminsMap ? (Array.isArray(adminList) ? adminList.length : 0) : null,
+        pending: rows ? rows.filter(pairing => pairing.status === 'pending') : null,
       }
     }
     homeFacts.value = next
@@ -661,8 +699,8 @@ function cardFacts(ch: Channel): HomeFacts | undefined {
 }
 
 function factValue(ch: Channel, kind: 'members' | 'admins'): string {
-  const facts = cardFacts(ch)
-  return facts ? String(facts[kind]) : '—'
+  const value = cardFacts(ch)?.[kind]
+  return value == null ? '—' : String(value)
 }
 
 function connectedDuration(ch: Channel): string {
@@ -681,15 +719,19 @@ function shortId(id: string): string {
 }
 
 function cardPending(ch: Channel): ChannelPairing | null {
-  return cardFacts(ch)?.pending[0] || null
+  return cardFacts(ch)?.pending?.[0] || null
 }
 
 function cardPendingCount(ch: Channel): number {
-  return cardFacts(ch)?.pending.length ?? ch.pendingPairings ?? 0
+  // Prefer the freshly polled status count (channels.status refreshes every
+  // 30s); the detailed facts fill in when status does not report one.
+  if (typeof ch.pendingPairings === 'number') return ch.pendingPairings
+  return cardFacts(ch)?.pending?.length ?? 0
 }
 
 // First-pairing bootstrap: the "as admin" checkbox defaults on only when the
-// channel has no approved pairings and no admin senders yet.
+// channel is KNOWN to have no approved pairings and no admin senders. An
+// unknown state (either fetch failed) must never default the grant on.
 function cardDefaultAsAdmin(ch: Channel): boolean {
   const facts = cardFacts(ch)
   return Boolean(facts && facts.members === 0 && facts.admins === 0)
@@ -768,7 +810,7 @@ function fixCredentials(ch: Channel): void {
   applySelection(channelKey(ch))
   detailTab.value = 'configuration'
   editMode.value = true
-  ensureConfigurationLoaded()
+  void ensureConfigurationLoaded()
   pendingScrollTab.value = 'configuration'
   syncQuery('push')
 }
@@ -821,7 +863,7 @@ function enterEdit(): void {
   if (!selectedChannel.value) return
   detailTab.value = 'configuration'
   editMode.value = true
-  ensureConfigurationLoaded()
+  void ensureConfigurationLoaded()
   void nextTick(() => {
     scrollToSection('configuration')
     pageRef.value
@@ -835,12 +877,12 @@ async function requestExitEdit(): Promise<void> {
   discardDraftAndExitEdit()
 }
 
-function ensureConfigurationLoaded(): void {
+function ensureConfigurationLoaded(): Promise<void> {
   const name = selectedName.value
-  if (!name) return
-  if (editor.loadedName.value === name && editor.phase.value === 'active') return
-  if (editor.phase.value === 'loading') return
-  void editor.open(name)
+  if (!name) return Promise.resolve()
+  if (editor.loadedName.value === name && editor.phase.value === 'active') return Promise.resolve()
+  if (editor.phase.value === 'loading') return Promise.resolve()
+  return editor.open(name)
 }
 
 // Draft Test probes the CURRENT DRAFT (onboarding.channel.probe {entry});
@@ -1045,11 +1087,13 @@ function forceCloseDetail(): void {
 // The ONE hydration path for the drill-in page: click-driven entry and
 // query-driven activation (deep links, Back/forward, F5 restore) both mutate
 // selectedName, and the full page shows every section at once — so members
-// and configuration load together here.
+// and configuration load together here. The settle promise is retained so a
+// deep-linked section scroll can re-anchor once async content stops shifting
+// the layout.
+let hydration: Promise<unknown> = Promise.resolve()
 watch(selectedName, name => {
   if (!name) return
-  ensureConfigurationLoaded()
-  void members.load(name)
+  hydration = Promise.allSettled([ensureConfigurationLoaded(), members.load(name)])
 })
 
 // ---------------------------------------------------------------------------
@@ -1069,6 +1113,7 @@ const drillPendingList = computed(() =>
 const drillPending = computed(() => drillPendingList.value[0] || null)
 const drillPendingCount = computed(() => drillPendingList.value.length)
 const drillDefaultAsAdmin = computed(() =>
+  members.adminsKnown.value &&
   !members.pairings.value.some(pairing => pairing.status === 'approved') &&
   members.adminSenders.value.length === 0)
 const drillErrorText = computed(() =>
@@ -1088,8 +1133,9 @@ function scrollContainer(): HTMLElement | null {
   return (pageRef.value?.closest('.content') as HTMLElement | null) ?? null
 }
 
-function scrollToSection(tab: DetailTab): void {
-  const behavior: ScrollBehavior = prefersReducedMotion() ? 'auto' : 'smooth'
+function scrollToSection(tab: DetailTab, behaviorOverride?: ScrollBehavior): void {
+  const behavior: ScrollBehavior =
+    behaviorOverride ?? (prefersReducedMotion() ? 'auto' : 'smooth')
   if (tab === 'overview') {
     const container = scrollContainer()
     if (container) container.scrollTo?.({ top: 0, behavior })
@@ -1133,12 +1179,16 @@ watch(() => Boolean(selectedChannel.value), drilled => {
 
 // Deep-linked (or deferred) section scrolls run once the page has actually
 // mounted — a cold ?channel=X&tab=pairings load may resolve channels after
-// the query was parsed.
+// the query was parsed. Sections above the target keep hydrating async and
+// shift the layout, so the anchor is re-applied instantly once the page's
+// content settles.
 watch([selectedChannel, pendingScrollTab], ([ch, tab]) => {
   if (!ch || !tab) return
   const target = tab
   pendingScrollTab.value = null
   void nextTick(() => scrollToSection(target))
+  const settled = hydration
+  void settled.then(() => nextTick(() => scrollToSection(target, 'auto')))
 })
 
 async function removeChannel(ch: Channel): Promise<void> {
@@ -1177,6 +1227,27 @@ const queryMissing = computed(() =>
 
 const OWNED_QUERY_KEYS = ['channel', 'tab', 'edit', 'compose', 'type'] as const
 
+// Serialized owned-query of the LAST write this reducer issued (or the last
+// inbound query it parsed). The state watcher's replace is skipped when it
+// would write the same owned query again — which is what lets an explicit
+// history PUSH (drill-in, compose, fix-credentials) actually land: vue-router
+// treats any later navigation, even an identical replace, as superseding the
+// still-pending push and cancels it.
+let lastSyncedQuery = ''
+
+function serializeOwned(query: Record<string, string>): string {
+  return OWNED_QUERY_KEYS.map(key => `${key}=${query[key] ?? ''}`).join('&')
+}
+
+function ownedQueryOf(query: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const key of OWNED_QUERY_KEYS) {
+    const value = query[key]
+    if (typeof value === 'string') out[key] = value
+  }
+  return out
+}
+
 function detailQuery(): Record<string, string> {
   if (composeMode.value) {
     const query: Record<string, string> = { compose: '1' }
@@ -1194,9 +1265,16 @@ function detailQuery(): Record<string, string> {
 
 function syncQuery(mode: 'push' | 'replace'): void {
   if (route.path !== '/channels') return
+  const desired = detailQuery()
+  const serialized = serializeOwned(desired)
+  // No-op-safe writer: a replace that would re-write the current owned query
+  // is skipped, so the state watcher can never race (and cancel) a push
+  // issued in the same tick or a route leave already in flight.
+  if (mode === 'replace' && serialized === lastSyncedQuery) return
+  lastSyncedQuery = serialized
   const query: Record<string, string | null | (string | null)[]> = { ...route.query }
   for (const key of OWNED_QUERY_KEYS) delete query[key]
-  Object.assign(query, detailQuery())
+  Object.assign(query, desired)
   void router[mode]({ query })
 }
 
@@ -1206,26 +1284,70 @@ function normalizeTab(tab: string): DetailTab | '' {
   return DETAIL_TABS.includes(tab as DetailTab) ? (tab as DetailTab) : ''
 }
 
+/** The compose-enter/repick wipe, shared by the guarded and clean paths:
+ *  any drill-in closes and the picked-type form — or the gallery — restores
+ *  with an empty draft. */
+function applyComposeQuery(type: string): void {
+  selectedName.value = ''
+  editMode.value = false
+  editor.reset()
+  members.reset()
+  composeMode.value = true
+  composeType.value = type
+  composeEditor.reset()
+  if (type) void composeEditor.startCompose(type)
+  else void composeEditor.loadCatalog()
+}
+
+/** The channel-selection application, shared by the guarded and clean paths. */
+function applyChannelQuery(name: string, tab: DetailTab | '', edit: boolean): void {
+  applySelection(name)
+  detailTab.value = tab || 'overview'
+  pendingScrollTab.value = detailTab.value
+  if (edit) {
+    // A deep link straight into edit mode always lands on Configuration.
+    detailTab.value = 'configuration'
+    editMode.value = true
+    pendingScrollTab.value = 'configuration'
+  }
+}
+
+// Every query-driven transition that would destroy a draft takes the SAME
+// guards as its button-driven twin: compose enter/repick and channel switch
+// confirm a dirty edit/compose draft, compose exit confirms a dirty compose
+// draft, and leaving drill-in confirms a dirty edit draft. "Keep editing"
+// restores the previous URL with a replace.
 function applyDetailQuery(): void {
+  if (route.path !== '/channels') return
+  lastSyncedQuery = serializeOwned(ownedQueryOf(route.query))
   if (route.query.compose === '1') {
     const type = typeof route.query.type === 'string' ? route.query.type : ''
-    if (!composeMode.value || composeType.value !== type) {
-      // Entering (or re-typing) compose from the URL: any drill-in closes and
-      // the picked-type form — or the gallery — restores with an empty draft.
-      selectedName.value = ''
-      editMode.value = false
-      editor.reset()
-      members.reset()
-      composeMode.value = true
-      composeType.value = type
-      composeEditor.reset()
-      if (type) void composeEditor.startCompose(type)
-      else void composeEditor.loadCatalog()
+    if (composeMode.value && composeType.value === type) return
+    const dirty = composeMode.value ? composeDirty.value : draftDirty.value
+    if (dirty) {
+      const confirmDiscard = composeMode.value ? confirmDiscardCompose : confirmDiscardDraft
+      void confirmDiscard().then(ok => {
+        if (ok) applyComposeQuery(type)
+        else syncQuery('replace')
+      })
+      return
     }
+    applyComposeQuery(type)
     return
   }
   if (composeMode.value) {
-    // Back (or a bare /channels URL) exits compose; drafts are not persisted.
+    // Back (or a bare /channels URL) exits compose — guarded when dirty.
+    if (composeDirty.value) {
+      void confirmDiscardCompose().then(ok => {
+        if (ok) {
+          exitCompose()
+          applyDetailQuery()
+        } else {
+          syncQuery('replace')
+        }
+      })
+      return
+    }
     exitCompose()
   }
   const name = typeof route.query.channel === 'string' ? route.query.channel : ''
@@ -1246,10 +1368,17 @@ function applyDetailQuery(): void {
     return
   }
   if (name !== selectedName.value) {
-    applySelection(name)
-    detailTab.value = tab || 'overview'
-    pendingScrollTab.value = detailTab.value
-  } else if (tab && tab !== detailTab.value) {
+    if (selectedName.value && draftDirty.value) {
+      void confirmDiscardDraft().then(ok => {
+        if (ok) applyChannelQuery(name, tab, edit)
+        else syncQuery('replace')
+      })
+      return
+    }
+    applyChannelQuery(name, tab, edit)
+    return
+  }
+  if (tab && tab !== detailTab.value) {
     detailTab.value = tab
     pendingScrollTab.value = tab
   }
@@ -1341,6 +1470,12 @@ async function toggleChannel(ch: Channel): Promise<void> {
 }
 
 function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
+
+// Pluralized restart count for the header facts line ("1 restart").
+function restartsLabel(ch: Channel): string {
+  const count = ch.restart_attempts ?? 0
+  return t('console.channels.detail.restarts', { count }, count)
+}
 
 function platformStatusLabel(status: string): string {
   if (status === 'supported') return t('console.channels.supported')
@@ -1516,18 +1651,22 @@ function probeResultDetail(ch: Channel): string {
 .ch-proof.is-declared { color: var(--text-dim); }
 .is-warn { color: var(--warn); }
 
-/* ===== floating dirty bar: bottom-center pill over the scrolling page ===== */
-.chd-dirtybar { bottom: calc(var(--sp-4) + env(safe-area-inset-bottom, 0px)); left: 50%; position: fixed; transform: translateX(-50%); width: min(720px, calc(100vw - 32px)); z-index: 45; }
+/* ===== floating dirty bar: bottom-center pill over the scrolling page =====
+   Sticky (not fixed): it centers on the CONTENT column — fixed positioning
+   would center on the viewport and drift off-axis by half the app sidebar. */
+.chd-dirtybar { bottom: var(--sp-4); margin: 0 auto; position: sticky; width: min(720px, 100%); z-index: 45; }
 .chd-dirtybar :deep(.ceb) { border: 1px solid var(--border-strong, var(--border)); border-radius: var(--radius-lg); box-shadow: var(--elev-3); position: static; }
 .ceb-slide-enter-active, .ceb-slide-leave-active { transition: transform var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out); }
-.ceb-slide-enter-from, .ceb-slide-leave-to { opacity: 0; transform: translateX(-50%) translateY(16px); }
+.ceb-slide-enter-from, .ceb-slide-leave-to { opacity: 0; transform: translateY(16px); }
 @media (prefers-reduced-motion: reduce) {
   .ceb-slide-enter-active, .ceb-slide-leave-active { transition: none; }
 }
 
 @media (max-width: 900px) {
   .chd__cols { grid-template-columns: minmax(0, 1fr); }
-  .chd__nav { flex-direction: row; overflow-x: auto; position: static; }
+  /* The section nav stays pinned under the floating topbar while the page
+     scrolls, so jumping between sections never requires scrolling back up. */
+  .chd__nav { background: var(--bg-surface); flex-direction: row; overflow-x: auto; padding: var(--sp-1) 0; position: sticky; top: 48px; z-index: 5; }
   .chd__nav button { white-space: nowrap; }
   .chd__actions { margin-left: 0; }
 }
@@ -1539,9 +1678,6 @@ function probeResultDetail(ch: Channel): string {
   .ch-stage__actions { justify-content: stretch; }
   .ch-stage__actions .btn { flex: 1; }
   .chb__grid { grid-template-columns: minmax(0, 1fr); }
-  /* The floating bar ends above the mobile tab bar (z-60, 56px + safe area)
-     so it is never covered. */
-  .chd-dirtybar { bottom: calc(var(--mobile-tabbar-h, 56px) + env(safe-area-inset-bottom, 0px) + 12px); }
   /* Touch-target floor for the compact controls this view introduces. */
   .chb-card__foot .btn { min-height: 40px; }
   .chd__nav button { min-height: 44px; }

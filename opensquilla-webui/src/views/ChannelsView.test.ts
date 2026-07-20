@@ -10,6 +10,7 @@ const channelRows = [
     enabled: true,
     configured: true,
     connected_since: '2026-07-13T08:00:00Z',
+    restart_attempts: 1,
     bot_user_id: 'U-BOT',
     capability_profile: {
       transports: ['webhook'],
@@ -83,6 +84,20 @@ const channelRows = [
     diagnostics: { network_probe: 'not_run' },
   },
   {
+    // Failed during gateway start: wire status is "stopped" but the
+    // diagnostics carry the startup error (source: start_error).
+    name: 'boot-failed-slack',
+    type: 'slack',
+    status: 'stopped',
+    connected: false,
+    enabled: true,
+    configured: true,
+    diagnostics: {
+      network_probe: 'not_run',
+      last_error: { message: 'invalid app credentials', error_class: 'auth_invalid', source: 'start_error' },
+    },
+  },
+  {
     name: 'ghost-runtime',
     type: 'slack',
     status: 'connected',
@@ -110,6 +125,10 @@ function channelCard(root: ParentNode, name: string): HTMLElement {
 async function mountChannelsView(options: {
   loadPairings?: (params?: Record<string, unknown>) => Promise<unknown>
   adminSenders?: Record<string, string[]>
+  /** Override the initial pairing rows served by the channels.pairings mock. */
+  initialPairings?: Array<Record<string, unknown>>
+  /** When set, config.get rejects (admin counts become unknown). */
+  configGetError?: boolean
   /** When set, onboarding.channel.probe rejects with this message. */
   draftProbeError?: { message: string }
   /** Initial route query (deep-link scenarios). */
@@ -132,7 +151,7 @@ async function mountChannelsView(options: {
   const push = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
   const pushToast = vi.fn()
   const confirm = vi.fn(async () => true)
-  let pairings: Array<{
+  interface PairingRow {
     pairingId: string
     pairingCode?: string
     channelName: string
@@ -141,7 +160,10 @@ async function mountChannelsView(options: {
     status: string
     createdAt?: string
     approvedAt?: string
-  }> = [
+  }
+  let pairings: PairingRow[] = options.initialPairings
+    ? options.initialPairings.map(pairing => ({ ...pairing }) as unknown as PairingRow)
+    : [
     {
       pairingId: 'pair-pending',
       pairingCode: 'AB12CD34',
@@ -205,9 +227,24 @@ async function mountChannelsView(options: {
       { name: 'domain', label: 'Domain', type: 'select', default: 'feishu', choices: ['feishu', 'lark'] },
     ],
   }
+  // No dedicated credential/secret fields: the gallery footnote must fall
+  // back to the required fields instead of rendering blank.
+  const matrixSpec = {
+    type: 'matrix',
+    label: 'Matrix',
+    description: 'Matrix homeserver client.',
+    transport: 'http_sync',
+    setupAids: [],
+    fields: [
+      { name: 'name', label: 'Channel name', type: 'text', required: true },
+      { name: 'homeserver_url', label: 'Homeserver URL', type: 'text', required: true },
+      { name: 'user_id', label: 'User id (@user:server)', type: 'text', required: true },
+      { name: 'access_token', label: 'Access token', type: 'password', required: false, secret: true, default: '' },
+    ],
+  }
   const rpcCall = vi.fn(async (method: string, params?: Record<string, unknown>) => {
     if (method === 'onboarding.catalog') {
-      return { channels: [slackSpec, feishuSpec] }
+      return { channels: [slackSpec, feishuSpec, matrixSpec] }
     }
     if (method === 'onboarding.channel.probe') {
       if (options.draftProbeError) throw new Error(options.draftProbeError.message)
@@ -241,6 +278,7 @@ async function mountChannelsView(options: {
     if (method === 'config.get') {
       // Card facts and the members panel read only the channel_admin_senders
       // map (bounded path read), mirroring the registry's dot-path navigation.
+      if (options.configGetError) throw new Error('config read failed')
       if (params?.path === 'channel_admin_senders') return { ...adminSendersMap }
       return {}
     }
@@ -294,6 +332,9 @@ async function mountChannelsView(options: {
   })
 
   const replace = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
+  // Mutable status snapshot: tests drive the 30s-poll divergence path by
+  // swapping this ref's value.
+  const channelsData = ref<{ channels: Array<Record<string, unknown>> }>({ channels: channelRows })
   vi.doMock('vue-router', () => ({
     useRouter: () => ({ push, replace }),
     useRoute: () => ({ path: '/channels', query: { ...(options.routeQuery || {}) }, hash: '' }),
@@ -308,7 +349,7 @@ async function mountChannelsView(options: {
   }))
   vi.doMock('@/composables/useRequest', () => ({
     useRequest: () => ({
-      data: ref({ channels: channelRows }),
+      data: channelsData,
       loading: ref(false),
       error: ref(null),
       execute,
@@ -344,7 +385,7 @@ async function mountChannelsView(options: {
     await nextTick()
   }
 
-  return { app, el, flush, nextTick, rpcCall, refresh, confirm, pushToast, push, replace, scrollIntoView }
+  return { app, el, flush, nextTick, rpcCall, refresh, confirm, pushToast, push, replace, scrollIntoView, channelsData }
 }
 
 type Ctx = Awaited<ReturnType<typeof mountChannelsView>>
@@ -403,6 +444,17 @@ describe('ChannelsView dashboard home', () => {
       expect(ops.textContent).toContain('Pending User')
       expect(ops.textContent).toContain('AB12CD34')
 
+      // The shared pairings response is filtered per channel: ops-slack's
+      // rows must not leak onto other cards as members or pending banners.
+      for (const name of ['alerts-telegram', 'dead-telegram', 'off-discord']) {
+        const other = channelCard(el, name)
+        const values = Array.from(other.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+        expect(values[1]).toBe('0')
+        expect(other.textContent).not.toContain('Pending User')
+        expect(other.querySelector('.chb-card__pending')).toBeNull()
+        expect(other.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
+      }
+
       // Unconfigured runtime channel renders as a muted, non-drillable card.
       const ghost = channelCard(el, 'ghost-runtime')
       expect(ghost.classList.contains('is-muted')).toBe(true)
@@ -436,7 +488,7 @@ describe('ChannelsView dashboard home', () => {
   })
 
   it('approves a pending pairing on the card without asAdmin when unchecked', async () => {
-    const { app, el, flush, rpcCall } = await mountChannelsView()
+    const { app, el, flush, rpcCall, push } = await mountChannelsView()
     try {
       await flush()
       const ops = channelCard(el, 'ops-slack')
@@ -455,6 +507,7 @@ describe('ChannelsView dashboard home', () => {
       // The banner clears once the facts reload shows no pending request.
       expect(el.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
       expect(el.querySelector('.chd')).toBeNull()
+      expect(push).not.toHaveBeenCalled()
     } finally {
       app.unmount()
     }
@@ -561,6 +614,144 @@ describe('ChannelsView dashboard home', () => {
       app.unmount()
     }
   })
+
+  it('presents a startup-failed stopped channel as danger with its error', async () => {
+    const { app, el, flush } = await mountChannelsView()
+    try {
+      await flush()
+      const card = channelCard(el, 'boot-failed-slack')
+      // Wire status is "stopped", but the start_error diagnostics escalate
+      // the presentation to Failed — never a muted "Not running".
+      expect(card.querySelector('.chs')?.textContent).toContain('Failed')
+      expect(card.querySelector('.chs.is-danger')).toBeTruthy()
+      expect(card.textContent).toContain('invalid app credentials')
+      expect(buttonWithText(card, 'Fix credentials')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('degrades member facts to — when the pairings fetch fails and falls back to the status pending count', async () => {
+    const loadPairings = vi.fn(async () => {
+      throw new Error('store offline')
+    })
+    const ctx = await mountChannelsView({
+      loadPairings,
+      adminSenders: { 'ops-slack': ['U-APPROVED'] },
+    })
+    const { app, el, flush, channelsData } = ctx
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      const values = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      // Unknown member data reads as —, never as a hard zero; the admin
+      // count still renders because config.get succeeded.
+      expect(values[1]).toBe('—')
+      expect(values[2]).toBe('1')
+      expect(ops.querySelector('.chb-card__pending')).toBeNull()
+
+      // channels.status still reports a pending count → the badge falls back
+      // to it instead of hiding the requests.
+      channelsData.value = {
+        channels: channelRows.map(ch =>
+          ch.name === 'ops-slack' ? { ...ch, pendingPairings: 3 } : ch),
+      }
+      await flush()
+      await flush()
+      expect(channelCard(el, 'ops-slack').querySelector('.chb-card__pending')?.textContent)
+        .toContain('3')
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('keeps the as-admin bootstrap OFF when the admin list is unknown', async () => {
+    const loadPairings = vi.fn(async () => ({
+      pairings: [{
+        pairingId: 'pair-first',
+        channelName: 'ops-slack',
+        senderId: 'U-FIRST',
+        senderName: 'First User',
+        status: 'pending',
+      }],
+    }))
+    const { app, el, flush } = await mountChannelsView({ loadPairings, configGetError: true })
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      const values = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      expect(values[2]).toBe('—')
+      // No approved members, but the admin list is UNKNOWN — the bootstrap
+      // default must not arm the grant on a failed read.
+      const checkbox = ops.querySelector<HTMLInputElement>(
+        '[aria-label="Approve First User as a channel admin"]')!
+      expect(checkbox.checked).toBe(false)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('refetches facts when the status poll reports a diverging pending count', async () => {
+    const { app, el, flush, rpcCall, channelsData } = await mountChannelsView()
+    try {
+      await flush()
+      const callsFor = (name: string) => rpcCall.mock.calls
+        .filter(([method, params]) => method === 'channels.pairings' && params?.channelName === name)
+        .length
+      const opsBefore = callsFor('ops-slack')
+      const telegramBefore = callsFor('alerts-telegram')
+
+      channelsData.value = {
+        channels: channelRows.map(ch =>
+          ch.name === 'ops-slack' ? { ...ch, pendingPairings: 2 } : ch),
+      }
+      await flush()
+      await flush()
+      // Only the diverging channel refetches; the fresh status count drives
+      // the badge immediately.
+      expect(callsFor('ops-slack')).toBeGreaterThan(opsBefore)
+      expect(callsFor('alerts-telegram')).toBe(telegramBefore)
+      expect(channelCard(el, 'ops-slack').querySelector('.chb-card__pending')?.textContent)
+        .toContain('2')
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('resets the as-admin override when the banner moves to the next pairing', async () => {
+    const { app, el, flush, nextTick, rpcCall } = await mountChannelsView({
+      initialPairings: [
+        { pairingId: 'pair-alpha', channelName: 'ops-slack', senderId: 'U-ALPHA', senderName: 'Alpha', status: 'pending' },
+        { pairingId: 'pair-beta', channelName: 'ops-slack', senderId: 'U-BETA', senderName: 'Beta', status: 'pending' },
+        { pairingId: 'pair-approved', channelName: 'ops-slack', senderId: 'U-OK', senderName: 'Existing', status: 'approved' },
+      ],
+    })
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      // Tick as-admin for Alpha explicitly (bootstrap is off: a member exists).
+      const alphaBox = ops.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Alpha as a channel admin"]')!
+      expect(alphaBox.checked).toBe(false)
+      alphaBox.checked = true
+      alphaBox.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for Alpha"]')!.click()
+      await flush()
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
+        channelName: 'ops-slack',
+        pairingId: 'pair-alpha',
+        asAdmin: true,
+      })
+      // The banner now shows Beta — Alpha's explicit override must NOT leak.
+      const betaBox = el.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Beta as a channel admin"]')!
+      expect(betaBox.checked).toBe(false)
+    } finally {
+      app.unmount()
+    }
+  })
 })
 
 describe('ChannelsView drill-in page', () => {
@@ -574,6 +765,9 @@ describe('ChannelsView drill-in page', () => {
         query: expect.objectContaining({ channel: 'ops-slack', tab: 'overview' }),
       }))
       expect(page.querySelector('h2')?.textContent).toBe('ops-slack')
+      // The restarts fact pluralizes: 1 → singular.
+      expect(page.textContent).toContain('1 restart')
+      expect(page.textContent).not.toContain('1 restarts')
 
       // All sections mount together: members and configuration hydrate on entry.
       expect(rpcCall).toHaveBeenCalledWith('channels.pairings', { channelName: 'ops-slack' })
@@ -875,6 +1069,37 @@ describe('ChannelsView members section', () => {
       app.unmount()
     }
   })
+
+  it('anchors the bootstrap default to the unfiltered first request, not the search match', async () => {
+    const ctx = await mountChannelsView({
+      initialPairings: [
+        { pairingId: 'pair-alpha', channelName: 'ops-slack', senderId: 'U-ALPHA', senderName: 'Alpha', status: 'pending' },
+        { pairingId: 'pair-beta', channelName: 'ops-slack', senderId: 'U-BETA', senderName: 'Beta', status: 'pending' },
+      ],
+    })
+    const { app, flush, nextTick } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const panel = membersPanel(page)
+      // No members, no admins: the FIRST request carries the bootstrap default.
+      expect(panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Alpha as a channel admin"]')!.checked).toBe(true)
+      expect(panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Beta as a channel admin"]')!.checked).toBe(false)
+
+      // Filtering to Beta must NOT move the pre-checked default onto it.
+      const search = panel.querySelector<HTMLInputElement>('.ch-pairing-search input')!
+      search.value = 'Beta'
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+      expect(panel.querySelector('[aria-label="Approve Alpha as a channel admin"]')).toBeNull()
+      expect(panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Beta as a channel admin"]')!.checked).toBe(false)
+    } finally {
+      app.unmount()
+    }
+  })
 })
 
 describe('ChannelsView in-place configuration editor', () => {
@@ -960,7 +1185,9 @@ describe('ChannelsView in-place configuration editor', () => {
       await flush()
       channelCard(el, 'alerts-telegram').click()
       await flush()
-      const telegramWrites = replace.mock.calls
+      // Entering the drill lands as a push; later state writes replace — the
+      // query must never inherit edit=1 on either channel.
+      const telegramWrites = [...replace.mock.calls, ...ctx.push.mock.calls]
         .map(call => call[0]?.query)
         .filter(query => query?.channel === 'alerts-telegram')
       expect(telegramWrites.length).toBeGreaterThan(0)
@@ -1205,12 +1432,17 @@ describe('ChannelsView compose takeover', () => {
       // Latin-locale order leads with Slack; the title names the step.
       const types = Array.from(surface.querySelectorAll('[data-channel-type]'))
         .map(node => node.getAttribute('data-channel-type'))
-      expect(types).toEqual(['slack', 'feishu'])
+      expect(types).toEqual(['slack', 'matrix', 'feishu'])
       expect(surface.querySelector('.chc__title')?.textContent).toContain('Choose a platform')
 
       const slackCard = surface.querySelector<HTMLElement>('[data-channel-type="slack"]')!
       expect(slackCard.querySelector('.brand-mark')).toBeTruthy()
       expect(slackCard.querySelector('.ctg__cred')?.textContent).toBe('Bot token · Signing secret')
+      // Matrix has no dedicated credential fields — the footnote derives from
+      // its required fields instead of rendering blank.
+      const matrixCard = surface.querySelector<HTMLElement>('[data-channel-type="matrix"]')!
+      expect(matrixCard.querySelector('.ctg__cred')?.textContent)
+        .toBe('Homeserver URL · User id (@user:server)')
       // Transport badges and descriptions are gone from the gallery.
       expect(surface.querySelector('.ctg__transport')).toBeNull()
       expect(surface.querySelector('.ctg__desc')).toBeNull()
@@ -1222,7 +1454,7 @@ describe('ChannelsView compose takeover', () => {
     }
   })
 
-  it('orders the gallery for zh locales with the CN platforms first', async () => {
+  it('orders the gallery for zh locales with the CN platforms first, names localized', async () => {
     const ctx = await mountChannelsView({ locale: 'zh-Hans' })
     try {
       await ctx.flush()
@@ -1231,7 +1463,10 @@ describe('ChannelsView compose takeover', () => {
       const surface = ctx.el.querySelector<HTMLElement>('.chc')!
       const types = Array.from(surface.querySelectorAll('[data-channel-type]'))
         .map(node => node.getAttribute('data-channel-type'))
-      expect(types).toEqual(['feishu', 'slack'])
+      expect(types).toEqual(['feishu', 'slack', 'matrix'])
+      // Platform display names come through the catalog i18n overlay.
+      expect(surface.querySelector('[data-channel-type="feishu"] .ctg__name')?.textContent)
+        .toBe('飞书（Lark）')
     } finally {
       ctx.app.unmount()
     }

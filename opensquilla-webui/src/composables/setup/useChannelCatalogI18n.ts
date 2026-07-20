@@ -17,6 +17,12 @@ export function useChannelCatalogI18n() {
     return tr(`setup.channelCatalog.${type}.description`, fallback || '')
   }
 
+  // Platform display name: localized when the overlay carries one (the CN
+  // platforms read as 飞书/企业微信/钉钉/QQ 机器人 in zh), else the backend label.
+  function localizeLabel(type: string, fallback: string): string {
+    return tr(`setup.channelCatalog.${type}.label`, fallback)
+  }
+
   function localizeNeeds(type: string, fallback?: string[]): string[] {
     // `te` reports false for array messages, so probe the resolved value:
     // tm returns the localized array when present, else a non-array to fall back.
@@ -53,6 +59,7 @@ export function useChannelCatalogI18n() {
 
   return {
     localizeDescription,
+    localizeLabel,
     localizeNeeds,
     localizeFieldLabel,
     localizeFieldDescription,

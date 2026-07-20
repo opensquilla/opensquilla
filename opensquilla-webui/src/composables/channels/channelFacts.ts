@@ -74,10 +74,13 @@ export function transportLabel(ch: Channel, notReported = ''): string {
   return STATIC_TRANSPORT[String(ch.type || '').toLowerCase()] || notReported
 }
 
-export function formatSince(since?: string | number | null): string {
+export function formatSince(
+  since?: string | number | null,
+  locale?: string,
+): string {
   if (!since) return '—'
   const date = new Date(since)
-  return Number.isNaN(date.getTime()) ? String(since) : date.toLocaleString()
+  return Number.isNaN(date.getTime()) ? String(since) : date.toLocaleString(locale)
 }
 
 /**

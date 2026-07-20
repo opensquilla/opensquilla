@@ -280,30 +280,67 @@ Primero se vacía y detiene el gateway en ejecución, la eliminación se mantien
 
 ## Privacidad de la instalación
 
-OpenSquilla utiliza telemetría de instalación anónima para estimar el número de instalaciones, la adopción de versiones y la compatibilidad en tiempo de ejecución. Los datos se envían en el primer arranque del gateway y una vez por cada versión de OpenSquilla. Las cargas usan un tiempo de espera corto y nunca bloquean el arranque.
+OpenSquilla utiliza telemetría de instalación anónima para estimar el número de
+instalaciones, la adopción de versiones y la compatibilidad en tiempo de ejecución. Los
+datos se envían únicamente cuando el gateway se inicia por primera vez y solo una vez
+por cada versión de OpenSquilla. También agrega localmente, por fecha UTC, el número de
+turnos de conversación de nivel superior completados y el uso de tokens. Al arrancar y
+después cada hora, OpenSquilla intenta enviar al mismo servicio de telemetría las
+instantáneas acumuladas pendientes del día UTC. OpenSquilla también puede realizar
+comprobaciones pasivas de actualizaciones, incluidas las realizadas al iniciar la
+aplicación de escritorio y, como máximo, una vez al día mientras la aplicación continúa
+en ejecución. Las cargas usan un tiempo de espera corto y nunca bloquean el arranque.
 
 Lo que se envía:
 
 - versión del esquema
 - resumen (digest) `install_id` estable generado localmente
 - versión de OpenSquilla
-- tipo de evento (`install` o `version_seen`)
+- tipo de evento (`install`, `version_seen` o `daily_usage`)
 - método de instalación (`pip`, `source`, `docker`, `desktop` o `unknown`)
 - sistema operativo, versión del SO, arquitectura de CPU y versión mayor/menor de Python
 - marcas de tiempo de primera detección y de envío
 - marcador de entorno de CI/pruebas (`ci_environment`)
+- en los eventos de uso diario: fecha UTC, número de turnos completados y totales de
+  tokens de entrada, salida, caché y escritura en caché
 
 El `install_id` es un resumen SHA-256 local y unidireccional derivado de direcciones MAC utilizables, luego de direcciones IP locales cuando no hay ninguna MAC disponible, con un valor aleatorio persistente de reserva. Los valores MAC/IP en bruto no se cargan.
 
 Lo que no se envía: nombres de usuario, nombres de host, rutas, claves de API, configuración de proveedores, contenido de chat/sesión/memoria/agente, nombres de archivo ni contenido de archivos. La IP de origen puede ser visible para los servidores HTTP en la capa de transporte, pero no forma parte de la carga útil.
 
-Para optar por no participar:
+Para desactivar antes del arranque toda observabilidad de red no iniciada por el
+usuario:
+
+```sh
+OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
+```
+
+O en la configuración:
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+Este interruptor unificado abarca la telemetría automática de instalación, la
+telemetría de uso diario agregada, las comprobaciones pasivas de actualizaciones y las
+comprobaciones automáticas realizadas al iniciar la aplicación de escritorio y mientras
+continúa en ejecución. Mientras siga activado el interruptor unificado o uno de los
+interruptores de desactivación compatibles, ni siquiera una comprobación de
+actualizaciones iniciada explícitamente por el usuario podrá omitirlo. Otras acciones
+iniciadas por el usuario todavía pueden acceder a servicios de red después de expresar
+una intención clara, por ejemplo, abrir la página de versiones, descargar archivos de
+una versión o utilizar proveedores, búsquedas o canales configurados.
+
+Las variables de entorno anteriores siguen siendo compatibles:
 
 ```sh
 OPENSQUILLA_TELEMETRY_DISABLED=true
+OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-Las implementaciones avanzadas pueden usar su propio endpoint:
+Las implementaciones avanzadas pueden usar su propio endpoint de telemetría de
+instalación:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install

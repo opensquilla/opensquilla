@@ -362,9 +362,9 @@ full reference.
 OpenSquilla uses anonymous installation telemetry to estimate install counts,
 version adoption, and runtime compatibility. Data is sent on first gateway
 startup and once per OpenSquilla version. It also records content-free daily
-aggregates for completed top-level conversations and attempts to upload pending
-cumulative UTC-day snapshots at startup and once per hour through the same
-telemetry service's dedicated `/v1/usage` route. OpenSquilla may also make
+aggregates of completed top-level conversations and token usage by UTC date,
+and attempts to upload pending cumulative UTC-day snapshots to the telemetry
+service at startup and once per hour. OpenSquilla may also make
 passive update checks, including automatic desktop update checks at startup
 and, while the app remains open, at most once per day. Uploads use a short
 timeout and never block startup.
@@ -423,11 +423,10 @@ OPENSQUILLA_TELEMETRY_DISABLED=true
 OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-Advanced deployments can use independent routes on their own telemetry service:
+Advanced deployments can use their own installation telemetry endpoint:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
-OPENSQUILLA_USAGE_TELEMETRY_ENDPOINT=https://example.com/v1/usage
 ```
 
 ---

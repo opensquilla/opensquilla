@@ -315,10 +315,9 @@ opensquilla uninstall --purge-all      # 全部（会要求你输入确认）
 
 OpenSquilla 使用匿名安装遥测来估算安装数量、版本采纳情况和运行时兼容性。数据只在网关
 首次启动时上报，并且每个 OpenSquilla 版本只上报一次。它还会在本地按 UTC 日期汇总已完成
-的顶层对话次数和 token 用量，并在启动时及此后每小时通过同一遥测服务的 `/v1/usage`
-专用路由尝试上报待发送的 UTC 当日累计快照。OpenSquilla 也可能执行被动更新
-检查，包括桌面启动时以及应用持续运行期间最多每日一次的自动更新检查。上传设了很短的
-超时，绝不会阻塞启动。
+的顶层对话次数和 token 用量，并在启动时及此后每小时尝试向遥测服务上报待发送的 UTC
+当日累计快照。OpenSquilla 也可能执行被动更新检查，包括桌面启动时以及应用持续运行期间
+最多每日一次的自动更新检查。上传设了很短的超时，绝不会阻塞启动。
 
 发送的内容:
 
@@ -360,11 +359,10 @@ OPENSQUILLA_TELEMETRY_DISABLED=true
 OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-进阶部署可以在自己的遥测服务上配置独立路由:
+进阶部署可以使用自己的安装遥测端点:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
-OPENSQUILLA_USAGE_TELEMETRY_ENDPOINT=https://example.com/v1/usage
 ```
 
 ---

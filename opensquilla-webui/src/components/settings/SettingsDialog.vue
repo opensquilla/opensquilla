@@ -224,7 +224,10 @@
             />
             <SettingsAppearancePanel v-else-if="section === 'appearance'" />
             <SettingsKeyboardPanel v-else-if="section === 'keyboard'" />
-            <SettingsAdvancedPanel v-else-if="section === 'advanced'" />
+            <SettingsAdvancedPanel
+              v-else-if="section === 'advanced'"
+              @open-agent-configuration="openAgentConfiguration"
+            />
           </template>
         </div>
       </div>
@@ -406,6 +409,7 @@ let returnTo: string | null = null
 let invokerEl: HTMLElement | null = null
 let mq: MediaQueryList | null = null
 let closing = false
+let transferringFocus = false
 
 const routeParam = computed(() => route.params.section)
 // `/setup` → `/settings/auto` asks for the first not-ready section once
@@ -531,6 +535,26 @@ function closeOverlay() {
   visible.value = false
 }
 
+// This is an intentional modal-to-page transition, not a Settings close/back
+// action. Suppress the old invoker restoration while routing, then focus the
+// destination heading so keyboard and screen-reader users perceive the change.
+async function openAgentConfiguration() {
+  if (transferringFocus) return
+  transferringFocus = true
+  try {
+    const failure = await router.push('/agents')
+    if (failure) {
+      transferringFocus = false
+      return
+    }
+    await nextTick()
+    document.getElementById('agents-page-title')?.focus()
+  } catch (error) {
+    transferringFocus = false
+    throw error
+  }
+}
+
 // One discard prompt shared by every exit path: requestClose (Escape, the
 // close button, backdrop click) and the history-back leave guard below.
 function confirmDiscard(): Promise<boolean> {
@@ -647,7 +671,7 @@ onUnmounted(() => {
   // A route-driven unmount that did not go through closeOverlay (e.g. the user
   // pressed browser Back) still owes focus restoration: the real invoker, or
   // the sidebar Settings button for a cold deep link, never a detached node.
-  if (!closing) (usableInvoker() ?? sidebarSettingsButton())?.focus()
+  if (!closing && !transferringFocus) (usableInvoker() ?? sidebarSettingsButton())?.focus()
   invokerEl = null
 })
 </script>

@@ -2,7 +2,11 @@
   <div class="ag-stage control-stage">
     <header class="ag-stage__header control-stage__header">
       <div class="ag-stage__title-block control-stage__title-block">
-        <h1 class="ag-stage__title control-stage__title">{{ t('console.agents.title') }}</h1>
+        <h1
+          id="agents-page-title"
+          class="ag-stage__title control-stage__title"
+          tabindex="-1"
+        >{{ t('console.agents.title') }}</h1>
         <p class="ag-stage__subtitle control-stage__subtitle">{{ t('console.agents.subtitle') }}</p>
       </div>
       <div class="ag-stage__actions control-stage__actions">

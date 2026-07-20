@@ -48,9 +48,11 @@ export const sharedRoutes: RouteRecordRaw[] = [
   // degrade gracefully
   // (openBlockedApprovalSession() routes straight to the blocked chat first).
   { path: '/approvals', redirect: '/sessions' },
-  { path: '/agents',    name: 'agents',    component: AgentsView,    meta: { title: 'Agents', group: 'Operate', icon: 'agents', nav: 'primary', navOrder: 40, platforms: ['web', 'desktop'], keepAlive: true } },
-  { path: '/cron',      name: 'cron',      component: CronView,      meta: { title: 'Cron', group: 'Operate', icon: 'cron', nav: 'primary', navOrder: 55, platforms: ['web', 'desktop'], keepAlive: true } },
-  { path: '/skills',    name: 'skills',    component: SkillsView,    meta: { title: 'Skills', group: 'Operate', icon: 'skills', nav: 'primary', navOrder: 45, platforms: ['web', 'desktop'], keepAlive: true } },
+  // Agent administration remains available as an advanced deep link, but is
+  // intentionally absent from primary navigation and cold-start restoration.
+  { path: '/agents',    name: 'agents',    component: AgentsView,    meta: { title: 'Agents', icon: 'agents', platforms: ['web', 'desktop'], keepAlive: true } },
+  { path: '/skills',    name: 'skills',    component: SkillsView,    meta: { title: 'Skills', group: 'Work', icon: 'skills', nav: 'primary', navOrder: 40, platforms: ['web', 'desktop'], keepAlive: true } },
+  { path: '/cron',      name: 'cron',      component: CronView,      meta: { title: 'Cron', group: 'Work', icon: 'cron', nav: 'primary', navOrder: 50, platforms: ['web', 'desktop'], keepAlive: true } },
   // Editorial surface (read, not operated): the first route to opt into an
   // Axis-B expressive skin. Not in the primary nav — reached by URL / links.
   { path: '/changelog', name: 'changelog', component: ChangelogView, meta: { title: 'Changelog', platforms: ['web', 'desktop'], skin: 'out-of-register' } },

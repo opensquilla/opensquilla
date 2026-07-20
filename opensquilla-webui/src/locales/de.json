@@ -843,6 +843,9 @@
       "experimental": "experimentell",
       "historyMergeDesc": "Beim Verlaufsabgleich nach Nachrichten-ID zusammenführen und reine Live-Felder behalten (standardmäßig aus, in Umstellung auf ein).",
       "historyMergeAria": "Verlaufsabgleich per ID-Zusammenführung (wird nach dem Neuladen wirksam)",
+      "agentConfigLabel": "Agent-Konfiguration (erweitert)",
+      "agentConfigDesc": "Vorhandene Agent-Konfigurationen verwalten. Dieser Bereich wird bei einer künftigen Multi-Agent-Überarbeitung angepasst.",
+      "agentConfigAction": "Öffnen",
       "runTraceLabel": "Run-Trace-Schublade in Protokollen",
       "runTraceDesc": "Macht Protokollzeilen interaktiv und öffnet eine zeilenweise Detailschublade für Knotenschritte in der Protokollansicht.",
       "runTraceAria": "Run-Trace-Schublade in Protokollen (wird nach dem Neuladen wirksam)"

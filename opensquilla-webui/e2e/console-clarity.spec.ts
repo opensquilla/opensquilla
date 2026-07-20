@@ -28,19 +28,15 @@ test.describe('Console clarity', () => {
     expect(parityErrors, 'live-turn parts/fold parity check reported a divergence').toEqual([])
   })
 
-  test('Console fold and Settings rows carry distinct icons', async ({ page }) => {
+  test('flat navigation removes the Console fold and keeps Settings distinct', async ({ page }) => {
     await openControl(page)
-
-    // The gear is exclusive to Settings; the Console fold uses its own glyph.
-    const consoleRow = page.locator('.sidebar-core .sidebar-console-row')
-    await expect(consoleRow).toHaveAttribute('data-icon', 'gauge')
 
     const settingsRow = page.locator('.sidebar-foot .sidebar-fn-item')
     await expect(settingsRow).toHaveAttribute('data-icon', 'settings')
-
-    expect(await consoleRow.getAttribute('data-icon')).not.toBe(
-      await settingsRow.getAttribute('data-icon'),
-    )
+    await expect(page.locator('.sidebar-nav-group-toggle')).toHaveCount(0)
+    await expect(page.locator('.sidebar-core .sidebar-fn-label')).toHaveText([
+      'Sessions', 'Overview', 'Skills', 'Cron',
+    ])
   })
 
   test('/health deep link redirects to /overview with the readiness report inline', async ({ page }) => {

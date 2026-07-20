@@ -843,6 +843,9 @@
       "experimental": "実験的",
       "historyMergeDesc": "履歴の同期時にメッセージ ID 単位でマージし、ライブ専用フィールドを保持します（既定はオフ、オンへ移行中）。",
       "historyMergeAria": "履歴の ID 単位での照合マージ（再読み込み後に有効）",
+      "agentConfigLabel": "エージェント設定（詳細）",
+      "agentConfigDesc": "既存のエージェント設定を管理します。この領域は今後のマルチエージェント再設計で変更されます。",
+      "agentConfigAction": "開く",
       "runTraceLabel": "ログの実行トレースドロワー",
       "runTraceDesc": "ログ行を操作可能にし、ログビューで行ごとのノードステップ詳細ドロワーを開きます。",
       "runTraceAria": "ログの実行トレースドロワー（再読み込み後に有効）"

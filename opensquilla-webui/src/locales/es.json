@@ -843,6 +843,9 @@
       "experimental": "experimental",
       "historyMergeDesc": "En la sincronización del historial, fusiona por id de mensaje y conserva los campos exclusivos del modo en vivo (desactivado por defecto, en transición a activado).",
       "historyMergeAria": "Fusión de historial por reconciliación de id (surte efecto tras recargar)",
+      "agentConfigLabel": "Configuración de agentes (avanzada)",
+      "agentConfigDesc": "Gestiona las configuraciones de agentes existentes. Esta área cambiará en un futuro rediseño multiagente.",
+      "agentConfigAction": "Abrir",
       "runTraceLabel": "Panel de traza de ejecución en Registros",
       "runTraceDesc": "Hace que las líneas de registro sean interactivas y abre un panel de detalle de pasos por nodo para cada línea en la vista de Registros.",
       "runTraceAria": "Panel de traza de ejecución en Registros (surte efecto tras recargar)"

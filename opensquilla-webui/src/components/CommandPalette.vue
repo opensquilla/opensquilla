@@ -81,7 +81,7 @@ import { useRouter } from 'vue-router'
 import Icon from './Icon.vue'
 import { useDialogA11y } from '@/composables/useDialogA11y'
 import { useBgm } from '@/composables/useBgm'
-import { getConsoleNavigationSections, getWorkNavigationSection } from '@/router/nav'
+import { getWorkNavigationSection } from '@/router/nav'
 import { useRpcStore } from '@/stores/rpc'
 import { highlightFtsSnippet } from '@/utils/searchSnippet'
 import type { IconName } from '@/utils/icons'
@@ -132,18 +132,14 @@ interface Command {
   run: Run
 }
 
-// Stable group order for the rendered palette. Nav groups are keyed on the
-// stable NavGroup taxonomy ('Operate'/'Observe'), never on display labels, so
-// localizing or rewording the sidebar bands cannot silently drop palette rows.
-// Conversation groups sort below the static nav/action groups so "go to page"
-// stays the top, instant result.
-const GROUP_ORDER = ['Work', 'Operate', 'Observe', 'Actions', 'Conversations', 'Messages'] as const
+// Stable group order for the rendered palette. Conversation groups sort below
+// the static nav/action groups so "go to page" stays the top, instant result.
+const GROUP_ORDER = ['Work', 'Observe', 'Actions', 'Conversations', 'Messages'] as const
 
 // Display label for a group id. Nav bands resolve through the same nav.* keys
 // the sidebar uses, so the palette and the rail always agree per locale.
 const GROUP_LABEL_KEYS: Record<string, string> = {
   Work: 'shared.cmdp.groupWork',
-  Operate: 'nav.groupBuild',
   Observe: 'nav.groupMonitor',
   Actions: 'shared.cmdp.groupActions',
   Conversations: 'shared.cmdp.groupConversations',
@@ -177,21 +173,6 @@ const allCommands = computed<Command[]>(() => {
       group: 'Work',
       run: navTo(item.path),
     })
-  }
-
-  // Build + Monitor: the grouped console sections, keyed on the stable
-  // NavGroup id; the localized band label stays searchable via keywords.
-  for (const section of getConsoleNavigationSections()) {
-    for (const item of section.items) {
-      out.push({
-        id: `nav:${item.path}`,
-        title: item.title,
-        icon: item.icon,
-        keywords: `${item.title} ${item.path} ${section.label}`.toLowerCase(),
-        group: section.group,
-        run: navTo(item.path),
-      })
-    }
   }
 
   // Hub tabs demoted from the rail but first-class in the palette: the Monitor

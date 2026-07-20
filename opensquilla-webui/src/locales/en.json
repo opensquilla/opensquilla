@@ -843,6 +843,9 @@
       "experimental": "experimental",
       "historyMergeDesc": "On history sync, merge by message id and keep live-only fields (default off, transitioning on).",
       "historyMergeAria": "History reconcile-by-id merge (takes effect after reload)",
+      "agentConfigLabel": "Agent configuration (advanced)",
+      "agentConfigDesc": "Manage existing agent configurations. This area will change in a future multi-agent redesign.",
+      "agentConfigAction": "Open",
       "runTraceLabel": "Run-trace drawer in Logs",
       "runTraceDesc": "Make log lines interactive and open a per-line node-step detail drawer in the Logs view.",
       "runTraceAria": "Run-trace drawer in Logs (takes effect after reload)"

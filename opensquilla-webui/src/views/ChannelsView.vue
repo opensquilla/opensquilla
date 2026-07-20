@@ -326,7 +326,7 @@
                   {{ t('console.channels.pairings.tryAgain') }}
                 </button>
               </div>
-              <div v-else-if="pairings.length === 0" class="ch-pairing-state">
+              <div v-else-if="pairings.length === 0 && adminOnlySenders.length === 0" class="ch-pairing-state">
                 <Icon name="shield" :size="20" aria-hidden="true" />
                 <strong>{{ t('console.channels.pairings.emptyTitle') }}</strong>
                 <span>{{ t('console.channels.pairings.emptyDescription') }}</span>
@@ -334,7 +334,7 @@
               <div v-else class="ch-pairing-groups">
                 <section v-if="pendingPairings.length" :aria-label="t('console.channels.pairings.pendingRequests')">
                   <h4>{{ t('console.channels.pairings.pendingRequests') }}</h4>
-                  <article v-for="pairing in pendingPairings" :key="pairing.pairingId" class="ch-pairing-row">
+                  <article v-for="(pairing, index) in pendingPairings" :key="pairing.pairingId" class="ch-pairing-row">
                     <div class="ch-pairing-avatar" aria-hidden="true">{{ pairingInitial(pairing) }}</div>
                     <div class="ch-pairing-identity">
                       <strong>{{ pairing.senderName || pairing.senderId }}</strong>
@@ -343,15 +343,26 @@
                       <time v-if="pairing.createdAt" :datetime="pairing.createdAt">{{ t('console.channels.pairings.requestedAt', { time: formatSince(pairing.createdAt) }) }}</time>
                     </div>
                     <span class="ch-pairing-status is-pending">{{ t('console.channels.pairings.pending') }}</span>
-                    <button
-                      class="btn btn--primary"
-                      type="button"
-                      :disabled="pairingActionPending(selectedChannel, pairing, 'approve')"
-                      :aria-label="t('console.channels.pairings.approveLabel', { sender: pairing.senderName || pairing.senderId })"
-                      @click="approvePairing(selectedChannel, pairing)"
-                    >
-                      {{ pairingActionPending(selectedChannel, pairing, 'approve') ? t('console.channels.pairings.approving') : t('console.channels.pairings.approve') }}
-                    </button>
+                    <div class="ch-pairing-actions">
+                      <label class="ch-pairing-asadmin" :title="t('console.channels.pairings.asAdminHint')">
+                        <input
+                          type="checkbox"
+                          :checked="asAdminChecked(pairing, index)"
+                          :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pairing.senderName || pairing.senderId })"
+                          @change="setAsAdminChecked(pairing, ($event.target as HTMLInputElement).checked)"
+                        />
+                        <span>{{ t('console.channels.pairings.asAdmin') }}</span>
+                      </label>
+                      <button
+                        class="btn btn--primary"
+                        type="button"
+                        :disabled="pairingActionPending(selectedChannel, pairing, 'approve')"
+                        :aria-label="t('console.channels.pairings.approveLabel', { sender: pairing.senderName || pairing.senderId })"
+                        @click="approvePairing(selectedChannel, pairing, asAdminChecked(pairing, index))"
+                      >
+                        {{ pairingActionPending(selectedChannel, pairing, 'approve') ? t('console.channels.pairings.approving') : t('console.channels.pairings.approve') }}
+                      </button>
+                    </div>
                   </article>
                 </section>
 
@@ -364,16 +375,66 @@
                       <span class="ch-mono">{{ pairing.senderId }}</span>
                       <time v-if="pairing.approvedAt" :datetime="pairing.approvedAt">{{ t('console.channels.pairings.approvedAt', { time: formatSince(pairing.approvedAt) }) }}</time>
                     </div>
-                    <span class="ch-pairing-status is-approved">{{ t('console.channels.pairings.approved') }}</span>
-                    <button
-                      class="btn btn--ghost ch-pairing-revoke"
-                      type="button"
-                      :disabled="pairingActionPending(selectedChannel, pairing, 'revoke')"
-                      :aria-label="t('console.channels.pairings.revokeLabel', { sender: pairing.senderName || pairing.senderId })"
-                      @click="revokePairing(selectedChannel, pairing)"
+                    <span
+                      class="ch-pairing-status"
+                      :class="isChannelAdmin(pairing.senderId) ? 'is-admin' : 'is-approved'"
                     >
-                      {{ pairingActionPending(selectedChannel, pairing, 'revoke') ? t('console.channels.pairings.revoking') : t('console.channels.pairings.revoke') }}
-                    </button>
+                      {{ isChannelAdmin(pairing.senderId) ? t('console.channels.pairings.adminPill') : t('console.channels.pairings.approved') }}
+                    </span>
+                    <div class="ch-pairing-actions">
+                      <button
+                        v-if="isChannelAdmin(pairing.senderId)"
+                        class="btn btn--ghost"
+                        type="button"
+                        :disabled="pairingActionPending(selectedChannel, pairing, 'admin')"
+                        :aria-label="t('console.channels.pairings.removeAdminLabel', { sender: pairing.senderName || pairing.senderId })"
+                        @click="setPairingAdmin(selectedChannel, pairing, false)"
+                      >
+                        {{ pairingActionPending(selectedChannel, pairing, 'admin') ? t('console.channels.pairings.updatingAdmin') : t('console.channels.pairings.removeAdmin') }}
+                      </button>
+                      <button
+                        v-else
+                        class="btn btn--ghost"
+                        type="button"
+                        :disabled="pairingActionPending(selectedChannel, pairing, 'admin')"
+                        :aria-label="t('console.channels.pairings.setAsAdminLabel', { sender: pairing.senderName || pairing.senderId })"
+                        @click="setPairingAdmin(selectedChannel, pairing, true)"
+                      >
+                        {{ pairingActionPending(selectedChannel, pairing, 'admin') ? t('console.channels.pairings.updatingAdmin') : t('console.channels.pairings.setAsAdmin') }}
+                      </button>
+                      <button
+                        class="btn btn--ghost ch-pairing-revoke"
+                        type="button"
+                        :disabled="pairingActionPending(selectedChannel, pairing, 'revoke')"
+                        :aria-label="t('console.channels.pairings.revokeLabel', { sender: pairing.senderName || pairing.senderId })"
+                        @click="revokePairing(selectedChannel, pairing)"
+                      >
+                        {{ pairingActionPending(selectedChannel, pairing, 'revoke') ? t('console.channels.pairings.revoking') : t('console.channels.pairings.revoke') }}
+                      </button>
+                    </div>
+                  </article>
+                </section>
+
+                <section v-if="adminOnlySenders.length" :aria-label="t('console.channels.pairings.adminsSubtitle')">
+                  <h4>{{ t('console.channels.pairings.adminsSubtitle') }}</h4>
+                  <article v-for="senderId in adminOnlySenders" :key="senderId" class="ch-pairing-row">
+                    <div class="ch-pairing-avatar" aria-hidden="true">{{ senderInitial(senderId) }}</div>
+                    <div class="ch-pairing-identity">
+                      <strong>{{ senderId }}</strong>
+                      <span class="ch-mono">{{ t('console.channels.pairings.adminOnlyHint') }}</span>
+                    </div>
+                    <span class="ch-pairing-status is-admin">{{ t('console.channels.pairings.adminPill') }}</span>
+                    <div class="ch-pairing-actions">
+                      <button
+                        class="btn btn--ghost ch-pairing-revoke"
+                        type="button"
+                        :disabled="adminOnlyActionPending(senderId)"
+                        :aria-label="t('console.channels.pairings.removeAdminLabel', { sender: senderId })"
+                        @click="removeAdminOnly(selectedChannel, senderId)"
+                      >
+                        {{ adminOnlyActionPending(senderId) ? t('console.channels.pairings.updatingAdmin') : t('console.channels.pairings.removeAdmin') }}
+                      </button>
+                    </div>
                   </article>
                 </section>
 
@@ -398,6 +459,7 @@
                   </article>
                 </section>
               </div>
+              <p v-if="pairings.length > 0 || adminOnlySenders.length" class="ch-pairing-hint">{{ t('console.channels.pairings.membersHint') }}</p>
               <p class="ch-sr-only" role="status" aria-live="polite">{{ pairingAnnouncement }}</p>
             </section>
           </template>
@@ -552,6 +614,13 @@ const pairingsLoading = ref(false)
 const pairingsError = ref('')
 const pairingAnnouncement = ref('')
 let pairingsRequestId = 0
+// Channel admins for the selected channel (channel_admin_senders[name]). Members
+// can chat + use safe tools; admins get the full tool surface. Refetched with
+// every pairing load so a grant/revoke reflects immediately.
+const adminSenders = ref<string[]>([])
+// Per-pairing "approve as admin" checkbox state; an entry here is an explicit
+// operator choice that overrides the first-pairing bootstrap default.
+const pairingAdminOverrides = ref<Record<string, boolean>>({})
 
 const { data: channelsData, loading, error, execute, refresh } = useRequest<ChannelsStatusResponse>(
   'channels.status', undefined, { immediate: false, errorLabel: t('console.channels.loadFailed') },
@@ -616,6 +685,34 @@ const approvedPairings = computed(() =>
   pairings.value.filter(pairing => pairing.status === 'approved' && matchesPairingSearch(pairing)))
 const revokedPairings = computed(() =>
   pairings.value.filter(pairing => pairing.status === 'revoked' && matchesPairingSearch(pairing)))
+
+function isChannelAdmin(senderId?: string | null): boolean {
+  return Boolean(senderId) && adminSenders.value.includes(String(senderId))
+}
+// Admins configured directly (added to channel_admin_senders in TOML) who have
+// no approved pairing row — surfaced so the members list is complete and the
+// grant is still removable from the UI.
+const adminOnlySenders = computed(() => {
+  const approvedIds = new Set(
+    pairings.value.filter(pairing => pairing.status === 'approved').map(pairing => pairing.senderId),
+  )
+  const query = pairingSearch.value.trim().toLowerCase()
+  return adminSenders.value.filter(id =>
+    !approvedIds.has(id) && (!query || id.toLowerCase().includes(query)))
+})
+// First-pairing bootstrap: default the "as admin" checkbox on only when the
+// channel has no approved members and no admins yet, so the very first person
+// approved becomes an admin unless the operator opts out.
+const noApprovedOrAdmins = computed(() =>
+  !pairings.value.some(pairing => pairing.status === 'approved') && adminSenders.value.length === 0)
+function asAdminChecked(pairing: ChannelPairing, index: number): boolean {
+  if (pairing.pairingId in pairingAdminOverrides.value) return pairingAdminOverrides.value[pairing.pairingId]
+  return index === 0 && noApprovedOrAdmins.value
+}
+function setAsAdminChecked(pairing: ChannelPairing, value: boolean): void {
+  pairingAdminOverrides.value = { ...pairingAdminOverrides.value, [pairing.pairingId]: value }
+}
+function senderInitial(senderId: string): string { return String(senderId || '?').slice(0, 1).toUpperCase() }
 // Unfiltered pending count drives the tab badge (a filtered-out request still
 // awaits the operator).
 const totalPendingPairings = computed(() =>
@@ -730,6 +827,8 @@ function selectChannel(ch: Channel): void {
   pairingsLoading.value = false
   pairingsError.value = ''
   pairingAnnouncement.value = ''
+  adminSenders.value = []
+  pairingAdminOverrides.value = {}
   // When the detail is an overlay (narrow viewport), move focus into it so a
   // keyboard user lands in the dialog; the scrim + Esc close it.
   void nextTick(() => {
@@ -838,6 +937,24 @@ async function withPairingAction(ch: Channel, pairing: ChannelPairing, action: s
   }
 }
 
+// Bounded config read: fetch only channel_admin_senders (config.get supports a
+// dot path, so we never pull the whole config into this view) and keep just the
+// list for the selected channel.
+async function loadChannelAdmins(name: string, requestId: number): Promise<void> {
+  try {
+    const map = await rpc.call<Record<string, unknown> | null>('config.get', {
+      path: 'channel_admin_senders',
+    })
+    if (selectedName.value !== name || requestId !== pairingsRequestId) return
+    const list = map && typeof map === 'object' ? (map as Record<string, unknown>)[name] : undefined
+    adminSenders.value = Array.isArray(list) ? list.map(String) : []
+  } catch {
+    // Admin standing is supplementary; a failed fetch leaves members visible
+    // without admin pills rather than breaking the whole members view.
+    if (selectedName.value === name && requestId === pairingsRequestId) adminSenders.value = []
+  }
+}
+
 async function loadPairings(ch: Channel): Promise<void> {
   const name = channelKey(ch)
   const requestId = ++pairingsRequestId
@@ -847,6 +964,7 @@ async function loadPairings(ch: Channel): Promise<void> {
     const result = await rpc.call<PairingsResponse>('channels.pairings', { channelName: name })
     if (selectedName.value !== name || requestId !== pairingsRequestId) return
     pairings.value = (result.pairings || []).filter(pairing => pairing.channelName === name)
+    await loadChannelAdmins(name, requestId)
   } catch (err) {
     if (selectedName.value === name && requestId === pairingsRequestId) {
       pairingsError.value = t('console.channels.pairings.loadFailed', { error: errorMessage(err) })
@@ -856,11 +974,13 @@ async function loadPairings(ch: Channel): Promise<void> {
   }
 }
 
-async function approvePairing(ch: Channel, pairing: ChannelPairing): Promise<void> {
+async function approvePairing(ch: Channel, pairing: ChannelPairing, asAdmin = false): Promise<void> {
   const sender = pairing.senderName || pairing.senderId
   const confirmed = await confirm({
     title: t('console.channels.pairings.approveConfirmTitle'),
-    body: t('console.channels.pairings.approveConfirmBody', { sender, channel: channelKey(ch) }),
+    body: asAdmin
+      ? t('console.channels.pairings.approveAdminConfirmBody', { sender, channel: channelKey(ch) })
+      : t('console.channels.pairings.approveConfirmBody', { sender, channel: channelKey(ch) }),
     primaryLabel: t('console.channels.pairings.approve'),
     primaryClass: 'btn--primary',
   })
@@ -868,14 +988,87 @@ async function approvePairing(ch: Channel, pairing: ChannelPairing): Promise<voi
   await withPairingAction(ch, pairing, pairing.status === 'revoked' ? 'reapprove' : 'approve', async () => {
     pairingsError.value = ''
     try {
-      await rpc.call('channels.pairing.approve', { channelName: channelKey(ch), pairingId: pairing.pairingId })
-      pairingAnnouncement.value = t('console.channels.pairings.approveSuccess', { sender })
+      // Only include asAdmin when set: a plain approval keeps its minimal
+      // payload and never touches channel_admin_senders.
+      const params: Record<string, unknown> = { channelName: channelKey(ch), pairingId: pairing.pairingId }
+      if (asAdmin) params.asAdmin = true
+      await rpc.call('channels.pairing.approve', params)
+      pairingAnnouncement.value = asAdmin
+        ? t('console.channels.pairings.approveAdminSuccess', { sender })
+        : t('console.channels.pairings.approveSuccess', { sender })
       pushToast(pairingAnnouncement.value, { tone: 'ok' })
       await loadPairings(ch)
     } catch (err) {
       pairingsError.value = t('console.channels.pairings.approveFailed', { sender, error: errorMessage(err) })
     }
   })
+}
+
+async function setPairingAdmin(ch: Channel, pairing: ChannelPairing, admin: boolean): Promise<void> {
+  const sender = pairing.senderName || pairing.senderId
+  const confirmed = await confirm({
+    title: admin
+      ? t('console.channels.pairings.setAsAdminConfirmTitle')
+      : t('console.channels.pairings.removeAdminConfirmTitle'),
+    body: admin
+      ? t('console.channels.pairings.setAsAdminConfirmBody', { sender, channel: channelKey(ch) })
+      : t('console.channels.pairings.removeAdminConfirmBody', { sender, channel: channelKey(ch) }),
+    primaryLabel: admin
+      ? t('console.channels.pairings.setAsAdmin')
+      : t('console.channels.pairings.removeAdmin'),
+    primaryClass: admin ? 'btn--primary' : undefined,
+  })
+  if (!confirmed) return
+  await withPairingAction(ch, pairing, 'admin', async () => {
+    pairingsError.value = ''
+    try {
+      await rpc.call('channels.admin.set', {
+        channelName: channelKey(ch),
+        senderId: pairing.senderId,
+        admin,
+      })
+      pairingAnnouncement.value = admin
+        ? t('console.channels.pairings.adminGrantedSuccess', { sender })
+        : t('console.channels.pairings.adminRemovedSuccess', { sender })
+      pushToast(pairingAnnouncement.value, { tone: 'ok' })
+      await loadPairings(ch)
+    } catch (err) {
+      pairingsError.value = t('console.channels.pairings.adminUpdateFailed', { sender, error: errorMessage(err) })
+    }
+  })
+}
+
+function adminOnlyActionKey(ch: Channel, senderId: string): string {
+  return `admin:${channelKey(ch)}:${senderId}`
+}
+function adminOnlyActionPending(senderId: string): boolean {
+  return Boolean(selectedChannel.value) &&
+    pendingActions.value.has(adminOnlyActionKey(selectedChannel.value as Channel, senderId))
+}
+
+async function removeAdminOnly(ch: Channel, senderId: string): Promise<void> {
+  const confirmed = await confirm({
+    title: t('console.channels.pairings.removeAdminConfirmTitle'),
+    body: t('console.channels.pairings.removeAdminConfirmBody', { sender: senderId, channel: channelKey(ch) }),
+    primaryLabel: t('console.channels.pairings.removeAdmin'),
+  })
+  if (!confirmed) return
+  const key = adminOnlyActionKey(ch, senderId)
+  if (pendingActions.value.has(key)) return
+  pendingActions.value = new Set(pendingActions.value).add(key)
+  pairingsError.value = ''
+  try {
+    await rpc.call('channels.admin.set', { channelName: channelKey(ch), senderId, admin: false })
+    pairingAnnouncement.value = t('console.channels.pairings.adminRemovedSuccess', { sender: senderId })
+    pushToast(pairingAnnouncement.value, { tone: 'ok' })
+    await loadPairings(ch)
+  } catch (err) {
+    pairingsError.value = t('console.channels.pairings.adminUpdateFailed', { sender: senderId, error: errorMessage(err) })
+  } finally {
+    const next = new Set(pendingActions.value)
+    next.delete(key)
+    pendingActions.value = next
+  }
 }
 
 async function revokePairing(ch: Channel, pairing: ChannelPairing): Promise<void> {
@@ -1228,6 +1421,11 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
 .ch-pairing-status.is-pending { border-color: color-mix(in srgb, var(--warn) 42%, var(--border)); color: var(--warn); }
 .ch-pairing-status.is-approved { border-color: color-mix(in srgb, var(--ok) 42%, var(--border)); color: var(--ok); }
 .ch-pairing-status.is-revoked { border-color: color-mix(in srgb, var(--danger) 42%, var(--border)); color: var(--danger); }
+.ch-pairing-status.is-admin { background: color-mix(in srgb, var(--accent) 14%, transparent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--accent); }
+.ch-pairing-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.ch-pairing-asadmin { align-items: center; color: var(--text-dim); cursor: pointer; display: inline-flex; font-size: 11px; gap: 5px; user-select: none; white-space: nowrap; }
+.ch-pairing-asadmin input { accent-color: var(--accent); cursor: pointer; margin: 0; }
+.ch-pairing-hint { color: var(--text-dim); font-size: 11px; line-height: 1.45; margin: 0; padding: 10px 14px 12px; }
 .ch-pairing-search { align-items: center; border-bottom: 1px solid var(--border); color: var(--text-dim); display: flex; gap: 8px; padding: 8px 14px; }
 .ch-pairing-search input { background: transparent; border: 0; color: var(--text); font: inherit; outline: 0; width: 100%; }
 .ch-pairing-revoke { color: var(--danger); }
@@ -1300,6 +1498,7 @@ function configRows(config: Record<string, unknown>): Array<{ key: string; value
   .ch-capability { grid-template-columns: 18px minmax(0, 1fr); }
   .ch-proof { grid-column: 2; width: fit-content; }
   .ch-pairing-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
-  .ch-pairing-row .btn { grid-column: 2 / -1; justify-self: start; }
+  .ch-pairing-row > .btn { grid-column: 2 / -1; justify-self: start; }
+  .ch-pairing-actions { grid-column: 1 / -1; justify-content: flex-start; }
 }
 </style>

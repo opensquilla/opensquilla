@@ -74,6 +74,7 @@ function channelRow(root: ParentNode, name: string): HTMLTableRowElement {
 
 async function mountChannelsView(options: {
   loadPairings?: (params?: Record<string, unknown>) => Promise<unknown>
+  adminSenders?: Record<string, string[]>
 } = {}) {
   vi.resetModules()
 
@@ -119,6 +120,7 @@ async function mountChannelsView(options: {
       status: 'revoked',
     },
   ]
+  const adminSendersMap: Record<string, string[]> = { ...(options.adminSenders || {}) }
   const execute = vi.fn(async () => ({ channels: channelRows }))
   const refresh = vi.fn(async () => ({ channels: channelRows }))
   const rpcCall = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -140,6 +142,12 @@ async function mountChannelsView(options: {
         secretFields: ['token', 'signing_secret'],
       }
     }
+    if (method === 'config.get') {
+      // Members panel reads only the channel_admin_senders map (bounded path
+      // read), so mirror the registry's dot-path navigation.
+      if (params?.path === 'channel_admin_senders') return { ...adminSendersMap }
+      return {}
+    }
     if (method === 'channels.pairings') {
       if (options.loadPairings) return options.loadPairings(params)
       return { pairings: pairings.map(pairing => ({ ...pairing })) }
@@ -148,11 +156,30 @@ async function mountChannelsView(options: {
       pairings = pairings.map(pairing => pairing.pairingId === params?.pairingId
         ? { ...pairing, status: 'approved', approvedAt: '2026-07-13T10:00:00Z' }
         : pairing)
-      return { status: 'approved' }
+      if (params?.asAdmin) {
+        const target = pairings.find(pairing => pairing.pairingId === params?.pairingId)
+        if (target) {
+          const set = new Set(adminSendersMap['ops-slack'] || [])
+          set.add(target.senderId)
+          adminSendersMap['ops-slack'] = [...set]
+        }
+      }
+      return { status: 'approved', adminGranted: Boolean(params?.asAdmin) }
     }
     if (method === 'channels.pairing.revoke') {
       pairings = pairings.filter(pairing => pairing.pairingId !== params?.pairingId)
       return { status: 'revoked' }
+    }
+    if (method === 'channels.admin.set') {
+      const channel = String(params?.channelName)
+      const senderId = String(params?.senderId)
+      const admin = Boolean(params?.admin)
+      const set = new Set(adminSendersMap[channel] || [])
+      if (admin) set.add(senderId)
+      else set.delete(senderId)
+      if (set.size) adminSendersMap[channel] = [...set]
+      else delete adminSendersMap[channel]
+      return { channelName: channel, senderId, admin: set.has(senderId), admins: adminSendersMap[channel] || [] }
     }
     throw new Error(`unexpected rpc method: ${method}`)
   })
@@ -303,7 +330,7 @@ describe('ChannelsView channel operations', () => {
       await nextTick()
       const detail = el.querySelector<HTMLElement>('.ch-detail')!
 
-      buttonWithText(detail, 'Pairings').click()
+      buttonWithText(detail, 'Members').click()
       await flush()
       expect(rpcCall).toHaveBeenCalledWith('channels.pairings', { channelName: 'ops-slack' })
       expect(detail.textContent).toContain('Request AB12CD34')
@@ -373,13 +400,13 @@ describe('ChannelsView channel operations', () => {
     try {
       channelRow(el, 'ops-slack').click()
       await nextTick()
-      buttonWithText(el.querySelector<HTMLElement>('.ch-detail')!, 'Pairings').click()
+      buttonWithText(el.querySelector<HTMLElement>('.ch-detail')!, 'Members').click()
       await nextTick()
 
       channelRow(el, 'alerts-telegram').click()
       await nextTick()
       const detail = el.querySelector<HTMLElement>('.ch-detail')!
-      buttonWithText(detail, 'Pairings').click()
+      buttonWithText(detail, 'Members').click()
       await flush()
 
       expect(loadPairings).toHaveBeenCalledTimes(2)
@@ -398,6 +425,133 @@ describe('ChannelsView channel operations', () => {
 
       expect(detail.textContent).toContain('Telegram User')
       expect(detail.textContent).not.toContain('Slack User')
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('promotes an approved member to channel admin', async () => {
+    const { app, el, flush, nextTick, rpcCall, confirm } = await mountChannelsView()
+
+    try {
+      channelRow(el, 'ops-slack').click()
+      await nextTick()
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      buttonWithText(detail, 'Members').click()
+      await flush()
+
+      detail.querySelector<HTMLButtonElement>('[aria-label="Make Approved User a channel admin"]')!.click()
+      await flush()
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Make this member an admin?',
+      }))
+      expect(rpcCall).toHaveBeenCalledWith('channels.admin.set', {
+        channelName: 'ops-slack',
+        senderId: 'U-APPROVED',
+        admin: true,
+      })
+      // After the grant + reload the row flips to the admin controls.
+      expect(detail.querySelector('[aria-label="Remove admin from Approved User"]')).toBeTruthy()
+      expect(detail.querySelector('[aria-label="Make Approved User a channel admin"]')).toBeNull()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('shows the Admin pill and demotes a channel admin', async () => {
+    const { app, el, flush, nextTick, rpcCall, confirm } = await mountChannelsView({
+      adminSenders: { 'ops-slack': ['U-APPROVED'] },
+    })
+
+    try {
+      channelRow(el, 'ops-slack').click()
+      await nextTick()
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      buttonWithText(detail, 'Members').click()
+      await flush()
+
+      // The approved admin renders the Admin pill instead of the plain badge.
+      const adminPill = Array.from(detail.querySelectorAll<HTMLElement>('.ch-pairing-status.is-admin'))
+        .find(node => node.textContent?.trim() === 'Admin')
+      expect(adminPill).toBeTruthy()
+
+      detail.querySelector<HTMLButtonElement>('[aria-label="Remove admin from Approved User"]')!.click()
+      await flush()
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Remove admin access?',
+      }))
+      expect(rpcCall).toHaveBeenCalledWith('channels.admin.set', {
+        channelName: 'ops-slack',
+        senderId: 'U-APPROVED',
+        admin: false,
+      })
+      // Back to member controls after the demotion + reload.
+      expect(detail.querySelector('[aria-label="Make Approved User a channel admin"]')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('approves a pending member as admin when the checkbox is ticked', async () => {
+    const { app, el, flush, nextTick, rpcCall } = await mountChannelsView()
+
+    try {
+      channelRow(el, 'ops-slack').click()
+      await nextTick()
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      buttonWithText(detail, 'Members').click()
+      await flush()
+
+      const checkbox = detail.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      // There is already an approved member, so the bootstrap default is off.
+      expect(checkbox.checked).toBe(false)
+      checkbox.checked = true
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+
+      detail.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
+        channelName: 'ops-slack',
+        pairingId: 'pair-pending',
+        asAdmin: true,
+      })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('defaults the first pending row to admin when the channel has no members yet', async () => {
+    const loadPairings = vi.fn(async () => ({
+      pairings: [{
+        pairingId: 'pair-first',
+        channelName: 'ops-slack',
+        senderId: 'U-FIRST',
+        senderName: 'First User',
+        status: 'pending',
+      }],
+    }))
+    const { app, el, flush, nextTick, rpcCall } = await mountChannelsView({ loadPairings })
+
+    try {
+      channelRow(el, 'ops-slack').click()
+      await nextTick()
+      const detail = el.querySelector<HTMLElement>('.ch-detail')!
+      buttonWithText(detail, 'Members').click()
+      await flush()
+
+      const checkbox = detail.querySelector<HTMLInputElement>(
+        '[aria-label="Approve First User as a channel admin"]')!
+      expect(checkbox.checked).toBe(true)
+
+      detail.querySelector<HTMLButtonElement>('[aria-label="Approve access for First User"]')!.click()
+      await flush()
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
+        channelName: 'ops-slack',
+        pairingId: 'pair-first',
+        asAdmin: true,
+      })
     } finally {
       app.unmount()
     }

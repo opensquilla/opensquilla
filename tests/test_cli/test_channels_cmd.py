@@ -416,3 +416,31 @@ def test_pairings_revoke_uses_the_revoke_rpc(tmp_path, monkeypatch):
         )
     ]
     assert "revoked" in result.stdout.lower()
+
+
+def test_pairings_approve_admin_flag_passes_as_admin(tmp_path, monkeypatch):
+    _setenv(monkeypatch, tmp_path)
+    fake = _install_fake_gateway(monkeypatch)
+    fake.payloads = {
+        "channels.pairing.approve": {
+            "pairing": {"pairingCode": "abcdef12", "senderId": "user-42", "status": "approved"},
+            "adminGranted": True,
+        }
+    }
+
+    result = runner.invoke(
+        app,
+        [
+            "channels", "pairings", "approve", "telegram-main", "abcdef12",
+            "--admin", "--yes",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert fake.calls == [
+        (
+            "channels.pairing.approve",
+            {"channelName": "telegram-main", "pairingCode": "abcdef12", "asAdmin": True},
+        )
+    ]
+    assert "[admin]" in result.stdout

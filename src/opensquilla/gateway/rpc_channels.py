@@ -645,6 +645,7 @@ async def _handle_channels_pairing_approve(
     ctx: RpcContext,
 ) -> dict[str, Any]:
     channel_name, pairing_id = _pairing_mutation_params(params, ctx)
+    as_admin = bool((params or {}).get("asAdmin", False))
     store = _pairing_store(ctx)
     # Re-approving an already-approved pairing must not re-notify the sender.
     was_approved = _pairing_status_of(store, channel_name, pairing_id) == "approved"
@@ -653,9 +654,62 @@ async def _handle_channels_pairing_approve(
         pairing_id=pairing_id,
         status="approved",
     )
+    payload: dict[str, Any] = {"pairing": _pairing_payload(record)}
+    if as_admin:
+        # Deliberate, narrow scope expansion: an operator.pairing caller may
+        # mark the sender they are approving RIGHT NOW as an admin of the
+        # channel they are approving them on — never an arbitrary config
+        # write. This is the "this is me" shortcut in the pairing flow.
+        payload["adminGranted"] = _grant_channel_admin_sender(
+            ctx,
+            channel_name=channel_name,
+            sender_id=str(getattr(record, "sender_id", "") or ""),
+        )
     if not was_approved:
         await _send_pairing_approved_notice(ctx, record)
-    return {"pairing": _pairing_payload(record)}
+    return payload
+
+
+def _grant_channel_admin_sender(
+    ctx: RpcContext,
+    *,
+    channel_name: str,
+    sender_id: str,
+) -> bool:
+    """Add ``sender_id`` to ``channel_admin_senders[channel_name]``.
+
+    Persist-before-apply: the updated mapping is written to the TOML first,
+    then swapped into the live config object (which channel dispatch reads
+    per message, so the grant is live from the next inbound message).
+    Idempotent; returns whether the sender is an admin afterwards.
+    """
+    sender_id = sender_id.strip()
+    if not sender_id or ctx.config is None:
+        return False
+    current = getattr(ctx.config, "channel_admin_senders", None)
+    admin_senders: dict[str, list[str]] = {
+        str(name): [
+            str(item)
+            for item in (values if isinstance(values, list | tuple) else [values])
+        ]
+        for name, values in (current or {}).items()
+    }
+    existing = admin_senders.get(channel_name, [])
+    if sender_id not in existing:
+        admin_senders[channel_name] = [*existing, sender_id]
+    from opensquilla.gateway.rpc_config import _persist_config
+
+    # Persist-before-apply: write the candidate to disk first so a failed
+    # write leaves memory and TOML agreeing on the old state.
+    candidate = ctx.config.model_copy(update={"channel_admin_senders": admin_senders})
+    _persist_config(candidate)
+    ctx.config.channel_admin_senders = admin_senders
+    log.info(
+        "channel.pairing_admin_granted",
+        channel=channel_name,
+        sender_id=sender_id,
+    )
+    return True
 
 
 @_d.method("channels.pairing.revoke", scope="operator.pairing")

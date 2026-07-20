@@ -626,24 +626,37 @@ def pairings_list(
 def pairings_approve(
     channel: str = typer.Argument(..., help="Channel name"),
     pairing: str = typer.Argument(..., help="Pairing code (8 chars) or full pairing id"),
+    admin: bool = typer.Option(
+        False,
+        "--admin",
+        help=(
+            "Also mark this sender as a channel admin (full tool surface; "
+            "privileged commands still confirm per call). Use for yourself "
+            "or someone you trust with the host."
+        ),
+    ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt"),
     json_output: bool = typer.Option(False, "--json", help="Emit machine-readable JSON"),
     config_path: Path | None = typer.Option(None, "--config", help="Override config path."),
 ) -> None:
     """Approve a pairing request; the sender is notified they can start."""
 
+    access = (
+        "The sender gains conversational access AND channel-admin privileges."
+        if admin
+        else "The sender gains conversational access."
+    )
     confirm_or_exit(
-        f"Approve pairing {pairing!r} on channel {channel!r}? "
-        "The sender gains conversational access.",
+        f"Approve pairing {pairing!r} on channel {channel!r}? {access}",
         yes=yes,
         json_output=json_output,
     )
 
     async def _run(client):
-        return await client.call(
-            "channels.pairing.approve",
-            {"channelName": channel, "pairingCode": pairing},
-        )
+        request: dict[str, object] = {"channelName": channel, "pairingCode": pairing}
+        if admin:
+            request["asAdmin"] = True
+        return await client.call("channels.pairing.approve", request)
 
     payload = run_gateway_sync(_run, json_output=json_output, config_path=config_path)
     if json_output:
@@ -651,7 +664,8 @@ def pairings_approve(
         return
     record = payload.get("pairing") or {}
     sender = str(record.get("senderName") or record.get("senderId") or "")
-    typer.echo(f"Pairing approved: {record.get('pairingCode', pairing)} ({sender})")
+    suffix = " [admin]" if payload.get("adminGranted") else ""
+    typer.echo(f"Pairing approved: {record.get('pairingCode', pairing)} ({sender}){suffix}")
 
 
 @pairings_app.command("revoke")

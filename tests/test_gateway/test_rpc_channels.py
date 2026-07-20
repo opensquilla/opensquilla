@@ -713,3 +713,65 @@ async def test_pairing_approve_without_a_stored_address_is_silent():
 
     assert res.error is None, res.error
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_as_admin_grants_and_persists(tmp_path, monkeypatch):
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.approve",
+        {"channelName": "work", "pairingId": "p1", "asAdmin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["adminGranted"] is True
+    # Live config sees the grant immediately (dispatch reads it per message).
+    assert ctx.config.channel_admin_senders == {"work": ["U-1"]}
+    # And it survived to disk: persist-before-apply wrote the TOML.
+    text = (tmp_path / "config.toml").read_text()
+    assert "channel_admin_senders" in text
+    assert "U-1" in text
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_as_admin_is_idempotent(tmp_path):
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-1"], "other": ["Z-9"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.approve",
+        {"channelName": "work", "pairingId": "p1", "asAdmin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["adminGranted"] is True
+    # No duplicate entry; unrelated channels' admins untouched.
+    assert ctx.config.channel_admin_senders == {"work": ["U-1"], "other": ["Z-9"]}
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_without_as_admin_changes_no_config(tmp_path):
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.approve",
+        {"channelName": "work", "pairingId": "p1"},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert "adminGranted" not in rpc_res.payload
+    assert ctx.config.channel_admin_senders == {}
+    assert not (tmp_path / "config.toml").exists()

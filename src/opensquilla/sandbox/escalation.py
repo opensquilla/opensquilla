@@ -145,12 +145,22 @@ def request_sandbox_approval(
         raise ValueError("sandbox_approval_params_required")
 
     if _current_tool_context_is_channel():
-        return _approval_payload(
-            "approval_denied",
-            "",
-            params,
-            message=_channel_sandbox_approval_disabled_message(),
-        )
+        admin_identity = _channel_admin_approval_identity()
+        if admin_identity is None:
+            return _approval_payload(
+                "approval_denied",
+                "",
+                params,
+                message=_channel_sandbox_approval_disabled_message(),
+            )
+        # A channel-admin turn may ask for approval: stamping senderId routes
+        # the prompt back into the originating chat (card / ``/approve <code>``)
+        # where only that sender can resolve it. Non-admin channel callers keep
+        # the hard deny above — pairing alone never unlocks host-side asks.
+        sender_id, session_key = admin_identity
+        params.setdefault("senderId", sender_id)
+        if session_key:
+            params.setdefault("sessionKey", session_key)
 
     queue = get_approval_queue()
     if approval_id is None:
@@ -222,6 +232,29 @@ def _current_tool_context_is_channel() -> bool:
         return False
     caller_kind = getattr(ctx, "caller_kind", None)
     return caller_kind is CallerKind.CHANNEL or str(caller_kind) == CallerKind.CHANNEL.value
+
+
+def _channel_admin_approval_identity() -> tuple[str, str] | None:
+    """Sender/session identity for a channel-admin turn, else ``None``.
+
+    ``is_owner`` on a channel ToolContext is set from
+    ``channel_admin_senders`` at dispatch time; the sender id recorded here is
+    the one the channel resolver later compares against, so a missing sender
+    id means the prompt could never be resolved and we fall back to the deny.
+    """
+    try:
+        from opensquilla.tools.types import current_tool_context
+
+        ctx = current_tool_context.get()
+    except Exception:  # pragma: no cover - defensive
+        return None
+    if ctx is None or not getattr(ctx, "is_owner", False):
+        return None
+    sender_id = str(getattr(ctx, "sender_id", "") or "").strip()
+    if not sender_id:
+        return None
+    session_key = str(getattr(ctx, "session_key", "") or "").strip()
+    return sender_id, session_key
 
 
 def remember_sandbox_approval_denial(

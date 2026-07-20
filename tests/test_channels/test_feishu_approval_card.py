@@ -39,7 +39,7 @@ def test_parse_approval_card_action_yields_inbound_message() -> None:
     assert msg.content == "/approve AB12"
     assert msg.metadata["approval_action"]["code"] == "AB12"
     # The shared parser recognises the carried action.
-    assert parse_approval_action(msg) == ("AB12", True)
+    assert parse_approval_action(msg) == ("AB12", "approve")
 
 
 def test_parse_ignores_clarify_and_unknown_actions() -> None:

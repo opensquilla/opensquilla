@@ -573,7 +573,12 @@ async def run_channel_dispatch(
             session_key=session_key,
             session_prefix=session_prefix,
         )
-        approval_reply = _maybe_resolve_channel_approval(msg=msg, session_key=session_key)
+        approval_reply = await _maybe_resolve_channel_approval(
+            msg=msg,
+            session_key=session_key,
+            config=config,
+            session_manager=session_manager,
+        )
         if approval_reply is not None:
             await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
             if delivery_store is not None:
@@ -961,30 +966,43 @@ def _slash_command_head(content: str) -> str | None:
     return stripped.split(maxsplit=1)[0]
 
 
-def _maybe_resolve_channel_approval(
+async def _maybe_resolve_channel_approval(
     *,
     msg: IncomingMessage,
     session_key: str,
+    config: Any = None,
+    session_manager: Any = None,
 ) -> OutgoingMessage | None:
     """Resolve a channel approval action without starting an agent turn.
 
     Recognises a Feishu ``approval_resolve`` card action or the universal
-    ``/approve <code>`` / ``/deny <code>`` text command, then resolves the
-    bound approval directly so the suspended tool call's ``wait()`` unblocks.
+    ``/approve <code>`` / ``/deny <code>`` / ``/approve <code> always`` text
+    command, then resolves the bound approval so the suspended tool call's
+    ``wait()`` unblocks. Sandbox-kind approvals go through the same
+    claim/finalize/apply-choice sequence as the Web UI resolver so their
+    choice semantics (durable same-type grants) actually take effect.
 
     Security: only the session owner (the ``sender_id`` that started the
     originating turn, recorded on the approval at request time) may resolve.
-    Any other sender is rejected without resolving. A channel approval forces
-    ``elevated_mode=None`` so it permits one gated command, never session-wide
-    elevation. Returns the reply to send, or ``None`` when the message is not
-    an approval action.
+    Any other sender is rejected without resolving. The ``always`` decision
+    additionally requires the sender to still be a configured channel admin
+    at resolution time — the card payload is never trusted for that. A plain
+    approval forces ``elevated_mode=None`` so it permits one gated command,
+    never session-wide elevation. Returns the reply to send, or ``None`` when
+    the message is not an approval action.
     """
-    from opensquilla.channels.approval_prompt import parse_approval_action, resolve_short_code
+    from opensquilla.channels.approval_prompt import (
+        DECISION_ALWAYS,
+        DECISION_DENY,
+        parse_approval_action,
+        resolve_short_code,
+    )
 
     parsed = parse_approval_action(msg)
     if parsed is None:
         return None
-    code, approved = parsed
+    code, decision = parsed
+    approved = decision != DECISION_DENY
     binding = resolve_short_code(code)
     if binding is None:
         log.info("channel.approval_unknown_code", code=code, session_key=session_key)
@@ -1029,13 +1047,35 @@ def _maybe_resolve_channel_approval(
             )
         )
 
+    if decision == DECISION_ALWAYS and not _sender_is_channel_admin(
+        config, binding.origin_channel_name, sender_id
+    ):
+        log.warning(
+            "channel.approval_always_requires_admin",
+            code=code,
+            session_key=session_key,
+            sender_id=sender_id,
+        )
+        return OutgoingMessage(
+            content=(
+                f"'Always' needs a channel admin. Reply /approve {code} "
+                "to allow just this once."
+            )
+        )
+
     from opensquilla.gateway.approval_queue import get_approval_queue
 
     queue = get_approval_queue()
     try:
-        # Force elevated_mode=None: a channel approval permits exactly the one
-        # gated command, never a session-wide bypass regardless of payload.
-        queue.resolve(binding.approval_id, approved, elevated_mode=None)
+        reply = await _resolve_channel_approval_decision(
+            queue,
+            approval_id=binding.approval_id,
+            code=code,
+            decision=decision,
+            approved=approved,
+            config=config,
+            session_manager=session_manager,
+        )
     except KeyError:
         log.info("channel.approval_expired", code=code, session_key=session_key)
         return OutgoingMessage(content=f"No pending approval {code}.")
@@ -1048,12 +1088,105 @@ def _maybe_resolve_channel_approval(
         "channel.approval_resolved",
         code=code,
         approved=approved,
+        always=decision == DECISION_ALWAYS,
         session_key=session_key,
         sender_id=sender_id,
     )
-    if approved:
-        return OutgoingMessage(content=f"Approved {code} — running …")
-    return OutgoingMessage(content=f"Denied {code}.")
+    return reply
+
+
+def _sender_is_channel_admin(config: Any, channel_name: str, sender_id: str) -> bool:
+    admin_senders = getattr(config, "channel_admin_senders", None)
+    if not isinstance(admin_senders, dict) or not channel_name or not sender_id:
+        return False
+    configured = admin_senders.get(channel_name)
+    if isinstance(configured, str):
+        return sender_id == configured
+    if not isinstance(configured, list | tuple | set | frozenset):
+        return False
+    return sender_id in {str(item) for item in configured}
+
+
+async def _resolve_channel_approval_decision(
+    queue: Any,
+    *,
+    approval_id: str,
+    code: str,
+    decision: str,
+    approved: bool,
+    config: Any,
+    session_manager: Any,
+) -> OutgoingMessage:
+    """Apply one parsed approval decision to the queue.
+
+    Sandbox-kind approvals replay the Web UI resolver's claim → finalize →
+    apply-choice → complete sequence so ``always`` (``allow_same_type``)
+    produces its durable grant; everything else keeps the original single
+    ``resolve()``. Raises ``KeyError``/``ValueError`` exactly like
+    ``queue.resolve`` so the caller's reply mapping stays unchanged.
+    """
+    from opensquilla.channels.approval_prompt import DECISION_ALWAYS
+    from opensquilla.sandbox.escalation import (
+        apply_sandbox_approval_choice,
+        deny_matching_pending_sandbox_approvals,
+        is_sandbox_approval_kind,
+        remember_sandbox_approval_denial,
+        validate_sandbox_approval_choice,
+    )
+
+    pending = queue.get(approval_id)
+    sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
+    choice: str | None = None
+    if sandbox_approval and approved:
+        choice = "allow_same_type" if decision == DECISION_ALWAYS else None
+        validate_sandbox_approval_choice(pending.params, choice=choice, approved=True)
+        claim_token = queue.claim_resolution(approval_id)
+        try:
+            queue.finalize_claimed_resolution(
+                approval_id,
+                claim_token,
+                True,
+                elevated_mode=None,
+            )
+        except Exception:
+            queue.release_resolution_claim(approval_id, claim_token)
+            raise
+        try:
+            await apply_sandbox_approval_choice(
+                pending.params,
+                choice=choice,
+                approved=True,
+                session_manager=session_manager,
+                config=config,
+            )
+        except Exception:
+            queue.reopen_resolved_approval(approval_id, expected_approved=True)
+            raise
+        queue.complete_claimed_resolution(approval_id, claim_token)
+    else:
+        # Force elevated_mode=None: a channel approval permits exactly the one
+        # gated command, never a session-wide bypass regardless of payload.
+        queue.resolve(
+            approval_id,
+            approved,
+            elevated_mode=None,
+            allow_idempotent=not sandbox_approval,
+        )
+        if sandbox_approval and not approved:
+            remember_sandbox_approval_denial(pending.params, approval_id)
+            deny_matching_pending_sandbox_approvals(
+                queue,
+                pending.params,
+                exclude_approval_id=approval_id,
+            )
+
+    if not approved:
+        return OutgoingMessage(content=f"Denied {code}.")
+    if choice == "allow_same_type":
+        return OutgoingMessage(
+            content=f"Approved {code} — this kind won't ask again this session."
+        )
+    return OutgoingMessage(content=f"Approved {code} — running …")
 
 
 async def _dispatch_channel_slash_command(
@@ -1166,7 +1299,12 @@ async def _dispatch_combined_message_after_debounce(channel: Any, combined: Any,
         log.info("channel.admission_denied", channel=session_prefix, reason=admission.reason, is_group=admission.is_group)  # noqa: E501
         return
     route_envelope = build_channel_route_envelope(msg, session_key=session_key, session_prefix=session_prefix)  # noqa: E501
-    approval_reply = _maybe_resolve_channel_approval(msg=msg, session_key=session_key)
+    approval_reply = await _maybe_resolve_channel_approval(
+        msg=msg,
+        session_key=session_key,
+        config=config,
+        session_manager=session_manager,
+    )
     if approval_reply is not None:
         await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
         return
@@ -1545,23 +1683,11 @@ async def _emit_run_heartbeat(
 
 
 def _is_channel_admin_sender(config: Any, envelope: Any) -> bool:
-    admin_senders = getattr(config, "channel_admin_senders", None)
-    if not isinstance(admin_senders, dict):
-        return False
-
     source_name = getattr(envelope, "source_name", None)
     sender_id = getattr(envelope, "sender_id", None)
-    if not isinstance(source_name, str) or not source_name:
+    if not isinstance(source_name, str) or not isinstance(sender_id, str):
         return False
-    if not isinstance(sender_id, str) or not sender_id:
-        return False
-
-    configured = admin_senders.get(source_name)
-    if isinstance(configured, str):
-        return sender_id == configured
-    if not isinstance(configured, list | tuple | set | frozenset):
-        return False
-    return sender_id in {str(item) for item in configured}
+    return _sender_is_channel_admin(config, source_name, sender_id)
 
 
 async def _run_turn_with_streaming(

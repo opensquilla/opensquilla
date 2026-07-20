@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -21,11 +22,17 @@ def _reset_state():
     reset_short_codes()
 
 
-def _pending_approval(owner_sender_id: str) -> tuple[str, str]:
+def _pending_approval(
+    owner_sender_id: str,
+    *,
+    origin_channel_name: str = "",
+    params: dict | None = None,
+) -> tuple[str, str]:
     queue = get_approval_queue()
     approval_id = queue.request(
         namespace="exec",
-        params={
+        params=params
+        or {
             "toolName": "exec_command",
             "command": "rm target.txt",
             "sessionKey": "agent:main:chat",
@@ -38,18 +45,24 @@ def _pending_approval(owner_sender_id: str) -> tuple[str, str]:
         namespace="exec",
         session_key="agent:main:chat",
         owner_sender_id=owner_sender_id,
+        origin_channel_name=origin_channel_name,
     )
     return approval_id, code
 
 
 def test_non_action_message_is_ignored() -> None:
     msg = IncomingMessage(sender_id="owner", channel_id="c1", content="hello there")
-    assert _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat") is None
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+    assert reply is None
 
 
 def test_unknown_code_returns_no_pending() -> None:
     msg = IncomingMessage(sender_id="owner", channel_id="c1", content="/approve ZZZZ")
-    reply = _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
     assert reply is not None
     assert "No pending approval ZZZZ" in reply.content
 
@@ -58,7 +71,9 @@ def test_non_owner_cannot_resolve() -> None:
     approval_id, code = _pending_approval(owner_sender_id="owner-1")
     msg = IncomingMessage(sender_id="intruder-2", channel_id="c1", content=f"/approve {code}")
 
-    reply = _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
 
     assert reply is not None
     assert "Only the session owner" in reply.content
@@ -81,7 +96,9 @@ def test_owner_approve_resolves_and_forces_no_elevation() -> None:
         msg = IncomingMessage(
             sender_id="owner-1", channel_id="c1", content=f"/approve {code}"
         )
-        reply = _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+        reply = await _maybe_resolve_channel_approval(
+            msg=msg, session_key="agent:main:chat"
+        )
         assert reply is not None
         assert f"Approved {code}" in reply.content
         await asyncio.wait_for(waiter_task, timeout=5.0)
@@ -101,10 +118,147 @@ def test_owner_deny_resolves_to_not_approved() -> None:
     approval_id, code = _pending_approval(owner_sender_id="owner-1")
     msg = IncomingMessage(sender_id="owner-1", channel_id="c1", content=f"/deny {code}")
 
-    reply = _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
 
     assert reply is not None
     assert f"Denied {code}" in reply.content
+    entry = get_approval_queue().get(approval_id)
+    assert entry.resolved is True
+    assert entry.approved is False
+
+
+def _admin_config(channel_name: str, sender_id: str) -> SimpleNamespace:
+    return SimpleNamespace(channel_admin_senders={channel_name: [sender_id]})
+
+
+def test_always_requires_channel_admin() -> None:
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1", origin_channel_name="feishu-main"
+    )
+    msg = IncomingMessage(
+        sender_id="owner-1", channel_id="c1", content=f"/approve {code} always"
+    )
+
+    # Owner of the turn but NOT a configured channel admin: rejected, and the
+    # approval stays pending so a plain /approve still works afterwards.
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(
+            msg=msg,
+            session_key="agent:main:chat",
+            config=SimpleNamespace(channel_admin_senders={}),
+        )
+    )
+    assert reply is not None
+    assert "needs a channel admin" in reply.content
+    assert get_approval_queue().get(approval_id).resolved is False
+
+
+def test_always_from_admin_resolves_plain_exec_approval() -> None:
+    # Non-sandbox (plain exec) approvals accept "always" as a plain approve —
+    # there is no durable-grant choice to apply.
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1", origin_channel_name="feishu-main"
+    )
+    msg = IncomingMessage(
+        sender_id="owner-1", channel_id="c1", content=f"/approve {code} always"
+    )
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(
+            msg=msg,
+            session_key="agent:main:chat",
+            config=_admin_config("feishu-main", "owner-1"),
+        )
+    )
+
+    assert reply is not None
+    assert f"Approved {code}" in reply.content
+    entry = get_approval_queue().get(approval_id)
+    assert entry.resolved is True
+    assert entry.approved is True
+
+
+def test_always_from_admin_applies_sandbox_same_type_choice(monkeypatch) -> None:
+    applied: list[dict] = []
+
+    async def _fake_apply(params, *, choice, approved, session_manager, config):
+        applied.append({"params": params, "choice": choice, "approved": approved})
+
+    monkeypatch.setattr(
+        "opensquilla.sandbox.escalation.apply_sandbox_approval_choice", _fake_apply
+    )
+
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1",
+        origin_channel_name="feishu-main",
+        params={
+            "approvalKind": "sandbox_network",
+            "host": "pypi.org",
+            "fingerprint": "fp-1",
+            "sessionKey": "agent:main:chat",
+            "senderId": "owner-1",
+            "choices": [
+                {"id": "allow_once", "label": "Allow once", "approved": True},
+                {"id": "allow_same_type", "label": "Allow same type", "approved": True},
+                {"id": "deny", "label": "Deny", "approved": False},
+            ],
+        },
+    )
+    msg = IncomingMessage(
+        sender_id="owner-1", channel_id="c1", content=f"/approve {code} always"
+    )
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(
+            msg=msg,
+            session_key="agent:main:chat",
+            config=_admin_config("feishu-main", "owner-1"),
+        )
+    )
+
+    assert reply is not None
+    assert "won't ask again" in reply.content
+    assert applied == [
+        {
+            "params": get_approval_queue().get(approval_id).params,
+            "choice": "allow_same_type",
+            "approved": True,
+        }
+    ]
+    entry = get_approval_queue().get(approval_id)
+    assert entry.resolved is True
+    assert entry.approved is True
+
+
+def test_sandbox_deny_remembers_and_fans_out(monkeypatch) -> None:
+    remembered: list[str] = []
+    monkeypatch.setattr(
+        "opensquilla.sandbox.escalation.remember_sandbox_approval_denial",
+        lambda params, approval_id: remembered.append(approval_id),
+    )
+
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1",
+        origin_channel_name="feishu-main",
+        params={
+            "approvalKind": "sandbox_network",
+            "host": "pypi.org",
+            "fingerprint": "fp-1",
+            "sessionKey": "agent:main:chat",
+            "senderId": "owner-1",
+        },
+    )
+    msg = IncomingMessage(sender_id="owner-1", channel_id="c1", content=f"/deny {code}")
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+
+    assert reply is not None
+    assert f"Denied {code}" in reply.content
+    assert remembered == [approval_id]
     entry = get_approval_queue().get(approval_id)
     assert entry.resolved is True
     assert entry.approved is False

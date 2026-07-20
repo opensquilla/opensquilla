@@ -7,9 +7,12 @@ session's delivery target is a direct chat) so the user who started the turn
 can approve or deny with an interactive card or the universal ``/approve
 <code>`` text command. On ``resolved`` it releases the short-code binding.
 
-Additive and best-effort: a missing session manager, channel manager, delivery
-target, or send failure is swallowed so notification never breaks queue state
-or the blocked run (which still expires on its own deadline).
+Additive: a missing session manager, channel manager, or delivery target is
+swallowed so notification never breaks queue state or the blocked run (which
+still expires on its own deadline). A failed SEND, however, denies the
+approval outright — the prompt's addressee is the only expected resolver, so
+an undeliverable prompt means the answer can never arrive and fast failure
+beats a silent multi-minute hang.
 """
 
 from __future__ import annotations
@@ -30,11 +33,28 @@ from opensquilla.channels.contract import channel_capability_profile
 log = structlog.get_logger(__name__)
 
 
+def _get_queue() -> Any:
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    return get_approval_queue()
+
+
 def _command_summary(params: dict[str, Any]) -> str:
     command = str(params.get("command") or "")
     if command:
         return command
     return str(params.get("toolName") or params.get("action_kind") or "")
+
+
+def _offers_always(params: dict[str, Any]) -> bool:
+    """True when the approval carries a durable ``allow_same_type`` choice."""
+    choices = params.get("choices")
+    if not isinstance(choices, list):
+        return False
+    return any(
+        isinstance(choice, dict) and choice.get("id") == "allow_same_type"
+        for choice in choices
+    )
 
 
 async def _deliver_channel_prompt(
@@ -95,6 +115,7 @@ async def _deliver_channel_prompt(
         command_or_tool=_command_summary(params),
         agent=str(params.get("agent") or ""),
         short_code=short_code,
+        offer_always=_offers_always(params),
     )
     profile = channel_capability_profile(adapter)
     rendered = render_approval_prompt(profile, request)
@@ -114,7 +135,7 @@ async def _deliver_channel_prompt(
     )
     try:
         await adapter.send(message)
-    except Exception as exc:  # noqa: BLE001 - notification is best-effort.
+    except Exception as exc:  # noqa: BLE001 - deny below, never raise here.
         log.warning(
             "approval_notify.send_failed",
             channel=channel_name,
@@ -122,6 +143,19 @@ async def _deliver_channel_prompt(
             error_type=type(exc).__name__,
             error=str(exc),
         )
+        # The originating sender is the only party expected to resolve a
+        # channel approval; if the prompt cannot reach them, waiting out the
+        # full queue deadline just leaves the turn hanging in silence. Deny
+        # immediately so the agent reports the failure while the user is
+        # still looking at the chat. Racing an operator resolving from the
+        # Web UI is fine — resolve() then raises and we keep their answer.
+        try:
+            _get_queue().resolve(approval_id, False, elevated_mode=None)
+        except Exception:  # noqa: BLE001 - already resolved or expired.
+            log.info(
+                "approval_notify.fail_closed_deny_skipped",
+                approval_id=approval_id,
+            )
 
 
 def register_approval_channel_notifier(

@@ -23,6 +23,10 @@ def _original_async(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitabl
 def patch_context(
     tmp_path: Path,
 ) -> Iterator[tuple[Path, ToolContext, list[dict[str, Any]]]]:
+    # Full-shard runs may follow tests that intentionally configure a disabled
+    # sandbox runtime.  Keep these direct-tool tests independent of that global
+    # runtime so their explicit ToolContext remains the only authority source.
+    reset_runtime()
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     events: list[dict[str, Any]] = []
@@ -36,6 +40,7 @@ def patch_context(
         yield workspace, ctx, events
     finally:
         current_tool_context.reset(token)
+        reset_runtime()
 
 
 @pytest.mark.asyncio
@@ -197,8 +202,8 @@ async def test_apply_patch_receipt_after_fingerprints_committed_file_bytes(
     apply_patch = _original_async(patch_tool.apply_patch)
     original_apply_ops = patch_tool._apply_ops
 
-    def apply_ops_with_disk_newlines(ops: Any, root: Any = None) -> Any:
-        result = original_apply_ops(ops, root)
+    def apply_ops_with_disk_newlines(ops: Any, root: Any = None, **kwargs: Any) -> Any:
+        result = original_apply_ops(ops, root, **kwargs)
         target.write_bytes(
             target.read_text(encoding="utf-8").replace("\n", "\r\n").encode("utf-8")
         )

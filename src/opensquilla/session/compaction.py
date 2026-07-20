@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import inspect
 import json
@@ -38,6 +39,7 @@ class CompactionConfig:
     api_key: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
     timeout_seconds: float = 90.0
+    provider: str = ""
     coverage_blocking: bool = False
     compaction_profile: CompactionProfile = "conversation"
     protected_recent_messages: int = 0
@@ -124,6 +126,7 @@ def build_compaction_config_from_provider(
 
     cfg.api_key = api_key
     cfg.model = configured_model or model_override or model or default_model
+    cfg.provider = connection_config.provider_kind
     if base_url:
         cfg.base_url = base_url
     return cfg
@@ -546,6 +549,7 @@ async def call_compaction_llm(
     base_url: str = "https://openrouter.ai/api/v1",
     timeout: float = _COMPACTION_TIMEOUT,
     custom_instructions: str | None = None,
+    provider: str = "",
 ) -> str | None:
     """Call LLM to summarize a conversation chunk. Returns None on failure."""
     if not api_key:
@@ -591,13 +595,28 @@ async def call_compaction_llm(
     }
     headers.update(provider_app_headers(url))
 
+    # Keep this import local: engine types import session lifecycle helpers
+    # while the session package initializes this module.
+    from opensquilla.engine.usage_http import reserve_direct_usage_call
+
+    usage = await reserve_direct_usage_call(
+        provider=provider
+        or ("openrouter" if "openrouter.ai" in url.lower() else "openai_compat"),
+        model=model,
+    )
+
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
+            await usage.finalize_openai_response(data)
             return cast(str, data["choices"][0]["message"]["content"])
+    except asyncio.CancelledError:
+        await usage.mark_unknown("cancelled")
+        raise
     except Exception as exc:
+        await usage.mark_unknown("direct_request_failed")
         log.warning("compaction.llm_call_failed", model=model, error=str(exc))
         return None
 
@@ -837,6 +856,7 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
                 base_url=cfg.base_url,
                 timeout=cfg.timeout_seconds,
                 custom_instructions=custom_instructions or None,
+                provider=cfg.provider,
             )
             if llm_result:
                 summaries.append(llm_result)

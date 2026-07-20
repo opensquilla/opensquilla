@@ -42,8 +42,8 @@
                   class="usage-sess-link"
                   :title="t('usageLogs.sessions.openChat', { session: row.sessionKey })"
                   @click.prevent="emit('openSession', row.sessionKey)"
-                >{{ row.sessionKey }}</a>
-                <span v-else>-</span>
+                >{{ row.sessionLabel }}</a>
+                <span v-else>{{ row.sessionLabel }}</span>
               </td>
               <td data-label="Modified" class="usage-mono usage-dim">{{ row.modified }}</td>
               <td data-label="Input" class="usage-mono">{{ row.inputTokens != null ? row.inputTokens.toLocaleString() : '-' }}</td>
@@ -62,7 +62,7 @@
                 <button
                   v-if="row.hasModelBreakdown"
                   class="usage-model-toggle"
-                  :class="{ open: expandedSessions.has(row.sessionKey || '') }"
+                  :class="{ open: expandedSessions.has(row.rowIdentity) }"
                   @click="emit('toggleModelExpand', row)"
                 >
                   <span>{{ modelDisplayLabel(row.raw) }}</span><span class="usage-model-caret">▾</span>
@@ -70,7 +70,7 @@
                 <span v-else class="usage-model-text">{{ modelDisplayLabel(row.raw) }}</span>
               </td>
             </tr>
-            <tr v-if="expandedSessions.has(row.sessionKey || '')" class="usage-expand-row">
+            <tr v-if="expandedSessions.has(row.rowIdentity)" class="usage-expand-row">
               <td class="usage-expand-cell" :colspan="tableColumns.length">
                 <UsageModelBreakdown
                   :rows="rowBreakdown(row.raw)"

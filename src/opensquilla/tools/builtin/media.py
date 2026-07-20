@@ -20,6 +20,11 @@ from opensquilla.artifacts import (
     ArtifactStore,
     artifact_payload,
 )
+from opensquilla.engine.usage_accounting import (
+    account_provider_stream,
+    current_usage_accounting_scope,
+    provider_accounts_physical_usage,
+)
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.audio import (
     AudioGenerationResult,
@@ -45,6 +50,7 @@ from opensquilla.provider.image_generation import (
     parse_image_generation_model_ref,
     reset_image_generation_providers,
 )
+from opensquilla.provider.protocol import provider_metadata
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -371,16 +377,36 @@ def _mime_to_ext(content_type: str) -> str:
 
 async def _complete_from_stream(provider: Any, messages: list, config: Any = None) -> str:
     """Consume a chat() stream and return the assembled text response."""
+    scope = current_usage_accounting_scope()
+    close_stream = None
+    if scope is None:
+        stream = provider.chat(messages=messages, config=config)
+    elif provider_accounts_physical_usage(provider):
+        stream = provider.chat(messages=messages, config=config)
+        close_stream = stream
+    else:
+        metadata = provider_metadata(provider)
+        stream = account_provider_stream(
+            lambda: provider.chat(messages=messages, config=config),
+            provider=metadata.provider_name or metadata.provider_kind,
+            model=metadata.model,
+        )
+        close_stream = stream
     text_parts: list[str] = []
-    async for event in provider.chat(messages=messages, config=config):
-        if hasattr(event, "text"):
-            text_parts.append(event.text)
-        elif hasattr(event, "delta") and isinstance(event.delta, str):
-            text_parts.append(event.delta)
-        elif getattr(event, "kind", None) == "error":
-            code = getattr(event, "code", "") or "provider_error"
-            message = getattr(event, "message", "") or "Provider stream failed"
-            raise RuntimeError(f"Provider stream error ({code}): {message}")
+    try:
+        async for event in stream:
+            if hasattr(event, "text"):
+                text_parts.append(event.text)
+            elif hasattr(event, "delta") and isinstance(event.delta, str):
+                text_parts.append(event.delta)
+            elif getattr(event, "kind", None) == "error":
+                code = getattr(event, "code", "") or "provider_error"
+                message = getattr(event, "message", "") or "Provider stream failed"
+                raise RuntimeError(f"Provider stream error ({code}): {message}")
+    finally:
+        aclose = getattr(close_stream, "aclose", None)
+        if callable(aclose):
+            await aclose()
     return "".join(text_parts)
 
 

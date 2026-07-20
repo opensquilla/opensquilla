@@ -3575,10 +3575,23 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
             new_epoch,
         )
 
+    async def _run_accounted() -> dict[str, Any]:
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            ctx.session_manager,
+            key,
+            run_kind="memory_flush",
+        )
+        with bind_usage_accounting_scope(usage_scope):
+            return await _run_locked()
+
     if lock is None:
-        return await _run_locked()
+        return await _run_accounted()
     async with lock:
-        return await _run_locked()
+        return await _run_accounted()
 
 
 async def _ensure_and_emit_reset_epoch(
@@ -4047,10 +4060,23 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         )
         return payload
 
+    async def _run_accounted() -> dict[str, Any]:
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            ctx.session_manager,
+            key,
+            run_kind="session_compaction",
+        )
+        with bind_usage_accounting_scope(usage_scope):
+            return await _run_locked()
+
     if lock is None:
-        return await _run_locked()
+        return await _run_accounted()
     async with lock:
-        return await _run_locked()
+        return await _run_accounted()
 
 
 @_d.method("sessions.compact", scope="operator.write")
@@ -4207,10 +4233,23 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
             payload["flush_receipt"] = flush_receipt_to_dict(receipt)
         return payload
 
+    async def _run_accounted() -> dict[str, Any]:
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            ctx.session_manager,
+            key,
+            run_kind="memory_flush",
+        )
+        with bind_usage_accounting_scope(usage_scope):
+            return await _run_locked()
+
     if lock is None:
-        return await _run_locked()
+        return await _run_accounted()
     async with lock:
-        return await _run_locked()
+        return await _run_accounted()
 
 
 @_d.method("sessions.subscribe", scope="operator.read")

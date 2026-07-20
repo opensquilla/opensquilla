@@ -93,6 +93,18 @@ from opensquilla.engine.tool_result_store import (
 )
 from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
 from opensquilla.engine.usage import model_usage_cost_fields
+from opensquilla.engine.usage_accounting import (
+    UsageAccountingScope,
+    UsageCallStart,
+    UsageEventSink,
+    UsageExecutionContext,
+    bind_usage_accounting_scope,
+    current_usage_accounting_scope,
+    has_known_provider_usage_receipt,
+    normalize_provider_usage,
+    provider_accounts_physical_usage,
+    start_usage_call,
+)
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
     runtime_execution_status,
@@ -175,6 +187,10 @@ from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
 from opensquilla.tools.projected_arguments import find_projected_tool_argument
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import ToolContext, current_tool_context
+from opensquilla.usage_reasons import (
+    normalize_usage_unknown_reason,
+    provider_error_usage_reason,
+)
 
 from .context import ContextAssembly
 from .subagent import SubagentManager, SubagentSpec
@@ -1666,6 +1682,8 @@ class Agent:
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
         failure_injector: FailureInjector | None = None,
+        usage_event_sink: UsageEventSink | None = None,
+        usage_execution_context: UsageExecutionContext | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -1716,6 +1734,12 @@ class Agent:
         # it is unset; a test passes an explicit FailureInjector to script the
         # retry/rotate/fallback chain without a network or a real provider.
         self._failure_injector: FailureInjector | None = failure_injector
+        # Optional provider-call ledger boundary.  Keeping both values out of
+        # AgentConfig prevents persistence concerns from leaking into provider
+        # request configuration.  With no sink, every accounting branch below
+        # is skipped and the historical runtime path is unchanged.
+        self._usage_event_sink = usage_event_sink
+        self._usage_execution_context = usage_execution_context
         if self.tool_handler is not None and self._tool_context is not None:
             self.tool_handler = self._bind_tool_handler_context(
                 self.tool_handler,
@@ -3942,6 +3966,92 @@ class Agent:
 
         return list(self._history)
 
+    def _usage_context_for_turn(self) -> UsageExecutionContext:
+        """Return the injected execution identity or a safe direct-Agent fallback."""
+
+        if self._usage_execution_context is not None:
+            return self._usage_execution_context
+        execution_id = uuid.uuid4().hex
+        return UsageExecutionContext(
+            execution_id=execution_id,
+            agent_run_id=execution_id,
+            agent_id=str(
+                self.config.tool_result_store_agent_id
+                or (self.config.metadata or {}).get("agent_id")
+                or ""
+            ),
+            run_kind="agent",
+        )
+
+    async def _usage_call_start(
+        self,
+        scope: UsageAccountingScope,
+    ) -> UsageCallStart | None:
+        return await start_usage_call(
+            scope,
+            provider=str(
+                self.config.provider_id
+                or getattr(self.provider, "provider_name", "")
+                or ""
+            ),
+            model=str(self.config.model_id or ""),
+        )
+
+    async def _usage_call_finalize(
+        self,
+        call: UsageCallStart,
+        provider_done: object,
+    ) -> None:
+        scope = current_usage_accounting_scope()
+        sink = scope.sink if scope is not None else self._usage_event_sink
+        if sink is None:
+            return
+        result = normalize_provider_usage(
+            provider_done,
+            default_provider=call.provider,
+            default_model=call.model,
+            completed_at_ms=time.time_ns() // 1_000_000,
+        )
+        finalize_task = asyncio.create_task(sink.finalize(call, result))
+        try:
+            await asyncio.shield(finalize_task)
+        except asyncio.CancelledError:
+            # A provider usage receipt already exists.  Finish its durable
+            # write before allowing turn cancellation to unwind.
+            with contextlib.suppress(Exception):
+                await finalize_task
+            raise
+        except Exception as exc:  # noqa: BLE001 - sink owns persistence/retry policy
+            # The durable started row remains available to gateway recovery.
+            # Never discard an already-generated provider response because a
+            # terminal ledger update is temporarily unavailable.
+            logger.warning(
+                "usage_accounting.finalize_failed",
+                event_id=call.event_id,
+                error=str(exc),
+            )
+
+    async def _usage_call_unknown(self, call: UsageCallStart, reason: str) -> None:
+        scope = current_usage_accounting_scope()
+        sink = scope.sink if scope is not None else self._usage_event_sink
+        if sink is None:
+            return
+        stable_reason = normalize_usage_unknown_reason(reason)
+        unknown_task = asyncio.create_task(sink.mark_unknown(call, stable_reason))
+        try:
+            await asyncio.shield(unknown_task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await unknown_task
+            raise
+        except Exception as exc:  # noqa: BLE001 - preserve the original turn outcome
+            logger.warning(
+                "usage_accounting.mark_unknown_failed",
+                event_id=call.event_id,
+                reason=stable_reason,
+                error=str(exc),
+            )
+
     async def run_turn(
         self,
         message: str,
@@ -3966,13 +4076,26 @@ class Agent:
             # them at the start of the next turn so a later access re-prompts
             # instead of being silently allowed for the whole session (issue #418).
             prune_once_mount_grants(self._session_key)
-        async for event in self._turn_generator(
-            message,
-            extra_messages,
-            semantic_message,
-            pending_input_provider=pending_input_provider,
-        ):
-            yield event
+        scope = current_usage_accounting_scope()
+        if self._usage_event_sink is not None:
+            context = self._usage_context_for_turn()
+            if not (
+                scope is not None
+                and scope.sink is self._usage_event_sink
+                and scope.context.execution_id == context.execution_id
+            ):
+                scope = UsageAccountingScope(
+                    sink=self._usage_event_sink,
+                    context=context,
+                )
+        with bind_usage_accounting_scope(scope):
+            async for event in self._turn_generator(
+                message,
+                extra_messages,
+                semantic_message,
+                pending_input_provider=pending_input_provider,
+            ):
+                yield event
 
     async def _turn_generator(
         self,
@@ -3988,6 +4111,7 @@ class Agent:
         self._focused_retrieved_tool_result_handles = set()
         self._current_turn_message = message
         _meta_invoke_turn_count.set(0)
+        usage_scope = current_usage_accounting_scope()
 
         # ------ IDLE → THINKING ------
         yield self._transition(AgentState.THINKING)
@@ -4957,6 +5081,14 @@ class Agent:
                             failure_kind=failure_kind,
                         )
 
+                    usage_call: UsageCallStart | None = None
+                    usage_call_terminal = False
+                    usage_unknown_reason = "provider_stream_ended_without_usage"
+                    if usage_scope is not None and not provider_accounts_physical_usage(
+                        self.provider
+                    ):
+                        usage_call = await self._usage_call_start(usage_scope)
+
                     try:
                         if self._failure_injector is None:
                             raw_stream = self.provider.chat(
@@ -5328,8 +5460,32 @@ class Agent:
                             elif isinstance(raw_ev, ProviderDoneEvent):
                                 # Call ended. All text was already streamed live as
                                 # it arrived, so there is nothing held to flush here.
+                                if _got_done_event:
+                                    # One physical stream owns one receipt. A
+                                    # malformed adapter repeating Done must not
+                                    # duplicate either legacy or ledger totals.
+                                    continue
                                 provider_done_for_log = raw_ev
                                 _got_done_event = True
+                                physical_usage_provider = str(
+                                    getattr(
+                                        raw_ev,
+                                        "_opensquilla_usage_provider",
+                                        "",
+                                    )
+                                    or ""
+                                )
+                                physical_usage_model = str(
+                                    getattr(raw_ev, "_opensquilla_usage_model", "")
+                                    or raw_ev.model
+                                    or self.config.model_id
+                                    or ""
+                                )
+                                if usage_call is not None and not usage_call_terminal:
+                                    # A malformed provider that emits duplicate Done
+                                    # events still finalizes this call envelope once.
+                                    usage_call_terminal = True
+                                    await self._usage_call_finalize(usage_call, raw_ev)
                                 iter_input_tokens = raw_ev.input_tokens
                                 iter_output_tokens = raw_ev.output_tokens
                                 iter_reasoning_tokens = raw_ev.reasoning_tokens
@@ -5356,13 +5512,14 @@ class Agent:
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             price=resolve_model_price(
-                                                raw_ev.model or self.config.model_id or "",
-                                                self.config.provider_id,
+                                                physical_usage_model,
+                                                physical_usage_provider
+                                                or self.config.provider_id,
                                             ).entry,
                                         ).cost_usd
                                         total_cost_usd_accum_has_estimate = True
-                                if raw_ev.model:
-                                    last_actual_model = raw_ev.model
+                                if physical_usage_model:
+                                    last_actual_model = physical_usage_model
                                 # Usage/cost accounting is billed-attempt based: discarded
                                 # invalid responses still consumed provider tokens, but
                                 # they must not be appended to conversation history or the
@@ -5408,7 +5565,7 @@ class Agent:
                                                 ),
                                                 model_id=str(
                                                     usage_row.get("model")
-                                                    or self.config.model_id
+                                                    or physical_usage_model
                                                     or ""
                                                 ),
                                                 cache_read_tokens=_usage_int(cache_read or 0),
@@ -5420,6 +5577,7 @@ class Agent:
                                                 ),
                                                 provider=str(
                                                     usage_row.get("provider")
+                                                    or physical_usage_provider
                                                     or self.config.provider_id
                                                     or getattr(self.provider, "provider_name", "")
                                                     or ""
@@ -5430,12 +5588,13 @@ class Agent:
                                             self._session_key,
                                             input_tokens=raw_ev.input_tokens,
                                             output_tokens=raw_ev.output_tokens,
-                                            model_id=raw_ev.model or self.config.model_id or "",
+                                            model_id=physical_usage_model,
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             billed_cost=raw_ev.billed_cost,
                                             provider=(
-                                                self.config.provider_id
+                                                physical_usage_provider
+                                                or self.config.provider_id
                                                 or getattr(self.provider, "provider_name", "")
                                             ),
                                         )
@@ -5448,6 +5607,16 @@ class Agent:
 
                             elif isinstance(raw_ev, ProviderErrorEvent):
                                 provider_error_for_log = raw_ev
+                                usage_unknown_reason = provider_error_usage_reason(
+                                    raw_ev.code
+                                )
+                                if (
+                                    usage_call is not None
+                                    and not usage_call_terminal
+                                    and has_known_provider_usage_receipt(raw_ev)
+                                ):
+                                    usage_call_terminal = True
+                                    await self._usage_call_finalize(usage_call, raw_ev)
                                 # One-shot thinking/reasoning fallback
                                 _err_lower = raw_ev.message.lower()
                                 if (
@@ -5484,6 +5653,7 @@ class Agent:
                                     error=raw_ev.error,
                                 )
                     except _IterationStreamTimeoutError:
+                        usage_unknown_reason = "iteration_timeout"
                         _notify_call_outcome(ok=False, failure_kind="iteration_timeout")
                         if artifact_delivery_final_response_pending:
                             yield _finish_artifact_delivery_degraded(
@@ -5505,17 +5675,28 @@ class Agent:
                         )
                         yield terminal_error
                         break
+                    except asyncio.CancelledError:
+                        usage_unknown_reason = "cancelled"
+                        raise
                     except TimeoutError:
                         # Total-deadline timeout raised by the stream wrapper:
                         # record the failed call, then propagate unchanged.
+                        usage_unknown_reason = "total_timeout"
                         _notify_call_outcome(ok=False, failure_kind="total_timeout")
                         raise
                     except Exception:
                         # A provider stream that raises (instead of yielding a
                         # ProviderErrorEvent) must still enter the stats before
                         # the exception propagates unchanged.
+                        usage_unknown_reason = "provider_exception"
                         _notify_call_outcome(ok=False, failure_kind="raised")
                         raise
+                    finally:
+                        if usage_call is not None and not usage_call_terminal:
+                            await self._usage_call_unknown(
+                                usage_call,
+                                usage_unknown_reason,
+                            )
 
                     call_duration_ms = int((time.monotonic() - call_started_at) * 1000)
                     _notify_call_outcome(
@@ -12221,6 +12402,8 @@ class Agent:
             workspace_dir=str(workspace_dir) if workspace_dir else None,
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=self._usage_execution_context,
         )
         llm_chat = (
             getattr(self, "_test_llm_chat_override", None)
@@ -12230,6 +12413,8 @@ class Agent:
                     base_config=self.config,
                     usage_tracker=self._usage_tracker,
                     session_key=self._session_key,
+                    usage_event_sink=self._usage_event_sink,
+                    usage_execution_context=self._usage_execution_context,
                 )
                 if self.provider is not None
                 else None
@@ -12451,6 +12636,8 @@ class Agent:
                 workspace_dir=str(workspace_dir) if workspace_dir else None,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
+                usage_event_sink=self._usage_event_sink,
+                usage_execution_context=self._usage_execution_context,
             )
             llm_chat = getattr(self, "_test_llm_chat_override", None) or (
                 make_llm_chat_from_provider(
@@ -12458,6 +12645,8 @@ class Agent:
                     base_config=self.config,
                     usage_tracker=self._usage_tracker,
                     session_key=self._session_key,
+                    usage_event_sink=self._usage_event_sink,
+                    usage_execution_context=self._usage_execution_context,
                 )
                 if self.provider is not None
                 else None
@@ -12680,6 +12869,8 @@ class Agent:
             workspace_dir=str(workspace_dir) if workspace_dir else None,
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=self._usage_execution_context,
         )
         llm_chat = getattr(self, "_test_llm_chat_override", None) or (
             make_llm_chat_from_provider(
@@ -12687,6 +12878,8 @@ class Agent:
                 base_config=self.config,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
+                usage_event_sink=self._usage_event_sink,
+                usage_execution_context=self._usage_execution_context,
             )
             if self.provider is not None
             else None
@@ -13268,6 +13461,37 @@ class Agent:
             else:
                 parent_run_mode = None
 
+        child_usage_context: UsageExecutionContext | None = None
+        if self._usage_event_sink is not None:
+            child_execution_id = uuid.uuid4().hex
+            parent_usage_context = self._usage_execution_context
+            child_usage_context = UsageExecutionContext(
+                execution_id=child_execution_id,
+                agent_run_id=child_execution_id,
+                turn_id=child_execution_id,
+                parent_turn_id=(
+                    parent_usage_context.turn_id or parent_usage_context.execution_id
+                    if parent_usage_context is not None
+                    else None
+                ),
+                session_id=(
+                    parent_usage_context.session_id
+                    if parent_usage_context is not None
+                    else None
+                ),
+                session_epoch=(
+                    parent_usage_context.session_epoch
+                    if parent_usage_context is not None
+                    else 0
+                ),
+                agent_id=(
+                    parent_usage_context.agent_id
+                    if parent_usage_context is not None
+                    else parse_agent_id(parent_session_key)
+                ),
+                run_kind="subagent",
+            )
+
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
         subagent_ctx = ToolContext(
@@ -13444,6 +13668,8 @@ class Agent:
             tool_handler=_subagent_tool_handler,
             subagent_manager=SubagentManager(spawn_depth=depth),
             tool_context=subagent_ctx,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=child_usage_context,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

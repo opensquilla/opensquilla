@@ -277,6 +277,8 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
+import { requestUsageSnapshot } from '@/composables/usage/useUsageQuery'
+import type { UsageSnapshot } from '@/types/usage'
 import { useToasts } from '@/composables/useToasts'
 import { isOwnedGatewayConnection } from '@/composables/useCliInvocation'
 import { usePlatform } from '@/platform'
@@ -403,11 +405,8 @@ const { data: statusData, refresh: refreshStatus } = useRequest<StatusData>(
   undefined,
   { errorLabel: 'Failed to load status', immediate: false },
 )
-const { data: usageData, refresh: refreshUsage } = useRequest<UsageData>(
-  'usage.status',
-  undefined,
-  { errorLabel: 'Failed to load usage', toastOnError: false, immediate: false },
-)
+const usageData = ref<UsageData | null>(null)
+const usageSnapshot = ref<UsageSnapshot | null>(null)
 const { data: sessionsData, loading: loadingSessions, error: sessionsError, refresh: refreshSessions } = useRequest<SessionsListData>(
   'sessions.list',
   { limit: 5 },
@@ -442,6 +441,29 @@ const costLine = computed<string>(() => {
   const cur = localStorage.getItem('opensquilla-currency') || 'USD'
   return cur === 'CNY' ? `${cny} · ${usd}` : `${usd} · ${cny}`
 })
+
+async function refreshUsage(): Promise<UsageData | null> {
+  try {
+    const snapshot = await requestUsageSnapshot(rpc, 'all', {
+      days: false,
+      models: false,
+      sessions: false,
+      cachedSnapshot: usageSnapshot.value,
+    })
+    usageSnapshot.value = snapshot
+    const result = {
+      totalSessions: snapshot.totals.sessions,
+      totalTokens: snapshot.totals.totalTokens,
+      totalCostUsd: snapshot.totals.cost,
+    }
+    usageData.value = result
+    return result
+  } catch {
+    // Overview usage is an optional KPI. Preserve the last good value while
+    // the primary Usage page provides a retryable error state.
+    return null
+  }
+}
 
 // Derived recent sessions
 const recentSessions = computed<Session[]>(() => {
@@ -621,7 +643,7 @@ const groupedFindings = computed<FindingGroup[]>(() => {
 onMounted(() => {
   // Initial data load (readiness loads once; deep doctor checks are heavier
   // than the 30s status polls, so they only rerun on manual Refresh).
-  // useRequest handles initial load for status/usage/sessions on mount.
+  // useRequest handles status/sessions; Usage uses its compatibility client.
   loadHealth()
   // Latency rides alongside the doctor report but never gates it. Like the
   // deep checks, providers.status is expensive (a client per registered spec),

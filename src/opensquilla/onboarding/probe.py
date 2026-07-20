@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import os
 import time
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -34,7 +35,14 @@ from opensquilla.provider.selector import (
     _exception_status_code,
     build_provider,
 )
-from opensquilla.provider.types import ChatConfig, DoneEvent, ErrorEvent, Message, ModelInfo
+from opensquilla.provider.types import (
+    ChatConfig,
+    DoneEvent,
+    ErrorEvent,
+    Message,
+    ModelInfo,
+    StreamEvent,
+)
 from opensquilla.redaction import redact_error_text
 
 log = structlog.get_logger(__name__)
@@ -88,6 +96,10 @@ async def probe_llm_provider(
     proxy: str = "",
     allow_default_api_key_env: bool = True,
     timeout: float = _PROBE_TIMEOUT_SECONDS,
+    chat_stream_factory: Callable[
+        [LLMProvider, list[Message], ChatConfig], AsyncIterator[StreamEvent]
+    ]
+    | None = None,
 ) -> ProviderProbeResult:
     """Run a one-token live chat against the candidate provider config.
 
@@ -142,33 +154,43 @@ async def probe_llm_provider(
     messages = [Message(role="user", content="ping")]
     start = time.monotonic()
     try:
-        async for event in provider.chat(messages, config=cfg):
-            if isinstance(event, ErrorEvent):
-                status_code = int(event.code) if str(event.code).isdigit() else None
-                kind = classify_provider_error(
-                    provider_id,
-                    status_code,
-                    raw_code=event.code,
-                    message=event.message,
-                )
-                return ProviderProbeResult(
-                    ok=False,
-                    provider_id=provider_id,
-                    model=model,
-                    failure_kind=kind.value,
-                    # Provider error bodies can echo credentials (bad keys,
-                    # signed URLs) — never repeat them verbatim.
-                    message=redact_error_text(event.message),
-                    code=str(event.code),
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                )
-            if isinstance(event, DoneEvent):
-                return ProviderProbeResult(
-                    ok=True,
-                    provider_id=provider_id,
-                    model=model,
-                    latency_ms=int((time.monotonic() - start) * 1000),
-                )
+        stream = (
+            chat_stream_factory(provider, messages, cfg)
+            if chat_stream_factory is not None
+            else provider.chat(messages, config=cfg)
+        )
+        try:
+            async for event in stream:
+                if isinstance(event, ErrorEvent):
+                    status_code = int(event.code) if str(event.code).isdigit() else None
+                    kind = classify_provider_error(
+                        provider_id,
+                        status_code,
+                        raw_code=event.code,
+                        message=event.message,
+                    )
+                    return ProviderProbeResult(
+                        ok=False,
+                        provider_id=provider_id,
+                        model=model,
+                        failure_kind=kind.value,
+                        # Provider error bodies can echo credentials (bad keys,
+                        # signed URLs) — never repeat them verbatim.
+                        message=redact_error_text(event.message),
+                        code=str(event.code),
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                    )
+                if isinstance(event, DoneEvent):
+                    return ProviderProbeResult(
+                        ok=True,
+                        provider_id=provider_id,
+                        model=model,
+                        latency_ms=int((time.monotonic() - start) * 1000),
+                    )
+        finally:
+            aclose = getattr(stream, "aclose", None)
+            if callable(aclose):
+                await aclose()
     except Exception as exc:  # noqa: BLE001 - a probe never raises transport noise
         log.warning(
             "onboarding.provider_probe_failed",

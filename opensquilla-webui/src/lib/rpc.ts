@@ -29,6 +29,11 @@ export interface RpcFrame {
   error?: string | RpcErrorDetail;
   protocol?: number;
   policy?: Record<string, unknown>;
+  features?: {
+    methods?: string[];
+    events?: string[];
+  };
+  auth?: Record<string, unknown>;
   seq?: number;
 }
 

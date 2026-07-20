@@ -1,12 +1,16 @@
 import { ref, computed, onUnmounted, onActivated, onDeactivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
-import { useRequest } from '@/composables/useRequest'
 import { useUsagePreferences } from '@/composables/usage/useUsagePreferences'
+import {
+  naturalRangeStartMs,
+  requestUsageSnapshot,
+} from '@/composables/usage/useUsageQuery'
 import { useUsageTotals } from '@/composables/usage/useUsageTotals'
 import { useUsageChartRows } from '@/composables/usage/useUsageChartRows'
 import { useUsageModelCards } from '@/composables/usage/useUsageModelCards'
 import { useUsageSessionRows } from '@/composables/usage/useUsageSessionRows'
+import { useRpcStore } from '@/stores/rpc'
 import { downloadText } from '@/utils/browser'
 import i18n from '@/i18n'
 import type {
@@ -15,6 +19,8 @@ import type {
   ModelCard,
   SessionRow,
   TableColumn,
+  UsageRangeSelection,
+  UsageSnapshot,
   UsageStatusData,
 } from '@/types/usage'
 
@@ -48,6 +54,7 @@ export function useUsageData() {
 // ---------------------------------------------------------------------------
 
 const router = useRouter()
+const rpc = useRpcStore()
 
 // ---------------------------------------------------------------------------
 // State
@@ -57,23 +64,30 @@ const {
   currency,
   range,
   setCurrency,
-  setRange,
+  setRange: persistRange,
 } = useUsagePreferences()
 const sortCol = ref('updated_at')
 const sortAsc = ref(false)
 const chartMode = ref<'tokens' | 'cost'>('tokens')
 const expandedSessions = ref<Set<string>>(new Set())
 
-const { data: usageStatusData, loading: usageLoading, error: usageError, refresh: refreshUsage } = useRequest<UsageStatusData>(
-  'usage.status',
-  undefined,
-  { errorLabel: t('usageLogs.errors.loadFailed'), immediate: false },
-)
-
-const sessions = computed<SessionRow[]>(() => usageStatusData.value?.sessions || [])
-const lastStatus = computed<UsageStatusData | null>(() => usageStatusData.value ?? null)
+const usageSnapshot = ref<UsageSnapshot | null>(null)
+const usageLoading = ref(false)
+const usageError = ref<string | null>(null)
+const sessions = computed<SessionRow[]>(() => usageSnapshot.value?.sessions || [])
+const lastStatus = computed<UsageStatusData | null>(() => {
+  const snapshot = usageSnapshot.value
+  if (!snapshot) return null
+  return {
+    sessions: snapshot.sessions,
+    totalSessions: snapshot.totals.sessions,
+    totalTokens: snapshot.totals.totalTokens,
+    totalCostUsd: snapshot.totals.cost,
+  }
+})
 
 let autoRefreshId: ReturnType<typeof setInterval> | null = null
+let loadGeneration = 0
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -83,25 +97,49 @@ const tableColumns = computed<TableColumn[]>(() =>
   TABLE_COLUMN_KEYS.map(({ key, labelKey }) => ({ key, label: t(labelKey) })))
 const sortableCols = computed(() => SORTABLE_COLS)
 
-const visibleSessions = computed(() => {
-  const cutoff = rangeCutoffMs(range.value)
-  if (cutoff == null) return sessions.value
-  return sessions.value.filter(row => {
-    const ts = sessionTimestamp(row)
-    return ts != null && ts >= cutoff
-  })
-})
+// usage.query already returns server-attributed rows for the requested range.
+// The legacy normalizer applies its explicit approximation before publishing
+// the snapshot, so renderers never re-filter authoritative ledger rows.
+const visibleSessions = computed(() => sessions.value)
 
 const undatedHiddenCount = computed(() => {
-  if (range.value === 'all') return 0
-  return sessions.value.filter(row => sessionTimestamp(row) == null).length
+  return 0
 })
 
 const rangeHiddenHint = computed(() => {
-  const hidden = undatedHiddenCount.value
-  if (hidden <= 0) return ''
-  return t('usageLogs.rangeHiddenHint', { count: hidden })
+  const snapshot = usageSnapshot.value
+  if (!snapshot) return ''
+  const notices: string[] = []
+  if (snapshot.timezoneFallback) {
+    notices.push(t('usageLogs.coverage.timezoneFallback', {
+      requested: snapshot.timezoneFallback.requestedTimezone,
+      effective: snapshot.timezoneFallback.effectiveTimezone,
+    }))
+  }
+  if (snapshot.mode === 'session_approximation') {
+    notices.push(t('usageLogs.coverage.approximate'))
+  } else if (snapshot.mode === 'ledger_partial') {
+    notices.push(t('usageLogs.coverage.partial'))
+  }
+  if (snapshot.coverage.legacyIncludedInTotals) {
+    notices.push(t('usageLogs.coverage.legacyIncluded'))
+  }
+  if (snapshot.totals.estimatedEventCount > 0) {
+    notices.push(t('usageLogs.coverage.estimated', {
+      count: snapshot.totals.estimatedEventCount,
+    }))
+  }
+  if (snapshot.totals.missingCostEntries > 0) {
+    notices.push(t('usageLogs.coverage.unpriced', { count: snapshot.totals.missingCostEntries }))
+  }
+  return notices.join(' · ')
 })
+
+const serverTotals = computed(() => usageSnapshot.value?.totals || null)
+const serverModels = computed(() =>
+  usageSnapshot.value?.source === 'usage_ledger' ? usageSnapshot.value.models : null)
+const serverDays = computed(() =>
+  usageSnapshot.value?.source === 'usage_ledger' ? usageSnapshot.value.days : null)
 
 const {
   usageTotals,
@@ -114,6 +152,7 @@ const {
   avgCostDisplay,
 } = useUsageTotals({
   visibleSessions,
+  serverTotals,
   currency,
   cnyRate: CNY_RATE,
   rowVal,
@@ -123,6 +162,7 @@ const {
 
 const { chartCaption, chartRows } = useUsageChartRows({
   visibleSessions,
+  serverDays,
   chartMode,
   rowVal,
   fmtCost,
@@ -131,6 +171,7 @@ const { chartCaption, chartRows } = useUsageChartRows({
 
 const { modelCards, modelsMeta } = useUsageModelCards({
   visibleSessions,
+  serverModels,
   rowVal,
 })
 
@@ -153,7 +194,7 @@ const { sortedRows, sessionsMeta } = useUsageSessionRows({
 // The initial fetch and the 60s refresh timer both live on activate/deactivate,
 // so a kept-alive but hidden Usage view stops polling. onActivated fires on
 // first mount too, so it owns the one-time fetch as well — no separate
-// onMounted fetch, which would double-fetch usage.status on first paint.
+// onMounted fetch, which would double-fetch Usage data on first paint.
 onActivated(() => {
   if (!autoRefreshId) autoRefreshId = setInterval(loadData, 60000)
   // A returning view refreshes immediately so cached numbers don't linger.
@@ -199,8 +240,8 @@ function openSession(key: string) {
   }
 }
 
-function toggleModelExpand(row: { raw: SessionRow; sessionKey: string }) {
-  const key = row.sessionKey || ''
+function toggleModelExpand(row: { raw: SessionRow; rowIdentity: string }) {
+  const key = row.rowIdentity
   if (expandedSessions.value.has(key)) {
     expandedSessions.value.delete(key)
   } else {
@@ -208,13 +249,54 @@ function toggleModelExpand(row: { raw: SessionRow; sessionKey: string }) {
   }
 }
 
-function loadData() {
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-  return refreshUsage()
+async function loadData(): Promise<boolean> {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false
+  const generation = ++loadGeneration
+  usageLoading.value = true
+  usageError.value = null
+  try {
+    const snapshot = await requestUsageSnapshot(
+      rpc,
+      range.value as UsageRangeSelection,
+      { cachedSnapshot: usageSnapshot.value },
+    )
+    if (generation !== loadGeneration) return false
+    usageSnapshot.value = snapshot
+    return true
+  } catch (error) {
+    if (generation !== loadGeneration) return false
+    // A refresh or range request must never replace already-rendered,
+    // trustworthy data with a page-level error.  The caller that changed the
+    // range restores the previous selection below, keeping the cached
+    // snapshot and its visible range label aligned.
+    if (!usageSnapshot.value) {
+      usageError.value = error instanceof Error ? error.message : String(error)
+    }
+    return false
+  } finally {
+    if (generation === loadGeneration) usageLoading.value = false
+  }
+}
+
+function setRange(nextRange: string) {
+  const previousRange = range.value
+  persistRange(nextRange)
+  void loadData().then(loaded => {
+    if (!loaded && range.value === nextRange && usageSnapshot.value) {
+      persistRange(previousRange)
+    }
+  })
 }
 
 function exportCsv() {
   const headers = [
+    'row_type',
+    'aggregation_mode',
+    'coverage_status',
+    'range_preset',
+    'range_from_ms',
+    'range_to_ms',
+    'timezone',
     'session',
     'input_tokens',
     'output_tokens',
@@ -224,13 +306,44 @@ function exportCsv() {
     'cost_cny',
     'billed_cost_usd',
     'estimated_cost_usd',
+    'estimated_event_count',
     'cost_source',
     'missing_cost_entries',
     'cost_ephemeral',
     'model',
   ]
+  const snapshot = usageSnapshot.value
+  const common = [
+    snapshot?.mode || 'session_approximation',
+    snapshot?.coverage.status || 'approximate',
+    snapshot?.range.preset || '',
+    snapshot?.range.fromMs ?? '',
+    snapshot?.range.toMs ?? '',
+    snapshot?.timezone || '',
+  ]
+  const totals = snapshot?.totals
+  const summary = [
+    'summary',
+    ...common,
+    '',
+    totals?.input ?? '',
+    totals?.output ?? '',
+    totals?.cacheRead ?? '',
+    totals?.cacheWrite ?? '',
+    totals?.cost != null ? totals.cost.toFixed(9) : '',
+    totals?.cost != null ? (totals.cost * CNY_RATE).toFixed(9) : '',
+    totals?.billedCost != null ? totals.billedCost.toFixed(9) : '',
+    totals?.estimatedCost != null ? totals.estimatedCost.toFixed(9) : '',
+    totals?.estimatedEventCount ?? '',
+    totals?.costSource || '',
+    totals?.missingCostEntries ?? '',
+    'false',
+    '',
+  ]
   const visibleRows = visibleSessions.value
   const rows = visibleRows.map(row => [
+    'session',
+    ...common,
     rowVal(row, 'session', 'sessionKey', 'key') || '',
     rowVal(row, 'input_tokens', 'inputTokens') ?? '',
     rowVal(row, 'output_tokens', 'outputTokens') ?? '',
@@ -240,14 +353,20 @@ function exportCsv() {
     rowVal(row, 'cost_usd', 'costUsd') != null ? (Number(rowVal(row, 'cost_usd', 'costUsd')) * CNY_RATE).toFixed(6) : '',
     rowVal(row, 'billed_cost_usd', 'billedCostUsd') != null ? Number(rowVal(row, 'billed_cost_usd', 'billedCostUsd')).toFixed(6) : '',
     rowVal(row, 'estimated_cost_usd', 'estimatedCostUsd') != null ? Number(rowVal(row, 'estimated_cost_usd', 'estimatedCostUsd')).toFixed(6) : '',
+    rowVal(row, 'estimated_event_count', 'estimatedEventCount') ?? '',
     costSource(row),
     rowVal(row, 'missing_cost_entries', 'missingCostEntries') ?? '',
     rowVal(row, 'cost_ephemeral', 'costEphemeral') ? 'true' : 'false',
     row.model || '',
   ])
-  const csv = [headers, ...rows].map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n')
+  const csv = [headers, summary, ...rows]
+    .map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(','))
+    .join('\n')
   const suffix = range.value === 'all' ? 'all' : `${range.value}d`
-  download(`opensquilla-usage-${suffix}-cny${CNY_RATE}.csv`, 'text/csv', csv)
+  const coverageSuffix = snapshot?.mode === 'session_approximation'
+    ? '-approximate'
+    : snapshot?.mode === 'ledger_partial' ? '-partial' : ''
+  download(`opensquilla-usage-${suffix}${coverageSuffix}-cny${CNY_RATE}.csv`, 'text/csv', csv)
 }
 
 // ---------------------------------------------------------------------------
@@ -255,8 +374,7 @@ function exportCsv() {
 // ---------------------------------------------------------------------------
 
 function rangeCutoffMs(r: string): number | null {
-  if (r === 'all') return null
-  return Date.now() - (Number(r) * 86400000)
+  return naturalRangeStartMs(r as UsageRangeSelection)
 }
 
 function fmtCost(usd: number | null | undefined, opts?: { decimals?: number }): string {

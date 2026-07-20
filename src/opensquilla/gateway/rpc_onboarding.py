@@ -433,6 +433,15 @@ async def _provider_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
 @_d.method("onboarding.provider.probe", scope="operator.admin")
 async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     """Live one-token probe of a candidate provider config (nothing is saved)."""
+    import uuid
+
+    from opensquilla.engine.usage_accounting import (
+        UsageAccountingScope,
+        UsageExecutionContext,
+        account_provider_stream,
+        bind_usage_accounting_scope,
+        provider_accounts_physical_usage,
+    )
     from opensquilla.onboarding.probe import probe_llm_provider
 
     provider_id = _require(params, "providerId")
@@ -458,18 +467,51 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
             base_url = str(getattr(cfg.llm, "base_url", "") or "")
         if not proxy:
             proxy = str(getattr(cfg.llm, "proxy", "") or "")
-    with _validation_error("onboarding.provider.invalid"):
-        result = await probe_llm_provider(
-            provider_id=provider_id,
-            model=str(p.get("model", "") or ""),
-            api_key=api_key,
-            api_key_env=api_key_env,
-            base_url=base_url,
-            proxy=proxy,
-            allow_default_api_key_env=(
-                not same_provider or reuse_stored_credentials
+    model = str(p.get("model", "") or "")
+    usage_scope = None
+    chat_stream_factory = None
+    if ctx.usage_event_sink is not None:
+        execution_id = uuid.uuid4().hex
+        usage_scope = UsageAccountingScope(
+            sink=ctx.usage_event_sink,
+            context=UsageExecutionContext(
+                execution_id=execution_id,
+                agent_run_id=execution_id,
+                turn_id=execution_id,
+                session_id=uuid.uuid5(
+                    uuid.NAMESPACE_URL,
+                    "opensquilla:system:onboarding-provider-probe",
+                ).hex,
+                agent_id="system",
+                run_kind="onboarding_probe",
             ),
         )
+
+        def chat_stream_factory(provider: Any, messages: Any, chat_config: Any) -> Any:
+            if provider_accounts_physical_usage(provider):
+                return provider.chat(messages, config=chat_config)
+            return account_provider_stream(
+                lambda: provider.chat(messages, config=chat_config),
+                provider=str(provider_id),
+                model=model,
+            )
+
+    with bind_usage_accounting_scope(usage_scope):
+        with _validation_error("onboarding.provider.invalid"):
+            probe_kwargs: dict[str, Any] = dict(
+                provider_id=provider_id,
+                model=model,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                base_url=base_url,
+                proxy=proxy,
+                allow_default_api_key_env=(
+                    not same_provider or reuse_stored_credentials
+                ),
+            )
+            if chat_stream_factory is not None:
+                probe_kwargs["chat_stream_factory"] = chat_stream_factory
+            result = await probe_llm_provider(**probe_kwargs)
     return result.to_payload()
 
 

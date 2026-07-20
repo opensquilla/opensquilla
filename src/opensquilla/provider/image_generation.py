@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from dataclasses import dataclass, field, replace
@@ -87,17 +88,31 @@ class OpenAIImageGenerationProvider:
             "output_format": request.output_format,
             "n": 1,
         }
-        async with httpx.AsyncClient(
-            timeout=request.timeout_seconds,
-            trust_env=_trust_env(),
-        ) as client:
-            response = await client.post(
-                self._api_url("/v1/images/generations"),
-                headers={"Authorization": f"Bearer {api_key}"},
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
+        from opensquilla.engine.usage_http import reserve_direct_usage_call
+
+        usage = await reserve_direct_usage_call(
+            provider=self.provider_id,
+            model=request.model,
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=request.timeout_seconds,
+                trust_env=_trust_env(),
+            ) as client:
+                response = await client.post(
+                    self._api_url("/v1/images/generations"),
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                await usage.finalize_openai_response(data)
+        except asyncio.CancelledError:
+            await usage.mark_unknown("cancelled")
+            raise
+        except Exception:
+            await usage.mark_unknown("direct_request_failed")
+            raise
 
         items = data.get("data") or []
         if not items:
@@ -166,21 +181,35 @@ class OpenRouterImageGenerationProvider:
             "stream": False,
             "image_config": self._image_config_for_size(request.size),
         }
-        async with httpx.AsyncClient(
-            timeout=request.timeout_seconds,
-            trust_env=_trust_env(),
-        ) as client:
-            response = await client.post(
-                self._api_url("/v1/chat/completions"),
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    **provider_app_headers(self._base_url),
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
+        from opensquilla.engine.usage_http import reserve_direct_usage_call
+
+        usage = await reserve_direct_usage_call(
+            provider=self.provider_id,
+            model=request.model,
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=request.timeout_seconds,
+                trust_env=_trust_env(),
+            ) as client:
+                response = await client.post(
+                    self._api_url("/v1/chat/completions"),
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        **provider_app_headers(self._base_url),
+                    },
+                    json=payload,
+                )
+                response.raise_for_status()
+                data = response.json()
+                await usage.finalize_openai_response(data)
+        except asyncio.CancelledError:
+            await usage.mark_unknown("cancelled")
+            raise
+        except Exception:
+            await usage.mark_unknown("direct_request_failed")
+            raise
 
         image_url = _extract_openrouter_image_url(data)
         if not image_url:

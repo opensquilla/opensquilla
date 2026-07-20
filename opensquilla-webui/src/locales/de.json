@@ -1018,6 +1018,8 @@
       "ariaLabel": "Erfordert Aufmerksamkeit",
       "allClear": "Alles in Ordnung",
       "costToday": "{amount} heute",
+      "costTodayLabel": "Kosten heute",
+      "costTotal": "{amount} gesamt",
       "needsApproval": "Genehmigung erforderlich",
       "openBlocked": "blockierte Sitzung öffnen →",
       "nothingWaiting": "nichts wartet auf Sie",
@@ -1750,6 +1752,14 @@
     },
     "costHintTitle": "CNY-Werte verwenden den festen Kurs {rate}. Für buchhalterische Zwecke mit dem aktuellen Wechselkurs abgleichen.",
     "rangeHiddenHint": "{count} undatierte Legacy-Sitzungen ausgeblendet",
+    "coverage": {
+      "approximate": "Älteres Gateway: Datumsbereiche sind Näherungen aus Sitzungs-Gesamtwerten.",
+      "partial": "Die Nutzungsbuch-Migration läuft noch; alle bekannten Werte werden angezeigt.",
+      "timezoneFallback": "Die Zeitzone {requested} ist ungültig; Datumswerte werden nach {effective} gruppiert.",
+      "legacyIncluded": "Nutzung vor dem Buch wird eingerechnet, kann aber keinem Datum zugeordnet werden.",
+      "estimated": "Enthält {count} geschätzte Aufrufe.",
+      "unpriced": "Bekannte Kosten werden angezeigt; für {count} Aufrufe fehlt ein Preis, daher sind die Kosten unvollständig."
+    },
     "chart": {
       "metric": "Diagrammkennzahl",
       "dateRange": "Datumsbereich",
@@ -1761,6 +1771,7 @@
       "output": "Ausgabe",
       "emptyWindow": "Keine Daten im ausgewählten Zeitfenster.",
       "openSession": "{session} öffnen",
+      "daily": "Tägliche Nutzung",
       "topByCost": "Top-Sitzungen nach Kosten",
       "topByTokens": "Top-Sitzungen nach Tokens gesamt",
       "showingOf": "{shown} von {total} werden angezeigt"

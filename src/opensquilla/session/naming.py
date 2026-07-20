@@ -18,6 +18,7 @@ the existing truncation fallback (``derive_transcript_title``) remains in effect
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -79,6 +80,7 @@ class NamingTarget:
     api_key: str
     base_url: str
     timeout: float
+    provider: str = ""
 
 
 def _display_name_is_generic(value: str | None) -> bool:
@@ -165,7 +167,13 @@ def resolve_naming_target(
     except (TypeError, ValueError):
         timeout = 30.0
 
-    return NamingTarget(model=model, api_key=api_key, base_url=base_url, timeout=timeout)
+    return NamingTarget(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        timeout=timeout,
+        provider=conn.provider_kind,
+    )
 
 
 def _sanitize_title(raw: str | None, max_chars: int) -> str | None:
@@ -226,6 +234,7 @@ async def call_naming_llm(
     timeout: float = 30.0,
     max_chars: int = 48,
     language: str = "auto",
+    provider: str = "",
 ) -> str | None:
     """Summarize ``first_message`` into a short title. Returns ``None`` on failure."""
 
@@ -258,13 +267,28 @@ async def call_naming_llm(
     }
     headers.update(provider_app_headers(url))
 
+    # Keep this import local: engine types import session lifecycle helpers
+    # while the session package initializes this module.
+    from opensquilla.engine.usage_http import reserve_direct_usage_call
+
+    usage = await reserve_direct_usage_call(
+        provider=provider
+        or ("openrouter" if "openrouter.ai" in url.lower() else "openai_compat"),
+        model=model,
+    )
+
     try:
         async with httpx.AsyncClient(timeout=timeout, trust_env=_trust_env()) as client:
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
+            await usage.finalize_openai_response(data)
             raw = data["choices"][0]["message"]["content"]
+    except asyncio.CancelledError:
+        await usage.mark_unknown("cancelled")
+        raise
     except Exception as exc:  # noqa: BLE001 - naming is best-effort
+        await usage.mark_unknown("direct_request_failed")
         log.warning("session_naming.llm_call_failed", model=model, error=str(exc))
         return None
 
@@ -317,15 +341,26 @@ async def generate_session_title(
         if target is None:
             return
 
-        title = await call_naming_llm(
-            first_message,
-            model=target.model,
-            api_key=target.api_key,
-            base_url=target.base_url,
-            timeout=target.timeout,
-            max_chars=int(getattr(naming_cfg, "max_chars", 48)),
-            language=str(getattr(naming_cfg, "language", "auto")),
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            getattr(ctx, "session_manager", None),
+            session_key,
+            run_kind="session_naming",
         )
+        with bind_usage_accounting_scope(usage_scope):
+            title = await call_naming_llm(
+                first_message,
+                model=target.model,
+                api_key=target.api_key,
+                base_url=target.base_url,
+                timeout=target.timeout,
+                max_chars=int(getattr(naming_cfg, "max_chars", 48)),
+                language=str(getattr(naming_cfg, "language", "auto")),
+                provider=target.provider,
+            )
         if not title:
             return
 

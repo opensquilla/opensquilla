@@ -1018,6 +1018,8 @@
       "ariaLabel": "需要关注",
       "allClear": "一切正常",
       "costToday": "今日 {amount}",
+      "costTodayLabel": "今日成本",
+      "costTotal": "累计 {amount}",
       "needsApproval": "需要审批",
       "openBlocked": "打开被阻塞的会话 →",
       "nothingWaiting": "没有需要你处理的事项",
@@ -1750,6 +1752,14 @@
     },
     "costHintTitle": "人民币金额使用内置汇率 {rate}。用于记账时请核对当前汇率。",
     "rangeHiddenHint": "已隐藏 {count} 个无日期的旧会话",
+    "coverage": {
+      "approximate": "当前连接的是旧版网关；日期范围按会话累计值近似统计。",
+      "partial": "用量账本仍在迁移中；当前显示全部已知用量。",
+      "timezoneFallback": "时区 {requested} 无效；日期当前按 {effective} 分组。",
+      "legacyIncluded": "账本启用前的用量已计入总数，但无法归入具体日期。",
+      "estimated": "包含 {count} 次估算调用。",
+      "unpriced": "当前显示已知成本；另有 {count} 次调用缺少价格，成本不完整。"
+    },
     "chart": {
       "metric": "图表指标",
       "dateRange": "日期范围",
@@ -1761,6 +1771,7 @@
       "output": "输出",
       "emptyWindow": "所选时间窗内无数据。",
       "openSession": "打开 {session}",
+      "daily": "每日用量",
       "topByCost": "按成本排名靠前的会话",
       "topByTokens": "按 Token 总数排名靠前的会话",
       "showingOf": "显示 {total} 中的 {shown}"

@@ -1018,6 +1018,8 @@
       "ariaLabel": "要対応",
       "allClear": "問題なし",
       "costToday": "本日 {amount}",
+      "costTodayLabel": "本日のコスト",
+      "costTotal": "合計 {amount}",
       "needsApproval": "承認が必要",
       "openBlocked": "ブロックされたセッションを開く →",
       "nothingWaiting": "保留中の項目はありません",
@@ -1750,6 +1752,14 @@
     },
     "costHintTitle": "CNY の値は固定レート {rate} を使用します。会計用途では現在の為替レートと照合してください。",
     "rangeHiddenHint": "日付なしのレガシーセッション {count} 件を非表示",
+    "coverage": {
+      "approximate": "旧 Gateway では、日付範囲をセッション累計から概算します。",
+      "partial": "利用量台帳を移行中です。既知の利用量はすべて表示しています。",
+      "timezoneFallback": "タイムゾーン {requested} は無効です。日付は {effective} で集計されています。",
+      "legacyIncluded": "台帳開始前の利用量は合計に含まれますが、日付には割り当てられません。",
+      "estimated": "{count} 件の推定呼び出しを含みます。",
+      "unpriced": "既知のコストを表示しています。{count} 件は価格未設定のため、コストは不完全です。"
+    },
     "chart": {
       "metric": "チャートの指標",
       "dateRange": "日付範囲",
@@ -1761,6 +1771,7 @@
       "output": "出力",
       "emptyWindow": "選択した期間にデータはありません。",
       "openSession": "{session} を開く",
+      "daily": "日別利用量",
       "topByCost": "コスト上位のセッション",
       "topByTokens": "合計トークン数上位のセッション",
       "showingOf": "{total} 件中 {shown} 件を表示"

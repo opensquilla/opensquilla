@@ -22,6 +22,7 @@
       :running-count="runningCount"
       :queued-count="queuedCount"
       :cost-usd="costUsd"
+      :cost-period="costPeriod"
       @open-approvals="openBlockedSession"
       @open-usage="router.push('/usage')"
     />
@@ -112,6 +113,8 @@ import Icon from '@/components/Icon.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import { useConfirm } from '@/composables/useConfirm'
+import { requestUsageSnapshot } from '@/composables/usage/useUsageQuery'
+import type { UsageSnapshot } from '@/types/usage'
 import SessionsTaskInput from '@/components/sessions/SessionsTaskInput.vue'
 import SessionsAttentionStrip from '@/components/sessions/SessionsAttentionStrip.vue'
 import SessionsLedger from '@/components/sessions/SessionsLedger.vue'
@@ -134,10 +137,6 @@ type FilterId = 'all' | 'chats' | 'automations' | 'channels'
 
 interface AgentsListResponse {
   agents?: Array<{ id?: string; name?: string }>
-}
-
-interface UsageStatusResponse {
-  totalCostUsd?: number
 }
 
 interface DeleteResponse {
@@ -173,10 +172,12 @@ const search = ref('')
 const agentNames = ref<Map<string, string>>(new Map())
 const pendingApprovals = ref<string[]>([])
 const costUsd = ref<number | null>(null)
+const costPeriod = ref<'today' | 'total'>('total')
 
 let refreshTimer: ReturnType<typeof setTimeout> | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let unsubs: Array<() => void> = []
+let lastCostSnapshot: UsageSnapshot | null = null
 
 // ---------------------------------------------------------------------------
 // Derivations
@@ -270,10 +271,21 @@ async function refreshApprovals() {
 
 async function refreshCost() {
   try {
-    const data = await rpc.call<UsageStatusResponse>('usage.status')
-    costUsd.value = data?.totalCostUsd != null ? Number(data.totalCostUsd) : null
+    const snapshot = await requestUsageSnapshot(rpc, 'today', {
+      days: false,
+      models: false,
+      sessions: false,
+      // Old gateways only expose lifetime totals. Showing that value is safe
+      // as long as the label says total rather than incorrectly claiming today.
+      fallbackRange: 'all',
+      cachedSnapshot: lastCostSnapshot,
+    })
+    lastCostSnapshot = snapshot
+    costUsd.value = snapshot.totals.cost
+    costPeriod.value = snapshot.source === 'usage_ledger' ? 'today' : 'total'
   } catch {
     costUsd.value = null
+    costPeriod.value = 'total'
   }
 }
 

@@ -7,6 +7,8 @@ const OverviewView = (() => {
   let _intervals = [];
   let _eventLog = [];
   let _viewGeneration = 0;
+  let _usageQueryUnavailable = false;
+  let _lastUsageSummary = null;
 
   function _ensureCss() {
     if (document.querySelector('link[data-view-css="overview"]')) return;
@@ -185,6 +187,8 @@ const OverviewView = (() => {
     _intervals.forEach(id => clearInterval(id));
     _intervals = [];
     _eventLog = [];
+    _usageQueryUnavailable = false;
+    _lastUsageSummary = null;
     _el = null;
     _rpc = null;
   }
@@ -207,6 +211,86 @@ const OverviewView = (() => {
     const VARIANT = { connected: 'ok', connecting: 'warn', disconnected: 'err' };
     pill.className = `conn-pill ${VARIANT[state] || ''}`.trim();
     pill.textContent = state;
+  }
+
+  function _supportsUsageQuery(rpc) {
+    const methods = rpc && rpc.hello && rpc.hello.features && rpc.hello.features.methods;
+    return !_usageQueryUnavailable && Array.isArray(methods) && methods.includes('usage.query');
+  }
+
+  function _overviewTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch {
+      return 'UTC';
+    }
+  }
+
+  function _usageQueryParams(timezone) {
+    return {
+      schemaVersion: 1,
+      range: { preset: 'all' },
+      timezone,
+      include: { days: false, models: false, sessions: false },
+    };
+  }
+
+  function _methodNotFound(err) {
+    return Boolean(err && err.code === 'METHOD_NOT_FOUND') ||
+      /method not found/i.test(String(err && err.message || err || ''));
+  }
+
+  function _queryCostUsd(totals) {
+    if (totals && totals.costNanos != null) return Number(totals.costNanos) / 1_000_000_000;
+    if (totals && totals.cost_nanos != null) return Number(totals.cost_nanos) / 1_000_000_000;
+    if (totals && totals.costMicroUsd != null) return Number(totals.costMicroUsd) / 1_000_000;
+    return Number(totals && (totals.costUsd ?? totals.cost_usd) || 0);
+  }
+
+  async function _loadUsageSummary(rpc) {
+    const timezone = _overviewTimezone();
+    let transientQueryFailure = false;
+    if (_supportsUsageQuery(rpc)) {
+      try {
+        const data = await rpc.call('usage.query', _usageQueryParams(timezone));
+        const totals = data.totals || {};
+        return {
+          source: 'usage_ledger',
+          totalSessions: totals.sessionCount ?? totals.session_count ?? 0,
+          totalTokens: totals.totalTokens ?? totals.total_tokens ?? 0,
+          totalCostUsd: _queryCostUsd(totals),
+        };
+      } catch (err) {
+        if (_methodNotFound(err)) {
+          _usageQueryUnavailable = true;
+        } else if (timezone !== 'UTC' && /timezone|time zone/i.test(String(err && err.message || err || ''))) {
+          try {
+            const data = await rpc.call('usage.query', _usageQueryParams('UTC'));
+            const totals = data.totals || {};
+            return {
+              source: 'usage_ledger',
+              totalSessions: totals.sessionCount ?? totals.session_count ?? 0,
+              totalTokens: totals.totalTokens ?? totals.total_tokens ?? 0,
+              totalCostUsd: _queryCostUsd(totals),
+            };
+          } catch (utcErr) {
+            if (_methodNotFound(utcErr)) _usageQueryUnavailable = true;
+            else transientQueryFailure = true;
+          }
+        } else {
+          transientQueryFailure = true;
+        }
+      }
+    }
+    try {
+      const status = await rpc.call('usage.status');
+      if (transientQueryFailure && _lastUsageSummary &&
+          _lastUsageSummary.source === 'usage_ledger') return _lastUsageSummary;
+      return { ...status, source: 'usage_status' };
+    } catch (err) {
+      if (_lastUsageSummary) return _lastUsageSummary;
+      throw err;
+    }
   }
 
   async function _loadData() {
@@ -257,8 +341,9 @@ const OverviewView = (() => {
       setText('ov-health-summary', 'open health');
     });
 
-    rpc.call('usage.status').then(data => {
+    _loadUsageSummary(rpc).then(data => {
       if (!_isCurrentView(root, rpc, generation)) return;
+      _lastUsageSummary = data;
       const cur = localStorage.getItem('opensquilla-currency') || 'USD';
       set('ov-sessions', data.totalSessions ?? '—');
       set('ov-tokens', data.totalTokens != null ? data.totalTokens.toLocaleString() : '—');

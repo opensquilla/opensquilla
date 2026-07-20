@@ -9,6 +9,7 @@ import os
 import secrets
 import sys
 import time
+import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
@@ -68,6 +69,31 @@ log = structlog.get_logger(__name__)
 GATEWAY_GRACEFUL_TIMEOUT_ENV = "OPENSQUILLA_GATEWAY_GRACEFUL_TIMEOUT"
 _DEFAULT_GRACEFUL_TIMEOUT_S = 30.0
 _MAX_GRACEFUL_TIMEOUT_S = 120.0
+
+
+def _auto_propose_usage_execution_context(
+    agent_id: str,
+    usage_event_sink: Any | None,
+) -> Any | None:
+    """Create one run identity for a gateway-owned auto-propose workload."""
+
+    if usage_event_sink is None:
+        return None
+    from opensquilla.engine.usage_accounting import UsageExecutionContext
+
+    execution_id = uuid.uuid4().hex
+    return UsageExecutionContext(
+        execution_id=execution_id,
+        agent_run_id=execution_id,
+        turn_id=execution_id,
+        session_id=uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"opensquilla:system:auto-propose:{agent_id}",
+        ).hex,
+        session_epoch=0,
+        agent_id=agent_id,
+        run_kind="auto_propose",
+    )
 
 
 def gateway_graceful_timeout() -> float:
@@ -257,7 +283,7 @@ def _make_channel_rpc_context_factory(svc: ServiceContainer, config: GatewayConf
     from opensquilla.channels.command_registry import build_channel_rpc_context
 
     def _factory(envelope: Any) -> Any:
-        names = ("session_manager", "provider_selector", "tool_registry", "usage_tracker", "skill_loader", "cron_scheduler", "task_runtime", "flush_service", "heartbeat_loop", "agent_registry", "memory_managers", "memory_stores", "memory_retrievers")  # noqa: E501
+        names = ("session_manager", "provider_selector", "tool_registry", "usage_tracker", "usage_event_sink", "skill_loader", "cron_scheduler", "task_runtime", "flush_service", "heartbeat_loop", "agent_registry", "memory_managers", "memory_stores", "memory_retrievers")  # noqa: E501
         return build_channel_rpc_context(
             envelope,
             gateway_config=config,
@@ -585,6 +611,8 @@ class ServiceContainer:
     session_manager: SessionManager | None = None
     skill_loader: SkillLoader | None = None
     usage_tracker: UsageTracker | None = None
+    usage_event_sink: Any = None
+    usage_backfill_task: asyncio.Task[Any] | None = None
     cron_scheduler: SchedulerEngine | None = None
     model_catalog: ModelCatalog | None = None
     agent_registry: Any = None
@@ -626,6 +654,13 @@ class ServiceContainer:
         an in-flight cron job or heartbeat tick can drive TurnRunner ->
         TurnCaptureService.capture_turn against an already-closed store.
         """
+        if self.usage_backfill_task is not None:
+            self.usage_backfill_task.cancel()
+            try:
+                await self.usage_backfill_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self.usage_backfill_task = None
         remove_compaction_listener = getattr(self, "_compaction_listener_remove", None)
         if callable(remove_compaction_listener):
             try:
@@ -681,6 +716,12 @@ class ServiceContainer:
                 from opensquilla.tools.builtin.sessions import set_task_runtime
 
                 set_task_runtime(None)
+            except Exception:
+                pass
+
+        if self.usage_event_sink is not None:
+            try:
+                await self.usage_event_sink.close()
             except Exception:
                 pass
 
@@ -2234,6 +2275,28 @@ async def build_services(
     _set_sessions_gateway_config(config)
     session_storage = get_session_storage(session_manager)
 
+    # Establish the ledger cutover before any TurnRunner can send a provider
+    # request.  This is intentionally a short sessions-only transaction; the
+    # transcript backfill is scheduled after the readiness flag is published.
+    usage_event_sink = None
+    if session_storage is not None and all(
+        hasattr(session_storage, method)
+        for method in (
+            "initialize_usage_ledger",
+            "start_usage_event",
+            "finalize_usage_event",
+            "mark_usage_event_unknown",
+        )
+    ):
+        from opensquilla.gateway.usage_ledger_runtime import SessionUsageEventSink
+
+        await session_storage.initialize_usage_ledger()
+        recover_started = getattr(session_storage, "recover_started_usage_events", None)
+        if callable(recover_started):
+            await recover_started(reason="gateway_restart_without_usage_receipt")
+        usage_event_sink = SessionUsageEventSink(session_storage)
+        log.info("build_services.usage_ledger_ready")
+
     # Wire agent registry into the agents_list tool surface.
     from opensquilla.tools.builtin.agents import set_agent_registry as _set_agent_registry_tool
 
@@ -2620,6 +2683,7 @@ async def build_services(
                 agent_ids=tuple(_configured_agent_ids(config, extra_agent_ids)),
                 interval_seconds=float(getattr(config.memory, "repair_interval_seconds", 60.0)),
                 max_items_per_tick=int(getattr(config.memory, "repair_max_items_per_tick", 5)),
+                usage_event_sink=usage_event_sink,
             )
             log.info("build_services.memory_repair_service_ready")
         except Exception as e:
@@ -2762,6 +2826,7 @@ async def build_services(
         session_manager=session_manager,
         skill_loader=skill_loader,
         usage_tracker=usage_tracker,
+        usage_event_sink=usage_event_sink,
         cron_scheduler=cron_scheduler,
         model_catalog=model_catalog,
         agent_registry=agent_registry,
@@ -2848,6 +2913,7 @@ def build_turn_runner_from_services(
         session_manager=svc.session_manager,
         skill_loader=svc.skill_loader,
         usage_tracker=svc.usage_tracker,
+        usage_event_sink=getattr(svc, "usage_event_sink", None),
         config=resolved_config,
         memory_sync_managers=getattr(svc, "memory_sync_managers", None) or None,
         model_catalog=getattr(svc, "model_catalog", None),
@@ -3025,6 +3091,11 @@ async def start_gateway_server(
     except BaseException:
         _pid_lock.release()
         raise
+
+    # Some embedding/tests provide a service-shaped object from an older
+    # bootstrap contract.  Treat the ledger sink as an optional additive
+    # capability so those callers keep booting unchanged.
+    usage_event_sink = getattr(svc, "usage_event_sink", None)
 
     # Record boot time for uptime calculation (gateway-specific)
     global _boot_time_ms
@@ -3443,11 +3514,17 @@ async def start_gateway_server(
                 metadata=auto_metadata,
             )
             tool_definitions = svc.tool_registry.to_tool_definitions(ctx)
+            auto_usage_context = _auto_propose_usage_execution_context(
+                agent_id,
+                usage_event_sink,
+            )
             llm_chat = make_llm_chat_from_provider(
                 provider=provider,
                 base_config=base_config,
                 usage_tracker=svc.usage_tracker,
                 session_key=f"auto_propose:{agent_id}",
+                usage_event_sink=usage_event_sink,
+                usage_execution_context=auto_usage_context,
             )
             base_tool_invoker = make_tool_invoker_from_handler(tool_handler=tool_handler)
             runtime_e2e_ctx = make_runtime_e2e_context(
@@ -3491,6 +3568,8 @@ async def start_gateway_server(
                     workspace_dir=workspace_str,
                     usage_tracker=svc.usage_tracker,
                     session_key=f"auto_propose:{agent_id}",
+                    usage_event_sink=usage_event_sink,
+                    usage_execution_context=auto_usage_context,
                 ),
                 skill_loader=svc.skill_loader,
                 llm_chat=llm_chat,
@@ -3625,6 +3704,7 @@ async def start_gateway_server(
                 "disabled" if not getattr(config.memory.dream, "enabled", False) else None
             ),
             post_dream_hook=_post_dream_auto_propose,
+            usage_event_sink=usage_event_sink,
         )
         svc.cron_scheduler.register_handler("agent_run", agent_handler)
         svc.cron_scheduler.register_handler("static_message", static_handler)
@@ -3721,6 +3801,7 @@ async def start_gateway_server(
         subscription_manager=subscription_manager,
         channel_manager=channel_manager,
         usage_tracker=svc.usage_tracker,
+        usage_event_sink=usage_event_sink,
         meta_run_writer=getattr(svc, "meta_run_writer", None),
         skill_loader=svc.skill_loader,
         cron_scheduler=svc.cron_scheduler,
@@ -3822,4 +3903,11 @@ async def start_gateway_server(
         log.info("gateway.squilla_router_preload_skipped", reason="desktop_fast_start")
 
     app.state.gateway_ready = True
+    usage_storage = get_session_storage(svc.session_manager)
+    if usage_storage is not None and hasattr(usage_storage, "get_usage_backfill_batch"):
+        from opensquilla.gateway.usage_backfill import run_usage_backfill
+
+        svc.usage_backfill_task = create_background_task(
+            run_usage_backfill(usage_storage)
+        )
     return server_handle

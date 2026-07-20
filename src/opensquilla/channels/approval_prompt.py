@@ -10,7 +10,7 @@ without binding to any single adapter:
   works on every adapter via the universal ``/approve``/``/deny`` commands.
 - :func:`parse_approval_action` recognises either a Feishu card action
   (``opensquilla_action == "approval_resolve"``) or the universal text
-  command and returns ``(code, approved)``.
+  command and returns ``(code, decision)``.
 
 The user-facing handle is a SHORT base32 code (default 4 chars,
 case-insensitive), never the raw approval/exec id. Raw ids leak in group
@@ -34,11 +34,20 @@ _CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CODE_LENGTH = 4
 
 # Universal text command. A leading slash avoids bare-word collisions with
-# ordinary chat ("approve the budget" must not resolve anything).
+# ordinary chat ("approve the budget" must not resolve anything). The optional
+# trailing word extends an approval: ``/approve K7PQ always`` selects the
+# durable same-type grant when the approval offers one.
 _TEXT_COMMAND_RE = re.compile(
-    r"^\s*/(approve|deny)\b\s*([0-9A-Za-z]{2,12})?\s*$",
+    r"^\s*/(approve|deny)\b\s*([0-9A-Za-z]{2,12})?(?:\s+(always))?\s*$",
     re.IGNORECASE,
 )
+
+# Decisions returned by :func:`parse_approval_action`. "always" maps to the
+# approval's ``allow_same_type`` choice at the resolution site; the prompt only
+# advertises it when the approval actually carries that choice.
+DECISION_APPROVE = "approve"
+DECISION_DENY = "deny"
+DECISION_ALWAYS = "always"
 
 
 @dataclass(frozen=True)
@@ -47,7 +56,10 @@ class ApprovalPromptRequest:
 
     ``short_code`` is the human handle bound to ``approval_id`` server-side;
     ``session_key`` and ``namespace`` mirror the queue entry so the bridge can
-    route the prompt back to the originating channel.
+    route the prompt back to the originating channel. ``offer_always`` is set
+    when the underlying approval carries an ``allow_same_type`` choice, i.e.
+    approving "always" has real durable-grant semantics rather than being a
+    placebo.
     """
 
     approval_id: str
@@ -56,6 +68,7 @@ class ApprovalPromptRequest:
     command_or_tool: str
     agent: str
     short_code: str
+    offer_always: bool = False
 
 
 @dataclass(frozen=True)
@@ -154,11 +167,16 @@ def _adapter_supports_interactive_cards(profile: Any) -> bool:
 
 def _prompt_text(request: ApprovalPromptRequest) -> str:
     command = request.command_or_tool or "(unknown command)"
+    always_line = (
+        f"/approve {request.short_code} always to stop asking for this kind, or "
+        if request.offer_always
+        else ""
+    )
     return (
         "Approval needed to run a privileged command.\n"
         f"Command: {command}\n"
         f"Code: {request.short_code}\n"
-        f"Reply /approve {request.short_code} to allow, or "
+        f"Reply /approve {request.short_code} to allow, {always_line}"
         f"/deny {request.short_code} to refuse."
     )
 
@@ -171,16 +189,45 @@ def _interactive_card(request: ApprovalPromptRequest) -> dict[str, Any]:
     keys on, paralleling the existing clarify-card contract.
     """
     command = request.command_or_tool or "(unknown command)"
-    approve_value = {
-        "opensquilla_action": "approval_resolve",
-        "code": request.short_code,
-        "decision": "approve",
-    }
-    deny_value = {
-        "opensquilla_action": "approval_resolve",
-        "code": request.short_code,
-        "decision": "deny",
-    }
+
+    def _action_value(decision: str) -> dict[str, str]:
+        return {
+            "opensquilla_action": "approval_resolve",
+            "code": request.short_code,
+            "decision": decision,
+        }
+
+    actions: list[dict[str, Any]] = [
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "Approve"},
+            "type": "primary",
+            "value": _action_value(DECISION_APPROVE),
+        },
+    ]
+    if request.offer_always:
+        actions.append(
+            {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": "Always allow"},
+                "type": "default",
+                "value": _action_value(DECISION_ALWAYS),
+            }
+        )
+    actions.append(
+        {
+            "tag": "button",
+            "text": {"tag": "plain_text", "content": "Deny"},
+            "type": "danger",
+            "value": _action_value(DECISION_DENY),
+        }
+    )
+    note = f"Or reply /approve {request.short_code} or /deny {request.short_code}."
+    if request.offer_always:
+        note = (
+            f"Or reply /approve {request.short_code}, "
+            f"/approve {request.short_code} always, or /deny {request.short_code}."
+        )
     return {
         "config": {"wide_screen_mode": True},
         "header": {
@@ -200,29 +247,14 @@ def _interactive_card(request: ApprovalPromptRequest) -> dict[str, Any]:
             },
             {
                 "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Approve"},
-                        "type": "primary",
-                        "value": approve_value,
-                    },
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": "Deny"},
-                        "type": "danger",
-                        "value": deny_value,
-                    },
-                ],
+                "actions": actions,
             },
             {
                 "tag": "note",
                 "elements": [
                     {
                         "tag": "plain_text",
-                        "content": (
-                            f"Or reply /approve {request.short_code} or /deny {request.short_code}."
-                        ),
+                        "content": note,
                     }
                 ],
             },
@@ -247,7 +279,7 @@ def render_approval_prompt(
     return payload
 
 
-def parse_approval_action(inbound: Any) -> tuple[str, bool] | None:
+def parse_approval_action(inbound: Any) -> tuple[str, str] | None:
     """Recognise an approval action from inbound channel data.
 
     Accepts either:
@@ -255,11 +287,14 @@ def parse_approval_action(inbound: Any) -> tuple[str, bool] | None:
     - a Feishu card action dict carrying
       ``value.opensquilla_action == "approval_resolve"`` (already-parsed
       ``IncomingMessage.metadata`` or a raw ``{"value": {...}}`` mapping), or
-    - a plain-text body of the form ``/approve <code>`` / ``/deny <code>``.
+    - a plain-text body of the form ``/approve <code>`` / ``/deny <code>`` /
+      ``/approve <code> always``.
 
-    Returns ``(short_code, approved)`` or ``None`` when the input is not an
-    approval action. A missing code yields ``None`` (treated as "no pending"
-    by the caller) rather than a silent no-op.
+    Returns ``(short_code, decision)`` with decision one of
+    :data:`DECISION_APPROVE` / :data:`DECISION_DENY` / :data:`DECISION_ALWAYS`,
+    or ``None`` when the input is not an approval action. A missing code
+    yields ``None`` (treated as "no pending" by the caller) rather than a
+    silent no-op.
     """
     card = _card_action(inbound)
     if card is not None:
@@ -273,11 +308,15 @@ def parse_approval_action(inbound: Any) -> tuple[str, bool] | None:
     code = match.group(2)
     if not code:
         return None
-    approved = match.group(1).lower() == "approve"
-    return normalize_code(code), approved
+    verb = match.group(1).lower()
+    if verb != "approve":
+        return normalize_code(code), DECISION_DENY
+    if match.group(3):
+        return normalize_code(code), DECISION_ALWAYS
+    return normalize_code(code), DECISION_APPROVE
 
 
-def _card_action(inbound: Any) -> tuple[str, bool] | None:
+def _card_action(inbound: Any) -> tuple[str, str] | None:
     value = _card_action_value(inbound)
     if value is None:
         return None
@@ -287,9 +326,9 @@ def _card_action(inbound: Any) -> tuple[str, bool] | None:
     if not isinstance(code, str) or not code.strip():
         return None
     decision = str(value.get("decision") or "").lower()
-    if decision not in {"approve", "deny"}:
+    if decision not in {DECISION_APPROVE, DECISION_DENY, DECISION_ALWAYS}:
         return None
-    return normalize_code(code), decision == "approve"
+    return normalize_code(code), decision
 
 
 def _card_action_value(inbound: Any) -> dict[str, Any] | None:

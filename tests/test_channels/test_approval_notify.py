@@ -144,3 +144,60 @@ def test_notifier_ignores_non_channel_requests() -> None:
 
     asyncio.run(_run())
     assert adapter.sent == []
+
+
+class _FailingAdapter(_FakeAdapter):
+    async def send(self, message) -> None:
+        raise RuntimeError("socket torn down")
+
+
+def test_send_failure_denies_the_approval_fail_closed() -> None:
+    adapter = _FailingAdapter(interactive_cards=False)
+    approval_id = _run_notifier(adapter, sender_id="owner-1")
+
+    entry = get_approval_queue().get(approval_id)
+    # The prompt's addressee is the only expected resolver; an undeliverable
+    # prompt is denied immediately instead of hanging until deadline expiry.
+    assert entry.resolved is True
+    assert entry.approved is False
+
+
+def test_prompt_offers_always_only_when_same_type_choice_exists() -> None:
+    adapter = _FakeAdapter(interactive_cards=True)
+
+    async def _run() -> None:
+        loop = asyncio.get_running_loop()
+        scheduled: list = []
+        remove = register_approval_channel_notifier(
+            get_approval_queue(),
+            session_manager=_FakeSessionManager(),
+            channel_manager_ref=lambda: _FakeChannelManager(adapter),
+            schedule=lambda coro: scheduled.append(loop.create_task(coro)),
+        )
+        try:
+            get_approval_queue().request(
+                namespace="exec",
+                params={
+                    "approvalKind": "sandbox_network",
+                    "host": "pypi.org",
+                    "sessionKey": "agent:main:chat",
+                    "senderId": "owner-1",
+                    "choices": [
+                        {"id": "allow_once", "label": "Allow once", "approved": True},
+                        {"id": "allow_same_type", "label": "Allow same type", "approved": True},
+                        {"id": "deny", "label": "Deny", "approved": False},
+                    ],
+                },
+            )
+            await asyncio.gather(*scheduled)
+        finally:
+            remove()
+
+    asyncio.run(_run())
+
+    assert len(adapter.sent) == 1
+    message = adapter.sent[0]
+    assert "always" in message.content
+    actions = message.metadata["card"]["elements"][1]["actions"]
+    decisions = [action["value"]["decision"] for action in actions]
+    assert decisions == ["approve", "always", "deny"]

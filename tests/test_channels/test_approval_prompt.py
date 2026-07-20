@@ -64,9 +64,13 @@ def test_render_with_none_profile_is_text_only() -> None:
 
 
 def test_parse_text_commands_are_case_insensitive() -> None:
-    assert parse_approval_action("/approve AB12") == ("AB12", True)
-    assert parse_approval_action("/deny ab12") == ("AB12", False)
-    assert parse_approval_action("  /APPROVE xy9z  ") == ("XY9Z", True)
+    assert parse_approval_action("/approve AB12") == ("AB12", "approve")
+    assert parse_approval_action("/deny ab12") == ("AB12", "deny")
+    assert parse_approval_action("  /APPROVE xy9z  ") == ("XY9Z", "approve")
+    assert parse_approval_action("/approve AB12 always") == ("AB12", "always")
+    assert parse_approval_action("/approve ab12 ALWAYS") == ("AB12", "always")
+    # "always" on a deny is meaningless and parses as a plain deny.
+    assert parse_approval_action("/deny AB12 always") == ("AB12", "deny")
 
 
 def test_parse_rejects_bare_word_and_missing_code() -> None:
@@ -78,7 +82,7 @@ def test_parse_rejects_bare_word_and_missing_code() -> None:
 
 def test_parse_incoming_message_text() -> None:
     msg = IncomingMessage(sender_id="u1", channel_id="c1", content="/deny AB12")
-    assert parse_approval_action(msg) == ("AB12", False)
+    assert parse_approval_action(msg) == ("AB12", "deny")
 
 
 def test_parse_card_action_from_metadata() -> None:
@@ -94,7 +98,7 @@ def test_parse_card_action_from_metadata() -> None:
             }
         },
     )
-    assert parse_approval_action(msg) == ("AB12", True)
+    assert parse_approval_action(msg) == ("AB12", "approve")
 
 
 def test_parse_card_action_requires_discriminator() -> None:

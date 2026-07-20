@@ -1018,6 +1018,7 @@
     "tests/test_tools/test_source_edit_visibility.py": 0.055,
     "tests/test_tools/test_subagents_ownership.py": 0.01,
     "tests/test_tools/test_tool_failure_envelope.py": 0.01,
+    "tests/test_tools/test_tool_upgrade_compatibility.py": 0.01,
     "tests/test_tools/test_tool_result_retrieval.py": 0.804,
     "tests/test_tools/test_web_fetch.py": 0.065,
     "tests/test_tools/test_web_http_request.py": 0.114,

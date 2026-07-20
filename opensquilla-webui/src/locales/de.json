@@ -190,7 +190,6 @@
       "keyboard": "Tastatur",
       "advanced": "Erweitert",
       "groups": {
-        "basic": "Allgemein",
         "gateway": "Gateway",
         "ai": "AI-Konfiguration",
         "delivery": "Zustellung",
@@ -999,6 +998,13 @@
     },
     "channelCatalog": {
       "fields": {
+        "group_session_scope": { "label": "Gruppensitzungsbereich" },
+        "busy_input_mode": { "label": "Eingaben während der Ausführung" },
+        "dm_access": { "label": "Direktnachrichten-Zugang" },
+        "pairing_approved_notice": { "label": "Absender nach Freigabe benachrichtigen" },
+        "allowed_senders": { "label": "Erlaubte Absender-IDs" },
+        "status_reactions_enabled": { "label": "Statusreaktionen für Nachrichten" },
+        "api_base": { "label": "API-Basis" },
         "name": { "label": "Kanalname", "description": "Eindeutiger Bezeichner für diesen Kanaleintrag." },
         "agent_id": { "label": "Agent-ID" },
         "enabled": { "label": "Aktiviert" },
@@ -1009,6 +1015,7 @@
         "debounce_window_s": { "label": "Entprellfenster (s)" }
       },
       "groups": {
+        "basic": "Allgemein",
         "credentials": "Zugangsdaten",
         "webhook": "Webhook",
         "behavior": "Verhalten",

@@ -190,7 +190,6 @@
       "keyboard": "Clavier",
       "advanced": "Avancé",
       "groups": {
-        "basic": "Général",
         "gateway": "Passerelle",
         "ai": "Configuration IA",
         "delivery": "Diffusion",
@@ -999,6 +998,13 @@
     },
     "channelCatalog": {
       "fields": {
+        "group_session_scope": { "label": "Portée de session de groupe" },
+        "busy_input_mode": { "label": "Saisie pendant l'exécution" },
+        "dm_access": { "label": "Accès aux messages privés" },
+        "pairing_approved_notice": { "label": "Prévenir l'expéditeur après approbation" },
+        "allowed_senders": { "label": "Ids d'expéditeurs autorisés" },
+        "status_reactions_enabled": { "label": "Réactions d'état des messages" },
+        "api_base": { "label": "Base d'API" },
         "name": { "label": "Nom du canal", "description": "Identifiant unique de cette entrée de canal." },
         "agent_id": { "label": "Id d'agent" },
         "enabled": { "label": "Activé" },
@@ -1009,6 +1015,7 @@
         "debounce_window_s": { "label": "Fenêtre de regroupement (s)" }
       },
       "groups": {
+        "basic": "Général",
         "credentials": "Identifiants",
         "webhook": "Webhook",
         "behavior": "Comportement",

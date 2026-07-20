@@ -190,7 +190,6 @@
       "keyboard": "Teclado",
       "advanced": "Avanzado",
       "groups": {
-        "basic": "Básico",
         "gateway": "Puerta de enlace",
         "ai": "Configuración de IA",
         "delivery": "Entrega",
@@ -999,6 +998,13 @@
     },
     "channelCatalog": {
       "fields": {
+        "group_session_scope": { "label": "Ámbito de sesión de grupo" },
+        "busy_input_mode": { "label": "Entrada durante la ejecución" },
+        "dm_access": { "label": "Acceso por mensaje directo" },
+        "pairing_approved_notice": { "label": "Avisar al remitente al aprobar" },
+        "allowed_senders": { "label": "Ids de remitente permitidos" },
+        "status_reactions_enabled": { "label": "Reacciones de estado del mensaje" },
+        "api_base": { "label": "Base de la API" },
         "name": { "label": "Nombre del canal", "description": "Identificador único de esta entrada de canal." },
         "agent_id": { "label": "Id de agente" },
         "enabled": { "label": "Habilitado" },
@@ -1009,6 +1015,7 @@
         "debounce_window_s": { "label": "Ventana de agrupación (s)" }
       },
       "groups": {
+        "basic": "Básico",
         "credentials": "Credenciales",
         "webhook": "Webhook",
         "behavior": "Comportamiento",

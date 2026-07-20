@@ -190,7 +190,6 @@
       "keyboard": "Keyboard",
       "advanced": "Advanced",
       "groups": {
-        "basic": "Basic",
         "gateway": "Gateway",
         "ai": "AI configuration",
         "delivery": "Delivery",
@@ -999,6 +998,13 @@
     },
     "channelCatalog": {
       "fields": {
+        "group_session_scope": { "label": "Group session scope" },
+        "busy_input_mode": { "label": "Input while busy" },
+        "dm_access": { "label": "Direct-message access" },
+        "pairing_approved_notice": { "label": "Tell senders when approved" },
+        "allowed_senders": { "label": "Allowed sender ids" },
+        "status_reactions_enabled": { "label": "Message status reactions" },
+        "api_base": { "label": "API base" },
         "name": { "label": "Channel name", "description": "Unique identifier for this channel entry." },
         "agent_id": { "label": "Agent id" },
         "enabled": { "label": "Enabled" },
@@ -1009,6 +1015,7 @@
         "debounce_window_s": { "label": "Debounce window (s)" }
       },
       "groups": {
+        "basic": "Basic",
         "credentials": "Credentials",
         "webhook": "Webhook",
         "behavior": "Behavior",

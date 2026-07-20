@@ -190,7 +190,6 @@
       "keyboard": "键盘",
       "advanced": "高级",
       "groups": {
-        "basic": "基本",
         "gateway": "网关",
         "ai": "AI 配置",
         "delivery": "分发",
@@ -999,6 +998,13 @@
     },
     "channelCatalog": {
       "fields": {
+        "group_session_scope": { "label": "群聊会话范围" },
+        "busy_input_mode": { "label": "忙碌时的输入处理" },
+        "dm_access": { "label": "私聊访问" },
+        "pairing_approved_notice": { "label": "批准后通知发送者" },
+        "allowed_senders": { "label": "允许的发送者 ID" },
+        "status_reactions_enabled": { "label": "消息状态表情回应" },
+        "api_base": { "label": "API 基础地址" },
         "name": { "label": "渠道名称", "description": "此渠道条目的唯一标识。" },
         "agent_id": { "label": "智能体 ID" },
         "enabled": { "label": "启用" },
@@ -1009,6 +1015,7 @@
         "debounce_window_s": { "label": "去抖窗口（秒）" }
       },
       "groups": {
+        "basic": "基本",
         "credentials": "凭证",
         "webhook": "Webhook 回调",
         "behavior": "行为",

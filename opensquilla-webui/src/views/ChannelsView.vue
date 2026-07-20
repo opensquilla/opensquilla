@@ -1322,7 +1322,10 @@ function probeResultDetail(ch: Channel): string {
    below the fold, and keeps detail text from sliding under the floating
    topbar. align-self:start is required: a stretched grid item cannot stick. */
 .ch-detail { align-self: start; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); display: flex; flex-direction: column; max-height: calc(100vh - 76px); min-height: min(620px, calc(100vh - 76px)); min-width: 0; overflow: hidden; position: sticky; top: 64px; }
-.ch-detail__header { align-items: flex-start; display: flex; gap: var(--sp-3); justify-content: space-between; padding: var(--sp-4); }
+/* flex:none on the fixed chrome (header/actions/tabs): inside the
+   viewport-capped aside only the BODY may give up height — a shrinking tab
+   strip clips its labels against the card below. */
+.ch-detail__header { align-items: flex-start; display: flex; flex: none; gap: var(--sp-3); justify-content: space-between; padding: var(--sp-4); }
 .ch-detail__identity { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }
 .ch-detail__identity > div { min-width: 0; }
 .ch-detail__title-row { align-items: center; display: flex; flex-wrap: wrap; gap: 10px; }
@@ -1330,12 +1333,12 @@ function probeResultDetail(ch: Channel): string {
 .ch-detail__identity p { color: var(--text-dim); font-size: var(--fs-sm); margin: 4px 0 0; }
 .ch-icon-btn { align-items: center; background: transparent; border: 0; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer; display: inline-flex; justify-content: center; padding: 6px; }
 .ch-icon-btn:hover { background: var(--bg-surface-2); color: var(--text); }
-.ch-detail__actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 var(--sp-4) var(--sp-3); }
+.ch-detail__actions { display: flex; flex: none; flex-wrap: wrap; gap: 8px; padding: 0 var(--sp-4) var(--sp-3); }
 .ch-detail__actions .btn { min-height: 32px; padding: 5px 10px; }
 .ch-detail__actiongroup { display: flex; flex-wrap: wrap; gap: 8px; }
 .ch-detail__actionsep { align-self: stretch; background: var(--border); flex: 0 0 1px; margin: 3px 2px; width: 1px; }
 .ch-detail__actions .ch-detail__remove { margin-left: auto; }
-.ch-detail__tabs { border-bottom: 1px solid var(--border); border-top: 1px solid var(--border); display: flex; overflow-x: auto; padding: 0 var(--sp-4); }
+.ch-detail__tabs { border-bottom: 1px solid var(--border); border-top: 1px solid var(--border); display: flex; flex: none; overflow-x: auto; padding: 0 var(--sp-4); }
 .ch-detail__tabs button { background: transparent; border: 0; color: var(--text-muted); cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 600; padding: 12px 13px; position: relative; white-space: nowrap; }
 .ch-detail__tabs button:hover, .ch-detail__tabs button.is-active { color: var(--text); }
 .ch-detail__tabs button.is-active::after { background: var(--accent); bottom: 0; content: ''; height: 2px; left: 10px; position: absolute; right: 10px; }

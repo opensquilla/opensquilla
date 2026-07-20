@@ -2342,6 +2342,15 @@ class OpenAIProvider:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if cfg.output_json_schema is not None:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "structured_output",
+                    "strict": cfg.output_json_schema_strict,
+                    "schema": cfg.output_json_schema,
+                },
+            }
         if self._provider_kind == "dashscope" and include_reasoning_content:
             payload["preserve_thinking"] = True
         if _should_use_max_completion_tokens(

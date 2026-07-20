@@ -963,6 +963,26 @@ async def _ensure_sandbox_setup_on_boot(config: GatewayConfig) -> Any | None:
     return result
 
 
+def _sandbox_settings_for_runtime(config: GatewayConfig) -> Any:
+    """Return sandbox settings normalized to the config-level run mode."""
+
+    from opensquilla.sandbox.run_mode import RunMode, config_run_mode, run_mode_config_patch
+
+    mode = config_run_mode(config)
+    if mode != RunMode.FULL:
+        return config.sandbox
+
+    patch = run_mode_config_patch(mode)
+    return config.sandbox.model_copy(
+        update={
+            "run_mode": patch.run_mode.value,
+            "sandbox": patch.sandbox,
+            "security_grading": patch.security_grading,
+            "network_default": patch.network_default,
+        }
+    )
+
+
 def _task_runtime_max_concurrency(config: GatewayConfig) -> int:
     return int(config.task_runtime.max_concurrency)
 
@@ -2143,15 +2163,16 @@ async def build_services(
     try:
         from opensquilla.sandbox.integration import configure_runtime
 
+        sandbox_settings = _sandbox_settings_for_runtime(config)
         effective = configure_runtime(
-            config.sandbox,
+            sandbox_settings,
             workspace=Path(config.workspace_dir) if config.workspace_dir else None,
         )
         log.info(
             "build_services.sandbox_ready",
             **effective.effective.as_dict(),
         )
-        if config.sandbox.auto_setup:
+        if getattr(effective.effective, "sandbox_enabled", True) and sandbox_settings.auto_setup:
             create_background_task(_ensure_sandbox_setup_on_boot(config))
     except Exception as e:  # pragma: no cover - boot diagnostics only
         log.exception("build_services.sandbox_configure_failed", error=str(e))

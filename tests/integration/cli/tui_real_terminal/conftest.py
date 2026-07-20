@@ -129,6 +129,12 @@ def run_real_terminal_scenario(
                 f"scenario {scenario.scenario_id!r} requires "
                 f"--tui-backend={scenario.required_backend_id}"
             )
+        if target.backend_id in {"opentui", "live-opentui"}:
+            from opensquilla.cli.tui.opentui.bridge import check_opentui_host_available
+
+            availability = check_opentui_host_available()
+            if not availability.available:
+                pytest.skip(availability.reason or "OpenTUI host unavailable")
         scenario_driver = tui_driver
         if scenario.requires_tmux:
             if not capabilities.tmux_available:

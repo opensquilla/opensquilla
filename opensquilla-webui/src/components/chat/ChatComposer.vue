@@ -155,7 +155,7 @@
               <Icon name="arrowUp" :size="17" />
             </button>
             <Transition name="composer-ctl">
-              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" :title="t('chat.stopResponseEsc')" :aria-label="t('chat.stopResponse')" @click="emit('stop')">
+              <button v-if="canStop" class="btn btn--icon btn--danger chat-send-btn" :title="t('chat.stopResponseEsc')" :aria-label="t('chat.stopResponse')" @click="emit('stop')">
                 <Icon name="stop" :size="16" />
               </button>
             </Transition>
@@ -199,6 +199,7 @@ defineProps<{
   busySendMode: 'queue' | 'steer'
   hasSendContent: boolean
   isStreaming: boolean
+  canStop: boolean
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string

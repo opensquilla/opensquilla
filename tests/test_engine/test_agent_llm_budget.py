@@ -44,12 +44,14 @@ from opensquilla.provider.request_proof import (
     ProviderRequestBudgetExceeded,
     prove_provider_payload,
 )
+from opensquilla.sandbox.run_context import RunContext
+from opensquilla.sandbox.run_mode import RunMode
 from opensquilla.session.compaction import CompactionResult
 from opensquilla.tools.mutation_receipts import (
     fingerprint_path,
     record_semantic_mutation_receipt,
 )
-from opensquilla.tools.types import ToolContext
+from opensquilla.tools.types import CallerKind, ToolContext
 
 RAW_CURRENT_TURN_OVERFLOW_MESSAGE = (
     "Context overflow is in the current turn's recent tool calls or "
@@ -2889,6 +2891,35 @@ def test_agent_child_config_inherits_tool_failure_loop_thresholds() -> None:
     assert child.config.post_tool_empty_recovery_mode == "warn_model"
     assert child.config.reasoning_prefill_recovery_mode == "recover"
     assert child.config.runtime_events_path == "/tmp/runtime-events.jsonl"
+
+
+def test_agent_child_tool_context_inherits_parent_full_host_run_mode() -> None:
+    parent_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.AGENT,
+        run_mode="full",
+        elevated="full",
+        workspace_dir="/tmp/opensquilla-workspace",
+        session_key="agent:main:webchat:parent",
+        sandbox_run_context=RunContext(
+            run_mode=RunMode.FULL,
+            workspace="/tmp/opensquilla-workspace",
+        ),
+    )
+    agent = Agent(
+        provider=_ContextOverflowProvider(success_after=1),
+        tool_context=parent_context,
+        session_key="agent:main:webchat:parent",
+    )
+
+    child = agent._make_child_agent(SubagentSpec(task="child task"), depth=1)
+
+    assert child._tool_context is not None
+    assert child._tool_context.caller_kind is CallerKind.SUBAGENT
+    assert child._tool_context.run_mode == "full"
+    assert child._tool_context.elevated == "full"
+    assert child._tool_context.sandbox_run_context is not None
+    assert child._tool_context.sandbox_run_context.run_mode is RunMode.FULL
 
 
 def test_agent_config_normalizes_flush_triggers_and_clamps_compaction_tail() -> None:

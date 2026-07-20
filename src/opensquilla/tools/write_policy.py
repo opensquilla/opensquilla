@@ -96,6 +96,10 @@ def match_workspace_write_deny(
     the active-workspace-relative path when a workspace is available.
     """
 
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return None
     patterns = _workspace_write_deny_globs(ctx)
     if not patterns:
         return None
@@ -138,6 +142,10 @@ def match_workspace_scratch_artifact(
     for paths already under the scratch directory.
     """
 
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return None
     active = ctx if ctx is not None else current_tool_context.get()
     if active is None or not getattr(active, "scratch_dir", None):
         return None

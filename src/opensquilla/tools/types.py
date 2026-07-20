@@ -109,6 +109,10 @@ class ToolContext:
     # router_control_turn_hold_applied) once the endgame git freeze margin is
     # reached; shell tools then block workspace-reverting git commands.
     endgame_git_freeze_active: bool = False
+    # New runtime-only fields stay at the end to preserve the public dataclass's
+    # historical positional constructor contract for embedded callers.
+    sandbox_file_system_profile: Any | None = None
+    on_sandbox_auto_review: Callable[[dict[str, object]], Awaitable[Any]] | None = None
 
 
 # Request-scoped context — set by build_tool_handler before each dispatch.
@@ -185,6 +189,9 @@ class ToolSpec:
     sandbox: SandboxToolDescriptor = field(
         default_factory=lambda: SandboxToolDescriptor.custom(kind="")
     )
+    # Parameters injected only by the runtime after approval. They remain in
+    # the Python handler signature/spec but are omitted from provider schemas.
+    runtime_only_arguments: frozenset[str] = field(default_factory=frozenset)
 
 
 # Registered tool implementation: async fn that accepts keyword args and returns str.

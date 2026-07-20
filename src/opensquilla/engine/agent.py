@@ -34,6 +34,7 @@ from opensquilla.engine.cache_break_monitor import (
     notify_compaction,
     record_prompt_state,
 )
+from opensquilla.engine.elevation_triage import RuleAssessment, local_elevation_assessment
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.final_diff_contract import (
     FinalDiffContractObservation,
@@ -148,6 +149,8 @@ from opensquilla.result_budget import (
 )
 from opensquilla.router_control import router_control_replay_event_from_payload
 from opensquilla.safety.secret_redaction import redact_secret_value
+from opensquilla.sandbox.approval_runtime import ApprovalAction, SuspendedToolRequest
+from opensquilla.sandbox.elevation import ElevationAction
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -931,6 +934,64 @@ def _pending_approval_payload(content: str) -> dict[str, Any] | None:
     return payload
 
 
+def _suspend_tool_request(
+    tool_call: ToolCall,
+    payload: dict[str, Any],
+) -> SuspendedToolRequest:
+    """Capture the original provider request plus its full model arguments."""
+
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    raw_action: dict[str, Any] = {}
+    retry_context: dict[str, Any] = {}
+    approval_session_key = ""
+    try:
+        entry = get_approval_queue().get(str(payload["approval_id"]))
+        if isinstance(entry.params.get("action"), dict):
+            raw_action = dict(entry.params["action"])
+        for key in (
+            "backendRetry",
+            "sandboxOriginalOutput",
+            "sandboxBackend",
+            "sandboxBackendNotes",
+            "retryReason",
+        ):
+            if key in entry.params:
+                retry_context[key] = entry.params[key]
+        approval_session_key = str(entry.params.get("sessionKey") or "")
+    except (KeyError, TypeError):
+        pass
+    if tool_call.tool_name == "apply_patch":
+        kind = "apply_patch"
+    elif tool_call.tool_name == "execute_code":
+        kind = "code"
+    elif payload.get("approvalKind") == "sandbox_network":
+        kind = "network"
+    elif tool_call.tool_name in {"write_file", "edit_file", "delete_file"}:
+        kind = "filesystem"
+    elif tool_call.tool_name in {"image", "pdf", "audio"}:
+        kind = "media"
+    else:
+        kind = "exec_command"
+    action = ApprovalAction(
+        kind=kind,  # type: ignore[arg-type]
+        call_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        cwd=Path(str(raw_action.get("cwd") or ".")).expanduser().resolve(strict=False),
+        payload={
+            "arguments": dict(tool_call.arguments),
+            "elevation": raw_action,
+            "retry_context": retry_context,
+        },
+        justification=str(raw_action.get("justification") or ""),
+    )
+    return SuspendedToolRequest(
+        tool_call=tool_call,
+        action=action,
+        metadata={"session_key": approval_session_key},
+    )
+
+
 async def _wait_for_pending_approval_resolution(
     payload: dict[str, Any],
     *,
@@ -942,9 +1003,160 @@ async def _wait_for_pending_approval_resolution(
     try:
         from opensquilla.gateway.approval_queue import get_approval_queue
 
-        await get_approval_queue().wait(approval_id, timeout=timeout)
+        queue = get_approval_queue()
+        await queue.wait(approval_id, timeout=max(0.0, timeout))
     except KeyError:
         return
+
+
+async def _review_pending_elevation_if_configured(
+    payload: dict[str, Any],
+    *,
+    transcript: list[Message],
+    runtime_events_path: str | None,
+    suspended_action: ApprovalAction | None = None,
+) -> RuleAssessment | None:
+    """Resolve one internal elevation record through deterministic local rules."""
+
+    approval_id = payload.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return None
+
+    from opensquilla.gateway.approval_queue import get_approval_queue
+    queue = get_approval_queue()
+    try:
+        entry = queue.get(approval_id)
+    except KeyError:
+        return None
+    params = entry.params
+    approval_kind = str(params.get("approvalKind") or "")
+    if (
+        entry.namespace != "exec"
+        or approval_kind not in {"sandbox_elevation", "sandbox_network"}
+        or params.get("reviewer") != "auto_review"
+        or params.get("humanActionable") is not False
+    ):
+        return None
+    if entry.resolved:
+        return None
+
+    fingerprint = str(
+        (
+            params.get("reviewFingerprint")
+            if approval_kind == "sandbox_network"
+            else params.get("fingerprint")
+        )
+        or ""
+    )
+    append_runtime_event(
+        runtime_events_path,
+        {
+            "event_type": "sandbox_elevation_review",
+            "phase": "started",
+            "review_id": approval_id,
+            "approval_id": approval_id,
+            "fingerprint": fingerprint,
+            "humanActionable": False,
+            "reviewer": "deterministic_rules",
+            "action": (
+                suspended_action.audit_payload() if suspended_action is not None else None
+            ),
+        },
+    )
+
+    review_source = "rules"
+    try:
+        raw_action = params.get("action")
+        if not isinstance(raw_action, dict):
+            raise ValueError("missing_canonical_elevation_action")
+        action = ElevationAction.from_canonical_payload(raw_action)
+        if action.fingerprint() != fingerprint:
+            raise ValueError("elevation_action_fingerprint_mismatch")
+        assessment = local_elevation_assessment(action, transcript)
+    except Exception as exc:
+        review_source = "rules_integrity_failure"
+        assessment = RuleAssessment(
+            risk_level="critical",
+            user_authorization="unknown",
+            outcome="deny",
+            rationale=(
+                "The exact approval action failed canonical integrity validation: "
+                f"{str(exc) or type(exc).__name__}"
+            ),
+            human_confirmation_allowed=False,
+        )
+
+    updated_params = dict(params)
+    requires_human_confirmation = (
+        assessment.risk_level == "critical" and assessment.human_confirmation_allowed
+    )
+    updated_params.update(
+        {
+            "reviewRiskLevel": assessment.risk_level,
+            "reviewAuthorization": assessment.user_authorization,
+            "reviewOutcome": assessment.outcome,
+            "reviewStatus": assessment.status,
+            "reviewRationale": assessment.rationale,
+            "reviewSource": review_source,
+        }
+    )
+    if requires_human_confirmation:
+        updated_params.update(
+            {
+                "reviewer": "user",
+                "humanActionable": True,
+                "ruleReviewOutcome": assessment.outcome,
+                "reviewStatus": "human_confirmation_required",
+            }
+        )
+    try:
+        queue.update_params(approval_id, updated_params)
+        if not requires_human_confirmation:
+            queue.resolve(approval_id, assessment.outcome == "allow")
+    except ValueError:
+        # Another resolver won the race. Never override an existing decision.
+        return None
+
+    if assessment.outcome == "allow" and approval_kind == "sandbox_network":
+        from opensquilla.sandbox.escalation import grant_auto_review_network_once
+
+        grant_auto_review_network_once(updated_params)
+
+    append_runtime_event(
+        runtime_events_path,
+        {
+            "event_type": "sandbox_elevation_review",
+            "phase": "completed",
+            "review_id": approval_id,
+            "approval_id": approval_id,
+            "fingerprint": fingerprint,
+            "humanActionable": False,
+            "risk_level": assessment.risk_level,
+            "authorization": assessment.user_authorization,
+            "outcome": assessment.outcome,
+            "status": assessment.status,
+            "rationale": assessment.rationale,
+            "attempt": assessment.attempt_count,
+            "latency_ms": assessment.latency_ms,
+            "human_confirmation_required": requires_human_confirmation,
+            "review_source": review_source,
+        },
+    )
+    logger.info(
+        "sandbox_elevation.review_completed",
+        approval_id=approval_id,
+        fingerprint=fingerprint,
+        risk_level=assessment.risk_level,
+        authorization=assessment.user_authorization,
+        outcome=assessment.outcome,
+        source=review_source,
+        status=(
+            "human_confirmation_required"
+            if requires_human_confirmation
+            else assessment.status
+        ),
+    )
+    return None if requires_human_confirmation else assessment
 
 
 @functools.lru_cache(maxsize=4096)
@@ -1365,6 +1577,8 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         stop_sequences=chat_cfg.stop_sequences,
         cache_breakpoints=chat_cfg.cache_breakpoints,
         cache_mode=chat_cfg.cache_mode,
+        output_json_schema=chat_cfg.output_json_schema,
+        output_json_schema_strict=chat_cfg.output_json_schema_strict,
         model_capabilities=chat_cfg.model_capabilities,
         thinking_level=None,
         provider_request_max_chars=chat_cfg.provider_request_max_chars,
@@ -3723,6 +3937,11 @@ class Agent:
     def set_history(self, messages: list[Message]) -> None:
         self._history = list(messages)
 
+    def history_snapshot(self) -> list[Message]:
+        """Return a detached history list for read-only session forks."""
+
+        return list(self._history)
+
     async def run_turn(
         self,
         message: str,
@@ -3933,6 +4152,8 @@ class Agent:
                 self.config.cache_breakpoints
             ),
             cache_mode=self.config.cache_mode,
+            output_json_schema=self.config.output_json_schema,
+            output_json_schema_strict=self.config.output_json_schema_strict,
             model_capabilities=self.config.model_capabilities,
             thinking_level=(
                 self.config.thinking if isinstance(self.config.thinking, ThinkingLevel) else None
@@ -3986,6 +4207,17 @@ class Agent:
         )
         turn_llm_calls = 0
         turn_tool_errors = 0
+        async def _review_inflight_sandbox_request(
+            payload: dict[str, object],
+        ) -> RuleAssessment | None:
+            return await _review_pending_elevation_if_configured(
+                dict(payload),
+                transcript=turn_messages,
+                runtime_events_path=self.config.runtime_events_path,
+            )
+
+        if self._tool_context is not None:
+            self._tool_context.on_sandbox_auto_review = _review_inflight_sandbox_request
         last_actual_model = ""
         turn_model_usage_breakdown: list[dict[str, Any]] = []
         last_ensemble_trace: dict[str, Any] | None = None
@@ -6568,6 +6800,8 @@ class Agent:
                             self.config.cache_breakpoints
                         ),
                         cache_mode=chat_cfg.cache_mode,
+                        output_json_schema=chat_cfg.output_json_schema,
+                        output_json_schema_strict=chat_cfg.output_json_schema_strict,
                         model_capabilities=self.config.model_capabilities,
                         thinking_level=(
                             self.config.thinking
@@ -7554,53 +7788,116 @@ class Agent:
                         result,
                         tool_call=result_tool_call,
                     )
-                    yield ToolResultEvent(
-                        tool_use_id=projected_result.tool_use_id,
-                        tool_name=projected_result.tool_name,
-                        result=projected_result.content,
-                        is_error=projected_result.is_error,
-                        arguments=tc.arguments,
-                        execution_status=projected_result.execution_status,
-                    )
-                    replay_event = router_control_replay_event_from_payload(result.content)
-                    if replay_event is not None:
-                        yield replay_event
                     pending_approval = _pending_approval_payload(result.content)
                     if pending_approval is not None and not tc.arguments.get("approval_id"):
+                        suspended = _suspend_tool_request(tc, pending_approval)
+                        assessment = await _review_pending_elevation_if_configured(
+                            pending_approval,
+                            transcript=turn_messages,
+                            runtime_events_path=self.config.runtime_events_path,
+                            suspended_action=suspended.action,
+                        )
+                        # Human-owned approvals need a lifecycle event so the UI can
+                        # render its card. Automatic rule reviews remain internal.
+                        if assessment is None:
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
                         await _wait_for_pending_approval_resolution(
                             pending_approval,
                             timeout=_cap_timeout_by_deadlines(self._approval_wait_timeout()),
                         )
-                        retry_arguments = dict(tc.arguments)
-                        retry_arguments["approval_id"] = pending_approval["approval_id"]
-                        retry_call = ToolCall(
-                            tool_use_id=tc.tool_use_id,
-                            tool_name=tc.tool_name,
-                            arguments=retry_arguments,
-                            synthetic_from_text=tc.synthetic_from_text,
-                            origin_trace=tc.origin_trace,
-                        )
-                        result = await _run_one(retry_call)
-                        result_tool_call = retry_call
-                        for artifact in result.artifacts:
-                            yield ArtifactEvent(**_artifact_event_kwargs(artifact))
-                        projected_result = await self._project_tool_result_for_delivery(
-                            result,
-                            tool_call=result_tool_call,
-                        )
+                        approval_entry = None
+                        from opensquilla.gateway.approval_queue import get_approval_queue
+
+                        try:
+                            approval_entry = get_approval_queue().get(
+                                str(pending_approval["approval_id"])
+                            )
+                        except KeyError:
+                            approval_entry = None
+                        if approval_entry is None or not approval_entry.resolved:
+                            turn_yielded = True
+                        elif not approval_entry.approved:
+                            suspended.deny(str(pending_approval["approval_id"]))
+                            rationale = str(
+                                approval_entry.params.get("reviewRationale") or ""
+                            ).strip()
+                            result = ToolResult(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                content=json.dumps(
+                                    {
+                                        "status": "approval_denied",
+                                        "approval_id": pending_approval["approval_id"],
+                                        "message": rationale
+                                        or "The exact elevated action was not approved.",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                is_error=False,
+                            )
+                            projected_result = await self._project_tool_result_for_delivery(
+                                result,
+                                tool_call=tc,
+                            )
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
+                            if approval_entry.resolution == "expired":
+                                turn_yielded = True
+                        else:
+                            resumed_call = suspended.approve(
+                                str(pending_approval["approval_id"])
+                            )
+                            result = await _run_one(suspended.begin_execution())
+                            suspended.complete()
+                            result_tool_call = resumed_call
+                            for artifact in result.artifacts:
+                                yield ArtifactEvent(**_artifact_event_kwargs(artifact))
+                            projected_result = await self._project_tool_result_for_delivery(
+                                result,
+                                tool_call=result_tool_call,
+                            )
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
+                            replay_event = router_control_replay_event_from_payload(
+                                result.content
+                            )
+                            if replay_event is not None:
+                                yield replay_event
+                            if _pending_approval_payload(result.content) is not None:
+                                turn_yielded = True
+                    else:
                         yield ToolResultEvent(
                             tool_use_id=projected_result.tool_use_id,
                             tool_name=projected_result.tool_name,
                             result=projected_result.content,
                             is_error=projected_result.is_error,
-                            arguments=retry_arguments,
+                            arguments=tc.arguments,
                             execution_status=projected_result.execution_status,
                         )
-                        replay_event = router_control_replay_event_from_payload(result.content)
+                        replay_event = router_control_replay_event_from_payload(
+                            result.content
+                        )
                         if replay_event is not None:
                             yield replay_event
-                        if _pending_approval_payload(result.content) is not None:
-                            turn_yielded = True
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
@@ -12932,6 +13229,11 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _make_child_agent(self, spec: SubagentSpec, depth: int) -> Agent:
+        from opensquilla.sandbox.run_context import (
+            RunContext,
+            normalize_scope,
+            run_context_for_subagent,
+        )
         from opensquilla.session.keys import parse_agent_id
         from opensquilla.tools.types import (
             SUBAGENT_TOOL_DENY,
@@ -12943,6 +13245,28 @@ class Agent:
 
         parent_session_key = self._session_key or "unknown"
         subagent_label = spec.label or "subagent"
+        parent_ctx = current_tool_context.get() or self._tool_context
+        parent_run_context = getattr(parent_ctx, "sandbox_run_context", None)
+        if isinstance(parent_run_context, RunContext):
+            parent_run_context = run_context_for_subagent(parent_run_context)
+        parent_sandbox_mounts = [
+            dict(item)
+            for item in (getattr(parent_ctx, "sandbox_mounts", None) or [])
+            if isinstance(item, dict)
+            and normalize_scope(item.get("scope"), "chat") != "once"
+        ]
+        parent_run_mode = getattr(parent_ctx, "run_mode", None)
+        if parent_run_mode is None:
+            run_context_mode = getattr(parent_run_context, "run_mode", None)
+            parent_run_mode = getattr(run_context_mode, "value", run_context_mode)
+        parent_elevated = getattr(parent_ctx, "elevated", None)
+        if parent_run_mode not in {"standard", "trusted", "full"}:
+            if parent_elevated == "full":
+                parent_run_mode = "full"
+            elif parent_elevated in {"on", "bypass"}:
+                parent_run_mode = "trusted"
+            else:
+                parent_run_mode = None
 
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
@@ -12958,6 +13282,10 @@ class Agent:
             channel_id=f"subagent:{parent_session_key}",
             sender_id=parent_session_key,
             denied_tools=set(SUBAGENT_TOOL_DENY),
+            run_mode=parent_run_mode,
+            sandbox_mounts=parent_sandbox_mounts,
+            sandbox_run_context=parent_run_context,
+            elevated=parent_elevated if parent_run_mode == "full" else None,
             tool_result_store_dir=self.config.tool_result_store_dir,
             tool_result_store_session_id=(
                 self.config.tool_result_store_session_id or parent_session_key
@@ -13115,6 +13443,7 @@ class Agent:
             tool_definitions=filtered_defs,
             tool_handler=_subagent_tool_handler,
             subagent_manager=SubagentManager(spawn_depth=depth),
+            tool_context=subagent_ctx,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

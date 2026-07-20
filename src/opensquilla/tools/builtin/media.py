@@ -247,8 +247,9 @@ def _resolve_media_path(path: str) -> Path:
 
 def _sensitive_media_path_block(tool_name: str, resolved: Path, original_path: str) -> dict | None:
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, is_sensitive_path
+    from opensquilla.tools.builtin import filesystem
 
-    if full_host_access_active():
+    if full_host_access_active() or filesystem._sandbox_path_access_enabled():
         return None
     sensitive = is_sensitive_path(str(resolved))
     if sensitive is None:

@@ -300,6 +300,10 @@ def require_fresh_workspace_file_read(
     tool_name: str,
     original_path: str,
 ) -> None:
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return
     ctx = current_tool_context.get()
     if ctx is None or not ctx.workspace_dir:
         return

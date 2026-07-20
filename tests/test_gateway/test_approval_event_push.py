@@ -8,6 +8,7 @@ import pytest
 
 from opensquilla.application.approval_queue import ApprovalQueue
 from opensquilla.gateway.approval_events import (
+    approval_event_name,
     build_approval_event_payload,
     register_approval_event_bridge,
 )
@@ -131,6 +132,58 @@ async def test_exec_approval_resolution_mirrors_resolved_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_auto_review_promotion_pushes_one_human_approval_request() -> None:
+    approvals_conn = _FakeConn("c-approvals", frozenset({"operator.approvals"}))
+    queue, scheduled, remove = _build_bridge([approvals_conn])
+    try:
+        approval_id = queue.request(
+            namespace="exec",
+            params={
+                "toolName": "exec_command",
+                "command": "critical operation",
+                "sessionKey": "agent:main:webchat:demo",
+                "reviewer": "auto_review",
+                "humanActionable": False,
+            },
+        )
+        assert scheduled == []
+
+        queue.update_params(
+            approval_id,
+            {
+                "toolName": "exec_command",
+                "command": "critical operation",
+                "sessionKey": "agent:main:webchat:demo",
+                "reviewer": "user",
+                "humanActionable": True,
+            },
+        )
+
+        assert len(scheduled) == 1
+        await scheduled.pop()
+        assert [name for name, _payload in approvals_conn.events] == [
+            "exec.approval.requested"
+        ]
+        assert approvals_conn.events[0][1]["approval_id"] == approval_id
+
+        queue.update_params(
+            approval_id,
+            {
+                "toolName": "exec_command",
+                "command": "critical operation",
+                "sessionKey": "agent:main:webchat:demo",
+                "reviewer": "user",
+                "humanActionable": True,
+                "reviewStatus": "still_waiting",
+            },
+        )
+        assert scheduled == []
+    finally:
+        remove()
+        queue.close()
+
+
+@pytest.mark.asyncio
 async def test_plugin_approval_events_use_plugin_namespace() -> None:
     approvals_conn = _FakeConn("c-approvals", frozenset({"operator.approvals"}))
     queue, scheduled, remove = _build_bridge([approvals_conn])
@@ -213,3 +266,21 @@ def test_build_approval_event_payload_maps_sandbox_session_id() -> None:
     )
 
     assert payload["session_key"] == "agent:main:webchat:demo"
+
+
+def test_auto_review_approval_does_not_emit_actionable_push() -> None:
+    info = {
+        "namespace": "exec",
+        "params": {"humanActionable": False, "reviewer": "auto_review"},
+    }
+
+    assert approval_event_name("requested", info) is None
+
+
+def test_human_approval_still_emits_actionable_push() -> None:
+    info = {
+        "namespace": "exec",
+        "params": {"humanActionable": True, "reviewer": "user"},
+    }
+
+    assert approval_event_name("requested", info) == "exec.approval.requested"

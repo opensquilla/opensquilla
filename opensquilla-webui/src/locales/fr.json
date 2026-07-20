@@ -843,6 +843,9 @@
       "experimental": "expérimental",
       "historyMergeDesc": "Lors de la synchro de l'historique, fusionne par id de message et conserve les champs en direct uniquement (désactivé par défaut, en transition vers activé).",
       "historyMergeAria": "Fusion de l'historique par réconciliation d'id (prend effet après rechargement)",
+      "agentConfigLabel": "Configuration des agents (avancée)",
+      "agentConfigDesc": "Gérez les configurations d'agents existantes. Cette zone évoluera lors d'une future refonte multi-agent.",
+      "agentConfigAction": "Ouvrir",
       "runTraceLabel": "Tiroir de trace d'exécution dans les Journaux",
       "runTraceDesc": "Rend les lignes de journal interactives et ouvre un tiroir de détail par étape de nœud dans la vue Journaux.",
       "runTraceAria": "Tiroir de trace d'exécution dans les Journaux (prend effet après rechargement)"

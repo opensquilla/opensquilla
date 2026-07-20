@@ -9,10 +9,10 @@
         data-testid="rag-refresh"
         class="btn btn--ghost"
         type="button"
-        :disabled="loadingStatus"
+        :disabled="loadingStatus || loadingLibraryStats"
         @click="refreshStatus"
       >
-        {{ loadingStatus ? t('rag.refreshing') : t('rag.refresh') }}
+        {{ loadingStatus || loadingLibraryStats ? t('rag.refreshing') : t('rag.refresh') }}
       </button>
     </header>
 
@@ -46,7 +46,36 @@
     <p v-if="status?.warning" class="rag-provider__warning" role="status">
       {{ status.warning }}
     </p>
-    <KnowledgeUploadPanel @verify-search="focusSearchWorkbench" />
+
+    <section class="rag-library-stats control-panel" :aria-label="t('rag.library.title')">
+      <header>
+        <div>
+          <h2 class="control-panel__title">{{ t('rag.library.title') }}</h2>
+          <p>{{ t('rag.library.description') }}</p>
+        </div>
+        <span v-if="loadingLibraryStats" class="control-pill">
+          {{ t('rag.library.loading') }}
+        </span>
+      </header>
+      <dl>
+        <div>
+          <dt>{{ t('rag.library.files') }}</dt>
+          <dd data-testid="rag-library-files">{{ libraryCount(libraryStats?.filesIndexed) }}</dd>
+        </div>
+        <div>
+          <dt>{{ t('rag.library.chunks') }}</dt>
+          <dd data-testid="rag-library-chunks">{{ libraryCount(libraryStats?.chunksIndexed) }}</dd>
+        </div>
+      </dl>
+      <p v-if="libraryStatsError" class="rag-provider__warning" role="status">
+        {{ t('rag.library.unavailable') }}
+      </p>
+    </section>
+
+    <KnowledgeUploadPanel
+      @indexed="refreshLibraryStats"
+      @verify-search="focusSearchWorkbench"
+    />
 
     <KnowledgeProfileSelector
       :profiles="status?.searchOptions?.retrievalProfiles ?? []"
@@ -97,6 +126,10 @@ import KnowledgeProfileSelector from '@/components/knowledge/KnowledgeProfileSel
 import KnowledgeUploadPanel from '@/components/knowledge/KnowledgeUploadPanel.vue'
 import KnowledgeProviderDetails from '@/components/knowledge/KnowledgeProviderDetails.vue'
 import KnowledgeSearchWorkspace from '@/components/knowledge/KnowledgeSearchWorkspace.vue'
+import {
+  getKnowledgeLibraryStats,
+  type KnowledgeLibraryStats,
+} from '@/components/knowledge/knowledgeStats'
 import { useRpcStore } from '@/stores/rpc'
 import {
   browserManagementLink,
@@ -120,6 +153,7 @@ const rpc = useRpcStore()
 const { t } = useI18n()
 
 const status = ref<RagProviderStatus | null>(null)
+const libraryStats = ref<KnowledgeLibraryStats | null>(null)
 const savedOverride = ref<string | null>(null)
 const profileDraft = ref<string | null>(null)
 const query = ref('')
@@ -129,17 +163,20 @@ const selectedEvidenceId = ref<string | null>(null)
 const getResponse = ref<RagGetResponse | null>(null)
 
 const loadingStatus = ref(false)
+const loadingLibraryStats = ref(false)
 const savingProfile = ref(false)
 const searching = ref(false)
 const reading = ref(false)
 
 const statusError = ref('')
+const libraryStatsError = ref('')
 const profileError = ref('')
 const searchError = ref('')
 const readError = ref('')
 const mobileReaderOpen = ref(false)
 
 let statusRequestId = 0
+let libraryStatsRequestId = 0
 let activationRequestId = 0
 let readerRequestId = 0
 let readerInflightKey: string | null = null
@@ -173,6 +210,10 @@ const statusToneClass = computed(() => ({
 
 function message(value: unknown): string {
   return value instanceof Error ? value.message : String(value)
+}
+
+function libraryCount(value: number | undefined): string {
+  return value === undefined ? '—' : new Intl.NumberFormat().format(value)
 }
 
 function isMobileViewport(): boolean {
@@ -271,6 +312,29 @@ async function loadStatus({ preserveDraft = true }: LoadStatusOptions = {}) {
 
 function refreshStatus() {
   void loadStatus({ preserveDraft: true })
+  void loadLibraryStats()
+}
+
+async function loadLibraryStats() {
+  const requestId = ++libraryStatsRequestId
+  loadingLibraryStats.value = true
+  libraryStatsError.value = ''
+  try {
+    const next = await getKnowledgeLibraryStats()
+    if (!pageActive || requestId !== libraryStatsRequestId) return false
+    libraryStats.value = next
+    return true
+  } catch (value) {
+    if (requestId !== libraryStatsRequestId) return false
+    libraryStatsError.value = message(value)
+    return false
+  } finally {
+    if (requestId === libraryStatsRequestId) loadingLibraryStats.value = false
+  }
+}
+
+function refreshLibraryStats() {
+  if (pageActive) void loadLibraryStats()
 }
 
 async function saveProfile() {
@@ -375,6 +439,7 @@ onActivated(() => {
   teardownPage()
   window.addEventListener('popstate', onPopState)
   syncMobileReaderUi(window.history.state)
+  void loadLibraryStats()
   void loadStatus({ preserveDraft: true }).then((loaded) => {
     if (!loaded || !pageActive || activationId !== activationRequestId) return
     ensureMobileReader(window.history.state)
@@ -386,9 +451,11 @@ onDeactivated(() => {
   activationRequestId += 1
   teardownPage()
   statusRequestId += 1
+  libraryStatsRequestId += 1
   readerRequestId += 1
   readerInflightKey = null
   loadingStatus.value = false
+  loadingLibraryStats.value = false
   reading.value = false
   mobileReaderOpen.value = false
 })
@@ -398,6 +465,7 @@ onUnmounted(() => {
   activationRequestId += 1
   teardownPage()
   statusRequestId += 1
+  libraryStatsRequestId += 1
   readerRequestId += 1
   readerInflightKey = null
 })
@@ -420,6 +488,54 @@ onUnmounted(() => {
   margin-left: auto;
 }
 
+.rag-library-stats {
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.rag-library-stats header {
+  align-items: center;
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+}
+
+.rag-library-stats header > div {
+  display: grid;
+  gap: var(--sp-1);
+}
+
+.rag-library-stats header p,
+.rag-library-stats > p {
+  margin: 0;
+}
+
+.rag-library-stats dl {
+  display: grid;
+  gap: var(--sp-3);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.rag-library-stats dl div {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  display: grid;
+  gap: var(--sp-1);
+  padding: var(--sp-4);
+}
+
+.rag-library-stats dt {
+  color: var(--text-muted);
+}
+
+.rag-library-stats dd {
+  font-size: clamp(1.5rem, 3vw, 2.25rem);
+  font-weight: 700;
+  margin: 0;
+}
+
 .rag-provider__hint {
   color: var(--text-muted);
 }
@@ -437,6 +553,10 @@ onUnmounted(() => {
 @media (max-width: 900px) {
   .rag-provider__status-line .btn {
     margin-left: 0;
+  }
+
+  .rag-library-stats dl {
+    grid-template-columns: 1fr;
   }
 }
 </style>

@@ -131,6 +131,25 @@
         />
       </div>
 
+      <p
+        v-if="job.state === 'queued' || job.state === 'running'"
+        data-testid="knowledge-job-activity"
+        class="knowledge-upload__activity"
+        role="status"
+      >
+        <span class="knowledge-upload__pulse" aria-hidden="true" />
+        <span>{{ t('rag.upload.job.active') }}</span>
+        <span v-if="job.files.total > 0">
+          · {{ t('rag.upload.job.filesProgress', {
+            processed: job.files.processed,
+            total: job.files.total,
+          }) }}
+        </span>
+        <span v-if="job.chunks.total > 0">
+          · {{ t('rag.upload.job.chunksPrepared', { count: job.chunks.total }) }}
+        </span>
+      </p>
+
       <ol class="knowledge-upload__phases" :aria-label="t('rag.upload.job.phasesLabel')">
         <li
           v-for="phase in phases"
@@ -217,6 +236,8 @@
 import { computed, onMounted, onUnmounted, ref, shallowRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  KnowledgeApiError,
+  clearStoredKnowledgeUpload,
   completeKnowledgeUpload,
   createKnowledgeUpload,
   getKnowledgeJob,
@@ -232,7 +253,7 @@ import {
   type StoredKnowledgeUpload,
 } from './knowledgeUpload'
 
-const emit = defineEmits<{ verifySearch: [] }>()
+const emit = defineEmits<{ indexed: []; verifySearch: [] }>()
 const { t, locale } = useI18n()
 
 const phases: KnowledgeJobPhase[] = [
@@ -414,18 +435,43 @@ function schedulePoll(jobId: string) {
   pollTimer = window.setTimeout(() => {
     pollTimer = null
     void loadJob(jobId, true)
-  }, 1500)
+  }, 1000)
+}
+
+function clearStaleReference() {
+  clearPoll()
+  try {
+    clearStoredKnowledgeUpload()
+  } catch {
+    // A stale local reference is harmless if restricted storage cannot remove it.
+  }
+  stored.value = null
+  upload.value = null
+  job.value = null
 }
 
 async function loadJob(jobId: string, background = false) {
   if (!background) operation.value = 'checking'
   try {
+    const previousState = job.value?.state
     const next = await getKnowledgeJob(jobId)
     job.value = next
     uiError.value = ''
     if (next.state === 'queued' || next.state === 'running') schedulePoll(jobId)
-    else clearPoll()
+    else {
+      clearPoll()
+      if (
+        (next.state === 'ready' || next.state === 'ready_with_warnings')
+        && previousState !== 'ready'
+        && previousState !== 'ready_with_warnings'
+      ) emit('indexed')
+    }
   } catch (value) {
+    if (value instanceof KnowledgeApiError && value.status === 404) {
+      clearStaleReference()
+      uiError.value = ''
+      return
+    }
     uiError.value = message(value)
     if (stored.value?.jobId === jobId) schedulePoll(jobId)
   } finally {
@@ -614,6 +660,41 @@ onUnmounted(clearPoll)
 .knowledge-upload__result {
   display: grid;
   gap: var(--sp-3);
+}
+
+.knowledge-upload__activity {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-1);
+}
+
+.knowledge-upload__pulse {
+  animation: knowledge-upload-pulse 1.2s ease-in-out infinite;
+  background: var(--accent);
+  border-radius: 999px;
+  block-size: 0.65rem;
+  display: inline-block;
+  inline-size: 0.65rem;
+}
+
+@keyframes knowledge-upload-pulse {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .knowledge-upload__pulse {
+    animation: none;
+  }
 }
 
 .knowledge-upload progress {

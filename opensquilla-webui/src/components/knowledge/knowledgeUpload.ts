@@ -1,6 +1,14 @@
 export const KNOWLEDGE_API_BASE = '/api/v1/knowledge'
 export const DEFAULT_UPLOAD_CHUNK_SIZE_BYTES = 16 * 1024 * 1024
+export const PREFERRED_UPLOAD_CHUNK_SIZE_BYTES = 4 * 1024 * 1024
 export const UPLOAD_STORAGE_KEY = 'opensquilla.knowledge.customer_shared.upload.v1'
+
+export class KnowledgeApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message)
+    this.name = 'KnowledgeApiError'
+  }
+}
 
 export type KnowledgeIndexType = 'fts' | 'vector'
 const KNOWLEDGE_INDEX_TYPE_ORDER: readonly KnowledgeIndexType[] = ['fts', 'vector']
@@ -138,7 +146,10 @@ async function expectJson(
   const payload = await readResponseBody(response)
   if (!expectedStatuses.includes(response.status)) {
     const detail = errorDetail(payload)
-    throw new Error(detail || `Knowledge API request failed (${response.status})`)
+    throw new KnowledgeApiError(
+      detail || `Knowledge API request failed (${response.status})`,
+      response.status,
+    )
   }
   const body = record(payload)
   if (!body) throw new Error('Knowledge API returned an invalid JSON response')
@@ -237,7 +248,11 @@ export async function uploadFileInChunks(
   if (initial.sizeBytes !== file.size) throw new Error('Selected file size does not match the upload')
 
   while (offset < file.size) {
-    const end = Math.min(file.size, offset + status.chunkSizeBytes)
+    const requestChunkSize = Math.min(
+      status.chunkSizeBytes,
+      PREFERRED_UPLOAD_CHUNK_SIZE_BYTES,
+    )
+    const end = Math.min(file.size, offset + requestChunkSize)
     const chunk = file.slice(offset, end)
     const response = await fetcher(
       `${KNOWLEDGE_API_BASE}/uploads/${encodeURIComponent(status.uploadId)}`,
@@ -451,6 +466,10 @@ export function saveStoredKnowledgeUpload(
   storage: Storage = localStorage,
 ) {
   storage.setItem(UPLOAD_STORAGE_KEY, JSON.stringify(value))
+}
+
+export function clearStoredKnowledgeUpload(storage: Storage = localStorage) {
+  storage.removeItem(UPLOAD_STORAGE_KEY)
 }
 
 export function matchesStoredFile(file: File, stored: StoredKnowledgeUpload): boolean {

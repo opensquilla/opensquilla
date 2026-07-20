@@ -1264,6 +1264,14 @@
     "refreshing": "Refreshing",
     "management": "Provider management",
     "managementLocalOnly": "The provider exposed a local-only management path.",
+    "library": {
+      "title": "Current knowledge library",
+      "description": "Content currently indexed and available for retrieval.",
+      "files": "Files",
+      "chunks": "Chunks",
+      "loading": "Loading…",
+      "unavailable": "Knowledge library stats are temporarily unavailable."
+    },
     "upload": {
       "title": "Upload and index",
       "description": "Upload a ZIP archive of customer documents. Large files are sent in resumable chunks.",
@@ -1294,6 +1302,9 @@
       "job": {
         "title": "Indexing status",
         "overall": "Overall progress",
+        "active": "The server is actively processing this job",
+        "filesProgress": "{processed}/{total} files processed",
+        "chunksPrepared": "{count} chunks prepared",
         "phasesLabel": "Indexing phases",
         "states": {
           "queued": "Queued",

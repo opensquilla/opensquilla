@@ -1264,6 +1264,14 @@
     "refreshing": "刷新中",
     "management": "Provider 管理",
     "managementLocalOnly": "Provider 提供了仅本机可用的管理入口。",
+    "library": {
+      "title": "当前知识库",
+      "description": "当前已入库并可用于检索的内容总量。",
+      "files": "文件",
+      "chunks": "Chunk",
+      "loading": "正在读取…",
+      "unavailable": "暂时无法读取知识库统计。"
+    },
     "upload": {
       "title": "上传并入库",
       "description": "上传包含客户文档的 ZIP 压缩包。大文件将以可断点续传的分块发送。",
@@ -1294,6 +1302,9 @@
       "job": {
         "title": "入库状态",
         "overall": "总体进度",
+        "active": "服务端正在持续处理",
+        "filesProgress": "已处理 {processed}/{total} 个文件",
+        "chunksPrepared": "已生成 {count} 个 Chunk",
         "phasesLabel": "入库阶段",
         "states": {
           "queued": "排队中",

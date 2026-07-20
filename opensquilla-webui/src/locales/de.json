@@ -1264,6 +1264,14 @@
     "refreshing": "Wird aktualisiert…",
     "management": "Anbieterverwaltung",
     "managementLocalOnly": "Der Anbieter stellt einen Verwaltungspfad bereit, der nur lokal erreichbar ist.",
+    "library": {
+      "title": "Aktuelle Wissensbibliothek",
+      "description": "Aktuell indexierte und für die Suche verfügbare Inhalte.",
+      "files": "Dateien",
+      "chunks": "Chunks",
+      "loading": "Wird geladen…",
+      "unavailable": "Statistiken sind vorübergehend nicht verfügbar."
+    },
     "upload": {
       "title": "Hochladen und indexieren",
       "description": "Eine ZIP-Datei mit Kundendokumenten hochladen. Große Dateien werden in fortsetzbaren Blöcken übertragen.",
@@ -1294,6 +1302,9 @@
       "job": {
         "title": "Indexierungsstatus",
         "overall": "Gesamtfortschritt",
+        "active": "Der Server verarbeitet den Auftrag weiter",
+        "filesProgress": "{processed}/{total} Dateien verarbeitet",
+        "chunksPrepared": "{count} Chunks vorbereitet",
         "phasesLabel": "Indexierungsphasen",
         "states": {
           "queued": "In Warteschlange",

@@ -163,6 +163,79 @@ async def test_provider_protocol_path_is_not_reused_for_management_api(
 
 
 @pytest.mark.asyncio
+async def test_stats_route_returns_only_validated_file_and_chunk_totals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KNOWLEDGE_SERVICE_TOKEN", "service-secret")
+    seen: dict[str, Any] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["url"] = str(request.url)
+        seen["authorization"] = request.headers.get("authorization")
+        return _json_response(
+            {
+                "ok": True,
+                "filesIndexed": 21_622,
+                "chunksIndexed": 224_066,
+                "rootDir": "/private/provider/path",
+            },
+            status_code=200,
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = Starlette()
+        register_knowledge_management_routes(
+            app,
+            config=_config(),
+            http_client=upstream,
+        )
+        async for client in _browser_client(app):
+            response = await client.get("/api/v1/knowledge/stats")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "filesIndexed": 21_622,
+        "chunksIndexed": 224_066,
+    }
+    assert seen == {
+        "method": "GET",
+        "url": "https://knowledge.internal.example/v1/status",
+        "authorization": "Bearer service-secret",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"chunksIndexed": 1},
+        {"filesIndexed": 1},
+        {"filesIndexed": -1, "chunksIndexed": 1},
+        {"filesIndexed": True, "chunksIndexed": 1},
+    ],
+)
+async def test_stats_route_rejects_invalid_upstream_counters(
+    payload: dict[str, Any],
+) -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return _json_response(payload, status_code=200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = Starlette()
+        register_knowledge_management_routes(
+            app,
+            config=_config(),
+            http_client=upstream,
+        )
+        async for client in _browser_client(app):
+            response = await client.get("/api/v1/knowledge/stats")
+
+    assert response.status_code == 502
+    assert response.json()["code"] == "KNOWLEDGE_UPSTREAM_INVALID_RESPONSE"
+
+
+@pytest.mark.asyncio
 async def test_get_complete_and_job_routes_validate_minimum_and_keep_extras() -> None:
     seen: list[tuple[str, str, bytes]] = []
 
@@ -701,6 +774,7 @@ def test_gateway_factory_registers_exact_management_routes() -> None:
     }
 
     assert registered == {
+        ("/api/v1/knowledge/stats", frozenset({"GET", "HEAD"})),
         ("/api/v1/knowledge/uploads", frozenset({"POST"})),
         (
             "/api/v1/knowledge/uploads/{upload_id}",

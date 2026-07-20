@@ -1264,6 +1264,14 @@
     "refreshing": "Actualisation…",
     "management": "Gestion du fournisseur",
     "managementLocalOnly": "Le fournisseur expose un chemin d’administration accessible uniquement en local.",
+    "library": {
+      "title": "Base de connaissances actuelle",
+      "description": "Contenu actuellement indexé et disponible pour la recherche.",
+      "files": "Fichiers",
+      "chunks": "Fragments",
+      "loading": "Chargement…",
+      "unavailable": "Les statistiques sont temporairement indisponibles."
+    },
     "upload": {
       "title": "Importer et indexer",
       "description": "Importez une archive ZIP de documents client. Les fichiers volumineux sont envoyés par blocs avec reprise.",
@@ -1294,6 +1302,9 @@
       "job": {
         "title": "État de l’indexation",
         "overall": "Progression globale",
+        "active": "Le serveur poursuit activement le traitement",
+        "filesProgress": "{processed}/{total} fichiers traités",
+        "chunksPrepared": "{count} fragments préparés",
         "phasesLabel": "Phases d’indexation",
         "states": {
           "queued": "En attente",

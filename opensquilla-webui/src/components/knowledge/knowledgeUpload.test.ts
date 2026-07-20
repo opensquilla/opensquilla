@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_UPLOAD_CHUNK_SIZE_BYTES,
+  PREFERRED_UPLOAD_CHUNK_SIZE_BYTES,
   UPLOAD_STORAGE_KEY,
+  clearStoredKnowledgeUpload,
   createKnowledgeUpload,
   loadStoredKnowledgeUpload,
   matchesStoredFile,
@@ -125,6 +127,36 @@ describe('knowledge upload API contract', () => {
       .toEqual([4, 4, 2])
   })
 
+  it('caps large server chunks so upload progress updates remain frequent', async () => {
+    const file = new File([new Uint8Array(PREFERRED_UPLOAD_CHUNK_SIZE_BYTES * 2 + 1)], 'customer.zip')
+    const fetcher = vi.fn<FetchLike>()
+      .mockImplementation(async (_input, init) => {
+        const offset = Number((init?.headers as Record<string, string>)['Upload-Offset'])
+        const next = offset + (init?.body as Blob).size
+        return jsonResponse({
+          uploadId: 'upload-1',
+          filename: 'customer.zip',
+          sizeBytes: file.size,
+          uploadedBytes: next,
+          indexTypes: ['fts', 'vector'],
+          chunkSizeBytes: DEFAULT_UPLOAD_CHUNK_SIZE_BYTES,
+        }, 200, { 'Upload-Offset': String(next) })
+      })
+
+    await uploadFileInChunks(file, {
+      ...uploadStatus(),
+      sizeBytes: file.size,
+      chunkSizeBytes: DEFAULT_UPLOAD_CHUNK_SIZE_BYTES,
+    }, { fetcher })
+
+    expect(fetcher.mock.calls.map(([, init]) => (init?.body as Blob).size))
+      .toEqual([
+        PREFERRED_UPLOAD_CHUNK_SIZE_BYTES,
+        PREFERRED_UPLOAD_CHUNK_SIZE_BYTES,
+        1,
+      ])
+  })
+
   it('recovers a 409 from the frozen expectedOffset without re-uploading accepted bytes', async () => {
     const fetcher = vi.fn<FetchLike>()
       .mockResolvedValueOnce(jsonResponse({
@@ -217,5 +249,8 @@ describe('knowledge upload resume metadata', () => {
     expect(loadStoredKnowledgeUpload(storageLike)).toEqual(saved)
     expect(matchesStoredFile(fileOf(), saved)).toBe(true)
     expect(matchesStoredFile(fileOf('0123456789', saved.lastModified + 1), saved)).toBe(false)
+
+    clearStoredKnowledgeUpload(storageLike)
+    expect(loadStoredKnowledgeUpload(storageLike)).toBeNull()
   })
 })

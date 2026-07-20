@@ -22,6 +22,19 @@ const rpcMock = vi.hoisted(() => ({
   call: vi.fn(),
   waitForConnection: vi.fn(),
 }))
+const fetchMock = vi.fn<typeof fetch>()
+
+function memoryStorage(): Storage {
+  const items = new Map<string, string>()
+  return {
+    get length() { return items.size },
+    clear: () => items.clear(),
+    getItem: key => items.get(key) ?? null,
+    key: index => Array.from(items.keys())[index] ?? null,
+    removeItem: key => { items.delete(key) },
+    setItem: (key, value) => { items.set(key, value) },
+  }
+}
 
 vi.mock('@/stores/rpc', () => ({
   useRpcStore: () => rpcMock,
@@ -205,6 +218,8 @@ function leafPaths(value: JsonObject, prefix = ''): string[] {
 
 const EXPECTED_RAG_KEYS = [
   'title', 'subtitle', 'refresh', 'refreshing', 'management', 'managementLocalOnly',
+  'library.title', 'library.description', 'library.files', 'library.chunks',
+  'library.loading', 'library.unavailable',
   'status.ready', 'status.degraded', 'status.unavailable', 'status.incompatible',
   'status.connecting', 'status.disabled', 'status.legacy',
   'profile.title', 'profile.description', 'profile.current', 'profile.providerDefault',
@@ -257,6 +272,9 @@ const UPLOAD_RAG_KEYS = [
   'upload.verifySearch',
   'upload.job.title',
   'upload.job.overall',
+  'upload.job.active',
+  'upload.job.filesProgress',
+  'upload.job.chunksPrepared',
   'upload.job.phasesLabel',
   'upload.job.states.queued',
   'upload.job.states.running',
@@ -752,10 +770,20 @@ describe('KnowledgeView workbench', () => {
   }
 
   beforeEach(() => {
+    vi.stubGlobal('localStorage', memoryStorage())
     rpcMock.call.mockReset()
     rpcMock.waitForConnection.mockReset().mockResolvedValue(undefined)
     currentStatus = structuredClone(READY_STATUS)
     configureDefaultRpc()
+    fetchMock.mockReset().mockResolvedValue(new Response(JSON.stringify({
+      filesIndexed: 21_622,
+      chunksIndexed: 224_066,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    localStorage.clear()
     i18n.global.locale.value = 'en'
     window.history.replaceState(null, '', '/')
     mobileViewport = false
@@ -781,6 +809,20 @@ describe('KnowledgeView workbench', () => {
     i18n.global.locale.value = 'en'
     document.body.innerHTML = ''
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+  })
+
+  it('shows current file and chunk totals from the knowledge stats endpoint', async () => {
+    mountView()
+    await settle()
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/knowledge/stats', {
+      credentials: 'same-origin',
+    })
+    expect(root.querySelector('[data-testid="rag-library-files"]')?.textContent)
+      .toBe('21,622')
+    expect(root.querySelector('[data-testid="rag-library-chunks"]')?.textContent)
+      .toBe('224,066')
   })
 
   it('loads once per KeepAlive activation and pairs the popstate listener', async () => {

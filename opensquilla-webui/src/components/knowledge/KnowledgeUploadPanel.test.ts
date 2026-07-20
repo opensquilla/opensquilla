@@ -13,6 +13,18 @@ import {
 const mountedApps: App[] = []
 let fetchMock: Mock<FetchLike>
 
+function memoryStorage(): Storage {
+  const items = new Map<string, string>()
+  return {
+    get length() { return items.size },
+    clear: () => items.clear(),
+    getItem: key => items.get(key) ?? null,
+    key: index => Array.from(items.keys())[index] ?? null,
+    removeItem: key => { items.delete(key) },
+    setItem: (key, value) => { items.set(key, value) },
+  }
+}
+
 function jsonResponse(
   body: unknown,
   status = 200,
@@ -65,14 +77,15 @@ async function mountPanel() {
   const root = document.createElement('div')
   document.body.appendChild(root)
   const onVerifySearch = vi.fn()
+  const onIndexed = vi.fn()
   const app = createApp({
-    render: () => h(KnowledgeUploadPanel, { onVerifySearch }),
+    render: () => h(KnowledgeUploadPanel, { onIndexed, onVerifySearch }),
   })
   app.use(i18n)
   app.mount(root)
   mountedApps.push(app)
   await settle()
-  return { root, onVerifySearch }
+  return { root, onIndexed, onVerifySearch }
 }
 
 function chooseFile(input: HTMLInputElement, file: File) {
@@ -89,6 +102,7 @@ function setChecked(input: HTMLInputElement, checked: boolean) {
 }
 
 beforeEach(() => {
+  vi.stubGlobal('localStorage', memoryStorage())
   localStorage.clear()
   i18n.global.locale.value = 'en'
   fetchMock = vi.fn<FetchLike>()
@@ -246,6 +260,8 @@ describe('KnowledgeUploadPanel', () => {
     expect(root.querySelector<HTMLInputElement>('[data-testid="knowledge-upload-file"]')?.disabled)
       .toBe(true)
     expect(root.textContent).toContain('42%')
+    expect(root.querySelector('[data-testid="knowledge-job-activity"]')?.textContent)
+      .toContain('2/5 files processed')
   })
 
   it('shows warning completion counters and reuses the existing search workbench entry', async () => {
@@ -257,7 +273,7 @@ describe('KnowledgeUploadPanel', () => {
       warnings: ['notes.txt was skipped'],
     })))
 
-    const { root, onVerifySearch } = await mountPanel()
+    const { root, onIndexed, onVerifySearch } = await mountPanel()
 
     expect(root.querySelector('[data-testid="knowledge-upload-result"]')?.textContent)
       .toContain('4 / 5')
@@ -269,6 +285,7 @@ describe('KnowledgeUploadPanel', () => {
     verify.click()
     await nextTick()
     expect(onVerifySearch).toHaveBeenCalledTimes(1)
+    expect(onIndexed).toHaveBeenCalledTimes(1)
     expect(root.querySelector<HTMLInputElement>('[data-testid="knowledge-upload-file"]')?.disabled)
       .toBe(false)
   })
@@ -292,5 +309,17 @@ describe('KnowledgeUploadPanel', () => {
     expect(root.querySelector('[data-testid="knowledge-job-error"]')?.textContent)
       .toContain('Embedding service unavailable')
     expect(root.querySelector('[data-testid="knowledge-upload-verify"]')).toBeNull()
+  })
+
+  it('clears a stale local job reference after the server returns 404', async () => {
+    saveStoredKnowledgeUpload(savedUpload('job-1'))
+    fetchMock.mockResolvedValue(jsonResponse({ error: 'knowledge job was not found' }, 404))
+
+    const { root } = await mountPanel()
+
+    expect(localStorage.getItem('opensquilla.knowledge.customer_shared.upload.v1')).toBeNull()
+    expect(root.querySelector<HTMLInputElement>('[data-testid="knowledge-upload-file"]')?.disabled)
+      .toBe(false)
+    expect(root.querySelector('[data-testid="knowledge-upload-error"]')).toBeNull()
   })
 })

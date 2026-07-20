@@ -1264,6 +1264,14 @@
     "refreshing": "Actualizando…",
     "management": "Gestión del proveedor",
     "managementLocalOnly": "El proveedor ofrece una ruta de gestión accesible solo desde el equipo local.",
+    "library": {
+      "title": "Biblioteca de conocimiento actual",
+      "description": "Contenido indexado y disponible actualmente para búsquedas.",
+      "files": "Archivos",
+      "chunks": "Fragmentos",
+      "loading": "Cargando…",
+      "unavailable": "Las estadísticas no están disponibles temporalmente."
+    },
     "upload": {
       "title": "Subir e indexar",
       "description": "Sube un archivo ZIP con documentos de clientes. Los archivos grandes se envían en bloques reanudables.",
@@ -1294,6 +1302,9 @@
       "job": {
         "title": "Estado de la indexación",
         "overall": "Progreso general",
+        "active": "El servidor sigue procesando activamente",
+        "filesProgress": "{processed}/{total} archivos procesados",
+        "chunksPrepared": "{count} fragmentos preparados",
         "phasesLabel": "Fases de indexación",
         "states": {
           "queued": "En cola",

@@ -1264,6 +1264,14 @@
     "refreshing": "更新中",
     "management": "プロバイダー管理",
     "managementLocalOnly": "プロバイダーから、ローカル環境でのみ利用できる管理パスが提供されています。",
+    "library": {
+      "title": "現在のナレッジライブラリ",
+      "description": "現在インデックス済みで検索に利用できるコンテンツです。",
+      "files": "ファイル",
+      "chunks": "チャンク",
+      "loading": "読み込み中…",
+      "unavailable": "ナレッジライブラリの統計を一時的に取得できません。"
+    },
     "upload": {
       "title": "アップロードしてインデックス化",
       "description": "顧客文書を含む ZIP アーカイブをアップロードします。大きなファイルは再開可能なチャンクで送信されます。",
@@ -1294,6 +1302,9 @@
       "job": {
         "title": "インデックス作成状況",
         "overall": "全体の進捗",
+        "active": "サーバーで処理を続行しています",
+        "filesProgress": "{processed}/{total} ファイルを処理済み",
+        "chunksPrepared": "{count} チャンクを生成済み",
         "phasesLabel": "インデックス作成フェーズ",
         "states": {
           "queued": "待機中",

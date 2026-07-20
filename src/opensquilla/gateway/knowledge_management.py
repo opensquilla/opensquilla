@@ -126,7 +126,7 @@ class _StreamingRequestBody:
 
 
 class KnowledgeManagementProxy:
-    """Validate and proxy the five browser-facing management routes."""
+    """Validate and proxy the browser-facing knowledge management routes."""
 
     def __init__(
         self,
@@ -167,6 +167,22 @@ class KnowledgeManagementProxy:
                 body,
                 expected_metadata=payload,
             ),
+        )
+
+    async def get_stats(self, request: Request) -> Response:
+        early = self._preflight(request, mutating=False)
+        if early is not None:
+            return early
+        return await self._forward(
+            method="GET",
+            path="/v1/status",
+            operation="stats",
+            expected_status=200,
+            validate=_validate_stats_response,
+            project=lambda body: {
+                "filesIndexed": body["filesIndexed"],
+                "chunksIndexed": body["chunksIndexed"],
+            },
         )
 
     async def get_upload(self, request: Request) -> Response:
@@ -318,6 +334,7 @@ class KnowledgeManagementProxy:
         request_headers: dict[str, str] | None = None,
         require_upload_offset: bool = False,
         body_stream: _StreamingRequestBody | None = None,
+        project: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
     ) -> Response:
         headers = self._upstream_headers()
         if request_headers:
@@ -351,7 +368,7 @@ class KnowledgeManagementProxy:
                     if body_stream is not None and not body_stream.complete:
                         raise _UpstreamProtocolError("upstream did not consume upload body")
                     return JSONResponse(
-                        payload,
+                        project(payload) if project is not None else payload,
                         status_code=upstream.status_code,
                         headers=response_headers,
                     )
@@ -409,6 +426,11 @@ def register_knowledge_management_routes(
     proxy = KnowledgeManagementProxy(config, http_client=http_client)
     app.router.routes.extend(
         [
+            Route(
+                "/api/v1/knowledge/stats",
+                proxy.get_stats,
+                methods=["GET"],
+            ),
             Route(
                 "/api/v1/knowledge/uploads",
                 proxy.create_upload,
@@ -519,6 +541,13 @@ def _validate_create_upload_request(payload: dict[str, Any]) -> None:
     _validated_filename(payload.get("filename"))
     _validated_nonnegative_int(payload.get("sizeBytes"), "sizeBytes")
     _validated_index_types(payload.get("indexTypes"))
+
+
+def _validate_stats_response(payload: dict[str, Any]) -> None:
+    for field in ("filesIndexed", "chunksIndexed"):
+        if field not in payload:
+            raise _UpstreamProtocolError("knowledge stats are missing required fields")
+        _validated_upstream_nonnegative_int(payload[field])
 
 
 def _validate_upload_response(

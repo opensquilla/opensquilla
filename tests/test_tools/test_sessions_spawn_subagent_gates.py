@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
@@ -253,7 +254,9 @@ async def test_sessions_spawn_propagates_owner_full_host_context_to_child() -> N
 
 
 @pytest.mark.asyncio
-async def test_sessions_spawn_does_not_propagate_once_or_temporary_grants() -> None:
+async def test_sessions_spawn_does_not_propagate_once_or_temporary_grants(
+    tmp_path: Path,
+) -> None:
     mgr = _StubSessionManager(
         {
             "caller": {"id": "caller", "enabled": True},
@@ -263,18 +266,22 @@ async def test_sessions_spawn_does_not_propagate_once_or_temporary_grants() -> N
     rt = _StubTaskRuntime()
     sessions_tool.set_session_manager(mgr)
     sessions_tool.set_task_runtime(rt)
+    workspace = str(tmp_path / "workspace")
+    durable_path = str(tmp_path / "durable")
+    one_shot_path = str(tmp_path / "one-shot")
+    temporary_path = str(tmp_path / "temporary")
     parent_ctx = _ctx()
     parent_ctx.run_mode = "trusted"
     parent_ctx.sandbox_mounts = [
-        {"path": "/durable", "access": "ro", "scope": "chat"},
-        {"path": "/one-shot", "access": "rw", "scope": "once"},
+        {"path": durable_path, "access": "ro", "scope": "chat"},
+        {"path": one_shot_path, "access": "rw", "scope": "once"},
     ]
     parent_ctx.sandbox_run_context = RunContext(
         run_mode=RunMode.TRUSTED,
-        workspace="/tmp/opensquilla-workspace",
+        workspace=workspace,
         mounts=(
-            MountGrant("/durable", scope="chat"),
-            MountGrant("/one-shot", access="rw", scope="once"),
+            MountGrant(durable_path, scope="chat"),
+            MountGrant(one_shot_path, access="rw", scope="once"),
         ),
         domains=(
             DomainGrant("durable.example", scope="workspace"),
@@ -288,9 +295,7 @@ async def test_sessions_spawn_does_not_propagate_once_or_temporary_grants() -> N
             PublicNetworkGrant(scope="chat"),
             PublicNetworkGrant(scope="once"),
         ),
-        temporary_grants=(
-            TemporaryGrant("mount", "/temporary", "fingerprint-1"),
-        ),
+        temporary_grants=(TemporaryGrant("mount", temporary_path, "fingerprint-1"),),
     )
 
     token = current_tool_context.set(parent_ctx)
@@ -307,20 +312,16 @@ async def test_sessions_spawn_does_not_propagate_once_or_temporary_grants() -> N
     assert all(item["scope"] != "once" for item in payload["public_network"])
     assert payload["temporary_grants"] == []
     assert envelope.metadata["sandbox_mounts"] == [
-        {"path": "/durable", "access": "ro", "scope": "chat"}
+        {"path": durable_path, "access": "ro", "scope": "chat"}
     ]
 
     child_ctx = tool_context_from_envelope(envelope, is_owner=True)
     child_run_context = child_ctx.sandbox_run_context
     assert child_run_context is not None
     assert child_run_context.run_mode is RunMode.TRUSTED
-    assert {grant.path for grant in child_run_context.mounts} == {"/durable"}
-    assert {grant.domain for grant in child_run_context.domains} == {
-        "durable.example"
-    }
-    assert {grant.bundle_id for grant in child_run_context.bundles} == {
-        "python-package-install"
-    }
+    assert {grant.path for grant in child_run_context.mounts} == {durable_path}
+    assert {grant.domain for grant in child_run_context.domains} == {"durable.example"}
+    assert {grant.bundle_id for grant in child_run_context.bundles} == {"python-package-install"}
     assert child_run_context.temporary_grants == ()
 
 

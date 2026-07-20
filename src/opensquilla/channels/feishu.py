@@ -43,7 +43,6 @@ from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
     ChannelLengthUnit,
-    ChannelPlatformManifest,
     ChannelSendResult,
 )
 from opensquilla.channels.transports import InboundEventEnvelope, InboundEventHandler
@@ -791,11 +790,10 @@ class FeishuChannel:
             transports=(self.config.connection_mode,),
         )
 
-    @property
-    def platform_capability_manifest(self) -> ChannelPlatformManifest:
-        from opensquilla.tools.builtin.feishu_platform import build_feishu_platform_manifest
-
-        return build_feishu_platform_manifest()
+    # No explicit platform manifest: the honest boundary derives from the
+    # capability profile. Vendor API surfaces (docs/drive/wiki) are Feishu's
+    # own MCP server and CLI, mounted through the MCP client, not channel
+    # tools — the channel advertises only what the conversation surface does.
 
     @property
     def capabilities(self) -> frozenset[str]:

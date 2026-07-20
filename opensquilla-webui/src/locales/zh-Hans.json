@@ -597,7 +597,17 @@
       "advancedGroup": "高级：访问与行为",
       "fieldRequired": "此字段必填",
       "fixRequired": "请先填写高亮的必填字段",
-      "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 渠道 › 配对 中批准。批准后 bot 会主动告诉对方可以开始了（可在下方关闭该通知）。"
+      "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 渠道 › 配对 中批准。批准后 bot 会主动告诉对方可以开始了（可在下方关闭该通知）。",
+      "aids": {
+        "title": "飞书控制台快捷方式",
+        "scopes_json": "权限清单 JSON——粘贴到 权限管理 → 批量导入",
+        "copy": "复制 JSON",
+        "copied": "已复制 ✓",
+        "credentials_link": "打开凭证页(App id / App secret)",
+        "quick_apply_link": "一键预填全部所需权限的申请",
+        "needAppId": "先填写 App id",
+        "ws_order_note": "长连接顺序:先保存本渠道让长连接建立,再到 事件与回调 切换为「使用长连接接收事件」——控制台仅在有活跃连接时才能保存该选项。"
+      }
     },
     "search": {
       "title": "网页搜索",

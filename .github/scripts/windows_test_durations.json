@@ -58,7 +58,6 @@
     "tests/test_channels/test_discord_routing.py": 0.017,
     "tests/test_channels/test_feishu_approval_card.py": 0.01,
     "tests/test_channels/test_feishu_auth_validation.py": 0.01,
-    "tests/test_channels/test_feishu_platform_tools.py": 0.204,
     "tests/test_channels/test_feishu_reactions.py": 0.01,
     "tests/test_channels/test_feishu_send_file.py": 0.02,
     "tests/test_channels/test_feishu_websocket_transport.py": 0.484,

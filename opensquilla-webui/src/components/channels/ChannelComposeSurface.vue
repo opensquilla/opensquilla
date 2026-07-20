@@ -65,7 +65,13 @@ watch(
           <span aria-hidden="true">‹</span>
           <span>{{ t('console.channels.compose.back') }}</span>
         </button>
-        <h2 class="chc__title">{{ t('console.channels.addChannel') }}</h2>
+        <!-- The title narrates the step: platform pick first, then the add
+             form named after the picked platform. -->
+        <h2 class="chc__title">
+          {{ picked
+            ? t('console.channels.compose.addPlatform', { platform: specLabel })
+            : t('console.channels.compose.galleryLabel') }}
+        </h2>
       </header>
 
       <div class="chc__body">

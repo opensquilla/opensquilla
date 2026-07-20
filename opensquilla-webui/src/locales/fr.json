@@ -1497,7 +1497,8 @@
         "galleryLabel": "Choisir une plateforme",
         "change": "Changer",
         "discardQuestion": "Abandonner le brouillon {platform} ?",
-        "catalogFailed": "Impossible de charger le catalogue de plateformes : {error}"
+        "catalogFailed": "Impossible de charger le catalogue de plateformes : {error}",
+        "addPlatform": "Ajouter {platform}"
       },
       "probeVerified": "Connexion vérifiée",
       "probeUnsupported": "Test de connexion en direct indisponible",

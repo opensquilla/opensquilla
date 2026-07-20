@@ -1497,7 +1497,8 @@
         "galleryLabel": "选择平台",
         "change": "更换",
         "discardQuestion": "丢弃 {platform} 草稿？",
-        "catalogFailed": "无法加载平台目录：{error}"
+        "catalogFailed": "无法加载平台目录：{error}",
+        "addPlatform": "添加 {platform}"
       },
       "probeVerified": "连接已验证",
       "probeUnsupported": "无法进行在线探测",

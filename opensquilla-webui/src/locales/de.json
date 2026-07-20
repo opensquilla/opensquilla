@@ -1497,7 +1497,8 @@
         "galleryLabel": "Plattform wählen",
         "change": "Ändern",
         "discardQuestion": "Entwurf für {platform} verwerfen?",
-        "catalogFailed": "Der Plattformkatalog konnte nicht geladen werden: {error}"
+        "catalogFailed": "Der Plattformkatalog konnte nicht geladen werden: {error}",
+        "addPlatform": "{platform} hinzufügen"
       },
       "probeVerified": "Verbindung verifiziert",
       "probeUnsupported": "Live-Prüfung nicht verfügbar",

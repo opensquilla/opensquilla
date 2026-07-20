@@ -1497,7 +1497,8 @@
         "galleryLabel": "Choose a platform",
         "change": "Change",
         "discardQuestion": "Discard the {platform} draft?",
-        "catalogFailed": "The platform catalog could not be loaded: {error}"
+        "catalogFailed": "The platform catalog could not be loaded: {error}",
+        "addPlatform": "Add {platform}"
       },
       "probeVerified": "Connection verified",
       "probeUnsupported": "Live probe unavailable",

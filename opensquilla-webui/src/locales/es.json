@@ -1497,7 +1497,8 @@
         "galleryLabel": "Elige una plataforma",
         "change": "Cambiar",
         "discardQuestion": "¿Descartar el borrador de {platform}?",
-        "catalogFailed": "No se pudo cargar el catálogo de plataformas: {error}"
+        "catalogFailed": "No se pudo cargar el catálogo de plataformas: {error}",
+        "addPlatform": "Añadir {platform}"
       },
       "probeVerified": "Conexión verificada",
       "probeUnsupported": "Prueba en vivo no disponible",

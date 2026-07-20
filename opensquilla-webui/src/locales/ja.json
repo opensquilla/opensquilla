@@ -1497,7 +1497,8 @@
         "galleryLabel": "プラットフォームを選択",
         "change": "変更",
         "discardQuestion": "{platform} のドラフトを破棄しますか？",
-        "catalogFailed": "プラットフォームカタログを読み込めませんでした: {error}"
+        "catalogFailed": "プラットフォームカタログを読み込めませんでした: {error}",
+        "addPlatform": "{platform} を追加"
       },
       "probeVerified": "接続を確認しました",
       "probeUnsupported": "ライブプローブは利用できません",

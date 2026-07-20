@@ -330,6 +330,19 @@ _CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE = (
     ")"
 )
 
+_CREATE_TELEMETRY_DAILY_USAGE = """
+CREATE TABLE IF NOT EXISTS telemetry_daily_usage (
+    day TEXT PRIMARY KEY,
+    conversation_turns INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    uploaded_at INTEGER
+)
+"""
+
 _CREATE_EPOCH_ROLLBACK_TRIGGER = """
 CREATE TRIGGER IF NOT EXISTS prevent_epoch_rollback
 BEFORE UPDATE OF epoch ON sessions
@@ -455,6 +468,7 @@ class SessionStorage:
         await self._conn.execute(_CREATE_IDX_AGENT_TASKS_STATUS_UPDATED)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
+        await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
         # FTS5 full-text search index + auto-sync triggers
         await self._conn.execute(_CREATE_TRANSCRIPT_FTS)
         await self._conn.execute(_CREATE_FTS_TRIGGER_INSERT)
@@ -481,6 +495,79 @@ class SessionStorage:
         await self._conn.commit()
         await self.mark_abandoned_agent_tasks()
 
+    async def record_daily_usage(
+        self,
+        *,
+        day: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        cache_write_tokens: int,
+        updated_at: int,
+    ) -> None:
+        """Atomically add one completed interactive turn to a UTC-day bucket."""
+        assert self._conn is not None
+        await self._conn.execute(
+            """
+            INSERT INTO telemetry_daily_usage (
+                day, conversation_turns, input_tokens, output_tokens,
+                cached_tokens, cache_write_tokens, updated_at, uploaded_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(day) DO UPDATE SET
+                conversation_turns = conversation_turns + 1,
+                input_tokens = input_tokens + excluded.input_tokens,
+                output_tokens = output_tokens + excluded.output_tokens,
+                cached_tokens = cached_tokens + excluded.cached_tokens,
+                cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                updated_at = excluded.updated_at,
+                uploaded_at = NULL
+            """,
+            (
+                day,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                cache_write_tokens,
+                updated_at,
+            ),
+        )
+        await self._conn.commit()
+
+    async def list_pending_daily_usage(self, *, before_day: str) -> list[dict[str, Any]]:
+        """Return unsent completed UTC-day aggregates in chronological order."""
+        assert self._conn is not None
+        async with self._conn.execute(
+            """
+            SELECT day, conversation_turns, input_tokens, output_tokens,
+                   cached_tokens, cache_write_tokens, updated_at, uploaded_at
+            FROM telemetry_daily_usage
+            WHERE day < ? AND uploaded_at IS NULL
+            ORDER BY day ASC
+            """,
+            (before_day,),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+    async def mark_daily_usage_uploaded(
+        self,
+        *,
+        day: str,
+        uploaded_at: int,
+        expected_conversation_turns: int,
+    ) -> bool:
+        """Mark a sent snapshot unless another turn changed it in flight."""
+        assert self._conn is not None
+        cursor = await self._conn.execute(
+            """
+            UPDATE telemetry_daily_usage
+            SET uploaded_at = ?
+            WHERE day = ? AND conversation_turns = ?
+            """,
+            (uploaded_at, day, expected_conversation_turns),
+        )
+        await self._conn.commit()
+        return cursor.rowcount > 0
+
     async def _migrate_epoch_column(self) -> None:
         """Idempotently add the epoch column to an existing sessions table.
 
@@ -497,15 +584,11 @@ class SessionStorage:
             )
             await self._conn.commit()
         # Defensive: zero-out any NULL epoch rows left by a partial migration.
-        async with self._conn.execute(
-            "SELECT COUNT(*) FROM sessions WHERE epoch IS NULL"
-        ) as cur:
+        async with self._conn.execute("SELECT COUNT(*) FROM sessions WHERE epoch IS NULL") as cur:
             row = await cur.fetchone()
         null_count = row[0] if row else 0
         if null_count > 0:
-            await self._conn.execute(
-                "UPDATE sessions SET epoch = 0 WHERE epoch IS NULL"
-            )
+            await self._conn.execute("UPDATE sessions SET epoch = 0 WHERE epoch IS NULL")
             await self._conn.commit()
 
     async def _migrate_derived_title_column(self) -> None:
@@ -519,9 +602,7 @@ class SessionStorage:
         async with self._conn.execute("PRAGMA table_info(sessions)") as cur:
             columns = [row[1] for row in await cur.fetchall()]
         if "derived_title" not in columns:
-            await self._conn.execute(
-                "ALTER TABLE sessions ADD COLUMN derived_title TEXT"
-            )
+            await self._conn.execute("ALTER TABLE sessions ADD COLUMN derived_title TEXT")
             await self._conn.commit()
 
     async def _migrate_transcript_reasoning_content_column(self) -> None:
@@ -541,9 +622,7 @@ class SessionStorage:
         async with self._conn.execute("PRAGMA table_info(transcript_entries)") as cur:
             columns = [row[1] for row in await cur.fetchall()]
         if "turn_usage" not in columns:
-            await self._conn.execute(
-                "ALTER TABLE transcript_entries ADD COLUMN turn_usage TEXT"
-            )
+            await self._conn.execute("ALTER TABLE transcript_entries ADD COLUMN turn_usage TEXT")
             await self._conn.commit()
 
     async def _migrate_summary_metadata_columns(self) -> None:
@@ -576,8 +655,7 @@ class SessionStorage:
             "tokens_before": "ALTER TABLE session_summaries ADD COLUMN tokens_before INTEGER",
             "tokens_after": "ALTER TABLE session_summaries ADD COLUMN tokens_after INTEGER",
             "removed_count": (
-                "ALTER TABLE session_summaries ADD COLUMN "
-                "removed_count INTEGER NOT NULL DEFAULT 0"
+                "ALTER TABLE session_summaries ADD COLUMN removed_count INTEGER NOT NULL DEFAULT 0"
             ),
             "kept_count": (
                 "ALTER TABLE session_summaries ADD COLUMN kept_count INTEGER NOT NULL DEFAULT 0"
@@ -607,9 +685,7 @@ class SessionStorage:
             "coverage_turn_id": (
                 "ALTER TABLE memory_durable_receipts ADD COLUMN coverage_turn_id TEXT"
             ),
-            "coverage_hash": (
-                "ALTER TABLE memory_durable_receipts ADD COLUMN coverage_hash TEXT"
-            ),
+            "coverage_hash": ("ALTER TABLE memory_durable_receipts ADD COLUMN coverage_hash TEXT"),
             "coverage_entry_count": (
                 "ALTER TABLE memory_durable_receipts ADD COLUMN coverage_entry_count INTEGER"
             ),
@@ -921,8 +997,7 @@ class SessionStorage:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params += [limit, offset]
         sql = (
-            f"SELECT * FROM agent_tasks {where} "
-            "ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?"
+            f"SELECT * FROM agent_tasks {where} ORDER BY created_at ASC, rowid ASC LIMIT ? OFFSET ?"
         )
         async with self.conn.execute(sql, params) as cur:
             rows = await cur.fetchall()
@@ -1019,9 +1094,7 @@ class SessionStorage:
         allowed = set(MemoryDurableReceipt.model_fields) - {"receipt_id", "created_at"}
         unknown = sorted(set(fields) - allowed)
         if unknown:
-            raise ValueError(
-                f"Unknown memory durable receipt fields: {', '.join(unknown)}"
-            )
+            raise ValueError(f"Unknown memory durable receipt fields: {', '.join(unknown)}")
         if "session_key" in fields:
             fields["session_key"] = canonicalize_session_key(fields["session_key"])
         fields.setdefault("updated_at", _now_ms())
@@ -1141,7 +1214,7 @@ class SessionStorage:
                 raise StaleEpochError(
                     f"Epoch mismatch for {entry.session_key}: "
                     f"expected {expected_epoch}, got {actual}"
-            )
+                )
             await self.conn.commit()
         else:
             sql = f"INSERT INTO transcript_entries ({', '.join(cols)}) VALUES ({placeholders})"
@@ -1218,9 +1291,7 @@ class SessionStorage:
             ORDER BY created_at ASC, id ASC
             LIMIT ? OFFSET ?
         """
-        async with self.conn.execute(
-            sql, (session_id, session_id, limit_val, offset)
-        ) as cur:
+        async with self.conn.execute(sql, (session_id, session_id, limit_val, offset)) as cur:
             rows = await cur.fetchall()
         return [TranscriptEntry(**_deserialize_row(dict(r))) for r in rows]
 
@@ -1294,9 +1365,7 @@ class SessionStorage:
             row = await cur.fetchone()
         return row[0] if row else 0
 
-    async def count_transcript_entries_batch(
-        self, session_ids: list[str]
-    ) -> dict[str, int]:
+    async def count_transcript_entries_batch(self, session_ids: list[str]) -> dict[str, int]:
         """Count transcript entries for many sessions in one round trip.
 
         Used by ``sessions.list`` (rpc_sessions.py) to avoid the N+1 pattern
@@ -1497,9 +1566,7 @@ class SessionStorage:
                 node=node,
                 entries=archived_entries or [],
                 compaction_id=summary.compaction_id if summary is not None else None,
-                compaction_index=summary.compaction_index
-                if summary is not None
-                else None,
+                compaction_index=summary.compaction_index if summary is not None else None,
             )
 
             await self.conn.execute(
@@ -1673,9 +1740,7 @@ class SessionStorage:
 
     # ── SessionContextState CRUD ─────────────────────────────────────────────
 
-    async def save_context_state(
-        self, state: SessionContextState
-    ) -> SessionContextState:
+    async def save_context_state(self, state: SessionContextState) -> SessionContextState:
         """Persist portable or provider-native context state for later replay."""
         state.session_key = canonicalize_session_key(state.session_key)
         data = state.model_dump(exclude={"id"})
@@ -1683,8 +1748,7 @@ class SessionStorage:
         placeholders = ", ".join("?" for _ in cols)
         values = [_serialize(data[c]) for c in cols]
         async with self.conn.execute(
-            "INSERT INTO session_context_states "
-            f"({', '.join(cols)}) VALUES ({placeholders})",
+            f"INSERT INTO session_context_states ({', '.join(cols)}) VALUES ({placeholders})",
             values,
         ) as cur:
             state.id = cur.lastrowid
@@ -1712,8 +1776,7 @@ class SessionStorage:
             clauses.append("valid = 1")
         where = " AND ".join(clauses)
         async with self.conn.execute(
-            "SELECT * FROM session_context_states "
-            f"WHERE {where} ORDER BY created_at ASC, id ASC",
+            f"SELECT * FROM session_context_states WHERE {where} ORDER BY created_at ASC, id ASC",
             params,
         ) as cur:
             rows = await cur.fetchall()
@@ -1873,8 +1936,7 @@ class SessionStorage:
             params.extend([token] * len(cols))
         params.append(limit)
         sql = (
-            f"SELECT * FROM sessions WHERE {' AND '.join(clauses)} "
-            "ORDER BY updated_at DESC LIMIT ?"
+            f"SELECT * FROM sessions WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT ?"
         )
         async with self.conn.execute(sql, params) as cur:
             rows = await cur.fetchall()

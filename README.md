@@ -361,10 +361,13 @@ full reference.
 
 OpenSquilla uses anonymous installation telemetry to estimate install counts,
 version adoption, and runtime compatibility. Data is sent on first gateway
-startup and once per OpenSquilla version. OpenSquilla may also make passive
-update checks, including automatic desktop update checks at startup and, while
-the app remains open, at most once per day. Uploads use a short timeout and
-never block startup.
+startup and once per OpenSquilla version. It also records content-free daily
+aggregates for completed top-level conversations and attempts to upload pending
+cumulative UTC-day snapshots at startup and once per hour through the same
+telemetry service's dedicated `/v1/usage` route. OpenSquilla may also make
+passive update checks, including automatic desktop update checks at startup
+and, while the app remains open, at most once per day. Uploads use a short
+timeout and never block startup.
 
 See [`PRIVACY.md`](PRIVACY.md) for the full privacy policy covering local data,
 provider requests, network observability, logs, release downloads, and deletion.
@@ -374,12 +377,14 @@ What is sent:
 - schema version
 - locally generated stable `install_id` digest
 - OpenSquilla version
-- event type (`install` or `version_seen`)
+- event type (`install`, `version_seen`, or `daily_usage`)
 - install method (`pip`, `source`, `docker`, `desktop`, or `unknown`)
 - operating system, OS version, CPU architecture, and Python major/minor
   version
 - first-seen and sent timestamps
 - CI/test-environment marker (`ci_environment`)
+- completed UTC day, conversation count, and aggregate input/output/cache/cache-write
+  token counts for daily-usage events
 
 The `install_id` is a local one-way SHA-256 digest derived from usable MAC
 addresses, then local IP addresses when no MAC is available, with a random
@@ -403,7 +408,8 @@ or set:
 disable_network_observability = true
 ```
 
-That unified switch covers automatic install telemetry, passive update checks,
+That unified switch covers automatic install telemetry, daily aggregate usage
+telemetry, passive update checks,
 and automatic desktop update checks at startup and during long-running app
 sessions. Explicit update-availability checks remain disabled while the unified
 or legacy opt-out is active. Other user-initiated actions may still contact
@@ -417,10 +423,11 @@ OPENSQUILLA_TELEMETRY_DISABLED=true
 OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-Advanced deployments can use their own endpoint:
+Advanced deployments can use independent routes on their own telemetry service:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
+OPENSQUILLA_USAGE_TELEMETRY_ENDPOINT=https://example.com/v1/usage
 ```
 
 ---

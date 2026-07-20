@@ -608,6 +608,7 @@ class ServiceContainer:
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
+    daily_usage_telemetry_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     deferred_warmups: list[Callable[[], Any]] = field(default_factory=list)
     _compaction_listener_remove: Callable[[], None] | None = None
     _approval_listener_remove: Callable[[], None] | None = None
@@ -651,6 +652,16 @@ class ServiceContainer:
             self._approval_channel_notifier_remove = None
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
+        daily_usage_task = self.daily_usage_telemetry_task
+        self.daily_usage_telemetry_task = None
+        if daily_usage_task is not None:
+            daily_usage_task.cancel()
+            try:
+                await daily_usage_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.debug("gateway.usage_telemetry_close_failed", exc_info=True)
         if self.heartbeat_watcher is not None:
             try:
                 await self.heartbeat_watcher.stop()
@@ -2085,9 +2096,7 @@ async def build_services(
             # 0o700: session transcripts are sensitive — keep a freshly created
             # state directory owner-only (umask-masked; no-op on Windows and on
             # pre-existing directories).
-            Path(session_db_path).expanduser().parent.mkdir(
-                mode=0o700, parents=True, exist_ok=True
-            )
+            Path(session_db_path).expanduser().parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         migrations_dir = _resolve_migrations_dir()
         applied = apply_pending(session_db_path, migrations_dir)
         if applied:
@@ -2214,9 +2223,7 @@ async def build_services(
                 from opensquilla.provider.live_catalog import warm_live_provider_catalogs
 
                 await asyncio.wait_for(
-                    warm_live_provider_catalogs(
-                        model_catalog, [config.llm.provider], proxy=proxy
-                    ),
+                    warm_live_provider_catalogs(model_catalog, [config.llm.provider], proxy=proxy),
                     timeout=5.0,
                 )
             except Exception as e:  # noqa: BLE001 - live metadata must never block boot
@@ -2556,8 +2563,7 @@ async def build_services(
                 # contended WAL write cannot stall service startup wiring.
                 await asyncio.to_thread(
                     meta_run_writer.mark_orphans_failed,
-                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600))
-                    * 1000,
+                    age_ms=int(getattr(persistence_cfg, "orphan_cleanup_age_seconds", 3600)) * 1000,
                 )
     except Exception as e:  # noqa: BLE001 - meta traces must not block boot.
         log.warning("build_services.meta_run_writer_failed", error=str(e))
@@ -2591,8 +2597,7 @@ async def build_services(
                 router_decision_writer = open_router_decision_writer(
                     decisions_db_path,
                     retention_days=int(
-                        getattr(router_cfg_for_decisions, "decision_retention_days", 30)
-                        or 30
+                        getattr(router_cfg_for_decisions, "decision_retention_days", 30) or 30
                     ),
                 )
                 set_decision_writer(router_decision_writer)
@@ -2621,9 +2626,7 @@ async def build_services(
     try:
         errors_storage = get_session_storage(session_manager)
         errors_db_path = (
-            getattr(errors_storage, "_db_path", None)
-            if errors_storage is not None
-            else None
+            getattr(errors_storage, "_db_path", None) if errors_storage is not None else None
         )
         if errors_db_path and errors_db_path != ":memory:":
             from opensquilla.persistence.turn_error_writer import (
@@ -2778,9 +2781,7 @@ def build_turn_runner_from_services(
         compaction_hooks=getattr(svc, "compaction_hooks", None),
         meta_run_writer=getattr(svc, "meta_run_writer", None),
         turn_error_writer=getattr(svc, "turn_error_writer", None),
-        provider_call_observer=build_provider_call_observer(
-            getattr(svc, "provider_stats", None)
-        ),
+        provider_call_observer=build_provider_call_observer(getattr(svc, "provider_stats", None)),
     )
 
 
@@ -2917,6 +2918,25 @@ async def start_gateway_server(
     except BaseException:
         _pid_lock.release()
         raise
+
+    # Daily usage uses the existing telemetry service's dedicated /v1/usage
+    # route and the same unified privacy switch. Upload once at startup and
+    # every hour while the gateway is running; failures remain pending.
+    try:
+        from opensquilla.observability.usage_telemetry import (
+            run_daily_usage_upload_loop,
+        )
+
+        daily_usage_storage = get_session_storage(svc.session_manager)
+        if daily_usage_storage is not None:
+            svc.daily_usage_telemetry_task = create_background_task(
+                run_daily_usage_upload_loop(
+                    daily_usage_storage,
+                    config=config,
+                )
+            )
+    except Exception:
+        log.debug("gateway.usage_telemetry_upload_skipped", exc_info=True)
 
     # Record boot time for uptime calculation (gateway-specific)
     global _boot_time_ms

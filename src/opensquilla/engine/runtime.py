@@ -151,6 +151,7 @@ from opensquilla.engine.turn_runner.harness import (
     _TurnRunnerTranscriptAppendAdapter,
     _TurnRunnerTurnErrorPersistAdapter,
     _TurnRunnerTurnMemoryCaptureAdapter,
+    _TurnRunnerUsageTelemetryAdapter,
 )
 from opensquilla.engine.turn_runner.stream_consumer_stage import _StreamState
 from opensquilla.engine.types import (
@@ -2392,6 +2393,7 @@ class TurnRunner:
             turn_memory_capture=_TurnRunnerTurnMemoryCaptureAdapter(self),
             session_totals=_TurnRunnerSessionTotalsAdapter(self),
             turn_error_persist=_TurnRunnerTurnErrorPersistAdapter(self),
+            usage_telemetry=_TurnRunnerUsageTelemetryAdapter(self),
         )
 
     @property

@@ -225,17 +225,17 @@ def test_channel_runtime_profile_exposes_explicit_category_tools_not_host_mutati
     ctx = ToolContext(
         is_owner=False,
         caller_kind=CallerKind.CHANNEL,
-        allowed_tools={"feishu_drive_upload_artifact", "write_file"},
+        allowed_tools={"vendor_upload_artifact", "write_file"},
     )
     tools = [
-        _spec("feishu_drive_upload_artifact"),
+        _spec("vendor_upload_artifact"),
         _spec("write_file"),
         _spec("create_pptx"),
     ]
 
     names = {tool.name for tool in filter_by_profile(tools, resolve_profile(ctx), ctx)}
 
-    assert "feishu_drive_upload_artifact" in names
+    assert "vendor_upload_artifact" in names
     assert "create_pptx" in names
     assert "write_file" not in names
 
@@ -522,19 +522,19 @@ async def test_channel_profile_blocks_forced_tool_calls_outside_safe_allowlist()
 async def test_channel_profile_allows_explicit_category_tools_not_host_mutation() -> None:
     registry = ToolRegistry()
     registry.register(_spec("create_pptx"), _handler)
-    registry.register(_spec("feishu_drive_upload_artifact"), _handler)
+    registry.register(_spec("vendor_upload_artifact"), _handler)
     registry.register(_spec("write_file"), _handler)
     ctx = ToolContext(
         is_owner=False,
         caller_kind=CallerKind.CHANNEL,
-        allowed_tools={"create_pptx", "feishu_drive_upload_artifact", "write_file"},
+        allowed_tools={"create_pptx", "vendor_upload_artifact", "write_file"},
     )
     handler = build_tool_handler(registry, ctx)
 
     category_tool = await handler(
         ToolCall(
             tool_use_id="tc-drive",
-            tool_name="feishu_drive_upload_artifact",
+            tool_name="vendor_upload_artifact",
             arguments={},
         )
     )

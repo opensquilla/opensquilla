@@ -371,20 +371,6 @@ class _ToolConcurrencyPolicy:
     limit_key: Hashable | None = None
 
 
-_FEISHU_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "feishu_chat_read",
-        "feishu_doc_list_blocks",
-        "feishu_doc_read_raw",
-        "feishu_drive_meta",
-        "feishu_drive_search",
-        "feishu_scopes_status",
-        "feishu_wiki_get_node",
-        "feishu_wiki_list_nodes",
-        "feishu_wiki_list_spaces",
-    }
-)
-
 _MUTEX_TOOL_POLICY = _ToolConcurrencyPolicy(mode="mutex")
 _CONCURRENT_TOOL_POLICY = _ToolConcurrencyPolicy(mode="concurrent")
 # Image analysis crosses a provider boundary. Keep slide-thumbnail bursts below
@@ -394,13 +380,6 @@ _IMAGE_ANALYSIS_TOOL_POLICY = _ToolConcurrencyPolicy(
     max_inflight=2,
     limit_key=("media", "image_analysis"),
 )
-_FEISHU_READ_TOOL_POLICY = _ToolConcurrencyPolicy(
-    mode="concurrent",
-    max_inflight=4,
-    limit_key=("feishu", "read"),
-)
-
-
 def _get_tool_concurrency_policy(
     tool_name: str,
     arguments: Mapping[str, Any] | None = None,
@@ -411,8 +390,6 @@ def _get_tool_concurrency_policy(
         return _IMAGE_ANALYSIS_TOOL_POLICY
     if tool_name in _SAFE_TOOL_NAMES:
         return _CONCURRENT_TOOL_POLICY
-    if tool_name in _FEISHU_READ_ONLY_TOOL_NAMES:
-        return _FEISHU_READ_TOOL_POLICY
     if tool_name == "sessions_send":
         session_key = (arguments or {}).get("session_key")
         if isinstance(session_key, str) and session_key.strip():

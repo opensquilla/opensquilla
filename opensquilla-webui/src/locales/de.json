@@ -597,7 +597,17 @@
       "advancedGroup": "Erweitert: Zugriff & Verhalten",
       "fieldRequired": "Dieses Feld ist erforderlich",
       "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
-      "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Der Bot teilt ihr dann mit, dass sie loslegen kann (unten abschaltbar)."
+      "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Der Bot teilt ihr dann mit, dass sie loslegen kann (unten abschaltbar).",
+      "aids": {
+        "title": "Feishu-Konsolen-Shortcuts",
+        "scopes_json": "Berechtigungs-Manifest — in 权限管理 → Massenimport einfügen",
+        "copy": "JSON kopieren",
+        "copied": "Kopiert ✓",
+        "credentials_link": "Zugangsdaten-Seite öffnen (App id / App secret)",
+        "quick_apply_link": "Antrag für alle benötigten Berechtigungen vorausfüllen",
+        "needAppId": "zuerst App id eintragen",
+        "ws_order_note": "Reihenfolge für die Langverbindung: zuerst diesen Kanal speichern, damit die Verbindung steht, dann in der Konsole auf »Events über Langverbindung empfangen« umstellen — die Auswahl lässt sich nur bei aktiver Verbindung speichern."
+      }
     },
     "search": {
       "title": "Websuche",

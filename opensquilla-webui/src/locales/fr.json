@@ -597,7 +597,17 @@
       "advancedGroup": "Avancé : accès et comportement",
       "fieldRequired": "Ce champ est obligatoire",
       "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
-      "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Le bot lui indique ensuite qu'elle peut commencer (désactivable ci-dessous)."
+      "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Le bot lui indique ensuite qu'elle peut commencer (désactivable ci-dessous).",
+      "aids": {
+        "title": "Raccourcis console Feishu",
+        "scopes_json": "Manifeste de permissions — à coller dans 权限管理 → import groupé",
+        "copy": "Copier le JSON",
+        "copied": "Copié ✓",
+        "credentials_link": "Ouvrir la page des identifiants (App id / App secret)",
+        "quick_apply_link": "Pré-remplir la demande de toutes les permissions requises",
+        "needAppId": "renseignez d'abord l'App id",
+        "ws_order_note": "Ordre pour la connexion longue : enregistrez d'abord ce canal pour établir la connexion, puis basculez la console sur « recevoir les événements par connexion longue » — ce choix ne s'enregistre que pendant qu'une connexion est active."
+      }
     },
     "search": {
       "title": "Recherche web",

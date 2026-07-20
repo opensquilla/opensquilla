@@ -18,6 +18,12 @@ const { t } = useI18n()
 const { localizeDescription, localizeNeeds } = useChannelCatalogI18n()
 const pendingRestart = usePendingRestart()
 
+interface ChannelSetupAid {
+  id: string
+  kind: 'copy' | 'link' | 'note' | string
+  content?: string
+}
+
 interface ChannelSpec {
   type: string
   label: string
@@ -28,6 +34,7 @@ interface ChannelSpec {
   help?: string
   fields?: FieldSpec[]
   whatYouNeed?: string[]
+  setupAids?: ChannelSetupAid[]
 }
 
 interface FieldSpec {
@@ -141,6 +148,31 @@ watch(
     }
   },
 )
+
+// Provider-console shortcuts (permission manifest, deep links). Content is
+// machine material from the catalog; labels are localized here by aid id.
+const setupAids = computed(() => spec.value?.setupAids || [])
+const aidAppId = computed(() => {
+  const row = props.panel.channelFields.find(r => r.field.name === 'app_id')
+  return String(row?.value || '').trim()
+})
+const aidDomainIsLark = computed(() => {
+  const row = props.panel.channelFields.find(r => r.field.name === 'domain')
+  return String(row?.value || '') === 'lark'
+})
+function aidHref(aid: ChannelSetupAid): string {
+  let url = (aid.content || '').replace('{app_id}', aidAppId.value)
+  if (aidDomainIsLark.value) url = url.replace('open.feishu.cn', 'open.larksuite.com')
+  return url
+}
+const copiedAidId = ref('')
+async function copyAid(aid: ChannelSetupAid) {
+  try {
+    await navigator.clipboard.writeText(aid.content || '')
+    copiedAidId.value = aid.id
+    window.setTimeout(() => { if (copiedAidId.value === aid.id) copiedAidId.value = '' }, 2000)
+  } catch { /* clipboard unavailable — the manifest is also in the docs */ }
+}
 
 function needsPreview(type: string, needs: string[] | undefined): string {
   return localizeNeeds(type, needs)
@@ -291,6 +323,29 @@ const testTone = computed(() => {
           </span>
         </div>
         <SetupNeedList v-if="!isEdit" :items="localizeNeeds(panel.channelType, panel.channelSpec?.whatYouNeed)" :label="t('setup.channels.needs')" />
+
+        <div v-if="setupAids.length" class="setup-channels__aids">
+          <h4 class="setup-channels__group">{{ t('setup.channels.aids.title') }}</h4>
+          <template v-for="aid in setupAids" :key="aid.id">
+            <div v-if="aid.kind === 'copy'" class="setup-channels__aid">
+              <span>{{ t(`setup.channels.aids.${aid.id}`) }}</span>
+              <button type="button" class="btn btn--ghost setup-channels__aidbtn" @click="copyAid(aid)">
+                {{ copiedAidId === aid.id ? t('setup.channels.aids.copied') : t('setup.channels.aids.copy') }}
+              </button>
+            </div>
+            <div v-else-if="aid.kind === 'link'" class="setup-channels__aid">
+              <a v-if="aidAppId" class="setup-channels__link" :href="aidHref(aid)" target="_blank" rel="noreferrer noopener">
+                {{ t(`setup.channels.aids.${aid.id}`) }} ↗
+              </a>
+              <span v-else class="setup-channels__aidmuted">
+                {{ t(`setup.channels.aids.${aid.id}`) }} — {{ t('setup.channels.aids.needAppId') }}
+              </span>
+            </div>
+            <p v-else-if="aid.kind === 'note'" class="setup-channels__aidnote">
+              {{ t(`setup.channels.aids.${aid.id}`) }}
+            </p>
+          </template>
+        </div>
 
         <template v-for="group in fieldGroups" :key="group.name || 'main'">
           <h4 v-if="group.name" class="setup-channels__group">{{ humanize(group.name) }}</h4>
@@ -475,6 +530,11 @@ const testTone = computed(() => {
   padding: 12px 14px;
   text-align: left;
 }
+.setup-channels__aids { display: grid; gap: 6px; }
+.setup-channels__aid { align-items: center; display: flex; gap: 10px; justify-content: space-between; }
+.setup-channels__aidbtn { flex: none; }
+.setup-channels__aidmuted { color: var(--text-dim); font-size: var(--fs-sm); }
+.setup-channels__aidnote { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; margin: 0; }
 .setup-channels__card:hover, .setup-channels__card:focus-visible {
   background: var(--bg-elevated);
   border-color: var(--accent);

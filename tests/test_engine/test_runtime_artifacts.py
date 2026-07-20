@@ -1226,15 +1226,16 @@ def test_artifact_delivery_target_key_preserves_whitespace_and_tolerates_nul(
     ],
 )
 def test_auto_publish_dedupes_current_artifact_by_store_safe_name(
-    tmp_path,
+    tmp_path_factory: pytest.TempPathFactory,
     target_name: str,
 ) -> None:
-    workspace = tmp_path / "workspace"
+    root = tmp_path_factory.mktemp("a")
+    workspace = root / "w"
     workspace.mkdir()
     target = workspace / target_name
     payload = b"<title>Already published</title>"
     target.write_bytes(payload)
-    media_root = tmp_path / "media"
+    media_root = root / "m"
     store = ArtifactStore(media_root)
     existing = store.publish_bytes(
         payload,

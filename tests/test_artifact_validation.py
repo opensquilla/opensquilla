@@ -363,6 +363,7 @@ def test_member_count_is_bounded_before_zipfile_parsing(
         (_make_pptx()[:-10], "pptx_invalid_zip_envelope"),
         (_make_pptx() + b"trailing bytes", "pptx_invalid_zip_envelope"),
     ],
+    ids=("plain-non-zip", "prefixed-zip", "truncated-zip", "trailing-bytes"),
 )
 def test_non_pure_or_truncated_zip_is_rejected(payload: bytes, reason_code: str) -> None:
     with pytest.raises(ArtifactValidationError) as raised:

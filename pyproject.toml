@@ -192,6 +192,8 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.mypy]
 python_version = "3.12"
+# Match the canonical full-tree type-check target used by CI on every host.
+platform = "linux"
 warn_return_any = true
 warn_unused_configs = true
 exclude = [

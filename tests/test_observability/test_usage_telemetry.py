@@ -152,6 +152,20 @@ async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_pa
         assert uploaded == 2
         assert [payload["day"] for payload in payloads] == ["2026-07-19", "2026-07-20"]
         payload = payloads[0]
+        assert set(payload) == {
+            "schema_version",
+            "event",
+            "event_id",
+            "install_id",
+            "opensquilla_version",
+            "day",
+            "sent_at",
+            "conversation_turns",
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "cache_write_tokens",
+        }
         assert payload["event"] == "daily_usage"
         assert payload["sent_at"].endswith("Z")
         assert payload["opensquilla_version"]
@@ -162,7 +176,6 @@ async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_pa
         assert payload["output_tokens"] == 2
         assert payload["cached_tokens"] == 3
         assert payload["cache_write_tokens"] == 1
-        assert "distributor_token" not in payload
         assert "session" not in str(payload).lower()
         assert await storage.list_pending_daily_usage(before_day="2026-07-21") == []
     finally:

@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
 
+from opensquilla.artifact_validation import (
+    ArtifactValidationError,
+    validate_artifact_for_delivery,
+)
 from opensquilla.artifacts import (
     DEFAULT_ARTIFACT_DISK_BUDGET_BYTES,
     DEFAULT_ARTIFACT_MAX_BYTES,
@@ -20,7 +24,7 @@ from opensquilla.artifacts import (
 )
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools.registry import tool
-from opensquilla.tools.types import ToolError, current_tool_context
+from opensquilla.tools.types import RetryableToolInputError, ToolError, current_tool_context
 
 _CSV_MIME = "text/csv"
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -212,6 +216,17 @@ def _published_response(
         raise ToolError("artifact storage is not configured for this turn")
     if not ctx.artifact_session_id or not ctx.session_key:
         raise ToolError("artifact session scope is not configured for this turn")
+
+    try:
+        validate_artifact_for_delivery(
+            payload,
+            source_name=name,
+            name=name,
+            mime=mime,
+            source=source,
+        )
+    except ArtifactValidationError as exc:
+        raise RetryableToolInputError(exc.user_message) from exc
 
     target_sha256 = hashlib.sha256(payload).hexdigest()
     for published in reversed(ctx.published_artifacts):

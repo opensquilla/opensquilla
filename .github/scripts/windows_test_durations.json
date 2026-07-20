@@ -30,6 +30,7 @@
     "tests/test_application/test_approval_patterns.py": 0.01,
     "tests/test_application/test_approval_rpc.py": 0.094,
     "tests/test_application/test_wizard.py": 0.01,
+    "tests/test_artifact_validation.py": 0.01,
     "tests/test_artifacts.py": 1.71,
     "tests/test_asyncio_utils.py": 0.01,
     "tests/test_attachment_workspace.py": 0.144,

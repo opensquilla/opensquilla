@@ -16,6 +16,7 @@ export interface UseChatMessageActionsOptions {
   sendCurrentInput: () => void
   focusComposer: () => void
   pendingForkBeforeMessageId: Ref<string | null>
+  aiGeneratedLabel?: () => string
 }
 
 export function useChatMessageActions(options: UseChatMessageActionsOptions) {
@@ -39,7 +40,10 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
 
   async function copyMessage(msg: ChatRenderedMessage): Promise<boolean> {
     try {
-      await copyTextWithFallback(copyableMessageText(msg))
+      const text = copyableMessageText(msg)
+      const isAssistant = (msg.displayRole || msg.role) === 'assistant'
+      const label = isAssistant ? options.aiGeneratedLabel?.().trim() : ''
+      await copyTextWithFallback(label && text ? `${text}\n\n${label}` : text)
       return true
     } catch (err) {
       console.warn('Copy failed:', err instanceof Error ? err.message : String(err))

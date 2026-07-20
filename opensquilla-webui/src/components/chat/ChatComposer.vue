@@ -162,6 +162,7 @@
           </div>
         </div>
       </div>
+      <p class="chat-ai-disclaimer" role="note">{{ t('chat.aiDisclaimer') }}</p>
     </div>
     <input
       ref="fileInputEl"
@@ -407,6 +408,14 @@ defineExpose<ChatComposerExpose>({
 
 .chat-composer--new-landing .chat-composer-inner {
   width: 100%;
+}
+
+.chat-ai-disclaimer {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  text-align: center;
 }
 
 .chat-attachments {

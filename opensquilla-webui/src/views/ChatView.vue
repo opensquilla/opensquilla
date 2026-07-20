@@ -1022,9 +1022,12 @@ const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
   }
 })
 
+const aiGeneratedLabel = computed(() => t('chat.aiGeneratedLabel'))
+
 const chatShareExport = useChatShareExport({
   threadRef,
   title: shareTitle,
+  aiGeneratedLabel: () => aiGeneratedLabel.value,
 })
 
 const preserveHistoryLiveTail = computed(() =>
@@ -1079,6 +1082,7 @@ const chatMessageActions = useChatMessageActions({
   sendCurrentInput: () => sendCurrentInput(),
   focusComposer: () => composerRef.value?.focusTextarea(),
   pendingForkBeforeMessageId,
+  aiGeneratedLabel: () => aiGeneratedLabel.value,
 })
 const {
   copyMessage,
@@ -1483,6 +1487,7 @@ const currentChatTitle = computed(() => {
 const chatMarkdownExport = useChatMarkdownExport({
   messages: renderedMessages,
   currentTitle: currentChatTitle,
+  aiGeneratedLabel,
 })
 const { exportMarkdown } = chatMarkdownExport
 

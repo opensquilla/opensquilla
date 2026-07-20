@@ -598,6 +598,13 @@
       "fieldRequired": "この項目は必須です",
       "fixRequired": "ハイライトされた必須項目を先に入力してください",
       "pairingExplainer": "ペアリングでは、最初にボットへメッセージを送った人に 8 桁のコードが発行されます。チャンネル › ペアリング で承認してください。承認するとボットが相手に開始できることを伝えます（下でオフにできます）。",
+      "jump": {
+        "description": "チャンネルの設定はチャンネルワークスペースで行います。プラットフォームを選び、フォームを入力し、その場で接続をテストできます。",
+        "open": "チャンネルワークスペースを開く",
+        "summary": "設定済み {count} 件 · 接続中 {connected} 件",
+        "summaryEmpty": "設定済みのチャンネルはまだありません。",
+        "summaryStatic": "ワークスペースでチャットチャンネルを追加・編集・テストします。"
+      },
       "aids": {
         "title": "Feishu コンソールのショートカット",
         "scopes_json": "権限マニフェスト JSON——権限管理 → 一括インポートに貼り付け",
@@ -990,6 +997,13 @@
       "secretComposePlaceholder": "トークンまたはシークレットを貼り付け"
     },
     "channelCatalog": {
+      "groups": {
+        "credentials": "認証情報",
+        "webhook": "Webhook",
+        "behavior": "動作",
+        "access": "アクセス",
+        "polling": "ポーリング"
+      },
       "dingtalk": {
         "description": "DingTalk 企業ロボット（stream 接続）。",
         "needs": [
@@ -1004,6 +1018,11 @@
         ]
       },
       "feishu": {
+        "fields": {
+          "domain": {
+            "label": "ドメイン"
+          }
+        },
         "description": "Feishu（または Lark）ボット — webhook または websocket 接続。",
         "needs": [
           "App id。",
@@ -1575,8 +1594,6 @@
       "editCredentials": "認証情報を編集",
       "toastProbeFailedResult": "{name} は接続テストに失敗しました: {detail}",
       "restartNotLoaded": "このチャンネルはまだ読み込まれていません — ゲートウェイを再起動してください",
-      "contextStrip": "設定済みチャンネルの実行状況 — 追加や編集は {link} で行えます",
-      "contextStripLink": "チャンネル設定",
       "removeChannel": "削除",
       "queryNotFound": "チャンネル {name} が見つかりません — 削除された可能性があります。",
       "queryNotFoundDismiss": "閉じる",

@@ -9,6 +9,7 @@ import { useI18n } from 'vue-i18n'
 import ChannelConfigRow, { type ConfigRowModel } from '@/components/channels/ChannelConfigRow.vue'
 import FeishuSetupAids from '@/components/channels/FeishuSetupAids.vue'
 import Icon from '@/components/Icon.vue'
+import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
 import type { ChannelEditorApi } from '@/composables/channels/useChannelEditor'
 
 const props = defineProps<{
@@ -22,6 +23,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { localizeFieldLabel, localizeGroupLabel } = useChannelCatalogI18n()
 
 // "editing" = any live-field mode (edit-in-place or compose); "edit" alone
 // still gates edit-only affordances like the locked name row.
@@ -45,6 +47,7 @@ interface EditorGroup {
 // the settings panel which appends them after the groups.
 const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(() => {
   const view = props.editor.panel.value
+  const type = props.editor.entryType.value
   const edited = new Set(props.editor.editedFields.value)
   const byName = new Map<string, ConfigRowModel>()
   for (const row of view.channelFields) {
@@ -53,6 +56,7 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
       // compose draft's name is an ordinary editable field.
       kind: isEdit.value && row.field.name === 'name' ? 'name' : 'field',
       field: row.field,
+      label: localizeFieldLabel(type, row.field.name, row.field.label),
       value: String(row.value ?? ''),
       edited: edited.has(row.field.name),
     })
@@ -61,6 +65,7 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
     byName.set(row.field.name, {
       kind: 'secret',
       field: row.field,
+      label: localizeFieldLabel(type, row.field.name, row.field.label),
       value: row.value,
       edited: edited.has(row.field.name),
       hasStored: row.hasStored,
@@ -116,6 +121,10 @@ function humanize(value: string): string {
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, char => char.toUpperCase())
 }
 
+function groupTitle(name: string): string {
+  return localizeGroupLabel(props.editor.entryType.value, name, humanize(name))
+}
+
 function onUpdate(name: string, value: unknown) {
   props.editor.updateField(name, value)
 }
@@ -150,9 +159,9 @@ function onCancelReplace(name: string) {
         v-for="group in grouped.main"
         :key="group.name || 'main'"
         class="cfge__group"
-        :aria-label="group.name ? humanize(group.name) : undefined"
+        :aria-label="group.name ? groupTitle(group.name) : undefined"
       >
-        <h4 v-if="group.name" class="cfge__group-title">{{ humanize(group.name) }}</h4>
+        <h4 v-if="group.name" class="cfge__group-title">{{ groupTitle(group.name) }}</h4>
         <template v-for="row in group.rows" :key="row.field.name">
           <p v-for="aid in notesBefore(row)" :key="aid.id" class="cfge__note">
             {{ t(`setup.channels.aids.${aid.id}`) }}

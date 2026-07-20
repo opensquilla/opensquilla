@@ -598,6 +598,13 @@
       "fieldRequired": "Ce champ est obligatoire",
       "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
       "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Le bot lui indique ensuite qu'elle peut commencer (désactivable ci-dessous).",
+      "jump": {
+        "description": "Les canaux se configurent dans l'espace de travail des canaux : choisissez une plateforme, remplissez le formulaire et testez la connexion là où le canal s'exécute.",
+        "open": "Ouvrir l'espace des canaux",
+        "summary": "{count} configurés · {connected} connectés",
+        "summaryEmpty": "Aucun canal configuré pour l'instant.",
+        "summaryStatic": "Ajoutez, modifiez et testez les canaux de discussion dans l'espace de travail."
+      },
       "aids": {
         "title": "Raccourcis console Feishu",
         "scopes_json": "Manifeste de permissions — à coller dans 权限管理 → import groupé",
@@ -990,6 +997,13 @@
       "secretComposePlaceholder": "Collez le jeton ou le secret"
     },
     "channelCatalog": {
+      "groups": {
+        "credentials": "Identifiants",
+        "webhook": "Webhook",
+        "behavior": "Comportement",
+        "access": "Accès",
+        "polling": "Interrogation"
+      },
       "dingtalk": {
         "description": "Robot d'entreprise DingTalk via connexion stream.",
         "needs": [
@@ -1004,6 +1018,11 @@
         ]
       },
       "feishu": {
+        "fields": {
+          "domain": {
+            "label": "Domaine"
+          }
+        },
         "description": "Bot Feishu (ou Lark) — connexion webhook ou websocket.",
         "needs": [
           "App id.",
@@ -1575,8 +1594,6 @@
       "editCredentials": "Modifier les identifiants",
       "toastProbeFailedResult": "{name} a échoué au test de connexion : {detail}",
       "restartNotLoaded": "Ce canal n'est pas encore chargé — redémarrez la passerelle pour le démarrer",
-      "contextStrip": "État d'exécution des canaux configurés — ajoutez ou modifiez la configuration dans {link}",
-      "contextStripLink": "Config. des canaux",
       "removeChannel": "Supprimer",
       "queryNotFound": "Canal {name} introuvable — il a peut-être été supprimé.",
       "queryNotFoundDismiss": "Fermer",

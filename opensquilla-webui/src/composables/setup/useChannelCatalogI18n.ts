@@ -31,5 +31,14 @@ export function useChannelCatalogI18n() {
     return tr(`setup.channelCatalog.${type}.fields.${name}.label`, fallback)
   }
 
-  return { localizeDescription, localizeNeeds, localizeFieldLabel }
+  // Group headers are shared vocabulary across channel types (credentials,
+  // webhook, …): a per-type key wins when present, else the shared key, else
+  // the caller's fallback (the humanized backend group name).
+  function localizeGroupLabel(type: string, group: string, fallback: string): string {
+    const typed = `setup.channelCatalog.${type}.groups.${group}`
+    if (te(typed)) return t(typed)
+    return tr(`setup.channelCatalog.groups.${group}`, fallback)
+  }
+
+  return { localizeDescription, localizeNeeds, localizeFieldLabel, localizeGroupLabel }
 }

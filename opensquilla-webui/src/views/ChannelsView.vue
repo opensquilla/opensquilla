@@ -17,14 +17,6 @@
       </div>
     </header>
 
-    <p class="ch-context">
-      <i18n-t keypath="console.channels.contextStrip" tag="span">
-        <template #link>
-          <router-link to="/settings/channels">{{ t('console.channels.contextStripLink') }}</router-link>
-        </template>
-      </i18n-t>
-    </p>
-
     <section v-if="total > 0" class="ch-summary" :aria-label="t('console.channels.summaryLabel')">
       <button type="button" :class="['ch-summary__item', { 'is-active': statusFilter === 'all' }]" @click="statusFilter = 'all'">
         <strong>{{ total }}</strong><span>{{ t('console.channels.totalChannels') }}</span>
@@ -1275,8 +1267,6 @@ function probeResultDetail(ch: Channel): string {
 .ch-summary__item.tone-info .dot { background: var(--info); }
 .ch-summary__item.tone-danger .dot { background: var(--danger); }
 .ch-summary__item.tone-muted .dot { background: var(--text-dim); }
-.ch-context { color: var(--text-dim); font-size: var(--fs-sm); margin: 0; }
-.ch-context a { color: var(--accent); }
 .ch-query-missing { align-items: center; background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--text-muted); display: flex; flex-wrap: wrap; font-size: var(--fs-sm); gap: var(--sp-2); grid-column: 1 / -1; justify-content: space-between; margin: 0; padding: 8px 12px; }
 .ch-query-missing > span { min-width: 0; overflow-wrap: anywhere; }
 .ch-detail__remove { color: var(--danger); }

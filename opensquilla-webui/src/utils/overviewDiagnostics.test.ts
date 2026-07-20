@@ -82,7 +82,11 @@ describe('settingsLinkForFinding', () => {
   })
 
   it('maps channels, capabilities, and both router spellings', () => {
-    expect(settingsLinkForFinding({ surface: 'channels' })).toEqual({ path: '/settings/channels' })
+    // Channel setup lives on the /channels workspace; a named finding
+    // deep-links straight into the in-place editor.
+    expect(settingsLinkForFinding({ surface: 'channels' })).toEqual({ path: '/channels' })
+    expect(settingsLinkForFinding({ surface: 'channels', evidence: { channelName: 'ops-slack' } }))
+      .toEqual({ path: '/channels', query: { channel: 'ops-slack', tab: 'configuration', edit: '1' } })
     expect(settingsLinkForFinding({ surface: 'router' })).toEqual({ path: '/settings/modelStrategy' })
     expect(settingsLinkForFinding({ surface: 'squilla_router' })).toEqual({ path: '/settings/modelStrategy' })
     expect(settingsLinkForFinding({ surface: 'image_generation' })).toEqual({ path: '/settings/capabilities' })

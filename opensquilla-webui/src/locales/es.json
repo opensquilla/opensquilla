@@ -598,6 +598,13 @@
       "fieldRequired": "Este campo es obligatorio",
       "fixRequired": "Completa primero los campos obligatorios resaltados",
       "pairingExplainer": "Con el emparejamiento, la primera persona que escriba a tu bot recibe un código de 8 caracteres: apruébalo en Canales → Emparejamientos. El bot le avisará de que ya puede empezar (puedes desactivarlo abajo).",
+      "jump": {
+        "description": "Los canales se configuran en el espacio de trabajo de canales: elige una plataforma, completa el formulario y prueba la conexión donde se ejecuta el canal.",
+        "open": "Abrir el espacio de canales",
+        "summary": "{count} configurados · {connected} conectados",
+        "summaryEmpty": "Aún no hay canales configurados.",
+        "summaryStatic": "Añade, edita y prueba canales de chat en el espacio de trabajo."
+      },
       "aids": {
         "title": "Atajos de la consola de Feishu",
         "scopes_json": "Manifiesto de permisos — pégalo en 权限管理 → importación masiva",
@@ -990,6 +997,13 @@
       "secretComposePlaceholder": "Pega el token o el secreto"
     },
     "channelCatalog": {
+      "groups": {
+        "credentials": "Credenciales",
+        "webhook": "Webhook",
+        "behavior": "Comportamiento",
+        "access": "Acceso",
+        "polling": "Sondeo"
+      },
       "dingtalk": {
         "description": "Robot corporativo de DingTalk mediante conexión stream.",
         "needs": [
@@ -1004,6 +1018,11 @@
         ]
       },
       "feishu": {
+        "fields": {
+          "domain": {
+            "label": "Dominio"
+          }
+        },
         "description": "Bot de Feishu (o Lark): conexión webhook o websocket.",
         "needs": [
           "App id.",
@@ -1575,8 +1594,6 @@
       "editCredentials": "Editar credenciales",
       "toastProbeFailedResult": "{name} falló la prueba de conexión: {detail}",
       "restartNotLoaded": "Este canal aún no está cargado: reinicia el gateway para arrancarlo",
-      "contextStrip": "Estado de ejecución de los canales configurados: añade o edita la configuración en {link}",
-      "contextStripLink": "Config. de canales",
       "removeChannel": "Eliminar",
       "queryNotFound": "No se encontró el canal {name}: puede haber sido eliminado.",
       "queryNotFoundDismiss": "Cerrar",

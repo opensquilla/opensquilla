@@ -598,6 +598,13 @@
       "fieldRequired": "此字段必填",
       "fixRequired": "请先填写高亮的必填字段",
       "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 渠道 › 配对 中批准。批准后 bot 会主动告诉对方可以开始了（可在下方关闭该通知）。",
+      "jump": {
+        "description": "渠道现在在渠道工作台中配置：选择平台、填写表单，并在渠道运行的地方直接测试连接。",
+        "open": "打开渠道工作台",
+        "summary": "已配置 {count} 个 · {connected} 个已连接",
+        "summaryEmpty": "尚未配置任何渠道。",
+        "summaryStatic": "在工作台中添加、编辑和测试聊天渠道。"
+      },
       "aids": {
         "title": "飞书控制台快捷方式",
         "scopes_json": "权限清单 JSON——粘贴到 权限管理 → 批量导入",
@@ -990,6 +997,13 @@
       "secretComposePlaceholder": "粘贴 token 或密钥"
     },
     "channelCatalog": {
+      "groups": {
+        "credentials": "凭证",
+        "webhook": "Webhook 回调",
+        "behavior": "行为",
+        "access": "访问控制",
+        "polling": "轮询"
+      },
       "dingtalk": {
         "description": "钉钉企业机器人，基于 stream 长连接。",
         "needs": [
@@ -1004,6 +1018,11 @@
         ]
       },
       "feishu": {
+        "fields": {
+          "domain": {
+            "label": "服务域名"
+          }
+        },
         "description": "飞书（或 Lark）机器人——webhook 或 websocket 连接。",
         "needs": [
           "App id。",
@@ -1575,8 +1594,6 @@
       "editCredentials": "编辑凭证",
       "toastProbeFailedResult": "{name} 连接测试失败：{detail}",
       "restartNotLoaded": "该渠道尚未加载——请重启网关以启动它",
-      "contextStrip": "已配置渠道的运行状态——添加或编辑配置请到 {link}",
-      "contextStripLink": "渠道设置",
       "removeChannel": "移除",
       "queryNotFound": "未找到渠道 {name}——它可能已被移除。",
       "queryNotFoundDismiss": "关闭",

@@ -12,6 +12,8 @@ import type { ChannelEditorFieldSpec } from '@/composables/channels/useChannelEd
 export interface ConfigRowModel {
   kind: 'name' | 'field' | 'secret'
   field: ChannelEditorFieldSpec
+  /** Display label (catalog-i18n overlay applied; falls back to the spec label). */
+  label: string
   value: string
   edited: boolean
   hasStored?: boolean
@@ -59,7 +61,7 @@ function onInput(event: Event) {
   <div class="cfge__row" :data-field="row.field.name">
     <div class="cfge__rail">
       <label class="cfge__label" :for="inputId">
-        {{ row.field.label }}<span v-if="row.field.required" aria-hidden="true"> *</span>
+        {{ row.label }}<span v-if="row.field.required" aria-hidden="true"> *</span>
       </label>
       <span
         v-if="edit && row.edited"
@@ -127,7 +129,7 @@ function onInput(event: Event) {
             :id="inputId"
             :checked="row.value === 'true'"
             :name="`setup_channel_${row.field.name}`"
-            :aria-label="row.field.label"
+            :aria-label="row.label"
             @change="value => emit('update', row.field.name, value)"
           />
         </span>

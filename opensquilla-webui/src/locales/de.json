@@ -598,6 +598,13 @@
       "fieldRequired": "Dieses Feld ist erforderlich",
       "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
       "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Der Bot teilt ihr dann mit, dass sie loslegen kann (unten abschaltbar).",
+      "jump": {
+        "description": "Kanäle werden im Kanal-Arbeitsbereich eingerichtet: Plattform wählen, Formular ausfüllen und die Verbindung direkt dort testen, wo der Kanal läuft.",
+        "open": "Kanal-Arbeitsbereich öffnen",
+        "summary": "{count} konfiguriert · {connected} verbunden",
+        "summaryEmpty": "Noch keine Kanäle konfiguriert.",
+        "summaryStatic": "Chat-Kanäle im Arbeitsbereich hinzufügen, bearbeiten und testen."
+      },
       "aids": {
         "title": "Feishu-Konsolen-Shortcuts",
         "scopes_json": "Berechtigungs-Manifest — in 权限管理 → Massenimport einfügen",
@@ -990,6 +997,13 @@
       "secretComposePlaceholder": "Token oder Secret einfügen"
     },
     "channelCatalog": {
+      "groups": {
+        "credentials": "Zugangsdaten",
+        "webhook": "Webhook",
+        "behavior": "Verhalten",
+        "access": "Zugriff",
+        "polling": "Polling"
+      },
       "dingtalk": {
         "description": "DingTalk-Unternehmensroboter über Stream-Verbindung.",
         "needs": [
@@ -1004,6 +1018,11 @@
         ]
       },
       "feishu": {
+        "fields": {
+          "domain": {
+            "label": "Domain"
+          }
+        },
         "description": "Feishu- (oder Lark-) Bot — Webhook- oder Websocket-Verbindung.",
         "needs": [
           "App-id.",
@@ -1575,8 +1594,6 @@
       "editCredentials": "Zugangsdaten bearbeiten",
       "toastProbeFailedResult": "{name} hat den Verbindungstest nicht bestanden: {detail}",
       "restartNotLoaded": "Dieser Kanal ist noch nicht geladen — Gateway neu starten, um ihn zu starten",
-      "contextStrip": "Laufzeitstatus der konfigurierten Kanäle — hinzufügen oder bearbeiten unter {link}",
-      "contextStripLink": "Kanal-Einrichtung",
       "removeChannel": "Entfernen",
       "queryNotFound": "Kanal {name} wurde nicht gefunden — er wurde möglicherweise entfernt.",
       "queryNotFoundDismiss": "Schließen",

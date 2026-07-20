@@ -1,6 +1,5 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import i18n from '@/i18n'
-import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import {
@@ -28,10 +27,7 @@ import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/s
 import { useRpcStore } from '@/stores/rpc'
 import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
-import { useConfirm } from '@/composables/useConfirm'
-import { adapterLoaded } from '@/lib/channelStatus'
-import type { RpcClientError } from '@/lib/rpc'
-import { localizeRpcError, saveFailedMessage } from '@/lib/rpcErrors'
+import { saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabelKey } from '@/utils/chat/routerTiers'
 
@@ -113,23 +109,6 @@ interface ChannelStatusRow {
   enabled?: boolean
   capability_profile?: unknown
   diagnostics?: Record<string, unknown>
-}
-
-export interface ChannelTestState {
-  phase: 'idle' | 'testing' | 'done'
-  status?: 'verified' | 'failed' | 'unsupported' | 'error'
-  detail?: string
-  latencyMs?: number | null
-}
-
-// Channel edit lifecycle: idle = compose form; the hash funnel in
-// SettingsDialog is the only thing that transitions idle → loading.
-export interface ChannelEditState {
-  phase: 'idle' | 'loading' | 'active' | 'error'
-  name?: string
-  type?: string
-  code?: string
-  message?: string
 }
 
 interface TierConfig {
@@ -282,7 +261,6 @@ export function useSetupCatalog() {
 
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
-const { confirm } = useConfirm()
 const pendingRestart = usePendingRestart()
 const t = i18n.global.t
 
@@ -291,10 +269,6 @@ const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
 const effectiveConfig = ref<EffectiveConfigData>({})
 const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
-const channelTest = ref<ChannelTestState>({ phase: 'idle' })
-const channelEdit = ref<ChannelEditState>({ phase: 'idle' })
-const channelFieldErrors = ref<Record<string, string>>({})
-const channelEditActive = computed(() => channelEdit.value.phase !== 'idle')
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
 const disableNetworkObservability = ref(false)
@@ -303,11 +277,9 @@ const providerForm = useSetupProviderForm()
 const behaviorForm = useSetupBehaviorForm()
 const routerForm = useSetupRouterForm()
 const ensembleForm = useSetupEnsembleForm()
-const channelsForm = useSetupChannelsForm()
 const capabilitiesForm = useSetupCapabilitiesForm()
 const promotedForm = useSettingsPromotedForm()
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
 const tierModelCatalogs = ref<DiscoveredModelsByProvider>({})
 const tierModelDiscoveries = new Map<string, Promise<void>>()
 const tierModelDiscoveryCompleted = new Set<string>()
@@ -402,11 +374,9 @@ watch(section, () => {
 onMounted(async () => {
   await loadData()
   loaded.value = true
-  startChannelPolling()
 })
 
 onUnmounted(() => {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 })
 
 // ---------------------------------------------------------------------------
@@ -442,10 +412,6 @@ async function loadData() {
     capabilitiesForm.initSearchFromConfig(config.value, searchProviders.value)
     capabilitiesForm.initMemoryFromConfig(config.value)
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
-    // An active channel edit owns the channels form — reloading every other
-    // section must not wipe the edit draft (re-seeding is explicit at the
-    // call sites that need it: save success, discard, hash application).
-    if (!channelEditActive.value) channelsForm.initFromCatalog(catalog.value.channels || [])
     promotedForm.initFromConfig(config.value)
     disableNetworkObservability.value = currentDisableNetworkObservability.value
     // Model listing is an optional UI accelerator and may involve an external
@@ -459,23 +425,6 @@ async function loadData() {
   } catch (err) {
     pushToast(t('setup.toast.loadFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }
-}
-
-async function loadChannelStatus() {
-  try {
-    channelStatus.value = await rpc.call<{ channels: ChannelStatusRow[] }>('channels.status')
-    pendingRestart.reconcile(channelStatus.value.channels || [])
-  } catch {
-    channelStatus.value = { channels: [] }
-  }
-}
-
-function startChannelPolling() {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = setInterval(async () => {
-    if (section.value !== 'channels') return
-    await loadChannelStatus()
-  }, 5000)
 }
 
 // ---------------------------------------------------------------------------
@@ -502,7 +451,6 @@ const modelStrategyForm = useSetupModelStrategyForm(
 )
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
-const catalogChannels = computed(() => catalog.value.channels || [])
 const searchProviders = computed(() => (catalog.value.searchProviders || []).filter(p => p.runtimeSupported))
 const imageProviders = computed(() => (catalog.value.imageGenerationProviders || []).filter(p => p.runtimeSupported))
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
@@ -649,9 +597,6 @@ const privacyStatusText = computed(() => {
     : t('setup.privacy.statusEnabled')
 })
 
-const channelSpec = computed(() => catalogChannels.value.find(c => c.type === channelsForm.selectedChannelType.value) || null)
-const channelSpecFields = computed(() => channelSpec.value?.fields || [])
-const channelRuntimeRows = computed(() => (channelStatus.value.channels || []).filter(row => row.configured !== false))
 
 const modelSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.summary.notConfigured')
@@ -914,12 +859,6 @@ const modelStrategyPanel = modelStrategyForm.createPanel({
   routerTemplateState: routerForm.tierTemplateState,
 })
 
-const channelsPanel = channelsForm.createPanel({
-  channelRuntimeRows,
-  catalogChannels,
-  channelSpec,
-  channelSpecFields,
-})
 
 const capabilitiesPanel = capabilitiesForm.createPanel({
   searchProviders,
@@ -1168,7 +1107,6 @@ const providerDirty = computed(() => (
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
 const privacySectionDirty = computed(() => privacyDirty.value)
 const modelStrategyDirty = computed(() => modelStrategyForm.isDirty.value)
-const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
   capabilitiesForm.searchDirty.value
   || capabilitiesForm.memoryDirty.value
@@ -1182,7 +1120,6 @@ function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'behavior') return behaviorDirty.value
   if (sectionId === 'privacy') return privacySectionDirty.value
   if (sectionId === 'modelStrategy') return modelStrategyDirty.value
-  if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
   return false
 }
@@ -1195,7 +1132,6 @@ async function saveDirtySections() {
     providerDirty.value
     || behaviorDirty.value
     || modelStrategyDirty.value
-    || channelsDirty.value
     || capabilitiesForm.searchDirty.value
     || capabilitiesForm.memoryDirty.value
     || promotedForm.captureDirty.value
@@ -1209,9 +1145,6 @@ async function saveDirtySections() {
   if (providerDirty.value) await saveProvider()
   if (behaviorDirty.value) await saveBehavior()
   if (modelStrategyDirty.value) await saveModelStrategy()
-  // The channels draft is never saved as a side effect of the global Save —
-  // the panel's own Save button is the only submit path. The draft still
-  // feeds hasUnsavedChanges, so the close guard keeps protecting it.
   if (capabilitiesForm.searchDirty.value) await saveSearch()
   if (capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value) await saveMemory()
   if (capabilitiesForm.imageDirty.value) await saveImage()
@@ -1220,10 +1153,6 @@ async function saveDirtySections() {
 
 async function discardChanges() {
   await loadData()
-  // Discard during an edit restores the stored values (and a clean baseline).
-  if (channelEditActive.value && channelEdit.value.name) {
-    await openChannelEditor(channelEdit.value.name)
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1319,144 +1248,6 @@ function envRecoveryCommand(section: string): string {
   const commands = Array.isArray(status.value.envRecoveryCommands) ? status.value.envRecoveryCommands : []
   const entry = commands.find(e => e && e.section === section && e.command)
   return entry ? (entry.command ?? '') : ''
-}
-
-// ---------------------------------------------------------------------------
-// Channel helpers
-// ---------------------------------------------------------------------------
-
-function onChannelTypeChange() {
-  channelsForm.resetForSpec(channelSpec.value)
-  channelTest.value = { phase: 'idle' }
-  channelFieldErrors.value = {}
-}
-
-function selectChannelType(value: string) {
-  channelsForm.selectChannelType(value)
-}
-
-function updateChannelField(name: string, value: unknown) {
-  channelsForm.updateField(name, value)
-  // A test verdict describes the draft it ran against; any edit voids it.
-  if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
-  if (channelFieldErrors.value[name]) {
-    const next = { ...channelFieldErrors.value }
-    delete next[name]
-    channelFieldErrors.value = next
-  }
-}
-
-// "invalid channel entry: token: Field required; name: ..." → field-anchored
-// errors for paths that match a rendered field; anything else degrades to the
-// existing toast (the durable fix is a structured error envelope, backend track).
-function parseChannelFieldErrors(message: string): Record<string, string> {
-  const match = /invalid channel entry: (.+)$/s.exec(message)
-  if (!match) return {}
-  const out: Record<string, string> = {}
-  for (const part of match[1].split('; ')) {
-    const idx = part.indexOf(': ')
-    if (idx <= 0) continue
-    const field = part.slice(0, idx).trim()
-    const detail = part.slice(idx + 2).trim()
-    if (field && detail && channelSpecFields.value.some(f => f.name === field)) out[field] = detail
-  }
-  return out
-}
-
-// Open the channel editor for an existing entry: fetch the redacted config,
-// seed the form in edit mode. Errors render as a fallback card instead of an
-// empty form that merely looks like an editor.
-async function openChannelEditor(name: string) {
-  channelEdit.value = { phase: 'loading', name }
-  channelTest.value = { phase: 'idle' }
-  channelFieldErrors.value = {}
-  try {
-    const res = await rpc.call<{ entry?: Record<string, unknown>; secretFields?: string[] }>(
-      'channels.get', { name },
-    )
-    const entry = res?.entry
-    const type = String(entry?.type || '')
-    const spec = catalogChannels.value.find(c => c.type === type)
-    if (!entry || !spec) {
-      channelEdit.value = {
-        phase: 'error', name, code: 'NOT_FOUND',
-        message: t('setup.channels.editUnknownType', { type: type || '?' }),
-      }
-      return
-    }
-    channelsForm.selectChannelType(spec.type)
-    channelsForm.initFromEntry(spec, entry, res.secretFields || [])
-    channelEdit.value = { phase: 'active', name, type: spec.type }
-  } catch (err) {
-    channelEdit.value = {
-      phase: 'error', name,
-      code: (err as RpcClientError | undefined)?.code,
-      message: localizeRpcError(err),
-    }
-  }
-}
-
-function exitChannelEditor() {
-  channelEdit.value = { phase: 'idle' }
-  channelTest.value = { phase: 'idle' }
-  channelsForm.resetForSpec(channelSpec.value)
-}
-
-// "Duplicate as new…" — fork the current edit into a compose draft with
-// secrets blanked (they are not client-readable) and a free name suggested.
-function duplicateChannelAsNew() {
-  const spec = channelSpec.value
-  if (!spec) return
-  channelsForm.duplicateAsNew(spec, channelRuntimeRows.value.map(row => row.name))
-  channelEdit.value = { phase: 'idle' }
-  channelTest.value = { phase: 'idle' }
-}
-
-function replaceChannelSecret(name: string) {
-  channelsForm.replaceSecret(name)
-  if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
-}
-
-function cancelChannelSecretReplace(name: string) {
-  channelsForm.cancelSecretReplace(name)
-  if (channelTest.value.phase !== 'idle') channelTest.value = { phase: 'idle' }
-}
-
-// Compose-mode duplicate-name guard, fed by the already-polled runtime rows.
-const composeDuplicate = computed(() => {
-  if (channelEditActive.value) return null
-  const name = channelsForm.nameValue.value
-  if (!name) return null
-  return channelRuntimeRows.value.find(row => row.name === name) || null
-})
-
-// Non-mutating live probe of the current draft. Blank secrets merge against
-// the stored entry server-side, so stored credentials can be verified without
-// retyping them. Save is never gated on this.
-async function testChannel() {
-  if (channelTest.value.phase === 'testing') return
-  channelTest.value = { phase: 'testing' }
-  try {
-    const result = await rpc.call<{
-      status?: string
-      connected?: boolean
-      latencyMs?: number | null
-      detail?: string
-    }>('channels.probe', { entry: channelsForm.payload() })
-    const status = result.status === 'verified' || result.status === 'failed' ? result.status : 'unsupported'
-    channelTest.value = {
-      phase: 'done',
-      status,
-      detail: result.detail || '',
-      latencyMs: result.latencyMs ?? null,
-    }
-  } catch (err) {
-    channelTest.value = {
-      phase: 'done',
-      status: 'error',
-      detail: err instanceof Error ? err.message : String(err),
-    }
-  }
 }
 
 function setRouterMode(value: string) {
@@ -1906,95 +1697,6 @@ async function applyProviderPreset() {
   }
 }
 
-async function saveChannel() {
-  // Field-anchored validation before any RPC round-trip.
-  const missing = channelsForm.missingRequiredFields()
-  if (missing.length > 0) {
-    channelFieldErrors.value = Object.fromEntries(
-      missing.map(name => [name, t('setup.channels.fieldRequired')]),
-    )
-    pushToast(t('setup.channels.fixRequired'), { tone: 'danger' })
-    return
-  }
-  channelFieldErrors.value = {}
-  const entry = channelsForm.payload()
-  const wasEditing = channelEditActive.value
-  try {
-    await rpc.call('onboarding.channel.probe', { entry })
-    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean; liveApply?: Record<string, string> | null; entry?: { name?: string } }>('onboarding.channel.upsert', { entry })
-    const name = String(entry.name || res?.entry?.name || '')
-    if (name && res?.changed !== false && res?.restartRequired !== false) {
-      // Restart-gated outcome (webhook-mode entry or no live reconciler):
-      // an upsert over a live adapter has no observable post-restart signal,
-      // so flag it and let the pending entry clear only manually.
-      const row = (channelStatus.value.channels || []).find(r => r.name === name)
-      pendingRestart.record(name, 'upsert', { wasLoaded: row ? adapterLoaded(row) : false })
-    }
-    if (name && res?.liveApply?.[name] === 'failed') {
-      // Saved, applied — and the adapter failed to start. Success wording
-      // here would hide a down channel; channels.restart is the retry path.
-      pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
-    } else {
-      pushToast(t(res?.restartRequired === false ? 'setup.toast.channelSavedLive' : 'setup.toast.channelSaved'))
-    }
-    await loadData()
-    // Stay in edit mode after an edit save: re-seed from the server so a
-    // just-replaced secret flips back to its masked row and the plaintext
-    // leaves memory.
-    if (wasEditing && name) await openChannelEditor(name)
-  } catch (err) {
-    const fieldErrors = parseChannelFieldErrors(err instanceof Error ? err.message : String(err))
-    if (Object.keys(fieldErrors).length > 0) channelFieldErrors.value = fieldErrors
-    pushToast(saveFailedMessage(err), { tone: 'danger' })
-  }
-}
-
-// Lifecycle actions on already-configured channels. The enable/disable/remove
-// RPCs all require a gateway restart to take effect; refresh only the runtime
-// list (loadChannelStatus) so the in-progress entry draft is preserved.
-async function setChannelEnabled(name: string, enabled: boolean) {
-  try {
-    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean; liveApply?: Record<string, string> | null }>(enabled ? 'onboarding.channel.enable' : 'onboarding.channel.disable', { name })
-    if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(name, enabled ? 'enable' : 'disable')
-    const live = res?.restartRequired === false
-    if (enabled && res?.liveApply?.[name] === 'failed') {
-      pushToast(t('setup.toast.channelStartFailed'), { tone: 'danger' })
-    } else {
-      pushToast(enabled
-        ? t(live ? 'setup.toast.channelEnabledLive' : 'setup.toast.channelEnabled')
-        : t(live ? 'setup.toast.channelDisabledLive' : 'setup.toast.channelDisabled'))
-    }
-    await loadChannelStatus()
-  } catch (err) {
-    pushToast(saveFailedMessage(err), { tone: 'danger' })
-  }
-}
-
-function enableChannel(name: string) {
-  return setChannelEnabled(name, true)
-}
-
-function disableChannel(name: string) {
-  return setChannelEnabled(name, false)
-}
-
-async function removeChannel(name: string) {
-  const ok = await confirm({
-    title: t('setup.channels.removeConfirmTitle'),
-    body: t('setup.channels.removeConfirmBody', { name }),
-    primaryLabel: t('setup.channels.removeConfirmPrimary'),
-  })
-  if (!ok) return
-  try {
-    const res = await rpc.call<{ changed?: boolean; restartRequired?: boolean }>('onboarding.channel.remove', { name })
-    if (res?.changed !== false && res?.restartRequired !== false) pendingRestart.record(name, 'remove')
-    pushToast(t(res?.restartRequired === false ? 'setup.toast.channelRemovedLive' : 'setup.toast.channelRemoved'))
-    await loadChannelStatus()
-  } catch (err) {
-    pushToast(saveFailedMessage(err), { tone: 'danger' })
-  }
-}
-
 async function saveSearch() {
   const params = capabilitiesForm.searchPayload()
   try {
@@ -2121,7 +1823,6 @@ async function copyConfigPath() {
     routerPanel,
     presetPanel,
     ensemblePanel,
-    channelsPanel,
     capabilitiesPanel,
     loadData,
     hasSavedProvider,
@@ -2163,17 +1864,14 @@ async function copyConfigPath() {
     setEnsembleScheme,
     setEnsembleMinSuccessful,
     setEnsembleAllFailedPolicy,
-    selectChannelType,
     updateProviderField,
     updateLlmTimeout,
     updateContextWindow,
     probeProviderConnection,
     revealProviderCredential,
     updateTierField,
-    updateChannelField,
     updateCapabilityField,
     onProviderChange,
-    onChannelTypeChange,
     onSearchProviderChange,
     onMemoryProviderChange,
     onImageProviderChange,
@@ -2184,22 +1882,6 @@ async function copyConfigPath() {
     saveEnsemble,
     saveModelStrategy,
     applyProviderPreset,
-    saveChannel,
-    enableChannel,
-    disableChannel,
-    removeChannel,
-    channelTest,
-    testChannel,
-    channelEdit,
-    channelEditActive,
-    channelFieldErrors,
-    channelsFormDirty: channelsForm.isDirty,
-    openChannelEditor,
-    exitChannelEditor,
-    duplicateChannelAsNew,
-    composeDuplicate,
-    replaceChannelSecret,
-    cancelChannelSecretReplace,
     saveSearch,
     saveMemory,
     saveImage,

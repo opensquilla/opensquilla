@@ -598,6 +598,13 @@
       "fieldRequired": "此字段必填",
       "fixRequired": "请先填写高亮的必填字段",
       "pairingExplainer": "配对模式下，第一次私聊 bot 的人会收到一个 8 位配对码——请在 渠道 › 配对 中批准。批准后 bot 会主动告诉对方可以开始了（可在下方关闭该通知）。",
+      "jump": {
+        "description": "渠道现在在渠道工作台中配置：选择平台、填写表单，并在渠道运行的地方直接测试连接。",
+        "open": "打开渠道工作台",
+        "summary": "已配置 {count} 个 · {connected} 个已连接",
+        "summaryEmpty": "尚未配置任何渠道。",
+        "summaryStatic": "在工作台中添加、编辑和测试聊天渠道。"
+      },
       "aids": {
         "title": "飞书控制台快捷方式",
         "scopes_json": "权限清单 JSON——粘贴到 权限管理 → 批量导入",
@@ -606,7 +613,7 @@
         "credentials_link": "打开凭证页(App id / App secret)",
         "quick_apply_link": "一键预填全部所需权限的申请",
         "needAppId": "先填写 App id",
-        "ws_order_note": "长连接顺序:先保存本渠道让长连接建立,再到 事件与回调 切换为「使用长连接接收事件」——控制台仅在有活跃连接时才能保存该选项。"
+        "ws_order_note": "长连接顺序：先保存本渠道让长连接建立，再到「事件与回调」切换为「使用长连接接收事件」——控制台仅在有活跃连接时才能保存该选项。"
       }
     },
     "search": {
@@ -990,7 +997,41 @@
       "secretComposePlaceholder": "粘贴 token 或密钥"
     },
     "channelCatalog": {
+      "fields": {
+        "group_session_scope": { "label": "群聊会话范围" },
+        "busy_input_mode": { "label": "忙碌时的输入处理" },
+        "dm_access": { "label": "私聊访问" },
+        "pairing_approved_notice": { "label": "批准后通知发送者" },
+        "allowed_senders": { "label": "允许的发送者 ID" },
+        "status_reactions_enabled": { "label": "消息状态表情回应" },
+        "api_base": { "label": "API 基础地址" },
+        "name": { "label": "渠道名称", "description": "此渠道条目的唯一标识。" },
+        "agent_id": { "label": "智能体 ID" },
+        "enabled": { "label": "启用" },
+        "default_chat_id": { "label": "默认会话 ID" },
+        "connection_mode": { "label": "连接方式" },
+        "app_id": { "label": "应用 ID（App ID）" },
+        "app_secret": { "label": "应用密钥（App Secret）" },
+        "signing_secret": { "label": "签名密钥（Signing secret）" },
+        "client_id": { "label": "客户端 ID（Client ID）" },
+        "client_secret": { "label": "客户端密钥（Client Secret）" },
+        "bot_id": { "label": "机器人 ID（Bot ID）" },
+        "bot_secret": { "label": "机器人密钥（Bot Secret）" },
+        "corp_secret": { "label": "企业应用密钥（Corp Secret）" },
+        "homeserver_url": { "label": "服务器地址（Homeserver URL）" },
+        "user_id": { "label": "用户 ID（{'@'}user:server）" },
+        "debounce_window_s": { "label": "去抖窗口（秒）" }
+      },
+      "groups": {
+        "basic": "基本",
+        "credentials": "凭证",
+        "webhook": "Webhook 回调",
+        "behavior": "行为",
+        "access": "访问控制",
+        "polling": "轮询"
+      },
       "dingtalk": {
+        "label": "钉钉",
         "description": "钉钉企业机器人，基于 stream 长连接。",
         "needs": [
           "Client id。",
@@ -998,12 +1039,19 @@
         ]
       },
       "discord": {
+        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
         "description": "Discord 机器人，使用 gateway websocket。",
         "needs": [
           "Bot token。"
         ]
       },
       "feishu": {
+        "label": "飞书（Lark）",
+        "fields": {
+          "domain": {
+            "label": "服务域名"
+          }
+        },
         "description": "飞书（或 Lark）机器人——webhook 或 websocket 连接。",
         "needs": [
           "App id。",
@@ -1019,6 +1067,7 @@
         ]
       },
       "qq": {
+        "label": "QQ 机器人",
         "description": "腾讯 QQ 机器人，基于 websocket。",
         "needs": [
           "App id。",
@@ -1026,6 +1075,7 @@
         ]
       },
       "slack": {
+        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
         "description": "Slack 工作区机器人——Socket 模式（websocket）或 Events API webhook。",
         "needs": [
           "Bot token（xoxb-…）。",
@@ -1033,12 +1083,14 @@
         ]
       },
       "telegram": {
+        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
         "description": "Telegram Bot API——轮询或 webhook 传输。",
         "needs": [
           "Bot token。"
         ]
       },
       "wecom": {
+        "label": "企业微信",
         "description": "企业微信 AI 机器人，基于 websocket，或企业应用 webhook 回调。",
         "needs": [
           "Corp id。",
@@ -1429,10 +1481,39 @@
       "notReported": "未报告",
       "tabs": {
         "overview": "概览",
-        "pairings": "配对",
+        "pairings": "成员",
         "capabilities": "功能",
         "diagnostics": "诊断",
         "configuration": "配置"
+      },
+      "editor": {
+        "editConfiguration": "编辑配置",
+        "edited": "已修改",
+        "unsavedAria": "有未保存的更改",
+        "unsavedSummary": "未保存 — {fields}",
+        "moreFields": "等 {count} 项",
+        "discardQuestion": "丢弃未保存的更改？",
+        "keepEditing": "继续编辑",
+        "discard": "丢弃",
+        "saving": "保存中…",
+        "saveAnyway": "仍要保存",
+        "saveFailed": "保存失败：{error}",
+        "probeValid": "配置校验通过",
+        "probeRunning": "正在检查草稿…",
+        "probeLatency": "{ms} 毫秒",
+        "storedSecret": "已存储 ······",
+        "otherSettings": "其他设置",
+        "unknownType": "该渠道类型（{type}）没有可用的编辑表单；请在配置文件中修改此条目。",
+        "entryMissing": "配置中找不到渠道 {name}。",
+        "editIntro": "更改在保存后生效。密钥留空则保留已存储的值。"
+      },
+      "compose": {
+        "back": "渠道",
+        "galleryLabel": "选择平台",
+        "change": "更换",
+        "discardQuestion": "丢弃 {platform} 草稿？",
+        "catalogFailed": "无法加载平台目录：{error}",
+        "addPlatform": "添加 {platform}"
       },
       "probeVerified": "连接已验证",
       "probeUnsupported": "无法进行在线探测",
@@ -1472,7 +1553,7 @@
       "networkProbe": "网络探测",
       "savedConfiguration": "已保存的配置",
       "editInSettings": "在设置中编辑",
-      "secretRedactionHint": "密钥始终隐藏。只有需要替换密钥时，才在设置中重新输入。",
+      "secretRedactionHint": "已存储的密钥不会显示。点击“编辑”后使用“替换”输入新值。",
       "secretStored": "已安全存储",
       "selectConfigurationHint": "打开此标签页以加载脱敏配置。",
       "configurationUnavailable": "无法获取配置：{error}",
@@ -1521,14 +1602,33 @@
         "reapproveLabel": "重新批准 {sender} 的访问",
         "pendingBadge": "{count} 个待审批配对请求",
         "searchLabel": "搜索配对",
-        "searchPlaceholder": "按名字或配对码搜索"
+        "searchPlaceholder": "按名字或配对码搜索",
+        "adminPill": "管理员",
+        "setAsAdmin": "设为管理员",
+        "removeAdmin": "取消管理员",
+        "updatingAdmin": "更新中…",
+        "setAsAdminLabel": "将 {sender} 设为频道管理员",
+        "removeAdminLabel": "取消 {sender} 的管理员身份",
+        "asAdmin": "设为管理员",
+        "asAdminHint": "以完整工具权限批准，而不仅是成员访问权限。",
+        "asAdminCheckboxLabel": "将 {sender} 批准为频道管理员",
+        "adminsSubtitle": "管理员",
+        "adminOnlyHint": "直接添加的管理员",
+        "membersHint": "成员可以聊天并使用安全工具。管理员可使用完整工具集，执行特权操作时需逐条确认。",
+        "approveAdminSuccess": "已将 {sender} 批准为频道管理员",
+        "approveAdminConfirmBody": "授予 {sender} 对 {channel} 的管理员权限？他们将获得完整工具权限，机器人会通知他们可以开始聊天。",
+        "setAsAdminConfirmTitle": "将该成员设为管理员？",
+        "setAsAdminConfirmBody": "授予 {sender} 在 {channel} 上的完整工具权限？特权操作仍会逐条确认。",
+        "removeAdminConfirmTitle": "取消管理员权限？",
+        "removeAdminConfirmBody": "将 {sender} 恢复为 {channel} 的成员权限？他们仍可聊天并使用安全工具。",
+        "adminGrantedSuccess": "已将 {sender} 设为频道管理员",
+        "adminRemovedSuccess": "已取消 {sender} 的管理员身份",
+        "adminUpdateFailed": "无法更新 {sender} 的管理员权限：{error}"
       },
       "probeFailed": "连接测试失败",
       "editCredentials": "编辑凭证",
       "toastProbeFailedResult": "{name} 连接测试失败：{detail}",
       "restartNotLoaded": "该渠道尚未加载——请重启网关以启动它",
-      "contextStrip": "已配置渠道的运行状态——添加或编辑配置请到 {link}",
-      "contextStripLink": "渠道设置",
       "removeChannel": "移除",
       "queryNotFound": "未找到渠道 {name}——它可能已被移除。",
       "queryNotFoundDismiss": "关闭",
@@ -1579,7 +1679,26 @@
       "configActionsLabel": "配置动作",
       "configActionHint": "写入配置——网关重启后生效",
       "editActionHint": "在渠道设置中打开编辑器",
-      "pendingApproval": "待审批"
+      "pendingApproval": "待审批",
+      "home": {
+        "connectedFor": "在线时长",
+        "membersFact": "成员",
+        "adminsFact": "管理员",
+        "pendingCount": "待批 {count}",
+        "details": "详情",
+        "pendingRequest": "{sender} 请求配对 · 配对码 {code}",
+        "reject": "拒绝",
+        "rejectLabel": "拒绝 {sender} 的配对请求",
+        "rejectSuccess": "已拒绝 {sender} 的配对请求",
+        "rejectFailed": "无法拒绝 {sender}：{error}",
+        "fixCredentials": "修复凭证"
+      },
+      "detail": {
+        "bot": "机器人 {id}",
+        "connectedFor": "在线 {duration}",
+        "restarts": "重启 {count} 次",
+        "capabilityReference": "能力参考"
+      }
     },
     "overview": {
       "channelsChip": "渠道",
@@ -2671,7 +2790,8 @@
       "contract_violation": "适配器契约违规",
       "transport_transient": "网络问题——自动重试中",
       "rate_limited": "被平台限流",
-      "channel_degraded": "渠道已降级"
+      "channel_degraded": "渠道已降级",
+      "startup_failed": "启动失败——请检查凭证与配置"
     },
     "banner": {
       "label": "等待网关重启",

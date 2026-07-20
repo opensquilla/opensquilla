@@ -27,6 +27,8 @@ export interface ChannelStatusInput {
   pendingRestart?: boolean | null
   /** `diagnostics.last_error.error_class` when present. */
   errorClass?: string | null
+  /** `diagnostics.last_error` records a startup failure (see startupFailure). */
+  startupFailed?: boolean | null
 }
 
 export interface ChannelStatusPresentation {
@@ -73,6 +75,8 @@ const ERROR_CLASSES = new Set([
   'transport_transient',
   'rate_limited',
   'channel_degraded',
+  // Synthesized by the gateway when an adapter fails during startup.
+  'startup_failed',
 ])
 
 function causeKeyFor(errorClass?: string | null): string | undefined {
@@ -123,6 +127,18 @@ export function statusPresentation(input: ChannelStatusInput): ChannelStatusPres
         causeKey,
       }
     case 'stopped':
+      // A channel that failed to START also reports "stopped" on the wire;
+      // the startup error in diagnostics is what separates "operator left it
+      // idle" (muted) from "it tried and could not boot" (danger).
+      if (input.startupFailed) {
+        return {
+          key: 'failed',
+          labelKey: 'channelStatus.failed',
+          tone: 'danger',
+          hintKey: 'channelStatus.hint.failed',
+          causeKey,
+        }
+      }
       return {
         key: 'notRunning',
         labelKey: 'channelStatus.notRunning',
@@ -145,6 +161,20 @@ export function lastErrorClass(diagnostics: unknown): string | undefined {
   if (!lastError || typeof lastError !== 'object') return undefined
   const errorClass = (lastError as Record<string, unknown>).error_class
   return typeof errorClass === 'string' && errorClass ? errorClass : undefined
+}
+
+/**
+ * Whether a channel's diagnostics record a startup failure: the gateway
+ * attaches `last_error` with `source: "start_error"` (adapter-provided
+ * diagnostics) or `error_class: "startup_failed"` (synthesized) when the
+ * adapter raised during start — while the wire status stays "stopped".
+ */
+export function startupFailure(diagnostics: unknown): boolean {
+  if (!diagnostics || typeof diagnostics !== 'object') return false
+  const lastError = (diagnostics as Record<string, unknown>).last_error
+  if (!lastError || typeof lastError !== 'object') return false
+  const record = lastError as Record<string, unknown>
+  return record.source === 'start_error' || record.error_class === 'startup_failed'
 }
 
 /**

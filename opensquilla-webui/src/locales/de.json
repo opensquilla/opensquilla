@@ -598,6 +598,13 @@
       "fieldRequired": "Dieses Feld ist erforderlich",
       "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
       "pairingExplainer": "Beim Pairing erhält die erste Person, die dem Bot schreibt, einen 8-stelligen Code — genehmigen Sie ihn unter Kanäle → Pairings. Der Bot teilt ihr dann mit, dass sie loslegen kann (unten abschaltbar).",
+      "jump": {
+        "description": "Kanäle werden im Kanal-Arbeitsbereich eingerichtet: Plattform wählen, Formular ausfüllen und die Verbindung direkt dort testen, wo der Kanal läuft.",
+        "open": "Kanal-Arbeitsbereich öffnen",
+        "summary": "{count} konfiguriert · {connected} verbunden",
+        "summaryEmpty": "Noch keine Kanäle konfiguriert.",
+        "summaryStatic": "Chat-Kanäle im Arbeitsbereich hinzufügen, bearbeiten und testen."
+      },
       "aids": {
         "title": "Feishu-Konsolen-Shortcuts",
         "scopes_json": "Berechtigungs-Manifest — in 权限管理 → Massenimport einfügen",
@@ -990,7 +997,41 @@
       "secretComposePlaceholder": "Token oder Secret einfügen"
     },
     "channelCatalog": {
+      "fields": {
+        "group_session_scope": { "label": "Gruppensitzungsbereich" },
+        "busy_input_mode": { "label": "Eingaben während der Ausführung" },
+        "dm_access": { "label": "Direktnachrichten-Zugang" },
+        "pairing_approved_notice": { "label": "Absender nach Freigabe benachrichtigen" },
+        "allowed_senders": { "label": "Erlaubte Absender-IDs" },
+        "status_reactions_enabled": { "label": "Statusreaktionen für Nachrichten" },
+        "api_base": { "label": "API-Basis" },
+        "name": { "label": "Kanalname", "description": "Eindeutiger Bezeichner für diesen Kanaleintrag." },
+        "agent_id": { "label": "Agent-ID" },
+        "enabled": { "label": "Aktiviert" },
+        "default_chat_id": { "label": "Standard-Chat-ID" },
+        "connection_mode": { "label": "Verbindungsmodus" },
+        "app_id": { "label": "App-ID" },
+        "app_secret": { "label": "App-Secret" },
+        "signing_secret": { "label": "Signing-Secret" },
+        "client_id": { "label": "Client-ID" },
+        "client_secret": { "label": "Client-Secret" },
+        "bot_id": { "label": "Bot-ID" },
+        "bot_secret": { "label": "Bot-Secret" },
+        "corp_secret": { "label": "Unternehmens-Secret" },
+        "homeserver_url": { "label": "Homeserver-URL" },
+        "user_id": { "label": "Benutzer-ID ({'@'}user:server)" },
+        "debounce_window_s": { "label": "Entprellfenster (s)" }
+      },
+      "groups": {
+        "basic": "Allgemein",
+        "credentials": "Zugangsdaten",
+        "webhook": "Webhook",
+        "behavior": "Verhalten",
+        "access": "Zugriff",
+        "polling": "Polling"
+      },
       "dingtalk": {
+        "label": "DingTalk",
         "description": "DingTalk-Unternehmensroboter über Stream-Verbindung.",
         "needs": [
           "Client-id.",
@@ -998,12 +1039,19 @@
         ]
       },
       "discord": {
+        "fields": { "token": { "label": "Bot-Token" } },
         "description": "Discord-Bot über Gateway-Websocket.",
         "needs": [
           "Bot-Token."
         ]
       },
       "feishu": {
+        "label": "Feishu / Lark",
+        "fields": {
+          "domain": {
+            "label": "Domain"
+          }
+        },
         "description": "Feishu- (oder Lark-) Bot — Webhook- oder Websocket-Verbindung.",
         "needs": [
           "App-id.",
@@ -1019,6 +1067,7 @@
         ]
       },
       "qq": {
+        "label": "QQ-Bot",
         "description": "Tencent-QQ-Bot über Websocket.",
         "needs": [
           "App-id.",
@@ -1026,6 +1075,7 @@
         ]
       },
       "slack": {
+        "fields": { "token": { "label": "Bot-Token" } },
         "description": "Slack-Workspace-Bot — Socket-Modus (Websocket) oder Events-API-Webhook.",
         "needs": [
           "Bot-Token (xoxb-…).",
@@ -1033,12 +1083,14 @@
         ]
       },
       "telegram": {
+        "fields": { "token": { "label": "Bot-Token" } },
         "description": "Telegram-Bot-API — Polling- oder Webhook-Transport.",
         "needs": [
           "Bot-Token."
         ]
       },
       "wecom": {
+        "label": "WeCom",
         "description": "Enterprise-WeChat-KI-Bot über Websocket oder Corp-App-Webhook-Callback.",
         "needs": [
           "Corp-id.",
@@ -1429,10 +1481,39 @@
       "notReported": "Nicht gemeldet",
       "tabs": {
         "overview": "Übersicht",
-        "pairings": "Kopplungen",
+        "pairings": "Mitglieder",
         "capabilities": "Funktionen",
         "diagnostics": "Diagnose",
         "configuration": "Konfiguration"
+      },
+      "editor": {
+        "editConfiguration": "Konfiguration bearbeiten",
+        "edited": "Geändert",
+        "unsavedAria": "Nicht gespeicherte Änderungen",
+        "unsavedSummary": "Nicht gespeichert — {fields}",
+        "moreFields": "+{count} weitere",
+        "discardQuestion": "Nicht gespeicherte Änderungen verwerfen?",
+        "keepEditing": "Weiter bearbeiten",
+        "discard": "Verwerfen",
+        "saving": "Speichern…",
+        "saveAnyway": "Trotzdem speichern",
+        "saveFailed": "Speichern fehlgeschlagen: {error}",
+        "probeValid": "Konfigurationsprüfung bestanden",
+        "probeRunning": "Entwurf wird geprüft…",
+        "probeLatency": "{ms} ms",
+        "storedSecret": "Gespeichert ······",
+        "otherSettings": "Weitere Einstellungen",
+        "unknownType": "Für diesen Kanaltyp ({type}) gibt es kein Bearbeitungsformular; bearbeite den Eintrag in der Konfigurationsdatei.",
+        "entryMissing": "Kanal {name} wurde in der Konfiguration nicht gefunden.",
+        "editIntro": "Änderungen gelten nach dem Speichern. Leere Geheimnisfelder behalten die gespeicherten Werte."
+      },
+      "compose": {
+        "back": "Kanäle",
+        "galleryLabel": "Plattform wählen",
+        "change": "Ändern",
+        "discardQuestion": "Entwurf für {platform} verwerfen?",
+        "catalogFailed": "Der Plattformkatalog konnte nicht geladen werden: {error}",
+        "addPlatform": "{platform} hinzufügen"
       },
       "probeVerified": "Verbindung verifiziert",
       "probeUnsupported": "Live-Prüfung nicht verfügbar",
@@ -1472,7 +1553,7 @@
       "networkProbe": "Netzwerkprüfung",
       "savedConfiguration": "Gespeicherte Konfiguration",
       "editInSettings": "In den Einstellungen bearbeiten",
-      "secretRedactionHint": "Geheimnisse bleiben verborgen. Geben Sie ein Geheimnis in den Einstellungen nur erneut ein, wenn Sie es ersetzen möchten.",
+      "secretRedactionHint": "Gespeicherte Geheimnisse werden nie angezeigt. Nutze Bearbeiten und dann Ersetzen, um einen neuen Wert einzugeben.",
       "secretStored": "Sicher gespeichert",
       "selectConfigurationHint": "Öffnen Sie diesen Tab, um die geschwärzte Konfiguration zu laden.",
       "configurationUnavailable": "Konfiguration nicht verfügbar: {error}",
@@ -1521,14 +1602,33 @@
         "reapproveLabel": "Zugriff für {sender} erneut genehmigen",
         "pendingBadge": "{count} ausstehende Pairing-Anfragen",
         "searchLabel": "Pairings suchen",
-        "searchPlaceholder": "Nach Name oder Pairing-Code suchen"
+        "searchPlaceholder": "Nach Name oder Pairing-Code suchen",
+        "adminPill": "Admin",
+        "setAsAdmin": "Als Admin festlegen",
+        "removeAdmin": "Admin entfernen",
+        "updatingAdmin": "Wird aktualisiert…",
+        "setAsAdminLabel": "{sender} zum Kanal-Admin machen",
+        "removeAdminLabel": "Admin-Rechte von {sender} entfernen",
+        "asAdmin": "als Admin",
+        "asAdminHint": "Mit vollem Werkzeugzugriff statt Mitgliederzugriff genehmigen.",
+        "asAdminCheckboxLabel": "{sender} als Kanal-Admin genehmigen",
+        "adminsSubtitle": "Admins",
+        "adminOnlyHint": "Direkt hinzugefügter Admin",
+        "membersHint": "Mitglieder können chatten und sichere Werkzeuge nutzen. Admins erhalten den vollen Werkzeugumfang, mit Bestätigung pro Befehl für privilegierte Aktionen.",
+        "approveAdminSuccess": "{sender} als Kanal-Admin genehmigt",
+        "approveAdminConfirmBody": "{sender} Admin-Zugriff auf {channel} gewähren? Sie erhalten den vollen Werkzeugumfang und der Bot teilt ihnen mit, dass sie chatten können.",
+        "setAsAdminConfirmTitle": "Dieses Mitglied zum Admin machen?",
+        "setAsAdminConfirmBody": "{sender} den vollen Werkzeugumfang in {channel} geben? Privilegierte Aktionen erfordern weiterhin eine Bestätigung pro Befehl.",
+        "removeAdminConfirmTitle": "Admin-Zugriff entfernen?",
+        "removeAdminConfirmBody": "{sender} auf Mitgliederzugriff in {channel} zurücksetzen? Sie können weiterhin chatten und sichere Werkzeuge nutzen.",
+        "adminGrantedSuccess": "{sender} ist jetzt Kanal-Admin",
+        "adminRemovedSuccess": "Admin-Rechte von {sender} entfernt",
+        "adminUpdateFailed": "Admin-Zugriff für {sender} konnte nicht aktualisiert werden: {error}"
       },
       "probeFailed": "Verbindungstest fehlgeschlagen",
       "editCredentials": "Zugangsdaten bearbeiten",
       "toastProbeFailedResult": "{name} hat den Verbindungstest nicht bestanden: {detail}",
       "restartNotLoaded": "Dieser Kanal ist noch nicht geladen — Gateway neu starten, um ihn zu starten",
-      "contextStrip": "Laufzeitstatus der konfigurierten Kanäle — hinzufügen oder bearbeiten unter {link}",
-      "contextStripLink": "Kanal-Einrichtung",
       "removeChannel": "Entfernen",
       "queryNotFound": "Kanal {name} wurde nicht gefunden — er wurde möglicherweise entfernt.",
       "queryNotFoundDismiss": "Schließen",
@@ -1579,7 +1679,26 @@
       "configActionsLabel": "Konfigurations-Aktionen",
       "configActionHint": "Schreibt die Konfiguration — wirksam nach einem Gateway-Neustart",
       "editActionHint": "Öffnet den Editor in der Kanal-Einrichtung",
-      "pendingApproval": "Wartet auf Freigabe"
+      "pendingApproval": "Wartet auf Freigabe",
+      "home": {
+        "connectedFor": "Laufzeit",
+        "membersFact": "Mitglieder",
+        "adminsFact": "Admins",
+        "pendingCount": "{count} ausstehend",
+        "details": "Details",
+        "pendingRequest": "{sender} bittet um Kopplung · Code {code}",
+        "reject": "Ablehnen",
+        "rejectLabel": "Kopplungsanfrage von {sender} ablehnen",
+        "rejectSuccess": "Kopplungsanfrage von {sender} abgelehnt",
+        "rejectFailed": "{sender} konnte nicht abgelehnt werden: {error}",
+        "fixCredentials": "Zugangsdaten korrigieren"
+      },
+      "detail": {
+        "bot": "Bot {id}",
+        "connectedFor": "Verbunden seit {duration}",
+        "restarts": "{count} Neustart | {count} Neustarts",
+        "capabilityReference": "Funktionsreferenz"
+      }
     },
     "overview": {
       "channelsChip": "Kanäle",
@@ -2671,7 +2790,8 @@
       "contract_violation": "Verstoß gegen den Adapter-Vertrag",
       "transport_transient": "Netzwerkproblem — erneuter Versuch",
       "rate_limited": "von der Plattform gedrosselt",
-      "channel_degraded": "Kanal beeinträchtigt"
+      "channel_degraded": "Kanal beeinträchtigt",
+      "startup_failed": "Start fehlgeschlagen — Zugangsdaten und Konfiguration prüfen"
     },
     "banner": {
       "label": "Gateway-Neustart ausstehend",

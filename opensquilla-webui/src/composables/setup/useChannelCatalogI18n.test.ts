@@ -48,6 +48,20 @@ describe('useChannelCatalogI18n', () => {
     expect(label).toBe('Backend Label')
   })
 
+  it('resolves the SHARED overlay level for common fields and group headers', () => {
+    // Regression: these keys must live under setup.channelCatalog (a stray
+    // "groups"/"fields" block elsewhere in the locale file silently falls
+    // back to the humanized backend English).
+    const { basicGroup, dmAccess, name } = withOverlay('zh-Hans', o => ({
+      basicGroup: o.localizeGroupLabel('feishu', 'basic', 'Basic'),
+      dmAccess: o.localizeFieldLabel('slack', 'dm_access', 'Direct-message access'),
+      name: o.localizeFieldLabel('telegram', 'name', 'Channel name'),
+    }))
+    expect(basicGroup).not.toBe('Basic')
+    expect(dmAccess).not.toBe('Direct-message access')
+    expect(name).not.toBe('Channel name')
+  })
+
   it('returns the fallback needs when the overlay has no array', () => {
     const needs = withOverlay('en', o => o.localizeNeeds('unknown', ['only', 'fallback']))
     expect(needs).toEqual(['only', 'fallback'])

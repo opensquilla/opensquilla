@@ -775,3 +775,247 @@ async def test_pairing_approve_without_as_admin_changes_no_config(tmp_path):
     assert "adminGranted" not in rpc_res.payload
     assert ctx.config.channel_admin_senders == {}
     assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.asyncio
+async def test_admin_set_grants_and_persists(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload == {
+        "channelName": "work",
+        "senderId": "U-7",
+        "admin": True,
+        "admins": ["U-7"],
+    }
+    # Live config sees the grant immediately (dispatch reads it per message).
+    assert ctx.config.channel_admin_senders == {"work": ["U-7"]}
+    # And it survived to disk: persist-before-apply wrote the TOML.
+    text = (tmp_path / "config.toml").read_text()
+    assert "channel_admin_senders" in text
+    assert "U-7" in text
+
+
+@pytest.mark.asyncio
+async def test_admin_set_revoke_removes_sender_and_drops_empty_channel(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": False},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["admin"] is False
+    assert rpc_res.payload["admins"] == []
+    # The now-empty channel key is dropped rather than left as an empty list.
+    assert ctx.config.channel_admin_senders == {}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_grant_is_idempotent(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["admin"] is True
+    # No duplicate entry appended.
+    assert ctx.config.channel_admin_senders == {"work": ["U-7"]}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_leaves_unrelated_channels_untouched(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"], "other": ["Z-9"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-8", "admin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["admins"] == ["U-7", "U-8"]
+    assert ctx.config.channel_admin_senders == {"work": ["U-7", "U-8"], "other": ["Z-9"]}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_requires_channel_and_sender(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    missing_sender = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "admin": True},
+        ctx,
+    )
+    assert missing_sender.error is not None
+
+    missing_channel = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"senderId": "U-7", "admin": True},
+        ctx,
+    )
+    assert missing_channel.error is not None
+
+
+@pytest.mark.asyncio
+async def test_admin_set_requires_an_explicit_boolean_admin(tmp_path):
+    # An omitted (or non-boolean) admin flag must be rejected, never coerced
+    # into a silent revoke that returns a success payload.
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"]}
+
+    omitted = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7"},
+        ctx,
+    )
+    assert omitted.error is not None
+    assert ctx.config.channel_admin_senders == {"work": ["U-7"]}
+
+    stringly = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": "false"},
+        ctx,
+    )
+    assert stringly.error is not None
+    assert ctx.config.channel_admin_senders == {"work": ["U-7"]}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_grant_rejects_unknown_channel_but_revoke_still_works(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    # A stale admin entry for a channel that no longer exists in config.
+    ctx.config.channel_admin_senders = {"gone": ["U-9"]}
+
+    grant = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "not-a-channel", "senderId": "U-7", "admin": True},
+        ctx,
+    )
+    assert grant.error is not None
+    assert "not-a-channel" in str(grant.error)
+    assert "not-a-channel" not in ctx.config.channel_admin_senders
+
+    # Revokes stay unvalidated: TOML-added admins on removed channels must
+    # remain demotable.
+    revoke = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "gone", "senderId": "U-9", "admin": False},
+        ctx,
+    )
+    assert revoke.error is None, revoke.error
+    assert ctx.config.channel_admin_senders == {}
+
+
+@pytest.mark.asyncio
+async def test_pairing_revoke_drops_admin_standing_and_reapprove_does_not_restore(tmp_path):
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore(status="approved"))
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-1"], "other": ["Z-9"]}
+
+    revoked = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.revoke",
+        {"channelName": "work", "pairingId": "p1"},
+        ctx,
+    )
+    assert revoked.error is None, revoked.error
+    assert revoked.payload["adminRemoved"] is True
+    # The withdrawn standing is gone from live config; other channels intact.
+    assert ctx.config.channel_admin_senders == {"other": ["Z-9"]}
+
+    # A plain Reapprove must NOT silently restore the admin surface.
+    reapproved = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.approve",
+        {"channelName": "work", "pairingId": "p1"},
+        ctx,
+    )
+    assert reapproved.error is None, reapproved.error
+    assert reapproved.payload["pairing"]["status"] == "approved"
+    assert ctx.config.channel_admin_senders == {"other": ["Z-9"]}
+
+
+@pytest.mark.asyncio
+async def test_pairing_revoke_without_admin_standing_touches_no_config(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore(status="approved"))
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    revoked = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.revoke",
+        {"channelName": "work", "pairingId": "p1"},
+        ctx,
+    )
+    assert revoked.error is None, revoked.error
+    assert "adminRemoved" not in revoked.payload
+    assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_as_admin_survives_a_failed_grant_and_still_notifies(
+    tmp_path, monkeypatch
+):
+    # The approval commits before the grant; a failing config persist must
+    # surface as adminGranted=false + warning — NOT as an RPC error that
+    # suppresses the approved-sender notice forever (a retry would see the
+    # pairing as already approved and never notify).
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    from opensquilla.gateway import rpc_config
+
+    def _boom(_config):
+        raise OSError("read-only config")
+
+    monkeypatch.setattr(rpc_config, "_persist_config", _boom)
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.approve",
+        {"channelName": "work", "pairingId": "p1", "asAdmin": True},
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["pairing"]["status"] == "approved"
+    assert res.payload["adminGranted"] is False
+    assert res.payload["warnings"]
+    # The transition happened in THIS call, so the sender still hears about it.
+    assert len(adapter.sent) == 1
+    # Nothing half-applied: the failed grant left live config untouched.
+    assert ctx.config.channel_admin_senders == {}

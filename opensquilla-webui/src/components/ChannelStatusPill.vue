@@ -11,6 +11,8 @@ const props = defineProps<{
   connected?: boolean | null
   pendingRestart?: boolean
   errorClass?: string | null
+  /** diagnostics recorded a startup failure (stopped → danger presentation). */
+  startupFailed?: boolean
   /** Append the one-line last_error cause ("credentials rejected") when known. */
   showCause?: boolean
 }>()
@@ -23,6 +25,7 @@ const pres = computed(() => statusPresentation({
   connected: props.connected,
   pendingRestart: props.pendingRestart,
   errorClass: props.errorClass,
+  startupFailed: props.startupFailed,
 }))
 
 const label = computed(() =>

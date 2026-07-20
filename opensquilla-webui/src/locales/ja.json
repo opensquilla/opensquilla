@@ -598,6 +598,13 @@
       "fieldRequired": "この項目は必須です",
       "fixRequired": "ハイライトされた必須項目を先に入力してください",
       "pairingExplainer": "ペアリングでは、最初にボットへメッセージを送った人に 8 桁のコードが発行されます。チャンネル › ペアリング で承認してください。承認するとボットが相手に開始できることを伝えます（下でオフにできます）。",
+      "jump": {
+        "description": "チャンネルの設定はチャンネルワークスペースで行います。プラットフォームを選び、フォームを入力し、その場で接続をテストできます。",
+        "open": "チャンネルワークスペースを開く",
+        "summary": "設定済み {count} 件 · 接続中 {connected} 件",
+        "summaryEmpty": "設定済みのチャンネルはまだありません。",
+        "summaryStatic": "ワークスペースでチャットチャンネルを追加・編集・テストします。"
+      },
       "aids": {
         "title": "Feishu コンソールのショートカット",
         "scopes_json": "権限マニフェスト JSON——権限管理 → 一括インポートに貼り付け",
@@ -990,7 +997,41 @@
       "secretComposePlaceholder": "トークンまたはシークレットを貼り付け"
     },
     "channelCatalog": {
+      "fields": {
+        "group_session_scope": { "label": "グループセッションの範囲" },
+        "busy_input_mode": { "label": "実行中の入力の扱い" },
+        "dm_access": { "label": "ダイレクトメッセージのアクセス" },
+        "pairing_approved_notice": { "label": "承認時に送信者へ通知" },
+        "allowed_senders": { "label": "許可する送信者 ID" },
+        "status_reactions_enabled": { "label": "メッセージ状態リアクション" },
+        "api_base": { "label": "API ベース URL" },
+        "name": { "label": "チャンネル名", "description": "このチャンネルエントリの一意の識別子。" },
+        "agent_id": { "label": "エージェント ID" },
+        "enabled": { "label": "有効" },
+        "default_chat_id": { "label": "既定のチャット ID" },
+        "connection_mode": { "label": "接続モード" },
+        "app_id": { "label": "アプリ ID（App ID）" },
+        "app_secret": { "label": "アプリシークレット" },
+        "signing_secret": { "label": "署名シークレット" },
+        "client_id": { "label": "クライアント ID" },
+        "client_secret": { "label": "クライアントシークレット" },
+        "bot_id": { "label": "ボット ID" },
+        "bot_secret": { "label": "ボットシークレット" },
+        "corp_secret": { "label": "企業シークレット（Corp Secret）" },
+        "homeserver_url": { "label": "ホームサーバー URL" },
+        "user_id": { "label": "ユーザー ID（{'@'}user:server）" },
+        "debounce_window_s": { "label": "デバウンス期間（秒）" }
+      },
+      "groups": {
+        "basic": "基本",
+        "credentials": "認証情報",
+        "webhook": "Webhook",
+        "behavior": "動作",
+        "access": "アクセス",
+        "polling": "ポーリング"
+      },
       "dingtalk": {
+        "label": "DingTalk（钉钉）",
         "description": "DingTalk 企業ロボット（stream 接続）。",
         "needs": [
           "Client id。",
@@ -998,12 +1039,19 @@
         ]
       },
       "discord": {
+        "fields": { "token": { "label": "ボットトークン" } },
         "description": "gateway websocket を使う Discord ボット。",
         "needs": [
           "Bot token。"
         ]
       },
       "feishu": {
+        "label": "Feishu / Lark",
+        "fields": {
+          "domain": {
+            "label": "ドメイン"
+          }
+        },
         "description": "Feishu（または Lark）ボット — webhook または websocket 接続。",
         "needs": [
           "App id。",
@@ -1019,6 +1067,7 @@
         ]
       },
       "qq": {
+        "label": "QQ ボット",
         "description": "websocket 経由の Tencent QQ ボット。",
         "needs": [
           "App id。",
@@ -1026,6 +1075,7 @@
         ]
       },
       "slack": {
+        "fields": { "token": { "label": "ボットトークン" } },
         "description": "Slack ワークスペースボット — Socket モード（websocket）または Events API webhook。",
         "needs": [
           "Bot token（xoxb-…）。",
@@ -1033,12 +1083,14 @@
         ]
       },
       "telegram": {
+        "fields": { "token": { "label": "ボットトークン" } },
         "description": "Telegram Bot API — ポーリングまたは webhook トランスポート。",
         "needs": [
           "Bot token。"
         ]
       },
       "wecom": {
+        "label": "WeCom（企業微信）",
         "description": "websocket 経由の企業 WeChat AI ボット、または法人アプリ webhook コールバック。",
         "needs": [
           "Corp id。",
@@ -1429,10 +1481,39 @@
       "notReported": "報告なし",
       "tabs": {
         "overview": "概要",
-        "pairings": "ペアリング",
+        "pairings": "メンバー",
         "capabilities": "機能",
         "diagnostics": "診断",
         "configuration": "設定"
+      },
+      "editor": {
+        "editConfiguration": "設定を編集",
+        "edited": "変更あり",
+        "unsavedAria": "未保存の変更があります",
+        "unsavedSummary": "未保存 — {fields}",
+        "moreFields": "ほか {count} 件",
+        "discardQuestion": "未保存の変更を破棄しますか？",
+        "keepEditing": "編集を続ける",
+        "discard": "破棄",
+        "saving": "保存中…",
+        "saveAnyway": "それでも保存",
+        "saveFailed": "保存に失敗しました: {error}",
+        "probeValid": "設定チェックに合格しました",
+        "probeRunning": "ドラフトを確認中…",
+        "probeLatency": "{ms} ミリ秒",
+        "storedSecret": "保存済み ······",
+        "otherSettings": "その他の設定",
+        "unknownType": "このチャンネルタイプ（{type}）には編集フォームがありません。設定ファイルで編集してください。",
+        "entryMissing": "チャンネル {name} は設定に見つかりませんでした。",
+        "editIntro": "変更は保存時に適用されます。シークレット欄を空のままにすると保存済みの値が保持されます。"
+      },
+      "compose": {
+        "back": "チャンネル",
+        "galleryLabel": "プラットフォームを選択",
+        "change": "変更",
+        "discardQuestion": "{platform} のドラフトを破棄しますか？",
+        "catalogFailed": "プラットフォームカタログを読み込めませんでした: {error}",
+        "addPlatform": "{platform} を追加"
       },
       "probeVerified": "接続を確認しました",
       "probeUnsupported": "ライブプローブは利用できません",
@@ -1472,7 +1553,7 @@
       "networkProbe": "ネットワークプローブ",
       "savedConfiguration": "保存済みの設定",
       "editInSettings": "設定で編集",
-      "secretRedactionHint": "シークレットは非表示のままです。置き換える場合にのみ、設定でシークレットを再入力してください。",
+      "secretRedactionHint": "保存済みのシークレットは表示されません。「編集」から「置き換え」で新しい値を入力してください。",
       "secretStored": "安全に保存済み",
       "selectConfigurationHint": "このタブを開いて、機密情報が伏せられた設定を読み込みます。",
       "configurationUnavailable": "設定を利用できません: {error}",
@@ -1521,14 +1602,33 @@
         "reapproveLabel": "{sender} のアクセスを再承認",
         "pendingBadge": "保留中のペアリング要求 {count} 件",
         "searchLabel": "ペアリングを検索",
-        "searchPlaceholder": "名前またはペアリングコードで検索"
+        "searchPlaceholder": "名前またはペアリングコードで検索",
+        "adminPill": "管理者",
+        "setAsAdmin": "管理者にする",
+        "removeAdmin": "管理者を解除",
+        "updatingAdmin": "更新中…",
+        "setAsAdminLabel": "{sender} をチャネル管理者にする",
+        "removeAdminLabel": "{sender} の管理者権限を解除",
+        "asAdmin": "管理者として",
+        "asAdminHint": "メンバー権限ではなく、すべてのツールを使える権限で承認します。",
+        "asAdminCheckboxLabel": "{sender} をチャネル管理者として承認",
+        "adminsSubtitle": "管理者",
+        "adminOnlyHint": "直接追加された管理者",
+        "membersHint": "メンバーはチャットと安全なツールを利用できます。管理者はすべてのツールを利用でき、特権操作はコマンドごとに確認されます。",
+        "approveAdminSuccess": "{sender} をチャネル管理者として承認しました",
+        "approveAdminConfirmBody": "{sender} に {channel} の管理者権限を付与しますか？すべてのツールを利用でき、ボットがチャットを開始できることを知らせます。",
+        "setAsAdminConfirmTitle": "このメンバーを管理者にしますか？",
+        "setAsAdminConfirmBody": "{sender} に {channel} ですべてのツールを使える権限を付与しますか？特権操作は引き続きコマンドごとに確認されます。",
+        "removeAdminConfirmTitle": "管理者権限を解除しますか？",
+        "removeAdminConfirmBody": "{sender} を {channel} のメンバー権限に戻しますか？引き続きチャットと安全なツールを利用できます。",
+        "adminGrantedSuccess": "{sender} をチャネル管理者にしました",
+        "adminRemovedSuccess": "{sender} の管理者権限を解除しました",
+        "adminUpdateFailed": "{sender} の管理者権限を更新できませんでした：{error}"
       },
       "probeFailed": "接続テストに失敗しました",
       "editCredentials": "認証情報を編集",
       "toastProbeFailedResult": "{name} は接続テストに失敗しました: {detail}",
       "restartNotLoaded": "このチャンネルはまだ読み込まれていません — ゲートウェイを再起動してください",
-      "contextStrip": "設定済みチャンネルの実行状況 — 追加や編集は {link} で行えます",
-      "contextStripLink": "チャンネル設定",
       "removeChannel": "削除",
       "queryNotFound": "チャンネル {name} が見つかりません — 削除された可能性があります。",
       "queryNotFoundDismiss": "閉じる",
@@ -1579,7 +1679,26 @@
       "configActionsLabel": "設定操作",
       "configActionHint": "設定に書き込みます — ゲートウェイ再起動後に反映されます",
       "editActionHint": "チャンネル設定でエディタを開きます",
-      "pendingApproval": "承認待ち"
+      "pendingApproval": "承認待ち",
+      "home": {
+        "connectedFor": "稼働時間",
+        "membersFact": "メンバー",
+        "adminsFact": "管理者",
+        "pendingCount": "承認待ち {count} 件",
+        "details": "詳細",
+        "pendingRequest": "{sender} がペアリングを申請 · コード {code}",
+        "reject": "拒否",
+        "rejectLabel": "{sender} のペアリング申請を拒否",
+        "rejectSuccess": "{sender} のペアリング申請を拒否しました",
+        "rejectFailed": "{sender} を拒否できませんでした: {error}",
+        "fixCredentials": "認証情報を修正"
+      },
+      "detail": {
+        "bot": "ボット {id}",
+        "connectedFor": "接続 {duration}",
+        "restarts": "再起動 {count} 回",
+        "capabilityReference": "機能リファレンス"
+      }
     },
     "overview": {
       "channelsChip": "チャンネル",
@@ -2671,7 +2790,8 @@
       "contract_violation": "アダプター契約違反",
       "transport_transient": "ネットワーク障害 — 再試行中",
       "rate_limited": "プラットフォームによるレート制限",
-      "channel_degraded": "チャンネルが劣化状態です"
+      "channel_degraded": "チャンネルが劣化状態です",
+      "startup_failed": "起動に失敗——認証情報と設定を確認してください"
     },
     "banner": {
       "label": "ゲートウェイ再起動待ち",

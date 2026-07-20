@@ -865,7 +865,7 @@ function findingSettingsLink(finding: Finding) {
 function openFindingSettings(finding: Finding) {
   const link = findingSettingsLink(finding)
   if (!link) return
-  router.push(link.hash ? { path: link.path, hash: link.hash } : { path: link.path }).catch(() => {})
+  router.push({ path: link.path, hash: link.hash, query: link.query }).catch(() => {})
 }
 
 function openSession(key: string) {

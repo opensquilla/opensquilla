@@ -226,6 +226,10 @@ METHOD_SCOPES: dict[str, str] = {
     "channels.pairings": PAIRING_SCOPE,
     "channels.pairing.approve": PAIRING_SCOPE,
     "channels.pairing.revoke": PAIRING_SCOPE,
+    # Grant/revoke a sender's channel-admin standing. Same narrow scope as
+    # pairing: an operator managing a channel's members may promote or demote
+    # its senders, but this is not an arbitrary config write.
+    "channels.admin.set": PAIRING_SCOPE,
     "exec.proposals.auto_enabled.list": PROPOSALS_SCOPE,
     # ----- admin -----
     # OpenSquilla-only; re-reads the on-disk TOML and swaps the ENTIRE runtime

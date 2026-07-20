@@ -21,6 +21,7 @@ export interface DiagnosticFindingLike {
 export interface FindingSettingsLink {
   path: string
   hash?: string
+  query?: Record<string, string>
 }
 
 export interface FindingSettingsContext {
@@ -93,13 +94,18 @@ export function settingsLinkForFinding(
     return { path: '/settings/provider' }
   }
   if (surface === 'channels') {
-    // Runtime findings carry the channel name in evidence once the backend
-    // populates it; a nameless finding degrades to the bare section.
+    // Channel setup lives on the /channels workspace now. Runtime findings
+    // carry the channel name in evidence once the backend populates it; a
+    // nameless finding degrades to the workspace itself. Query params have no
+    // reserved names, so even a channel literally named "new" deep-links.
     const name = finding?.evidence?.channelName ?? finding?.evidence?.channel
-    if (typeof name === 'string' && name.trim() && name !== 'new') {
-      return { path: '/settings/channels', hash: `#channel-${encodeURIComponent(name.trim())}` }
+    if (typeof name === 'string' && name.trim()) {
+      return {
+        path: '/channels',
+        query: { channel: name.trim(), tab: 'configuration', edit: '1' },
+      }
     }
-    return { path: '/settings/channels' }
+    return { path: '/channels' }
   }
   if (surface === 'router' || surface === 'squilla_router') {
     return { path: '/settings/modelStrategy' }
@@ -118,7 +124,10 @@ export function settingsLinkForFinding(
 }
 
 function settingsRoute(link: FindingSettingsLink): string {
-  return `${link.path}${link.hash || ''}`
+  const query = link.query
+    ? `?${new URLSearchParams(link.query).toString()}`
+    : ''
+  return `${link.path}${query}${link.hash || ''}`
 }
 
 // The Desktop agent hand-off is explanatory only. Recursively remove every

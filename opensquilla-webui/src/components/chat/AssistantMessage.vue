@@ -24,10 +24,62 @@
       <Icon v-if="shareSelected" name="check" :size="13" />
     </button>
     <div class="msg-ai-main">
-      <ReasoningPart v-if="reasoningPart" :part="reasoningPart" />
+      <div v-if="!message.stopNotice" class="msg-ai-author">
+        <span class="msg-ai-avatar" aria-hidden="true">
+          <img src="/opensquilla-assistant-avatar.png" alt="" />
+        </span>
+      </div>
+      <slot v-if="!message.stopNotice" name="router-strip" />
+      <details v-if="hasActivityFold" class="activity-fold" @toggle="onActivityFoldToggle">
+        <summary
+          class="activity-fold__summary"
+          data-testid="activity-fold-toggle"
+        >
+          <Icon class="activity-fold__chevron" name="chevronRight" :size="13" />
+          <span class="activity-fold__summary-text">{{ activitySummary }}</span>
+          <span v-if="message.isStreaming && hasActivityTools && reasoningSummary" class="activity-fold__summary-meta">{{ reasoningSummary }}</span>
+        </summary>
+        <div class="activity-fold__body" data-testid="activity-fold-body">
+          <section v-if="reasoningPart" class="activity-fold__reasoning-step">
+            <button
+              type="button"
+              class="activity-fold__step-toggle"
+              :aria-expanded="activityReasoningOpen ? 'true' : 'false'"
+              data-testid="activity-reasoning-toggle"
+              @click="toggleActivityReasoning"
+            >
+              <span class="activity-fold__step-label">{{ reasoningSummary }}</span>
+              <Icon
+                class="activity-fold__step-chevron"
+                :class="{ open: activityReasoningOpen }"
+                name="chevronRight"
+                :size="13"
+              />
+            </button>
+            <div v-if="activityReasoningOpen" class="activity-fold__reasoning">
+              <div class="activity-fold__reasoning-text">{{ reasoningPart.text }}</div>
+            </div>
+          </section>
+          <ToolCallTimeline
+            v-if="activityTimelineItems.length"
+            class="activity-fold__timeline"
+            variant="activity"
+            :items="activityTimelineItems"
+            :is-tool-group-open="isActivityToolGroupOpen"
+            :is-tool-item-open="isActivityToolItemOpen"
+            :tool-group-status-text="activityGroupStatusText"
+            :tool-status-text="toolStatusText"
+            :tool-secondary-text="toolSecondaryText"
+            @toggle-group="toggleActivityToolGroup"
+            @toggle-item="toggleActivityToolItem"
+            @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
+          />
+        </div>
+      </details>
+
       <ToolCallTimeline
-        v-if="message.timelineItems?.length"
-        :items="message.timelineItems"
+        v-if="answerTimelineItems.length"
+        :items="answerTimelineItems"
         :is-tool-group-open="isToolGroupOpen"
         :is-tool-item-open="isToolItemOpen"
         :tool-group-status-text="toolGroupStatusText"
@@ -37,21 +89,11 @@
         @toggle-item="$emit('toggleToolItem', $event)"
         @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
       />
-      <template v-else>
-        <TextPart v-if="standaloneTextPart" :part="standaloneTextPart" :sources="message.sources ?? []" @citation="onCitation" />
-      </template>
-
-      <ToolCallTimeline
-        v-if="!message.timelineItems?.length && message.toolCalls?.length"
-        :items="legacyTimelineItems"
-        :is-tool-group-open="isToolGroupOpen"
-        :is-tool-item-open="isToolItemOpen"
-        :tool-group-status-text="toolGroupStatusText"
-        :tool-status-text="toolStatusText"
-        :tool-secondary-text="toolSecondaryText"
-        @toggle-group="$emit('toggleToolGroup', $event)"
-        @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
+      <TextPart
+        v-else-if="standaloneTextPart"
+        :part="standaloneTextPart"
+        :sources="message.sources ?? []"
+        @citation="onCitation"
       />
 
       <!-- Inline interrupts: approval / clarify requests that blocked the run,
@@ -236,7 +278,6 @@ import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
-import ReasoningPart from '@/components/chat/parts/ReasoningPart.vue'
 import StatusHistoryPart from '@/components/chat/parts/StatusHistoryPart.vue'
 import TextPart from '@/components/chat/parts/TextPart.vue'
 import { useChatRouteFeedback } from '@/composables/chat/useChatRouteFeedback'
@@ -252,11 +293,13 @@ import type {
 } from '@/types/chat'
 import type { ChatPart } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
+import { toolActionLabel, toolOperationKey, toolResultCount } from '@/utils/chat/toolDisplay'
 import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
 
 const props = defineProps<{
   message: ChatRenderedMessage
   index: number
+  turnElapsedSeconds?: number
   shareMode: boolean
   shareSelected: boolean
   shareMessageId: string
@@ -438,6 +481,201 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   }))
 })
 
+// The persisted/live timeline interleaves narration and tools. The final text
+// segment is the answer; everything before it is execution context and belongs
+// in the collapsed activity disclosure. This also handles a tool emitted after
+// the final text by keeping the answer visually last, which is the most useful
+// reading order once the run has completed.
+const sourceTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
+  if (props.message.timelineItems?.length) return props.message.timelineItems
+  return props.message.toolCalls?.length ? legacyTimelineItems.value : []
+})
+
+const timelineSplit = computed(() => {
+  const items = sourceTimelineItems.value
+  const hasTools = items.some(item => item.type === 'tool-group')
+  if (!hasTools) return { activity: [] as ChatStreamTimelineItem[], answer: items }
+
+  let finalTextIndex = -1
+  for (let index = items.length - 1; index >= 0; index--) {
+    if (items[index].type === 'text') {
+      finalTextIndex = index
+      break
+    }
+  }
+  if (finalTextIndex < 0) return { activity: items, answer: [] as ChatStreamTimelineItem[] }
+  return {
+    activity: items.filter((_, index) => index !== finalTextIndex),
+    answer: [items[finalTextIndex]],
+  }
+})
+
+const WEB_RESEARCH_OPERATIONS = new Set(['web.search', 'web.read', 'web.discover'])
+
+/** Continuous web search/read retries are one research phase from the user's
+ * perspective. Collapse them into one disclosure, omit failed/zero-result
+ * attempts, and keep only useful calls in the nested detail. */
+const activityTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
+  const activity = timelineSplit.value.activity
+  const toolItems = activity.filter(
+    (item): item is Extract<ChatStreamTimelineItem, { type: 'tool-group' }> => item.type === 'tool-group',
+  )
+  if (!toolItems.length || !toolItems.every(item => WEB_RESEARCH_OPERATIONS.has(item.group.operationKey))) {
+    return activity
+  }
+
+  const calls = toolItems.flatMap(item => item.group.calls)
+    .filter(call => {
+      if (call.isRunning) return true
+      if (call.isError || call.status === 'error') return false
+      const operation = toolOperationKey(call.name)
+      return !(
+        (operation === 'web.search' || operation === 'web.discover')
+        && toolResultCount(call.result) === 0
+      )
+    })
+    .map(call => ({ ...call, displayName: toolActionLabel(call.name) }))
+
+  if (!calls.length) return []
+  const isRunning = calls.some(call => call.isRunning)
+  const allDone = calls.every(call => call.status === 'success')
+  const group: ChatToolCallGroup = {
+    groupId: `${props.message.messageId || props.message.id}:web-research`,
+    operationKey: 'web.research',
+    label: t('chat.tool.researchWeb'),
+    iconName: 'search',
+    calls,
+    countLabel: props.message.sources?.length
+      ? t('shared.runTrace.resultsCount', { count: props.message.sources.length })
+      : t('shared.runTrace.callsCount', { count: calls.length }),
+    secondary: '',
+    isRunning,
+    isError: false,
+    status: allDone ? 'success' : '',
+  }
+  return [{ type: 'tool-group', key: group.groupId, group }]
+})
+const answerTimelineItems = computed(() => timelineSplit.value.answer)
+const hasActivityFold = computed(() => !!reasoningPart.value || activityTimelineItems.value.length > 0)
+const hasActivityTools = computed(() =>
+  activityTimelineItems.value.some(item => item.type === 'tool-group'),
+)
+const activityReasoningOpen = ref(false)
+const activityOpenGroupId = ref<string | null>(null)
+const activityOpenItemKey = ref<string | null>(null)
+
+function resetActivityLevels() {
+  activityReasoningOpen.value = false
+  activityOpenGroupId.value = null
+  activityOpenItemKey.value = null
+}
+
+function onActivityFoldToggle(event: Event) {
+  const details = event.currentTarget as HTMLDetailsElement | null
+  if (!details?.open) resetActivityLevels()
+}
+
+function toggleActivityReasoning() {
+  const next = !activityReasoningOpen.value
+  resetActivityLevels()
+  activityReasoningOpen.value = next
+}
+
+function isActivityToolGroupOpen(groupId: string): boolean {
+  return activityOpenGroupId.value === groupId
+}
+
+function isActivityToolItemOpen(renderKey: string): boolean {
+  return activityOpenItemKey.value === renderKey
+}
+
+function activityGroupForCall(renderKey: string): ChatToolCallGroup | null {
+  for (const item of activityTimelineItems.value) {
+    if (item.type !== 'tool-group') continue
+    if (item.group.calls.some(call => call.renderKey === renderKey)) return item.group
+  }
+  return null
+}
+
+function toggleActivityToolGroup(groupId: string) {
+  const next = activityOpenGroupId.value === groupId ? null : groupId
+  resetActivityLevels()
+  activityOpenGroupId.value = next
+}
+
+function toggleActivityToolItem(renderKey: string) {
+  const group = activityGroupForCall(renderKey)
+  const keepGroupId = group && group.calls.length > 1 ? group.groupId : null
+  const next = activityOpenItemKey.value === renderKey ? null : renderKey
+  activityReasoningOpen.value = false
+  activityOpenGroupId.value = keepGroupId
+  activityOpenItemKey.value = next
+}
+
+watch(
+  () => props.message.messageId || props.message.id,
+  resetActivityLevels,
+)
+
+const reasoningSummary = computed(() => {
+  const seconds = reasoningPart.value?.seconds || 0
+  if (!reasoningPart.value) return ''
+  if (seconds < 1) return t('chat.thoughtProcess')
+  if (seconds < 60) return t('chat.thoughtForSeconds', { seconds })
+  return t('chat.thoughtForMinutes', {
+    minutes: Math.floor(seconds / 60),
+    seconds: seconds % 60,
+  })
+})
+
+const completedElapsedSeconds = computed(() => Math.max(
+  0,
+  Math.floor(props.turnElapsedSeconds || reasoningPart.value?.seconds || 0),
+))
+
+const completedSummary = computed(() => {
+  const total = completedElapsedSeconds.value
+  if (total < 1) return t('chat.completed')
+  return t('chat.completedIn', {
+    minutes: Math.floor(total / 60),
+    seconds: total % 60,
+  })
+})
+
+function activityGroupStatusText(group: ChatToolCallGroup): string {
+  if (group.operationKey !== 'web.research') return props.toolGroupStatusText(group)
+  if (group.isRunning) return t('chat.tool.running')
+  return group.status === 'success' ? t('chat.tool.done') : ''
+}
+
+const activitySummary = computed(() => {
+  if (!props.message.isStreaming) return completedSummary.value
+  const groups = activityTimelineItems.value.filter(
+    (item): item is Extract<ChatStreamTimelineItem, { type: 'tool-group' }> => item.type === 'tool-group',
+  )
+  if (!groups.length) return reasoningSummary.value || t('chat.thoughtProcess')
+  if (groups.length === 1 && groups[0].group.operationKey === 'web.research') {
+    return groups[0].group.label
+  }
+
+  const summaries: string[] = []
+  const byOperation = new Map<string, { label: string; count: number }>()
+  for (const item of groups) {
+    const current = byOperation.get(item.group.operationKey)
+    if (current) current.count += item.group.calls.length
+    else byOperation.set(item.group.operationKey, {
+      label: item.group.label,
+      count: item.group.calls.length,
+    })
+  }
+  for (const entry of byOperation.values()) {
+    summaries.push(entry.count > 1 ? `${entry.label} ×${entry.count}` : entry.label)
+  }
+  const visible = summaries.slice(0, 3)
+  if (summaries.length > visible.length) visible.push(`+${summaries.length - visible.length}`)
+  return visible.join(' · ')
+})
+
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return
   if (props.message.stopNotice) return
@@ -543,6 +781,203 @@ function ensembleRole(role: string, label: string): string {
   padding-top: 0.0625rem;
 }
 
+.msg-ai-author {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+.msg-ai-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 2rem;
+  width: 2rem;
+  height: 2rem;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--ok) 18%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--ok) 8%, var(--bg-surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--bg-surface) 78%, transparent);
+}
+
+.msg-ai-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+}
+
+.activity-fold {
+  margin: 0 0 0.625rem;
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+}
+
+.activity-fold__summary {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.25rem 0.125rem;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  list-style: none;
+  line-height: 1.45;
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+.activity-fold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.activity-fold__summary:hover {
+  color: var(--text-muted);
+}
+
+.activity-fold__summary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.activity-fold__chevron {
+  flex: 0 0 auto;
+  transition: transform var(--dur-fast) var(--ease-standard);
+}
+
+.activity-fold[open] > .activity-fold__summary .activity-fold__chevron {
+  transform: rotate(90deg);
+}
+
+.activity-fold__summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-fold__summary-meta {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.activity-fold__body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.125rem 0;
+}
+
+.activity-fold__reasoning-step {
+  min-width: 0;
+}
+
+.activity-fold__step-toggle {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1rem;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 2.25rem;
+  padding: 0.25rem 0.5rem 0.25rem 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+
+.activity-fold__step-toggle:hover,
+.activity-fold__step-toggle[aria-expanded="true"] {
+  background: color-mix(in srgb, var(--bg-hover) 68%, transparent);
+  color: var(--text);
+}
+
+.activity-fold__step-toggle:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring-inset);
+}
+
+.activity-fold__step-label {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.78125rem;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-fold__step-chevron {
+  color: var(--text-dim);
+  transition: transform var(--dur-fast) var(--ease-standard);
+}
+
+.activity-fold__step-chevron.open {
+  transform: rotate(90deg);
+}
+
+.activity-fold__reasoning {
+  min-width: 0;
+  margin: 0.125rem 0 0.375rem 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 22%, var(--hairline));
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in srgb, var(--bg-surface) 54%, transparent);
+}
+
+.activity-fold__reasoning-text {
+  max-height: 15rem;
+  overflow-y: auto;
+  color: var(--text-muted);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.activity-fold__timeline :deep(.tool-row) {
+  min-height: 2.125rem;
+  padding: 0.375rem 0.5rem 0.375rem 0;
+}
+
+.activity-fold__timeline :deep(.tool-row__label),
+.activity-fold__timeline :deep(.tool-row__arg),
+.activity-fold__timeline :deep(.tool-row__status) {
+  font-size: 0.78125rem;
+}
+
+@media (max-width: 620px) {
+  .activity-fold__summary-meta {
+    display: none;
+  }
+
+  .activity-fold__body {
+    margin-left: 0.125rem;
+    padding-left: 0.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-fold__summary,
+  .activity-fold__chevron,
+  .activity-fold__step-toggle,
+  .activity-fold__step-chevron {
+    transition: none;
+  }
+}
+
 .msg-ai--stop-notice .msg-ai-main {
   display: inline-flex;
   align-items: center;
@@ -582,10 +1017,10 @@ function ensembleRole(role: string, label: string): string {
 
 .msg-ai-ending--done {
   margin-top: 0.625rem;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .msg-ai-ending--done :deep(.msg-artifacts) {
@@ -598,8 +1033,8 @@ function ensembleRole(role: string, label: string): string {
 
 .msg-ai-ending--done .msg-ai-footer {
   margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--hairline);
+  padding-top: 0;
+  border-top: 0;
 }
 
 .msg-ai-actions {

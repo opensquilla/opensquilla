@@ -1,16 +1,42 @@
 <template>
-  <div v-if="open" class="deliv-overlay" @click.self="emit('close')">
+  <div
+    v-if="visible"
+    class="deliv-overlay"
+    :class="{ 'deliv-overlay--rail': mode === 'rail' }"
+    @click.self="mode === 'drawer' && emit('close')"
+  >
     <aside
       ref="drawerRef"
       class="deliv-drawer"
-      role="dialog"
-      aria-modal="true"
+      :class="{
+        'deliv-drawer--rail': mode === 'rail',
+        'deliv-drawer--rail-collapsed': mode === 'rail' && collapsed,
+      }"
+      :role="mode === 'rail' ? 'complementary' : 'dialog'"
+      :aria-modal="mode === 'drawer' ? 'true' : undefined"
       :aria-label="t('chat.deliverablesCount', { count: artifacts.length })"
     >
       <header class="deliv-head">
-        <h3 class="deliv-head__title">{{ t('chat.deliverables') }}</h3>
-        <span class="deliv-head__count" aria-hidden="true">{{ artifacts.length }}</span>
+        <div v-if="!collapsed" class="deliv-head__summary">
+          <h3 class="deliv-head__title">{{ t('chat.deliverables') }}</h3>
+          <span class="deliv-head__count" aria-hidden="true">{{ artifacts.length }}</span>
+        </div>
         <button
+          v-if="mode === 'rail'"
+          type="button"
+          class="btn btn--icon btn--ghost deliv-head__rail-toggle chat-context-rail-toggle"
+          :class="{ 'deliv-head__rail-toggle--collapsed': collapsed }"
+          :title="collapsed ? t('chat.expandDeliverablesRail') : t('chat.collapseDeliverablesRail')"
+          :aria-label="collapsed ? t('chat.expandDeliverablesRail') : t('chat.collapseDeliverablesRail')"
+          :aria-expanded="!collapsed"
+          aria-controls="chat-context-rail-body"
+          data-testid="context-rail-toggle"
+          @click="emit('toggleRail')"
+        >
+          <Icon name="panel-right" :size="17" />
+        </button>
+        <button
+          v-if="mode === 'drawer'"
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
@@ -22,7 +48,7 @@
         </button>
       </header>
 
-      <div class="deliv-body" :aria-label="t('chat.sessionDeliverables')">
+      <div v-if="!collapsed" id="chat-context-rail-body" class="deliv-body" :aria-label="t('chat.sessionDeliverables')">
         <p v-if="artifacts.length === 0" class="deliv-empty">{{ t('chat.noDeliverables') }}</p>
         <ul v-else class="deliv-grid">
           <li v-for="artifact in artifacts" :key="artifactKey(artifact)" class="deliv-tile-wrap">
@@ -61,6 +87,7 @@
             </button>
           </li>
         </ul>
+
       </div>
     </aside>
 
@@ -188,24 +215,32 @@ import {
   artifactThumbnailUrl,
 } from '@/utils/chat/artifacts'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   open: boolean
+  mode?: 'drawer' | 'rail'
   artifacts: ArtifactPayload[]
   sessionKey?: string
   authToken?: string
-}>()
+  collapsed?: boolean
+}>(), {
+  mode: 'drawer',
+  collapsed: false,
+})
 
 const emit = defineEmits<{
   close: []
   download: [artifact: ArtifactPayload]
+  toggleRail: []
 }>()
 
 const drawerRef = ref<HTMLElement | null>(null)
 const closeBtn = ref<HTMLButtonElement | null>(null)
 const previewCloseBtn = ref<HTMLButtonElement | null>(null)
 const active = ref<ArtifactPayload | null>(null)
+const visible = computed(() => props.open || props.mode === 'rail')
 
 let invokerEl: HTMLElement | null = null
+let previewInvokerEl: HTMLElement | null = null
 
 const visualArtifacts = computed(() => props.artifacts.filter(isVisual))
 const activeImageIndex = computed(() => {
@@ -359,6 +394,7 @@ function showNextImage() {
 /* ── Preview (lightbox / metadata) ─────────────────────────────────────── */
 
 function openPreview(artifact: ArtifactPayload) {
+  previewInvokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
   active.value = artifact
   if (isVisual(artifact)) loadFull(artifact)
   else disposeFull()
@@ -368,7 +404,11 @@ function openPreview(artifact: ArtifactPayload) {
 function closePreview() {
   active.value = null
   disposeFull()
-  nextTick(() => closeBtn.value?.focus())
+  nextTick(() => {
+    if (previewInvokerEl && document.contains(previewInvokerEl)) previewInvokerEl.focus()
+    else closeBtn.value?.focus()
+    previewInvokerEl = null
+  })
 }
 
 /* ── Dialog a11y: focus trap, Escape, focus return ─────────────────────── */
@@ -392,11 +432,15 @@ function trapFocus(event: KeyboardEvent, rootEl: HTMLElement | null) {
 }
 
 function onDocumentKeydown(event: KeyboardEvent) {
-  if (!props.open) return
+  if (!visible.value) return
   if (event.key === 'Escape') {
-    event.preventDefault()
-    if (active.value) closePreview()
-    else emit('close')
+    if (active.value) {
+      event.preventDefault()
+      closePreview()
+    } else if (props.mode === 'drawer') {
+      event.preventDefault()
+      emit('close')
+    }
     return
   }
   if (active.value && event.key === 'ArrowLeft') {
@@ -417,27 +461,31 @@ function onDocumentKeydown(event: KeyboardEvent) {
   if (active.value) {
     const panel = drawerRef.value?.parentElement?.querySelector<HTMLElement>('.deliv-preview__panel') || null
     trapFocus(event, panel)
-  } else {
+  } else if (props.mode === 'drawer') {
     trapFocus(event, drawerRef.value)
   }
 }
 
 watch(
-  () => props.open,
+  visible,
   (open, wasOpen) => {
     if (open && !wasOpen) {
-      invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      if (props.mode === 'drawer') {
+        invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      }
       document.addEventListener('keydown', onDocumentKeydown)
-      nextTick(() => closeBtn.value?.focus())
+      if (props.mode === 'drawer') nextTick(() => closeBtn.value?.focus())
     } else if (!open && wasOpen) {
       document.removeEventListener('keydown', onDocumentKeydown)
       active.value = null
+      previewInvokerEl = null
       disposeFull()
       disposeTileControllers()
       if (invokerEl && document.contains(invokerEl)) invokerEl.focus()
       invokerEl = null
     }
   },
+  { immediate: true },
 )
 
 const visualKeys = computed(() => visualArtifacts.value.map(artifactKey).join('|'))
@@ -446,7 +494,7 @@ const visualKeys = computed(() => visualArtifacts.value.map(artifactKey).join('|
 // their blob URLs are revoked promptly.
 watch(
   () => [visualKeys.value, props.sessionKey || '', props.authToken || ''],
-  () => { if (props.open) disposeTileControllers() },
+  () => { if (visible.value) disposeTileControllers() },
 )
 
 onUnmounted(() => {

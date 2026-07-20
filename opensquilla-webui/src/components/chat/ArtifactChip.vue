@@ -109,11 +109,12 @@ const bodyLabel = computed(() => {
   padding: var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-1);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
+  background: var(--bg-surface-2);
+  transition: background var(--dur-fast) var(--ease-standard), border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard);
 }
 
 .msg-artifact-chip:hover {
+  background: color-mix(in srgb, var(--text) 2%, var(--bg-surface-2));
   border-color: var(--border-strong);
   box-shadow: var(--shadow-sm);
 }
@@ -145,17 +146,17 @@ const bodyLabel = computed(() => {
   height: 3rem;
   border-radius: var(--radius-md);
   color: var(--info);
-  background: color-mix(in srgb, var(--info) 10%, var(--bg-surface));
+  background: color-mix(in srgb, var(--info) 10%, var(--bg-surface-2));
 }
 
 .msg-artifact-icon[data-kind="data"] {
   color: var(--warn);
-  background: color-mix(in srgb, var(--warn) 10%, var(--bg-surface));
+  background: color-mix(in srgb, var(--warn) 10%, var(--bg-surface-2));
 }
 
 .msg-artifact-icon[data-kind="code"] {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface));
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface-2));
 }
 
 .msg-artifact-info {
@@ -220,7 +221,7 @@ const bodyLabel = computed(() => {
   padding: 0 var(--sp-3);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  background: var(--bg-hover);
   color: var(--text);
   font-size: var(--fs-xs);
   font-weight: 500;
@@ -242,7 +243,7 @@ const bodyLabel = computed(() => {
   height: var(--sp-8);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg-surface);
+  background: var(--bg-hover);
   color: var(--text-muted);
   cursor: pointer;
   transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);

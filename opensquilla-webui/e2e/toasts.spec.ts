@@ -64,43 +64,6 @@ test.describe('Failure toasts and composer copy', () => {
     expect(placeholder).not.toMatch(/[一-鿿]/)
   })
 
-  test('unsupported voice input raises a danger toast that auto-dismisses', async ({ page }) => {
-    await page.addInitScript(() => {
-      Object.defineProperty(window, 'MediaRecorder', { value: undefined, configurable: true })
-    })
-    await openDraftChat(page)
-
-    await page.locator('button[aria-label="Record voice input"]').click()
-
-    const toast = page.getByTestId('toast')
-    await expect(toast).toHaveCount(1)
-    await expect(toast).toContainText('Voice input is not supported in this browser')
-    await expect(toast).toHaveClass(/toast--danger/)
-
-    // The host is a polite live region and does not steal focus.
-    await expect(page.getByTestId('toast-host')).toHaveAttribute('aria-live', 'polite')
-
-    // Auto-dismisses without user action.
-    await expect(toast).toHaveCount(0, { timeout: 8000 })
-  })
-
-  test('repeated failures stack as separate toasts and dismiss on demand', async ({ page }) => {
-    await page.addInitScript(() => {
-      Object.defineProperty(window, 'MediaRecorder', { value: undefined, configurable: true })
-    })
-    await openDraftChat(page)
-
-    const voiceButton = page.locator('button[aria-label="Record voice input"]')
-    await voiceButton.click()
-    await voiceButton.click()
-
-    const toasts = page.getByTestId('toast')
-    await expect(toasts).toHaveCount(2)
-
-    await toasts.first().getByRole('button', { name: 'Dismiss notification' }).click()
-    await expect(toasts).toHaveCount(1)
-  })
-
   test('artifact download failure raises a toast when the API returns 500', async ({ page }) => {
     await seedHistoryWithArtifact(page)
     await page.route('**/api/v1/artifacts/**', route =>

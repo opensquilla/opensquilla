@@ -86,6 +86,8 @@ async function mountStrip(message: ChatRenderedMessage) {
 beforeEach(() => {
   i18n.global.locale.value = 'en'
   document.body.innerHTML = ''
+  delete (window as Window & { __opensquillaOpenEnsembleInspectors?: Set<string> })
+    .__opensquillaOpenEnsembleInspectors
 })
 
 afterEach(() => {
@@ -130,6 +132,8 @@ describe('RouterFxStrip model selection motion', () => {
     expect(el.querySelector('.router-fx-selector')).toBeFalsy()
     expect(el.querySelectorAll('.router-fx-cell.win')).toHaveLength(1)
     expect(el.querySelector<HTMLElement>('.router-fx-cell.win')?.dataset.cellIdx).toBe('2')
+    expect(el.querySelectorAll('.router-fx-grid .router-fx-cell')).toHaveLength(4)
+    expect(el.querySelector('.router-fx-header')?.textContent).toContain('AI model router')
     expect(announcer?.textContent).toBe('Router selected deepseek-v4-flash')
     expect(root?.getAttribute('aria-label')).toBe('Router selected deepseek-v4-flash')
     app.unmount()

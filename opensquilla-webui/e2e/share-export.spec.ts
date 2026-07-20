@@ -89,7 +89,7 @@ test.describe('Share export', () => {
                 stageHeight: Math.max(node.scrollHeight, node.offsetHeight),
                 clones: clones.length,
                 roles: clones.map(cloneRole).filter(Boolean) as string[],
-                thinkingFolds: node.querySelectorAll('.thinking-fold').length,
+                thinkingFolds: node.querySelectorAll('.thinking-fold, .activity-fold').length,
                 costEls: node.querySelectorAll('.msg-meta__cost').length,
                 metaMore: node.querySelectorAll('.msg-meta__more').length,
                 actionRows: node.querySelectorAll('.msg-ai-actions, .msg-user-actions').length,

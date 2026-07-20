@@ -1,5 +1,12 @@
 <template>
-  <div ref="traceRoot" class="tool-timeline" :class="{ 'tool-timeline--checklist': variant === 'checklist' }">
+  <div
+    ref="traceRoot"
+    class="tool-timeline"
+    :class="{
+      'tool-timeline--checklist': variant === 'checklist',
+      'tool-timeline--activity': variant === 'activity',
+    }"
+  >
   <section
     v-if="summary"
     class="run-trace__summary control-stat-grid control-stat-grid--fixed"
@@ -81,7 +88,7 @@
           >
             <span class="tool-row__bullet" :class="groupBulletClass(item.group)" aria-hidden="true" />
             <span class="tool-row__label">{{ item.group.label }}</span>
-            <span class="step-count">{{ t('shared.runTrace.callsCount', { count: item.group.calls.length }) }}</span>
+            <span class="step-count">{{ item.group.countLabel || t('shared.runTrace.callsCount', { count: item.group.calls.length }) }}</span>
             <span v-if="item.group.secondary" class="tool-row__arg">{{ item.group.secondary }}</span>
             <span class="tool-row__trailing">
               <span class="tool-row__status">{{ resolvedGroupStatusText(item.group) }}</span>
@@ -491,7 +498,7 @@ const props = defineProps<{
   // 'checklist' drives the live work-card presentation: a running row shows a
   // pulsing ring, a completed row dims, an error row stays open. History
   // omits this, keeping the default pill timeline untouched.
-  variant?: 'checklist'
+  variant?: 'checklist' | 'activity'
 }>()
 
 const emit = defineEmits<{
@@ -599,8 +606,7 @@ function decorateCodeBlocks() {
 // which compose into the same tool-group timeline shape so the markup never
 // branches on input source.
 const resolvedItems = computed<ChatStreamTimelineItem[]>(() => {
-  if (props.items) return props.items
-  return composeTree(props.steps ?? []).map((node): ChatStreamTimelineItem => {
+  const items = props.items ?? composeTree(props.steps ?? []).map((node): ChatStreamTimelineItem => {
     const members = node.children.length ? node.children.map(child => child.step) : [node.step]
     const calls = members.map(stepToRenderItem)
     const isError = calls.some(call => call.isError || call.status === 'error')
@@ -620,6 +626,29 @@ const resolvedItems = computed<ChatStreamTimelineItem[]>(() => {
       status,
     }
     return { type: 'tool-group', key: node.step.id, group }
+  })
+
+  if (props.variant !== 'activity') return items
+
+  return items.flatMap<ChatStreamTimelineItem>(item => {
+    if (item.type !== 'tool-group') return [item]
+    const calls = item.group.calls.filter(call => !call.isError && call.status !== 'error')
+    if (!calls.length) return []
+    const isRunning = calls.some(call => call.isRunning)
+    const status: '' | 'success' = calls.every(call => call.status === 'success') ? 'success' : ''
+    return [{
+      ...item,
+      group: {
+        ...item.group,
+        calls,
+        countLabel: calls.length === item.group.calls.length
+          ? item.group.countLabel
+          : t('shared.runTrace.callsCount', { count: calls.length }),
+        isRunning,
+        isError: false,
+        status,
+      },
+    }]
   })
 })
 
@@ -691,6 +720,7 @@ function operationKey(call: ChatToolCallRenderItem): string {
 }
 
 function callDefaultOpen(call: ChatToolCallRenderItem): boolean {
+  if (props.variant === 'activity') return false
   if (call.isError || call.status === 'error') return true
   return !COLLAPSED_BY_DEFAULT.has(operationKey(call))
 }
@@ -1178,6 +1208,13 @@ function fmtTok(n?: number | null): string {
   gap: 0.125rem;
 }
 
+.tool-timeline--activity {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
 /* Flatten the per-group card chrome so the rows read as one running list. */
 .tool-timeline--checklist .step-card {
   margin: 0;
@@ -1186,6 +1223,52 @@ function fmtTok(n?: number | null): string {
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+/* Finished assistant activity is a lightweight disclosure. The action label
+   carries the meaning, so top-level numbering and decorative bullets stay out
+   of the reading path. */
+.tool-timeline--activity .step-card {
+  position: relative;
+  z-index: 1;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.tool-timeline--activity .tool-row {
+  min-height: 2.25rem;
+  border-radius: var(--radius-md);
+}
+
+.tool-timeline--activity .tool-row__bullet {
+  display: none;
+}
+
+.tool-timeline--activity .step-group-members {
+  position: relative;
+  margin: 0 0 0.375rem 0.6875rem;
+  padding-left: 1.25rem;
+  border-left: 1px solid var(--hairline);
+}
+
+.tool-timeline--activity .step-group-members::before {
+  display: none;
+}
+
+.tool-timeline--activity .tool-row-body {
+  margin: 0.125rem 0 0.5rem 1.875rem;
+  padding: 0.375rem 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 22%, var(--hairline));
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: color-mix(in srgb, var(--bg-surface) 54%, transparent);
+}
+
+.tool-timeline--activity .step-group-members .tool-row-body {
+  margin-left: 1.125rem;
 }
 
 /* A running row earns a steady outlined ring; completed rows dim so attention

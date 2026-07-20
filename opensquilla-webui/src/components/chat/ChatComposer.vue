@@ -114,16 +114,6 @@
                 @set-run-mode="emit('setRunMode', $event)"
               />
             </div>
-            <button
-              class="btn btn--icon btn--ghost"
-              :class="{ 'is-active': voiceRecording, 'chat-mic--needs-setup': !voiceReady }"
-              :title="voiceReady ? t('chat.recordVoice') : t('chat.voiceUnavailableHint')"
-              :aria-label="voiceReady ? t('chat.recordVoice') : t('chat.voiceUnavailableHint')"
-              :disabled="voiceBusy"
-              @click="voiceReady ? emit('voiceInput') : emit('voiceSetup')"
-            >
-              <Icon name="microphone" :size="17" />
-            </button>
             <button class="btn btn--icon btn--ghost" :title="t('chat.exportMarkdown')" :aria-label="t('chat.exportMarkdown')" @click="emit('exportMarkdown')">
               <Icon name="download" :size="17" />
             </button>
@@ -208,9 +198,6 @@ defineProps<{
   routerVisualEffectsEnabled: boolean
   codingModeEnabled: boolean
   codingModeSettingsBusy: boolean
-  voiceBusy: boolean
-  voiceRecording: boolean
-  voiceReady: boolean
 }>()
 
 const emit = defineEmits<{
@@ -227,8 +214,6 @@ const emit = defineEmits<{
   setModelRoutingMode: [mode: ModelRoutingMode]
   setVisualEffectsEnabled: [enabled: boolean]
   setCodingModeEnabled: [enabled: boolean]
-  voiceInput: []
-  voiceSetup: []
   exportMarkdown: []
   stop: []
 }>()
@@ -387,9 +372,9 @@ defineExpose<ChatComposerExpose>({
 }
 
 .chat-composer {
-  padding: 0.75rem 1.5rem 1.875rem;
+  padding: 0.75rem 1.5rem 1.25rem;
   border-top: 0;
-  background: var(--bg-surface);
+  background: transparent;
   flex-shrink: 0;
 }
 
@@ -508,16 +493,20 @@ defineExpose<ChatComposerExpose>({
 .chat-input-panel {
   display: flex;
   flex-direction: column;
-  min-height: 128px;
-  border: 1px solid var(--border-strong);
+  min-height: 112px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 70%, transparent);
   border-radius: var(--radius-modal);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-xs);
+  background: color-mix(in srgb, var(--bg-surface) 76%, transparent);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--bg-surface) 84%, transparent),
+    0 14px 38px color-mix(in srgb, var(--text) 9%, transparent);
   position: relative;
 }
 
 .chat-composer--new-landing .chat-input-panel {
-  min-height: 168px;
+  min-height: 148px;
   border-color: var(--border);
   border-radius: var(--radius-modal);
   box-shadow: var(--shadow-lg);
@@ -594,7 +583,7 @@ defineExpose<ChatComposerExpose>({
 
 .chat-textarea {
   width: 100%;
-  min-height: 68px;
+  min-height: 58px;
   max-height: 160px;
   padding: 1rem 1rem 0.375rem;
   border: 0;
@@ -609,7 +598,7 @@ defineExpose<ChatComposerExpose>({
 }
 
 .chat-composer--new-landing .chat-textarea {
-  min-height: 108px;
+  min-height: 88px;
   padding: 1.25rem 1.5rem 0.5rem;
   font-size: 1rem;
 }
@@ -620,8 +609,19 @@ defineExpose<ChatComposerExpose>({
 }
 
 .chat-input-panel:focus-within {
-  border-color: var(--border-focus);
-  box-shadow: var(--shadow-sm);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border));
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--bg-surface) 88%, transparent),
+    0 16px 42px color-mix(in srgb, var(--text) 10%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+@media (forced-colors: active), (prefers-contrast: more) {
+  .chat-input-panel {
+    background: var(--bg-surface);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 .btn--icon {
@@ -640,16 +640,6 @@ defineExpose<ChatComposerExpose>({
 .btn--ghost.is-active {
   background: color-mix(in srgb, var(--ok) 12%, var(--bg-surface));
   color: var(--ok);
-}
-
-/* Voice not configured: keep the button clickable (it routes to setup) but
-   dim it so it still reads as "not active"; brighten on hover to invite it. */
-.chat-mic--needs-setup {
-  opacity: var(--state-disabled-opacity);
-}
-
-.chat-mic--needs-setup:hover {
-  opacity: 1;
 }
 
 .chat-model-routing-btn {

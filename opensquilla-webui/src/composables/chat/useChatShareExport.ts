@@ -275,12 +275,12 @@ function cleanupShareClone(clone: HTMLElement): HTMLElement {
   )
   clone.removeAttribute('data-share-selected')
 
-  // Thinking fold: an expanded fold means the user deliberately opened the
-  // reasoning and is sharing it — keep the text, but swap the interactive
-  // <details> chrome for a quiet static label. A collapsed fold is just a
-  // dead button in a static image and is dropped entirely.
-  clone.querySelectorAll<HTMLElement>('.thinking-fold').forEach((fold) => {
-    const body = fold.querySelector<HTMLElement>('.thinking-fold__body')
+  // Reasoning/activity folds: an expanded fold means the user deliberately
+  // opened the trace and is sharing it — keep the text, but swap interactive
+  // <details> chrome for a quiet static label. A collapsed fold is just a dead
+  // button in a static image and is dropped entirely.
+  clone.querySelectorAll<HTMLElement>('.thinking-fold, .activity-fold').forEach((fold) => {
+    const body = fold.querySelector<HTMLElement>('.thinking-fold__body, .activity-fold__body')
     const text = body?.textContent?.trim() || ''
     if (!fold.hasAttribute('open') || !text) {
       fold.remove()
@@ -290,7 +290,7 @@ function cleanupShareClone(clone: HTMLElement): HTMLElement {
     block.className = 'chat-share-export-thinking'
     const label = document.createElement('div')
     label.className = 'chat-share-export-thinking__label'
-    label.textContent = 'Thinking'
+    label.textContent = fold.querySelector('summary')?.textContent?.trim() || 'Thinking'
     const bodyText = document.createElement('div')
     bodyText.className = 'chat-share-export-thinking__body'
     bodyText.textContent = text

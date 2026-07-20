@@ -31,7 +31,7 @@ defineProps<{
   toolStatusText: (call: ChatToolCallRenderItem) => string
   toolSecondaryText: (call: ChatToolCallRenderItem) => string
   toolElapsedText?: (call: ChatToolCallRenderItem) => string
-  variant?: 'checklist'
+  variant?: 'checklist' | 'activity'
 }>()
 
 defineEmits<{

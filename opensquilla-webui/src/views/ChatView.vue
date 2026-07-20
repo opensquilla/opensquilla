@@ -1,7 +1,12 @@
 <template>
   <div
     class="chat"
-    :class="{ 'chat--new-landing': isNewChatLanding, 'chat--drag-over': threadDragOver }"
+    :class="{
+      'chat--new-landing': isNewChatLanding,
+      'chat--drag-over': threadDragOver,
+      'chat--with-context-rail': hasContextRail,
+      'chat--context-rail-collapsed': hasContextRail && !contextRailOpen,
+    }"
     @dragenter="onChatDragEnter"
     @dragover="onChatDragOver"
     @dragleave="onChatDragLeave"
@@ -38,9 +43,9 @@
       </div>
       <div class="chat-header-right">
         <button
-          v-if="sessionArtifacts.length > 0"
+          v-if="sessionArtifacts.length > 0 && !isDesktopViewport"
           type="button"
-          class="chat-share-btn chat-deliverables-btn"
+          class="chat-share-btn chat-deliverables-btn chat-deliverables-btn--mobile"
           :title="t('chat.deliverablesCount', { count: sessionArtifacts.length })"
           :aria-label="t('chat.deliverablesCount', { count: sessionArtifacts.length })"
           @click="openDeliverables"
@@ -181,19 +186,34 @@
           @resume-sandbox="resumeSandbox"
         >
           <template #router-strip="{ message: msg }">
-            <RouterFxStrip v-if="shouldRenderRouterStrip(msg)" :message="msg" />
+            <RouterFxStrip
+              v-if="shouldRenderRouterStrip(msg)"
+              class="router-fx--assistant"
+              :message="msg"
+            />
           </template>
         </ChatMessageList>
 
-        <!-- Pre-reveal router phase: shown only before the live work-card owns
-             the turn. Once the work-card is visible, execution status becomes
-             the single primary progress surface. -->
-        <RouterFxStrip
-          v-if="routerStripReserve"
-          class="router-fx-reserve"
-          :message="routerStripReserve"
-          aria-hidden="true"
-        />
+        <!-- Before the live answer mounts, routing still belongs to the
+             OpenSquilla turn — never to the user's message above it. -->
+        <div
+          v-if="isStreaming && liveRouterStripMessage && !(streamBubble && answerRevealOpen)"
+          class="msg-ai msg-ai--router-pending"
+          data-history-role="assistant"
+        >
+          <div class="msg-ai-main">
+            <div class="msg-ai-author">
+              <span class="msg-ai-avatar" aria-hidden="true">
+                <img src="/opensquilla-assistant-avatar.png" alt="" />
+              </span>
+            </div>
+            <RouterFxStrip
+              class="router-fx--assistant router-fx-reserve"
+              :message="liveRouterStripMessage"
+              aria-hidden="true"
+            />
+          </div>
+        </div>
 
         <!-- MetaSkill run cards: preflight checkpoint + progress ribbon,
              grouped per run_id above the live activity area. -->
@@ -217,6 +237,16 @@
              work card so it owns the focus while the agent works. -->
         <div v-if="isStreaming && streamBubble && answerRevealOpen" class="msg-ai" data-history-role="assistant" aria-live="polite">
           <div class="msg-ai-main">
+            <div class="msg-ai-author">
+              <span class="msg-ai-avatar" aria-hidden="true">
+                <img src="/opensquilla-assistant-avatar.png" alt="" />
+              </span>
+            </div>
+            <RouterFxStrip
+              v-if="liveRouterStripMessage"
+              class="router-fx--assistant"
+              :message="liveRouterStripMessage"
+            />
             <section
               class="work-card"
               :class="{ 'work-card--stale': streamActivityStale }"
@@ -242,7 +272,7 @@
               <ToolCallTimeline
                 v-if="liveTimelineItems.length"
                 class="work-card__timeline"
-                variant="checklist"
+                variant="activity"
                 :items="liveTimelineItems"
                 :is-tool-group-open="isToolGroupOpen"
                 :is-tool-item-open="isToolItemOpen"
@@ -352,6 +382,7 @@
     </div>
 
     <PendingQueue
+      class="chat-pending-dock"
       :items="pendingQueue"
       :max-pending="maxPending"
       :mode="isStreaming ? busySendMode : null"
@@ -434,9 +465,6 @@
       :router-visual-effects-enabled="routerVisualEffectsEnabled"
       :coding-mode-enabled="codingModeEnabled"
       :coding-mode-settings-busy="codingModeSettingsBusy"
-      :voice-busy="voiceBusy"
-      :voice-recording="voiceRecording"
-      :voice-ready="voiceReady"
       @composition-change="composing = $event"
       @beforeinput="onTextareaBeforeInput"
       @file-change="onFileInputChange"
@@ -449,13 +477,25 @@
       @set-model-routing-mode="setComposerModelRoutingMode"
       @set-visual-effects-enabled="setComposerVisualEffectsEnabled"
       @set-coding-mode-enabled="setComposerCodingModeEnabled"
-      @voice-input="onVoiceInput"
-      @voice-setup="onVoiceSetup"
       @export-markdown="exportMarkdown"
       @send="onSend"
       @stop="onStop"
     />
     </div>
+
+    <DeliverablesDrawer
+      v-if="hasContextRail"
+      id="chat-context-rail"
+      class="chat-context-rail"
+      mode="rail"
+      :open="true"
+      :artifacts="sessionArtifacts"
+      :session-key="sessionKey"
+      :auth-token="readAuthToken()"
+      :collapsed="!contextRailOpen"
+      @toggle-rail="contextRailOpen = !contextRailOpen"
+      @download="downloadArtifact"
+    />
 
     <ToolResultModal
       :open="toolResultModal.open"
@@ -466,6 +506,7 @@
     />
 
     <DeliverablesDrawer
+      mode="drawer"
       :open="deliverablesOpen"
       :artifacts="sessionArtifacts"
       :session-key="sessionKey"
@@ -502,7 +543,6 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch, watchEffect } f
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
-import { useRpcCall } from '@/composables/useRpc'
 import { useAppStore } from '@/stores/app'
 import ApprovalCard from '@/components/chat/ApprovalCard.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
@@ -560,7 +600,6 @@ import { useChatSlashCommands } from '@/composables/chat/useChatSlashCommands'
 import { useChatStream } from '@/composables/chat/useChatStream'
 import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
 import { useChatUsageWidget } from '@/composables/chat/useChatUsageWidget'
-import { useVoiceInput } from '@/composables/chat/useVoiceInput'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import { useToasts } from '@/composables/useToasts'
 import type {
@@ -1022,6 +1061,16 @@ const routerStripReserve = computed<ChatRenderedMessage | null>(() => {
   }
 })
 
+const liveRouterStripMessage = computed<ChatRenderedMessage | null>(() => {
+  if (!isStreaming.value) return null
+  for (let i = renderedMessages.value.length - 1; i >= 0; i--) {
+    const message = renderedMessages.value[i]
+    if (message.isRouterStrip) return message
+    if (message.displayRole === 'user') break
+  }
+  return routerStripReserve.value
+})
+
 const chatShareExport = useChatShareExport({
   threadRef,
   title: shareTitle,
@@ -1052,22 +1101,6 @@ const {
   cancelAnchorStabilization,
   cleanup: cleanupHistory,
 } = chatHistory
-
-const voiceInput = useVoiceInput()
-const {
-  voiceBusy,
-  voiceRecording,
-  toggleVoiceInput,
-  cleanup: cleanupVoiceInput,
-} = voiceInput
-
-// Gate the composer mic button on real transcription readiness. onboarding.status
-// resolves whether audio is enabled AND an ElevenLabs key is present server-side
-// (including env-var keys the browser can't see), so audioConfigured is a true
-// "voice will work" signal — this keeps the button from being clicked into a
-// guaranteed failure. It's the same snapshot the empty-state chips read.
-const voiceCapability = useRpcCall<{ audioConfigured?: boolean }>('onboarding.status')
-const voiceReady = computed(() => voiceCapability.data.value?.audioConfigured === true)
 
 const chatMessageActions = useChatMessageActions({
   messages,
@@ -1525,27 +1558,6 @@ function applyLandingSuggestion(text: string) {
   composerRef.value?.focusTextarea()
 }
 
-function appendComposerText(text: string) {
-  const next = String(text || '').trim()
-  if (!next) return
-  inputText.value = inputText.value.trim()
-    ? `${inputText.value.trimEnd()}\n${next}`
-    : next
-  autoResizeTextarea()
-  composerRef.value?.focusTextarea()
-}
-
-function onVoiceInput() {
-  void toggleVoiceInput(appendComposerText)
-}
-
-// When voice isn't configured the mic button routes here instead of recording:
-// tell the user what's missing and take them straight to the audio settings.
-function onVoiceSetup() {
-  pushToast(t('chat.toast.voiceSetupNeeded'), { tone: 'info' })
-  router.push('/settings/capabilities').catch(() => {})
-}
-
 function normalizeRunStatus(status: string): ChatRunStatusState {
   const value = String(status || '').toLowerCase()
   if (value === 'abandoned') return 'interrupted'
@@ -1661,6 +1673,13 @@ const sessionArtifacts = computed<ArtifactPayload[]>(() => {
   streamArtifacts.value.forEach(consider)
   return collected
 })
+
+const contextRailOpen = ref(true)
+const contextRailAvailable = computed(() =>
+  isDesktopViewport.value
+  && !isNewChatLanding.value
+  && sessionArtifacts.value.length > 0)
+const hasContextRail = computed(() => contextRailAvailable.value)
 
 const deliverablesOpen = ref(false)
 const metaRunsHistoryOpen = ref(false)
@@ -2111,7 +2130,6 @@ onUnmounted(() => {
   cleanupHistory()
   cleanupStream()
   cleanupCompaction()
-  cleanupVoiceInput()
   chatApprovals.cleanup()
   metaRuns.cleanup()
   if (composerResizeObserver) { composerResizeObserver.disconnect(); composerResizeObserver = null }

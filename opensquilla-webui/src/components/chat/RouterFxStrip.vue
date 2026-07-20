@@ -135,13 +135,19 @@ const props = defineProps<{
   message: ChatRenderedMessage
 }>()
 
-const inspectorOpen = ref(false)
+const inspectorRegistryWindow = window as Window & {
+  __opensquillaOpenEnsembleInspectors?: Set<string>
+}
+const openEnsembleInspectorIds = inspectorRegistryWindow.__opensquillaOpenEnsembleInspectors
+  || (inspectorRegistryWindow.__opensquillaOpenEnsembleInspectors = new Set<string>())
+
 const motionPhase = ref<RouterFxMotionPhase>('idle')
 const scanIndex = ref(-1)
 const resultAnnouncement = ref('')
 const selectorVisible = ref(false)
 const selectorStyle = ref<Record<string, string>>({})
 const gridElement = ref<HTMLElement | null>(null)
+const inspectorOpen = ref(false)
 const gridCells = computed(() => props.message.gridCells || [])
 const ensemble = computed(() => props.message.ensemble)
 const ensembleModels = computed(() => ensemble.value?.models || [])
@@ -175,12 +181,6 @@ const animationIdentity = computed(() => [
 ].join('::'))
 const hasEnsembleModels = computed(() => ensembleModels.value.length > 0)
 const isEnsembleHandoff = computed(() => props.message.routerState === 'handoff' && !hasEnsembleModels.value)
-// Ensemble strips are trace surfaces, not only animations: keep them openable
-// even while candidate details are still unknown so the empty/pending state is
-// visible instead of looking broken.
-const hasInspector = computed(() =>
-  isEnsemblePanel.value || hasEnsembleModels.value || (ensemble.value?.modelCount || 0) > 0,
-)
 // A live ensemble is complete only after the aggregator has reached a terminal
 // state. Proposer completion alone is the handoff into synthesis, not the end.
 const hasAggregator = computed(() =>
@@ -209,6 +209,9 @@ const candidateCount = computed(() => {
 })
 const totalCandidates = computed(() => ensemble.value?.totalCandidates || 0)
 const hasKnownCandidateCount = computed(() => candidateCount.value > 0)
+const hasInspector = computed(() =>
+  isEnsemblePanel.value || hasEnsembleModels.value || (ensemble.value?.modelCount || 0) > 0,
+)
 const emptyTraceLabel = computed(() =>
   isEnsembleHandoff.value
     ? t('chat.routerFx.ensembleTraceUnavailable')
@@ -396,6 +399,8 @@ watch(
 
 onMounted(() => {
   mounted = true
+  inspectorOpen.value = openEnsembleInspectorIds.size > 0
+  if (inspectorOpen.value) openEnsembleInspectorIds.add(inspectorId.value)
   window.addEventListener('resize', syncSelectorPosition)
   initializeMotion()
 })
@@ -409,6 +414,8 @@ onBeforeUnmount(() => {
 function toggleInspector() {
   if (!hasInspector.value) return
   inspectorOpen.value = !inspectorOpen.value
+  if (inspectorOpen.value) openEnsembleInspectorIds.add(inspectorId.value)
+  else openEnsembleInspectorIds.clear()
 }
 
 function ensembleModelUsage(model: ChatEnsembleMetaModel): string {
@@ -430,6 +437,7 @@ function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
   const seconds = elapsedMs / 1000
   return `${seconds >= 10 ? Math.round(seconds) : Number(seconds.toFixed(1))}s`
 }
+
 </script>
 
 <style scoped>
@@ -449,6 +457,24 @@ function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
   --router-muted: var(--text-dim);
   --router-danger: var(--danger);
   --router-cell-bg: color-mix(in srgb, var(--bg-surface) 72%, transparent);
+}
+
+/* Once paired with an answer, routing reads as part of OpenSquilla's work:
+   left-aligned beneath the assistant identity and before the activity fold. */
+.router-fx--assistant {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 0.625rem;
+}
+
+.router-fx--assistant[data-panel="llm-ensemble"] {
+  align-items: flex-start;
+}
+
+.router-fx--assistant:not([data-panel="llm-ensemble"]) .router-fx-header,
+.router-fx--assistant:not([data-panel="llm-ensemble"]) .router-fx-grid {
+  align-self: center;
+  width: min(100%, 620px);
 }
 
 .router-fx-header {
@@ -574,7 +600,7 @@ function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
   border-radius: var(--radius-md);
   background:
     radial-gradient(color-mix(in srgb, var(--router-text) 6%, transparent) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
-    var(--router-surface);
+    var(--bg-surface-2);
   color: var(--router-text);
   font: inherit;
   text-align: left;
@@ -588,7 +614,7 @@ function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
   border-color: color-mix(in srgb, var(--router-accent) 48%, var(--router-hairline));
   background:
     radial-gradient(color-mix(in srgb, var(--router-text) 6%, transparent) 0.7px, transparent 1.2px) 0 0 / 8px 8px,
-    color-mix(in srgb, var(--router-accent) 3%, var(--router-surface));
+    color-mix(in srgb, var(--router-accent) 3%, var(--bg-surface-2));
 }
 
 .router-fx-ensemble:disabled {
@@ -1051,6 +1077,20 @@ function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
   opacity: 1;
 }
 
+@media (max-width: 620px) {
+  .router-fx {
+    max-width: calc(100% - 24px);
+  }
+
+  .router-fx-header,
+  .router-fx-grid,
+  .router-fx-ensemble {
+    width: 100%;
+    max-width: 100%;
+  }
+
+}
+
 @media (prefers-reduced-motion: reduce) {
   .router-fx-cell,
   .router-fx-cell::before,
@@ -1101,5 +1141,6 @@ function ensembleModelElapsed(model: ChatEnsembleMetaModel): string {
   .router-fx-inspector__usage {
     display: none;
   }
+
 }
 </style>

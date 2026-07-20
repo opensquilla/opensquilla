@@ -90,6 +90,7 @@ export interface ChatToolCallGroup {
   label: string
   iconName: IconName
   calls: ChatToolCallRenderItem[]
+  countLabel?: string
   secondary: string
   isRunning: boolean
   isError: boolean

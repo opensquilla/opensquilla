@@ -12,6 +12,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("agents", "identity"),
     ("agents", "onboarding"),
     ("agents", "session"),
+    # Format-specific delivery validation reuses canonical attachment MIME and
+    # container signatures; contracts remains implementation-free.
+    ("artifact_validation.py", "contracts"),
     ("channels", "engine"),
     ("channels", "contracts"),
     ("channels", "gateway"),

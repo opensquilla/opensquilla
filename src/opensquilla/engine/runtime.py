@@ -273,7 +273,9 @@ _T3_FLUSH_FAILED: Final[str] = "flush_failed"
 _T3_COMPACT_FAILED: Final[str] = "compact_failed"
 _IMAGE_GENERATION_TOOL_NAMES: Final[frozenset[str]] = frozenset({"image_generate"})
 _ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
-_ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
+_ARTIFACT_DELIVERY_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {"publish_artifact", "create_pptx"}
+)
 _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
 _HOOKS_FEATURE_ENV: Final[str] = "OPENSQUILLA_HOOKS"
 
@@ -1115,7 +1117,7 @@ def _persisted_tool_result_segment(
 
 
 def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:
-    if event.tool_name != _ARTIFACT_DELIVERY_TOOL_NAME or not event.is_error:
+    if event.tool_name not in _ARTIFACT_DELIVERY_TOOL_NAMES or not event.is_error:
         return None
     raw = event.result.strip()
     summary = raw
@@ -1135,20 +1137,121 @@ def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:
     summary = " ".join(summary.split())
     if len(summary) > _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS:
         summary = summary[: _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS - 3].rstrip() + "..."
-    return summary or "publish_artifact failed"
+    return summary or f"{event.tool_name} failed"
 
+
+def _artifact_delivery_result_name(event: ToolResultEvent) -> str | None:
+    try:
+        parsed = json.loads(event.result)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    artifact = parsed.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+    name = artifact.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _artifact_delivery_effective_publish_name(
+    arguments: dict[str, Any],
+    raw_target: str,
+) -> str | None:
+    """Mirror publish_artifact's effective public filename calculation."""
+
+    try:
+        target_name = Path(raw_target).name
+        raw_name = arguments.get("name")
+        requested_name = raw_name if isinstance(raw_name, str) else None
+        artifact_name = (requested_name or target_name).strip() or target_name
+        if (
+            requested_name
+            and not Path(artifact_name).suffix
+            and Path(target_name).suffix
+        ):
+            artifact_name = f"{artifact_name}{Path(target_name).suffix}"
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return artifact_name or None
+
+
+def _artifact_delivery_target_keys(
+    event: ToolResultEvent,
+    *,
+    tool_context: ToolContext | None = None,
+    include_publish_name: bool = False,
+) -> tuple[str, ...]:
+    if event.tool_name not in _ARTIFACT_DELIVERY_TOOL_NAMES:
+        return ()
+    arguments = event.arguments if isinstance(event.arguments, dict) else {}
+    from opensquilla.engine.artifact_delivery import (
+        artifact_delivery_name_target_key,
+        artifact_delivery_publish_target_key,
+    )
+
+    if event.tool_name == "publish_artifact":
+        raw_target = arguments.get("path")
+        if not isinstance(raw_target, str):
+            return ()
+        path_key = artifact_delivery_publish_target_key(
+            raw_target,
+            workspace_dir=tool_context.workspace_dir if tool_context is not None else None,
+        )
+        keys = [path_key] if path_key is not None else []
+        if not include_publish_name:
+            if "name" in arguments and isinstance(arguments.get("name"), str):
+                artifact_name = _artifact_delivery_effective_publish_name(
+                    arguments,
+                    raw_target,
+                )
+                if artifact_name is not None:
+                    return (artifact_delivery_name_target_key(artifact_name),)
+            return tuple(keys)
+
+        artifact_name = _artifact_delivery_result_name(event)
+        if artifact_name is None:
+            artifact_name = _artifact_delivery_effective_publish_name(
+                arguments,
+                raw_target,
+            )
+        if artifact_name is not None:
+            keys.append(artifact_delivery_name_target_key(artifact_name))
+        return tuple(dict.fromkeys(keys))
+
+    effective_name = _artifact_delivery_result_name(event) if not event.is_error else None
+    if effective_name is None:
+        raw_name = arguments.get("name") or "generated.pptx"
+        if not isinstance(raw_name, str):
+            return ()
+        # Match create_pptx's public name normalization: it publishes a basename
+        # and appends .pptx when omitted.
+        effective_name = Path(raw_name).name.strip()
+        if not effective_name or effective_name in {".", ".."}:
+            effective_name = "generated.pptx"
+        if not effective_name.lower().endswith(".pptx"):
+            effective_name = f"{effective_name}.pptx"
+    name_key = artifact_delivery_name_target_key(effective_name)
+    keys = [name_key]
+    if not event.is_error and tool_context is not None and tool_context.workspace_dir:
+        root_path_key = artifact_delivery_publish_target_key(
+            name_key.removeprefix("name:"),
+            workspace_dir=tool_context.workspace_dir,
+        )
+        if root_path_key is not None:
+            keys.append(root_path_key)
+    return tuple(dict.fromkeys(keys))
 
 def _artifact_delivery_failure_notice(*, partial: bool = False) -> str:
     if partial:
         return (
             f"{_ARTIFACT_DELIVERY_FAILURE_MARKER} some generated files were attached, "
             "but at least one file could not be attached. Ask me to resend the "
-            "missing file after I correct the generated file path."
+            "missing file after I correct or regenerate it."
         )
     return (
         f"{_ARTIFACT_DELIVERY_FAILURE_MARKER} no downloadable file was attached "
-        "to this response. Ask me to resend the file after I correct the generated "
-        "file path."
+        "to this response. Ask me to resend the file after I correct or regenerate it."
     )
 
 

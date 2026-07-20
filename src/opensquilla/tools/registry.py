@@ -465,7 +465,6 @@ def tool(
     description: str,
     params: dict[str, Any] | None = None,
     required: list[str] | None = None,
-    runtime_only_arguments: frozenset[str] | set[str] | tuple[str, ...] = (),
     owner_only: bool = False,
     exposed_by_default: bool = True,
     execution_timeout_seconds: float | None = None,
@@ -474,6 +473,8 @@ def tool(
     result_budget_class: str | None = None,
     sandbox: SandboxToolDescriptor | None = None,
     registry: ToolRegistry | None = None,
+    *,
+    runtime_only_arguments: frozenset[str] | set[str] | tuple[str, ...] = (),
 ) -> Any:
     """Decorator to register an async function as a tool.
 

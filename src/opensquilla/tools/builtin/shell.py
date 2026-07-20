@@ -4691,10 +4691,11 @@ async def exec_command(
     timeout: float = _DEFAULT_EXEC_TIMEOUT,
     env: dict[str, str] | None = None,
     stdin: str | None = None,
+    approval_id: str | None = None,
+    *,
     sandbox_permissions: str = "use_default",
     justification: str = "",
     prefix_rule: list[str] | None = None,
-    approval_id: str | None = None,
 ) -> str:
     import os
 
@@ -5154,10 +5155,11 @@ async def background_process(
     command: str,
     workdir: str | None = None,
     timeout: float = _DEFAULT_BACKGROUND_TIMEOUT,
+    approval_id: str | None = None,
+    *,
     sandbox_permissions: str = "use_default",
     justification: str = "",
     prefix_rule: list[str] | None = None,
-    approval_id: str | None = None,
 ) -> str:
     if full_host_access_active():
         return await _start_host_background_process(

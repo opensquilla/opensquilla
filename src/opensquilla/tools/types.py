@@ -51,8 +51,6 @@ class ToolContext:
     run_mode: str | None = None
     sandbox_mounts: list[dict[str, Any]] = field(default_factory=list)
     sandbox_run_context: Any | None = None
-    # Runtime-only filesystem profile override for restricted internal callers.
-    sandbox_file_system_profile: Any | None = None
     source_diff_preservation_mode: str = "log"
     source_diff_candidate_mode: str = "log"
     source_diff_candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -87,7 +85,6 @@ class ToolContext:
     on_memory_source_write: Callable[[str, str], None] | None = None
     on_bootstrap_source_write: Callable[[str, str], None] | None = None
     on_runtime_event: Callable[[dict[str, Any]], None] | None = None
-    on_sandbox_auto_review: Callable[[dict[str, object]], Awaitable[Any]] | None = None
     # Legacy elevated mode compatibility. New code should treat only "full" as
     # host execution; standard/trusted run modes stay sandboxed.
     elevated: str | None = None
@@ -112,6 +109,10 @@ class ToolContext:
     # router_control_turn_hold_applied) once the endgame git freeze margin is
     # reached; shell tools then block workspace-reverting git commands.
     endgame_git_freeze_active: bool = False
+    # New runtime-only fields stay at the end to preserve the public dataclass's
+    # historical positional constructor contract for embedded callers.
+    sandbox_file_system_profile: Any | None = None
+    on_sandbox_auto_review: Callable[[dict[str, object]], Awaitable[Any]] | None = None
 
 
 # Request-scoped context — set by build_tool_handler before each dispatch.

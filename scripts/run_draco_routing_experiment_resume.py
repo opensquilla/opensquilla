@@ -4411,6 +4411,8 @@ def render_markdown(
 def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
     keys = [
         "input",
+        "resume_from_jsonl",
+        "only_group_task_keys",
         "config",
         "experiment_config",
         "experiment_config_override",
@@ -4838,7 +4840,83 @@ async def amain(args: argparse.Namespace) -> int:
                 tools=group_tools,
             )
 
-    pending = [_guarded(task, group) for task in tasks for group in groups]
+    selected_keys = {
+        (group, str(task["id"]))
+        for task in tasks
+        for group in groups
+    }
+    only_keys_path = getattr(args, "only_group_task_keys", None)
+    if only_keys_path is not None:
+        path = Path(only_keys_path)
+        if not path.is_file():
+            raise ValueError(f"group/task key JSONL does not exist: {path}")
+        requested_keys: set[tuple[str, str]] = set()
+        with path.open("r", encoding="utf-8") as only_fh:
+            for line_number, line in enumerate(only_fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    key_row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"invalid group/task key JSONL at {path}:{line_number}: {exc}"
+                    ) from exc
+                key = (
+                    str(key_row.get("group") or ""),
+                    str(key_row.get("task_id") or ""),
+                )
+                if not all(key):
+                    raise ValueError(
+                        f"missing group or task_id in group/task key JSONL at "
+                        f"{path}:{line_number}"
+                    )
+                requested_keys.add(key)
+        unknown_keys = requested_keys - selected_keys
+        if unknown_keys:
+            preview = ", ".join(f"{group}/{task_id}" for group, task_id in sorted(unknown_keys)[:5])
+            raise ValueError(f"group/task key JSONL contains unknown keys: {preview}")
+        selected_keys &= requested_keys
+        print(
+            f"selection: restricted run to {len(selected_keys)} group/task pairs",
+            file=sys.stderr,
+            flush=True,
+        )
+    completed_keys: set[tuple[str, str]] = set()
+    for resume_path in list(getattr(args, "resume_from_jsonl", []) or []):
+        path = Path(resume_path)
+        if not path.is_file():
+            raise ValueError(f"resume JSONL does not exist: {path}")
+        with path.open("r", encoding="utf-8") as resume_fh:
+            for line_number, line in enumerate(resume_fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    prior_row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"invalid resume JSONL at {path}:{line_number}: {exc}"
+                    ) from exc
+                key = (
+                    str(prior_row.get("group") or ""),
+                    str(prior_row.get("task_id") or ""),
+                )
+                if key in selected_keys:
+                    completed_keys.add(key)
+
+    pending = [
+        _guarded(task, group)
+        for task in tasks
+        for group in groups
+        if (group, str(task["id"])) in selected_keys
+        and (group, str(task["id"])) not in completed_keys
+    ]
+    if completed_keys:
+        print(
+            f"resume: skipped {len(completed_keys)} completed group/task pairs; "
+            f"scheduled {len(pending)} remaining pairs",
+            file=sys.stderr,
+            flush=True,
+        )
     with (
         jsonl_path.open("w", encoding="utf-8") as fh,
         trace_path.open("w", encoding="utf-8") as trace_fh,
@@ -4899,6 +4977,25 @@ async def amain(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True, help="DRACO JSONL input.")
+    parser.add_argument(
+        "--resume-from-jsonl",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Skip group/task pairs already present in this JSONL; repeatable. "
+            "New results are always written to a separate timestamped JSONL."
+        ),
+    )
+    parser.add_argument(
+        "--only-group-task-keys",
+        type=Path,
+        default=None,
+        help=(
+            "Run only group/task pairs listed as JSONL objects containing group and "
+            "task_id. Every listed pair must be selected by --groups and --input."
+        ),
+    )
     parser.add_argument("--config", type=Path, default=None, help="OpenSquilla TOML config.")
     parser.add_argument(
         "--experiment-config",

@@ -660,32 +660,41 @@ async def _handle_channels_pairing_approve(
         # mark the sender they are approving RIGHT NOW as an admin of the
         # channel they are approving them on — never an arbitrary config
         # write. This is the "this is me" shortcut in the pairing flow.
-        payload["adminGranted"] = _grant_channel_admin_sender(
+        sender_id = str(getattr(record, "sender_id", "") or "")
+        admins = _set_channel_admin_sender(
             ctx,
             channel_name=channel_name,
-            sender_id=str(getattr(record, "sender_id", "") or ""),
+            sender_id=sender_id,
+            admin=True,
         )
+        payload["adminGranted"] = sender_id.strip() in admins
     if not was_approved:
         await _send_pairing_approved_notice(ctx, record)
     return payload
 
 
-def _grant_channel_admin_sender(
+def _set_channel_admin_sender(
     ctx: RpcContext,
     *,
     channel_name: str,
     sender_id: str,
-) -> bool:
-    """Add ``sender_id`` to ``channel_admin_senders[channel_name]``.
+    admin: bool,
+) -> list[str]:
+    """Grant or revoke ``sender_id`` in ``channel_admin_senders[channel_name]``.
+
+    ``admin=True`` appends the sender if absent; ``admin=False`` removes it.
+    An empty admin list drops the channel key entirely so the persisted TOML
+    never accumulates empty stanzas.
 
     Persist-before-apply: the updated mapping is written to the TOML first,
     then swapped into the live config object (which channel dispatch reads
-    per message, so the grant is live from the next inbound message).
-    Idempotent; returns whether the sender is an admin afterwards.
+    per message, so the change is live from the next inbound message). Both
+    directions are idempotent. Returns the resulting admin list for the
+    channel.
     """
     sender_id = sender_id.strip()
     if not sender_id or ctx.config is None:
-        return False
+        return []
     current = getattr(ctx.config, "channel_admin_senders", None)
     admin_senders: dict[str, list[str]] = {
         str(name): [
@@ -695,8 +704,15 @@ def _grant_channel_admin_sender(
         for name, values in (current or {}).items()
     }
     existing = admin_senders.get(channel_name, [])
-    if sender_id not in existing:
-        admin_senders[channel_name] = [*existing, sender_id]
+    if admin:
+        if sender_id not in existing:
+            admin_senders[channel_name] = [*existing, sender_id]
+    else:
+        remaining = [item for item in existing if item != sender_id]
+        if remaining:
+            admin_senders[channel_name] = remaining
+        else:
+            admin_senders.pop(channel_name, None)
     from opensquilla.gateway.rpc_config import _persist_config
 
     # Persist-before-apply: write the candidate to disk first so a failed
@@ -705,11 +721,45 @@ def _grant_channel_admin_sender(
     _persist_config(candidate)
     ctx.config.channel_admin_senders = admin_senders
     log.info(
-        "channel.pairing_admin_granted",
+        "channel.admin_set" if admin else "channel.admin_removed",
         channel=channel_name,
         sender_id=sender_id,
     )
-    return True
+    return admin_senders.get(channel_name, [])
+
+
+@_d.method("channels.admin.set", scope="operator.pairing")
+async def _handle_channels_admin_set(
+    params: dict | None,
+    ctx: RpcContext,
+) -> dict[str, Any]:
+    """Grant or revoke a sender's channel-admin standing.
+
+    The recoverable counterpart to the pairing-time admin grant: a mistaken
+    grant can be lifted, and an admin added directly to the TOML can be
+    promoted or demoted from the same members view. Narrow by design — it
+    only edits ``channel_admin_senders`` for the named channel.
+    """
+    data = params or {}
+    channel_name = str(data.get("channelName") or "").strip()
+    sender_id = str(data.get("senderId") or "").strip()
+    admin = bool(data.get("admin", False))
+    if not channel_name:
+        raise ValueError("channelName required")
+    if not sender_id:
+        raise ValueError("senderId required")
+    admins = _set_channel_admin_sender(
+        ctx,
+        channel_name=channel_name,
+        sender_id=sender_id,
+        admin=admin,
+    )
+    return {
+        "channelName": channel_name,
+        "senderId": sender_id,
+        "admin": sender_id in admins,
+        "admins": admins,
+    }
 
 
 @_d.method("channels.pairing.revoke", scope="operator.pairing")

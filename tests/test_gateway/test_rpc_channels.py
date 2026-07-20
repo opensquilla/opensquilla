@@ -775,3 +775,109 @@ async def test_pairing_approve_without_as_admin_changes_no_config(tmp_path):
     assert "adminGranted" not in rpc_res.payload
     assert ctx.config.channel_admin_senders == {}
     assert not (tmp_path / "config.toml").exists()
+
+
+@pytest.mark.asyncio
+async def test_admin_set_grants_and_persists(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload == {
+        "channelName": "work",
+        "senderId": "U-7",
+        "admin": True,
+        "admins": ["U-7"],
+    }
+    # Live config sees the grant immediately (dispatch reads it per message).
+    assert ctx.config.channel_admin_senders == {"work": ["U-7"]}
+    # And it survived to disk: persist-before-apply wrote the TOML.
+    text = (tmp_path / "config.toml").read_text()
+    assert "channel_admin_senders" in text
+    assert "U-7" in text
+
+
+@pytest.mark.asyncio
+async def test_admin_set_revoke_removes_sender_and_drops_empty_channel(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": False},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["admin"] is False
+    assert rpc_res.payload["admins"] == []
+    # The now-empty channel key is dropped rather than left as an empty list.
+    assert ctx.config.channel_admin_senders == {}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_grant_is_idempotent(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-7", "admin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["admin"] is True
+    # No duplicate entry appended.
+    assert ctx.config.channel_admin_senders == {"work": ["U-7"]}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_leaves_unrelated_channels_untouched(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+    ctx.config.channel_admin_senders = {"work": ["U-7"], "other": ["Z-9"]}
+
+    rpc_res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "senderId": "U-8", "admin": True},
+        ctx,
+    )
+
+    assert rpc_res.error is None, rpc_res.error
+    assert rpc_res.payload["admins"] == ["U-7", "U-8"]
+    assert ctx.config.channel_admin_senders == {"work": ["U-7", "U-8"], "other": ["Z-9"]}
+
+
+@pytest.mark.asyncio
+async def test_admin_set_requires_channel_and_sender(tmp_path):
+    ctx = _notice_ctx(_NoticeAdapter(), _NoticeStore())
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    missing_sender = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"channelName": "work", "admin": True},
+        ctx,
+    )
+    assert missing_sender.error is not None
+
+    missing_channel = await get_dispatcher().dispatch(
+        "r1",
+        "channels.admin.set",
+        {"senderId": "U-7", "admin": True},
+        ctx,
+    )
+    assert missing_channel.error is not None

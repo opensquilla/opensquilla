@@ -1658,7 +1658,10 @@
         "rejectLabel": "{sender} のペアリング申請を拒否",
         "rejectSuccess": "{sender} のペアリング申請を拒否しました",
         "rejectFailed": "{sender} を拒否できませんでした: {error}",
-        "fixCredentials": "認証情報を修正"
+        "fixCredentials": "認証情報を修正",
+        "galleryLead": "プラットフォームを選んで始めましょう",
+        "platformBarLabel": "チャンネルを追加 · プラットフォームを選択",
+        "platformBarMore": "他 {count} 件"
       },
       "detail": {
         "bot": "ボット {id}",

@@ -6,7 +6,7 @@
         <p class="ch-stage__subtitle control-stage__subtitle">{{ t('console.channels.subtitle') }}</p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
-        <button class="btn btn--primary" type="button" @click="openChannelCompose">
+        <button v-if="addTier === 'card'" class="btn btn--primary" type="button" @click="openChannelCompose">
           <Icon name="plus" :size="16" aria-hidden="true" />
           <span>{{ t('console.channels.addChannel') }}</span>
         </button>
@@ -33,14 +33,17 @@
       <LoadingSpinner />
     </div>
 
-    <section v-else-if="channels.length === 0 && unconfiguredChannels.length === 0" class="control-empty ch-empty">
-      <div class="ch-empty__icon" aria-hidden="true"><Icon name="channels" :size="34" /></div>
-      <div class="control-empty__title">{{ t('console.channels.emptyTitle') }}</div>
-      <p class="control-empty__hint">{{ t('console.channels.emptyMsg') }}</p>
-      <button class="btn btn--primary" type="button" @click="openChannelCompose">
-        <Icon name="plus" :size="16" aria-hidden="true" />
-        <span>{{ t('console.channels.addFirstChannel') }}</span>
-      </button>
+    <!-- ===== Tier 1 (0 configured channels): the inline platform gallery IS
+         the page content and the single add entry — no top-right button. ===== -->
+    <section v-else-if="addTier === 'gallery'" class="ch-gallery-home" :aria-label="t('console.channels.home.galleryLead')">
+      <p class="ch-gallery-home__lead">{{ t('console.channels.home.galleryLead') }}</p>
+      <ChannelTypeGallery
+        :channels="composeEditor.catalog.value"
+        :pending="composeEditor.catalogPending.value"
+        :error="composeEditor.catalogError.value"
+        @pick="openComposeWithType"
+        @retry="composeEditor.loadCatalog"
+      />
     </section>
 
     <!-- ================= Drill-in: one channel as a full page ============= -->
@@ -335,11 +338,23 @@
           <p class="chb-card__hint">{{ t('console.channels.unconfiguredHint') }}</p>
         </article>
 
-        <button type="button" class="chb-card chb-card--add" @click="openChannelCompose">
+        <button v-if="addTier === 'card'" type="button" class="chb-card chb-card--add" @click="openChannelCompose">
           <span aria-hidden="true">＋</span>
           <span>{{ t('console.channels.addChannel') }}</span>
         </button>
       </div>
+
+      <!-- ===== Tier 2 (1–3 configured channels): the platform bar is the single
+           add entry — no add-card, no top-right button. Picking a chip opens the
+           compose form pre-picked; "+N more" opens the full compose gallery. ===== -->
+      <ChannelPlatformBar
+        v-if="addTier === 'bar'"
+        :channels="composeEditor.catalog.value"
+        :used-types="channels.map(ch => String(ch.type))"
+        :pending="composeEditor.catalogPending.value"
+        @pick="openComposeWithType"
+        @more="openChannelCompose"
+      />
     </section>
 
     <!-- Floating dirty bar: the page scrolls as a whole now, so the unsaved
@@ -393,6 +408,8 @@ import ChannelBrandMark from '@/components/setup/ChannelBrandMark.vue'
 import ChannelComposeSurface from '@/components/channels/ChannelComposeSurface.vue'
 import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
 import ChannelEditorActionBar from '@/components/channels/ChannelEditorActionBar.vue'
+import ChannelPlatformBar from '@/components/channels/ChannelPlatformBar.vue'
+import ChannelTypeGallery from '@/components/channels/ChannelTypeGallery.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import PendingRestartBanner from '@/components/PendingRestartBanner.vue'
@@ -443,6 +460,10 @@ const STATUS_SEVERITY = Object.fromEntries(
 ) as Record<ChannelStatusKey, number>
 const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'configuration', 'diagnostics']
 const SECTIONS: SectionId[] = ['pairings', 'configuration', 'diagnostics']
+// The add-region adapts to how many channels are configured, and there is
+// EXACTLY ONE "add" affordance on screen at any time: 0 → inline gallery,
+// 1..3 → platform bar below the grid, >=4 → trailing add-card + header button.
+const PLATFORM_BAR_MAX_CHANNELS = 3
 
 const { t, locale } = useI18n()
 const rpc = useRpcStore()
@@ -496,6 +517,25 @@ const unconfiguredChannels = computed<Channel[]>(() =>
 const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) === selectedName.value) || null)
 const selectedProbe = computed(() =>
   selectedChannel.value ? probeResults.value[channelKey(selectedChannel.value)] : undefined)
+
+// Which add affordance the home shows — driven by the CONFIGURED channel count
+// only (orphan runtime channels don't count toward the tier). 'gallery' = the
+// inline platform gallery (0 channels), 'bar' = the platform bar under the grid
+// (1..3), 'card' = the trailing add-card + top-right button (>=4). Exactly one
+// of these is the add entry at any time.
+const addTier = computed<'gallery' | 'bar' | 'card'>(() => {
+  const count = channels.value.length
+  if (count === 0) return 'gallery'
+  return count <= PLATFORM_BAR_MAX_CHANNELS ? 'bar' : 'card'
+})
+
+// Tier 1 (inline gallery) and Tier 2 (platform bar) render the platform catalog
+// on the home surface WITHOUT ever entering the compose takeover — so the
+// compose editor's catalog must be warmed as soon as the home lands in either
+// tier (loadCatalog is idempotent and de-dups an in-flight fetch).
+watch(addTier, tier => {
+  if (tier === 'gallery' || tier === 'bar') void composeEditor.loadCatalog()
+}, { immediate: true })
 
 const loadData = refresh
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -608,6 +648,23 @@ async function openChannelCompose(): Promise<void> {
   composeType.value = ''
   composeEditor.reset()
   void composeEditor.loadCatalog()
+  syncQuery('push')
+}
+
+/**
+ * Enter the compose takeover ALREADY pre-picked on a platform — the Tier-1
+ * gallery tile and the Tier-2 platform chip both land straight on the picked
+ * form, skipping the in-takeover gallery step. Same guards as
+ * openChannelCompose; one history PUSH carries ?compose=1&type=<t>.
+ */
+async function openComposeWithType(type: string): Promise<void> {
+  if (composeMode.value) { pickComposeType(type); return }
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
+  if (editMode.value) discardDraftAndExitEdit()
+  if (selectedName.value) forceCloseDetail()
+  composeMode.value = true
+  composeEditor.reset()
+  pickComposeType(type)
   syncQuery('push')
 }
 
@@ -1603,8 +1660,9 @@ function probeResultDetail(ch: Channel): string {
 .ch-stale { align-items: center; background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface)); border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border)); border-radius: var(--radius-md); color: var(--text-muted); display: flex; font-size: var(--fs-sm); gap: var(--sp-2); margin: 0; padding: 7px 12px; }
 .ch-stale > svg { color: var(--warn); flex: 0 0 auto; }
 .ch-stale > span { flex: 1; }
-.ch-empty { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); gap: var(--sp-3); }
-.ch-empty__icon { align-items: center; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border)); border-radius: 50%; color: var(--accent); display: flex; height: 72px; justify-content: center; width: 72px; }
+/* Tier 1 (0 configured channels): the inline platform gallery IS the page. */
+.ch-gallery-home { display: flex; flex-direction: column; gap: var(--sp-3); }
+.ch-gallery-home__lead { color: var(--text-dim); font-size: var(--fs-sm); margin: 0; }
 .is-spinning { animation: ch-spin 0.9s linear infinite; }
 @keyframes ch-spin { to { transform: rotate(360deg); } }
 

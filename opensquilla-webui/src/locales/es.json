@@ -1658,7 +1658,10 @@
         "rejectLabel": "Rechazar la solicitud de emparejamiento de {sender}",
         "rejectSuccess": "Solicitud de emparejamiento de {sender} rechazada",
         "rejectFailed": "No se pudo rechazar a {sender}: {error}",
-        "fixCredentials": "Corregir credenciales"
+        "fixCredentials": "Corregir credenciales",
+        "galleryLead": "Elige una plataforma para empezar",
+        "platformBarLabel": "Añadir un canal · elige una plataforma",
+        "platformBarMore": "+{count} más"
       },
       "detail": {
         "bot": "Bot {id}",

@@ -1658,7 +1658,10 @@
         "rejectLabel": "Reject the pairing request from {sender}",
         "rejectSuccess": "Rejected the pairing request from {sender}",
         "rejectFailed": "Could not reject {sender}: {error}",
-        "fixCredentials": "Fix credentials"
+        "fixCredentials": "Fix credentials",
+        "galleryLead": "Choose a platform to get started",
+        "platformBarLabel": "Add a channel · pick a platform",
+        "platformBarMore": "+{count} more"
       },
       "detail": {
         "bot": "Bot {id}",

@@ -1658,7 +1658,10 @@
         "rejectLabel": "Refuser la demande d'appairage de {sender}",
         "rejectSuccess": "Demande d'appairage de {sender} refusée",
         "rejectFailed": "Impossible de refuser {sender} : {error}",
-        "fixCredentials": "Corriger les identifiants"
+        "fixCredentials": "Corriger les identifiants",
+        "galleryLead": "Choisissez une plateforme pour commencer",
+        "platformBarLabel": "Ajouter un canal · choisissez une plateforme",
+        "platformBarMore": "+{count} de plus"
       },
       "detail": {
         "bot": "Bot {id}",

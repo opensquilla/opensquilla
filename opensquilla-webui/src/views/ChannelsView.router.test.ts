@@ -28,6 +28,27 @@ const channelRows = [
     capability_profile: { transports: ['polling'], maturity: 'YELLOW-experimental', evidence: {} },
     diagnostics: { network_probe: 'not_run' },
   },
+  // Four configured channels keeps the home in the add-card tier, so the
+  // top-right "Add channel" button (the compose entry these routing tests
+  // exercise) is present.
+  {
+    name: 'wecom-hr',
+    type: 'wecom',
+    status: 'connected',
+    connected: true,
+    enabled: true,
+    configured: true,
+    diagnostics: { network_probe: 'not_run' },
+  },
+  {
+    name: 'discord-lab',
+    type: 'discord',
+    status: 'connected',
+    connected: true,
+    enabled: true,
+    configured: true,
+    diagnostics: { network_probe: 'not_run' },
+  },
 ]
 
 function buttonWithText(root: ParentNode, label: string): HTMLButtonElement {

@@ -135,6 +135,9 @@ async function mountChannelsView(options: {
   draftProbeError?: { message: string }
   /** Initial route query (deep-link scenarios). */
   routeQuery?: Record<string, string>
+  /** Override the configured channel rows (drives the add-tier: 0 → gallery,
+   *  1..3 → platform bar, >=4 → add-card). Defaults to the shared fixture. */
+  channelRows?: Array<Record<string, unknown>>
   locale?: string
 } = {}) {
   vi.resetModules()
@@ -192,8 +195,9 @@ async function mountChannelsView(options: {
     },
   ]
   const adminSendersMap: Record<string, string[]> = { ...(options.adminSenders || {}) }
-  const execute = vi.fn(async () => ({ channels: channelRows }))
-  const refresh = vi.fn(async () => ({ channels: channelRows }))
+  const rows = options.channelRows ?? channelRows
+  const execute = vi.fn(async () => ({ channels: rows }))
+  const refresh = vi.fn(async () => ({ channels: rows }))
   // Catalog slice mirroring the backend field-spec shape (groups, secrets,
   // show_when, advanced) for the in-place configuration editor.
   const slackSpec = {
@@ -341,7 +345,7 @@ async function mountChannelsView(options: {
   const replace = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
   // Mutable status snapshot: tests drive the 30s-poll divergence path by
   // swapping this ref's value.
-  const channelsData = ref<{ channels: Array<Record<string, unknown>> }>({ channels: channelRows })
+  const channelsData = ref<{ channels: Array<Record<string, unknown>> }>({ channels: rows })
   vi.doMock('vue-router', () => ({
     useRouter: () => ({ push, replace }),
     useRoute: () => ({ path: '/channels', query: { ...(options.routeQuery || {}) }, hash: '' }),
@@ -1624,6 +1628,109 @@ describe('ChannelsView in-place configuration editor', () => {
         .toContain('Stored ······')
     } finally {
       ctx.app.unmount()
+    }
+  })
+})
+
+describe('ChannelsView add-tier', () => {
+  const twoChannels = [
+    { name: 'ops-slack', type: 'slack', status: 'connected', connected: true, enabled: true, configured: true, diagnostics: { network_probe: 'not_run' } },
+    { name: 'alerts-telegram', type: 'telegram', status: 'stopped', connected: false, enabled: true, configured: true, diagnostics: { network_probe: 'not_run' } },
+  ]
+
+  // The single "Add channel" affordance is the top-right header button; the
+  // add-card ("＋Add channel") and platform-bar label are deliberately not it.
+  function headerAddButtons(root: ParentNode): HTMLButtonElement[] {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
+      .filter(button => button.textContent?.trim() === 'Add channel')
+  }
+
+  it('Tier 1 (0 channels): the inline platform gallery is the page, no header add button', async () => {
+    const { app, el, flush } = await mountChannelsView({ channelRows: [] })
+    try {
+      await flush()
+      await flush()
+      // The catalog gallery renders inline (same specs the compose gallery uses).
+      expect(el.querySelector('.ctg__grid')).toBeTruthy()
+      expect(el.querySelector('[data-channel-type="slack"]')).toBeTruthy()
+      expect(el.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
+      // The gallery IS the single entry: no header button, no dashboard grid/bar.
+      expect(headerAddButtons(el)).toHaveLength(0)
+      expect(el.querySelector('.chb__grid')).toBeNull()
+      expect(el.querySelector('.ch-platbar')).toBeNull()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('Tier 1: a gallery tile enters compose pre-picked (?compose=1&type=)', async () => {
+    const ctx = await mountChannelsView({ channelRows: [] })
+    const { app, el, flush, push } = ctx
+    try {
+      await flush()
+      await flush()
+      el.querySelector<HTMLButtonElement>('[data-channel-type="slack"]')!.click()
+      await flush()
+      // One history PUSH carries compose=1 AND the picked type in a single write.
+      expect(push).toHaveBeenCalledWith(expect.objectContaining({
+        query: expect.objectContaining({ compose: '1', type: 'slack' }),
+      }))
+      expect(el.querySelector('.chc')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('Tier 2 (1..3 channels): platform bar replaces the add-card and skips used platforms', async () => {
+    const { app, el, flush } = await mountChannelsView({ channelRows: twoChannels })
+    try {
+      await flush()
+      await flush()
+      // The grid keeps the channel cards but drops the trailing add-card.
+      expect(channelCard(el, 'ops-slack')).toBeTruthy()
+      expect(channelCard(el, 'alerts-telegram')).toBeTruthy()
+      expect(el.querySelector('.chb-card--add')).toBeNull()
+      // No header button — the bar is the single entry.
+      expect(headerAddButtons(el)).toHaveLength(0)
+      const bar = el.querySelector<HTMLElement>('.ch-platbar')
+      expect(bar).toBeTruthy()
+      // Chips only for UNCONFIGURED platform types: slack (used) is skipped;
+      // feishu/matrix (catalog, unused) surface.
+      expect(bar!.querySelector('[data-channel-type="slack"]')).toBeNull()
+      expect(bar!.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
+      expect(bar!.querySelector('[data-channel-type="matrix"]')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('Tier 2: a platform chip enters compose pre-picked', async () => {
+    const ctx = await mountChannelsView({ channelRows: twoChannels })
+    const { app, el, flush, push } = ctx
+    try {
+      await flush()
+      await flush()
+      el.querySelector<HTMLButtonElement>('.ch-platbar [data-channel-type="feishu"]')!.click()
+      await flush()
+      expect(push).toHaveBeenCalledWith(expect.objectContaining({
+        query: expect.objectContaining({ compose: '1', type: 'feishu' }),
+      }))
+      expect(el.querySelector('.chc')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('Tier 3 (>=4 channels): the add-card and header button return, no platform bar', async () => {
+    // The shared fixture carries five configured channels.
+    const { app, el, flush } = await mountChannelsView()
+    try {
+      await flush()
+      expect(el.querySelector('.chb-card--add')).toBeTruthy()
+      expect(headerAddButtons(el).length).toBeGreaterThan(0)
+      expect(el.querySelector('.ch-platbar')).toBeNull()
+    } finally {
+      app.unmount()
     }
   })
 })

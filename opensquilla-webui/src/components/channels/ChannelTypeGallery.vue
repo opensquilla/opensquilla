@@ -10,6 +10,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ChannelBrandMark from '@/components/setup/ChannelBrandMark.vue'
 import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
+import { orderChannelSpecs } from '@/composables/setup/channelPlatformOrder'
 import type { ChannelEditorFieldSpec, ChannelEditorSpec } from '@/composables/channels/useChannelEditor'
 
 const props = defineProps<{
@@ -26,22 +27,12 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const { localizeFieldLabel, localizeLabel } = useChannelCatalogI18n()
 
-const ZH_ORDER = ['feishu', 'wecom', 'dingtalk', 'qq', 'slack', 'telegram', 'discord', 'matrix']
-const DEFAULT_ORDER = ['slack', 'telegram', 'discord', 'matrix', 'feishu', 'wecom', 'dingtalk', 'qq']
-
 function displayLabel(spec: ChannelEditorSpec): string {
   return localizeLabel(spec.type, spec.label)
 }
 
-const sorted = computed(() => {
-  const order = String(locale.value).toLowerCase().startsWith('zh') ? ZH_ORDER : DEFAULT_ORDER
-  const rank = new Map(order.map((type, index) => [type, index]))
-  return [...props.channels].sort((a, b) => {
-    const rankA = rank.get(a.type) ?? order.length
-    const rankB = rank.get(b.type) ?? order.length
-    return rankA - rankB || displayLabel(a).localeCompare(displayLabel(b))
-  })
-})
+const sorted = computed(() =>
+  orderChannelSpecs(props.channels, String(locale.value), displayLabel))
 
 // The one-line footnote: localized labels of the required credential/secret
 // fields ("App ID · App Secret", "Bot token"), restricted to the fields

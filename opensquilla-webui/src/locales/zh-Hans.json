@@ -1658,7 +1658,10 @@
         "rejectLabel": "拒绝 {sender} 的配对请求",
         "rejectSuccess": "已拒绝 {sender} 的配对请求",
         "rejectFailed": "无法拒绝 {sender}：{error}",
-        "fixCredentials": "修复凭证"
+        "fixCredentials": "修复凭证",
+        "galleryLead": "选择一个平台开始",
+        "platformBarLabel": "添加渠道 · 直接选一个平台",
+        "platformBarMore": "+{count} 更多"
       },
       "detail": {
         "bot": "机器人 {id}",

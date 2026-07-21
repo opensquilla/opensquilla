@@ -1658,7 +1658,10 @@
         "rejectLabel": "Kopplungsanfrage von {sender} ablehnen",
         "rejectSuccess": "Kopplungsanfrage von {sender} abgelehnt",
         "rejectFailed": "{sender} konnte nicht abgelehnt werden: {error}",
-        "fixCredentials": "Zugangsdaten korrigieren"
+        "fixCredentials": "Zugangsdaten korrigieren",
+        "galleryLead": "Wählen Sie eine Plattform, um zu beginnen",
+        "platformBarLabel": "Kanal hinzufügen · Plattform wählen",
+        "platformBarMore": "+{count} weitere"
       },
       "detail": {
         "bot": "Bot {id}",

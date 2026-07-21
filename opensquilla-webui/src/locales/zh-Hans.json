@@ -1001,29 +1001,76 @@
     },
     "channelCatalog": {
       "fields": {
-        "group_session_scope": { "label": "群聊会话范围" },
-        "busy_input_mode": { "label": "忙碌时的输入处理" },
-        "dm_access": { "label": "私聊访问" },
-        "pairing_approved_notice": { "label": "批准后通知发送者" },
-        "allowed_senders": { "label": "允许的发送者 ID" },
-        "status_reactions_enabled": { "label": "消息状态表情回应" },
-        "api_base": { "label": "API 基础地址" },
-        "name": { "label": "渠道名称", "description": "此渠道条目的唯一标识。" },
-        "agent_id": { "label": "智能体 ID" },
-        "enabled": { "label": "启用" },
-        "default_chat_id": { "label": "默认会话 ID" },
-        "connection_mode": { "label": "连接方式" },
-        "app_id": { "label": "应用 ID（App ID）" },
-        "app_secret": { "label": "应用密钥（App Secret）" },
-        "signing_secret": { "label": "签名密钥（Signing secret）" },
-        "client_id": { "label": "客户端 ID（Client ID）" },
-        "client_secret": { "label": "客户端密钥（Client Secret）" },
-        "bot_id": { "label": "机器人 ID（Bot ID）" },
-        "bot_secret": { "label": "机器人密钥（Bot Secret）" },
-        "corp_secret": { "label": "企业应用密钥（Corp Secret）" },
-        "homeserver_url": { "label": "服务器地址（Homeserver URL）" },
-        "user_id": { "label": "用户 ID（{'@'}user:server）" },
-        "debounce_window_s": { "label": "去抖窗口（秒）" }
+        "group_session_scope": {
+          "label": "群聊会话范围"
+        },
+        "busy_input_mode": {
+          "label": "忙碌时的输入处理"
+        },
+        "dm_access": {
+          "label": "私聊访问"
+        },
+        "pairing_approved_notice": {
+          "label": "批准后通知发送者"
+        },
+        "allowed_senders": {
+          "label": "允许的发送者 ID"
+        },
+        "status_reactions_enabled": {
+          "label": "消息状态表情回应"
+        },
+        "api_base": {
+          "label": "API 基础地址"
+        },
+        "name": {
+          "label": "渠道名称",
+          "description": "此渠道条目的唯一标识。"
+        },
+        "agent_id": {
+          "label": "智能体 ID"
+        },
+        "enabled": {
+          "label": "启用"
+        },
+        "default_chat_id": {
+          "label": "默认会话 ID"
+        },
+        "connection_mode": {
+          "label": "连接方式"
+        },
+        "app_id": {
+          "label": "应用 ID（App ID）"
+        },
+        "app_secret": {
+          "label": "应用密钥（App Secret）"
+        },
+        "signing_secret": {
+          "label": "签名密钥（Signing secret）"
+        },
+        "client_id": {
+          "label": "客户端 ID（Client ID）"
+        },
+        "client_secret": {
+          "label": "客户端密钥（Client Secret）"
+        },
+        "bot_id": {
+          "label": "机器人 ID（Bot ID）"
+        },
+        "bot_secret": {
+          "label": "机器人密钥（Bot Secret）"
+        },
+        "corp_secret": {
+          "label": "企业应用密钥（Corp Secret）"
+        },
+        "homeserver_url": {
+          "label": "服务器地址（Homeserver URL）"
+        },
+        "user_id": {
+          "label": "用户 ID（{'@'}user:server）"
+        },
+        "debounce_window_s": {
+          "label": "去抖窗口（秒）"
+        }
       },
       "groups": {
         "basic": "基本",
@@ -1042,7 +1089,11 @@
         ]
       },
       "discord": {
-        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
+        "fields": {
+          "token": {
+            "label": "机器人令牌（Bot token）"
+          }
+        },
         "description": "Discord 机器人，使用 gateway websocket。",
         "needs": [
           "Bot token。"
@@ -1078,7 +1129,11 @@
         ]
       },
       "slack": {
-        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
+        "fields": {
+          "token": {
+            "label": "机器人令牌（Bot token）"
+          }
+        },
         "description": "Slack 工作区机器人——Socket 模式（websocket）或 Events API webhook。",
         "needs": [
           "Bot token（xoxb-…）。",
@@ -1086,7 +1141,11 @@
         ]
       },
       "telegram": {
-        "fields": { "token": { "label": "机器人令牌（Bot token）" } },
+        "fields": {
+          "token": {
+            "label": "机器人令牌（Bot token）"
+          }
+        },
         "description": "Telegram Bot API——轮询或 webhook 传输。",
         "needs": [
           "Bot token。"
@@ -1510,7 +1569,9 @@
         "otherSettings": "其他设置",
         "unknownType": "该渠道类型（{type}）没有可用的编辑表单；请在配置文件中修改此条目。",
         "entryMissing": "配置中找不到渠道 {name}。",
-        "editIntro": "更改在保存后生效。密钥留空则保留已存储的值。"
+        "editIntro": "更改在保存后生效。密钥留空则保留已存储的值。",
+        "boolOn": "开启",
+        "boolOff": "关闭"
       },
       "compose": {
         "back": "渠道",
@@ -1702,7 +1763,9 @@
         "bot": "机器人 {id}",
         "connectedFor": "在线 {duration}",
         "restarts": "重启 {count} 次",
-        "capabilityReference": "能力参考"
+        "capabilityReference": "能力参考",
+        "copyBotId": "复制 Bot ID：{id}",
+        "botIdCopied": "Bot ID 已复制"
       }
     },
     "overview": {

@@ -53,6 +53,7 @@ const placeholder = computed(() => {
   return isSecretInput.value ? t('setup.field.secretComposePlaceholder') : ''
 })
 const displayValue = computed(() => (props.row.value === '' ? '—' : props.row.value))
+const isEmptyValue = computed(() => props.row.value === '')
 
 function onInput(event: Event) {
   emit('update', props.row.field.name, (event.target as HTMLInputElement | HTMLSelectElement).value)
@@ -63,7 +64,7 @@ function onInput(event: Event) {
   <div class="cfge__row" :data-field="row.field.name">
     <div class="cfge__rail">
       <label class="cfge__label" :for="inputId">
-        {{ row.label }}<span v-if="row.field.required" aria-hidden="true"> *</span>
+        {{ row.label }}<span v-if="edit && row.field.required" aria-hidden="true"> *</span>
       </label>
       <span
         v-if="edit && row.edited"
@@ -125,7 +126,10 @@ function onInput(event: Event) {
       </template>
 
       <template v-else-if="fieldType === 'bool'">
-        <span v-if="!edit" class="cfge__value">{{ displayValue }}</span>
+        <span v-if="!edit" class="cfge__value cfge__value--bool" :class="row.value === 'true' ? 'is-on' : 'is-off'">
+          <span class="cfge__booldot" aria-hidden="true"></span>
+          {{ row.value === 'true' ? t('console.channels.editor.boolOn') : t('console.channels.editor.boolOff') }}
+        </span>
         <span v-else class="cfge__switchline">
           <ControlSwitch
             :id="inputId"
@@ -152,7 +156,7 @@ function onInput(event: Event) {
       </template>
 
       <template v-else>
-        <span v-if="!edit" class="cfge__value">{{ displayValue }}</span>
+        <span v-if="!edit" class="cfge__value" :class="{ 'cfge__value--empty': isEmptyValue }">{{ displayValue }}</span>
         <input
           v-else
           :id="inputId"
@@ -167,7 +171,7 @@ function onInput(event: Event) {
         />
       </template>
 
-      <span v-if="row.description" class="cfge__desc">{{ row.description }}</span>
+      <span v-if="edit && row.description" class="cfge__desc">{{ row.description }}</span>
       <p v-if="edit && error" class="cfge__field-error" role="alert">{{ error }}</p>
     </div>
   </div>

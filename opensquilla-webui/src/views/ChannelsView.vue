@@ -77,11 +77,17 @@
               show-cause
             />
             <span class="chd__fact">{{ transportLabel(selectedChannel, t('console.channels.notReported')) }}</span>
-            <span v-if="selectedChannel.bot_user_id" class="chd__fact chd__fact--mono">{{ t('console.channels.detail.bot', { id: selectedChannel.bot_user_id }) }}</span>
+            <button
+              v-if="selectedChannel.bot_user_id"
+              type="button"
+              class="chd__fact chd__fact--mono chd__botid"
+              :title="t('console.channels.detail.copyBotId', { id: selectedChannel.bot_user_id })"
+              @click="copyBotId(selectedChannel.bot_user_id)"
+            >{{ t('console.channels.detail.bot', { id: truncateId(selectedChannel.bot_user_id) }) }}</button>
             <span v-if="selectedChannel.connected_since" class="chd__fact" :title="formatSince(selectedChannel.connected_since, locale)">
               {{ t('console.channels.detail.connectedFor', { duration: formatConnectedDuration(selectedChannel.connected_since) }) }}
             </span>
-            <span class="chd__fact">{{ restartsLabel(selectedChannel) }}</span>
+            <span v-if="(selectedChannel.restart_attempts ?? 0) > 0" class="chd__fact">{{ restartsLabel(selectedChannel) }}</span>
           </p>
         </div>
         <!-- Runtime ops first, then configuration writes, destructive Remove
@@ -1103,6 +1109,7 @@ watch(selectedName, name => {
 const activeSection = ref<SectionId>('pairings')
 const pendingScrollTab = ref<DetailTab | null>(null)
 let spyTarget: HTMLElement | Window | null = null
+let spyHoldUntil = 0
 
 const memberCount = computed(() =>
   members.pairings.value.filter(pairing => pairing.status === 'approved').length)
@@ -1143,6 +1150,7 @@ function scrollToSection(tab: DetailTab, behaviorOverride?: ScrollBehavior): voi
     return
   }
   activeSection.value = tab
+  spyHoldUntil = Date.now() + 800
   sectionEl(tab)?.scrollIntoView?.({ behavior, block: 'start' })
 }
 
@@ -1153,6 +1161,7 @@ function goToSection(section: SectionId): void {
 
 function onSpyScroll(): void {
   if (!pageRef.value) return
+  if (Date.now() < spyHoldUntil) return
   let current: SectionId = SECTIONS[0]
   for (const section of SECTIONS) {
     const el = sectionEl(section)
@@ -1472,6 +1481,19 @@ async function toggleChannel(ch: Channel): Promise<void> {
 function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
 
 // Pluralized restart count for the header facts line ("1 restart").
+function truncateId(id: string): string {
+  return id.length > 14 ? `${id.slice(0, 7)}…${id.slice(-4)}` : id
+}
+
+async function copyBotId(id: string) {
+  try {
+    await navigator.clipboard.writeText(id)
+    pushToast(t('console.channels.detail.botIdCopied'), { tone: 'ok' })
+  } catch {
+    /* clipboard unavailable: the title still exposes the full id */
+  }
+}
+
 function restartsLabel(ch: Channel): string {
   const count = ch.restart_attempts ?? 0
   return t('console.channels.detail.restarts', { count }, count)
@@ -1592,18 +1614,37 @@ function probeResultDetail(ch: Channel): string {
 .chd__fact { min-width: 0; overflow-wrap: anywhere; }
 .chd__fact::before { color: var(--text-dim); content: '·'; margin-right: var(--sp-2); }
 .chd__fact--mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
+.chd__botid { background: transparent; border: 0; color: inherit; cursor: copy; padding: 0; }
+.chd__botid:hover { color: var(--text); }
 .chd__actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-left: auto; }
 .chd__actions .btn { min-height: 32px; padding: 5px 10px; }
 .chd__remove { color: var(--danger); }
-.chd__cols { align-items: start; display: grid; gap: var(--sp-5); grid-template-columns: 190px minmax(0, 1fr); }
+.chd__cols { align-items: start; display: grid; gap: var(--sp-5); grid-template-columns: 172px minmax(0, 1fr); max-width: 1460px; }
 .chd__nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 56px; }
-.chd__nav button { align-items: center; background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer; display: flex; font: inherit; font-size: var(--fs-sm); gap: 7px; padding: 8px 12px; text-align: left; }
+.chd__nav button { align-items: center; background: transparent; border: 0; border-left: 2px solid transparent; color: var(--text-muted); cursor: pointer; display: flex; font: inherit; font-size: var(--fs-sm); gap: 7px; line-height: 1.4; padding: 7px 10px; text-align: left; }
 .chd__nav button:hover { color: var(--text); }
-.chd__nav button.is-active { background: var(--bg-surface); border-color: var(--border); color: var(--text); font-weight: 600; }
+.chd__nav button:focus-visible { border-radius: var(--radius-sm); box-shadow: var(--focus-ring); outline: 0; }
+.chd__nav button.is-active { border-left-color: var(--text); color: var(--text); font-weight: 550; }
 .chd__nav-count { color: var(--text-dim); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; margin-left: auto; }
-.chd__main { display: grid; gap: var(--sp-3); min-width: 0; }
+.chd__main { display: grid; gap: 24px; max-width: 1280px; min-width: 0; }
 .chd__section { display: grid; gap: var(--sp-3); scroll-margin-top: 64px; }
-.chd__no-evidence { font-size: var(--fs-sm); padding: 0 14px 12px; }
+.chd__no-evidence { font-size: var(--fs-sm); padding: 0 0 12px; }
+/* One-document skeleton: drill sections read as titled groups, not widgets. */
+.chd__main :deep(.ch-panel) { background: transparent; border: 0; border-radius: 0; overflow: visible; }
+.chd__main :deep(.ch-panel > h3), .chd__main :deep(.ch-panel__heading) { border-bottom: 1px solid var(--border); padding: 0 0 8px; }
+.chd__main :deep(.ch-panel__heading p) { margin: 2px 0 0; }
+.chd__main :deep(.ch-panel__intro) { padding: 10px 0 0; }
+.chd__main :deep(.ch-pairing-summary) { border-bottom: 0; padding: 8px 0 0; }
+.chd__main :deep(.ch-pairing-summary .is-zero), .chd__main :deep(.ch-pairing-summary .is-zero strong) { color: var(--text-dim); font-weight: 400; }
+.chd__main :deep(.ch-pairing-search) { margin: 8px 0 0; }
+.chd__main :deep(.ch-pairing-state) { flex-direction: row; gap: 10px; justify-content: flex-start; min-height: 0; padding: 16px 0; text-align: left; }
+.chd__main :deep(.ch-pairing-state strong) { font-weight: 550; }
+.chd__main :deep(.ch-pairing-groups h4) { padding: 12px 0 6px; }
+.chd__main :deep(.ch-pairing-row) { padding-left: 0; padding-right: 0; }
+.chd__main :deep(.ch-metrics) { gap: 0 var(--sp-5); grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); max-width: 760px; }
+.chd__main :deep(.ch-metrics > div) { border-right: 0; padding: 12px 0; }
+.chd__main :deep(.ch-facts dl > div) { padding: 10px 0; }
+.chd__main :deep(.cfge) { padding-left: 0; padding-right: 0; }
 
 /* Unsaved-draft dot on the Configuration sidenav item: typographic, not
    chromatic. */

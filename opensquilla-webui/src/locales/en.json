@@ -1001,29 +1001,76 @@
     },
     "channelCatalog": {
       "fields": {
-        "group_session_scope": { "label": "Group session scope" },
-        "busy_input_mode": { "label": "Input while busy" },
-        "dm_access": { "label": "Direct-message access" },
-        "pairing_approved_notice": { "label": "Tell senders when approved" },
-        "allowed_senders": { "label": "Allowed sender ids" },
-        "status_reactions_enabled": { "label": "Message status reactions" },
-        "api_base": { "label": "API base" },
-        "name": { "label": "Channel name", "description": "Unique identifier for this channel entry." },
-        "agent_id": { "label": "Agent id" },
-        "enabled": { "label": "Enabled" },
-        "default_chat_id": { "label": "Default chat id" },
-        "connection_mode": { "label": "Connection mode" },
-        "app_id": { "label": "App id" },
-        "app_secret": { "label": "App secret" },
-        "signing_secret": { "label": "Signing secret" },
-        "client_id": { "label": "Client id" },
-        "client_secret": { "label": "Client secret" },
-        "bot_id": { "label": "Bot ID" },
-        "bot_secret": { "label": "Bot secret" },
-        "corp_secret": { "label": "Corp secret" },
-        "homeserver_url": { "label": "Homeserver URL" },
-        "user_id": { "label": "User id ({'@'}user:server)" },
-        "debounce_window_s": { "label": "Debounce window (s)" }
+        "group_session_scope": {
+          "label": "Group session scope"
+        },
+        "busy_input_mode": {
+          "label": "Input while busy"
+        },
+        "dm_access": {
+          "label": "Direct-message access"
+        },
+        "pairing_approved_notice": {
+          "label": "Tell senders when approved"
+        },
+        "allowed_senders": {
+          "label": "Allowed sender ids"
+        },
+        "status_reactions_enabled": {
+          "label": "Message status reactions"
+        },
+        "api_base": {
+          "label": "API base"
+        },
+        "name": {
+          "label": "Channel name",
+          "description": "Unique identifier for this channel entry."
+        },
+        "agent_id": {
+          "label": "Agent id"
+        },
+        "enabled": {
+          "label": "Enabled"
+        },
+        "default_chat_id": {
+          "label": "Default chat id"
+        },
+        "connection_mode": {
+          "label": "Connection mode"
+        },
+        "app_id": {
+          "label": "App id"
+        },
+        "app_secret": {
+          "label": "App secret"
+        },
+        "signing_secret": {
+          "label": "Signing secret"
+        },
+        "client_id": {
+          "label": "Client id"
+        },
+        "client_secret": {
+          "label": "Client secret"
+        },
+        "bot_id": {
+          "label": "Bot ID"
+        },
+        "bot_secret": {
+          "label": "Bot secret"
+        },
+        "corp_secret": {
+          "label": "Corp secret"
+        },
+        "homeserver_url": {
+          "label": "Homeserver URL"
+        },
+        "user_id": {
+          "label": "User id ({'@'}user:server)"
+        },
+        "debounce_window_s": {
+          "label": "Debounce window (s)"
+        }
       },
       "groups": {
         "basic": "Basic",
@@ -1042,7 +1089,11 @@
         ]
       },
       "discord": {
-        "fields": { "token": { "label": "Bot token" } },
+        "fields": {
+          "token": {
+            "label": "Bot token"
+          }
+        },
         "description": "Discord bot using gateway websocket.",
         "needs": [
           "Bot token."
@@ -1078,7 +1129,11 @@
         ]
       },
       "slack": {
-        "fields": { "token": { "label": "Bot token" } },
+        "fields": {
+          "token": {
+            "label": "Bot token"
+          }
+        },
         "description": "Slack workspace bot — Socket Mode (websocket) or Events API webhook.",
         "needs": [
           "Bot token (xoxb-…).",
@@ -1086,7 +1141,11 @@
         ]
       },
       "telegram": {
-        "fields": { "token": { "label": "Bot token" } },
+        "fields": {
+          "token": {
+            "label": "Bot token"
+          }
+        },
         "description": "Telegram Bot API — polling or webhook transport.",
         "needs": [
           "Bot token."
@@ -1510,7 +1569,9 @@
         "otherSettings": "Other settings",
         "unknownType": "No editor form is available for this channel type ({type}); edit the entry in the configuration file.",
         "entryMissing": "Channel {name} was not found in the configuration.",
-        "editIntro": "Changes apply on Save. Blank secret fields keep their stored values."
+        "editIntro": "Changes apply on Save. Blank secret fields keep their stored values.",
+        "boolOn": "On",
+        "boolOff": "Off"
       },
       "compose": {
         "back": "Channels",
@@ -1702,7 +1763,9 @@
         "bot": "Bot {id}",
         "connectedFor": "Connected {duration}",
         "restarts": "{count} restart | {count} restarts",
-        "capabilityReference": "Capability reference"
+        "capabilityReference": "Capability reference",
+        "copyBotId": "Copy bot ID: {id}",
+        "botIdCopied": "Bot ID copied"
       }
     },
     "overview": {

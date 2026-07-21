@@ -283,6 +283,14 @@ function onCancelReplace(name: string) {
    skeleton and the flip reflows nothing. */
 .cfge { display: block; padding: var(--sp-3) var(--sp-4) var(--sp-4); }
 .cfge__group + .cfge__group { margin-top: 28px; }
+/* Read mode is a fact sheet, not a form: on wide panels the record flows in
+   two columns so a saved channel reads at a glance instead of as a strip. */
+@media (min-width: 1100px) {
+  .cfge:not(.is-edit) section.cfge__group { column-gap: 56px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .cfge:not(.is-edit) section.cfge__group > .cfge__group-title,
+  .cfge:not(.is-edit) section.cfge__group > .cfge__note { grid-column: 1 / -1; }
+}
+.cfge:not(.is-edit) .cfge__row { min-height: 32px; }
 .cfge__group-title {
   border-bottom: 1px solid var(--border);
   color: var(--text);
@@ -315,6 +323,10 @@ function onCancelReplace(name: string) {
 .cfge :deep(.cfge__input) { background: var(--bg); border-color: var(--border); min-width: 0; outline: 0; }
 .cfge :deep(.cfge__input:focus-visible) { border-color: var(--accent); box-shadow: var(--focus-ring); }
 .cfge :deep(.cfge__value--secret) { font-variant-numeric: tabular-nums; letter-spacing: 0.08em; }
+.cfge :deep(.cfge__value--empty) { color: var(--text-dim); }
+.cfge :deep(.cfge__value--bool.is-off) { color: var(--text-muted); }
+.cfge :deep(.cfge__booldot) { background: var(--text-dim); border-radius: 50%; flex: none; height: 7px; width: 7px; }
+.cfge :deep(.cfge__value--bool.is-on .cfge__booldot) { background: var(--ok); }
 .cfge :deep(.cfge__value--locked > svg) { color: var(--text-dim); flex: none; }
 .cfge :deep(.cfge__secretline) { align-items: center; display: flex; gap: var(--sp-2); }
 .cfge :deep(.cfge__secretline .cfge__value),

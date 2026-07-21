@@ -911,6 +911,40 @@ class TestSessionsList:
         assert row["interactive"] is False
 
     @pytest.mark.asyncio
+    async def test_list_classifies_custom_named_channel_sessions(self, dispatcher):
+        # Operators name channels freely ("飞书", "slack-eng"); the session key
+        # and last_channel carry that NAME, not the platform type. The view must
+        # resolve it through the configured name->type map or every custom-named
+        # channel's sessions land in the sidebar as unclassifiable "unknown".
+        session = FakeSession(
+            session_key="agent:main:飞书:direct:ou_demo_user",
+            last_channel="飞书",
+            last_to="ou_demo_user",
+        )
+        config = GatewayConfig(
+            memory={"flush_enabled": False},
+            channels={
+                "channels": [
+                    {
+                        "type": "feishu",
+                        "name": "飞书",
+                        "app_id": "cli_dummy",
+                        "app_secret": "dummy",
+                    }
+                ]
+            },
+        )
+        ctx = make_ctx(session_manager=FakeSessionManager([session]), config=config)
+
+        res = await dispatcher.dispatch("r1", "sessions.list", None, ctx)
+
+        assert res.ok is True
+        row = res.payload["sessions"][0]
+        assert row["sessionKind"] == "channel"
+        assert row["surface"] == "feishu"
+        assert row["conversationKind"] == "direct"
+
+    @pytest.mark.asyncio
     async def test_list_contract_slack_channel_thread_row(self, dispatcher):
         thread_id = "1717000000.000100"
         session = FakeSession(

@@ -288,6 +288,18 @@ def _apply_run_context_route_metadata(
         route_envelope.metadata["elevated"] = "full"
 
 
+def _channel_types_from_config(config: Any) -> dict[str, str]:
+    """Lowercased configured-channel-name -> platform-type map for the view."""
+    channels_cfg = getattr(getattr(config, "channels", None), "channels", None) or []
+    out: dict[str, str] = {}
+    for entry in channels_cfg:
+        name = str(getattr(entry, "name", "") or "").strip().lower()
+        ctype = str(getattr(entry, "type", "") or "").strip().lower()
+        if name and ctype:
+            out[name] = ctype
+    return out
+
+
 def _normalize_session_send_source_hint(params: dict[str, Any]) -> dict[str, Any]:
     raw_hint = params.get("_source")
     source_hint = dict(raw_hint) if isinstance(raw_hint, dict) else {}
@@ -1239,6 +1251,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             task_rows=task_rows,
             now_ms=now_ms,
             transcript_title=transcript_titles.get(s.session_id, ""),
+            channel_types=_channel_types_from_config(ctx.config),
         )
         row.update(task_summary)
         row.update(view_fields)
@@ -1248,7 +1261,12 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
     return {"sessions": result, "count": len(result), "ts": now_ms}
 
 
-async def _titles_for_keys(storage: Any, keys: list[str], now_ms: int) -> dict[str, str]:
+async def _titles_for_keys(
+    storage: Any,
+    keys: list[str],
+    now_ms: int,
+    channel_types: dict[str, str] | None = None,
+) -> dict[str, str]:
     """Resolve canonical session_key -> sidebar title for a small set of keys.
 
     Labels transcript (content) hits without rebuilding the whole session list.
@@ -1274,6 +1292,7 @@ async def _titles_for_keys(storage: Any, keys: list[str], now_ms: int) -> dict[s
             task_rows=[],
             now_ms=now_ms,
             transcript_title=transcript_titles.get(getattr(node, "session_id", ""), ""),
+            channel_types=channel_types,
         )
         out[canonicalize_session_key(node.session_key)] = str(view.get("title") or "")
     return out
@@ -1344,6 +1363,7 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
             task_rows=[],
             now_ms=now_ms,
             transcript_title=transcript_titles.get(getattr(s, "session_id", ""), ""),
+            channel_types=_channel_types_from_config(getattr(ctx, "config", None)),
         )
         title_keys.add(canonicalize_session_key(s.session_key))
         session_hits.append(
@@ -1386,7 +1406,12 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
         content_keys.add(canon)
         pending.append((raw_key, canon, row))
 
-    title_map = await _titles_for_keys(storage, [canon for _, canon, _ in pending], now_ms)
+    title_map = await _titles_for_keys(
+        storage,
+        [canon for _, canon, _ in pending],
+        now_ms,
+        channel_types=_channel_types_from_config(getattr(ctx, "config", None)),
+    )
     message_hits: list[dict[str, Any]] = []
     for raw_key, canon, row in pending:
         message_hits.append(
@@ -1519,7 +1544,9 @@ async def _should_auto_title(
 
         origin = getattr(session, "origin", None)
         origin_map = origin if isinstance(origin, dict) else {}
-        surface = _surface(session, key, origin_map)
+        surface = _surface(
+            session, key, origin_map, _channel_types_from_config(getattr(ctx, "config", None))
+        )
         session_kind = _session_kind(session, key, surface, origin_map)
         if not is_naming_eligible(naming_cfg, surface, session_kind):
             return False

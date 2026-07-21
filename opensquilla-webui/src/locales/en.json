@@ -1689,7 +1689,8 @@
         "removeAdminConfirmBody": "Return {sender} to member access on {channel}? They can still chat and use safe tools.",
         "adminGrantedSuccess": "Made {sender} a channel admin",
         "adminRemovedSuccess": "Removed admin from {sender}",
-        "adminUpdateFailed": "Could not update admin access for {sender}: {error}"
+        "adminUpdateFailed": "Could not update admin access for {sender}: {error}",
+        "asAdminBootstrap": "This is me — make channel admin"
       },
       "probeFailed": "Connection test failed",
       "editCredentials": "Edit credentials",

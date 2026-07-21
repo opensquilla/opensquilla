@@ -1689,7 +1689,8 @@
         "removeAdminConfirmBody": "{sender} を {channel} のメンバー権限に戻しますか？引き続きチャットと安全なツールを利用できます。",
         "adminGrantedSuccess": "{sender} をチャネル管理者にしました",
         "adminRemovedSuccess": "{sender} の管理者権限を解除しました",
-        "adminUpdateFailed": "{sender} の管理者権限を更新できませんでした：{error}"
+        "adminUpdateFailed": "{sender} の管理者権限を更新できませんでした：{error}",
+        "asAdminBootstrap": "これは自分です — 管理者にする"
       },
       "probeFailed": "接続テストに失敗しました",
       "editCredentials": "認証情報を編集",

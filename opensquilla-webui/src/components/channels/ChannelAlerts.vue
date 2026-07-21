@@ -59,7 +59,7 @@ function asAdminChecked(): boolean {
           :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pendingPairing.senderName || pendingPairing.senderId })"
           @change="adminOverride = ($event.target as HTMLInputElement).checked"
         />
-        <span>{{ t('console.channels.pairings.asAdmin') }}</span>
+        <span>{{ t(defaultAsAdmin ? 'console.channels.pairings.asAdminBootstrap' : 'console.channels.pairings.asAdmin') }}</span>
       </label>
       <button
         type="button"

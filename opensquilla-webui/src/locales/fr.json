@@ -1689,7 +1689,8 @@
         "removeAdminConfirmBody": "Ramener {sender} à un accès membre sur {channel} ? Il peut toujours discuter et utiliser les outils sûrs.",
         "adminGrantedSuccess": "{sender} est désormais admin du canal",
         "adminRemovedSuccess": "Droits d'admin retirés à {sender}",
-        "adminUpdateFailed": "Impossible de mettre à jour l'accès admin pour {sender} : {error}"
+        "adminUpdateFailed": "Impossible de mettre à jour l'accès admin pour {sender} : {error}",
+        "asAdminBootstrap": "C'est moi — définir comme admin"
       },
       "probeFailed": "Échec du test de connexion",
       "editCredentials": "Modifier les identifiants",

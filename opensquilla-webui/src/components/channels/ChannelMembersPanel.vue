@@ -98,7 +98,7 @@ function formatSince(since?: string | number | null): string {
                 :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pairing.senderName || pairing.senderId })"
                 @change="members.setAsAdminChecked(pairing, ($event.target as HTMLInputElement).checked)"
               />
-              <span>{{ t('console.channels.pairings.asAdmin') }}</span>
+              <span>{{ t(members.isBootstrapPairing(pairing) ? 'console.channels.pairings.asAdminBootstrap' : 'console.channels.pairings.asAdmin') }}</span>
             </label>
             <button
               class="btn btn--primary"

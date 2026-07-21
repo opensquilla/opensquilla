@@ -1689,7 +1689,8 @@
         "removeAdminConfirmBody": "{sender} auf Mitgliederzugriff in {channel} zurücksetzen? Sie können weiterhin chatten und sichere Werkzeuge nutzen.",
         "adminGrantedSuccess": "{sender} ist jetzt Kanal-Admin",
         "adminRemovedSuccess": "Admin-Rechte von {sender} entfernt",
-        "adminUpdateFailed": "Admin-Zugriff für {sender} konnte nicht aktualisiert werden: {error}"
+        "adminUpdateFailed": "Admin-Zugriff für {sender} konnte nicht aktualisiert werden: {error}",
+        "asAdminBootstrap": "Das bin ich — als Admin festlegen"
       },
       "probeFailed": "Verbindungstest fehlgeschlagen",
       "editCredentials": "Zugangsdaten bearbeiten",

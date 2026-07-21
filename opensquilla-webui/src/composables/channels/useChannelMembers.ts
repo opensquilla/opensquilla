@@ -115,6 +115,9 @@ export function useChannelMembers() {
   const firstPendingId = computed(() =>
     pairings.value.find(pairing => pairing.status === 'pending')?.pairingId ?? '')
 
+  function isBootstrapPairing(pairing: ChannelPairing): boolean {
+    return pairing.pairingId === firstPendingId.value && noApprovedOrAdmins.value
+  }
   function asAdminChecked(pairing: ChannelPairing): boolean {
     if (pairing.pairingId in adminOverrides.value) return adminOverrides.value[pairing.pairingId]
     return pairing.pairingId === firstPendingId.value && noApprovedOrAdmins.value
@@ -321,6 +324,7 @@ export function useChannelMembers() {
     pendingCount,
     isChannelAdmin,
     asAdminChecked,
+    isBootstrapPairing,
     setAsAdminChecked,
     actionPending,
     adminOnlyActionPending,

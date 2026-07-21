@@ -1689,7 +1689,8 @@
         "removeAdminConfirmBody": "将 {sender} 恢复为 {channel} 的成员权限？他们仍可聊天并使用安全工具。",
         "adminGrantedSuccess": "已将 {sender} 设为频道管理员",
         "adminRemovedSuccess": "已取消 {sender} 的管理员身份",
-        "adminUpdateFailed": "无法更新 {sender} 的管理员权限：{error}"
+        "adminUpdateFailed": "无法更新 {sender} 的管理员权限：{error}",
+        "asAdminBootstrap": "这是我本人 — 设为渠道管理员"
       },
       "probeFailed": "连接测试失败",
       "editCredentials": "编辑凭证",

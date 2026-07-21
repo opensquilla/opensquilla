@@ -1689,7 +1689,8 @@
         "removeAdminConfirmBody": "¿Devolver a {sender} al acceso de miembro en {channel}? Todavía puede chatear y usar herramientas seguras.",
         "adminGrantedSuccess": "{sender} ahora es administrador del canal",
         "adminRemovedSuccess": "Se quitó el administrador a {sender}",
-        "adminUpdateFailed": "No se pudo actualizar el acceso de administrador de {sender}: {error}"
+        "adminUpdateFailed": "No se pudo actualizar el acceso de administrador de {sender}: {error}",
+        "asAdminBootstrap": "Soy yo — hacer administrador"
       },
       "probeFailed": "La prueba de conexión falló",
       "editCredentials": "Editar credenciales",

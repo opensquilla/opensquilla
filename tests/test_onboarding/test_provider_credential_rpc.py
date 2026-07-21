@@ -121,6 +121,37 @@ async def test_provider_probe_rpc_reuses_stored_credentials_when_blank(
     assert seen[0].headers["authorization"] == "Bearer sk-stored"
 
 
+async def test_provider_probe_rpc_binds_synthetic_usage_scope(
+    tmp_path, monkeypatch: Any
+) -> None:
+    from opensquilla.engine.usage_accounting import current_usage_accounting_scope
+
+    observed = []
+
+    async def fake_probe_llm_provider(**kwargs: Any) -> _ProbePayload:
+        scope = current_usage_accounting_scope()
+        assert scope is not None
+        assert callable(kwargs.get("chat_stream_factory"))
+        observed.append(scope.context)
+        return _ProbePayload()
+
+    monkeypatch.setattr(
+        "opensquilla.onboarding.probe.probe_llm_provider",
+        fake_probe_llm_provider,
+    )
+    ctx = _stored_openai_ctx(tmp_path)
+    ctx.usage_event_sink = object()
+
+    payload = await rpc_onboarding._provider_probe(
+        {"providerId": "openai", "model": "gpt-4o"},
+        ctx,
+    )
+
+    assert payload["ok"] is True
+    assert observed[0].run_kind == "onboarding_probe"
+    assert observed[0].session_id
+
+
 async def test_provider_probe_rpc_reuses_stored_base_url_and_proxy_when_blank(
     tmp_path, monkeypatch: Any
 ) -> None:

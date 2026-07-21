@@ -1,10 +1,7 @@
 import 'vue-router'
 
-/** Sidebar grouping bands, ordered top→bottom in the Console fold. */
+/** Stable route taxonomy used by navigation and settings surfaces. */
 export type NavGroup = 'Work' | 'Operate' | 'Observe' | 'Settings'
-
-/** Console fold renders these bands as labeled sub-sections, in this order. */
-export const CONSOLE_GROUP_ORDER: readonly NavGroup[] = ['Operate', 'Observe'] as const
 
 declare module 'vue-router' {
   interface RouteMeta {

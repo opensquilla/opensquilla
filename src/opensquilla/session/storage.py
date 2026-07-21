@@ -9,12 +9,13 @@ import logging
 import random
 import sqlite3
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from functools import wraps
-from typing import TYPE_CHECKING, Any, Concatenate
+from typing import TYPE_CHECKING, Any, Concatenate, cast
 
 from opensquilla.compat import aiosqlite
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
@@ -24,10 +25,31 @@ from opensquilla.session.models import (
     MemoryDurableReceipt,
     SessionContextState,
     SessionNode,
+    SessionStatus,
     SessionSummary,
     TranscriptEntry,
     TurnIngressReceipt,
 )
+from opensquilla.session.usage_ledger import (
+    UsageBackfillBatch,
+    UsageBackfillCursor,
+    UsageBackfillEntry,
+    UsageBackfillStatus,
+    UsageBackfillWrite,
+    UsageEventCompletion,
+    UsageEventItem,
+    UsageEventRecord,
+    UsageEventStart,
+    UsageEventStatus,
+    UsageLedgerConflictError,
+    UsageLedgerState,
+    UsageLegacyBaseline,
+    usd_to_nanos,
+    validate_usage_completion,
+    validate_usage_event_start,
+    validate_usage_item,
+)
+from opensquilla.usage_reasons import normalize_usage_unknown_reason
 
 if TYPE_CHECKING:
     from opensquilla.persistence.meta_run_writer import MetaRunWriter
@@ -132,7 +154,8 @@ def _serialized_read[**P, R](
 # Version 7 added archived transcript rows for canonical recovery after compaction.
 # Version 8 added the derived_title column for LLM-generated session titles.
 # Version 9 added durable turn-ingress receipts.
-SCHEMA_VERSION = 9
+# Version 10 added the durable provider usage ledger.
+SCHEMA_VERSION = 10
 
 # Session rows at or above this semantic version were created by fork logic
 # that records enough existing metadata for canonical coverage to be checked
@@ -219,6 +242,7 @@ CREATE TABLE IF NOT EXISTS transcript_entries (
     tool_call_id TEXT,
     reasoning_content TEXT,
     turn_usage TEXT,
+    turn_context TEXT,
     created_at INTEGER NOT NULL,
     token_count INTEGER,
     provenance_kind TEXT,
@@ -256,6 +280,7 @@ CREATE TABLE IF NOT EXISTS compacted_transcript_entries (
     tool_call_id TEXT,
     reasoning_content TEXT,
     turn_usage TEXT,
+    turn_context TEXT,
     created_at INTEGER NOT NULL,
     token_count INTEGER,
     provenance_kind TEXT,
@@ -469,6 +494,172 @@ _CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE = (
     ")"
 )
 
+_CREATE_USAGE_EVENTS = """
+CREATE TABLE IF NOT EXISTS usage_events (
+    event_id                    TEXT PRIMARY KEY,
+    execution_id                TEXT NOT NULL,
+    call_index                  INTEGER NOT NULL CHECK (call_index >= 0),
+    turn_id                     TEXT,
+    agent_run_id                TEXT,
+    parent_turn_id              TEXT,
+    session_id                  TEXT NOT NULL,
+    session_epoch               INTEGER NOT NULL DEFAULT 0 CHECK (session_epoch >= 0),
+    agent_id                    TEXT NOT NULL DEFAULT 'main',
+    run_kind                    TEXT NOT NULL DEFAULT 'default',
+    provider                    TEXT,
+    model                       TEXT,
+    started_at_ms               INTEGER NOT NULL CHECK (started_at_ms >= 0),
+    completed_at_ms             INTEGER,
+    status                      TEXT NOT NULL DEFAULT 'started'
+                                CHECK (status IN ('started', 'finalized', 'unknown')),
+    input_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens               INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    reasoning_tokens            INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+    cache_read_tokens           INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+    cache_write_tokens          INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+    total_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+    cost_nanos                  INTEGER NOT NULL DEFAULT 0 CHECK (cost_nanos >= 0),
+    billed_cost_nanos           INTEGER NOT NULL DEFAULT 0 CHECK (billed_cost_nanos >= 0),
+    estimated_cost_nanos        INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_nanos >= 0),
+    cost_source                 TEXT NOT NULL DEFAULT 'none',
+    estimate_basis              TEXT,
+    price_source                TEXT,
+    coverage_status             TEXT NOT NULL DEFAULT 'pending',
+    missing_cost_entries        INTEGER NOT NULL DEFAULT 0
+                                CHECK (missing_cost_entries >= 0),
+    unknown_reason              TEXT,
+    origin                      TEXT NOT NULL,
+    schema_version              INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (execution_id, call_index),
+    CHECK (completed_at_ms IS NULL OR completed_at_ms >= started_at_ms),
+    CHECK (cost_nanos = billed_cost_nanos + estimated_cost_nanos)
+)
+"""
+
+_CREATE_USAGE_EVENT_ITEMS = """
+CREATE TABLE IF NOT EXISTS usage_event_items (
+    event_id                    TEXT NOT NULL,
+    ordinal                     INTEGER NOT NULL CHECK (ordinal >= 0),
+    provider                    TEXT,
+    model                       TEXT,
+    input_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens               INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    reasoning_tokens            INTEGER NOT NULL DEFAULT 0 CHECK (reasoning_tokens >= 0),
+    cache_read_tokens           INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+    cache_write_tokens          INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+    total_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+    cost_nanos                  INTEGER NOT NULL DEFAULT 0 CHECK (cost_nanos >= 0),
+    billed_cost_nanos           INTEGER NOT NULL DEFAULT 0 CHECK (billed_cost_nanos >= 0),
+    estimated_cost_nanos        INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_nanos >= 0),
+    cost_source                 TEXT NOT NULL DEFAULT 'none',
+    estimate_basis              TEXT,
+    price_source                TEXT,
+    schema_version              INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (event_id, ordinal),
+    FOREIGN KEY (event_id) REFERENCES usage_events(event_id) ON DELETE CASCADE,
+    CHECK (cost_nanos = billed_cost_nanos + estimated_cost_nanos)
+)
+"""
+
+_CREATE_USAGE_LEDGER_STATE = """
+CREATE TABLE IF NOT EXISTS usage_ledger_state (
+    singleton_id                INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    ledger_started_at_ms        INTEGER NOT NULL CHECK (ledger_started_at_ms >= 0),
+    backfill_status             TEXT NOT NULL DEFAULT 'pending'
+                                CHECK (backfill_status IN
+                                       ('pending', 'running', 'complete',
+                                        'partial', 'failed')),
+    cursor_created_at_ms        INTEGER,
+    cursor_session_id           TEXT,
+    cursor_message_id           TEXT,
+    backfilled_event_count      INTEGER NOT NULL DEFAULT 0
+                                CHECK (backfilled_event_count >= 0),
+    backfilled_cost_nanos       INTEGER NOT NULL DEFAULT 0
+                                CHECK (backfilled_cost_nanos >= 0),
+    anomaly_count               INTEGER NOT NULL DEFAULT 0 CHECK (anomaly_count >= 0),
+    last_error_code             TEXT,
+    updated_at_ms               INTEGER NOT NULL CHECK (updated_at_ms >= 0),
+    schema_version              INTEGER NOT NULL DEFAULT 1,
+    CHECK (
+        (cursor_created_at_ms IS NULL AND cursor_session_id IS NULL
+         AND cursor_message_id IS NULL)
+        OR
+        (cursor_created_at_ms IS NOT NULL AND cursor_session_id IS NOT NULL
+         AND cursor_message_id IS NOT NULL)
+    )
+)
+"""
+
+_CREATE_USAGE_LEGACY_BASELINES = """
+CREATE TABLE IF NOT EXISTS usage_legacy_baselines (
+    session_id                  TEXT NOT NULL,
+    session_epoch               INTEGER NOT NULL DEFAULT 0 CHECK (session_epoch >= 0),
+    agent_id                    TEXT NOT NULL DEFAULT 'main',
+    captured_at_ms              INTEGER NOT NULL CHECK (captured_at_ms >= 0),
+    input_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (input_tokens >= 0),
+    output_tokens               INTEGER NOT NULL DEFAULT 0 CHECK (output_tokens >= 0),
+    total_tokens                INTEGER NOT NULL DEFAULT 0 CHECK (total_tokens >= 0),
+    cache_read_tokens           INTEGER NOT NULL DEFAULT 0 CHECK (cache_read_tokens >= 0),
+    cache_write_tokens          INTEGER NOT NULL DEFAULT 0 CHECK (cache_write_tokens >= 0),
+    cost_nanos                  INTEGER NOT NULL DEFAULT 0 CHECK (cost_nanos >= 0),
+    billed_cost_nanos           INTEGER NOT NULL DEFAULT 0 CHECK (billed_cost_nanos >= 0),
+    estimated_cost_nanos        INTEGER NOT NULL DEFAULT 0 CHECK (estimated_cost_nanos >= 0),
+    cost_source                 TEXT NOT NULL DEFAULT 'none',
+    missing_cost_entries        INTEGER NOT NULL DEFAULT 0
+                                CHECK (missing_cost_entries >= 0),
+    schema_version              INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (session_id, session_epoch),
+    CHECK (cost_nanos = billed_cost_nanos + estimated_cost_nanos)
+)
+"""
+
+_CREATE_IDX_USAGE_EVENTS_COMPLETED = """
+CREATE INDEX IF NOT EXISTS idx_usage_events_completed
+ON usage_events(completed_at_ms, event_id)
+"""
+_CREATE_IDX_USAGE_EVENTS_SESSION_COMPLETED = """
+CREATE INDEX IF NOT EXISTS idx_usage_events_session_completed
+ON usage_events(session_id, completed_at_ms, event_id)
+"""
+_CREATE_IDX_USAGE_EVENTS_AGENT_COMPLETED = """
+CREATE INDEX IF NOT EXISTS idx_usage_events_agent_completed
+ON usage_events(agent_id, completed_at_ms, event_id)
+"""
+_CREATE_IDX_USAGE_EVENTS_STATUS_COMPLETED = """
+CREATE INDEX IF NOT EXISTS idx_usage_events_status_completed
+ON usage_events(status, completed_at_ms, event_id)
+"""
+_CREATE_IDX_USAGE_EVENTS_STATUS_STARTED = """
+CREATE INDEX IF NOT EXISTS idx_usage_events_status_started
+ON usage_events(status, started_at_ms, event_id)
+"""
+_CREATE_IDX_USAGE_EVENT_ITEMS_MODEL = """
+CREATE INDEX IF NOT EXISTS idx_usage_event_items_model
+ON usage_event_items(model, event_id, ordinal)
+"""
+_CREATE_IDX_USAGE_EVENT_ITEMS_PROVIDER = """
+CREATE INDEX IF NOT EXISTS idx_usage_event_items_provider
+ON usage_event_items(provider, event_id, ordinal)
+"""
+_CREATE_IDX_USAGE_LEGACY_BASELINES_CAPTURED = """
+CREATE INDEX IF NOT EXISTS idx_usage_legacy_baselines_captured
+ON usage_legacy_baselines(captured_at_ms, session_id)
+"""
+_CREATE_IDX_TRANSCRIPT_USAGE_BACKFILL = """
+CREATE INDEX IF NOT EXISTS idx_transcript_usage_backfill
+ON transcript_entries(created_at, session_id, message_id)
+WHERE role = 'assistant' AND turn_usage IS NOT NULL
+"""
+_CREATE_IDX_COMPACTED_USAGE_BACKFILL = """
+CREATE INDEX IF NOT EXISTS idx_compacted_usage_backfill
+ON compacted_transcript_entries(created_at, session_id, message_id)
+WHERE role = 'assistant' AND turn_usage IS NOT NULL
+"""
+_CREATE_IDX_SESSIONS_ID_KEY = """
+CREATE INDEX IF NOT EXISTS idx_sessions_id_key
+ON sessions(session_id, session_key)
+"""
+
 _CREATE_EPOCH_ROLLBACK_TRIGGER = """
 CREATE TRIGGER IF NOT EXISTS prevent_epoch_rollback
 BEFORE UPDATE OF epoch ON sessions
@@ -516,6 +707,7 @@ def _deserialize_row(row: dict[str, Any]) -> dict[str, Any]:
         "delivery_context",
         "tool_calls",
         "turn_usage",
+        "turn_context",
         "origin",
         "details",
         "summary_payload",
@@ -555,6 +747,116 @@ def _py_lower(value: Any) -> Any:
     return value.lower() if isinstance(value, str) else value
 
 
+def _legacy_nonnegative_integer(value: Any) -> tuple[int, bool]:
+    """Return a SQLite-safe counter and whether the source was invalid."""
+
+    if value is None or isinstance(value, bool):
+        return 0, True
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return 0, True
+    if not parsed.is_finite() or parsed < 0 or parsed != parsed.to_integral_value():
+        return 0, True
+    integer = int(parsed)
+    if integer > (1 << 63) - 1:
+        return 0, True
+    return integer, False
+
+
+def _legacy_cost_triplet(
+    total_usd: Any,
+    billed_usd: Any,
+    estimated_usd: Any,
+) -> tuple[int, int, int, bool]:
+    """Normalize old float columns while preserving the known total.
+
+    A valid legacy total remains authoritative. The billed component is capped
+    at that total and the estimate becomes the residual, so every persisted
+    baseline satisfies ``cost = billed + estimated``. Any repair is surfaced as
+    an anomaly/missing entry rather than silently claiming exact history.
+    """
+
+    def parse(value: Any) -> tuple[int, bool]:
+        if value is None or isinstance(value, bool):
+            return 0, True
+        try:
+            return usd_to_nanos(value), False
+        except (TypeError, ValueError, OverflowError):
+            return 0, True
+
+    raw_total, invalid_total = parse(total_usd)
+    raw_billed, invalid_billed = parse(billed_usd)
+    raw_estimated, invalid_estimated = parse(estimated_usd)
+    total = raw_billed + raw_estimated if invalid_total else raw_total
+    billed = min(raw_billed, total)
+    estimated = total - billed
+    anomaly = (
+        invalid_total
+        or invalid_billed
+        or invalid_estimated
+        or raw_total != raw_billed + raw_estimated
+    )
+    return total, billed, estimated, anomaly
+
+
+def _sqlite_usage_nonnegative_int(value: Any) -> int:
+    return _legacy_nonnegative_integer(value)[0]
+
+
+def _sqlite_usage_invalid_int(value: Any) -> int:
+    return int(_legacy_nonnegative_integer(value)[1])
+
+
+def _sqlite_usage_cost_total(total: Any, billed: Any, estimated: Any) -> int:
+    return _legacy_cost_triplet(total, billed, estimated)[0]
+
+
+def _sqlite_usage_cost_billed(total: Any, billed: Any, estimated: Any) -> int:
+    return _legacy_cost_triplet(total, billed, estimated)[1]
+
+
+def _sqlite_usage_cost_estimated(total: Any, billed: Any, estimated: Any) -> int:
+    return _legacy_cost_triplet(total, billed, estimated)[2]
+
+
+def _sqlite_usage_cost_anomaly(total: Any, billed: Any, estimated: Any) -> int:
+    return int(_legacy_cost_triplet(total, billed, estimated)[3])
+
+
+def _usage_event_from_row(row: Any) -> UsageEventRecord:
+    data = dict(row)
+    data["status"] = cast(UsageEventStatus, data["status"])
+    return UsageEventRecord(**data)
+
+
+def _usage_item_from_row(row: Any) -> UsageEventItem:
+    return UsageEventItem(**dict(row))
+
+
+def _usage_state_from_row(row: Any) -> UsageLedgerState:
+    data = dict(row)
+    data.pop("singleton_id", None)
+    data["backfill_status"] = cast(UsageBackfillStatus, data["backfill_status"])
+    return UsageLedgerState(**data)
+
+
+def _usage_baseline_from_row(row: Any) -> UsageLegacyBaseline:
+    return UsageLegacyBaseline(**dict(row))
+
+
+def _json_object_or_none(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 class SessionStorage:
     """Low-level async SQLite operations for session persistence."""
 
@@ -568,6 +870,8 @@ class SessionStorage:
         self._conn: Any | None = None
         self._meta_run_writer = meta_run_writer
         self._operation_lock = asyncio.Lock()
+        self._usage_backfill_index_lock = asyncio.Lock()
+        self._usage_backfill_indexes_ready = False
         self._poisoned = False
         self._busy_budget_seconds = _INTERACTIVE_BUSY_BUDGET_SECONDS
         self._sleep = asyncio.sleep
@@ -582,6 +886,17 @@ class SessionStorage:
         await self._conn.create_function(  # type: ignore[attr-defined]
             "py_lower", 1, _py_lower, deterministic=True
         )
+        for name, arity, function in (
+            ("usage_nonnegative_int", 1, _sqlite_usage_nonnegative_int),
+            ("usage_invalid_int", 1, _sqlite_usage_invalid_int),
+            ("usage_cost_total", 3, _sqlite_usage_cost_total),
+            ("usage_cost_billed", 3, _sqlite_usage_cost_billed),
+            ("usage_cost_estimated", 3, _sqlite_usage_cost_estimated),
+            ("usage_cost_anomaly", 3, _sqlite_usage_cost_anomaly),
+        ):
+            await self._conn.create_function(  # type: ignore[attr-defined]
+                name, arity, function, deterministic=True
+            )
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
@@ -798,6 +1113,18 @@ class SessionStorage:
         await self._conn.execute(_CREATE_IDX_TURN_INGRESS_ACCEPTED_SESSION)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
+        await self._conn.execute(_CREATE_USAGE_EVENTS)
+        await self._conn.execute(_CREATE_USAGE_EVENT_ITEMS)
+        await self._conn.execute(_CREATE_USAGE_LEDGER_STATE)
+        await self._conn.execute(_CREATE_USAGE_LEGACY_BASELINES)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENTS_COMPLETED)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENTS_SESSION_COMPLETED)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENTS_AGENT_COMPLETED)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENTS_STATUS_COMPLETED)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENTS_STATUS_STARTED)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENT_ITEMS_MODEL)
+        await self._conn.execute(_CREATE_IDX_USAGE_EVENT_ITEMS_PROVIDER)
+        await self._conn.execute(_CREATE_IDX_USAGE_LEGACY_BASELINES_CAPTURED)
         # FTS5 full-text search index + auto-sync triggers
         await self._conn.execute(_CREATE_TRANSCRIPT_FTS)
         await self._conn.execute(_CREATE_FTS_TRIGGER_INSERT)
@@ -811,6 +1138,7 @@ class SessionStorage:
         await self._migrate_derived_title_column()
         await self._migrate_transcript_reasoning_content_column()
         await self._migrate_transcript_turn_usage_column()
+        await self._migrate_transcript_turn_context_column()
         await self._migrate_summary_metadata_columns()
         await self._migrate_memory_durable_receipt_coverage_columns()
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE)
@@ -822,7 +1150,55 @@ class SessionStorage:
         if "updated_at" in session_columns:
             await self._conn.execute(_CREATE_IDX_SESSIONS_UPDATED)
         await self._conn.commit()
-        await self.mark_abandoned_agent_tasks()
+        required_recovery_columns = {
+            "status",
+            "updated_at",
+            "ended_at",
+            "runtime_ms",
+            "started_at",
+        }
+        if required_recovery_columns <= session_columns:
+            await self.mark_abandoned_agent_tasks()
+
+    async def prepare_usage_backfill_indexes(self) -> None:
+        """Build optional historical-scan indexes after Gateway readiness.
+
+        V021 and the fresh-install schema deliberately avoid indexing transcript
+        history: creating an index scans the complete source table and must not
+        delay an upgrade from becoming ready.  The post-ready backfill worker
+        calls this method before paging.  File-backed databases use an
+        independent connection so the shared interactive connection and its
+        operation lock remain available to RPC reads.
+        """
+
+        async with self._usage_backfill_index_lock:
+            if self._usage_backfill_indexes_ready:
+                return
+            statements = (
+                _CREATE_IDX_TRANSCRIPT_USAGE_BACKFILL,
+                _CREATE_IDX_COMPACTED_USAGE_BACKFILL,
+                _CREATE_IDX_SESSIONS_ID_KEY,
+            )
+            if self._db_path == ":memory:":
+                async with self._operation_lock:
+                    self._raise_if_poisoned()
+                    for statement in statements:
+                        await self.conn.execute(statement)
+                    await self.conn.commit()
+            else:
+                connection = await aiosqlite.connect(
+                    self._db_path,
+                    isolation_level=None,
+                )
+                try:
+                    await connection.execute(
+                        f"PRAGMA busy_timeout={int(_INTERACTIVE_BUSY_BUDGET_SECONDS * 1000)}"
+                    )
+                    for statement in statements:
+                        await connection.execute(statement)
+                finally:
+                    await connection.close()
+            self._usage_backfill_indexes_ready = True
 
     async def _migrate_epoch_column(self) -> None:
         """Idempotently add the epoch column to an existing sessions table.
@@ -888,6 +1264,18 @@ class SessionStorage:
                 "ALTER TABLE transcript_entries ADD COLUMN turn_usage TEXT"
             )
             await self._conn.commit()
+
+    async def _migrate_transcript_turn_context_column(self) -> None:
+        """Idempotently add causal turn identity to active and archived rows."""
+        assert self._conn is not None
+        for table in ("transcript_entries", "compacted_transcript_entries"):
+            async with self._conn.execute(f"PRAGMA table_info({table})") as cur:
+                columns = {row[1] for row in await cur.fetchall()}
+            if "turn_context" not in columns:
+                await self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN turn_context TEXT"
+                )
+        await self._conn.commit()
 
     async def _migrate_summary_metadata_columns(self) -> None:
         """Idempotently add structured compaction summary metadata columns."""
@@ -970,6 +1358,1056 @@ class SessionStorage:
         if self._conn is None:
             raise RuntimeError("Storage not connected. Call connect() first.")
         return self._conn
+
+    # ── Durable usage ledger ────────────────────────────────────────────────
+
+    async def _get_usage_event_on_conn(
+        self,
+        conn: Any,
+        *,
+        event_id: str | None = None,
+        execution_id: str | None = None,
+        call_index: int | None = None,
+    ) -> UsageEventRecord | None:
+        if event_id is not None:
+            sql = "SELECT * FROM usage_events WHERE event_id = ?"
+            params: tuple[Any, ...] = (event_id,)
+        elif execution_id is not None and call_index is not None:
+            sql = "SELECT * FROM usage_events WHERE execution_id = ? AND call_index = ?"
+            params = (execution_id, call_index)
+        else:
+            raise ValueError("an event id or execution identity is required")
+        async with conn.execute(sql, params) as cur:
+            row = await cur.fetchone()
+        return None if row is None else _usage_event_from_row(row)
+
+    async def _get_usage_items_on_conn(
+        self,
+        conn: Any,
+        event_id: str,
+    ) -> list[UsageEventItem]:
+        async with conn.execute(
+            "SELECT * FROM usage_event_items WHERE event_id = ? ORDER BY ordinal",
+            (event_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_usage_item_from_row(row) for row in rows]
+
+    @staticmethod
+    def _assert_usage_start_matches(
+        persisted: UsageEventRecord,
+        event: UsageEventStart,
+    ) -> None:
+        persisted_identity = (
+            persisted.event_id,
+            persisted.execution_id,
+            persisted.call_index,
+            persisted.session_id,
+            persisted.agent_id,
+            persisted.session_epoch,
+            persisted.turn_id,
+            persisted.agent_run_id,
+            persisted.parent_turn_id,
+            persisted.run_kind,
+            persisted.started_at_ms,
+            persisted.origin,
+        )
+        requested_identity = (
+            event.event_id,
+            event.execution_id,
+            event.call_index,
+            event.session_id,
+            event.agent_id,
+            event.session_epoch,
+            event.turn_id,
+            event.agent_run_id,
+            event.parent_turn_id,
+            event.run_kind,
+            event.started_at_ms,
+            event.origin,
+        )
+        if persisted_identity != requested_identity:
+            raise UsageLedgerConflictError(
+                "usage event identity was reused with different attribution"
+            )
+
+    @staticmethod
+    def _assert_usage_completion_matches(
+        persisted: UsageEventRecord,
+        completion: UsageEventCompletion,
+    ) -> None:
+        expected_provider = completion.provider or persisted.provider
+        expected_model = completion.model or persisted.model
+        persisted_payload = (
+            persisted.completed_at_ms,
+            persisted.input_tokens,
+            persisted.output_tokens,
+            persisted.reasoning_tokens,
+            persisted.cache_read_tokens,
+            persisted.cache_write_tokens,
+            persisted.total_tokens,
+            persisted.cost_nanos,
+            persisted.billed_cost_nanos,
+            persisted.estimated_cost_nanos,
+            persisted.cost_source,
+            persisted.provider,
+            persisted.model,
+            persisted.estimate_basis,
+            persisted.price_source,
+            persisted.coverage_status,
+            persisted.missing_cost_entries,
+        )
+        requested_payload = (
+            completion.completed_at_ms,
+            completion.input_tokens,
+            completion.output_tokens,
+            completion.reasoning_tokens,
+            completion.cache_read_tokens,
+            completion.cache_write_tokens,
+            completion.total_tokens,
+            completion.cost_nanos,
+            completion.billed_cost_nanos,
+            completion.estimated_cost_nanos,
+            completion.cost_source,
+            expected_provider,
+            expected_model,
+            completion.estimate_basis,
+            completion.price_source,
+            completion.coverage_status,
+            completion.missing_cost_entries,
+        )
+        if persisted_payload != requested_payload:
+            raise UsageLedgerConflictError(
+                "usage event was finalized again with different accounting data"
+            )
+
+    @staticmethod
+    def _usage_items_match_completion(
+        items: Sequence[UsageEventItem],
+        completion: UsageEventCompletion,
+    ) -> bool:
+        if not items:
+            return True
+        components = (
+            ("input_tokens", completion.input_tokens),
+            ("output_tokens", completion.output_tokens),
+            ("reasoning_tokens", completion.reasoning_tokens),
+            ("cache_read_tokens", completion.cache_read_tokens),
+            ("cache_write_tokens", completion.cache_write_tokens),
+            ("total_tokens", completion.total_tokens),
+            ("cost_nanos", completion.cost_nanos),
+            ("billed_cost_nanos", completion.billed_cost_nanos),
+            ("estimated_cost_nanos", completion.estimated_cost_nanos),
+        )
+        return all(
+            sum(getattr(item, field) for item in items) == expected
+            for field, expected in components
+        )
+
+    async def _start_usage_event_on_conn(
+        self,
+        conn: Any,
+        event: UsageEventStart,
+    ) -> tuple[UsageEventRecord, bool]:
+        insert_cursor = await conn.execute(
+            """
+            INSERT INTO usage_events (
+                event_id, execution_id, call_index, turn_id, agent_run_id,
+                parent_turn_id, session_id, session_epoch, agent_id, run_kind,
+                provider, model, started_at_ms, status, coverage_status, origin
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started', 'pending', ?)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                event.event_id,
+                event.execution_id,
+                event.call_index,
+                event.turn_id,
+                event.agent_run_id,
+                event.parent_turn_id,
+                event.session_id,
+                event.session_epoch,
+                event.agent_id,
+                event.run_kind,
+                event.provider,
+                event.model,
+                event.started_at_ms,
+                event.origin,
+            ),
+        )
+        by_event = await self._get_usage_event_on_conn(conn, event_id=event.event_id)
+        by_execution = await self._get_usage_event_on_conn(
+            conn,
+            execution_id=event.execution_id,
+            call_index=event.call_index,
+        )
+        if by_event is None or by_execution is None or by_event.event_id != by_execution.event_id:
+            raise UsageLedgerConflictError(
+                "usage event id and execution identity refer to different records"
+            )
+        self._assert_usage_start_matches(by_event, event)
+        created = insert_cursor.rowcount == 1
+        return by_event, created
+
+    async def _resolve_live_usage_start_on_conn(
+        self,
+        conn: Any,
+        event: UsageEventStart,
+    ) -> UsageEventStart:
+        """Fill default live attribution from the current session row.
+
+        Exact event replays retain the originally persisted epoch even if the
+        session has reset since the first reservation.
+        """
+
+        if event.origin != "live_provider":
+            return event
+        persisted = await self._get_usage_event_on_conn(conn, event_id=event.event_id)
+        if persisted is None:
+            persisted = await self._get_usage_event_on_conn(
+                conn,
+                execution_id=event.execution_id,
+                call_index=event.call_index,
+            )
+        if persisted is not None:
+            return replace(
+                event,
+                agent_id=persisted.agent_id,
+                session_epoch=persisted.session_epoch,
+            )
+        async with conn.execute(
+            """
+            SELECT agent_id, epoch
+            FROM sessions
+            WHERE session_id = ?
+            ORDER BY session_key
+            LIMIT 1
+            """,
+            (event.session_id,),
+        ) as cur:
+            session_row = await cur.fetchone()
+        if session_row is None:
+            return event
+        return replace(
+            event,
+            agent_id=str(session_row["agent_id"] or event.agent_id),
+            session_epoch=max(0, int(session_row["epoch"] or 0)),
+        )
+
+    async def start_usage_event(self, event: UsageEventStart) -> UsageEventRecord:
+        """Durably reserve a provider-call identity before the request is sent.
+
+        Repeating the exact call is idempotent. Reusing either unique identity
+        with different attribution raises ``UsageLedgerConflictError``.
+        """
+
+        validate_usage_event_start(event)
+        async with self._write_transaction("start_usage_event") as conn:
+            resolved_event = await self._resolve_live_usage_start_on_conn(conn, event)
+            validate_usage_event_start(resolved_event)
+            record, _created = await self._start_usage_event_on_conn(conn, resolved_event)
+            return record
+
+    async def _finalize_usage_event_on_conn(
+        self,
+        conn: Any,
+        event_id: str,
+        completion: UsageEventCompletion,
+        items: Sequence[UsageEventItem],
+    ) -> tuple[UsageEventRecord, bool]:
+        persisted = await self._get_usage_event_on_conn(conn, event_id=event_id)
+        if persisted is None:
+            raise KeyError(f"usage event not found: {event_id}")
+        if completion.completed_at_ms < persisted.started_at_ms:
+            raise ValueError("completed_at_ms must not precede started_at_ms")
+
+        seen_ordinals: set[int] = set()
+        for item in items:
+            validate_usage_item(item, event_id=event_id)
+            if item.ordinal in seen_ordinals:
+                raise ValueError("usage item ordinals must be unique per event")
+            seen_ordinals.add(item.ordinal)
+        if items and not self._usage_items_match_completion(items, completion):
+            raise ValueError(
+                "usage items must reconcile exactly with their event envelope"
+            )
+
+        if persisted.status == "finalized":
+            self._assert_usage_completion_matches(persisted, completion)
+            persisted_items = await self._get_usage_items_on_conn(conn, event_id)
+            if persisted_items != sorted(items, key=lambda item: item.ordinal):
+                raise UsageLedgerConflictError(
+                    "usage event was finalized again with different model items"
+                )
+            return persisted, False
+
+        provider = completion.provider or persisted.provider
+        model = completion.model or persisted.model
+        await conn.execute(
+            """
+            UPDATE usage_events
+            SET completed_at_ms = ?, status = 'finalized', input_tokens = ?,
+                output_tokens = ?, reasoning_tokens = ?, cache_read_tokens = ?,
+                cache_write_tokens = ?, total_tokens = ?, cost_nanos = ?,
+                billed_cost_nanos = ?, estimated_cost_nanos = ?, cost_source = ?,
+                provider = ?, model = ?, estimate_basis = ?, price_source = ?,
+                coverage_status = ?, missing_cost_entries = ?, unknown_reason = NULL
+            WHERE event_id = ?
+            """,
+            (
+                completion.completed_at_ms,
+                completion.input_tokens,
+                completion.output_tokens,
+                completion.reasoning_tokens,
+                completion.cache_read_tokens,
+                completion.cache_write_tokens,
+                completion.total_tokens,
+                completion.cost_nanos,
+                completion.billed_cost_nanos,
+                completion.estimated_cost_nanos,
+                completion.cost_source,
+                provider,
+                model,
+                completion.estimate_basis,
+                completion.price_source,
+                completion.coverage_status,
+                completion.missing_cost_entries,
+                event_id,
+            ),
+        )
+        await conn.execute("DELETE FROM usage_event_items WHERE event_id = ?", (event_id,))
+        for item in sorted(items, key=lambda item: item.ordinal):
+            await conn.execute(
+                """
+                INSERT INTO usage_event_items (
+                    event_id, ordinal, provider, model, input_tokens, output_tokens,
+                    reasoning_tokens, cache_read_tokens, cache_write_tokens,
+                    total_tokens, cost_nanos, billed_cost_nanos,
+                    estimated_cost_nanos, cost_source, estimate_basis, price_source,
+                    schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    item.event_id,
+                    item.ordinal,
+                    item.provider,
+                    item.model,
+                    item.input_tokens,
+                    item.output_tokens,
+                    item.reasoning_tokens,
+                    item.cache_read_tokens,
+                    item.cache_write_tokens,
+                    item.total_tokens,
+                    item.cost_nanos,
+                    item.billed_cost_nanos,
+                    item.estimated_cost_nanos,
+                    item.cost_source,
+                    item.estimate_basis,
+                    item.price_source,
+                    item.schema_version,
+                ),
+            )
+        finalized = await self._get_usage_event_on_conn(conn, event_id=event_id)
+        assert finalized is not None
+        return finalized, True
+
+    async def finalize_usage_event(
+        self,
+        event_id: str,
+        completion: UsageEventCompletion,
+        *,
+        items: Sequence[UsageEventItem] = (),
+    ) -> UsageEventRecord:
+        """Atomically finalize one event and all of its per-model items."""
+
+        if not event_id:
+            raise ValueError("event_id must not be empty")
+        validate_usage_completion(completion)
+        async with self._write_transaction("finalize_usage_event") as conn:
+            record, _changed = await self._finalize_usage_event_on_conn(
+                conn, event_id, completion, items
+            )
+            return record
+
+    async def mark_usage_event_unknown(
+        self,
+        event_id: str,
+        *,
+        completed_at_ms: int,
+        reason: str | None = None,
+    ) -> UsageEventRecord:
+        """Mark a started provider request as having no trustworthy usage receipt.
+
+        A concurrent successful finalization wins and is never downgraded.
+        ``reason`` must be a stable code, not a raw provider error message.
+        """
+
+        if not event_id:
+            raise ValueError("event_id must not be empty")
+        if completed_at_ms < 0:
+            raise ValueError("completed_at_ms must be non-negative")
+        stable_reason = normalize_usage_unknown_reason(reason)
+        async with self._write_transaction("mark_usage_event_unknown") as conn:
+            persisted = await self._get_usage_event_on_conn(conn, event_id=event_id)
+            if persisted is None:
+                raise KeyError(f"usage event not found: {event_id}")
+            if persisted.status == "finalized":
+                return persisted
+            if persisted.status == "unknown":
+                return persisted
+            if completed_at_ms < persisted.started_at_ms:
+                raise ValueError("completed_at_ms must not precede started_at_ms")
+            await conn.execute(
+                """
+                UPDATE usage_events
+                SET completed_at_ms = ?, status = 'unknown',
+                    coverage_status = 'usage_unknown', missing_cost_entries = 1,
+                    unknown_reason = ?
+                WHERE event_id = ? AND status = 'started'
+                """,
+                (completed_at_ms, stable_reason, event_id),
+            )
+            record = await self._get_usage_event_on_conn(conn, event_id=event_id)
+            assert record is not None
+            return record
+
+    async def recover_started_usage_events(
+        self,
+        *,
+        completed_at_ms: int | None = None,
+        reason: str = "process_restarted",
+        started_before_ms: int | None = None,
+    ) -> int:
+        """Terminalize provider reservations left open by an earlier process.
+
+        Boot should call this before accepting new turns. The optional strict
+        ``started_before_ms`` cutoff lets tests or embedding hosts avoid touching
+        requests reserved by another known-live writer.
+        """
+
+        recovered_at_ms = _now_ms() if completed_at_ms is None else completed_at_ms
+        if recovered_at_ms < 0:
+            raise ValueError("completed_at_ms must be non-negative")
+        if started_before_ms is not None and started_before_ms < 0:
+            raise ValueError("started_before_ms must be non-negative")
+        stable_reason = normalize_usage_unknown_reason(reason)
+        clauses = ["status = 'started'"]
+        params: list[Any] = [recovered_at_ms, recovered_at_ms, stable_reason]
+        if started_before_ms is not None:
+            clauses.append("started_at_ms < ?")
+            params.append(started_before_ms)
+        async with self._write_transaction("recover_started_usage_events") as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE usage_events
+                SET completed_at_ms = CASE
+                        WHEN started_at_ms > ? THEN started_at_ms ELSE ?
+                    END,
+                    status = 'unknown', coverage_status = 'usage_unknown',
+                    missing_cost_entries = 1, unknown_reason = ?
+                WHERE """
+                + " AND ".join(clauses),
+                params,
+            )
+            return max(0, int(cursor.rowcount or 0))
+
+    async def initialize_usage_ledger(
+        self,
+        now_ms: int | None = None,
+    ) -> UsageLedgerState:
+        """Atomically establish cutover and snapshot legacy totals with set SQL."""
+
+        captured_at_ms = _now_ms() if now_ms is None else now_ms
+        if captured_at_ms < 0:
+            raise ValueError("now_ms must be non-negative")
+
+        async with self._write_transaction("initialize_usage_ledger") as conn:
+            existing = await self._get_usage_state_on_conn(conn)
+            if existing is not None:
+                return existing
+
+            await conn.execute(
+                """
+                INSERT INTO usage_ledger_state (
+                    singleton_id, ledger_started_at_ms, backfill_status, updated_at_ms
+                ) VALUES (1, ?, 'pending', ?)
+                """,
+                (captured_at_ms, captured_at_ms),
+            )
+            # One bounded INSERT...SELECT replaces a Python row loop and keeps
+            # the pre-live cutover transaction short even for large histories.
+            # The registered deterministic functions sanitize corrupt legacy
+            # values without aborting gateway startup.
+            await conn.execute(
+                """
+                WITH normalized AS (
+                    SELECT
+                        session_key,
+                        session_id,
+                        usage_nonnegative_int(epoch) AS session_epoch,
+                        COALESCE(NULLIF(agent_id, ''), 'main') AS agent_id,
+                        usage_nonnegative_int(input_tokens) AS input_tokens,
+                        usage_nonnegative_int(output_tokens) AS output_tokens,
+                        usage_nonnegative_int(cache_read) AS cache_read_tokens,
+                        usage_nonnegative_int(cache_write) AS cache_write_tokens,
+                        usage_cost_total(
+                            total_cost_usd,
+                            billed_cost_usd,
+                            estimated_cost_component_usd
+                        ) AS cost_nanos,
+                        usage_cost_billed(
+                            total_cost_usd,
+                            billed_cost_usd,
+                            estimated_cost_component_usd
+                        ) AS billed_cost_nanos,
+                        usage_cost_estimated(
+                            total_cost_usd,
+                            billed_cost_usd,
+                            estimated_cost_component_usd
+                        ) AS estimated_cost_nanos,
+                        COALESCE(NULLIF(cost_source, ''), 'none') AS cost_source,
+                        usage_nonnegative_int(missing_cost_entries) AS missing_entries,
+                        usage_invalid_int(epoch)
+                            + usage_invalid_int(input_tokens)
+                            + usage_invalid_int(output_tokens)
+                            + usage_invalid_int(total_tokens)
+                            + usage_invalid_int(cache_read)
+                            + usage_invalid_int(cache_write)
+                            + usage_invalid_int(missing_cost_entries)
+                            + CASE WHEN usage_nonnegative_int(total_tokens)
+                                != usage_nonnegative_int(input_tokens)
+                                   + usage_nonnegative_int(output_tokens)
+                              THEN 1 ELSE 0 END
+                            + usage_cost_anomaly(
+                                total_cost_usd,
+                                billed_cost_usd,
+                                estimated_cost_component_usd
+                              ) AS row_anomalies
+                    FROM sessions
+                ), ranked AS (
+                    SELECT
+                        normalized.*,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY session_id, session_epoch
+                            ORDER BY session_key
+                        ) AS baseline_rank
+                    FROM normalized
+                )
+                INSERT INTO usage_legacy_baselines (
+                    session_id, session_epoch, agent_id, captured_at_ms,
+                    input_tokens, output_tokens, total_tokens, cache_read_tokens,
+                    cache_write_tokens, cost_nanos, billed_cost_nanos,
+                    estimated_cost_nanos, cost_source, missing_cost_entries
+                )
+                SELECT
+                    session_id,
+                    session_epoch,
+                    agent_id,
+                    ?,
+                    input_tokens,
+                    output_tokens,
+                    input_tokens + output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    cost_nanos,
+                    billed_cost_nanos,
+                    estimated_cost_nanos,
+                    cost_source,
+                    missing_entries + row_anomalies
+                FROM ranked
+                WHERE baseline_rank = 1
+                """,
+                (captured_at_ms,),
+            )
+            await conn.execute(
+                """
+                UPDATE usage_ledger_state
+                SET anomaly_count =
+                    COALESCE((
+                        SELECT SUM(
+                            usage_invalid_int(epoch)
+                            + usage_invalid_int(input_tokens)
+                            + usage_invalid_int(output_tokens)
+                            + usage_invalid_int(total_tokens)
+                            + usage_invalid_int(cache_read)
+                            + usage_invalid_int(cache_write)
+                            + usage_invalid_int(missing_cost_entries)
+                            + CASE WHEN usage_nonnegative_int(total_tokens)
+                                != usage_nonnegative_int(input_tokens)
+                                   + usage_nonnegative_int(output_tokens)
+                              THEN 1 ELSE 0 END
+                            + usage_cost_anomaly(
+                                total_cost_usd,
+                                billed_cost_usd,
+                                estimated_cost_component_usd
+                              )
+                        )
+                        FROM sessions
+                    ), 0)
+                    + COALESCE((
+                        SELECT SUM(duplicate_count - 1)
+                        FROM (
+                            SELECT COUNT(*) AS duplicate_count
+                            FROM sessions
+                            GROUP BY session_id, usage_nonnegative_int(epoch)
+                            HAVING COUNT(*) > 1
+                        )
+                    ), 0)
+                WHERE singleton_id = 1
+                """
+            )
+            state = await self._get_usage_state_on_conn(conn)
+            assert state is not None
+            return state
+
+    @_serialized_read
+    async def get_usage_ledger_state(self) -> UsageLedgerState | None:
+        async with self.conn.execute(
+            "SELECT * FROM usage_ledger_state WHERE singleton_id = 1"
+        ) as cur:
+            row = await cur.fetchone()
+        return None if row is None else _usage_state_from_row(row)
+
+    @_serialized_read
+    async def list_usage_legacy_baselines(self) -> list[UsageLegacyBaseline]:
+        async with self.conn.execute(
+            """
+            SELECT * FROM usage_legacy_baselines
+            ORDER BY captured_at_ms, session_id, session_epoch
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_usage_baseline_from_row(row) for row in rows]
+
+    @_serialized_read
+    async def resolve_usage_session_keys(
+        self,
+        session_ids: Sequence[str],
+    ) -> dict[str, str]:
+        """Resolve only currently live session ids to navigable session keys."""
+
+        unique_ids = list(dict.fromkeys(value for value in session_ids if value))
+        resolved: dict[str, str] = {}
+        for start in range(0, len(unique_ids), _SQLITE_VARIABLE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _SQLITE_VARIABLE_CHUNK_SIZE]
+            placeholders = ", ".join("?" for _ in chunk)
+            async with self.conn.execute(
+                "SELECT session_id, session_key FROM sessions "
+                f"WHERE session_id IN ({placeholders}) "  # noqa: S608
+                "ORDER BY session_id, session_key",
+                chunk,
+            ) as cur:
+                rows = await cur.fetchall()
+            for row in rows:
+                resolved.setdefault(str(row["session_id"]), str(row["session_key"]))
+        return resolved
+
+    @_serialized_read
+    async def query_usage_events(
+        self,
+        from_ms: int | None,
+        to_ms: int | None,
+        statuses: Sequence[UsageEventStatus] = ("finalized",),
+        session_id: str | None = None,
+    ) -> list[UsageEventRecord]:
+        """Read terminal events whose completion time is in ``[from_ms, to_ms)``."""
+
+        if from_ms is not None and from_ms < 0:
+            raise ValueError("from_ms must be non-negative")
+        if to_ms is not None and to_ms < 0:
+            raise ValueError("to_ms must be non-negative")
+        if from_ms is not None and to_ms is not None and from_ms > to_ms:
+            raise ValueError("from_ms must not exceed to_ms")
+        allowed_statuses = {"started", "finalized", "unknown"}
+        if any(status not in allowed_statuses for status in statuses):
+            raise ValueError("unsupported usage event status")
+        if not statuses:
+            return []
+        clauses = [f"status IN ({', '.join('?' for _ in statuses)})"]
+        params: list[Any] = list(statuses)
+        if from_ms is not None:
+            clauses.append("completed_at_ms >= ?")
+            params.append(from_ms)
+        if to_ms is not None:
+            clauses.append("completed_at_ms < ?")
+            params.append(to_ms)
+        if session_id is not None:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        # Keep the range/order traversal anchored on completion time.  Without
+        # the hint SQLite can prefer the recovery-oriented status/started index
+        # and materialize a temporary sort, which degrades as the ledger grows.
+        range_index = (
+            "idx_usage_events_session_completed"
+            if session_id is not None
+            else "idx_usage_events_completed"
+        )
+        sql = (
+            f"SELECT * FROM usage_events INDEXED BY {range_index} WHERE "  # noqa: S608
+            + " AND ".join(clauses)
+            + " ORDER BY completed_at_ms, event_id"
+        )
+        async with self.conn.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [_usage_event_from_row(row) for row in rows]
+
+    @_serialized_read
+    async def query_usage_event_items(
+        self,
+        event_ids: Sequence[str],
+    ) -> list[UsageEventItem]:
+        if not event_ids:
+            return []
+        unique_ids = list(dict.fromkeys(event_ids))
+        items: list[UsageEventItem] = []
+        for start in range(0, len(unique_ids), _SQLITE_VARIABLE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _SQLITE_VARIABLE_CHUNK_SIZE]
+            placeholders = ", ".join("?" for _ in chunk)
+            async with self.conn.execute(
+                "SELECT * FROM usage_event_items "
+                f"WHERE event_id IN ({placeholders}) ORDER BY event_id, ordinal",  # noqa: S608
+                chunk,
+            ) as cur:
+                rows = await cur.fetchall()
+            items.extend(_usage_item_from_row(row) for row in rows)
+        return items
+
+    @_serialized_read
+    async def get_usage_backfill_batch(
+        self,
+        *,
+        before_ms: int,
+        after: UsageBackfillCursor | None = None,
+        limit: int = 500,
+    ) -> UsageBackfillBatch:
+        """Return canonical pre-cutover assistant rows in stable cursor order.
+
+        Active and compacted copies are deduplicated by ``session_id`` and
+        ``message_id``. Current session metadata is joined by ``session_id`` so
+        the worker can reject inherited fork rows without a stable ``turn_id``.
+        """
+
+        if before_ms < 0:
+            raise ValueError("before_ms must be non-negative")
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        cursor_clause = ""
+        cursor_params: list[Any] = []
+        if after is not None:
+            if after.created_at_ms < 0 or not after.session_id or not after.message_id:
+                raise ValueError("backfill cursor fields must be valid")
+            cursor_clause = (
+                "AND (created_at, session_id, message_id) > (?, ?, ?)"
+            )
+            cursor_params.extend(
+                (after.created_at_ms, after.session_id, after.message_id)
+            )
+
+        # Read at most one page from each indexed canonical source, then merge
+        # and deduplicate in memory. This keeps every page O(log N + limit)
+        # instead of rerunning ROW_NUMBER over the complete history.
+        source_rows: list[tuple[int, dict[str, Any]]] = []
+        source_full = False
+        for priority, table in enumerate(
+            ("transcript_entries", "compacted_transcript_entries")
+        ):
+            params = [before_ms, *cursor_params, limit + 1]
+            sql = f"""
+                SELECT session_id, message_id, created_at, turn_usage, turn_context
+                FROM {table}
+                WHERE role = 'assistant' AND turn_usage IS NOT NULL
+                  AND created_at < ? {cursor_clause}
+                ORDER BY created_at, session_id, message_id
+                LIMIT ?
+            """  # noqa: S608 - table is selected from fixed internal literals.
+            async with self.conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+            source_full = source_full or len(rows) > limit
+            source_rows.extend((priority, dict(row)) for row in rows)
+
+        canonical: dict[tuple[str, str], tuple[int, dict[str, Any]]] = {}
+        for priority, row in source_rows:
+            identity = (str(row["session_id"]), str(row["message_id"]))
+            current = canonical.get(identity)
+            if current is None or priority < current[0]:
+                canonical[identity] = (priority, row)
+        merged = sorted(
+            canonical.values(),
+            key=lambda value: (
+                int(value[1]["created_at"]),
+                str(value[1]["session_id"]),
+                str(value[1]["message_id"]),
+                value[0],
+            ),
+        )
+        selected = [row for _priority, row in merged[:limit]]
+        exhausted = not source_full and len(merged) <= limit
+
+        metadata: dict[str, tuple[str, int, bool]] = {}
+        session_ids = list(dict.fromkeys(str(row["session_id"]) for row in selected))
+        for start in range(0, len(session_ids), _SQLITE_VARIABLE_CHUNK_SIZE):
+            chunk = session_ids[start : start + _SQLITE_VARIABLE_CHUNK_SIZE]
+            placeholders = ", ".join("?" for _ in chunk)
+            async with self.conn.execute(
+                "SELECT session_id, agent_id, epoch, forked_from_parent "
+                "FROM sessions "
+                f"WHERE session_id IN ({placeholders}) "  # noqa: S608
+                "ORDER BY session_id, session_key",
+                chunk,
+            ) as cur:
+                session_rows = await cur.fetchall()
+            for row in session_rows:
+                metadata.setdefault(
+                    str(row["session_id"]),
+                    (
+                        str(row["agent_id"] or "main"),
+                        max(0, int(row["epoch"] or 0)),
+                        bool(row["forked_from_parent"]),
+                    ),
+                )
+
+        entries = tuple(
+            UsageBackfillEntry(
+                cursor=UsageBackfillCursor(
+                    created_at_ms=int(row["created_at"]),
+                    session_id=str(row["session_id"]),
+                    message_id=str(row["message_id"]),
+                ),
+                agent_id=metadata.get(str(row["session_id"]), ("main", 0, False))[0],
+                session_epoch=metadata.get(
+                    str(row["session_id"]), ("main", 0, False)
+                )[1],
+                forked_from_parent=metadata.get(
+                    str(row["session_id"]), ("main", 0, False)
+                )[2],
+                turn_usage=_json_object_or_none(row["turn_usage"]),
+                turn_context=_json_object_or_none(row["turn_context"]),
+                session_metadata_missing=str(row["session_id"]) not in metadata,
+            )
+            for row in selected
+        )
+        return UsageBackfillBatch(
+            entries=entries,
+            next_cursor=entries[-1].cursor if entries else after,
+            exhausted=exhausted,
+        )
+
+    async def update_usage_backfill_progress(
+        self,
+        *,
+        status: UsageBackfillStatus,
+        cursor: UsageBackfillCursor | None = None,
+        backfilled_event_count_delta: int = 0,
+        backfilled_cost_nanos_delta: int = 0,
+        anomaly_count_delta: int = 0,
+        last_error_code: str | None = None,
+        now_ms: int | None = None,
+    ) -> UsageLedgerState:
+        """Update resumable worker state when no event batch is being committed."""
+
+        allowed_statuses = {"pending", "running", "complete", "partial", "failed"}
+        if status not in allowed_statuses:
+            raise ValueError("unsupported usage backfill status")
+        for label, value in (
+            ("backfilled_event_count_delta", backfilled_event_count_delta),
+            ("backfilled_cost_nanos_delta", backfilled_cost_nanos_delta),
+            ("anomaly_count_delta", anomaly_count_delta),
+        ):
+            if value < 0:
+                raise ValueError(f"{label} must be non-negative")
+        updated_at_ms = _now_ms() if now_ms is None else now_ms
+        if updated_at_ms < 0:
+            raise ValueError("now_ms must be non-negative")
+        if last_error_code is not None and (
+            not last_error_code or len(last_error_code) > 128
+        ):
+            raise ValueError("last_error_code must be a stable code up to 128 characters")
+        async with self._write_transaction("update_usage_backfill_progress") as conn:
+            state = await self._get_usage_state_on_conn(conn)
+            if state is None:
+                raise RuntimeError("usage ledger must be initialized before backfill")
+            self._validate_usage_backfill_cursor_advance(state, cursor)
+            effective_cursor = cursor or self._cursor_from_usage_state(state)
+            await conn.execute(
+                """
+                UPDATE usage_ledger_state
+                SET backfill_status = ?, cursor_created_at_ms = ?,
+                    cursor_session_id = ?, cursor_message_id = ?,
+                    backfilled_event_count = backfilled_event_count + ?,
+                    backfilled_cost_nanos = backfilled_cost_nanos + ?,
+                    anomaly_count = anomaly_count + ?, last_error_code = ?,
+                    updated_at_ms = ?
+                WHERE singleton_id = 1
+                """,
+                (
+                    status,
+                    effective_cursor.created_at_ms if effective_cursor else None,
+                    effective_cursor.session_id if effective_cursor else None,
+                    effective_cursor.message_id if effective_cursor else None,
+                    backfilled_event_count_delta,
+                    backfilled_cost_nanos_delta,
+                    anomaly_count_delta,
+                    last_error_code,
+                    updated_at_ms,
+                ),
+            )
+            updated = await self._get_usage_state_on_conn(conn)
+            assert updated is not None
+            return updated
+
+    async def _get_usage_state_on_conn(self, conn: Any) -> UsageLedgerState | None:
+        async with conn.execute(
+            "SELECT * FROM usage_ledger_state WHERE singleton_id = 1"
+        ) as cur:
+            row = await cur.fetchone()
+        return None if row is None else _usage_state_from_row(row)
+
+    @staticmethod
+    def _cursor_from_usage_state(state: UsageLedgerState) -> UsageBackfillCursor | None:
+        if (
+            state.cursor_created_at_ms is None
+            or state.cursor_session_id is None
+            or state.cursor_message_id is None
+        ):
+            return None
+        return UsageBackfillCursor(
+            state.cursor_created_at_ms,
+            state.cursor_session_id,
+            state.cursor_message_id,
+        )
+
+    @classmethod
+    def _validate_usage_backfill_cursor_advance(
+        cls,
+        state: UsageLedgerState,
+        cursor: UsageBackfillCursor | None,
+    ) -> None:
+        if cursor is not None and (
+            cursor.created_at_ms < 0 or not cursor.session_id or not cursor.message_id
+        ):
+            raise ValueError("backfill cursor fields must be valid")
+        previous = cls._cursor_from_usage_state(state)
+        if cursor is not None and previous is not None and cursor < previous:
+            raise ValueError("backfill cursor must not move backwards")
+
+    async def apply_usage_backfill_batch(
+        self,
+        writes: Sequence[UsageBackfillWrite],
+        *,
+        cursor: UsageBackfillCursor | None,
+        exhausted: bool,
+        anomaly_delta: int = 0,
+        now_ms: int | None = None,
+    ) -> UsageLedgerState:
+        """Atomically persist historical events, their items, and worker cursor.
+
+        Retrying an ambiguously committed batch does not increment state totals
+        twice because exact finalized events are treated as idempotent replays.
+        """
+
+        if anomaly_delta < 0:
+            raise ValueError("anomaly_delta must be non-negative")
+        updated_at_ms = _now_ms() if now_ms is None else now_ms
+        if updated_at_ms < 0:
+            raise ValueError("now_ms must be non-negative")
+        for write in writes:
+            validate_usage_event_start(write.start)
+            validate_usage_completion(write.completion)
+            if write.start.origin != "backfilled_turn":
+                raise ValueError("backfill events must use origin='backfilled_turn'")
+            for item in write.items:
+                validate_usage_item(item, event_id=write.start.event_id)
+
+        async with self._write_transaction("apply_usage_backfill_batch") as conn:
+            state = await self._get_usage_state_on_conn(conn)
+            if state is None:
+                raise RuntimeError("usage ledger must be initialized before backfill")
+            self._validate_usage_backfill_cursor_advance(state, cursor)
+            effective_cursor = cursor or self._cursor_from_usage_state(state)
+            added_count = 0
+            added_cost_nanos = 0
+            implicit_anomalies = 0
+            for write in writes:
+                if write.completion.completed_at_ms >= state.ledger_started_at_ms:
+                    raise ValueError("backfill events must complete before ledger cutover")
+                if not self._usage_items_match_completion(
+                    write.items,
+                    write.completion,
+                ):
+                    implicit_anomalies += 1
+                    continue
+                existing = await self._get_usage_event_on_conn(
+                    conn, event_id=write.start.event_id
+                )
+                if (
+                    existing is not None
+                    and existing.origin == "backfilled_turn"
+                    and write.start.turn_id
+                    and existing.turn_id == write.start.turn_id
+                    and existing.execution_id == write.start.execution_id
+                    and existing.call_index == write.start.call_index
+                ):
+                    if existing.status == "finalized":
+                        try:
+                            self._assert_usage_completion_matches(
+                                existing, write.completion
+                            )
+                            existing_items = await self._get_usage_items_on_conn(
+                                conn, existing.event_id
+                            )
+                            if existing_items != sorted(
+                                write.items, key=lambda item: item.ordinal
+                            ):
+                                raise UsageLedgerConflictError(
+                                    "fork copy has different model usage items"
+                                )
+                        except UsageLedgerConflictError:
+                            implicit_anomalies += 1
+                        # A proven inherited fork copy is attribution of the
+                        # same physical spend, never another billable event.
+                        continue
+                await self._start_usage_event_on_conn(conn, write.start)
+                _record, changed = await self._finalize_usage_event_on_conn(
+                    conn,
+                    write.start.event_id,
+                    write.completion,
+                    write.items,
+                )
+                if changed:
+                    added_count += 1
+                    added_cost_nanos += write.completion.cost_nanos
+
+            total_anomaly_delta = anomaly_delta + implicit_anomalies
+            cumulative_anomalies = state.anomaly_count + total_anomaly_delta
+            if exhausted:
+                next_status = "partial" if cumulative_anomalies else "complete"
+            else:
+                next_status = "running"
+            await conn.execute(
+                """
+                UPDATE usage_ledger_state
+                SET backfill_status = ?, cursor_created_at_ms = ?,
+                    cursor_session_id = ?, cursor_message_id = ?,
+                    backfilled_event_count = backfilled_event_count + ?,
+                    backfilled_cost_nanos = backfilled_cost_nanos + ?,
+                    anomaly_count = anomaly_count + ?, last_error_code = NULL,
+                    updated_at_ms = ?
+                WHERE singleton_id = 1
+                """,
+                (
+                    next_status,
+                    effective_cursor.created_at_ms if effective_cursor else None,
+                    effective_cursor.session_id if effective_cursor else None,
+                    effective_cursor.message_id if effective_cursor else None,
+                    added_count,
+                    added_cost_nanos,
+                    total_anomaly_delta,
+                    updated_at_ms,
+                ),
+            )
+            updated = await self._get_usage_state_on_conn(conn)
+            assert updated is not None
+            return updated
 
     # ── Session CRUD ────────────────────────────────────────────────────────
 
@@ -1599,7 +3037,37 @@ class SessionStorage:
     async def mark_abandoned_agent_tasks(self, now_ms: int | None = None) -> int:
         """Mark non-terminal persisted tasks as abandoned after process restart."""
         ts = now_ms or _now_ms()
+        terminal_session_statuses = (
+            SessionStatus.DONE,
+            SessionStatus.FAILED,
+            SessionStatus.KILLED,
+            SessionStatus.TIMEOUT,
+        )
         async with self._write_transaction("mark_abandoned_agent_tasks") as conn:
+            async with conn.execute(
+                """
+                SELECT DISTINCT agent_tasks.session_key
+                FROM agent_tasks
+                JOIN sessions ON sessions.session_key = agent_tasks.session_key
+                WHERE sessions.status NOT IN (?, ?, ?, ?)
+                  AND (
+                    agent_tasks.status IN (?, ?)
+                    OR (
+                        agent_tasks.status = ?
+                        AND agent_tasks.terminal_reason = ?
+                    )
+                  )
+                """,
+                (
+                    *terminal_session_statuses,
+                    AgentTaskStatus.QUEUED,
+                    AgentTaskStatus.RUNNING,
+                    AgentTaskStatus.ABANDONED,
+                    "process_restart",
+                ),
+            ) as session_cur:
+                session_keys = [str(row[0]) for row in await session_cur.fetchall()]
+
             cur = await conn.execute(
                 """
                 UPDATE agent_tasks
@@ -1619,6 +3087,34 @@ class SessionStorage:
                 ),
             )
             count = int(cur.rowcount if cur.rowcount is not None else 0)
+            for index in range(0, len(session_keys), _SQLITE_VARIABLE_CHUNK_SIZE):
+                chunk = session_keys[index : index + _SQLITE_VARIABLE_CHUNK_SIZE]
+                placeholders = ", ".join("?" for _ in chunk)
+                await conn.execute(
+                f"""
+                UPDATE sessions
+                SET status = ?,
+                    updated_at = ?,
+                    ended_at = COALESCE(ended_at, ?),
+                    runtime_ms = CASE
+                        WHEN runtime_ms IS NOT NULL THEN runtime_ms
+                        WHEN started_at IS NULL THEN NULL
+                        WHEN ? >= started_at THEN ? - started_at
+                        ELSE 0
+                    END
+                WHERE session_key IN ({placeholders})
+                  AND status NOT IN (?, ?, ?, ?)
+                """,
+                (
+                    SessionStatus.FAILED,
+                    ts,
+                    ts,
+                    ts,
+                    ts,
+                    *chunk,
+                    *terminal_session_statuses,
+                ),
+            )
         return count
 
     # ── Transcript CRUD ──────────────────────────────────────────────────────
@@ -1757,6 +3253,7 @@ class SessionStorage:
                 tool_call_id,
                 reasoning_content,
                 turn_usage,
+                turn_context,
                 created_at,
                 token_count,
                 provenance_kind,
@@ -1779,6 +3276,7 @@ class SessionStorage:
                 tool_call_id,
                 reasoning_content,
                 turn_usage,
+                turn_context,
                 created_at,
                 token_count,
                 provenance_kind,
@@ -2534,6 +4032,7 @@ class SessionStorage:
                 tool_call_id,
                 reasoning_content,
                 turn_usage,
+                turn_context,
                 created_at,
                 token_count,
                 provenance_kind,
@@ -2557,6 +4056,7 @@ class SessionStorage:
                 tool_call_id,
                 reasoning_content,
                 turn_usage,
+                turn_context,
                 created_at,
                 token_count,
                 provenance_kind,
@@ -2684,6 +4184,30 @@ class SessionStorage:
             ) as cur:
                 removed = cur.rowcount or 0
         return removed > 0
+
+    async def update_transcript_turn_context(
+        self,
+        session_key: str,
+        message_id: str,
+        turn_context: dict[str, Any],
+    ) -> bool:
+        """Replace one message's additive causal identity snapshot.
+
+        The row can cross into the compacted archive while a queued turn waits,
+        so update both canonical transcript tables in one transaction.
+        """
+
+        encoded = _serialize(turn_context)
+        changed = 0
+        async with self._write_transaction("update_transcript_turn_context") as conn:
+            for table in ("transcript_entries", "compacted_transcript_entries"):
+                async with conn.execute(
+                    f"UPDATE {table} SET turn_context = ? "
+                    "WHERE session_key = ? AND message_id = ?",
+                    (encoded, session_key, message_id),
+                ) as cur:
+                    changed += cur.rowcount or 0
+        return changed > 0
 
     async def delete_summaries(self, session_id: str) -> None:
         async with self._write_transaction("delete_summaries") as conn:
@@ -2912,6 +4436,7 @@ class SessionStorage:
                 tool_call_id,
                 reasoning_content,
                 turn_usage,
+                turn_context,
                 created_at,
                 token_count,
                 provenance_kind,

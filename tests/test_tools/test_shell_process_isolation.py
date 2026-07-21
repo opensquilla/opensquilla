@@ -34,6 +34,7 @@ def _python_shell_command(script: str) -> str:
 class _FakeStdin:
     def __init__(self) -> None:
         self.closed = False
+        self.close_waited = False
         self.writes: list[bytes] = []
 
     def is_closing(self) -> bool:
@@ -49,7 +50,7 @@ class _FakeStdin:
         self.closed = True
 
     async def wait_closed(self) -> None:
-        return None
+        self.close_waited = True
 
 
 @dataclass
@@ -230,11 +231,23 @@ async def test_exec_command_writes_optional_stdin() -> None:
         "import sys; data = sys.stdin.read(); print('STDIN:' + data)"
     )
 
-    result = await shell.exec_command(command, stdin="payload", timeout=1.0)
+    result = await shell.exec_command(command, stdin="payload", timeout=5.0)
 
     exit_line, stdout = result.split("\n", 1)
     assert exit_line == "exit_code=0"
     assert stdout.splitlines() == ["STDIN:payload"]
+
+
+@pytest.mark.asyncio
+async def test_write_exec_stdin_waits_until_eof_is_delivered() -> None:
+    stdin = _FakeStdin()
+    proc = SimpleNamespace(stdin=stdin)
+
+    await shell._write_exec_stdin(proc, b"payload")
+
+    assert stdin.writes == [b"payload"]
+    assert stdin.closed is True
+    assert stdin.close_waited is True
 
 
 @pytest.mark.asyncio

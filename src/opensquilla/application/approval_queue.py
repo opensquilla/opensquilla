@@ -392,6 +392,38 @@ class ApprovalQueue:
         self._pending[approval_id] = entry
         return entry
 
+    def update_params(self, approval_id: str, params: dict) -> None:
+        """Replace review metadata while an approval is still unresolved."""
+
+        payload = self._serialize_params(params)
+        self._release_stale_claims()
+        self._conn.execute("BEGIN IMMEDIATE")
+        row = self._get_row(approval_id)
+        if row is None:
+            self._conn.rollback()
+            raise KeyError(f"Approval not found: {approval_id}")
+        entry = self._row_to_entry(row)
+        if entry.resolved or entry.claim_token:
+            self._conn.rollback()
+            raise ValueError(f"Approval is not pending: {approval_id}")
+        became_human_actionable = (
+            entry.params.get("humanActionable") is False
+            and params.get("humanActionable") is True
+        )
+        cursor = self._conn.execute(
+            "UPDATE approval_queue SET params = ? "
+            "WHERE approval_id = ? AND resolved = 0 AND claim_token IS NULL",
+            (payload, approval_id),
+        )
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise ValueError(f"Approval params could not be updated: {approval_id}")
+        self._conn.commit()
+        updated_entry = self.get(approval_id)
+        self._pending[approval_id] = updated_entry
+        if became_human_actionable:
+            self._notify_event("requested", updated_entry)
+
     async def wait(self, approval_id: str, timeout: float | None = None) -> bool:
         entry = self.get(approval_id)
         if entry.resolved and entry.claim_token is None:

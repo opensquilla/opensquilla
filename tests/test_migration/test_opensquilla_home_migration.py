@@ -2185,6 +2185,46 @@ def test_configured_data_root_inside_source_code_task_blocks_import(
     assert not applied_target.exists()
 
 
+@pytest.mark.parametrize("configured_kind", ["workspace", "agent-workspace"])
+def test_case_alias_root_inside_source_code_task_blocks_import(
+    tmp_path: Path,
+    configured_kind: str,
+) -> None:
+    source = _build_source_home(tmp_path)
+    actual = source / "code-task" / "selected-subdir"
+    actual.mkdir(parents=True)
+    (actual / "must-not-migrate.txt").write_text(
+        "local run data\n",
+        encoding="utf-8",
+    )
+    configured = source / "CODE-TASK" / "selected-subdir"
+    try:
+        if not configured.samefile(actual):
+            pytest.skip("filesystem does not expose a case-insensitive alias")
+    except OSError:
+        pytest.skip("filesystem is case-sensitive")
+
+    payload = tomllib.loads((source / "config.toml").read_text(encoding="utf-8"))
+    if configured_kind == "workspace":
+        payload["workspace_dir"] = str(configured)
+    else:
+        payload["agents"] = [{"id": "research", "workspace": str(configured)}]
+    (source / "config.toml").write_text(tomli_w.dumps(payload), encoding="utf-8")
+    target = tmp_path / "target-home"
+
+    report = _run(source, target, apply=True)
+
+    data_root_errors = [
+        item
+        for item in _errors(report)
+        if item["kind"] == "preflight/data-root"
+        and item["source"] == str(configured)
+    ]
+    assert data_root_errors
+    assert data_root_errors[0]["details"]["stable_code"] == "configured_code_task_root"
+    assert not target.exists()
+
+
 def test_dotenv_data_root_inside_source_code_task_blocks_import(tmp_path: Path) -> None:
     source = _build_source_home(tmp_path)
     configured = source / "code-task"

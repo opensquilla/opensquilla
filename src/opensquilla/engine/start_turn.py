@@ -32,6 +32,7 @@ def _turn_kwargs(
     persisted_user_message_id: str | None,
     fresh_user_session: bool | None,
     stream_event_sink: Callable[[Any], Awaitable[None]] | None,
+    turn_id: str | None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "attachments": attachments,
@@ -49,6 +50,8 @@ def _turn_kwargs(
         kwargs["fresh_user_session"] = fresh_user_session
     if stream_event_sink is not None:
         kwargs["stream_event_sink"] = stream_event_sink
+    if turn_id is not None:
+        kwargs["task_id"] = turn_id
     return kwargs
 
 
@@ -65,6 +68,7 @@ async def reserve_turn_via_runtime(
     persisted_user_message_id: str | None = None,
     fresh_user_session: bool | None = None,
     stream_event_sink: Callable[[Any], Awaitable[None]] | None = None,
+    turn_id: str | None = None,
     overflow_policy: Any = None,
 ) -> TaskReservation:
     """Reserve runtime admission while preserving shared ingress metadata."""
@@ -78,6 +82,7 @@ async def reserve_turn_via_runtime(
         persisted_user_message_id=persisted_user_message_id,
         fresh_user_session=fresh_user_session,
         stream_event_sink=stream_event_sink,
+        turn_id=turn_id,
     )
     if overflow_policy is not None:
         kwargs["overflow_policy"] = overflow_policy
@@ -97,6 +102,7 @@ async def start_turn_via_runtime(
     persisted_user_message_id: str | None = None,
     fresh_user_session: bool | None = None,
     stream_event_sink: Callable[[Any], Awaitable[None]] | None = None,
+    turn_id: str | None = None,
 ) -> TaskHandle:
     """Enqueue a turn. Exceptions propagate — recovery is surface-specific.
 
@@ -124,5 +130,6 @@ async def start_turn_via_runtime(
         persisted_user_message_id=persisted_user_message_id,
         fresh_user_session=fresh_user_session,
         stream_event_sink=stream_event_sink,
+        turn_id=turn_id,
     )
     return await runtime.enqueue(envelope, message, **kwargs)

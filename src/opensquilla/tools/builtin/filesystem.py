@@ -6,16 +6,22 @@ import asyncio
 import contextvars
 import csv
 import fnmatch
+import hashlib
 import json
 import os
 import posixpath
 import re
+import sys
 import zipfile
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
 
+from opensquilla.sandbox.backend.unavailable import UnavailableBackend
+from opensquilla.sandbox.directory_listing import format_directory_entry
+from opensquilla.sandbox.elevation import ElevationAction, gate_elevated_action
 from opensquilla.sandbox.escalation import (
     build_path_approval_params,
     current_tool_mounts,
@@ -23,14 +29,19 @@ from opensquilla.sandbox.escalation import (
     grant_temporary_mount_for_current_tool,
     request_sandbox_approval,
 )
-from opensquilla.sandbox.integration import get_runtime
+from opensquilla.sandbox.integration import active_file_system_profile, get_runtime
 from opensquilla.sandbox.operation_runtime import (
     FilesystemOperationRequest,
     SandboxOperation,
     SandboxOperationRuntime,
     SandboxToolDescriptor,
 )
-from opensquilla.sandbox.path_validation import MountDecision, decide_path_access
+from opensquilla.sandbox.path_validation import (
+    MountDecision,
+    decide_path_access,
+    trusted_write_auto_grant_allowed,
+)
+from opensquilla.sandbox.permissions import FileSystemAccess
 from opensquilla.tools.mutation_receipts import (
     fingerprint_path,
     record_semantic_mutation_receipt,
@@ -568,14 +579,23 @@ def _sandbox_path_access_enabled() -> bool:
 
 
 def _active_sandbox_mounts() -> list[dict[str, object]]:
-    return current_tool_mounts()
+    mounts = current_tool_mounts()
+    runtime = get_runtime()
+    settings = getattr(runtime, "settings", None) if runtime is not None else None
+    if (
+        sys.platform.startswith("linux")
+        and bool(getattr(settings, "host_root_readonly", False))
+        and not any(str(item.get("path") or "") == "/" for item in mounts)
+    ):
+        mounts.insert(0, {"path": "/", "access": "ro"})
+    return mounts
 
 
 def _path_access_required_envelope(
     decision: MountDecision,
     *,
     approval_id: str | None = None,
-) -> dict[str, object]:
+) -> dict[str, object] | None:
     ctx = current_tool_context.get()
     workspace_root = _workspace_root()
     approval = build_path_approval_params(
@@ -620,7 +640,7 @@ def _path_access_denied_message(workspace_root: Path | None) -> str:
 def _path_access_blocked_envelope(decision: MountDecision) -> dict[str, object]:
     return {
         "status": "blocked",
-        "reason": "sensitive_path",
+        "reason": decision.reason,
         "path": decision.normalized_path,
         "message": decision.reason,
     }
@@ -641,14 +661,34 @@ def _sandbox_path_access_envelope(
         workspace=_workspace_root(),
         mounts=_active_sandbox_mounts(),
         write=write,
+        profile=active_file_system_profile(_workspace_root()),
     )
     if decision.status == "allowed":
         return None
     if decision.status == "blocked":
         return _path_access_blocked_envelope(decision)
-    if trusted_sandbox_active():
+    if not write and trusted_sandbox_active():
+        # Managed Execution treats local reads as host-readable. Sensitive data
+        # exfiltration remains blocked at the action/network review boundary.
+        return None
+    if trusted_sandbox_active() and trusted_write_auto_grant_allowed(
+        decision.normalized_path,
+        workspace=_workspace_root(),
+    ):
         if grant_temporary_mount_for_current_tool(decision):
             return None
+    if write:
+        return {
+            "status": "elevation_required",
+            "reason": decision.reason,
+            "path": decision.normalized_path,
+            "access": "rw",
+            "message": (
+                "This write is outside the sandbox's writable roots. Retry only if "
+                "the user's request warrants it, using sandbox_permissions="
+                "require_escalated and a precise justification."
+            ),
+        }
     return _path_access_required_envelope(decision, approval_id=approval_id)
 
 
@@ -672,6 +712,7 @@ def _active_sandbox_mount_allows(resolved: Path, *, write: bool) -> bool:
         workspace=_workspace_root(),
         mounts=_active_sandbox_mounts(),
         write=write,
+        profile=active_file_system_profile(_workspace_root()),
     )
     return decision.status == "allowed"
 
@@ -685,10 +726,26 @@ def _active_filesystem_run_mode() -> str:
 
 async def _run_sandbox_operation_if_required(
     operation: SandboxOperation,
+    *,
+    host_execution_active: bool = False,
 ) -> object | None:
+    if operation.domain == "filesystem" and operation.file_system_profile is None:
+        profile = active_file_system_profile(_workspace_root())
+        if profile is not None:
+            operation = replace(operation, file_system_profile=profile)
+    runtime = get_runtime()
+    ctx = current_tool_context.get()
+    if (
+        trusted_sandbox_active()
+        and ctx is not None
+        and ctx.is_owner
+        and runtime is not None
+        and isinstance(runtime.backend, UnavailableBackend)
+    ):
+        return None
     return await SandboxOperationRuntime(
-        get_runtime(),
-        host_execution_active=full_host_access_active(),
+        runtime,
+        host_execution_active=full_host_access_active() or host_execution_active,
     ).run(operation)
 
 
@@ -783,6 +840,31 @@ def _strict_read_mount_roots() -> tuple[Path, ...]:
     return tuple(roots)
 
 
+def _strict_read_profile_roots() -> tuple[Path, ...]:
+    """Return readable roots from the same profile used by direct tools.
+
+    Linux expresses Codex's host-readable policy as a read-only ``/`` mount,
+    while Windows expresses it as a set of platform-specific profile entries.
+    Strict workspace reads must understand both representations or filesystem
+    tools disagree with shell and patch tools on Windows.
+    """
+
+    profile = active_file_system_profile(_workspace_root())
+    if profile is None:
+        return tuple()
+    roots: list[Path] = []
+    for entry in profile.entries:
+        if entry.access is FileSystemAccess.DENY:
+            continue
+        try:
+            root = Path(entry.path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if root not in roots:
+            roots.append(root)
+    return tuple(roots)
+
+
 def _strict_read_roots() -> tuple[Path, ...]:
     if full_host_access_active():
         return tuple()
@@ -796,6 +878,9 @@ def _strict_read_roots() -> tuple[Path, ...]:
     for mount_root in _strict_read_mount_roots():
         if mount_root not in roots:
             roots.append(mount_root)
+    for profile_root in _strict_read_profile_roots():
+        if profile_root not in roots:
+            roots.append(profile_root)
     return tuple(roots)
 
 
@@ -904,13 +989,18 @@ def _workspace_strict_candidate_marker(
     original_path: str | None = None,
     strict_root: Path | None = None,
     strict_roots: tuple[Path, ...] | None = None,
+    resolved_candidate: Path | None = None,
 ) -> str | None:
     """Return a per-candidate blocked marker for directory/search tools."""
 
     roots = (strict_root,) if strict_root is not None else (strict_roots or _strict_read_roots())
     if not roots:
         return None
-    resolved = candidate.expanduser().resolve(strict=False)
+    resolved = (
+        resolved_candidate
+        if resolved_candidate is not None
+        else candidate.expanduser().resolve(strict=False)
+    )
     if not _is_within_any_root(resolved, roots):
         root_labels = ", ".join(str(root) for root in roots)
         return f"[blocked] {candidate}: outside active read roots ({root_labels})"
@@ -923,7 +1013,7 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
     """Return a hard-block envelope for sensitive host paths, unless fully elevated."""
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
 
-    if full_host_access_active():
+    if full_host_access_active() or _sandbox_path_access_enabled():
         return None
     sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
     if sensitive is None:
@@ -934,10 +1024,21 @@ def _sensitive_access_block(tool_name: str, resolved: Path, original_path: str) 
 def _is_sensitive_access_path(resolved: Path, workspace: Path | None = None) -> bool:
     from opensquilla.sandbox.sensitive_paths import sensitive_path_marker
 
+    if _sandbox_path_access_enabled():
+        return False
     root = workspace if workspace is not None else _workspace_root()
     return (
         not full_host_access_active()
         and sensitive_path_marker(str(resolved), workspace=root) is not None
+    )
+
+
+def _is_pathlib_symlink_loop_error(exc: RuntimeError) -> bool:
+    """Return whether ``Path.resolve`` converted an OS symlink loop error."""
+
+    return str(exc).startswith("Symlink loop from ") and isinstance(
+        exc.__context__,
+        OSError,
     )
 
 
@@ -977,6 +1078,8 @@ def _is_under_configured_scratch_dir(resolved: Path) -> bool:
 
 
 def _gate_workspace_lockdown_write(tool_name: str, resolved: Path, original_path: str) -> None:
+    if full_host_access_active():
+        return
     roots = _workspace_lockdown_roots()
     if not roots or _inside_any_root(resolved, roots):
         return
@@ -992,32 +1095,28 @@ async def _gate_out_of_workspace_write(
     resolved: Path,
     original_path: str,
     approval_id: str | None,
-) -> dict | None:
-    """Return an approval-required/denied/blocked dict, or None to proceed.
+    *,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    content_digest: str | None = None,
+    prefix_rule: list[str] | None = None,
+) -> tuple[dict[str, object] | None, bool]:
+    """Return ``(block, elevated)`` after hard policy and exact-action gating."""
+    if full_host_access_active():
+        return None, False
 
-    Writes that stay inside the workspace pass through immediately. Writes
-    outside the current sandbox view are routed through the sandbox path grant
-    flow when the sandbox runtime is active. Without that unified path approval
-    path, outside-workspace writes fail closed instead of falling back to a
-    tool-local exec approval.
-    """
     # Sensitive-path hard block — takes precedence over approval flow.
     from opensquilla.sandbox.sensitive_paths import build_block_envelope, sensitive_path_marker
 
-    elevated_full = full_host_access_active()
-    if not elevated_full:
+    if not _sandbox_path_access_enabled():
         sensitive = sensitive_path_marker(str(resolved), workspace=_workspace_root())
         if sensitive is not None:
-            return build_block_envelope(
-                f"{tool_name} {original_path}", sensitive, tool_name=tool_name
+            return (
+                build_block_envelope(
+                    f"{tool_name} {original_path}", sensitive, tool_name=tool_name
+                ),
+                False,
             )
-    path_access = _sandbox_path_access_envelope(
-        resolved,
-        write=True,
-        approval_id=approval_id,
-    )
-    if path_access is not None:
-        return path_access
 
     _gate_workspace_lockdown_write(tool_name, resolved, original_path)
     from opensquilla.tools.write_policy import (
@@ -1038,17 +1137,88 @@ async def _gate_out_of_workspace_write(
         workspace=_workspace_root(),
     )
 
+    if sandbox_permissions not in {"use_default", "require_escalated"}:
+        return (
+            {
+                "status": "invalid_request",
+                "reason": "invalid_sandbox_permissions",
+            },
+            False,
+        )
+
+    if _sandbox_path_access_enabled():
+        decision = decide_path_access(
+            resolved,
+            workspace=_workspace_root(),
+            mounts=_active_sandbox_mounts(),
+            write=True,
+            profile=active_file_system_profile(_workspace_root()),
+        )
+        if decision.status == "blocked":
+            return _path_access_blocked_envelope(decision), False
+        if decision.status == "request":
+            if sandbox_permissions == "use_default":
+                return (
+                    {
+                        "status": "elevation_required",
+                        "reason": decision.reason,
+                        "path": decision.normalized_path,
+                        "access": "rw",
+                        "message": (
+                            "This write is outside the sandbox's writable roots. Retry "
+                            "only if the user's request warrants it, using "
+                            "sandbox_permissions=require_escalated and a precise "
+                            "justification."
+                        ),
+                    },
+                    False,
+                )
+            if not justification.strip():
+                return (
+                    {
+                        "status": "elevation_required",
+                        "reason": "justification_required",
+                        "message": (
+                            "A precise justification is required for elevated execution."
+                        ),
+                    },
+                    False,
+                )
+            action_kinds = {
+                "write_file": "fs.write",
+                "edit_file": "fs.edit",
+                "edit_source": "fs.edit_source",
+            }
+            action = ElevationAction(
+                tool_name=tool_name,
+                action_kind=action_kinds.get(tool_name, "fs.write"),
+                argv=(tool_name, str(resolved)),
+                cwd=str(_workspace_root() or Path.cwd()),
+                sandbox_permissions="require_escalated",
+                justification=justification,
+                target_paths=((str(resolved), "write"),),
+                content_digest=content_digest,
+                prefix_rule=tuple(prefix_rule) if prefix_rule is not None else None,
+            )
+            ctx = current_tool_context.get()
+            gate = gate_elevated_action(
+                action,
+                approval_id=approval_id,
+                session_key=ctx.session_key if ctx is not None else None,
+            )
+            if not gate.allowed:
+                return gate.to_envelope(), False
+            return None, True
+
     if not _is_outside_workspace(resolved):
-        return None
+        return None, False
     if _is_inside_scratch(resolved):
-        return None
+        return None, False
     if _memory_source_rel_path(resolved) is not None:
-        return None
+        return None, False
     if _active_sandbox_mount_allows(resolved, write=True):
-        return None
-    if elevated_full:
-        return None
-    return _outside_workspace_write_block(tool_name, resolved, original_path)
+        return None, False
+    return _outside_workspace_write_block(tool_name, resolved, original_path), False
 
 
 @tool(
@@ -1463,22 +1633,68 @@ def _format_spreadsheet(
             "type": "string",
             "description": "Complete file content to write; not a patch fragment.",
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root write.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated write.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for writes outside the workspace.",
         },
     },
     required=["path", "content"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.write",
         argv_factory=lambda a: ("fs.write", str(a.get("path", ""))),
         request_factory=_tool_path_request,
+        enforce=False,
         record_payload=False,
     ),
 )
-async def write_file(path: str, content: str, approval_id: str | None = None) -> str:
+async def write_file(
+    path: str,
+    content: str,
+    approval_id: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
+) -> str:
     p = _resolve_path(path)
-    approval = await _gate_out_of_workspace_write("write_file", p, path, approval_id)
+    if full_host_access_active():
+        loop = asyncio.get_event_loop()
+        created = not p.exists()
+
+        def _write_full_host() -> None:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+
+        await loop.run_in_executor(None, _write_full_host)
+        record_workspace_file_write(p, operation="write_file", created=created)
+        _notify_memory_source_write(p)
+        _notify_bootstrap_source_write(p)
+        return f"Written {len(content)} bytes to {p}"
+
+    approval, elevated = await _gate_out_of_workspace_write(
+        "write_file",
+        p,
+        path,
+        approval_id,
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        content_digest=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        prefix_rule=prefix_rule,
+    )
     if approval is not None:
         return json.dumps(approval)
 
@@ -1498,7 +1714,8 @@ async def write_file(path: str, content: str, approval_id: str | None = None) ->
                 path=p,
                 paths=(p,),
                 content=content,
-            )
+            ),
+            host_execution_active=elevated,
         )
         if sandbox_result is not None:
             created = bool(getattr(sandbox_result, "created", created))
@@ -1644,6 +1861,7 @@ async def write_scratch(path: str, content: str) -> str:
         },
     },
     required=["path", "content"],
+    runtime_only_arguments=("approval_id",),
     exposed_by_default=False,
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.write",
@@ -1728,6 +1946,8 @@ def _gate_write_file_destructive_overwrite(
     `edit_file` or `apply_patch` instead.
     """
 
+    if full_host_access_active():
+        return
     workspace = _workspace_root()
     if workspace is None or _is_outside_workspace(path):
         return
@@ -1848,16 +2068,32 @@ def _edit_file_retry_guidance(*, duplicate_match: bool = False) -> str:
                 },
             },
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root edit.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated edit.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Sandbox path approval record for edits outside the workspace.",
         },
     },
     required=["path"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.edit",
         argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
         request_factory=_tool_path_request,
+        enforce=False,
         record_payload=False,
     ),
 )
@@ -1867,17 +2103,57 @@ async def edit_file(
     new_text: str | None = None,
     approval_id: str | None = None,
     edits: list[dict[str, Any]] | str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
 ) -> str:
     p = _resolve_path(path)
-    approval = await _gate_out_of_workspace_write("edit_file", p, path, approval_id)
-    if approval is not None:
-        return json.dumps(approval)
     replacements = _normalize_edit_replacements(
         path=path,
         old_text=old_text,
         new_text=new_text,
         edits=edits,
     )
+    if full_host_access_active():
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        loop = asyncio.get_event_loop()
+        original = await loop.run_in_executor(None, p.read_text, "utf-8")
+        updated = _apply_edit_replacements(original, replacements, path=path)
+        await loop.run_in_executor(None, p.write_text, updated, "utf-8")
+        _notify_memory_source_write(p)
+        _notify_bootstrap_source_write(p)
+        if len(replacements) == 1:
+            replacement = replacements[0]
+            return (
+                f"Edited {p}: replaced {len(replacement.old_text)} chars with "
+                f"{len(replacement.new_text)} chars"
+            )
+        return f"Edited {p}: applied {len(replacements)} replacements"
+
+    edit_digest = hashlib.sha256(
+        json.dumps(
+            [
+                {"old_text": item.old_text, "new_text": item.new_text}
+                for item in replacements
+            ],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    approval, elevated = await _gate_out_of_workspace_write(
+        "edit_file",
+        p,
+        path,
+        approval_id,
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        content_digest=edit_digest,
+        prefix_rule=prefix_rule,
+    )
+    if approval is not None:
+        return json.dumps(approval)
     require_fresh_workspace_file_read(p, tool_name="edit_file", original_path=path)
     workspace = _filesystem_operation_workspace()
     if workspace is not None:
@@ -1893,7 +2169,8 @@ async def edit_file(
                     paths=(p,),
                     old_text=sandbox_replacement.old_text,
                     new_text=sandbox_replacement.new_text,
-                )
+                ),
+                host_execution_active=elevated,
             )
             if sandbox_result is not None:
                 after_fingerprint = fingerprint_path(p)
@@ -1912,7 +2189,7 @@ async def edit_file(
                 _notify_memory_source_write(p)
                 _notify_bootstrap_source_write(p)
                 return str(getattr(sandbox_result, "message"))
-        elif _sandbox_path_access_enabled():
+        elif _sandbox_path_access_enabled() and not elevated:
             raise RetryableToolInputError(
                 "edit_file accepts only one replacement per call when edits are "
                 "dispatched through the sandbox runtime. Retry with a single "
@@ -1998,17 +2275,33 @@ async def edit_file(
                 "additionalProperties": False,
             },
         },
+        "sandbox_permissions": {
+            "type": "string",
+            "enum": ["use_default", "require_escalated"],
+            "description": "Use require_escalated only for an exact out-of-root edit.",
+        },
+        "justification": {
+            "type": "string",
+            "description": "Short user-facing reason for the exact elevated edit.",
+        },
+        "prefix_rule": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Optional narrow prefix suggestion; never persisted by auto review.",
+        },
         "approval_id": {
             "type": "string",
             "description": "Approval record to consume for edits outside the workspace.",
         },
     },
     required=["path", "expected_revision", "edits"],
+    runtime_only_arguments=("approval_id",),
     exposed_by_default=False,
     sandbox=SandboxToolDescriptor.filesystem(
         kind="fs.edit",
         argv_factory=lambda a: ("fs.edit", str(a.get("path", ""))),
         request_factory=_tool_path_request,
+        enforce=False,
         record_payload=False,
     ),
 )
@@ -2017,9 +2310,29 @@ async def edit_source(
     expected_revision: str,
     edits: list[dict[str, Any]],
     approval_id: str | None = None,
+    sandbox_permissions: str = "use_default",
+    justification: str = "",
+    prefix_rule: list[str] | None = None,
 ) -> str:
     p = _resolve_path(path)
-    approval = await _gate_out_of_workspace_write("edit_source", p, path, approval_id)
+    edit_digest = hashlib.sha256(
+        json.dumps(
+            {"expected_revision": expected_revision, "edits": edits},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    approval, _elevated = await _gate_out_of_workspace_write(
+        "edit_source",
+        p,
+        path,
+        approval_id,
+        sandbox_permissions=sandbox_permissions,
+        justification=justification,
+        content_digest=edit_digest,
+        prefix_rule=prefix_rule,
+    )
     if approval is not None:
         return json.dumps(approval)
     if not p.exists():
@@ -2490,6 +2803,7 @@ def _record_edit_recovery_event(
         },
     },
     required=["path"],
+    runtime_only_arguments=("approval_id",),
     sandbox=SandboxToolDescriptor.filesystem(
         kind="list_dir",
         argv_factory=lambda a: ("list_dir", str(a.get("path", ""))),
@@ -2535,34 +2849,35 @@ async def list_dir(path: str, approval_id: str | None = None) -> str:
         files: list[str] = []
         blocked_entries: list[str] = []
         for entry in sorted(p.iterdir(), key=lambda e: e.name):
+            try:
+                resolved_entry = entry.resolve(strict=False)
+            except OSError:
+                is_directory, line = format_directory_entry(entry, follow_target=False)
+                (dirs if is_directory else files).append(line)
+                continue
+            except RuntimeError as exc:
+                if not _is_pathlib_symlink_loop_error(exc):
+                    raise
+                is_directory, line = format_directory_entry(
+                    entry,
+                    follow_target=False,
+                    symlink_target_is_broken=True,
+                )
+                (dirs if is_directory else files).append(line)
+                continue
             marker = _workspace_strict_candidate_marker(
                 "list_dir",
                 entry,
                 strict_roots=strict_roots,
+                resolved_candidate=resolved_entry,
             )
             if marker is not None:
                 blocked_entries.append(marker)
                 continue
-            if _is_sensitive_access_path(entry.resolve(strict=False), workspace=workspace_root):
+            if _is_sensitive_access_path(resolved_entry, workspace=workspace_root):
                 continue
-            if entry.is_dir():
-                dirs.append(f"[dir]  {entry.name}/")
-            else:
-                # A broken symlink (or a race deleting the entry) makes stat()
-                # raise; catching it keeps one bad entry from aborting the whole
-                # listing. Fall back to lstat (does not follow the link) and
-                # mark it, or show the size as unavailable.
-                try:
-                    size = entry.stat().st_size
-                    files.append(f"[file] {entry.name} ({size} bytes)")
-                except OSError:
-                    try:
-                        if entry.is_symlink():
-                            files.append(f"[link] {entry.name} (broken symlink)")
-                        else:
-                            files.append(f"[file] {entry.name} (size unavailable)")
-                    except OSError:
-                        files.append(f"[file] {entry.name} (size unavailable)")
+            is_directory, line = format_directory_entry(entry)
+            (dirs if is_directory else files).append(line)
         return dirs + files + blocked_entries
 
     # _list reads the current tool context (run mode / full-host access) via

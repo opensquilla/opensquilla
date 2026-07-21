@@ -45,11 +45,82 @@ from .types import (
 
 TRACE_CONTENT_MAX_CHARS = 8_000
 _ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
+_ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS = 5.0
 log = structlog.get_logger(__name__)
 
 
 def _ensemble_heartbeat_interval() -> float:
     return max(0.001, float(_ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS))
+
+
+def _consume_task_result(task: asyncio.Future[Any]) -> None:
+    """Consume a detached task result so late failures are not reported globally."""
+
+    with contextlib.suppress(BaseException):
+        task.result()
+
+
+async def _bounded_task_cleanup(
+    tasks: Sequence[asyncio.Future[Any]],
+    *,
+    phase: str,
+    cleanup_deadline: float | None = None,
+) -> set[asyncio.Future[Any]]:
+    """Wait briefly for tasks and detach cancellation-resistant work."""
+
+    active = {task for task in tasks if not task.done()}
+    if not active:
+        return set()
+    cleanup_timeout = (
+        max(0.0, cleanup_deadline - time.monotonic())
+        if cleanup_deadline is not None
+        else max(0.0, float(_ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS))
+    )
+    _, lingering = await asyncio.wait(
+        active,
+        timeout=cleanup_timeout,
+    )
+    if lingering:
+        log.warning(
+            "ensemble.cancel_cleanup_timeout",
+            phase=phase,
+            pending_count=len(lingering),
+            timeout_seconds=cleanup_timeout,
+        )
+        for task in lingering:
+            task.add_done_callback(_consume_task_result)
+    return lingering
+
+
+async def _close_async_iterator(
+    stream_iter: AsyncIterator[StreamEvent],
+    *,
+    phase: str,
+    cleanup_deadline: float | None = None,
+) -> None:
+    """Close a provider iterator without letting cleanup mask the terminal event."""
+
+    aclose = getattr(stream_iter, "aclose", None)
+    if not callable(aclose):
+        return
+    try:
+        close_future = asyncio.ensure_future(aclose())
+    except Exception as exc:  # noqa: BLE001 - cleanup must not mask the root cause
+        log.warning(
+            "ensemble.stream_close_failed",
+            phase=phase,
+            error=str(exc),
+        )
+        return
+    lingering = await _bounded_task_cleanup(
+        [close_future],
+        phase=f"{phase}_close",
+        cleanup_deadline=cleanup_deadline,
+    )
+    if lingering:
+        close_future.cancel()
+    if close_future.done():
+        _consume_task_result(close_future)
 
 
 async def _stream_with_heartbeats(
@@ -85,14 +156,44 @@ async def _stream_with_heartbeats(
             yield event
             pending = asyncio.ensure_future(stream_iter.__anext__())
     finally:
+        cleanup_deadline = time.monotonic() + max(
+            0.0,
+            float(_ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS),
+        )
         if not pending.done():
             pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
-                await pending
-        aclose = getattr(stream_iter, "aclose", None)
-        if callable(aclose):
-            with contextlib.suppress(Exception):
-                await aclose()
+            lingering = await _bounded_task_cleanup(
+                [pending],
+                phase=f"{phase}_stream",
+                cleanup_deadline=cleanup_deadline,
+            )
+            if lingering:
+                # A second cancellation interrupts providers that suppress the
+                # first CancelledError while unwinding their stream.
+                pending.cancel()
+        if pending.done():
+            _consume_task_result(pending)
+            await _close_async_iterator(
+                stream_iter,
+                phase=phase,
+                cleanup_deadline=cleanup_deadline,
+            )
+        else:
+            # If __anext__ ignored cancellation, close the iterator as soon as
+            # that in-flight call eventually yields or exits. This callback is
+            # detached so the user-facing timeout remains bounded.
+            def _close_after_pending(done: asyncio.Future[Any]) -> None:
+                _consume_task_result(done)
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    return
+                close_task = loop.create_task(
+                    _close_async_iterator(stream_iter, phase=phase)
+                )
+                close_task.add_done_callback(_consume_task_result)
+
+            pending.add_done_callback(_close_after_pending)
 
 
 @dataclass(frozen=True)
@@ -140,6 +241,7 @@ class _CandidateResult:
     error_code: str = ""
     message_limit_proof: ProviderMessageLimitProof | None = None
     execution: dict[str, Any] = field(default_factory=dict)
+    usage_reported: bool = False
 
     @property
     def ok(self) -> bool:
@@ -415,7 +517,8 @@ def _summed_float(rows: Sequence[dict[str, Any]], key: str) -> float:
 
 def _candidate_has_usage(candidate: _CandidateResult) -> bool:
     return bool(
-        candidate.ok
+        candidate.usage_reported
+        or candidate.ok
         or candidate.input_tokens
         or candidate.output_tokens
         or candidate.reasoning_tokens
@@ -491,6 +594,10 @@ class EnsembleProvider:
     """G8 fusion provider: proposer candidates first, one aggregator stream after."""
 
     provider_name = "ensemble"
+    # Replaying one failed chat would rerun every proposer plus aggregation.
+    # Selector fallback may still hop to a single provider, whose default is
+    # retry-safe, before the Agent considers a same-provider retry.
+    retry_failed_call_safe = False
 
     def __init__(
         self,
@@ -742,6 +849,9 @@ class EnsembleProvider:
             tools=tools,
             config=aggregator_cfg,
             prior_rows=proposer_rows,
+            prior_missing_count=sum(
+                1 for candidate in candidates if not candidate.usage_reported
+            ),
             trace=trace,
         ):
             yield event
@@ -779,29 +889,45 @@ class EnsembleProvider:
                 index += 1
         if not tasks:
             return []
-        if (
-            self.quorum_grace_seconds <= 0
-            or self.min_successful_proposers >= len(tasks)
-        ):
-            return sorted(
-                await asyncio.gather(*tasks),
-                key=lambda result: (result.index, result.sample_index),
-            )
 
         results: list[_CandidateResult] = []
         pending: set[asyncio.Task[_CandidateResult]] = set(tasks)
+        cancel_code = ""
+        cancel_message = ""
         try:
+            if len(pending) < self.min_successful_proposers:
+                cancel_code = "quorum_unreachable"
+                cancel_message = (
+                    "proposer cancelled because ensemble quorum is unreachable: "
+                    f"0 successful + {len(pending)} pending "
+                    f"< {self.min_successful_proposers} required"
+                )
             while pending:
+                if cancel_code:
+                    break
                 done, pending = await asyncio.wait(
                     pending,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 for task in done:
                     results.append(await task)
-                if sum(1 for result in results if result.ok) >= self.min_successful_proposers:
+
+                successful_count = sum(1 for result in results if result.ok)
+                if successful_count + len(pending) < self.min_successful_proposers:
+                    cancel_code = "quorum_unreachable"
+                    cancel_message = (
+                        "proposer cancelled because ensemble quorum became unreachable: "
+                        f"{successful_count} successful + {len(pending)} pending "
+                        f"< {self.min_successful_proposers} required"
+                    )
+                    break
+                if (
+                    self.quorum_grace_seconds > 0
+                    and successful_count >= self.min_successful_proposers
+                ):
                     break
 
-            if pending:
+            if pending and not cancel_code:
                 done, pending = await asyncio.wait(
                     pending,
                     timeout=self.quorum_grace_seconds,
@@ -810,23 +936,29 @@ class EnsembleProvider:
                     results.append(await task)
 
             if pending:
+                controlled_code = cancel_code or "quorum_cancelled"
+                controlled_message = cancel_message or (
+                    "proposer cancelled after "
+                    f"{self.quorum_grace_seconds:g}s ensemble quorum grace"
+                )
                 for task in pending:
-                    setattr(task, "_opensquilla_ensemble_cancel_code", "quorum_cancelled")
+                    setattr(task, "_opensquilla_ensemble_cancel_code", controlled_code)
                     setattr(
                         task,
                         "_opensquilla_ensemble_cancel_message",
-                        (
-                            "proposer cancelled after "
-                            f"{self.quorum_grace_seconds:g}s ensemble quorum grace"
-                        ),
+                        controlled_message,
                     )
                     task.cancel()
                 remaining = list(pending)
-                cancelled_results = await asyncio.gather(*remaining, return_exceptions=True)
-                for task, item in zip(remaining, cancelled_results, strict=True):
-                    if isinstance(item, _CandidateResult):
-                        results.append(item)
-                    else:
+                lingering = await _bounded_task_cleanup(remaining, phase="proposers")
+                for task in remaining:
+                    if task.done():
+                        with contextlib.suppress(BaseException):
+                            item = task.result()
+                            if isinstance(item, _CandidateResult):
+                                results.append(item)
+                                continue
+                    if task in lingering or task.done():
                         index, sample_index, member = task_meta[task]
                         cfg = member.provider_config
                         results.append(
@@ -836,8 +968,8 @@ class EnsembleProvider:
                                 label=member.label or f"proposer_{index + 1}",
                                 provider=cfg.provider,
                                 model=cfg.model,
-                                error=str(item),
-                                error_code=type(item).__name__,
+                                error=controlled_message,
+                                error_code=controlled_code,
                             )
                         )
             return sorted(results, key=lambda result: (result.index, result.sample_index))
@@ -846,7 +978,10 @@ class EnsembleProvider:
                 if not task.done():
                     task.cancel()
             if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
+                await _bounded_task_cleanup(list(pending), phase="proposers_external_cancel")
+                for task in pending:
+                    if task.done():
+                        _consume_task_result(task)
             raise
 
     async def _collect_candidate(
@@ -983,6 +1118,7 @@ class EnsembleProvider:
                     tool_parts.append(f"\n[tool_args:{event.arguments}]")
             elif isinstance(event, DoneEvent):
                 got_done = True
+                result.usage_reported = True
                 result.input_tokens = event.input_tokens
                 result.output_tokens = event.output_tokens
                 result.reasoning_tokens = event.reasoning_tokens
@@ -1109,6 +1245,7 @@ class EnsembleProvider:
         tools: list[ToolDefinition] | None,
         config: ChatConfig,
         prior_rows: list[dict[str, Any]],
+        prior_missing_count: int,
         trace: dict[str, Any],
     ) -> AsyncIterator[StreamEvent]:
         final_text_parts: list[str] = []
@@ -1175,6 +1312,14 @@ class EnsembleProvider:
                 cost_source=_rollup_cost_source(rows),
                 model_usage_breakdown=rows,
                 ensemble_trace=trace,
+                usage_missing_count=prior_missing_count,
+            )
+
+        def partial_error(event: ErrorEvent) -> ErrorEvent:
+            return replace(
+                event,
+                model_usage_breakdown=list(prior_rows),
+                usage_missing_count=prior_missing_count + 1,
             )
 
         yield aggregator_progress("aggregator_start")
@@ -1219,7 +1364,7 @@ class EnsembleProvider:
                         "aggregator_finish",
                         error=event.message,
                     )
-                    yield event
+                    yield partial_error(event)
                     return
                 elif isinstance(event, TextDeltaEvent):
                     final_text_parts.append(event.text)
@@ -1235,7 +1380,7 @@ class EnsembleProvider:
                 code="ensemble_aggregator_timeout",
             )
             yield aggregator_progress("aggregator_finish", error=error.message)
-            yield error
+            yield partial_error(error)
             return
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
             error = ErrorEvent(
@@ -1243,14 +1388,14 @@ class EnsembleProvider:
                 code="ensemble_aggregator_error",
             )
             yield aggregator_progress("aggregator_finish", error=error.message)
-            yield error
+            yield partial_error(error)
             return
         error = ErrorEvent(
             message="ensemble aggregator stream ended before DoneEvent",
             code="ensemble_aggregator_incomplete",
         )
         yield aggregator_progress("aggregator_finish", error=error.message)
-        yield error
+        yield partial_error(error)
 
     async def _fallback_or_error(
         self,
@@ -1277,6 +1422,11 @@ class EnsembleProvider:
             else:
                 yield ErrorEvent(message=reason, code=code)
             return
+        fallback_timeout_seconds = float(
+            getattr(config, "timeout", ChatConfig().timeout)
+            if config is not None
+            else ChatConfig().timeout
+        )
         trace = self._trace_payload(
             candidates,
             successful_count=sum(1 for candidate in candidates if candidate.ok),
@@ -1287,42 +1437,82 @@ class EnsembleProvider:
             final_request_config=config,
             final_request_tools=tools,
             final_request_messages=messages,
-            final_request_timeout_seconds=(
-                float(getattr(config, "timeout", 0.0) or 0.0) if config is not None else None
-            ),
+            final_request_timeout_seconds=fallback_timeout_seconds,
         )
         proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
+        proposer_missing_count = sum(
+            1 for candidate in candidates if not candidate.usage_reported
+        )
+
+        def partial_error(event: ErrorEvent) -> ErrorEvent:
+            return replace(
+                event,
+                model_usage_breakdown=list(proposer_rows),
+                usage_missing_count=proposer_missing_count + 1,
+            )
         final_text_parts: list[str] = []
-        async for event in self.fallback_provider.chat(messages, tools=tools, config=config):
-            if isinstance(event, DoneEvent):
-                output_text = "".join(final_text_parts)
-                _attach_final_request_output(trace, event=event, output_text=output_text)
-                fallback_row = _done_usage_row(
-                    event,
-                    role="fallback_single",
-                    profile=self.profile_name,
-                    label="fallback",
-                    provider=str(getattr(self.fallback_provider, "provider_name", "fallback")),
-                    model=event.model,
-                )
-                rows = [*proposer_rows, fallback_row]
-                yield replace(
-                    event,
-                    input_tokens=_summed_int(rows, "input_tokens"),
-                    output_tokens=_summed_int(rows, "output_tokens"),
-                    reasoning_tokens=_summed_int(rows, "reasoning_tokens"),
-                    cached_tokens=_summed_int(rows, "cached_tokens"),
-                    cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
-                    billed_cost=_summed_float(rows, "billed_cost"),
-                    cost_source=_rollup_cost_source(rows),
-                    model_usage_breakdown=rows,
-                    ensemble_trace=trace,
-                )
-            elif isinstance(event, TextDeltaEvent):
-                final_text_parts.append(event.text)
+        yield ProviderHeartbeatEvent(
+            phase="ensemble_fallback",
+            message="Ensemble quorum unavailable; waiting for fallback model",
+        )
+        try:
+            async for event in _stream_with_heartbeats(
+                self.fallback_provider.chat(messages, tools=tools, config=config),
+                phase="ensemble_fallback_wait",
+                message="Waiting for ensemble fallback model",
+                timeout_seconds=fallback_timeout_seconds,
+            ):
+                if isinstance(event, DoneEvent):
+                    output_text = "".join(final_text_parts)
+                    _attach_final_request_output(trace, event=event, output_text=output_text)
+                    fallback_row = _done_usage_row(
+                        event,
+                        role="fallback_single",
+                        profile=self.profile_name,
+                        label="fallback",
+                        provider=str(
+                            getattr(self.fallback_provider, "provider_name", "fallback")
+                        ),
+                        model=event.model,
+                    )
+                    rows = [*proposer_rows, fallback_row]
+                    yield replace(
+                        event,
+                        input_tokens=_summed_int(rows, "input_tokens"),
+                        output_tokens=_summed_int(rows, "output_tokens"),
+                        reasoning_tokens=_summed_int(rows, "reasoning_tokens"),
+                        cached_tokens=_summed_int(rows, "cached_tokens"),
+                        cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
+                        billed_cost=_summed_float(rows, "billed_cost"),
+                        cost_source=_rollup_cost_source(rows),
+                        model_usage_breakdown=rows,
+                        ensemble_trace=trace,
+                        usage_missing_count=proposer_missing_count,
+                    )
+                    return
+                if isinstance(event, ErrorEvent):
+                    yield partial_error(event)
+                    return
+                if isinstance(event, TextDeltaEvent):
+                    final_text_parts.append(event.text)
                 yield event
-            else:
-                yield event
+        except TimeoutError:
+            yield partial_error(
+                ErrorEvent(
+                    message=(
+                        "ensemble fallback timed out after "
+                        f"{fallback_timeout_seconds:g}s"
+                    ),
+                    code="ensemble_fallback_timeout",
+                )
+            )
+            return
+        yield partial_error(
+            ErrorEvent(
+                message="ensemble fallback stream ended before DoneEvent",
+                code="ensemble_fallback_incomplete",
+            )
+        )
 
 
 def _trace_content(text: str, *, max_chars: int = TRACE_CONTENT_MAX_CHARS) -> dict[str, Any]:
@@ -1599,7 +1789,11 @@ _STATIC_B5_DEFAULT_MIN_SUCCESSFUL_PROPOSERS = 3
 _STATIC_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS = 300.0
 _STATIC_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS = 480.0
 _STATIC_B5_DEFAULT_SHUFFLE_CANDIDATES = False
-_STATIC_B5_QUORUM_GRACE_SECONDS = 30.0
+# Once the fixed-lineup quorum is available, give an almost-finished straggler
+# a short window to join the fusion. Keeping this substantially below the
+# proposer timeout prevents one slow upstream from dominating end-to-end
+# latency while preserving the fixed lineup's configured quorum quality floor.
+_STATIC_B5_QUORUM_GRACE_SECONDS = 5.0
 
 _DYNAMIC_SLOT_WEIGHTS = {
     "cheap_contrast": {

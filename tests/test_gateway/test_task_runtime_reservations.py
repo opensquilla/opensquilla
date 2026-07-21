@@ -119,6 +119,82 @@ async def test_reserve_is_inert_until_activation(monkeypatch: pytest.MonkeyPatch
 
 
 @pytest.mark.asyncio
+async def test_reserve_preserves_task_id_without_capturing_accepted_config() -> None:
+    storage = _TrackingStorage()
+    config_captures: list[dict[str, str]] = []
+
+    async def handler(_run: Any) -> None:
+        raise AssertionError("an aborted reservation must never execute")
+
+    def capture_config() -> dict[str, str]:
+        snapshot = {"strategy": "router"}
+        config_captures.append(snapshot)
+        return snapshot
+
+    runtime = TaskRuntime(
+        storage=storage,
+        turn_handler=handler,
+        accepted_config_provider=capture_config,
+    )
+
+    reservation = await runtime.reserve(
+        _envelope(),
+        "reserved",
+        task_id="turn-preallocated",
+    )
+
+    assert reservation.task_id == "turn-preallocated"
+    assert reservation.task_record.task_id == "turn-preallocated"
+    assert reservation.runtime_task.accepted_config is None
+    assert config_captures == []
+
+    await runtime.abort_reservation(reservation)
+    assert config_captures == []
+
+
+@pytest.mark.asyncio
+async def test_activate_captures_accepted_config_once() -> None:
+    storage = _TrackingStorage()
+    handler_started = asyncio.Event()
+    release_handler = asyncio.Event()
+    seen_configs: list[Any] = []
+    config_captures: list[dict[str, str]] = []
+
+    async def handler(run: Any) -> None:
+        seen_configs.append(run.accepted_config)
+        handler_started.set()
+        await release_handler.wait()
+
+    def capture_config() -> dict[str, str]:
+        snapshot = {"strategy": f"router-{len(config_captures) + 1}"}
+        config_captures.append(snapshot)
+        return snapshot
+
+    runtime = TaskRuntime(
+        storage=storage,
+        turn_handler=handler,
+        accepted_config_provider=capture_config,
+    )
+    reservation = await runtime.reserve(_envelope(), "accepted")
+
+    assert config_captures == []
+    storage.accept(reservation.task_record)
+
+    first = await runtime.activate(reservation)
+    second = await runtime.activate(reservation)
+    await asyncio.wait_for(handler_started.wait(), timeout=1.0)
+
+    assert first == second
+    assert config_captures == [{"strategy": "router-1"}]
+    assert seen_configs == [{"strategy": "router-1"}]
+
+    release_handler.set()
+    assert (await runtime.wait(first.task_id, timeout=1.0)).status == (
+        AgentTaskStatus.SUCCEEDED
+    )
+
+
+@pytest.mark.asyncio
 async def test_activate_starts_precommitted_task_without_creating_ledger_row() -> None:
     storage = _TrackingStorage()
     handler_started = asyncio.Event()
@@ -223,7 +299,7 @@ async def test_try_collect_atomically_mutates_only_after_persist_and_skips_repla
     ]
     assert candidate.message == "first\nsecond"
     assert candidate.attachments == [{"name": "first.txt"}, {"name": "second.txt"}]
-    assert candidate.semantic_message == "semantic first\nsemantic second"
+    assert candidate.semantic_message == "semantic first\n\nsemantic second"
     assert candidate.message_count == 5
     assert candidate.persisted_user_message_id == "message-first"
     assert candidate.persisted_user_message_ids == [
@@ -262,7 +338,7 @@ async def test_try_collect_atomically_mutates_only_after_persist_and_skips_repla
         {"name": "first.txt"},
         {"name": "second.txt"},
     ]
-    assert collected_run.semantic_message == "semantic first\nsemantic second"
+    assert collected_run.semantic_message == "semantic first\n\nsemantic second"
     assert collected_run.persisted_user_message_id == "message-first"
     assert collected_run.persisted_user_message_ids == (
         "message-first",

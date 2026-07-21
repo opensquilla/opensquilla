@@ -131,6 +131,8 @@ export interface ChatRunTask {
   finishedAt?: number | string
   terminal_reason?: string
   terminalReason?: string
+  task_group_count?: number
+  taskGroupCount?: number
 }
 
 export interface ChatRunStatus {

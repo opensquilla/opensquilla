@@ -67,6 +67,13 @@ GEMINI.md
 !/src/opensquilla/gateway/static/img/*.png
 !/opensquilla-webui/public/opensquilla-mark.png
 !/src/opensquilla/gateway/static/dist/opensquilla-mark.png
+!/src/opensquilla/dist/
+!/src/opensquilla/dist/**
+/src/opensquilla/dist/**/__pycache__/
+!/src/opensquilla/gateway/static/dist/
+!/src/opensquilla/gateway/static/dist/**
+!/src/opensquilla/plugins/tokenjuice/rules/build/
+!/src/opensquilla/plugins/tokenjuice/rules/build/**
 site/
 /plugins/
 crontab-*

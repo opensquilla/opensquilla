@@ -98,9 +98,21 @@ class ToolRegistry:
     def _schema_for(rt: RegisteredTool) -> dict[str, Any]:
         return {
             "type": "object",
-            "properties": rt.spec.parameters,
-            "required": rt.spec.required,
+            "properties": {
+                name: value
+                for name, value in rt.spec.parameters.items()
+                if name not in rt.spec.runtime_only_arguments
+            },
+            "required": ToolRegistry._required_for(rt),
         }
+
+    @staticmethod
+    def _required_for(rt: RegisteredTool) -> list[str]:
+        return [
+            name
+            for name in rt.spec.required
+            if name not in rt.spec.runtime_only_arguments
+        ]
 
     @staticmethod
     def _parameters_for(rt: RegisteredTool, ctx: ToolContext) -> dict[str, Any]:
@@ -111,6 +123,8 @@ class ToolRegistry:
         ):
             raw_parameters = raw_parameters["properties"]
         parameters = copy.deepcopy(raw_parameters)
+        for name in rt.spec.runtime_only_arguments:
+            parameters.pop(name, None)
         if rt.spec.name != "router_control":
             return parameters
         router_cfg = getattr(ctx, "router_control_config", None)
@@ -266,7 +280,7 @@ class ToolRegistry:
                 input_schema=ToolInputSchema(
                     type="object",
                     properties=self._parameters_for(rt, active_ctx),
-                    required=rt.spec.required,
+                    required=self._required_for(rt),
                 ),
                 execution_timeout_seconds=rt.spec.execution_timeout_seconds,
                 execution_timeout_argument=rt.spec.execution_timeout_argument,
@@ -312,7 +326,7 @@ class ToolRegistry:
                 "schema": {
                     "type": "object",
                     "properties": self._parameters_for(rt, ctx),
-                    "required": rt.spec.required,
+                    "required": self._required_for(rt),
                 },
                 "source": "plugin" if "." in rt.spec.name else "builtin",
                 "enabled": True,
@@ -344,7 +358,7 @@ class ToolRegistry:
                 "schema": {
                     "type": "object",
                     "properties": self._parameters_for(rt, ctx),
-                    "required": rt.spec.required,
+                    "required": self._required_for(rt),
                 },
             }
             for rt in self._iter_visible_tools(ctx, sort=True)
@@ -459,6 +473,8 @@ def tool(
     result_budget_class: str | None = None,
     sandbox: SandboxToolDescriptor | None = None,
     registry: ToolRegistry | None = None,
+    *,
+    runtime_only_arguments: frozenset[str] | set[str] | tuple[str, ...] = (),
 ) -> Any:
     """Decorator to register an async function as a tool.
 
@@ -474,6 +490,7 @@ def tool(
             description=description,
             parameters=params or {},
             required=required or [],
+            runtime_only_arguments=frozenset(runtime_only_arguments),
             owner_only=owner_only,
             exposed_by_default=exposed_by_default,
             execution_timeout_seconds=execution_timeout_seconds,
@@ -523,12 +540,16 @@ def tool(
                 await record_tool_operation_success(guard, result)
             return cast(str, result)
 
-        if spec.sandbox.enforce:
-            @functools.wraps(fn)
-            async def _descriptor_unwrap_compat(*args: Any, **kwargs: Any) -> str:
-                return await fn(*args, **kwargs)
+        # Keep the historical two-step ``__wrapped__`` chain even for tools
+        # whose descriptor records metadata without enforcing the generic
+        # operation guard. A few internal registries deliberately unwrap the
+        # public tool wrapper twice to call the raw handler in a controlled
+        # ToolContext; changing descriptor enforcement must not break them.
+        @functools.wraps(fn)
+        async def _descriptor_unwrap_compat(*args: Any, **kwargs: Any) -> str:
+            return await fn(*args, **kwargs)
 
-            wrapper.__wrapped__ = _descriptor_unwrap_compat  # type: ignore[attr-defined]
+        wrapper.__wrapped__ = _descriptor_unwrap_compat  # type: ignore[attr-defined]
 
         return wrapper
 

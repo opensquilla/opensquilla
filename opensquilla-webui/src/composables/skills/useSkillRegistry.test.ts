@@ -20,7 +20,7 @@ describe('useSkillRegistry install state', () => {
       }
       throw new Error(`Unexpected RPC method: ${method}`)
     })
-    const loadData = vi.fn(async () => {})
+    const loadData = vi.fn(async () => true)
     const registry = useSkillRegistry({ call } as never, loadData)
 
     registry.registryResults.value = [
@@ -48,5 +48,19 @@ describe('useSkillRegistry install state', () => {
     expect(loadData).toHaveBeenCalledOnce()
     expect(registry.registryResults.value.map(result => result.installed)).toEqual([true, false])
     expect(registry.installingId.value).toBeNull()
+  })
+
+  it('warns when installation succeeds but the catalog list cannot refresh', async () => {
+    const call = vi.fn(async () => ({
+      success: true,
+      name: 'Development Coding Agent',
+      message: 'installed',
+    }))
+    const loadData = vi.fn(async () => false)
+    const registry = useSkillRegistry({ call } as never, loadData)
+
+    await registry.installSkill('development-coding-agent', 'clawhub')
+
+    expect(pushToast).toHaveBeenCalledWith(expect.any(String), { tone: 'warn' })
   })
 })

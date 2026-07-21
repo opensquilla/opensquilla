@@ -110,7 +110,7 @@ const DEFAULT_ALL_FAILED_POLICY = 'fallback_single'
 const STATIC_B5_EFFECTIVE_QUORUM = 3
 const STATIC_B5_PROPOSER_TIMEOUT_SECONDS = 300
 const STATIC_B5_AGGREGATOR_TIMEOUT_SECONDS = 480
-const STATIC_B5_QUORUM_GRACE_SECONDS = 30
+const STATIC_B5_QUORUM_GRACE_SECONDS = 5
 
 export type EnsembleScheme = 'preset' | 'custom' | 'legacy'
 

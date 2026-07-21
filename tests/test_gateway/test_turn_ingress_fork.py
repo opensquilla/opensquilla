@@ -18,6 +18,7 @@ from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.task_runtime import TaskRuntime
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.storage import SessionStorage
+from opensquilla.session.turn_context import turn_context_scope
 
 PARENT_KEY = "agent:main:webchat:atomic-fork"
 CLIENT_REQUEST_ID = "atomic-fork-request"
@@ -98,7 +99,17 @@ async def _seed_parent(stack: _ForkStack) -> str:
         agent_id="main",
         display_name="Atomic fork parent",
     )
-    await stack.manager.append_message(PARENT_KEY, "user", "A marker")
+    with turn_context_scope(
+        {
+            "turn_id": "parent-turn-a",
+            "client_message_id": "parent-message-a",
+            "surface_id": "web:parent",
+            "intent": "send",
+            "disposition": "applied",
+            "revision": 1,
+        }
+    ):
+        await stack.manager.append_message(PARENT_KEY, "user", "A marker")
     middle = await stack.manager.append_message(PARENT_KEY, "assistant", "B marker")
     await stack.manager.append_message(PARENT_KEY, "user", "C marker")
     return middle.message_id
@@ -162,7 +173,27 @@ async def test_chat_send_fork_atomically_accepts_child_prefix_message_task_and_r
         assert child.forked_from_parent is True
         child_entries = await stack.manager.get_transcript(child_key)
         assert [entry.content for entry in child_entries] == ["A marker", "B edited"]
+        assert child_entries[0].turn_context == {
+            "turn_id": "parent-turn-a",
+            "client_message_id": "parent-message-a",
+            "surface_id": "web:parent",
+            "intent": "send",
+            "disposition": "applied",
+            "revision": 1,
+        }
+        assert child_entries[-1].turn_context == {
+            "turn_id": response.payload["task_id"],
+            "client_message_id": response.payload["client_message_id"],
+            "surface_id": response.payload["surface_id"],
+            "intent": "send",
+            "disposition": "applied",
+            "revision": 1,
+        }
         assert child_entries[-1].message_id == response.payload["message_id"]
+        assert response.payload["turn_id"] == response.payload["task_id"]
+        assert isinstance(response.payload["client_message_id"], str)
+        assert response.payload["client_message_id"]
+        assert response.payload["surface_id"].startswith("webchat:")
 
         task = await stack.storage.get_agent_task(response.payload["task_id"])
         assert task.session_key == child_key
@@ -216,9 +247,10 @@ async def test_chat_send_fork_replays_same_child_without_duplicate_side_effects(
         assert replay.payload["session_id"] == first.payload["session_id"]
         assert replay.payload["message_id"] == first.payload["message_id"]
         assert replay.payload["task_id"] == first.payload["task_id"]
-        assert [entry.content for entry in await stack.manager.get_transcript(
-            replay.payload["sessionKey"]
-        )] == ["A marker", "B edited"]
+        assert [
+            entry.content
+            for entry in await stack.manager.get_transcript(replay.payload["sessionKey"])
+        ] == ["A marker", "B edited"]
         assert _table_counts(stack.db_path) == {
             "sessions": 2,
             "transcript_entries": 5,
@@ -251,9 +283,11 @@ async def test_chat_send_fork_storage_busy_leaves_no_child_turn_or_reservation(
             assert response.error.retryable is True
             assert response.error.accepted is False
             assert response.error.retry_after_ms is not None
-            assert [
-                entry.content for entry in await stack.manager.get_transcript(PARENT_KEY)
-            ] == ["A marker", "B marker", "C marker"]
+            assert [entry.content for entry in await stack.manager.get_transcript(PARENT_KEY)] == [
+                "A marker",
+                "B marker",
+                "C marker",
+            ]
             assert _table_counts(stack.db_path) == {
                 "sessions": 1,
                 "transcript_entries": 3,

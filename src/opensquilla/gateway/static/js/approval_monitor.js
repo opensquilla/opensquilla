@@ -6,6 +6,8 @@ const ApprovalMonitor = (() => {
   let _timer = null;
   let _modal = null;
   let _modalApprovalId = null;
+  let _modalResolutionPending = false;
+  let _resolveRetryTimer = null;
   let _busy = false;
   let _pollBusy = false;
   let _pollDelayMs = POLL_MS;
@@ -80,7 +82,7 @@ const ApprovalMonitor = (() => {
 
       const modalStillPending = _modalApprovalId
         && pending.some((item) => String(item.id || '') === _modalApprovalId);
-      if (_modal && !modalStillPending) {
+      if (_modal && !modalStillPending && !_modalResolutionPending) {
         _closeModal();
       }
 
@@ -313,10 +315,26 @@ const ApprovalMonitor = (() => {
         await _poll();
         throw new Error('HTTP ' + resp.status);
       }
+      const result = await resp.json();
+      const canonicalApproved = _canonicalApprovalOutcome(result);
+      if (canonicalApproved === null) {
+        // Another surface owns the in-flight resolution. Keep this modal open
+        // and do not label the local click as the outcome. Reissuing the same
+        // idempotent resolve request obtains the canonical result once the
+        // Gateway finishes applying any sandbox side effects.
+        _modalResolutionPending = true;
+        _resetPollBackoff();
+        if (_resolveRetryTimer) clearTimeout(_resolveRetryTimer);
+        _resolveRetryTimer = setTimeout(() => {
+          _resolveRetryTimer = null;
+          if (_modal === overlay) _resolve(item, resolution, overlay);
+        }, 500);
+        return;
+      }
       _closeModal();
       UI.toast(
-        body.approved ? 'Approval granted' : 'Approval denied',
-        body.approved ? 'info' : 'warn',
+        canonicalApproved ? 'Approval granted' : 'Approval denied',
+        canonicalApproved ? 'info' : 'warn',
         2500
       );
       _resetPollBackoff();
@@ -329,10 +347,19 @@ const ApprovalMonitor = (() => {
     }
   }
 
+  function _canonicalApprovalOutcome(result) {
+    if (!result || result.pending === true || result.resolutionInProgress === true) return null;
+    if (result.resolved !== true || typeof result.approved !== 'boolean') return null;
+    return result.approved;
+  }
+
   function _closeModal() {
+    if (_resolveRetryTimer) clearTimeout(_resolveRetryTimer);
+    _resolveRetryTimer = null;
     if (_modal) _modal.remove();
     _modal = null;
     _modalApprovalId = null;
+    _modalResolutionPending = false;
   }
 
   function _approvalCommand(item) {

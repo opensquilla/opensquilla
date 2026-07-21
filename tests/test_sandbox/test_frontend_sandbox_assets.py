@@ -163,8 +163,26 @@ def test_approval_monitor_closes_stale_modal_when_pending_approval_disappears() 
     assert "let _modalApprovalId = null;" in monitor
     assert "_modalApprovalId = String(item.id || '');" in monitor
     assert "const modalStillPending = _modalApprovalId" in monitor
-    assert "if (_modal && !modalStillPending) {" in monitor
+    assert "if (_modal && !modalStillPending && !_modalResolutionPending) {" in monitor
     assert "_closeModal();" in monitor
     resolve_start = monitor.index("fetch('/api/approvals/resolve'")
     resolve_block = monitor[resolve_start : monitor.index("} catch", resolve_start)]
     assert "await _poll();" in resolve_block
+
+
+def test_approval_monitor_uses_canonical_cross_surface_resolution() -> None:
+    monitor = _read(APPROVAL_MONITOR_JS)
+    resolve_start = monitor.index("async function _resolve")
+    resolve_block = monitor[resolve_start : monitor.index("function _closeModal", resolve_start)]
+
+    assert "const result = await resp.json();" in resolve_block
+    assert "const canonicalApproved = _canonicalApprovalOutcome(result);" in resolve_block
+    assert "if (canonicalApproved === null)" in resolve_block
+    assert "_modalResolutionPending = true;" in resolve_block
+    assert "if (_modal === overlay) _resolve(item, resolution, overlay);" in resolve_block
+    assert "canonicalApproved ? 'Approval granted' : 'Approval denied'" in resolve_block
+    assert "body.approved ? 'Approval granted' : 'Approval denied'" not in resolve_block
+    assert "result.pending === true" in resolve_block
+    assert "result.resolutionInProgress === true" in resolve_block
+    assert "typeof result.approved !== 'boolean'" in resolve_block
+    assert "!modalStillPending && !_modalResolutionPending" in monitor

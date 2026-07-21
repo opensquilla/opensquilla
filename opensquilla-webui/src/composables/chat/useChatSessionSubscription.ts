@@ -1,4 +1,4 @@
-import type { Ref } from 'vue'
+import { ref, type Ref } from 'vue'
 import type {
   ChatRunStatus,
   ChatRunStatusSource,
@@ -20,7 +20,10 @@ export interface UseChatSessionSubscriptionOptions {
   runStatus: Ref<ChatRunStatus>
   isStreaming: Ref<boolean>
   hasActiveInterrupt: Ref<boolean>
+  activeStreamTaskId: Ref<string>
+  activeTaskGroups: Ref<Set<string>>
   sessionRunStatus: (source: ChatRunStatusSource | null | undefined) => ChatRunStatus
+  startStreaming: () => void
   loadHistory: () => void | Promise<void>
   resetStreamIdleTimer: () => void
   resetStreamLiveTurnState: () => void
@@ -29,10 +32,15 @@ export interface UseChatSessionSubscriptionOptions {
 const LIVE_RUN_STATES = ['queued', 'running', 'approval_pending']
 
 export function useChatSessionSubscription(options: UseChatSessionSubscriptionOptions) {
+  const isHydrating = ref(false)
+  let subscriptionAttempt = 0
+
   async function subscribeSession() {
     if (!options.sessionKey.value) return
     const key = options.sessionKey.value
     const sinceStreamSeq = options.lastStreamSeq.value
+    const attempt = ++subscriptionAttempt
+    if (sinceStreamSeq === 0) isHydrating.value = true
     try {
       await options.rpc.waitForConnection()
       if (key !== options.sessionKey.value) return
@@ -52,6 +60,19 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
           active_task: options.runStatus.value.task,
         })
       }
+      const liveTaskSnapshot = LIVE_RUN_STATES.includes(options.runStatus.value.status)
+      reconcileActiveTaskGroups(res)
+      if (liveTaskSnapshot && !options.isStreaming.value) {
+        options.startStreaming()
+      }
+      if (liveTaskSnapshot) {
+        const activeTask = (res.active_task || res.activeTask) as {
+          task_id?: string
+          taskId?: string
+        } | null | undefined
+        const taskId = activeTask?.task_id || activeTask?.taskId
+        if (taskId) options.activeStreamTaskId.value = taskId
+      }
       // Replayed events arrive before this response and can rebuild a live
       // bubble for a run that already ended (a stopped run leaves no terminal
       // event in the replay buffer), duplicating the partial reply that
@@ -60,7 +81,7 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
       if (
         options.isStreaming.value
         && !options.hasActiveInterrupt.value
-        && !LIVE_RUN_STATES.includes(options.runStatus.value.status)
+        && !liveTaskSnapshot
       ) {
         options.resetStreamLiveTurnState()
       }
@@ -75,6 +96,8 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
       if (options.isStreaming.value) options.resetStreamIdleTimer()
     } catch (err: unknown) {
       console.warn('Session stream subscription failed:', err instanceof Error ? err.message : err)
+    } finally {
+      if (attempt === subscriptionAttempt) isHydrating.value = false
     }
   }
 
@@ -91,7 +114,24 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
     options.runStatus.value = options.sessionRunStatus(source)
   }
 
+  function reconcileActiveTaskGroups(res: SessionMessagesSubscribeResponse) {
+    const snapshot = res.active_task_group_ids || res.activeTaskGroupIds
+    if (!Array.isArray(snapshot)) return
+    options.activeTaskGroups.value = new Set(
+      snapshot.filter((groupId): groupId is string => typeof groupId === 'string' && Boolean(groupId)),
+    )
+    if (options.activeTaskGroups.value.size === 0) return
+    applySessionRunState({
+      run_status: 'running',
+      active_task: {
+        status: 'running',
+        task_group_count: options.activeTaskGroups.value.size,
+      },
+    })
+  }
+
   return {
+    isHydrating,
     subscribeSession,
     unsubscribeSession,
     applySessionRunState,

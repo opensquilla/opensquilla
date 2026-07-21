@@ -244,6 +244,47 @@ def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
     assert "True" in check.stdout
 
 
+def test_config_set_legacy_ensemble_toggle_persists_canonical_router_mode(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "routing.toml"
+    target.write_text(
+        "\n".join(
+            [
+                "[llm_ensemble]",
+                "enabled = false",
+                'selection_mode = "router_dynamic"',
+                "",
+                "[squilla_router]",
+                "enabled = false",
+                'rollout_phase = "observe"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "llm_ensemble.enabled",
+            "true",
+            "--config",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    from opensquilla.gateway.config import GatewayConfig
+
+    reloaded = GatewayConfig.load(str(target))
+    assert reloaded.llm_ensemble.enabled is True
+    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.rollout_phase == "full"
+
+
 def test_config_set_get_privacy_network_observability_round_trips(tmp_path: Path):
     target = tmp_path / "privacy.toml"
     target.write_text("", encoding="utf-8")

@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import os
 from collections.abc import AsyncIterator
+from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from pptx import Presentation
 
+from opensquilla.artifacts import ArtifactStore, artifact_payload
+from opensquilla.engine.artifact_delivery import (
+    artifact_delivery_publish_target_key,
+    auto_publish_omitted_workspace_artifacts,
+)
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.types import ArtifactEvent, DoneEvent, TextDeltaEvent, ToolUseStartEvent
 from opensquilla.gateway.config import AttachmentsConfig, GatewayConfig, SquillaRouterConfig
@@ -22,7 +31,13 @@ from opensquilla.session.storage import SessionStorage
 from opensquilla.tools.builtin import filesystem
 from opensquilla.tools.builtin import patch as patch_tools
 from opensquilla.tools.registry import ToolRegistry, ToolSpec
-from opensquilla.tools.types import CallerKind, ToolContext, ToolError, current_tool_context
+from opensquilla.tools.types import (
+    CallerKind,
+    RetryableToolInputError,
+    ToolContext,
+    ToolError,
+    current_tool_context,
+)
 
 
 class _ArtifactProvider:
@@ -154,6 +169,36 @@ class _FailedPublishProvider:
         return []
 
 
+class _RetryPublishProvider(_FailedPublishProvider):
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        yield ProviderText(text="Regenerating the presentation. ")
+        yield ProviderToolUseStart(
+            tool_use_id=f"publish-{call_number}",
+            tool_name="publish_artifact",
+        )
+        yield ProviderToolUseEnd(
+            tool_use_id=f"publish-{call_number}",
+            tool_name="publish_artifact",
+            arguments={"path": "report.pptx"},
+        )
+        yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+
+
+class _FailedCreatePptxProvider(_FailedPublishProvider):
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            yield ProviderToolUseStart(tool_use_id="create-1", tool_name="create_pptx")
+            yield ProviderToolUseEnd(
+                tool_use_id="create-1",
+                tool_name="create_pptx",
+                arguments={"name": "report.pptx", "slides": [{"title": "Report"}]},
+            )
+            yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+            return
+        yield ProviderText(text="Report file is ready for download.")
+        yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+
+
 class _OmittedPublishProvider:
     provider_name = "test"
 
@@ -182,6 +227,40 @@ class _OmittedPublishProvider:
             yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
             return
         yield ProviderText(text="Created manual-big-write.html for you.")
+        yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
+
+    async def list_models(self) -> list[ModelInfo]:
+        return []
+
+
+class _OmittedInvalidPptxProvider:
+    provider_name = "test"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.model = "test/model"
+
+    def chat(self, messages: list[Message], tools=None, config=None) -> AsyncIterator[Any]:
+        self.calls += 1
+        return self._stream(self.calls)
+
+    async def _stream(self, call_number: int) -> AsyncIterator[Any]:
+        if call_number == 1:
+            yield ProviderToolUseStart(
+                tool_use_id="write-1",
+                tool_name="write_file",
+            )
+            yield ProviderToolUseEnd(
+                tool_use_id="write-1",
+                tool_name="write_file",
+                arguments={
+                    "path": "broken.pptx",
+                    "content": "this is not a PowerPoint package",
+                },
+            )
+            yield ProviderDone(stop_reason="tool_use", input_tokens=1, output_tokens=1)
+            return
+        yield ProviderText(text="Created broken.pptx for you.")
         yield ProviderDone(stop_reason="stop", input_tokens=1, output_tokens=1)
 
     async def list_models(self) -> list[ModelInfo]:
@@ -546,6 +625,76 @@ def _failed_publish_registry() -> ToolRegistry:
     return registry
 
 
+def _retry_publish_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    calls = 0
+
+    async def publish_artifact(path: str) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RetryableToolInputError("Regenerate the invalid PPTX and try again.")
+        ctx = current_tool_context.get()
+        assert ctx is not None
+        ctx.published_artifacts.append(
+            {
+                "id": "art-retried",
+                "kind": "artifact_ref",
+                "name": path,
+                "mime": (
+                    "application/vnd.openxmlformats-officedocument."
+                    "presentationml.presentation"
+                ),
+                "size": 8,
+                "sha256": "d" * 64,
+                "session_id": ctx.artifact_session_id,
+                "session_key": ctx.session_key,
+                "source": "publish_artifact",
+                "created_at": "2026-07-20T00:00:00Z",
+                "download_url": "/api/v1/artifacts/art-retried",
+            }
+        )
+        return json.dumps({"status": "published", "artifact": {"name": path}})
+
+    registry.register(
+        ToolSpec(
+            name="publish_artifact",
+            description="Publish a generated artifact",
+            parameters={
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+            },
+        ),
+        publish_artifact,
+    )
+    return registry
+
+
+def _failed_create_pptx_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+
+    async def create_pptx(slides: list[dict[str, Any]], name: str | None = None) -> str:
+        raise RetryableToolInputError("The PPTX was not attached; regenerate it.")
+
+    registry.register(
+        ToolSpec(
+            name="create_pptx",
+            description="Create a presentation",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "slides": {"type": "array", "items": {"type": "object"}},
+                },
+                "required": ["slides"],
+            },
+        ),
+        create_pptx,
+    )
+    return registry
+
+
 def _publish_then_forbidden_tool_registry() -> tuple[ToolRegistry, list[str]]:
     registry = ToolRegistry()
     forbidden_calls: list[str] = []
@@ -844,6 +993,386 @@ async def test_turn_runner_auto_publishes_deliverable_file_when_model_omits_publ
         await storage.close()
 
 
+def test_auto_publish_validates_and_publishes_pptx_from_same_bytes(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.engine.artifact_delivery as artifact_delivery
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "brief.pptx"
+    presentation = Presentation()
+    presentation.slides.add_slide(presentation.slide_layouts[1])
+    presentation.save(target)
+    expected = target.read_bytes()
+    replacement = Presentation()
+    replacement.slides.add_slide(replacement.slide_layouts[5])
+    replacement_output = BytesIO()
+    replacement.save(replacement_output)
+    replacement_payload = replacement_output.getvalue()
+    validate = artifact_delivery.validate_artifact_for_delivery
+
+    def validate_then_replace(*args: object, **kwargs: object) -> object:
+        report = validate(*args, **kwargs)
+        target.write_bytes(replacement_payload)
+        return report
+
+    monkeypatch.setattr(
+        artifact_delivery,
+        "validate_artifact_for_delivery",
+        validate_then_replace,
+    )
+
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-valid-pptx",
+        session_key="agent:main:webchat:valid-pptx",
+    )
+    ctx.workspace_file_writes.append(
+        {
+            "created": True,
+            "path": str(target),
+            "relative_path": target.name,
+            "name": target.name,
+        }
+    )
+
+    result = auto_publish_omitted_workspace_artifacts(
+        ctx,
+        final_text="Created brief.pptx for you.",
+    )
+
+    assert result.failure_summaries == []
+    assert len(result.artifacts) == 1
+    artifact = result.artifacts[0]
+    assert artifact["name"] == "brief.pptx"
+    store = ArtifactStore(str(tmp_path / "media"))
+    _, material_path = store.resolve_for_download(
+        str(artifact["id"]),
+        session_id="session-valid-pptx",
+    )
+    material = material_path.read_bytes()
+    assert target.read_bytes() == replacement_payload
+    assert material == expected
+    Presentation(BytesIO(material))
+
+
+def test_auto_publish_validates_invalid_pptx_before_persisted_dedupe(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "brief.pptx"
+    invalid_payload = b"not an OOXML package"
+    target.write_bytes(invalid_payload)
+    media_root = tmp_path / "media"
+    store = ArtifactStore(media_root)
+    historical = store.publish_bytes(
+        invalid_payload,
+        session_id="session-invalid-pptx",
+        session_key="agent:main:webchat:invalid-pptx",
+        name=target.name,
+        mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        source="legacy",
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(media_root),
+        artifact_session_id="session-invalid-pptx",
+        session_key="agent:main:webchat:invalid-pptx",
+    )
+    ctx.workspace_file_writes.append(
+        {
+            "created": True,
+            "path": str(target),
+            "relative_path": target.name,
+            "name": target.name,
+        }
+    )
+
+    result = auto_publish_omitted_workspace_artifacts(
+        ctx,
+        final_text="Created brief.pptx for you.",
+    )
+
+    assert result.artifacts == []
+    assert len(result.failure_summaries) == 1
+    assert ctx.published_artifacts == []
+    assert store.path_for(historical).read_bytes() == invalid_payload
+
+
+def test_auto_publish_known_valid_pptx_reports_exact_resolved_target(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    reports = workspace / "reports"
+    reports.mkdir(parents=True)
+    target = reports / "brief.pptx"
+    presentation = Presentation()
+    presentation.slides.add_slide(presentation.slide_layouts[1])
+    presentation.save(target)
+    target_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-known-pptx",
+        session_key="agent:main:webchat:known-pptx",
+    )
+    ctx.published_artifacts.append(
+        {
+            "id": "already-present",
+            "sha256": target_sha256,
+            "name": target.name,
+        }
+    )
+    ctx.workspace_file_writes.append(
+        {
+            "created": True,
+            "path": str(target),
+            "relative_path": "reports/brief.pptx",
+            "name": target.name,
+        }
+    )
+
+    result = auto_publish_omitted_workspace_artifacts(
+        ctx,
+        final_text="Created reports/brief.pptx for you.",
+    )
+
+    assert result.artifacts == []
+    assert result.failure_summaries == []
+    assert set(result.resolved_target_keys) == {
+        "path:" + os.path.normcase(os.path.normpath(str(target.resolve()))),
+        "name:brief.pptx",
+    }
+
+
+def test_auto_publish_nested_target_does_not_report_basename_as_resolved(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    reports = workspace / "reports"
+    reports.mkdir(parents=True)
+    target = reports / "deck.html"
+    target.write_text("<title>Deck</title>", encoding="utf-8")
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-nested-target",
+        session_key="agent:main:webchat:nested-target",
+    )
+    ctx.workspace_file_writes.append(
+        {
+            "created": True,
+            "path": str(target),
+            "relative_path": "reports/deck.html",
+            "name": target.name,
+        }
+    )
+
+    result = auto_publish_omitted_workspace_artifacts(
+        ctx,
+        final_text="Created reports/deck.html for you.",
+    )
+
+    assert len(result.artifacts) == 1
+    assert set(result.resolved_target_keys) == {
+        "path:" + os.path.normcase(os.path.normpath(str(target.resolve()))),
+        "name:deck.html",
+    }
+    assert "path:" + os.path.normcase(os.path.normpath("deck.html")) not in (
+        result.resolved_target_keys
+    )
+
+
+def test_artifact_delivery_target_key_preserves_whitespace_and_tolerates_nul(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+
+    plain = artifact_delivery_publish_target_key(
+        "deck.pptx",
+        workspace_dir=workspace,
+    )
+    leading_space = artifact_delivery_publish_target_key(
+        " deck.pptx",
+        workspace_dir=workspace,
+    )
+
+    assert plain is not None
+    assert leading_space is not None
+    assert plain != leading_space
+    assert artifact_delivery_publish_target_key(
+        "bad\x00deck.pptx",
+        workspace_dir=workspace,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "target_name",
+    [
+        pytest.param(
+            "deck:unsafe.html",
+            marks=pytest.mark.skipif(
+                os.name == "nt",
+                reason="colon is not a legal Windows workspace filename",
+            ),
+        ),
+        ("x" * 156) + ".html",
+    ],
+)
+def test_auto_publish_dedupes_current_artifact_by_store_safe_name(
+    tmp_path_factory: pytest.TempPathFactory,
+    target_name: str,
+) -> None:
+    root = tmp_path_factory.mktemp("a")
+    workspace = root / "w"
+    workspace.mkdir()
+    target = workspace / target_name
+    payload = b"<title>Already published</title>"
+    target.write_bytes(payload)
+    media_root = root / "m"
+    store = ArtifactStore(media_root)
+    existing = store.publish_bytes(
+        payload,
+        session_id="session-safe-name",
+        session_key="agent:main:webchat:safe-name",
+        name=target.name,
+        mime="text/html",
+        source="publish_artifact",
+    )
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(media_root),
+        artifact_session_id="session-safe-name",
+        session_key="agent:main:webchat:safe-name",
+        published_artifacts=[artifact_payload(existing)],
+    )
+    ctx.workspace_file_writes.append(
+        {
+            "created": True,
+            "path": str(target),
+            "relative_path": target.name,
+            "name": target.name,
+        }
+    )
+
+    result = auto_publish_omitted_workspace_artifacts(
+        ctx,
+        final_text=f"Created {target.name} for you.",
+    )
+
+    assert result.artifacts == []
+    assert result.failure_summaries == []
+    assert len(ctx.published_artifacts) == 1
+
+
+def test_auto_publish_oversized_pptx_preflights_before_read_or_validation(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import opensquilla.engine.artifact_delivery as artifact_delivery
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "large.pptx"
+    target.write_bytes(b"oversized")
+    ctx = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-large-pptx",
+        session_key="agent:main:webchat:large-pptx",
+        artifact_max_bytes=4,
+    )
+    ctx.workspace_file_writes.append(
+        {
+            "created": True,
+            "path": str(target),
+            "relative_path": target.name,
+            "name": target.name,
+        }
+    )
+
+    def unexpected_call(*args: object, **kwargs: object) -> None:
+        pytest.fail("oversized PPTX must be rejected before reading or validation")
+
+    monkeypatch.setattr(artifact_delivery.Path, "read_bytes", unexpected_call)
+    monkeypatch.setattr(
+        artifact_delivery,
+        "validate_artifact_for_delivery",
+        unexpected_call,
+    )
+
+    result = auto_publish_omitted_workspace_artifacts(
+        ctx,
+        final_text="Created large.pptx for you.",
+    )
+
+    assert result.artifacts == []
+    assert len(result.failure_summaries) == 1
+    assert "per-file budget" in result.failure_summaries[0]
+    assert ctx.published_artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_rejects_invalid_omitted_pptx_and_marks_delivery_failure(
+    tmp_path,
+) -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    manager = SessionManager(storage)
+    session_key = "agent:main:webchat:artifact-invalid-pptx"
+    await manager.create(session_key)
+    runner = TurnRunner(
+        provider_selector=_ProviderSelector(_OmittedInvalidPptxProvider()),
+        tool_registry=_write_file_registry(),
+        session_manager=manager,
+        config=GatewayConfig(
+            attachments=AttachmentsConfig(media_root=str(tmp_path / "media")),
+            squilla_router=SquillaRouterConfig(enabled=False),
+        ),
+    )
+    tool_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(tmp_path / "workspace"),
+        allowed_tools={"write_file"},
+        elevated="full",
+    )
+
+    try:
+        events = [
+            event
+            async for event in runner.run(
+                "make a presentation",
+                session_key,
+                tool_context=tool_context,
+                history_has_persisted_user=False,
+                no_memory_capture=True,
+            )
+        ]
+
+        assert [event for event in events if isinstance(event, ArtifactEvent)] == []
+        done = next(event for event in events if isinstance(event, DoneEvent))
+        assert "File delivery failed:" in done.text
+        assert "correct or regenerate it" in done.text
+
+        transcript = await manager.get_transcript(session_key)
+        assistant = [entry for entry in transcript if entry.role == "assistant"][-1]
+        assert "File delivery failed:" in assistant.content
+        assert "artifacts" not in assistant.content
+    finally:
+        await storage.close()
+
+
 @pytest.mark.asyncio
 async def test_turn_runner_does_not_auto_publish_edited_config_json(tmp_path) -> None:
     storage = SessionStorage(":memory:")
@@ -990,6 +1519,7 @@ async def test_turn_runner_marks_partial_omitted_artifact_delivery_failure(
         assert any("File delivery failed:" in text for text in text_deltas)
         assert "File delivery failed:" in done.text
         assert "some generated files were attached" in done.text
+        assert "correct or regenerate it" in done.text
         assert "no downloadable file was attached" not in done.text
 
         transcript = await manager.get_transcript(session_key)
@@ -1250,7 +1780,7 @@ async def test_turn_runner_marks_failed_artifact_delivery_in_final_text(tmp_path
         done = next(event for event in events if isinstance(event, DoneEvent))
         assert any("File delivery failed:" in text for text in text_deltas)
         assert "File delivery failed:" in done.text
-        assert "Ask me to resend the file after I correct the generated file path." in done.text
+        assert "Ask me to resend the file after I correct or regenerate it." in done.text
         assert "publish_artifact" not in done.text
         assert "active workspace" not in done.text
         assert "missing-report.pptx" not in done.text
@@ -1260,5 +1790,97 @@ async def test_turn_runner_marks_failed_artifact_delivery_in_final_text(tmp_path
         assert "Report file is ready for download." in assistant.content
         assert "File delivery failed:" in assistant.content
         assert "artifacts" not in assistant.content
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_clears_delivery_failure_after_same_target_retry_succeeds(
+    tmp_path,
+) -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    manager = SessionManager(storage)
+    session_key = "agent:main:webchat:artifact-retry-success"
+    await manager.create(session_key)
+    provider = _RetryPublishProvider()
+    runner = TurnRunner(
+        provider_selector=_ProviderSelector(provider),
+        tool_registry=_retry_publish_registry(),
+        session_manager=manager,
+        config=GatewayConfig(
+            attachments=AttachmentsConfig(media_root=str(tmp_path / "media")),
+            squilla_router=SquillaRouterConfig(enabled=False),
+        ),
+    )
+    tool_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(tmp_path),
+    )
+
+    try:
+        events = [
+            event
+            async for event in runner.run(
+                "make report",
+                session_key,
+                tool_context=tool_context,
+                history_has_persisted_user=False,
+                no_memory_capture=True,
+            )
+        ]
+
+        done = next(event for event in events if isinstance(event, DoneEvent))
+        artifacts = [event for event in events if isinstance(event, ArtifactEvent)]
+        assert provider.calls == 2
+        assert [artifact.id for artifact in artifacts] == ["art-retried"]
+        assert "File delivery failed:" not in done.text
+
+        transcript = await manager.get_transcript(session_key)
+        assistant = [entry for entry in transcript if entry.role == "assistant"][-1]
+        assert "File delivery failed:" not in assistant.content
+        assert "art-retried" in assistant.content
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_turn_runner_marks_failed_create_pptx_delivery_in_final_text(tmp_path) -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    manager = SessionManager(storage)
+    session_key = "agent:main:webchat:create-pptx-failed"
+    await manager.create(session_key)
+    runner = TurnRunner(
+        provider_selector=_ProviderSelector(_FailedCreatePptxProvider()),
+        tool_registry=_failed_create_pptx_registry(),
+        session_manager=manager,
+        config=GatewayConfig(
+            attachments=AttachmentsConfig(media_root=str(tmp_path / "media")),
+            squilla_router=SquillaRouterConfig(enabled=False),
+        ),
+    )
+    tool_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(tmp_path),
+    )
+
+    try:
+        events = [
+            event
+            async for event in runner.run(
+                "make report",
+                session_key,
+                tool_context=tool_context,
+                history_has_persisted_user=False,
+                no_memory_capture=True,
+            )
+        ]
+        done = next(event for event in events if isinstance(event, DoneEvent))
+        assert [event for event in events if isinstance(event, ArtifactEvent)] == []
+        assert "File delivery failed:" in done.text
+        assert "correct or regenerate it" in done.text
     finally:
         await storage.close()

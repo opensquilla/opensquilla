@@ -577,6 +577,303 @@ def test_tool_result_handler_keeps_small_write_file_arguments() -> None:
     assert state.turn_segments[0]["input"] is arguments
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("publish_artifact", {"path": "deck.pptx"}),
+        ("create_pptx", {"name": "deck.pptx", "slides": [{"title": "Deck"}]}),
+    ],
+)
+def test_tool_result_handler_clears_delivery_failure_after_same_target_succeeds(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    state = _make_state()
+    handler = _ToolResultHandler()
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="failed",
+            tool_name=tool_name,
+            result=(
+                '{"status":"error","error_class":"RetryableToolInputError",'
+                '"user_message":"regenerate","retry_allowed":true}'
+            ),
+            is_error=True,
+            arguments=arguments,
+        ),
+        state,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded",
+            tool_name=tool_name,
+            result='{"status":"published"}',
+            arguments=arguments,
+        ),
+        state,
+    )
+
+    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures_by_target == {}
+
+
+def test_tool_result_handler_keeps_unrelated_delivery_failure_after_retry() -> None:
+    state = _make_state()
+    handler = _ToolResultHandler()
+    for target in ("first.pptx", "second.pptx"):
+        handler.handle(
+            ToolResultEvent(
+                tool_use_id=f"failed-{target}",
+                tool_name="publish_artifact",
+                result='{"status":"error","user_message":"regenerate"}',
+                is_error=True,
+                arguments={"path": target},
+            ),
+            state,
+        )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded-first",
+            tool_name="publish_artifact",
+            result='{"status":"published"}',
+            arguments={"path": "first.pptx"},
+        ),
+        state,
+    )
+
+    assert state.artifact_delivery_failures == ["regenerate"]
+    assert set(state.artifact_delivery_failures_by_target) == {"path:second.pptx"}
+
+
+@pytest.mark.parametrize(
+    "failed_path",
+    [
+        "/workspace/reports/deck.pptx",
+        r"C:\workspace\reports\deck.pptx",
+        "reports/deck.pptx",
+    ],
+)
+def test_tool_result_handler_matches_publish_target_across_workspace_path_forms(
+    tmp_path,
+    failed_path: str,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    canonical_path = workspace / "reports" / "deck.pptx"
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"path": failed_path},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded",
+            tool_name="publish_artifact",
+            result='{"status":"published"}',
+            arguments={"path": str(canonical_path)},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures_by_target == {}
+
+
+def test_tool_result_handler_uses_create_pptx_effective_basename_and_suffix() -> None:
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="failed",
+            tool_name="create_pptx",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"name": "reports/deck"},
+        ),
+        state,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="succeeded",
+            tool_name="create_pptx",
+            result='{"status":"published"}',
+            arguments={"name": "deck.pptx"},
+        ),
+        state,
+    )
+
+    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures_by_target == {}
+
+
+def test_publish_success_clears_create_name_failure_but_not_other_path_failure(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="create-failed",
+            tool_name="create_pptx",
+            result='{"status":"error","user_message":"create failed"}',
+            is_error=True,
+            arguments={"name": "deck.pptx"},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="root-publish-failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"root path failed"}',
+            is_error=True,
+            arguments={"path": "deck.pptx"},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="nested-publish-succeeded",
+            tool_name="publish_artifact",
+            result='{"status":"published","artifact":{"name":"deck.pptx"}}',
+            arguments={"path": "reports/deck.pptx"},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    assert state.artifact_delivery_failures == ["root path failed"]
+    assert len(state.artifact_delivery_failures_by_target) == 1
+    assert next(iter(state.artifact_delivery_failures_by_target)).startswith("path:")
+
+
+@pytest.mark.parametrize(
+    ("failed_path_factory", "cleared"),
+    [
+        (lambda workspace: "deck.pptx", True),
+        (lambda workspace: str(workspace / "deck.pptx"), True),
+        (lambda workspace: "/workspace/deck.pptx", True),
+        (lambda workspace: "reports/deck.pptx", False),
+    ],
+)
+def test_create_pptx_success_only_clears_matching_root_publish_failure(
+    tmp_path,
+    failed_path_factory,
+    cleared: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    state = _make_state()
+    handler = _ToolResultHandler()
+    failed_path = failed_path_factory(workspace)
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="publish-failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"path": failed_path},
+        ),
+        state,
+        tool_context=ctx,
+    )
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="create-succeeded",
+            tool_name="create_pptx",
+            result='{"status":"published","artifact":{"name":"deck.pptx"}}',
+            arguments={"name": "deck.pptx", "slides": [{"title": "Deck"}]},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    if cleared:
+        assert state.artifact_delivery_failures == []
+        assert state.artifact_delivery_failures_by_target == {}
+    else:
+        assert state.artifact_delivery_failures == ["regenerate"]
+        assert len(state.artifact_delivery_failures_by_target) == 1
+
+
+@pytest.mark.parametrize(
+    ("source_path", "explicit_name", "created_name", "cleared"),
+    [
+        ("reports/source.bin", "deck.pptx", "deck.pptx", True),
+        ("reports/source.pptx", "deck", "deck.pptx", True),
+        ("reports/source.bin", "deck", "deck.pptx", False),
+        ("reports/source.pptx", "  deck  ", "deck.pptx", True),
+        ("reports/deck.pptx", "", "deck.pptx", True),
+        ("reports/source.pptx", "de:ck", "de_ck.pptx", True),
+    ],
+)
+def test_explicit_publish_name_is_the_single_logical_failure_identity(
+    tmp_path,
+    source_path: str,
+    explicit_name: str,
+    created_name: str,
+    cleared: bool,
+) -> None:
+    workspace = tmp_path / "workspace"
+    ctx = SimpleNamespace(workspace_dir=str(workspace))
+    state = _make_state()
+    handler = _ToolResultHandler()
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="publish-failed",
+            tool_name="publish_artifact",
+            result='{"status":"error","user_message":"regenerate"}',
+            is_error=True,
+            arguments={"path": source_path, "name": explicit_name},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    assert len(state.artifact_delivery_failures_by_target) == 1
+    assert next(iter(state.artifact_delivery_failures_by_target)).startswith("name:")
+
+    handler.handle(
+        ToolResultEvent(
+            tool_use_id="create-succeeded",
+            tool_name="create_pptx",
+            result=(
+                '{"status":"published","artifact":{"name":"'
+                + created_name
+                + '"}}'
+            ),
+            arguments={"name": created_name, "slides": [{"title": "Deck"}]},
+        ),
+        state,
+        tool_context=ctx,
+    )
+
+    if cleared:
+        assert state.artifact_delivery_failures == []
+        assert state.artifact_delivery_failures_by_target == {}
+    else:
+        assert state.artifact_delivery_failures == ["regenerate"]
+        assert len(state.artifact_delivery_failures_by_target) == 1
+
+
 def test_tool_result_handler_updates_tool_use_name_after_runtime_coercion() -> None:
     state = _make_state()
     state.turn_segments.append(

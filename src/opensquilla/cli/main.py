@@ -1096,6 +1096,11 @@ def agent(
 def chat(
     model: str = typer.Option("", "--model", "-m", help="Model override"),
     session_id: str = typer.Option("", "--session", "-s", help="Resume session"),
+    ui: str | None = typer.Option(
+        None,
+        "--ui",
+        help="Chat UI: auto, tui, or plain (default: auto)",
+    ),
     standalone: bool = typer.Option(False, "--standalone", help="Direct Agent without gateway"),
     workspace: str = typer.Option("", "--workspace", help="Workspace root for standalone tools"),
     workspace_strict: bool | None = typer.Option(
@@ -1117,6 +1122,7 @@ def chat(
             run_chat(
                 model=model,
                 session_id=session_id,
+                ui=ui,
                 standalone=True,
                 workspace=workspace,
                 workspace_strict=workspace_strict,
@@ -1129,6 +1135,7 @@ def chat(
     run_chat(
         model=model,
         session_id=session_id,
+        ui=ui,
         standalone=False,
         workspace=workspace,
         workspace_strict=workspace_strict,

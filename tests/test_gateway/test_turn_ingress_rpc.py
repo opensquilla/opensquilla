@@ -109,9 +109,7 @@ def _table_counts(db_path: Path) -> dict[str, int]:
     connection = sqlite3.connect(db_path)
     try:
         return {
-            table: int(
-                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            )
+            table: int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
             for table in (
                 "transcript_entries",
                 "agent_tasks",
@@ -139,6 +137,8 @@ async def test_sessions_send_atomically_accepts_message_task_and_receipt(tmp_pat
                 "key": SESSION_KEY,
                 "message": "one durable turn",
                 "clientRequestId": CLIENT_REQUEST_ID,
+                "clientMessageId": "composer-message-1",
+                "surfaceId": "tui:atomic-test",
             },
             stack.context,
         )
@@ -149,7 +149,20 @@ async def test_sessions_send_atomically_accepts_message_task_and_receipt(tmp_pat
         assert response.payload["clientRequestId"] == CLIENT_REQUEST_ID
         assert response.payload["message_id"]
         assert response.payload["task_id"]
+        assert response.payload["turn_id"] == response.payload["task_id"]
+        assert response.payload["user_message_id"] == response.payload["message_id"]
+        assert response.payload["client_message_id"] == "composer-message-1"
+        assert response.payload["surface_id"] == "tui:atomic-test"
         assert response.payload["replayed"] is False
+        entries = await stack.storage.get_transcript(stack.session_id)
+        assert entries[0].turn_context == {
+            "turn_id": response.payload["task_id"],
+            "client_message_id": "composer-message-1",
+            "surface_id": "tui:atomic-test",
+            "intent": "send",
+            "disposition": "applied",
+            "revision": 1,
+        }
         assert _table_counts(stack.db_path) == {
             "transcript_entries": 1,
             "agent_tasks": 1,
@@ -166,13 +179,20 @@ async def test_sessions_send_replays_same_request_without_duplicate_side_effects
             "key": SESSION_KEY,
             "message": "replay me exactly once",
             "clientRequestId": CLIENT_REQUEST_ID,
+            "clientMessageId": "original-composer-message",
+            "surfaceId": "tui:original",
         }
         first = await get_dispatcher().dispatch(
             "rpc-replay-first", "sessions.send", params, stack.context
         )
         await stack.wait_until_running()
+        replay_params = {
+            **params,
+            "clientMessageId": "retry-composer-message",
+            "surfaceId": "tui:retry",
+        }
         replay = await get_dispatcher().dispatch(
-            "rpc-replay-second", "sessions.send", params, stack.context
+            "rpc-replay-second", "sessions.send", replay_params, stack.context
         )
 
         assert first.ok is True
@@ -182,6 +202,9 @@ async def test_sessions_send_replays_same_request_without_duplicate_side_effects
         assert replay.payload["clientRequestId"] == CLIENT_REQUEST_ID
         assert replay.payload["message_id"] == first.payload["message_id"]
         assert replay.payload["task_id"] == first.payload["task_id"]
+        assert replay.payload["turn_id"] == first.payload["turn_id"]
+        assert replay.payload["client_message_id"] == "original-composer-message"
+        assert replay.payload["surface_id"] == "tui:original"
         assert _table_counts(stack.db_path) == {
             "transcript_entries": 1,
             "agent_tasks": 1,
@@ -222,6 +245,7 @@ async def test_activation_failure_is_returned_as_an_accepted_failed_task(
     tmp_path: Path,
 ) -> None:
     async with _open_real_stack(tmp_path / "sessions.db") as stack:
+
         async def _fail_activation(*_args: Any, **_kwargs: Any) -> None:
             raise RuntimeError("synthetic activation failure")
 
@@ -254,6 +278,7 @@ async def test_post_accept_notification_failure_does_not_reject_the_turn(
     tmp_path: Path,
 ) -> None:
     async with _open_real_stack(tmp_path / "sessions.db") as stack:
+
         def _fail_notification(_entry: Any) -> None:
             raise RuntimeError("synthetic post-accept notification failure")
 
@@ -517,6 +542,8 @@ async def test_collect_mode_atomically_merges_message_and_receipt_into_queued_ta
                 "message": "collect one",
                 "queueMode": "collect",
                 "clientRequestId": "collect-first",
+                "clientMessageId": "collect-composer-1",
+                "surfaceId": "tui:collect-1",
             },
             stack.context,
         )
@@ -528,6 +555,8 @@ async def test_collect_mode_atomically_merges_message_and_receipt_into_queued_ta
                 "message": "collect two",
                 "queueMode": "collect",
                 "clientRequestId": "collect-second",
+                "clientMessageId": "collect-composer-2",
+                "surfaceId": "tui:collect-2",
             },
             stack.context,
         )
@@ -536,6 +565,10 @@ async def test_collect_mode_atomically_merges_message_and_receipt_into_queued_ta
         assert first.ok is True
         assert second.ok is True
         assert second.payload["task_id"] == first.payload["task_id"]
+        assert first.payload["turn_id"] == first.payload["task_id"]
+        assert second.payload["turn_id"] == first.payload["task_id"]
+        assert second.payload["client_message_id"] == "collect-composer-2"
+        assert second.payload["surface_id"] == "tui:collect-2"
         candidate = stack.runtime._tasks[first.payload["task_id"]]
         assert candidate.message == "collect one\ncollect two"
         persisted = await stack.storage.get_agent_task(first.payload["task_id"])
@@ -543,6 +576,24 @@ async def test_collect_mode_atomically_merges_message_and_receipt_into_queued_ta
         assert persisted.details is not None
         assert persisted.details["collected"] is True
         assert persisted.details["message_count"] == 2
+        entries = await stack.storage.get_transcript(stack.session_id)
+        assert entries[-2].turn_context == {
+            "turn_id": first.payload["task_id"],
+            "client_message_id": "collect-composer-1",
+            "surface_id": "tui:collect-1",
+            "intent": "send",
+            "disposition": "queued",
+            "revision": 1,
+        }
+        assert entries[-1].turn_context == {
+            "turn_id": first.payload["task_id"],
+            "client_message_id": "collect-composer-2",
+            "surface_id": "tui:collect-2",
+            "intent": "send",
+            "disposition": "queued",
+            "target_turn_id": first.payload["task_id"],
+            "revision": 2,
+        }
         assert _table_counts(stack.db_path) == {
             "transcript_entries": 3,
             "agent_tasks": 2,
@@ -660,9 +711,7 @@ async def test_collect_storage_busy_leaves_transcript_receipt_and_candidate_unch
         )
         candidate = stack.runtime._tasks[queued.payload["task_id"]]
         original_message = candidate.message
-        original_details = (
-            await stack.storage.get_agent_task(queued.payload["task_id"])
-        ).details
+        original_details = (await stack.storage.get_agent_task(queued.payload["task_id"])).details
 
         stack.storage._busy_budget_seconds = 0.0
         await stack.storage.conn.execute("PRAGMA busy_timeout = 0")
@@ -716,6 +765,8 @@ async def test_chat_send_forwards_client_request_id_into_atomic_acceptance(
                 "message": "forward this request identity",
                 "queueMode": "steer",
                 "clientRequestId": CLIENT_REQUEST_ID,
+                "clientMessageId": "web-composer-message",
+                "surfaceId": "webui:chat",
             },
             stack.context,
         )
@@ -724,6 +775,8 @@ async def test_chat_send_forwards_client_request_id_into_atomic_acceptance(
         assert response.ok is True
         assert response.payload["accepted"] is True
         assert response.payload["clientRequestId"] == CLIENT_REQUEST_ID
+        assert response.payload["client_message_id"] == "web-composer-message"
+        assert response.payload["surface_id"] == "webui:chat"
         acceptance = await stack.storage.get_turn_ingress_receipt(
             source_scope="web:webchat:operator",
             request_session_key=SESSION_KEY,
@@ -736,6 +789,10 @@ async def test_chat_send_forwards_client_request_id_into_atomic_acceptance(
         task = await stack.storage.get_agent_task(response.payload["task_id"])
         assert task is not None
         assert task.queue_mode == "interrupt"
+        entries = await stack.storage.get_transcript(stack.session_id)
+        assert entries[0].turn_context is not None
+        assert entries[0].turn_context["client_message_id"] == "web-composer-message"
+        assert entries[0].turn_context["surface_id"] == "webui:chat"
         assert _table_counts(stack.db_path) == {
             "transcript_entries": 1,
             "agent_tasks": 1,

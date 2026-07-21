@@ -168,6 +168,24 @@ def test_overview_ignores_stale_load_after_view_destroy() -> None:
     assert "rpc.call('doctor.status'" in body
 
 
+def test_overview_usage_kpi_negotiates_ledger_query_with_legacy_fallback() -> None:
+    source = OVERVIEW_JS.read_text(encoding="utf-8")
+    helper_start = source.index("async function _loadUsageSummary(rpc)")
+    helper_end = source.index("  async function _loadData()", helper_start)
+    helper = source[helper_start:helper_end]
+
+    assert "rpc.hello.features.methods" in source
+    assert "methods.includes('usage.query')" in source
+    assert "schemaVersion: 1" in source
+    assert "range: { preset: 'all' }" in source
+    assert "include: { days: false, models: false, sessions: false }" in source
+    assert "await rpc.call('usage.query'" in helper
+    assert "await rpc.call('usage.status')" in helper
+    assert "transientQueryFailure" in helper
+    assert "_lastUsageSummary.source === 'usage_ledger'" in helper
+    assert "costNanos" in source
+
+
 def test_overview_text_links_have_touch_friendly_hit_area() -> None:
     css = OVERVIEW_CSS.read_text(encoding="utf-8")
     start = css.index(".ov-link {")

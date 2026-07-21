@@ -161,11 +161,12 @@ async def test_routing_mode_toggle_persists_only_its_paths(cfg_path) -> None:
     }
     data = tomllib.loads(cfg_path.read_text())
     assert data["llm_ensemble"]["enabled"] is True
-    # Values equal to the model default (router enabled/full) may be omitted
-    # by the sparse diff; the round-trip contract is what matters.
+    # The default static_openrouter_b5 ensemble is independent, so the
+    # canonical three-state reconciliation overrides the legacy conflicting
+    # router=true field while preserving the explicit full rollout marker.
     reloaded = GatewayConfig.load(str(cfg_path))
     assert reloaded.llm_ensemble.enabled is True
-    assert reloaded.squilla_router.enabled is True
+    assert reloaded.squilla_router.enabled is False
     assert reloaded.squilla_router.rollout_phase == "full"
     # No default-bake: sections the toggle never touched stay absent.
     assert "memory" not in data

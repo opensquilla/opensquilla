@@ -681,7 +681,7 @@ describe('useChatSend attachment payloads', () => {
     expect(bindActiveStreamTask).toHaveBeenCalledWith('task-new')
   })
 
-  it('stops the session that owns the stream and poisons its stale task id', () => {
+  it('stops the whole session that owns the stream without trusting a stale task id', () => {
     const activeStreamTaskId = ref('task-old')
     const activeStreamSessionKey = ref('agent:main:webchat:old')
     const { api, rpc, stream } = makeOptions({
@@ -695,10 +695,21 @@ describe('useChatSend attachment payloads', () => {
 
     expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
       sessionKey: 'agent:main:webchat:old',
-      taskId: 'task-old',
       source: 'webui_stop',
     })
     expect(activeStreamTaskId.value).not.toBe('task-old')
+  })
+
+  it('stops an active subagent group after the parent stream has ended', () => {
+    const { api, rpc, stream } = makeOptions({ canStop: () => true })
+    stream.isStreaming.value = false
+
+    api.onStop()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: 'agent:main:webchat:test',
+      source: 'webui_stop',
+    })
   })
 
   it('does not let a stopped send response rebind the next turn', async () => {

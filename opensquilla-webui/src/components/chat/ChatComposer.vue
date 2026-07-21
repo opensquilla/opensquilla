@@ -155,13 +155,14 @@
               <Icon name="arrowUp" :size="17" />
             </button>
             <Transition name="composer-ctl">
-              <button v-if="isStreaming" class="btn btn--icon btn--danger chat-send-btn" :title="t('chat.stopResponseEsc')" :aria-label="t('chat.stopResponse')" @click="emit('stop')">
+              <button v-if="canStop" class="btn btn--icon btn--danger chat-send-btn" :title="t('chat.stopResponseEsc')" :aria-label="t('chat.stopResponse')" @click="emit('stop')">
                 <Icon name="stop" :size="16" />
               </button>
             </Transition>
           </div>
         </div>
       </div>
+      <p class="chat-ai-disclaimer" role="note">{{ t('chat.aiDisclaimer') }}</p>
     </div>
     <input
       ref="fileInputEl"
@@ -198,6 +199,7 @@ defineProps<{
   busySendMode: 'queue' | 'steer'
   hasSendContent: boolean
   isStreaming: boolean
+  canStop: boolean
   isNewLanding: boolean
   placeholder: string
   sendButtonTitle: string
@@ -407,6 +409,14 @@ defineExpose<ChatComposerExpose>({
 
 .chat-composer--new-landing .chat-composer-inner {
   width: 100%;
+}
+
+.chat-ai-disclaimer {
+  margin: 0.5rem 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.5;
+  text-align: center;
 }
 
 .chat-attachments {

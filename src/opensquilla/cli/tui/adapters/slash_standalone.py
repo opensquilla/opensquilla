@@ -536,6 +536,17 @@ async def handle_standalone_slash_command(
         await dispatch_theme_command(cmd, context.tui_output)
         return True
 
+    if (
+        _slash_parts(cmd, "/strategy")
+        or _slash_parts(cmd, "/router")
+        or _slash_parts(cmd, "/ensemble")
+    ):
+        console.print(
+            "[yellow]Model strategy controls require Gateway mode; "
+            "restart without --standalone.[/yellow]"
+        )
+        return True
+
     if parts := _slash_parts(cmd, "/new"):
         title = parts[1].strip() if len(parts) > 1 else None
         await _replace_with_new_session(context, title=title)
@@ -558,12 +569,22 @@ async def handle_standalone_slash_command(
 
     if parts := _slash_parts(cmd, "/model"):
         if len(parts) == 1:
-            console.print(f"[dim]model={state.model or 'default'}[/dim]")
+            console.print(f"[dim]model pin[/dim] [bold]{context.model or 'auto'}[/bold]")
         else:
             new_model = parts[1].strip()
-            context.model = new_model
-            state.model = new_model
-            console.print(f"[green]model:[/green] {new_model}")
+            normalized = new_model.lower()
+            if normalized == "status":
+                console.print(
+                    f"[dim]model pin[/dim] [bold]{context.model or 'auto'}[/bold]"
+                )
+            elif normalized in {"auto", "default"}:
+                context.model = None
+                state.model = None
+                console.print("[green]model pin:[/green] auto")
+            else:
+                context.model = new_model
+                state.model = new_model
+                console.print(f"[green]model pin:[/green] {new_model}")
         return True
 
     if cmd == "/cost":

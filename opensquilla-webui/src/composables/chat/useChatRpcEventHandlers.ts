@@ -662,6 +662,14 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (!isCurrentTaskPayload(payload)) return
     if (sessionChangeIsTerminal(payload)) {
       markTaskSettled(payload)
+      const state = options.sessionRunStatus(payload)
+      const interrupted = state.status === 'cancelled' || state.status === 'interrupted'
+      if (activeTaskGroups.value.size > 0 && !interrupted) {
+        if (stream.isStreaming.value) stream.endStreaming()
+        options.applySessionRunState(activeTaskGroupRunState(payload))
+        options.scheduleHistorySync()
+        return
+      }
       syncTerminalSessionChange(payload)
       return
     }

@@ -163,7 +163,7 @@ class SetupEngine:
             all_failed_policy = payload.get("allFailedPolicy")
             res = upsert_llm_ensemble(
                 self.config,
-                enabled=None if enabled is None else bool(enabled),
+                enabled=enabled,
                 selection_mode=None if selection_mode is None else str(selection_mode),
                 ranking_user_profile_generation_enabled=(
                     None

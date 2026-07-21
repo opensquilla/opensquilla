@@ -210,3 +210,19 @@ def mark_evidence_represented(
         if entry is not None:
             entry.status = "represented"
             entry.last_skip_reason = reason
+
+
+def mark_evidence_rejected(
+    store: PromotionEvidenceStore,
+    candidate_ids: list[str],
+    *,
+    now_iso: str,
+    reason: str,
+) -> None:
+    """Terminally acknowledge candidates the curator explicitly skipped."""
+    for candidate_id in candidate_ids:
+        entry = store.entries.get(candidate_id)
+        if entry is not None:
+            entry.status = "rejected"
+            entry.rejected_at = now_iso
+            entry.last_skip_reason = reason

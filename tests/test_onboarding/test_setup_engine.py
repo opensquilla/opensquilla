@@ -274,6 +274,8 @@ def test_setup_engine_applies_ensemble_with_keep_current_semantics(tmp_path):
 
     with pytest.raises(ValueError, match="modelOptions must be a list"):
         SetupEngine(path=target).apply("ensemble", {"modelOptions": "not-a-list"})
+    with pytest.raises(ValueError, match="enabled must be a boolean"):
+        SetupEngine(path=target).apply("ensemble", {"enabled": "false"})
 
 
 def test_setup_engine_accepts_ensemble_section_aliases(tmp_path):

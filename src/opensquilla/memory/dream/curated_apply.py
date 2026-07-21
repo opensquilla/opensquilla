@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from opensquilla.memory.dream.models import (
@@ -97,7 +99,24 @@ def apply_promotion_patch(
     changed = next_content != content
     if changed and not dry_run:
         memory_path.parent.mkdir(parents=True, exist_ok=True)
-        memory_path.write_text(next_content, encoding="utf-8")
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=memory_path.parent,
+                prefix=f".{memory_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as handle:
+                temporary_path = Path(handle.name)
+                handle.write(next_content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary_path.replace(memory_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
     return ApplyPromotionResult(
         applied=0 if dry_run else applied,
         skipped=skipped,

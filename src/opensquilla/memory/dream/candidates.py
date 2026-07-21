@@ -145,7 +145,30 @@ def scan_dream_candidates(
                 source_day=source_day,
                 text=unit,
             )
-            if candidate is not None:
-                candidates.append((stat.st_mtime, candidate))
-    candidates.sort(key=lambda item: item[0])
-    return [candidate for _mtime, candidate in candidates[: max(0, int(max_batch_size))]]
+            if candidate is None:
+                continue
+            candidates.append((stat.st_mtime, candidate))
+    candidates.sort(
+        key=lambda item: (
+            item[0],
+            item[1].source_path,
+            item[1].snippet_sha256,
+        )
+    )
+    limit = max(0, int(max_batch_size))
+    if limit == 0 or not candidates:
+        return []
+    if len(candidates) <= limit:
+        return [candidate for _mtime, candidate in candidates]
+
+    # The persisted cursor contains only an mtime. Never split a timestamp tie
+    # across batches: advancing to the first half's mtime would make the rest
+    # fail the next scan's ``mtime > cursor`` check forever. The configured
+    # limit is therefore soft at the boundary, which trades a bounded one-off
+    # expansion for lossless progress on coarse-resolution filesystems.
+    cutoff_mtime = candidates[limit - 1][0]
+    return [
+        candidate
+        for mtime, candidate in candidates
+        if mtime <= cutoff_mtime
+    ]

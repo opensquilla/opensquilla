@@ -81,6 +81,7 @@ def test_apply_promotion_patch_upserts_curated_section(tmp_path: Path) -> None:
     assert "## User Preferences" in memory_md.read_text(encoding="utf-8")
     assert "User prefers concise implementation notes" in memory_md.read_text(encoding="utf-8")
     assert "Promoted From Dream Evidence" not in memory_md.read_text(encoding="utf-8")
+    assert not list(tmp_path.glob(".MEMORY.md.*.tmp"))
 
 
 def test_apply_promotion_patch_dry_run_does_not_write(tmp_path: Path) -> None:

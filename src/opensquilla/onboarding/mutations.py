@@ -941,6 +941,13 @@ _LLM_ENSEMBLE_ALL_FAILED_POLICIES: tuple[str, ...] = tuple(
 )
 
 
+def _strict_boolean(value: object, *, label: str) -> bool:
+    """Accept a real JSON boolean without truthiness-based coercion."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{label} must be a boolean")
+    return value
+
+
 def upsert_llm_ensemble(
     config: GatewayConfig,
     *,
@@ -968,7 +975,7 @@ def upsert_llm_ensemble(
     merged = dict(current)
 
     if enabled is not None:
-        merged["enabled"] = bool(enabled)
+        merged["enabled"] = _strict_boolean(enabled, label="enabled")
     if selection_mode is not None:
         mode_clean = str(selection_mode).strip()
         if mode_clean not in _LLM_ENSEMBLE_SELECTION_MODES:

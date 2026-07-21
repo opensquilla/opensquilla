@@ -527,6 +527,29 @@ async def test_ensemble_configure_rejects_unknown_selection_mode(tmp_path, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("enabled", "false"),
+    ],
+)
+async def test_ensemble_configure_rejects_non_boolean_switch_values(
+    field: str, value: object, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.ensemble.configure",
+        {field: value},
+        _admin_ctx(),
+    )
+
+    assert res.error is not None
+    assert res.error.code == "onboarding.ensemble.invalid"
+
+
+@pytest.mark.asyncio
 async def test_ensemble_configure_requires_admin(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
     res = await get_dispatcher().dispatch(

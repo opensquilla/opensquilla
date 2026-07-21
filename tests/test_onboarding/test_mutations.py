@@ -472,6 +472,20 @@ def test_upsert_llm_ensemble_can_toggle_profile_switches_independently():
     assert res.public_payload["ranking_user_profile_enabled"] is False
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "enabled",
+    ],
+)
+@pytest.mark.parametrize("value", ["false", "0", 0, 1, [], {}])
+def test_upsert_llm_ensemble_rejects_truthy_boolean_coercion(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=rf"{field} must be a boolean"):
+        upsert_llm_ensemble(GatewayConfig(), **{field: value})  # type: ignore[arg-type]
+
+
 def test_upsert_llm_ensemble_keeps_legacy_model_options_payload():
     cfg = GatewayConfig(llm_ensemble={"selection_mode": "router_dynamic"})
 

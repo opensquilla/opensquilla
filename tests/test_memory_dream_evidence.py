@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from opensquilla.memory.dream.candidates import scan_dream_candidates
@@ -147,6 +148,39 @@ def test_scan_splits_routing_preference_log_per_line(tmp_path: Path) -> None:
     assert by_signal == {"positive", "correction"}
     # Distinct claims → distinct dedup keys, so they accrue evidence independently.
     assert len({candidate.claim_sha256 for candidate in candidates}) == 2
+
+
+def test_scan_does_not_split_equal_mtime_boundary(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    shared_mtime_ns = 1_800_000_000_000_000_000
+    for index in range(22):
+        path = memory_dir / f"2027-01-15-note-{index}.md"
+        path.write_text(
+            f"Memory: durable note {index}\n",
+            encoding="utf-8",
+        )
+        os.utime(path, ns=(shared_mtime_ns, shared_mtime_ns))
+
+    first = scan_dream_candidates(
+        tmp_path,
+        cursor=0.0,
+        max_batch_size=20,
+        agent_id="main",
+    )
+    cursor = max(candidate.source_mtime_ns for candidate in first) / 1_000_000_000
+    second = scan_dream_candidates(
+        tmp_path,
+        cursor=cursor,
+        max_batch_size=20,
+        agent_id="main",
+    )
+
+    # The mtime cursor cannot represent a position inside a tie. The scanner
+    # therefore expands the boundary batch instead of silently starving two
+    # files after advancing the cursor.
+    assert len(first) == 22
+    assert second == []
 
 
 def test_scan_keeps_narrative_note_whole(tmp_path: Path) -> None:

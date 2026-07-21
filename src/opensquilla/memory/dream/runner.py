@@ -19,16 +19,13 @@ from opensquilla.memory.dream.candidates import scan_dream_candidates
 from opensquilla.memory.dream.curated_apply import apply_promotion_patch
 from opensquilla.memory.dream.evidence import (
     mark_evidence_promoted,
+    mark_evidence_rejected,
     mark_evidence_represented,
     mark_evidence_skipped,
     update_promotion_evidence,
     write_evidence_store,
 )
-from opensquilla.memory.dream.models import (
-    ApplyPromotionResult,
-    PromotionPatch,
-    PromotionPatchOperation,
-)
+from opensquilla.memory.dream.models import ApplyPromotionResult
 from opensquilla.memory.dream.prompts import parse_promotion_patch, promotion_patch_prompt
 from opensquilla.memory.dream.ranking import rank_promotion_candidates
 from opensquilla.memory.dream.receipts import write_dream_receipt
@@ -275,15 +272,32 @@ class Dream:
                 now_iso=now_iso,
                 persist=not result.dry_run,
             )
-            ranked = rank_promotion_candidates(
+            ranked_all = rank_promotion_candidates(
                 store,
                 min_score=getattr(self.config, "evidence_min_score", 0.55),
                 negative_recurrence_threshold=getattr(
                     self.config, "evidence_negative_recurrence_threshold", 2
                 ),
                 min_seen_count=getattr(self.config, "evidence_min_seen_count", 1),
-                limit=getattr(self.config, "max_batch_size", 20),
+                limit=None,
             )
+            raw_claims = {candidate.claim_sha256 for candidate in raw_candidates}
+            ranked_current = [
+                candidate
+                for candidate in ranked_all
+                if candidate.claim_sha256 in raw_claims
+            ]
+            ranked_backlog = [
+                candidate
+                for candidate in ranked_all
+                if candidate.claim_sha256 not in raw_claims
+            ]
+            configured_limit = max(0, int(getattr(self.config, "max_batch_size", 20)))
+            remaining = max(0, configured_limit - len(ranked_current))
+            # Current raw evidence must not be crowded out by older candidates:
+            # the cursor advances past this batch after apply. Equal-mtime ties
+            # may make ``ranked_current`` exceed the soft configured limit.
+            ranked = ranked_current + ranked_backlog[:remaining]
             result.evidence_status = "ok"
             result.evidence_ms = int((time.monotonic() - evidence_start) * 1000)
         except Exception as exc:  # noqa: BLE001
@@ -293,11 +307,17 @@ class Dream:
             result.cursor_after = result.cursor_before
             return result
 
-        if not ranked:
-            max_mtime = max(
-                (candidate.source_mtime_ns / 1_000_000_000 for candidate in raw_candidates),
+        max_mtime = max(
+            result.cursor_before,
+            max(
+                (
+                    candidate.source_mtime_ns / 1_000_000_000
+                    for candidate in raw_candidates
+                ),
                 default=result.cursor_before,
-            )
+            ),
+        )
+        if not ranked:
             if not result.dry_run:
                 write_evidence_store(self.workspace, store)
                 result.files_processed = len(raw_candidates)
@@ -326,64 +346,141 @@ class Dream:
                 logger.warning("dream.log_emit_failed", extra={"error": str(exc)})
             return result
 
+        writes_enabled = bool(
+            getattr(self.config, "evidence_curated_writes_enabled", True)
+        )
+        if not result.dry_run and not writes_enabled:
+            disabled_skipped_candidates = [
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "reason": "curated_writes_disabled",
+                }
+                for candidate in ranked
+            ]
+            for candidate in ranked:
+                mark_evidence_skipped(
+                    store,
+                    candidate.candidate_id,
+                    "curated_writes_disabled",
+                )
+            # This flag is a hard write/cost gate. Keep candidates non-terminal
+            # and leave the cursor in place so enabling curated writes later can
+            # process exactly the same evidence without another provider call now.
+            write_evidence_store(self.workspace, store)
+            result.apply_status = "skipped"
+            result.cursor_after = result.cursor_before
+            result.edit_receipt_path = write_dream_receipt(
+                workspace=self.workspace,
+                artifact_id=self._artifact_id(),
+                agent_id=getattr(self, "agent_id", "main"),
+                dry_run=False,
+                candidate_paths=[candidate.source_path for candidate in raw_candidates],
+                evidence_updated=len(raw_candidates),
+                ranked_candidates=ranked,
+                skipped_candidates=disabled_skipped_candidates,
+                applied=ApplyPromotionResult(),
+                memory_md_backup_path="",
+                cursor_before=result.cursor_before,
+                cursor_after=result.cursor_after,
+            )
+            try:
+                self._emit_log(result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("dream.log_emit_failed", extra={"error": str(exc)})
+            return result
+
         apply_start = time.monotonic()
         artifact_id = self._artifact_id()
         candidate_paths = [candidate.source_path for candidate in raw_candidates]
+        ranked_for_receipt = list(ranked)
         skipped_candidates: list[dict[str, Any]] = []
         memory_backup_path = ""
         try:
             current_memory = (
                 self.memory_md.read_text(encoding="utf-8") if self.memory_md.exists() else ""
             )
-            prompt = promotion_patch_prompt(current_memory, ranked)
-            result.promotion_prompt_chars = len(prompt)
-            text = await _run_complete(self.provider, [Message(role="user", content=prompt)], 4096)
-            patch = parse_promotion_patch(text, ranked)
-            result.provider_calls = 1
-
-            live_candidate_ids: set[str] = set()
+            live_ranked = []
             for candidate in ranked:
                 rehydrated = rehydrate_candidate(self.workspace, candidate)
                 if rehydrated.ok:
-                    live_candidate_ids.add(candidate.candidate_id)
-                else:
-                    reason = rehydrated.reason or "rehydrate_failed"
-                    skipped_candidates.append(
-                        {"candidate_id": candidate.candidate_id, "reason": reason}
-                    )
-                    mark_evidence_skipped(store, candidate.candidate_id, reason)
+                    live_ranked.append(candidate)
+                    continue
+                reason = rehydrated.reason or "rehydrate_failed"
+                skipped_candidates.append(
+                    {"candidate_id": candidate.candidate_id, "reason": reason}
+                )
+                mark_evidence_skipped(store, candidate.candidate_id, reason)
+            ranked = live_ranked
+            if skipped_candidates and not result.dry_run:
+                write_evidence_store(self.workspace, store)
 
-            filtered_operations: list[PromotionPatchOperation] = []
-            for operation in patch.operations:
-                if operation.op == "skip":
-                    filtered_operations.append(operation)
+            if not ranked:
+                if not result.dry_run:
+                    result.files_processed = len(raw_candidates)
+                    self.cursor.save(max_mtime)
+                    result.cursor_after = max_mtime
+                else:
+                    result.cursor_after = result.cursor_before
+                result.memory_md_sha_after = result.memory_md_sha_before
+                result.apply_status = "skipped"
+                result.apply_ms = int((time.monotonic() - apply_start) * 1000)
+                result.edit_receipt_path = write_dream_receipt(
+                    workspace=self.workspace,
+                    artifact_id=artifact_id,
+                    agent_id=getattr(self, "agent_id", "main"),
+                    dry_run=result.dry_run,
+                    candidate_paths=candidate_paths,
+                    evidence_updated=len(raw_candidates),
+                    ranked_candidates=ranked_for_receipt,
+                    skipped_candidates=skipped_candidates,
+                    applied=ApplyPromotionResult(),
+                    memory_md_backup_path="",
+                    cursor_before=result.cursor_before,
+                    cursor_after=result.cursor_after,
+                )
+                try:
+                    self._emit_log(result)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("dream.log_emit_failed", extra={"error": str(exc)})
+                return result
+
+            prompt = promotion_patch_prompt(current_memory, ranked)
+            result.promotion_prompt_chars = len(prompt)
+            text = await _run_complete(self.provider, [Message(role="user", content=prompt)], 4096)
+            result.provider_calls = 1
+            patch = parse_promotion_patch(text, ranked)
+
+            changed_during_completion: list[str] = []
+            for candidate in ranked:
+                rehydrated = rehydrate_candidate(self.workspace, candidate)
+                if rehydrated.ok:
                     continue
-                live_ids = [
-                    candidate_id
-                    for candidate_id in operation.candidate_ids
-                    if candidate_id in live_candidate_ids
-                ]
-                if not live_ids:
-                    continue
-                operation.candidate_ids = live_ids
-                filtered_operations.append(operation)
-            filtered_patch = PromotionPatch(operations=filtered_operations)
-            if not result.dry_run and getattr(
-                self.config, "evidence_curated_writes_enabled", True
-            ):
+                reason = rehydrated.reason or "rehydrate_failed"
+                changed_during_completion.append(candidate.candidate_id)
+                skipped_candidates.append(
+                    {"candidate_id": candidate.candidate_id, "reason": reason}
+                )
+                mark_evidence_skipped(store, candidate.candidate_id, reason)
+            if changed_during_completion:
+                if not result.dry_run:
+                    write_evidence_store(self.workspace, store)
+                raise RuntimeError(
+                    "Dream candidate changed during provider completion: "
+                    + ", ".join(changed_during_completion)
+                )
+
+            if not result.dry_run:
                 memory_backup_path = self._backup_memory_md(artifact_id)
             applied = apply_promotion_patch(
                 self.workspace,
-                filtered_patch,
-                dry_run=result.dry_run
-                or not getattr(self.config, "evidence_curated_writes_enabled", True),
+                patch,
+                dry_run=result.dry_run,
             )
             if not result.dry_run:
                 promoted_ids: list[str] = []
                 represented_ids: list[str] = []
+                rejected_ids: list[str] = []
                 for applied_operation in applied.applied_operations:
-                    if applied_operation.get("op") not in {"upsert", "merge"}:
-                        continue
                     raw_candidate_ids = applied_operation.get("candidate_ids", [])
                     if not isinstance(raw_candidate_ids, list):
                         continue
@@ -392,6 +489,11 @@ class Dream:
                         for candidate_id in raw_candidate_ids
                         if isinstance(candidate_id, str)
                     ]
+                    if applied_operation.get("op") == "skip":
+                        rejected_ids.extend(candidate_ids)
+                        continue
+                    if applied_operation.get("op") not in {"upsert", "merge"}:
+                        continue
                     if applied_operation.get("changed") is True:
                         promoted_ids.extend(candidate_ids)
                     else:
@@ -402,13 +504,22 @@ class Dream:
                     for candidate_id in represented_ids
                     if candidate_id not in promoted_set
                 ]
+                represented_set = set(represented_ids)
+                rejected_ids = [
+                    candidate_id
+                    for candidate_id in rejected_ids
+                    if candidate_id not in promoted_set
+                    and candidate_id not in represented_set
+                ]
                 mark_evidence_promoted(store, promoted_ids, now_iso)
                 mark_evidence_represented(store, represented_ids, "no_curated_change")
-                write_evidence_store(self.workspace, store)
-                max_mtime = max(
-                    (candidate.source_mtime_ns / 1_000_000_000 for candidate in raw_candidates),
-                    default=result.cursor_before,
+                mark_evidence_rejected(
+                    store,
+                    rejected_ids,
+                    now_iso=now_iso,
+                    reason="curator_skip",
                 )
+                write_evidence_store(self.workspace, store)
                 result.files_processed = len(raw_candidates)
                 self.cursor.save(max_mtime)
                 result.cursor_after = max_mtime
@@ -429,7 +540,7 @@ class Dream:
                 dry_run=result.dry_run,
                 candidate_paths=candidate_paths,
                 evidence_updated=len(raw_candidates),
-                ranked_candidates=ranked,
+                ranked_candidates=ranked_for_receipt,
                 skipped_candidates=skipped_candidates,
                 applied=applied,
                 memory_md_backup_path=memory_backup_path,

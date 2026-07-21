@@ -2825,7 +2825,11 @@ class TurnRunner:
             TASK_ANALYZER_PROVIDER_ID,
         )
         from opensquilla.provider.registry import get_provider_spec
-        from opensquilla.provider.selector import ProviderConfig, build_provider
+        from opensquilla.provider.selector import (
+            ModelSelector,
+            ProviderConfig,
+            SelectorConfig,
+        )
 
         try:
             spec = get_provider_spec(TASK_ANALYZER_PROVIDER_ID)
@@ -2890,14 +2894,11 @@ class TurnRunner:
                     reason="credential_unavailable",
                 )
                 return None
-            return build_provider(
-                provider=analyzer_config.provider,
-                model=analyzer_config.model,
-                api_key=analyzer_config.api_key,
-                base_url=analyzer_config.base_url,
-                org_id=analyzer_config.org_id,
-                proxy=analyzer_config.proxy,
-            )
+            # Resolve the exact deployment assembled above. The convenience
+            # ``build_provider`` factory only accepts legacy scalar fields and
+            # would silently discard OpenRouter ``provider_routing`` as well as
+            # the analyzer's no-private-state replay boundary.
+            return ModelSelector(SelectorConfig(primary=analyzer_config)).resolve()
         except Exception as exc:  # noqa: BLE001 - task analysis has a local fallback
             log.warning(
                 "llm_ensemble.router_dynamic.task_analyzer_provider_unavailable",

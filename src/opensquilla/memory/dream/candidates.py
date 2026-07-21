@@ -70,6 +70,7 @@ def _build_candidate(
     source_size: int,
     source_day: str | None,
     text: str,
+    source_occurrence_id: str,
 ) -> RawDreamCandidate | None:
     snippet = _normalize_snippet(text)
     if len(snippet) > _SNIPPET_MAX_CHARS:
@@ -87,6 +88,7 @@ def _build_candidate(
         claim_sha256=_sha256(_normalize_snippet(snippet).lower()),
         source_day=source_day,
         signal_kind=classify_signal(snippet),
+        source_occurrence_id=source_occurrence_id,
     )
 
 
@@ -136,7 +138,24 @@ def scan_dream_candidates(
         if quarantine_enabled and is_quarantined_text(raw):
             continue
         source_day = _source_day(path)
+        # The occurrence ordinal is scoped to equal normalized claims in one
+        # source.  It is stable when new lines are appended, unlike a global
+        # line number, and distinguishes repeated identical thumbs.
+        occurrence_counts: dict[str, int] = {}
         for unit in _split_units(raw):
+            normalized_unit = _normalize_snippet(unit).lower()
+            occurrence_index = occurrence_counts.get(normalized_unit, 0)
+            occurrence_counts[normalized_unit] = occurrence_index + 1
+            source_occurrence_id = _sha256(
+                "\n".join(
+                    (
+                        agent_id,
+                        rel_path,
+                        _sha256(normalized_unit),
+                        str(occurrence_index),
+                    )
+                )
+            )
             candidate = _build_candidate(
                 agent_id=agent_id,
                 rel_path=rel_path,
@@ -144,6 +163,7 @@ def scan_dream_candidates(
                 source_size=stat.st_size,
                 source_day=source_day,
                 text=unit,
+                source_occurrence_id=source_occurrence_id,
             )
             if candidate is None:
                 continue

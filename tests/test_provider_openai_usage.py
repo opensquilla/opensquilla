@@ -132,16 +132,37 @@ def test_openrouter_cost_requires_explicit_non_byok_evidence() -> None:
     ) == (0.012, "provider_billed")
     assert _provider_cost_with_byok_evidence(
         "openrouter", 0.004, {"is_byok": True}
-    ) == (0.004, "openrouter_byok")
+    ) == (0.0, "openrouter_byok")
     assert _provider_cost_with_byok_evidence(
         "openrouter", 0.012, {}
-    ) == (0.012, "provider_billed_unverified")
+    ) == (0.0, "provider_billed_unverified")
     assert _provider_cost_with_byok_evidence(
         "openrouter", 0.0, {"is_byok": False, "cost": 0}
     ) == (0.0, "provider_billed")
     assert _provider_cost_with_byok_evidence(
         "openrouter", 0.0, {"is_byok": False}
     ) == (0.0, "openrouter_billing_unverified")
+
+
+@pytest.mark.parametrize("invalid_cost", [float("nan"), float("inf"), "bad"])
+def test_openrouter_cost_falls_back_to_finite_total_cost(invalid_cost: object) -> None:
+    usage = {
+        "is_byok": False,
+        "cost": invalid_cost,
+        "total_cost": 0.25,
+    }
+
+    assert _usage_fields(usage)[-1] == pytest.approx(0.25)
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", _usage_fields(usage)[-1], usage
+    ) == (0.25, "provider_billed")
+    evidence = _provider_usage_evidence(
+        provider_kind="openrouter",
+        usage=usage,
+        router_metadata={"is_byok": False},
+        response_ids=["gen-cost-fallback"],
+    )
+    assert evidence["provider_reported_cost"] == pytest.approx(0.25)
 
 
 def test_openrouter_router_metadata_is_sanitized_and_persisted() -> None:
@@ -188,9 +209,76 @@ def test_openrouter_router_metadata_is_sanitized_and_persisted() -> None:
     )
     assert evidence["router_metadata"] == sanitized
     assert evidence["response_ids"] == ["gen-1", "gen-2"]
+    assert evidence["provider_reported_cost"] == 0.1
+    assert "cost" not in evidence
     assert _provider_cost_with_byok_evidence(
         "openrouter", 0.0, {}
     ) == (0.0, "openrouter_billing_unverified")
+
+
+def test_provider_usage_evidence_is_allowlisted_bounded_and_finite() -> None:
+    evidence = _provider_usage_evidence(
+        provider_kind="openrouter",
+        usage={
+            "prompt_tokens": 12,
+            "completion_tokens": float("inf"),
+            "total_tokens": -1,
+            "cost": float("nan"),
+            "total_cost": 0.25,
+            "is_byok": False,
+            "secret": {"api_key": "must-not-survive"},
+            "prompt_tokens_details": {
+                "cached_tokens": 3,
+                "cache_write_tokens": 4,
+                "cache_creation_input_tokens": 5,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 6,
+                    "private": 999,
+                },
+                "unknown_detail": 999,
+            },
+            "server_tool_use": {
+                "web_search": 2,
+                "negative": -1,
+                "infinite": float("inf"),
+            },
+        },
+        router_metadata={
+            "requested": "x" * 513,
+            "strategy": "direct",
+            "is_byok": False,
+            "summary": "must-not-survive",
+            "attempts": [
+                {
+                    "provider": "OpenAI",
+                    "model": "openai/gpt",
+                    "status": 200,
+                    "private": {"api_key": "must-not-survive"},
+                }
+                for _ in range(40)
+            ],
+        },
+        response_ids=[f"gen-{index}" for index in range(40)] + ["x" * 513],
+    )
+
+    assert evidence["prompt_tokens"] == 12
+    assert evidence["provider_reported_cost"] == 0.25
+    assert evidence["is_byok"] is False
+    assert evidence["prompt_tokens_details"] == {
+        "cached_tokens": 3,
+        "cache_write_tokens": 4,
+        "cache_creation_input_tokens": 5,
+        "cache_creation": {"ephemeral_5m_input_tokens": 6},
+    }
+    assert evidence["server_tool_use"] == {"web_search": 2}
+    assert "completion_tokens" not in evidence
+    assert "total_tokens" not in evidence
+    assert "secret" not in evidence
+    assert "requested" not in evidence["router_metadata"]
+    assert "summary" not in evidence["router_metadata"]
+    assert len(evidence["router_metadata"]["attempts"]) == 32
+    assert len(evidence["response_ids"]) == 32
+    assert "must-not-survive" not in json.dumps(evidence, sort_keys=True)
 
 
 def test_stream_fallback_retains_unknown_physical_request() -> None:

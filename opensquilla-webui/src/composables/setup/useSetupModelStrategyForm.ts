@@ -39,6 +39,10 @@ export function useSetupModelStrategyForm(
 
   function setStrategy(next: ModelStrategy) {
     if (next === 'ensemble') {
+      // Re-selecting the already-active card is a no-op. Hidden config-only
+      // modes (notably router_tree_baseline) must not be normalized to a visible
+      // preset merely because the user clicked the selected strategy card.
+      if (activeStrategy.value === 'ensemble') return
       routerForm.setRouterMode('disabled')
       ensembleForm.setEnabled(true)
       // Providers with an official preset land on it; every other provider

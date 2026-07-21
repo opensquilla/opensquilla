@@ -54,6 +54,7 @@ interface EnsemblePanelContract {
   activeModel?: string
   selectionMode: string
   scheme: EnsembleScheme
+  legacyMigratable: boolean
   schemeCardsAvailable: boolean
   modelOptions: string[]
   candidates: readonly { provider: string; model: string; source?: string; enabled?: boolean; role?: string }[]
@@ -530,8 +531,12 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           class="setup-model-strategy__notice setup-model-strategy__notice--legacy"
           data-testid="ensemble-legacy-banner"
         >
-          <span>{{ t('setup.modelStrategy.legacyDynamicNotice') }}</span>
+          <span v-if="panel.ensemble.legacyMigratable">{{ t('setup.modelStrategy.legacyDynamicNotice') }}</span>
+          <span v-else>
+            <code>{{ panel.ensemble.selectionMode }}</code> · {{ t('setup.modelStrategy.presetReadOnlyHint') }}
+          </span>
           <button
+            v-if="panel.ensemble.legacyMigratable"
             type="button"
             class="btn"
             data-testid="ensemble-migrate-legacy"

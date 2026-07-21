@@ -1297,6 +1297,8 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
     assert done.output_tokens == 10
     assert done.model_usage_breakdown[-1]["role"] == "fallback_single"
     assert done.model_usage_breakdown[-1]["provider"] == "deepseek"
+    assert done.model_usage_breakdown[-1]["model"] == "single"
+    assert done.model_usage_breakdown[-1]["requested_model"] == "deepseek-chat"
     assert done.ensemble_trace is not None
     assert done.ensemble_trace["fallback_used"] is True
     assert done.ensemble_trace["llm_request_count"] == 3
@@ -1304,6 +1306,13 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
     assert done.ensemble_trace["final_request"]["role"] == "fallback_single"
     assert done.ensemble_trace["final_request"]["request_started"] is True
     assert done.ensemble_trace["final_request"]["output"]["text"] == "single"
+    # Feedback attribution consumes execution.model and must retain the
+    # configured registry identity.  The provider-reported alias belongs only
+    # in usage/executed-model evidence.
+    assert done.ensemble_trace["final_request"]["execution"]["model"] == (
+        "deepseek-chat"
+    )
+    assert done.ensemble_trace["final_request"]["execution"]["provider"] == "deepseek"
     assert done.ensemble_trace["final_request"]["usage"]["model"] == "single"
 
 

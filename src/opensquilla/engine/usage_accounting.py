@@ -466,12 +466,19 @@ def _item_from_row(
         else row.get("cached_tokens")
     )
     cache_write_tokens = _usage_int(row.get("cache_write_tokens"))
-    billed = _usage_float(row.get("billed_cost"))
+    reported_source = str(row.get("cost_source") or "none").strip().lower()
+    # A positive number is not, by itself, proof of a provider bill.  In
+    # particular OpenRouter exposes a reported cost for BYOK and for responses
+    # whose BYOK status is absent.  Only the provider adapter's explicit
+    # ``provider_billed`` attestation may enter the exact billed ledger bucket.
+    trusted_provider_bill = reported_source == "provider_billed"
+    reported_billed = _usage_float(row.get("billed_cost"))
+    billed = reported_billed if trusted_provider_bill else 0.0
 
     estimate_usd = 0.0
     estimate_basis: str | None = None
     price_source: str | None = None
-    if billed <= 0.0:
+    if not trusted_provider_bill and reported_source != "free":
         resolved = resolve_model_price(model, provider)
         estimate = estimate_cost(
             input_tokens=input_tokens,
@@ -486,7 +493,11 @@ def _item_from_row(
 
     billed_nanos = usd_to_nanos(billed)
     estimated_nanos = usd_to_nanos(estimate_usd)
-    if billed_nanos and estimated_nanos:
+    if trusted_provider_bill:
+        # Explicit zero-dollar receipts are still exact.  Do not replace them
+        # with a list-price estimate merely because ``billed_cost`` is zero.
+        source = "provider_billed"
+    elif billed_nanos and estimated_nanos:
         source = "mixed"
     elif billed_nanos:
         source = "provider_billed"
@@ -495,7 +506,7 @@ def _item_from_row(
     elif estimate_basis == "free":
         source = "free"
     else:
-        source = str(row.get("cost_source") or "unavailable")
+        source = reported_source or "unavailable"
         if source == "none":
             source = "unavailable"
 
@@ -569,13 +580,24 @@ def normalize_provider_usage(
     )
     billed_nanos = sum(item.billed_cost_nanos for item in items)
     estimated_nanos = sum(item.estimated_cost_nanos for item in items)
-    if billed_nanos and estimated_nanos:
+    item_sources = {item.cost_source for item in items}
+    known_sources = item_sources & {
+        "provider_billed",
+        "opensquilla_estimate",
+        "free",
+    }
+    has_unknown_source = bool(item_sources - known_sources)
+    if has_unknown_source and known_sources:
         cost_source = "mixed"
-    elif billed_nanos:
+    elif has_unknown_source:
+        cost_source = "unavailable"
+    elif len(known_sources) > 1:
+        cost_source = "mixed"
+    elif known_sources == {"provider_billed"}:
         cost_source = "provider_billed"
-    elif estimated_nanos:
+    elif known_sources == {"opensquilla_estimate"}:
         cost_source = "opensquilla_estimate"
-    elif items and all(item.cost_source == "free" for item in items):
+    elif known_sources == {"free"}:
         cost_source = "free"
     else:
         cost_source = "unavailable"

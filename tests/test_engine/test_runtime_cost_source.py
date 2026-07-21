@@ -97,6 +97,7 @@ async def test_runtime_persists_billed_and_estimated_cost_source_rollup() -> Non
                 input_tokens=100,
                 output_tokens=10,
                 billed_cost=0.004,
+                cost_source="provider_billed",
                 model="claude-opus-4-7",
             ),
             ProviderDone(
@@ -164,6 +165,7 @@ async def test_runtime_persists_usage_before_yielding_terminal_error() -> None:
                 reasoning_tokens=2,
                 reasoning_content="internal reasoning",
                 billed_cost=0.004,
+                cost_source="provider_billed",
                 model="claude-opus-4-7",
             )
         ]

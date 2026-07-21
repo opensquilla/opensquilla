@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.gateway.config import (
-    GatewayConfig,
     LEGACY_OPENROUTER_MODEL_OPTIONS,
+    GatewayConfig,
     LlmProviderConfig,
     MemoryEmbeddingConfig,
     SlackChannelEntry,

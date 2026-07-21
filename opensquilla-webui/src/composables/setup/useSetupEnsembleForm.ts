@@ -10,16 +10,19 @@ import { computed, ref, type ComputedRef } from 'vue'
 // - "preset": the provider's fixed B5 lineup (OpenRouter / TokenRhythm only).
 // - "custom": an explicit user-authored lineup saved as selection_mode
 //   "custom_b5" (roles per candidate, single aggregator).
-// The legacy "router_dynamic" mode is read-compatible but hidden: stored
-// configs surface a migration banner that converts them to a custom lineup.
+// The legacy dynamic modes are read-compatible but hidden. router_dynamic can
+// be migrated to a custom lineup; the frozen tree baseline is config-only and
+// remains read-only in Settings.
 
 export const CUSTOM_B5_SELECTION_MODE = 'custom_b5'
+export const TREE_BASELINE_SELECTION_MODE = 'router_tree_baseline'
 
 export const ENSEMBLE_SELECTION_MODES = [
   'static_openrouter_b5',
   'static_tokenrhythm_b5',
   CUSTOM_B5_SELECTION_MODE,
   'router_dynamic',
+  TREE_BASELINE_SELECTION_MODE,
 ] as const
 export const ENSEMBLE_ALL_FAILED_POLICIES = ['fallback_single', 'error'] as const
 
@@ -856,6 +859,7 @@ export function useSetupEnsembleForm() {
 
       const scheme: EnsembleScheme = (
         selectionMode.value === 'router_dynamic'
+        || selectionMode.value === TREE_BASELINE_SELECTION_MODE
           ? 'legacy'
           : selectionMode.value === CUSTOM_B5_SELECTION_MODE
             ? 'custom'
@@ -880,9 +884,22 @@ export function useSetupEnsembleForm() {
           true,
           normalizeCandidateRole(candidate.role),
         ))
-      const legacyCandidates = legacyDefaultModelOptions(modelOptions.value)
+      // The frozen tree baseline treats an omitted/empty model_options list as
+      // the shipped legacy OpenRouter pool. Mirror that effective runtime
+      // configuration in the read-only panel instead of presenting an empty
+      // ensemble while the backend still executes the default members.
+      const effectiveLegacyModelOptions = (
+        selectionMode.value === TREE_BASELINE_SELECTION_MODE
+        && modelOptions.value.length === 0
+      )
+        ? LEGACY_OPENROUTER_MODEL_OPTIONS
+        : modelOptions.value
+      const legacyCandidates = (
+        legacyDefaultModelOptions(effectiveLegacyModelOptions)
+        && selectionMode.value !== TREE_BASELINE_SELECTION_MODE
+      )
         ? []
-        : modelOptions.value.map((model) => {
+        : effectiveLegacyModelOptions.map((model) => {
           const provider = model.includes('/') ? 'openrouter' : activeProvider
           return withCredential(provider, model, 'legacy_model_options', credentialStatus)
         })
@@ -939,6 +956,7 @@ export function useSetupEnsembleForm() {
         activeModel,
         selectionMode: selectionMode.value,
         scheme,
+        legacyMigratable: selectionMode.value === 'router_dynamic',
         schemeCardsAvailable: providerStaticMode !== null,
         modelOptions: [...modelOptions.value],
         candidates: candidates.value.map(candidate => ({ ...candidate })),
@@ -958,7 +976,9 @@ export function useSetupEnsembleForm() {
         minSuccessfulProposers: minSuccessfulProposers.value,
         allFailedPolicy: allFailedPolicy.value,
         showModelOptions: scheme !== 'preset',
-        showCandidateEditor: scheme === 'custom' || scheme === 'legacy',
+        showCandidateEditor: (
+          scheme === 'custom' || selectionMode.value === 'router_dynamic'
+        ),
         showOpenrouterHint: false,
         advancedOpen: (
           minSuccessfulProposers.value !== DEFAULT_MIN_SUCCESSFUL_PROPOSERS

@@ -19,6 +19,7 @@ import {
   CUSTOM_B5_SELECTION_MODE,
   LEGACY_OPENROUTER_MODEL_OPTIONS,
   STATIC_B5_PROFILES,
+  TREE_BASELINE_SELECTION_MODE,
   staticB5ModeForProvider,
   useSetupEnsembleForm,
   type EnsembleCandidateConfig,
@@ -1149,6 +1150,28 @@ const ensembleProviderIds = computed(() => {
     for (const candidate of ensemble.candidates || []) {
       if (candidate.enabled === false) continue
       add(candidate.provider)
+    }
+    return providers
+  }
+
+  if (selectionMode === TREE_BASELINE_SELECTION_MODE) {
+    for (const candidate of ensemble.candidates || []) {
+      if (candidate.enabled === false) continue
+      add(candidate.provider || currentProvider.value)
+    }
+    for (const tier of Object.values(config.value.squilla_router?.tiers || {})) {
+      add(tier.provider || currentProvider.value)
+    }
+    // The frozen baseline's shipped pool is the legacy OpenRouter list. An
+    // explicit non-empty model_options list replaces it but follows the same
+    // slash-id provider convention as the backend selector.
+    const modelOptions = (ensemble.model_options || []).length
+      ? ensemble.model_options || []
+      : LEGACY_OPENROUTER_MODEL_OPTIONS
+    for (const model of modelOptions) {
+      const modelId = String(model || '').trim()
+      if (!modelId) continue
+      add(modelId.includes('/') ? 'openrouter' : currentProvider.value)
     }
     return providers
   }

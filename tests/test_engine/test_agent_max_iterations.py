@@ -132,6 +132,7 @@ class _DoneUsageProvider:
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             billed_cost=self.billed_cost,
+            cost_source=("provider_billed" if self.billed_cost > 0 else "none"),
         )
 
     async def list_models(self) -> list[Any]:

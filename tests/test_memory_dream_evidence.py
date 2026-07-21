@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def test_update_promotion_evidence_creates_store(tmp_path: Path) -> None:
 
     path = promotion_evidence_path(tmp_path)
     assert path.exists()
-    assert store.version == 1
+    assert store.version == 2
     assert len(store.entries) == 1
     entry = next(iter(store.entries.values()))
     assert entry.seen_count == 1
@@ -46,7 +47,9 @@ def test_update_promotion_evidence_creates_store(tmp_path: Path) -> None:
     assert entry.status == "candidate"
 
 
-def test_update_promotion_evidence_accumulates_seen_count(tmp_path: Path) -> None:
+def test_update_promotion_evidence_does_not_recount_same_source_occurrence(
+    tmp_path: Path,
+) -> None:
     candidate = _candidate()
     update_promotion_evidence(tmp_path, [candidate], now_iso="2026-05-22T00:00:00Z")
     store = update_promotion_evidence(
@@ -54,8 +57,8 @@ def test_update_promotion_evidence_accumulates_seen_count(tmp_path: Path) -> Non
     )
 
     entry = next(iter(store.entries.values()))
-    assert entry.seen_count == 2
-    assert entry.positive_signal_count == 2
+    assert entry.seen_count == 1
+    assert entry.positive_signal_count == 1
     assert entry.first_seen_at == "2026-05-22T00:00:00Z"
     assert entry.last_seen_at == "2026-05-22T01:00:00Z"
 
@@ -148,6 +151,121 @@ def test_scan_splits_routing_preference_log_per_line(tmp_path: Path) -> None:
     assert by_signal == {"positive", "correction"}
     # Distinct claims → distinct dedup keys, so they accrue evidence independently.
     assert len({candidate.claim_sha256 for candidate in candidates}) == 2
+
+
+def test_rescanning_appended_preference_log_counts_only_new_occurrences(
+    tmp_path: Path,
+) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    note = memory_dir / "routing-preferences.md"
+    avoided = "- do not route to `model:openai/gpt-6`"
+    preferred = "- prefers routing to `model:x-ai/grok-4.5`"
+    note.write_text(avoided + "\n", encoding="utf-8")
+
+    first = scan_dream_candidates(
+        tmp_path, cursor=0.0, max_batch_size=10, agent_id="main"
+    )
+    update_promotion_evidence(
+        tmp_path,
+        first,
+        now_iso="2026-05-22T00:00:00Z",
+    )
+
+    # A later append makes the whole file eligible again.  The old avoidance
+    # line must not acquire fake recurrence merely because another model was
+    # rated; only the newly appended occurrence is new evidence.
+    with note.open("a", encoding="utf-8") as handle:
+        handle.write(preferred + "\n")
+    second = scan_dream_candidates(
+        tmp_path, cursor=0.0, max_batch_size=10, agent_id="main"
+    )
+    store = update_promotion_evidence(
+        tmp_path,
+        second,
+        now_iso="2026-05-22T01:00:00Z",
+    )
+    by_snippet = {entry.snippet: entry for entry in store.entries.values()}
+    assert by_snippet[avoided].seen_count == 1
+    assert by_snippet[avoided].correction_signal_count == 1
+    assert by_snippet[preferred].seen_count == 1
+    assert by_snippet[preferred].positive_signal_count == 1
+
+    # An actually repeated identical thumb is a distinct occurrence and counts
+    # once, while the two historical lines remain deduplicated.
+    with note.open("a", encoding="utf-8") as handle:
+        handle.write(avoided + "\n")
+    third = scan_dream_candidates(
+        tmp_path, cursor=0.0, max_batch_size=10, agent_id="main"
+    )
+    store = update_promotion_evidence(
+        tmp_path,
+        third,
+        now_iso="2026-05-22T02:00:00Z",
+    )
+    by_snippet = {entry.snippet: entry for entry in store.entries.values()}
+    assert by_snippet[avoided].seen_count == 2
+    assert by_snippet[avoided].correction_signal_count == 2
+    assert by_snippet[preferred].seen_count == 1
+    assert by_snippet[preferred].positive_signal_count == 1
+
+
+def test_v1_store_migration_maps_legacy_occurrences_without_recounting(
+    tmp_path: Path,
+) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    note = memory_dir / "routing-preferences.md"
+    line = "- prefers routing to `model:x-ai/grok-4.5`"
+    note.write_text(line + "\n" + line + "\n", encoding="utf-8")
+    candidates = scan_dream_candidates(
+        tmp_path, cursor=0.0, max_batch_size=10, agent_id="main"
+    )
+    initial = update_promotion_evidence(
+        tmp_path,
+        candidates,
+        now_iso="2026-05-22T00:00:00Z",
+    )
+    initial_entry = next(iter(initial.entries.values()))
+    assert initial_entry.seen_count == 2
+
+    # Simulate the released v1 shape: aggregate counts, but no occurrence ids.
+    path = promotion_evidence_path(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["version"] = 1
+    for raw_entry in payload["entries"].values():
+        raw_entry.pop("observed_occurrence_ids", None)
+        raw_entry.pop("legacy_unmapped_occurrence_count", None)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    migrated = update_promotion_evidence(
+        tmp_path,
+        candidates,
+        now_iso="2026-05-22T01:00:00Z",
+    )
+    migrated_entry = next(iter(migrated.entries.values()))
+    assert migrated.version == 2
+    assert migrated_entry.seen_count == 2
+    assert migrated_entry.positive_signal_count == 2
+    assert migrated_entry.legacy_unmapped_occurrence_count == 0
+    assert len(migrated_entry.observed_occurrence_ids) == 2
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 2
+
+    # A genuinely new third occurrence increments after the v1 watermark has
+    # been fully mapped.
+    with note.open("a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
+    replay = scan_dream_candidates(
+        tmp_path, cursor=0.0, max_batch_size=10, agent_id="main"
+    )
+    updated = update_promotion_evidence(
+        tmp_path,
+        replay,
+        now_iso="2026-05-22T02:00:00Z",
+    )
+    updated_entry = next(iter(updated.entries.values()))
+    assert updated_entry.seen_count == 3
+    assert updated_entry.positive_signal_count == 3
 
 
 def test_scan_does_not_split_equal_mtime_boundary(tmp_path: Path) -> None:

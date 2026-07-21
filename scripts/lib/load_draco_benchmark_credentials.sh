@@ -6,8 +6,13 @@
 load_draco_benchmark_credentials() {
   umask 077
 
-  local openrouter_secret_file="${OPENSQUILLA_OPENROUTER_SECRET_FILE:-/home/codex/.config/opensquilla/secrets/openrouter.key}"
-  local brave_env_file="${OPENSQUILLA_BRAVE_ENV_FILE:-/home/codex/code/opensquilla/.local-state/brave.env}"
+  local config_home="${XDG_CONFIG_HOME:-${HOME:?HOME is required}/.config}"
+  local loader_dir repo reference_repo
+  loader_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  repo="${OPENSQUILLA_REPO:-$(cd "$loader_dir/../.." && pwd)}"
+  reference_repo="${OPENSQUILLA_REFERENCE_REPO:-$(dirname "$repo")/opensquilla}"
+  local openrouter_secret_file="${OPENSQUILLA_OPENROUTER_SECRET_FILE:-$config_home/opensquilla/secrets/openrouter.key}"
+  local brave_env_file="${OPENSQUILLA_BRAVE_ENV_FILE:-$reference_repo/.local-state/brave.env}"
 
   _validate_draco_secret_file() {
     local path="$1"

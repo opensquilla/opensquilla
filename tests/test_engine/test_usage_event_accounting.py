@@ -11,6 +11,7 @@ from opensquilla.engine import Agent, AgentConfig, SubagentSpec
 from opensquilla.engine.outcome import outcome_from_error
 from opensquilla.engine.pricing import PriceEntry, ResolvedModelPrice
 from opensquilla.engine.runtime import TurnRunner, _SelectorFallbackProvider
+from opensquilla.engine.types import DoneEvent as AgentDone
 from opensquilla.engine.types import ErrorEvent
 from opensquilla.engine.usage_accounting import (
     UsageAccountingScope,
@@ -394,6 +395,142 @@ async def test_retried_done_calls_get_monotonic_distinct_identities() -> None:
     assert sink.unknown == []
 
 
+@pytest.mark.asyncio
+async def test_agent_does_not_promote_unverified_provider_cost_to_billed() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="ok"),
+                ProviderDone(
+                    input_tokens=10,
+                    output_tokens=2,
+                    billed_cost=99.0,
+                    cost_source="provider_billed_unverified",
+                    model="model-a",
+                ),
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=1, provider_id="openrouter", model_id="model-a"),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+    done = next(event for event in events if isinstance(event, AgentDone))
+
+    assert done.billed_cost == 0.0
+    assert done.cost_source != "provider_billed"
+
+
+@pytest.mark.asyncio
+async def test_agent_mixed_breakdown_keeps_exact_rows_without_washing_unverified_cost() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderText(text="ok"),
+                ProviderDone(
+                    input_tokens=30,
+                    output_tokens=5,
+                    billed_cost=0.75,
+                    cost_source="mixed",
+                    model="ensemble",
+                    model_usage_breakdown=[
+                        {
+                            "provider": "openrouter",
+                            "model": "model-exact",
+                            "input_tokens": 10,
+                            "output_tokens": 2,
+                            "billed_cost": 0.25,
+                            "cost_source": "provider_billed",
+                        },
+                        {
+                            "provider": "openrouter",
+                            "model": "model-unverified",
+                            "input_tokens": 20,
+                            "output_tokens": 3,
+                            "billed_cost": 0.50,
+                            "cost_source": "provider_billed_unverified",
+                        },
+                    ],
+                ),
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(max_iterations=1, provider_id="openrouter", model_id="ensemble"),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+    done = next(event for event in events if isinstance(event, AgentDone))
+    by_model = {row["model"]: row for row in done.model_usage_breakdown}
+
+    assert done.billed_cost == pytest.approx(0.25)
+    assert by_model["model-exact"]["billed_cost"] == pytest.approx(0.25)
+    assert by_model["model-unverified"]["billed_cost"] == 0.0
+    assert by_model["model-unverified"]["billed_cost_usd"] == 0.0
+    assert by_model["model-unverified"]["cost_source"] != "provider_billed"
+
+
+@pytest.mark.asyncio
+async def test_agent_known_error_receipt_is_retained_in_totals_and_llm_error_log() -> None:
+    provider = _SequenceProvider(
+        [
+            [
+                ProviderError(
+                    message="rate limited after completion",
+                    code="429",
+                    model_usage_breakdown=[
+                        {
+                            "provider": "openrouter",
+                            "model": "model-a",
+                            "input_tokens": 12,
+                            "output_tokens": 3,
+                            "billed_cost": 0.25,
+                            "cost_source": "provider_billed",
+                            "provider_usage": {
+                                "is_byok": False,
+                                "provider_reported_cost": 0.25,
+                                "response_ids": ["failed-call-1"],
+                                "router_metadata": {"is_byok": False},
+                            },
+                        }
+                    ],
+                    usage_missing_count=0,
+                )
+            ]
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            max_provider_retries=0,
+            provider_id="openrouter",
+            model_id="model-a",
+        ),
+    )
+    call_logs: list[tuple[str, dict[str, Any]]] = []
+    agent._write_turn_call_log = (  # type: ignore[method-assign]
+        lambda kind, **payload: call_logs.append((kind, payload))
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+    done = next(event for event in events if isinstance(event, AgentDone))
+    error_log = next(payload for kind, payload in call_logs if kind == "llm_error")
+
+    assert done.input_tokens == 12
+    assert done.output_tokens == 3
+    assert done.billed_cost == pytest.approx(0.25)
+    assert done.model_usage_breakdown[0]["model"] == "model-a"
+    assert error_log["usage"]["input_tokens"] == 12
+    assert error_log["usage"]["billed_cost"] == pytest.approx(0.25)
+    assert error_log["usage"]["model_usage_breakdown"][0]["provider_usage"][
+        "response_ids"
+    ] == ["failed-call-1"]
+
+
 def test_ensemble_breakdown_is_one_envelope_with_items(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "opensquilla.engine.usage_accounting.resolve_model_price",
@@ -413,6 +550,7 @@ def test_ensemble_breakdown_is_one_envelope_with_items(monkeypatch: pytest.Monke
                 "input_tokens": 10,
                 "output_tokens": 2,
                 "billed_cost": 0.5,
+                "cost_source": "provider_billed",
             },
             {
                 "provider": "p2",
@@ -451,12 +589,168 @@ def test_ensemble_breakdown_is_one_envelope_with_items(monkeypatch: pytest.Monke
     )
 
 
+@pytest.mark.parametrize(
+    "untrusted_source",
+    ["provider_billed_unverified", "openrouter_byok"],
+)
+def test_untrusted_provider_cost_never_enters_exact_billed_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+    untrusted_source: str,
+) -> None:
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        lambda model, provider: ResolvedModelPrice(
+            entry=PriceEntry(input_per_m=1.0, output_per_m=2.0),
+            source="test",
+        ),
+    )
+    result = normalize_provider_usage(
+        ProviderDone(
+            input_tokens=1_000_000,
+            output_tokens=0,
+            billed_cost=99.0,
+            cost_source=untrusted_source,
+            model="model-a",
+        ),
+        default_provider="openrouter",
+        default_model="model-a",
+        completed_at_ms=1,
+    )
+
+    assert result.billed_cost_nanos == 0
+    assert result.estimated_cost_nanos == usd_to_nanos("1.0")
+    assert result.cost_source == "opensquilla_estimate"
+    assert result.items[0].cost_source == "opensquilla_estimate"
+
+
+def test_explicit_zero_provider_bill_is_exact_and_not_estimated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        lambda model, provider: ResolvedModelPrice(
+            entry=PriceEntry(input_per_m=1.0, output_per_m=2.0),
+            source="test",
+        ),
+    )
+    result = normalize_provider_usage(
+        ProviderDone(
+            input_tokens=1_000_000,
+            output_tokens=0,
+            billed_cost=0.0,
+            cost_source="provider_billed",
+            model="model-a",
+        ),
+        default_provider="openrouter",
+        default_model="model-a",
+        completed_at_ms=1,
+    )
+
+    assert result.billed_cost_nanos == 0
+    assert result.estimated_cost_nanos == 0
+    assert result.cost_source == "provider_billed"
+    assert result.items[0].cost_source == "provider_billed"
+
+
+def test_distinct_unknown_sources_aggregate_to_unavailable_not_mixed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        lambda model, provider: ResolvedModelPrice(
+            entry=PriceEntry(input_per_m=0.0, output_per_m=0.0),
+            source="missing",
+        ),
+    )
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.estimate_cost",
+        lambda **kwargs: SimpleNamespace(cost_usd=0.0, basis=None),
+    )
+    result = normalize_provider_usage(
+        ProviderDone(
+            input_tokens=3,
+            output_tokens=2,
+            billed_cost=0.0,
+            model_usage_breakdown=[
+                {
+                    "provider": "openrouter",
+                    "model": "model-a",
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "billed_cost": 0.0,
+                    "cost_source": "openrouter_byok",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "model-b",
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "billed_cost": 0.0,
+                    "cost_source": "provider_billed_unverified",
+                },
+            ],
+        ),
+        default_provider="openrouter",
+        default_model="ensemble",
+        completed_at_ms=1,
+    )
+
+    assert result.cost_source == "unavailable"
+
+
+def test_exact_zero_plus_unknown_aggregates_to_mixed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        lambda model, provider: ResolvedModelPrice(
+            entry=PriceEntry(input_per_m=0.0, output_per_m=0.0),
+            source="missing",
+        ),
+    )
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.estimate_cost",
+        lambda **kwargs: SimpleNamespace(cost_usd=0.0, basis=None),
+    )
+    result = normalize_provider_usage(
+        ProviderDone(
+            input_tokens=3,
+            output_tokens=2,
+            billed_cost=0.0,
+            model_usage_breakdown=[
+                {
+                    "provider": "openrouter",
+                    "model": "model-a",
+                    "input_tokens": 1,
+                    "output_tokens": 1,
+                    "billed_cost": 0.0,
+                    "cost_source": "provider_billed",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "model-b",
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "billed_cost": 0.0,
+                    "cost_source": "provider_billed_unverified",
+                },
+            ],
+        ),
+        default_provider="openrouter",
+        default_model="ensemble",
+        completed_at_ms=1,
+    )
+
+    assert result.cost_source == "mixed"
+
+
 def test_incomplete_breakdown_falls_back_to_done_envelope() -> None:
     event = ProviderDone(
         input_tokens=30,
         output_tokens=5,
         cached_tokens=4,
         billed_cost=0.75,
+        cost_source="provider_billed",
         model="aggregate-model",
         model_usage_breakdown=[
             {
@@ -465,6 +759,7 @@ def test_incomplete_breakdown_falls_back_to_done_envelope() -> None:
                 "input_tokens": 10,
                 "output_tokens": 2,
                 "billed_cost": 0.25,
+                "cost_source": "provider_billed",
             }
         ],
     )
@@ -495,6 +790,7 @@ def test_partial_ensemble_error_preserves_known_items_and_missing_coverage() -> 
                 "input_tokens": 10,
                 "output_tokens": 2,
                 "billed_cost": 0.25,
+                "cost_source": "provider_billed",
             }
         ],
         usage_missing_count=1,
@@ -524,6 +820,7 @@ def test_complete_ensemble_error_preserves_known_items_without_missing_coverage(
                 "input_tokens": 10,
                 "output_tokens": 2,
                 "billed_cost": 0.25,
+                "cost_source": "provider_billed",
             }
         ],
         usage_missing_count=0,
@@ -558,6 +855,7 @@ async def test_partial_ensemble_error_finalizes_outer_call_instead_of_unknown() 
                     "input_tokens": 4,
                     "output_tokens": 2,
                     "billed_cost": 0.1,
+                    "cost_source": "provider_billed",
                 }
             ],
             usage_missing_count=2,
@@ -595,6 +893,7 @@ async def test_complete_ensemble_error_finalizes_outer_call_instead_of_unknown()
                     "input_tokens": 4,
                     "output_tokens": 2,
                     "billed_cost": 0.1,
+                    "cost_source": "provider_billed",
                 }
             ],
             usage_missing_count=0,
@@ -632,6 +931,7 @@ async def test_agent_finalizes_partial_error_with_a_known_receipt() -> None:
                             "input_tokens": 4,
                             "output_tokens": 2,
                             "billed_cost": 0.1,
+                            "cost_source": "provider_billed",
                         }
                     ],
                     usage_missing_count=1,
@@ -741,6 +1041,7 @@ async def test_selector_fallback_accounts_each_physical_leg_without_outer_duplic
                 input_tokens=7,
                 output_tokens=2,
                 billed_cost=0.25,
+                cost_source="provider_billed",
                 model="fallback-model",
             ),
         ],

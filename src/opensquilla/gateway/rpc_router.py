@@ -49,8 +49,8 @@ def _is_router_dynamic_ensemble_decision(record: Mapping[str, Any]) -> bool:
     """Return whether a persisted decision belongs to dynamic ensemble ranking."""
     executed_kind = str(record.get("executed_kind") or "").strip().lower()
     profile = str(record.get("ensemble_profile") or "").strip().lower()
-    return executed_kind == "ensemble" and (
-        profile == "router_dynamic" or profile.startswith("router_dynamic/")
+    return executed_kind == "ensemble" and bool(
+        re.fullmatch(r"router_dynamic(?:/c[0-3])?", profile)
     )
 
 

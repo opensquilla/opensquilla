@@ -44,6 +44,15 @@ def _load_runner():
 runner = _load_runner()
 
 
+def _openrouter_exact_evidence(cost: float, response_id: str) -> dict[str, object]:
+    return {
+        "is_byok": False,
+        "provider_reported_cost": cost,
+        "response_ids": [response_id],
+        "router_metadata": {"is_byok": False},
+    }
+
+
 def _load_resume_runner():
     spec = importlib.util.spec_from_file_location(
         "run_draco_routing_experiment_resume_under_test",
@@ -212,6 +221,44 @@ def test_reasoning_tokens_are_not_double_counted_as_total_tokens() -> None:
 
     assert runner._usage_token_count(usage) == 150
     assert _load_resume_runner()._usage_token_count(usage) == 150
+
+
+@pytest.mark.parametrize("module", [runner, _load_resume_runner()], ids=["main", "resume"])
+def test_task_analyzer_provider_preserves_routing_and_disables_replay(
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    sentinel = object()
+
+    class _Selector:
+        def __init__(self, config) -> None:
+            captured["primary"] = config.primary
+
+        def resolve(self):
+            return sentinel
+
+    monkeypatch.setattr(module, "ModelSelector", _Selector)
+    routed = ProviderConfig(
+        provider="openrouter",
+        model="original",
+        api_key="fake",
+        base_url="https://openrouter.example/api/v1",
+        provider_routing={"order": ["OpenAI"], "allow_fallbacks": False},
+        replay_provider_state=True,
+    )
+
+    resolved = module.build_task_analyzer_provider(
+        routed,
+        provider_id="openrouter",
+        model_id="openai/gpt-analyzer",
+    )
+    primary = captured["primary"]
+
+    assert resolved is sentinel
+    assert primary.provider_routing == routed.provider_routing
+    assert primary.replay_provider_state is False
+    assert primary.model == "openai/gpt-analyzer"
 
 
 def _openrouter_config() -> tuple[GatewayConfig, ProviderConfig]:
@@ -840,11 +887,13 @@ def test_cost_accounting_includes_judge_and_never_prices_unknown_as_zero() -> No
     generation_usage = {
         "model_usage_breakdown": [
             {
+                "provider": "openrouter",
                 "model": "known",
                 "input_tokens": 100,
                 "output_tokens": 20,
                 "billed_cost": 0.10,
                 "cost_source": "provider_billed",
+                "provider_usage": _openrouter_exact_evidence(0.10, "gen-known"),
             },
             {
                 "model": "unknown",
@@ -861,10 +910,13 @@ def test_cost_accounting_includes_judge_and_never_prices_unknown_as_zero() -> No
             "run": {
                 "llm_request_count": 1,
                 "usage": {
+                    "provider": "openrouter",
+                    "model": "judge-model",
                     "input_tokens": 50,
                     "output_tokens": 5,
                     "billed_cost": 0.03,
                     "cost_source": "provider_billed",
+                    "provider_usage": _openrouter_exact_evidence(0.03, "judge-1"),
                 },
             },
         },
@@ -873,10 +925,13 @@ def test_cost_accounting_includes_judge_and_never_prices_unknown_as_zero() -> No
             "run": {
                 "llm_request_count": 1,
                 "usage": {
+                    "provider": "openrouter",
+                    "model": "judge-model",
                     "input_tokens": 60,
                     "output_tokens": 6,
                     "billed_cost": 0.04,
                     "cost_source": "provider_billed",
+                    "provider_usage": _openrouter_exact_evidence(0.04, "judge-2"),
                 },
             },
         },
@@ -962,6 +1017,116 @@ def test_agent_llm_error_without_usage_is_counted_as_unknown_cost() -> None:
     assert accounting["cost_exact"] is False
 
 
+def test_estimated_and_mixed_usage_record_their_actual_cost_fields() -> None:
+    accounting = runner.usage_cost_accounting(
+        {
+            "model_usage_breakdown": [
+                {
+                    "provider": "openrouter",
+                    "model": "estimated-model",
+                    "input_tokens": 3,
+                    "output_tokens": 1,
+                    "billed_cost": 0.0,
+                    "estimated_cost_usd": 0.40,
+                    "cost_usd": 0.40,
+                    "cost_source": "opensquilla_estimate",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "mixed-model",
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "billed_cost": 0.10,
+                    "billed_cost_usd": 0.10,
+                    "estimated_cost_usd": 0.20,
+                    "cost_usd": 0.30,
+                    "cost_source": "mixed",
+                },
+            ]
+        },
+        expected_requests=2,
+        scope="generation",
+    )
+
+    assert accounting["estimated_request_count"] == 1
+    assert accounting["mixed_request_count"] == 1
+    assert accounting["recorded_cost_usd"] == pytest.approx(0.70)
+
+
+def test_agent_model_usage_preserves_physical_provider_evidence() -> None:
+    provider_usage = _openrouter_exact_evidence(0.01, "generation-1")
+    breakdown = runner.aggregate_agent_model_usage(
+        [
+            {
+                "kind": "llm_response",
+                "payload": {
+                    "iteration": 1,
+                    "call_attempt": 1,
+                    "usage": {
+                        "provider": "openrouter",
+                        "model": "model-a",
+                        "input_tokens": 3,
+                        "output_tokens": 1,
+                        "billed_cost": 0.01,
+                        "cost_source": "provider_billed",
+                        "provider_usage": provider_usage,
+                    },
+                },
+            }
+        ]
+    )
+
+    assert breakdown[0]["provider"] == "openrouter"
+    assert breakdown[0]["provider_usage"] == provider_usage
+    assert runner.usage_cost_accounting(
+        {"model_usage_breakdown": breakdown},
+        expected_requests=1,
+        scope="generation",
+    )["cost_exact"] is True
+
+
+def test_failed_agent_attempt_synthesizes_diagnostic_usage_from_recorder() -> None:
+    recorder = runner.BenchmarkTurnCallRecorder()
+    recorder.write(
+        "llm_error",
+        {
+            "iteration": 1,
+            "call_attempt": 1,
+            "usage": {
+                "provider": "openrouter",
+                "model": "model-a",
+                "input_tokens": 12,
+                "output_tokens": 3,
+                "billed_cost": 0.25,
+                "cost_source": "provider_billed",
+                "provider_usage": _openrouter_exact_evidence(0.25, "failed-1"),
+            },
+            "error": {"code": "timeout", "message": "timed out"},
+        },
+    )
+
+    done = runner.provider_done_from_agent_done(
+        None,
+        recorder=recorder,
+        fallback_model="model-a",
+    )
+
+    assert done is not None
+    assert done.stop_reason == "error"
+    assert done.input_tokens == 12
+    assert done.output_tokens == 3
+    assert done.billed_cost == pytest.approx(0.25)
+    assert done.provider_usage["diagnostic_usage_only"] is True
+    assert done.model_usage_breakdown[0]["provider_usage"]["response_ids"] == [
+        "failed-1"
+    ]
+    assert runner.usage_cost_accounting(
+        runner.done_payload(done),
+        expected_requests=1,
+        scope="generation",
+    )["cost_exact"] is True
+
+
 def test_main_and_resume_share_identical_critical_runtime_functions() -> None:
     resume_runner = _load_resume_runner()
     critical = (
@@ -972,6 +1137,10 @@ def test_main_and_resume_share_identical_critical_runtime_functions() -> None:
         "build_local_web_tool_registry",
         "build_benchmark_tool_context",
         "run_local_web_tools_preflight",
+        "build_task_analyzer_provider",
+        "_openrouter_non_byok_receipt_is_exact",
+        "_first_usage_cost",
+        "_mixed_usage_cost",
         "usage_cost_accounting",
         "merge_cost_accounting",
         "row_cost_accounting",
@@ -1103,12 +1272,15 @@ def test_resume_requires_recomputed_non_byok_cost_evidence() -> None:
 
     exact = {
         **base,
-        "cost_accounting": {
-            "llm_total": {
-                "cost_exact": True,
-                "request_count": 1,
-                "exact_request_count": 1,
-            }
+        "llm_request_count": 1,
+        "usage": {
+            "provider": "openrouter",
+            "model": "model-a",
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "billed_cost": 0.01,
+            "cost_source": "provider_billed",
+            "provider_usage": _openrouter_exact_evidence(0.01, "resume-1"),
         },
     }
     exact["openrouter_non_byok_audit"] = resume_runner.openrouter_non_byok_audit(
@@ -1289,6 +1461,30 @@ def test_task_input_hash_covers_rubric_not_only_prompt() -> None:
 
 def test_openrouter_non_byok_audit_fails_closed() -> None:
     exact = {
+        "llm_request_count": 2,
+        "usage": {
+            "model_usage_breakdown": [
+                {
+                    "provider": "openrouter",
+                    "model": "model-a",
+                    "input_tokens": 3,
+                    "output_tokens": 1,
+                    "billed_cost": 0.01,
+                    "cost_source": "provider_billed",
+                    "provider_usage": _openrouter_exact_evidence(0.01, "exact-1"),
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "model-b",
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "billed_cost": 0.02,
+                    "cost_source": "provider_billed",
+                    "provider_usage": _openrouter_exact_evidence(0.02, "exact-2"),
+                },
+            ]
+        },
+        # A forged/stale summary must not bypass physical receipt validation.
         "cost_accounting": {
             "llm_total": {
                 "cost_exact": True,
@@ -1298,11 +1494,26 @@ def test_openrouter_non_byok_audit_fails_closed() -> None:
         }
     }
     unverified = {
+        **exact,
+        "usage": {
+            "model_usage_breakdown": [
+                exact["usage"]["model_usage_breakdown"][0],
+                {
+                    **exact["usage"]["model_usage_breakdown"][1],
+                    "provider_usage": {
+                        "is_byok": True,
+                        "provider_reported_cost": 0.02,
+                        "response_ids": ["byok-2"],
+                        "router_metadata": {"is_byok": True},
+                    },
+                },
+            ]
+        },
         "cost_accounting": {
             "llm_total": {
-                "cost_exact": False,
+                "cost_exact": True,
                 "request_count": 2,
-                "exact_request_count": 1,
+                "exact_request_count": 2,
             }
         }
     }
@@ -1313,6 +1524,50 @@ def test_openrouter_non_byok_audit_fails_closed() -> None:
     assert audit["unverified_or_byok_request_count"] == 1
 
 
+@pytest.mark.parametrize("module", [runner, _load_resume_runner()], ids=["main", "resume"])
+def test_openrouter_exact_receipt_requires_billed_and_reported_cost_match(module) -> None:
+    usage = {
+        "provider": "openrouter",
+        "model": "model-a",
+        "input_tokens": 3,
+        "output_tokens": 1,
+        "billed_cost": 0.0,
+        "cost_source": "provider_billed",
+        "provider_usage": _openrouter_exact_evidence(0.25, "mismatch-1"),
+    }
+
+    accounting = module.usage_cost_accounting(
+        usage,
+        expected_requests=1,
+        scope="generation",
+    )
+
+    assert accounting["exact_request_count"] == 0
+    assert accounting["unknown_request_count"] == 1
+    assert accounting["cost_exact"] is False
+
+
+def test_done_payload_keeps_provider_for_single_exact_receipt() -> None:
+    done = runner.DoneEvent(
+        provider="openrouter",
+        model="model-a",
+        input_tokens=3,
+        output_tokens=1,
+        billed_cost=0.25,
+        cost_source="provider_billed",
+        provider_usage=_openrouter_exact_evidence(0.25, "single-1"),
+    )
+
+    payload = runner.done_payload(done)
+
+    assert payload["provider"] == "openrouter"
+    assert runner.usage_cost_accounting(
+        payload,
+        expected_requests=1,
+        scope="generation",
+    )["cost_exact"] is True
+
+
 def test_b2_provider_alignment_pins_effective_member_configuration() -> None:
     config, inherited = _openrouter_config()
     provider = build_ensemble_provider_from_config(
@@ -1321,7 +1576,7 @@ def test_b2_provider_alignment_pins_effective_member_configuration() -> None:
         fallback_provider=None,
     )
     assert provider.min_successful_proposers == 3
-    assert provider.quorum_grace_seconds == 30.0
+    assert provider.quorum_grace_seconds == 5.0
 
     provider = runner.align_b2_provider_to_g12(provider, _experiment_config())
 

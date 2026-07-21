@@ -10,6 +10,7 @@ import re
 import sys
 from collections.abc import AsyncIterator, Iterator, Mapping
 from dataclasses import asdict, replace
+from itertools import islice
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -1059,6 +1060,24 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
+def _reported_usage_cost(usage: Mapping[str, Any] | None) -> float | None:
+    """Return the first finite non-negative provider-reported cost field."""
+
+    if not isinstance(usage, Mapping):
+        return None
+    for key in ("cost", "total_cost"):
+        value = usage.get(key)
+        if key not in usage or value is None or isinstance(value, bool):
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if math.isfinite(parsed) and parsed >= 0.0:
+            return parsed
+    return None
+
+
 def _first_present(*sources: tuple[Mapping[str, Any], str]) -> int:
     """Return the first source[key] that is actually present (key in dict).
 
@@ -1118,7 +1137,7 @@ def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, 
         (prompt_details, "cache_creation_tokens"),
     )
 
-    billed_cost = _coerce_float(usage.get("cost", usage.get("total_cost")))
+    billed_cost = _reported_usage_cost(usage) or 0.0
     return (
         input_tokens,
         output_tokens,
@@ -1145,69 +1164,211 @@ def _openrouter_is_byok(usage: Mapping[str, Any] | None) -> bool | None:
 
 
 def _openrouter_has_explicit_cost(usage: Mapping[str, Any] | None) -> bool:
-    if not isinstance(usage, Mapping):
-        return False
-    for key in ("cost", "total_cost"):
-        if key not in usage or isinstance(usage.get(key), bool):
-            continue
-        try:
-            value = float(usage[key])
-        except (TypeError, ValueError):
-            continue
-        if math.isfinite(value) and value >= 0:
-            return True
-    return False
+    return _reported_usage_cost(usage) is not None
 
 
-def _sanitize_openrouter_metadata(value: Any) -> dict[str, Any]:
-    """Retain only stable, non-prompt router attestation fields."""
+_EVIDENCE_MAX_STRING_CHARS = 512
+_EVIDENCE_MAX_LIST_ITEMS = 32
+_EVIDENCE_MAX_MAP_ITEMS = 64
+_EVIDENCE_MAX_INTEGER = (1 << 63) - 1
+
+
+def _safe_evidence_string(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > _EVIDENCE_MAX_STRING_CHARS:
+        return None
+    return value
+
+
+def _safe_evidence_number(value: Any, *, integer: bool = False) -> int | float | None:
+    """Normalize a bounded, finite, non-negative provider evidence number."""
+
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed) or parsed < 0 or parsed > _EVIDENCE_MAX_INTEGER:
+        return None
+    if integer:
+        if not parsed.is_integer():
+            return None
+        return int(parsed)
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def _safe_evidence_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _sanitize_numeric_mapping(
+    value: Any,
+    *,
+    allowed_keys: tuple[str, ...] | None = None,
+) -> dict[str, int | float]:
+    if not isinstance(value, Mapping):
+        return {}
+    allowed = set(allowed_keys) if allowed_keys is not None else None
+    result: dict[str, int | float] = {}
+    for raw_key, raw_value in islice(value.items(), _EVIDENCE_MAX_MAP_ITEMS):
+        if not isinstance(raw_key, str) or not raw_key or len(raw_key) > 64:
+            continue
+        if allowed is not None and raw_key not in allowed:
+            continue
+        number = _safe_evidence_number(raw_value, integer=True)
+        if number is not None:
+            result[raw_key] = number
+    return result
+
+
+def _sanitize_provider_usage(value: Any) -> dict[str, Any]:
+    """Keep only bounded usage/cost evidence required by accounting.
+
+    Provider payloads are untrusted network input and are later embedded in
+    traces and durable artifacts.  Do not persist additive keys or arbitrary
+    nested objects merely because they appeared under ``usage``.
+    """
 
     if not isinstance(value, Mapping):
         return {}
     result: dict[str, Any] = {}
-    for key in ("requested", "strategy", "attempt", "is_byok", "region"):
-        item = value.get(key)
-        if item is None or isinstance(item, str | int | bool):
+    integer_fields = (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_tokens",
+        "prompt_cache_hit_tokens",
+        "cache_creation_input_tokens",
+        "cache_write_tokens",
+    )
+    for key in integer_fields:
+        number = _safe_evidence_number(value.get(key), integer=True)
+        if number is not None:
+            result[key] = number
+    is_byok = _safe_evidence_bool(value.get("is_byok"))
+    if is_byok is not None:
+        result["is_byok"] = is_byok
+
+    reported_cost = _safe_evidence_number(_reported_usage_cost(value))
+    if reported_cost is not None:
+        # This is evidence reported by the provider, not necessarily a trusted
+        # OpenRouter bill (BYOK and missing-BYOK cases remain non-exact).
+        result["provider_reported_cost"] = reported_cost
+
+    nested_numeric_fields = {
+        "prompt_tokens_details": (
+            "cached_tokens",
+            "cache_creation_tokens",
+            "cache_write_tokens",
+            "cache_creation_input_tokens",
+            "audio_tokens",
+        ),
+        "completion_tokens_details": (
+            "reasoning_tokens",
+            "accepted_prediction_tokens",
+            "rejected_prediction_tokens",
+            "audio_tokens",
+        ),
+        "cache_creation": (
+            "ephemeral_5m_input_tokens",
+            "ephemeral_1h_input_tokens",
+        ),
+    }
+    for key, allowed_keys in nested_numeric_fields.items():
+        sanitized = _sanitize_numeric_mapping(value.get(key), allowed_keys=allowed_keys)
+        if sanitized:
+            result[key] = sanitized
+    prompt_details = value.get("prompt_tokens_details")
+    if isinstance(prompt_details, Mapping):
+        prompt_cache_creation = _sanitize_numeric_mapping(
+            prompt_details.get("cache_creation"),
+            allowed_keys=(
+                "ephemeral_5m_input_tokens",
+                "ephemeral_1h_input_tokens",
+            ),
+        )
+        if prompt_cache_creation:
+            result.setdefault("prompt_tokens_details", {})[
+                "cache_creation"
+            ] = prompt_cache_creation
+    server_tool_use = _sanitize_numeric_mapping(value.get("server_tool_use"))
+    if server_tool_use:
+        result["server_tool_use"] = server_tool_use
+    return result
+
+
+def _sanitize_openrouter_metadata(value: Any) -> dict[str, Any]:
+    """Retain only bounded, stable, non-prompt router attestation fields."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("requested", "strategy", "region"):
+        item = _safe_evidence_string(value.get(key))
+        if item is not None:
             result[key] = item
+    attempt = _safe_evidence_number(value.get("attempt"), integer=True)
+    if attempt is not None:
+        result["attempt"] = attempt
+    is_byok = _safe_evidence_bool(value.get("is_byok"))
+    if is_byok is not None:
+        result["is_byok"] = is_byok
+
+    def sanitized_rows(
+        raw_rows: Any,
+        *,
+        string_keys: tuple[str, ...],
+        bool_keys: tuple[str, ...] = (),
+        integer_keys: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        if not isinstance(raw_rows, list):
+            return []
+        rows: list[dict[str, Any]] = []
+        for raw_row in raw_rows[:_EVIDENCE_MAX_LIST_ITEMS]:
+            if not isinstance(raw_row, Mapping):
+                continue
+            row: dict[str, Any] = {}
+            for key in string_keys:
+                string_item = _safe_evidence_string(raw_row.get(key))
+                if string_item is not None:
+                    row[key] = string_item
+            for key in bool_keys:
+                bool_item = _safe_evidence_bool(raw_row.get(key))
+                if bool_item is not None:
+                    row[key] = bool_item
+            for key in integer_keys:
+                integer_item = _safe_evidence_number(raw_row.get(key), integer=True)
+                if integer_item is not None:
+                    row[key] = integer_item
+            if row:
+                rows.append(row)
+        return rows
+
     endpoints = value.get("endpoints")
     if isinstance(endpoints, Mapping):
-        available = endpoints.get("available")
         result["endpoints"] = {
-            "total": endpoints.get("total"),
-            "available": [
-                {
-                    key: item.get(key)
-                    for key in ("provider", "model", "selected")
-                    if key in item
-                }
-                for item in available
-                if isinstance(item, Mapping)
-            ]
-            if isinstance(available, list)
-            else [],
+            "available": sanitized_rows(
+                endpoints.get("available"),
+                string_keys=("provider", "model"),
+                bool_keys=("selected",),
+            )
         }
-    attempts = value.get("attempts")
-    if isinstance(attempts, list):
-        result["attempts"] = [
-            {
-                key: item.get(key)
-                for key in ("provider", "model", "status")
-                if key in item
-            }
-            for item in attempts
-            if isinstance(item, Mapping)
-        ]
-    pipeline = value.get("pipeline")
-    if isinstance(pipeline, list):
-        result["pipeline"] = [
-            {
-                key: item.get(key)
-                for key in ("type", "name")
-                if key in item
-            }
-            for item in pipeline
-            if isinstance(item, Mapping)
-        ]
+        total = _safe_evidence_number(endpoints.get("total"), integer=True)
+        if total is not None:
+            result["endpoints"]["total"] = total
+    attempts = sanitized_rows(
+        value.get("attempts"),
+        string_keys=("provider", "model"),
+        integer_keys=("status",),
+    )
+    if attempts:
+        result["attempts"] = attempts
+    pipeline = sanitized_rows(
+        value.get("pipeline"),
+        string_keys=("type", "name"),
+    )
+    if pipeline:
+        result["pipeline"] = pipeline
     return result
 
 
@@ -1254,10 +1415,16 @@ def _provider_usage_evidence(
     response_ids: list[str],
     cache_namespace_sha256: str = "",
 ) -> dict[str, Any]:
-    evidence = dict(usage) if isinstance(usage, Mapping) else {}
+    evidence = _sanitize_provider_usage(usage)
     if provider_kind == "openrouter":
         evidence["router_metadata"] = _sanitize_openrouter_metadata(router_metadata)
-        evidence["response_ids"] = sorted({item for item in response_ids if item})
+        evidence["response_ids"] = sorted(
+            {
+                item
+                for item in response_ids[:_EVIDENCE_MAX_LIST_ITEMS]
+                if _safe_evidence_string(item) is not None
+            }
+        )
         if cache_namespace_sha256:
             evidence["cache_namespace_sha256"] = cache_namespace_sha256
     return evidence
@@ -1272,20 +1439,20 @@ def _provider_cost_with_byok_evidence(
 
     ``provider_billed`` now means OpenRouter explicitly returned
     ``is_byok=false`` for this call. A positive cost without that evidence is
-    preserved but marked unverified, while explicit BYOK is never presented as
-    an exact OpenRouter-billed result.
+    retained only in sanitized ``provider_usage`` evidence, while explicit
+    BYOK is never presented as an exact OpenRouter-billed result.
     """
     if provider_kind != "openrouter":
         return _provider_billed_cost(provider_kind, raw_billed_cost)
     is_byok = _openrouter_is_byok(usage)
     if is_byok is True:
-        return raw_billed_cost, "openrouter_byok"
+        return 0.0, "openrouter_byok"
     if is_byok is False:
         if _openrouter_has_explicit_cost(usage):
             return raw_billed_cost, "provider_billed"
-        return raw_billed_cost, "openrouter_billing_unverified"
+        return 0.0, "openrouter_billing_unverified"
     if raw_billed_cost > 0.0:
-        return raw_billed_cost, "provider_billed_unverified"
+        return 0.0, "provider_billed_unverified"
     return 0.0, "openrouter_billing_unverified"
 
 
@@ -3160,8 +3327,11 @@ class OpenAIProvider:
                             )
                             return
                         trace.record_chunk(chunk)
-                        chunk_id = chunk.get("id")
-                        if isinstance(chunk_id, str) and chunk_id:
+                        chunk_id = _safe_evidence_string(chunk.get("id"))
+                        if (
+                            len(response_ids) < _EVIDENCE_MAX_LIST_ITEMS
+                            and chunk_id is not None
+                        ):
                             response_ids.add(chunk_id)
                         chunk_model = chunk.get("model")
                         if chunk_model:
@@ -4755,6 +4925,8 @@ class OpenAIProvider:
         ):
             reasoning_text = _extract_think_tags("".join(assistant_text_parts)) or None
 
+        response_id = _safe_evidence_string(data.get("id"))
+        nonstream_response_ids = [response_id] if response_id is not None else []
         trace.record_response(
             response=data,
             usage={
@@ -4771,7 +4943,7 @@ class OpenAIProvider:
             assistant_text="".join(visible_assistant_text_parts),
             reasoning_content=reasoning_text or None,
             tool_calls=trace_tool_calls,
-            response_ids=[str(data["id"])] if data.get("id") else [],
+            response_ids=nonstream_response_ids,
             metadata={"cache_shape": cache_shape},
         )
         yield DoneEvent(
@@ -4794,7 +4966,7 @@ class OpenAIProvider:
                 provider_kind=self._provider_kind,
                 usage=data.get("usage"),
                 router_metadata=router_metadata,
-                response_ids=[str(data["id"])] if data.get("id") else [],
+                response_ids=nonstream_response_ids,
                 cache_namespace_sha256=cache_namespace_sha256,
             ),
         )

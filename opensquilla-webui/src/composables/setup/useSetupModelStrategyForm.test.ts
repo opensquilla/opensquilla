@@ -24,6 +24,20 @@ describe('useSetupModelStrategyForm', () => {
     expect(strategy.activeStrategy.value).toBe('ensemble')
   })
 
+  it('does not rewrite an active hidden tree-baseline ensemble when reselected', () => {
+    const router = useSetupRouterForm()
+    const ensemble = useSetupEnsembleForm()
+    router.initFromConfig({ enabled: true, tier_profile: 'openrouter' }, {}, 'openrouter')
+    ensemble.initFromConfig({ enabled: true, selection_mode: 'router_tree_baseline' })
+    const strategy = useSetupModelStrategyForm(router, ensemble, computed(() => 'openrouter'))
+
+    strategy.setStrategy('ensemble')
+
+    expect(ensemble.selectionMode.value).toBe('router_tree_baseline')
+    expect(ensemble.isDirty.value).toBe(false)
+    expect(ensemble.payload()).toEqual({})
+  })
+
   it('derives model ensemble over single model when ensemble is enabled', () => {
     const { router, ensemble, strategy } = makeForm()
     router.setRouterMode('disabled')

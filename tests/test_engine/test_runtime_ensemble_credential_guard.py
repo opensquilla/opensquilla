@@ -261,11 +261,11 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
 ) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-synthetic")
     fixed_analyzer_provider = object()
-    provider_builds: list[dict[str, Any]] = []
+    provider_builds: list[ProviderConfig] = []
     analyzer_calls: list[dict[str, Any]] = []
 
-    def fake_build_provider(**kwargs: Any) -> object:
-        provider_builds.append(kwargs)
+    def fake_resolve(selector: Any) -> object:
+        provider_builds.append(selector.current_config)
         return fixed_analyzer_provider
 
     async def fake_analyze_task_with_provider(**kwargs: Any) -> TaskAnalysisResult:
@@ -284,21 +284,20 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
         )
 
     monkeypatch.setattr(
-        "opensquilla.provider.selector.build_provider",
-        fake_build_provider,
+        "opensquilla.provider.selector.ModelSelector.resolve",
+        fake_resolve,
     )
     monkeypatch.setattr(
         "opensquilla.provider.ranking_router.analyze_task_with_provider",
         fake_analyze_task_with_provider,
     )
-    runner = TurnRunner(
-        provider_selector=None,
-        config=_static_b5_config(
-            selection_mode="router_dynamic",
-            ranking_user_profile_generation_enabled=False,
-            ranking_user_profile_enabled=True,
-        ),
+    config = _static_b5_config(
+        selection_mode="router_dynamic",
+        ranking_user_profile_generation_enabled=False,
+        ranking_user_profile_enabled=True,
     )
+    config.llm.provider_routing = {TASK_ANALYZER_MODEL_ID: "anthropic"}
+    runner = TurnRunner(provider_selector=None, config=config)
     selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
 
     turn, provider = await runner._run_pipeline(
@@ -312,16 +311,16 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     )
 
     assert isinstance(provider, EnsembleProvider)
-    assert provider_builds == [
-        {
-            "provider": TASK_ANALYZER_PROVIDER_ID,
-            "model": TASK_ANALYZER_MODEL_ID,
-            "api_key": "sk-or-synthetic",
-            "base_url": "https://openrouter.ai/api/v1",
-            "org_id": "",
-            "proxy": "",
-        }
-    ]
+    assert len(provider_builds) == 1
+    analyzer_config = provider_builds[0]
+    assert analyzer_config.provider == TASK_ANALYZER_PROVIDER_ID
+    assert analyzer_config.model == TASK_ANALYZER_MODEL_ID
+    assert analyzer_config.api_key == "sk-or-synthetic"
+    assert analyzer_config.base_url == "https://openrouter.ai/api/v1"
+    assert analyzer_config.provider_routing == {
+        TASK_ANALYZER_MODEL_ID: "anthropic"
+    }
+    assert analyzer_config.replay_provider_state is False
     assert len(analyzer_calls) == 1
     assert analyzer_calls[0]["provider"] is fixed_analyzer_provider
     assert analyzer_calls[0]["analyzer_provider_id"] == TASK_ANALYZER_PROVIDER_ID

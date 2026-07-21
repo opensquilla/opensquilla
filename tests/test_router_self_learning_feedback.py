@@ -174,7 +174,7 @@ def test_retention_keys_on_rating_ts(tmp_path) -> None:
 
 def test_concurrent_writes_with_prune_lose_nothing(tmp_path) -> None:
     """The write lock serializes append+prune; parallel ratings all survive."""
-    import threading
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import timedelta
 
     # Seed one expired row so every write triggers a real prune rewrite.
@@ -183,11 +183,11 @@ def test_concurrent_writes_with_prune_lose_nothing(tmp_path) -> None:
     def submit(i: int) -> None:
         _write(tmp_path, f"c{i}", "up", turn=i, now=NOW)
 
-    threads = [threading.Thread(target=submit, args=(i,)) for i in range(16)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    # Future.result() (used by map) propagates worker exceptions to the test.
+    # Bare Thread targets only emit a warning, so a failure after append could
+    # otherwise leave all rows present while the test still passes.
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        list(executor.map(submit, range(16)))
 
     fb = load_feedback_map("main", home=tmp_path)
     assert "expired" not in fb

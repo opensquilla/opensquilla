@@ -486,6 +486,9 @@ async def test_profile_application_does_not_implicitly_enable_generation(
         ("ensemble", "custom_b5"),
         ("ensemble", "router_tree_baseline"),
         ("ensemble", "router_dynamic_bad"),
+        ("ensemble", "router_dynamic/"),
+        ("ensemble", "router_dynamic/c9"),
+        ("ensemble", "router_dynamic/custom"),
     ],
 )
 async def test_profile_generation_ignores_non_dynamic_ranking_decisions(

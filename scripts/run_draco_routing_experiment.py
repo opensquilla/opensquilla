@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shlex
 import statistics
@@ -90,7 +91,6 @@ from opensquilla.provider.selector import (
     ModelSelector,
     ProviderConfig,
     SelectorConfig,
-    build_provider,
 )
 from opensquilla.provider.types import (
     ChatConfig,
@@ -2065,6 +2065,23 @@ def build_single_provider(
     return ModelSelector(SelectorConfig(primary=cfg)).resolve()
 
 
+def build_task_analyzer_provider(
+    routed_config: ProviderConfig,
+    *,
+    provider_id: str,
+    model_id: str,
+):
+    """Resolve the analyzer without dropping routing or replay-safety fields."""
+
+    analyzer_cfg = replace(
+        routed_config,
+        provider=provider_id,
+        model=model_id,
+        replay_provider_state=False,
+    )
+    return ModelSelector(SelectorConfig(primary=analyzer_cfg)).resolve()
+
+
 def task_analyzer_usage_row(
     usage: Mapping[str, Any],
     *,
@@ -2073,6 +2090,18 @@ def task_analyzer_usage_row(
     source: str,
     fallback_reason: str,
 ) -> dict[str, Any]:
+    provider_usage = (
+        dict(usage.get("provider_usage"))
+        if isinstance(usage.get("provider_usage"), Mapping)
+        else {}
+    )
+    provider_usage.update(
+        {
+            "task_analysis_source": source,
+            "fallback_reason": fallback_reason,
+            "usage_unknown": not bool(usage),
+        }
+    )
     return {
         "role": "task_analyzer",
         "label": "task_analyzer",
@@ -2085,11 +2114,7 @@ def task_analyzer_usage_row(
         "cache_write_tokens": int(usage.get("cache_write_tokens") or 0),
         "billed_cost": float(usage.get("billed_cost") or 0.0),
         "cost_source": str(usage.get("cost_source") or "none"),
-        "provider_usage": {
-            "task_analysis_source": source,
-            "fallback_reason": fallback_reason,
-            "usage_unknown": not bool(usage),
-        },
+        "provider_usage": provider_usage,
     }
 
 
@@ -2363,19 +2388,10 @@ async def build_experiment_provider(
         )
         user_profile_enabled = bool(ensemble_cfg.ranking_user_profile_enabled)
         user_profile = mock_user_profile(ranking_config) if user_profile_enabled else None
-        analyzer_cfg = replace(
+        analyzer_provider = build_task_analyzer_provider(
             routed_config,
-            provider=TASK_ANALYZER_PROVIDER_ID,
-            model=TASK_ANALYZER_MODEL_ID,
-            replay_provider_state=False,
-        )
-        analyzer_provider = build_provider(
-            provider=analyzer_cfg.provider,
-            model=analyzer_cfg.model,
-            api_key=analyzer_cfg.api_key,
-            base_url=analyzer_cfg.base_url,
-            org_id=analyzer_cfg.org_id,
-            proxy=analyzer_cfg.proxy,
+            provider_id=TASK_ANALYZER_PROVIDER_ID,
+            model_id=TASK_ANALYZER_MODEL_ID,
         )
         task_analysis = await analyze_task_with_provider(
             provider=analyzer_provider,
@@ -2790,6 +2806,7 @@ def aggregate_agent_model_usage(records: list[dict[str, Any]]) -> list[dict[str,
                 "agent_call_index": call_index,
                 "agent_iteration": coerce_metric_int(payload.get("iteration")),
                 "agent_call_attempt": coerce_metric_int(payload.get("call_attempt")),
+                "provider": str(usage.get("provider") or ""),
                 "model": str(usage.get("model") or ""),
                 "input_tokens": coerce_metric_int(usage.get("input_tokens")),
                 "output_tokens": coerce_metric_int(usage.get("output_tokens")),
@@ -2798,6 +2815,11 @@ def aggregate_agent_model_usage(records: list[dict[str, Any]]) -> list[dict[str,
                 "cache_write_tokens": coerce_metric_int(usage.get("cache_write_tokens")),
                 "billed_cost": float(usage.get("billed_cost") or 0.0),
                 "cost_source": str(usage.get("cost_source") or "none"),
+                "provider_usage": (
+                    dict(usage.get("provider_usage"))
+                    if isinstance(usage.get("provider_usage"), Mapping)
+                    else {}
+                ),
             }
         )
     return rows
@@ -2856,10 +2878,58 @@ def provider_done_from_agent_done(
     recorder: BenchmarkTurnCallRecorder,
     fallback_model: str,
 ) -> DoneEvent | None:
-    if done is None:
-        return None
     breakdown = aggregate_agent_model_usage(recorder.records)
     trace = aggregate_agent_ensemble_trace(recorder.records)
+    if done is None:
+        observed_rows = [
+            row
+            for row in breakdown
+            if row.get("role") != "agent_llm_request_unknown"
+        ]
+        if not observed_rows:
+            return None
+        sources = {
+            str(row.get("cost_source") or "none").strip().casefold()
+            for row in breakdown
+        }
+        if sources == {"provider_billed"}:
+            envelope_source = "provider_billed"
+        elif len(sources) == 1:
+            envelope_source = next(iter(sources))
+        else:
+            envelope_source = "mixed"
+        providers = {
+            str(row.get("provider") or "").strip()
+            for row in observed_rows
+            if str(row.get("provider") or "").strip()
+        }
+        return DoneEvent(
+            stop_reason="error",
+            input_tokens=sum(coerce_metric_int(row.get("input_tokens")) for row in breakdown),
+            output_tokens=sum(coerce_metric_int(row.get("output_tokens")) for row in breakdown),
+            reasoning_tokens=sum(
+                coerce_metric_int(row.get("reasoning_tokens")) for row in breakdown
+            ),
+            cached_tokens=sum(coerce_metric_int(row.get("cached_tokens")) for row in breakdown),
+            cache_write_tokens=sum(
+                coerce_metric_int(row.get("cache_write_tokens")) for row in breakdown
+            ),
+            billed_cost=sum(
+                float(row.get("billed_cost") or 0.0)
+                for row in breakdown
+                if str(row.get("cost_source") or "none").strip().casefold()
+                == "provider_billed"
+            ),
+            model=str(observed_rows[-1].get("model") or fallback_model),
+            provider=next(iter(providers)) if len(providers) == 1 else "",
+            cost_source=envelope_source,
+            model_usage_breakdown=breakdown,
+            ensemble_trace=trace,
+            provider_usage={
+                "diagnostic_usage_only": True,
+                "agent_llm_call_count": len(llm_response_records(recorder.records)),
+            },
+        )
     if trace:
         trace["agent_iterations"] = done.iterations
     provider_usage: dict[str, Any] = {
@@ -2873,7 +2943,7 @@ def provider_done_from_agent_done(
         reasoning_content=done.reasoning_content,
         reasoning_tokens=done.reasoning_tokens,
         cached_tokens=done.cached_tokens,
-        billed_cost=done.billed_cost or done.cost_usd,
+        billed_cost=done.billed_cost,
         model=done.model or fallback_model,
         cache_write_tokens=done.cache_write_tokens,
         cost_source=done.cost_source,
@@ -3166,6 +3236,7 @@ def done_payload(done: DoneEvent | None) -> dict[str, Any]:
     if done is None:
         return {}
     payload = {
+        "provider": str(getattr(done, "provider", "") or ""),
         "model": done.model,
         "stop_reason": done.stop_reason,
         "input_tokens": done.input_tokens,
@@ -4284,6 +4355,78 @@ def _usage_token_count(usage: dict[str, Any]) -> int:
     )
 
 
+def _finite_nonnegative_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, int | float)
+        and math.isfinite(float(value))
+        and float(value) >= 0.0
+    )
+
+
+def _openrouter_non_byok_receipt_is_exact(unit: Mapping[str, Any]) -> bool:
+    """Require physical OpenRouter receipt evidence before calling cost exact."""
+
+    if str(unit.get("provider") or "").strip().casefold() != "openrouter":
+        return False
+    provider_usage = unit.get("provider_usage")
+    if not isinstance(provider_usage, Mapping):
+        return False
+    router_metadata = provider_usage.get("router_metadata")
+    response_ids = provider_usage.get("response_ids")
+    billed_cost = unit.get("billed_cost")
+    reported_cost = provider_usage.get("provider_reported_cost")
+    if (
+        isinstance(billed_cost, bool)
+        or not isinstance(billed_cost, int | float)
+        or isinstance(reported_cost, bool)
+        or not isinstance(reported_cost, int | float)
+    ):
+        return False
+    return (
+        provider_usage.get("is_byok") is False
+        and isinstance(router_metadata, Mapping)
+        and router_metadata.get("is_byok") is False
+        and _finite_nonnegative_number(billed_cost)
+        and _finite_nonnegative_number(reported_cost)
+        and round(float(billed_cost) * 1_000_000_000)
+        == round(float(reported_cost) * 1_000_000_000)
+        and isinstance(response_ids, list)
+        and bool(response_ids)
+        and all(
+            isinstance(response_id, str) and bool(response_id.strip())
+            for response_id in response_ids
+        )
+    )
+
+
+def _first_usage_cost(unit: Mapping[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        if key in unit and _finite_nonnegative_number(unit.get(key)):
+            return float(unit[key])
+    return None
+
+
+def _mixed_usage_cost(unit: Mapping[str, Any]) -> float | None:
+    total = _first_usage_cost(unit, "cost_usd", "costUsd")
+    if total is not None:
+        return total
+    billed = _first_usage_cost(
+        unit,
+        "billed_cost_usd",
+        "billedCostUsd",
+        "billed_cost",
+    )
+    estimated = _first_usage_cost(
+        unit,
+        "estimated_cost_usd",
+        "estimatedCostUsd",
+    )
+    if billed is None and estimated is None:
+        return None
+    return (billed or 0.0) + (estimated or 0.0)
+
+
 def usage_cost_accounting(
     usage: Any,
     *,
@@ -4304,20 +4447,31 @@ def usage_cost_accounting(
     recorded_cost = 0.0
     for unit in units:
         source = str(unit.get("cost_source") or "none").strip().casefold()
-        cost = unit.get("billed_cost")
-        has_cost = isinstance(cost, int | float)
-        if source == "provider_billed" and has_cost:
-            category = "exact"
-        elif source.startswith("opensquilla_") and has_cost:
-            category = "estimated"
-        elif source == "mixed" and has_cost:
-            category = "mixed"
+        cost: float | None = None
+        if (
+            source == "provider_billed"
+            and _openrouter_non_byok_receipt_is_exact(unit)
+        ):
+            cost = _first_usage_cost(unit, "billed_cost")
+            category = "exact" if cost is not None else "unknown"
+        elif source.startswith("opensquilla_"):
+            cost = _first_usage_cost(
+                unit,
+                "estimated_cost_usd",
+                "estimatedCostUsd",
+                "cost_usd",
+                "costUsd",
+            )
+            category = "estimated" if cost is not None else "unknown"
+        elif source == "mixed":
+            cost = _mixed_usage_cost(unit)
+            category = "mixed" if cost is not None else "unknown"
         else:
             category = "unknown"
         counts[category] += 1
         tokens[category] += _usage_token_count(unit)
-        if has_cost and category != "unknown":
-            recorded_cost += float(cost)
+        if cost is not None and category != "unknown":
+            recorded_cost += cost
     missing = max(0, request_count - observed)
     counts["unknown"] += missing
     known_requests = counts["exact"] + counts["estimated"] + counts["mixed"]
@@ -4357,8 +4511,7 @@ def usage_cost_accounting(
 
 
 def merge_cost_accounting(scope: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
-    merged = {
-        "scope": scope,
+    merged_numeric: dict[str, int | float] = {
         "request_count": 0,
         "usage_observed_request_count": 0,
         "exact_request_count": 0,
@@ -4373,35 +4526,36 @@ def merge_cost_accounting(scope: str, accounts: list[dict[str, Any]]) -> dict[st
         "recorded_cost_usd": 0.0,
     }
     for account in accounts:
-        for key in tuple(merged):
-            if key == "scope":
-                continue
+        for key in tuple(merged_numeric):
             value = account.get(key)
             if isinstance(value, int | float):
-                merged[key] += value
-    requests = int(merged["request_count"])
-    known_requests = requests - int(merged["unknown_request_count"])
-    total_tokens = int(merged["total_tokens"])
+                merged_numeric[key] += value
+    requests = int(merged_numeric["request_count"])
+    known_requests = requests - int(merged_numeric["unknown_request_count"])
+    total_tokens = int(merged_numeric["total_tokens"])
+    merged: dict[str, Any] = {"scope": scope, **merged_numeric}
     merged.update(
         {
             "known_request_coverage_pct": (
                 known_requests / requests * 100.0 if requests else 100.0
             ),
             "exact_request_coverage_pct": (
-                int(merged["exact_request_count"]) / requests * 100.0
+                int(merged_numeric["exact_request_count"]) / requests * 100.0
                 if requests
                 else 100.0
             ),
             "known_token_coverage_pct": (
-                (total_tokens - int(merged["unknown_tokens"])) / total_tokens * 100.0
+                (total_tokens - int(merged_numeric["unknown_tokens"]))
+                / total_tokens
+                * 100.0
                 if total_tokens
-                else (100.0 if not merged["unknown_request_count"] else 0.0)
+                else (100.0 if not merged_numeric["unknown_request_count"] else 0.0)
             ),
-            "cost_complete": int(merged["unknown_request_count"]) == 0,
+            "cost_complete": int(merged_numeric["unknown_request_count"]) == 0,
             "cost_exact": (
-                int(merged["unknown_request_count"]) == 0
-                and int(merged["estimated_request_count"]) == 0
-                and int(merged["mixed_request_count"]) == 0
+                int(merged_numeric["unknown_request_count"]) == 0
+                and int(merged_numeric["estimated_request_count"]) == 0
+                and int(merged_numeric["mixed_request_count"]) == 0
             ),
         }
     )
@@ -4529,7 +4683,10 @@ def row_cost_accounting(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def openrouter_non_byok_audit(row: dict[str, Any]) -> dict[str, Any]:
-    accounting = row.get("cost_accounting") or row_cost_accounting(row)
+    # Never trust a persisted/derived summary here: recompute from every
+    # physical usage row so stale or forged ``cost_exact`` cannot bypass the
+    # non-BYOK receipt checks above.
+    accounting = row_cost_accounting(row)
     llm_total = accounting.get("llm_total") or {}
     passed = bool(llm_total.get("cost_exact"))
     return {

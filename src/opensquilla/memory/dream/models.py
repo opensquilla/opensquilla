@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+PROMOTION_EVIDENCE_STORE_VERSION = 2
+
 
 @dataclass
 class RawDreamCandidate:
@@ -17,6 +19,11 @@ class RawDreamCandidate:
     claim_sha256: str
     source_day: str | None = None
     signal_kind: str = "neutral"
+    # Stable identity for one occurrence inside its source.  Dream may rescan an
+    # append-only file after its mtime changes; this prevents old lines from
+    # being counted again while still allowing two identical appended lines to
+    # count as two independent observations.
+    source_occurrence_id: str = ""
 
 
 @dataclass
@@ -42,11 +49,16 @@ class PromotionEvidenceEntry:
     promoted_at: str | None = None
     rejected_at: str | None = None
     last_skip_reason: str | None = None
+    observed_occurrence_ids: list[str] = field(default_factory=list)
+    # A v1 store knew only the aggregate seen_count.  During migration this
+    # watermark is consumed as stable occurrence ids are rediscovered, so
+    # replaying old evidence cannot increment the aggregate a second time.
+    legacy_unmapped_occurrence_count: int = 0
 
 
 @dataclass
 class PromotionEvidenceStore:
-    version: int = 1
+    version: int = PROMOTION_EVIDENCE_STORE_VERSION
     updated_at: str = ""
     entries: dict[str, PromotionEvidenceEntry] = field(default_factory=dict)
 

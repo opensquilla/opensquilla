@@ -8,6 +8,11 @@ import pytest
 import structlog.testing
 
 import opensquilla.provider.ranking_router as ranking_router
+from opensquilla.engine.usage_accounting import (
+    UsageAccountingScope,
+    UsageExecutionContext,
+    bind_usage_accounting_scope,
+)
 from opensquilla.provider.ranking_router import (
     CAPABILITIES,
     DOMAINS,
@@ -789,6 +794,12 @@ class _AnalyzerProvider:
                 output_tokens=7,
                 billed_cost=0.012,
                 cost_source="provider_billed",
+                provider_usage={
+                    "is_byok": False,
+                    "provider_reported_cost": 0.012,
+                    "response_ids": ["analyzer-1"],
+                    "router_metadata": {"is_byok": False},
+                },
             )
 
     def chat(
@@ -853,6 +864,58 @@ async def test_task_analyzer_uses_provider_interface_and_validates_json() -> Non
     assert analyzer_payload["allowed_session_intents"] == ["new_task", "continue", "redo"]
     # The profile never reaches the analyzer provider, even when one is supplied.
     assert "user_profile" not in analyzer_payload
+
+
+@pytest.mark.asyncio
+async def test_task_analyzer_uses_durable_accounting_and_retains_provider_evidence() -> None:
+    class _Sink:
+        def __init__(self) -> None:
+            self.started: list[Any] = []
+            self.finalized: list[tuple[Any, Any]] = []
+            self.unknown: list[tuple[Any, str]] = []
+
+        async def start(self, call: Any) -> None:
+            self.started.append(call)
+
+        async def finalize(self, call: Any, result: Any) -> None:
+            self.finalized.append((call, result))
+
+        async def mark_unknown(self, call: Any, reason: str) -> None:
+            self.unknown.append((call, reason))
+
+    sink = _Sink()
+    scope = UsageAccountingScope(
+        sink=sink,
+        context=UsageExecutionContext(
+            execution_id="routing-decision-1",
+            agent_run_id="routing-decision-1",
+            turn_id="turn-1",
+            session_id="session-1",
+            agent_id="main",
+            run_kind="routing",
+        ),
+    )
+    provider = _AnalyzerProvider(json.dumps(_task_profile(tier=2)))
+
+    with bind_usage_accounting_scope(scope):
+        result = await analyze_task_with_provider(
+            provider=provider,
+            message="implement a parser",
+            user_profile_enabled=False,
+            request_context=_context(),
+            routed_tier="c1",
+            routing_confidence=0.8,
+            analyzer_provider_id=TASK_ANALYZER_PROVIDER_ID,
+            analyzer_model_id=TASK_ANALYZER_MODEL_ID,
+        )
+
+    assert len(sink.started) == 1
+    assert len(sink.finalized) == 1
+    assert sink.unknown == []
+    assert sink.started[0].provider == TASK_ANALYZER_PROVIDER_ID
+    assert sink.finalized[0][1].cost_source == "provider_billed"
+    assert result.usage["provider_usage"]["is_byok"] is False
+    assert result.usage["provider_usage"]["response_ids"] == ["analyzer-1"]
 
 
 @pytest.mark.asyncio

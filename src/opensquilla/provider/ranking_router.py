@@ -2124,16 +2124,36 @@ async def analyze_task_with_provider(
     usage: dict[str, Any] = {}
     normalization_issues: list[str] = []
     try:
-        stream = provider.chat(
-            [Message(role="user", content=json.dumps(analyzer_input, ensure_ascii=True))],
-            tools=None,
-            config=ChatConfig(
-                max_tokens=analyzer_max_output_tokens,
-                temperature=analyzer_temperature,
-                system=system_prompt,
-                thinking=analyzer_thinking,
-                timeout=effective_timeout,
-            ),
+        analyzer_messages = [
+            Message(role="user", content=json.dumps(analyzer_input, ensure_ascii=True))
+        ]
+        analyzer_config = ChatConfig(
+            max_tokens=analyzer_max_output_tokens,
+            temperature=analyzer_temperature,
+            system=system_prompt,
+            thinking=analyzer_thinking,
+            timeout=effective_timeout,
+        )
+        # Task analysis is a physical provider request just like generation and
+        # must cross the same fail-closed durable accounting boundary.  The
+        # helper is a pass-through when no scope is bound (CLI/unit tests).
+        from opensquilla.engine.usage_accounting import (
+            account_provider_stream,
+            provider_accounts_physical_usage,
+        )
+
+        stream = (
+            provider.chat(analyzer_messages, tools=None, config=analyzer_config)
+            if provider_accounts_physical_usage(provider)
+            else account_provider_stream(
+                lambda: provider.chat(
+                    analyzer_messages,
+                    tools=None,
+                    config=analyzer_config,
+                ),
+                provider=provider_id,
+                model=model_id,
+            )
         )
         text_parts: list[str] = []
         total_chars = 0
@@ -2157,6 +2177,7 @@ async def analyze_task_with_provider(
                             "cache_write_tokens": event.cache_write_tokens,
                             "billed_cost": event.billed_cost,
                             "cost_source": event.cost_source,
+                            "provider_usage": dict(event.provider_usage),
                         }
                         if usage_tracker is not None and session_key:
                             try:
@@ -2168,7 +2189,11 @@ async def analyze_task_with_provider(
                                     provider=provider_id,
                                     cache_read_tokens=event.cached_tokens,
                                     cache_write_tokens=event.cache_write_tokens,
-                                    billed_cost=event.billed_cost,
+                                    billed_cost=(
+                                        event.billed_cost
+                                        if event.cost_source == "provider_billed"
+                                        else 0.0
+                                    ),
                                 )
                             except Exception:  # noqa: BLE001 - accounting cannot break routing
                                 log.warning(

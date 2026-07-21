@@ -67,6 +67,41 @@ describe('useSetupEnsembleForm — init + dirty tracking', () => {
     expect(f.isDirty.value).toBe(false)
   })
 
+  it('keeps the config-only tree baseline readable without making it editable', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_tree_baseline',
+      model_options: [...LEGACY_OPENROUTER_MODEL_OPTIONS],
+    })
+
+    const panel = makePanel(f, 'tokenrhythm').value
+    expect(f.selectionMode.value).toBe('router_tree_baseline')
+    expect(f.isDirty.value).toBe(false)
+    expect(f.payload()).toEqual({})
+    expect(panel.scheme).toBe('legacy')
+    expect(panel.legacyMigratable).toBe(false)
+    expect(panel.showCandidateEditor).toBe(false)
+    expect(panel.customCandidates).toHaveLength(LEGACY_OPENROUTER_MODEL_OPTIONS.length)
+  })
+
+  it('shows the tree baseline runtime defaults when model options are empty', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_tree_baseline',
+      model_options: [],
+    })
+
+    const panel = makePanel(f, 'tokenrhythm').value
+    expect(f.isDirty.value).toBe(false)
+    expect(f.payload()).toEqual({})
+    expect(panel.customCandidates.map(candidate => candidate.model)).toEqual(
+      LEGACY_OPENROUTER_MODEL_OPTIONS,
+    )
+    expect(panel.customCandidates.every(candidate => candidate.provider === 'openrouter')).toBe(true)
+  })
+
   it('falls back to the shipped defaults for an empty or invalid config slice', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig({ selection_mode: 'bogus', all_failed_policy: 'bogus', min_successful_proposers: -3 })

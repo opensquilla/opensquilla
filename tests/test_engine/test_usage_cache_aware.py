@@ -277,6 +277,7 @@ async def test_agent_turn_end_billed_cost_has_null_basis(
                 input_tokens=self._input_tokens,
                 output_tokens=self._output_tokens,
                 billed_cost=0.02,
+                cost_source="provider_billed",
                 model=self._model,
             )
 

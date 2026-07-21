@@ -1303,6 +1303,19 @@ describe('useSetupCatalog fresh-install provider semantics', () => {
     )
   })
 
+  it('detects the frozen tree baseline OpenRouter pool for a foreign primary', async () => {
+    await expectMultiProviderRouting(
+      'tokenrhythm',
+      { enabled: false, cross_provider_tiers: false },
+      {
+        enabled: true,
+        selection_mode: 'router_tree_baseline',
+        model_options: [...LEGACY_OPENROUTER_MODEL_OPTIONS],
+      },
+      true,
+    )
+  })
+
   it.each([
     {
       name: 'detects a foreign router_dynamic candidate',

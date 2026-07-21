@@ -847,6 +847,7 @@ class _MixedBilledAndEstimatedCostProvider:
                 input_tokens=1,
                 output_tokens=1,
                 billed_cost=0.0005,
+                cost_source="provider_billed",
             )
             return
         # Second call is cost-blind (billed_cost=0.0), forcing the estimator
@@ -3257,6 +3258,7 @@ async def test_agent_turn_cost_budget_combines_billed_and_unbilled_ensemble_memb
                 "input_tokens": 1000,
                 "output_tokens": 0,
                 "billed_cost": 0.25,
+                "cost_source": "provider_billed",
             },
             {
                 "provider": "p2",

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from opensquilla.memory.dream.models import (
+    PROMOTION_EVIDENCE_STORE_VERSION,
     PromotionEvidenceEntry,
     PromotionEvidenceStore,
     RawDreamCandidate,
@@ -38,8 +39,23 @@ def _candidate_id(candidate: RawDreamCandidate) -> str:
     return _sha256(normalized)
 
 
-def _entry_from_dict(raw: dict[str, Any]) -> PromotionEvidenceEntry | None:
+def _entry_from_dict(
+    raw: dict[str, Any], *, source_version: int
+) -> PromotionEvidenceEntry | None:
     try:
+        seen_count = max(0, int(raw.get("seen_count") or 0))
+        observed_occurrence_ids = list(
+            dict.fromkeys(
+                str(value)
+                for value in raw.get("observed_occurrence_ids", [])
+                if isinstance(value, str) and value
+            )
+        )
+        legacy_unmapped_occurrence_count = (
+            max(0, seen_count - len(observed_occurrence_ids))
+            if source_version < PROMOTION_EVIDENCE_STORE_VERSION
+            else max(0, int(raw.get("legacy_unmapped_occurrence_count") or 0))
+        )
         return PromotionEvidenceEntry(
             candidate_id=str(raw["candidate_id"]),
             agent_id=str(raw.get("agent_id") or "main"),
@@ -52,7 +68,7 @@ def _entry_from_dict(raw: dict[str, Any]) -> PromotionEvidenceEntry | None:
             claim_sha256=str(raw.get("claim_sha256") or ""),
             first_seen_at=str(raw.get("first_seen_at") or ""),
             last_seen_at=str(raw.get("last_seen_at") or ""),
-            seen_count=max(0, int(raw.get("seen_count") or 0)),
+            seen_count=seen_count,
             positive_signal_count=max(0, int(raw.get("positive_signal_count") or 0)),
             correction_signal_count=max(0, int(raw.get("correction_signal_count") or 0)),
             failure_signal_count=max(0, int(raw.get("failure_signal_count") or 0)),
@@ -70,6 +86,8 @@ def _entry_from_dict(raw: dict[str, Any]) -> PromotionEvidenceEntry | None:
                 if isinstance(raw.get("last_skip_reason"), str)
                 else None
             ),
+            observed_occurrence_ids=observed_occurrence_ids,
+            legacy_unmapped_occurrence_count=legacy_unmapped_occurrence_count,
         )
     except (KeyError, TypeError, ValueError):
         return None
@@ -80,20 +98,28 @@ def load_evidence_store(workspace: Path) -> PromotionEvidenceStore:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return PromotionEvidenceStore(version=1, entries={})
+        return PromotionEvidenceStore(
+            version=PROMOTION_EVIDENCE_STORE_VERSION, entries={}
+        )
     if not isinstance(raw, dict):
-        return PromotionEvidenceStore(version=1, entries={})
+        return PromotionEvidenceStore(
+            version=PROMOTION_EVIDENCE_STORE_VERSION, entries={}
+        )
+    try:
+        source_version = max(1, int(raw.get("version") or 1))
+    except (TypeError, ValueError):
+        source_version = 1
     entries_raw = raw.get("entries")
     entries: dict[str, PromotionEvidenceEntry] = {}
     if isinstance(entries_raw, dict):
         for key, value in entries_raw.items():
             if not isinstance(value, dict):
                 continue
-            entry = _entry_from_dict(value)
+            entry = _entry_from_dict(value, source_version=source_version)
             if entry is not None:
                 entries[str(key)] = entry
     return PromotionEvidenceStore(
-        version=1,
+        version=PROMOTION_EVIDENCE_STORE_VERSION,
         updated_at=str(raw.get("updated_at") or ""),
         entries=entries,
     )
@@ -103,13 +129,14 @@ def write_evidence_store(workspace: Path, store: PromotionEvidenceStore) -> None
     path = promotion_evidence_path(workspace)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "version": store.version,
+        "version": PROMOTION_EVIDENCE_STORE_VERSION,
         "updated_at": store.updated_at,
         "entries": {key: asdict(entry) for key, entry in store.entries.items()},
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+    store.version = PROMOTION_EVIDENCE_STORE_VERSION
 
 
 def _increment_signal(entry: PromotionEvidenceEntry, signal_kind: str) -> None:
@@ -131,6 +158,10 @@ def update_promotion_evidence(
     persist: bool = True,
 ) -> PromotionEvidenceStore:
     store = load_evidence_store(workspace)
+    observed_by_candidate: dict[str, set[str]] = {
+        candidate_id: set(entry.observed_occurrence_ids)
+        for candidate_id, entry in store.entries.items()
+    }
     for candidate in candidates:
         snippet = candidate.snippet.strip()
         if not snippet:
@@ -165,6 +196,28 @@ def update_promotion_evidence(
                 source_days=[],
             )
             store.entries[candidate_id] = entry
+        occurrence_id = candidate.source_occurrence_id or _sha256(
+            "\n".join(
+                (
+                    candidate.agent_id,
+                    candidate.source_path,
+                    claim_sha,
+                    "0",
+                )
+            )
+        )
+        observed = observed_by_candidate.setdefault(
+            candidate_id, set(entry.observed_occurrence_ids)
+        )
+        is_new_occurrence = occurrence_id not in observed
+        if is_new_occurrence:
+            observed.add(occurrence_id)
+            entry.observed_occurrence_ids.append(occurrence_id)
+            if entry.legacy_unmapped_occurrence_count > 0:
+                entry.legacy_unmapped_occurrence_count -= 1
+            else:
+                entry.seen_count += 1
+                _increment_signal(entry, candidate.signal_kind)
         entry.last_seen_at = now_iso
         entry.source_path = candidate.source_path
         entry.source_kind = candidate.source_kind
@@ -173,10 +226,9 @@ def update_promotion_evidence(
         entry.snippet = snippet
         entry.snippet_sha256 = snippet_sha
         entry.claim_sha256 = claim_sha
-        entry.seen_count += 1
         if candidate.source_day and candidate.source_day not in entry.source_days:
             entry.source_days.append(candidate.source_day)
-        _increment_signal(entry, candidate.signal_kind)
+    store.version = PROMOTION_EVIDENCE_STORE_VERSION
     store.updated_at = now_iso
     if persist:
         write_evidence_store(workspace, store)

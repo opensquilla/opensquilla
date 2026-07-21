@@ -108,6 +108,7 @@ def parse_promotion_patch(text: str, candidates: list[PromotionCandidate]) -> Pr
     if not isinstance(operations_raw, list):
         raise ValueError("Dream operations must be a list")
     operations: list[PromotionPatchOperation] = []
+    assigned_candidate_ids: set[str] = set()
     for raw in operations_raw:
         if not isinstance(raw, dict):
             continue
@@ -118,16 +119,26 @@ def parse_promotion_patch(text: str, candidates: list[PromotionCandidate]) -> Pr
         ids = [str(value) for value in ids_raw if isinstance(value, str)]
         if ids == ["auto"]:
             ids = sorted(candidate_ids)
-        ids = [value for value in ids if value in candidate_ids]
+        ids = list(dict.fromkeys(value for value in ids if value in candidate_ids))
         if not ids:
             continue
+        duplicate_ids = assigned_candidate_ids.intersection(ids)
+        if duplicate_ids:
+            raise ValueError(
+                "Dream candidate assigned to multiple operations: "
+                + ", ".join(sorted(duplicate_ids))
+            )
+        text_value = str(raw.get("text") or "")
+        if op in {"upsert", "merge"} and not text_value.strip():
+            raise ValueError(f"Dream {op} operation must contain non-empty text")
+        assigned_candidate_ids.update(ids)
         operations.append(
             PromotionPatchOperation(
                 op=op,
                 candidate_ids=ids,
                 section=str(raw.get("section") or "Long-Term Memory"),
                 memory_id=str(raw.get("memory_id") or ""),
-                text=str(raw.get("text") or ""),
+                text=text_value,
                 replaces_memory_id=(
                     str(raw["replaces_memory_id"])
                     if isinstance(raw.get("replaces_memory_id"), str)

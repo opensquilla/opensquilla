@@ -71,3 +71,25 @@ def test_braces_inside_string_do_not_break_balance() -> None:
 def test_no_json_raises() -> None:
     with pytest.raises(ValueError, match="did not contain JSON"):
         parse_promotion_patch("no json here at all", [_candidate()])
+
+
+@pytest.mark.parametrize("op", ["upsert", "merge"])
+def test_write_operation_without_text_is_rejected(op: str) -> None:
+    text = (
+        '{"operations":[{"op":"'
+        + op
+        + '","candidate_ids":["cand-1"],"text":"  "}]}'
+    )
+    with pytest.raises(ValueError, match="must contain non-empty text"):
+        parse_promotion_patch(text, [_candidate()])
+
+
+def test_candidate_cannot_be_assigned_to_multiple_operations() -> None:
+    text = (
+        '{"operations":['
+        '{"op":"upsert","candidate_ids":["cand-1"],"text":"- first"},'
+        '{"op":"merge","candidate_ids":["cand-1"],"text":"- second"}'
+        "]}"
+    )
+    with pytest.raises(ValueError, match="assigned to multiple operations"):
+        parse_promotion_patch(text, [_candidate()])

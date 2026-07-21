@@ -1019,3 +1019,28 @@ async def test_pairing_approve_as_admin_survives_a_failed_grant_and_still_notifi
     assert len(adapter.sent) == 1
     # Nothing half-applied: the failed grant left live config untouched.
     assert ctx.config.channel_admin_senders == {}
+
+
+@pytest.mark.asyncio
+async def test_pairing_approve_as_admin_skips_grant_for_removed_channel(tmp_path):
+    # Same guard channels.admin.set applies to grants: approving a stale
+    # pairing asAdmin on a since-removed channel must not persist a dormant
+    # admin entry that re-arms for a future channel with the same name.
+    adapter = _NoticeAdapter()
+    ctx = _notice_ctx(adapter, _NoticeStore())
+    ctx.config = GatewayConfig()  # the "work" channel is no longer configured
+    ctx.config.config_path = str(tmp_path / "config.toml")
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "channels.pairing.approve",
+        {"channelName": "work", "pairingId": "p1", "asAdmin": True},
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    assert res.payload["pairing"]["status"] == "approved"
+    assert res.payload["adminGranted"] is False
+    assert res.payload["warnings"]
+    assert ctx.config.channel_admin_senders == {}
+    assert not (tmp_path / "config.toml").exists()

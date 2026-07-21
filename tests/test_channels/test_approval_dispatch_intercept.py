@@ -10,22 +10,29 @@ import pytest
 from opensquilla.channels.approval_prompt import bind_short_code, reset_short_codes
 from opensquilla.channels.types import IncomingMessage
 from opensquilla.gateway.approval_queue import get_approval_queue, reset_approval_queue
-from opensquilla.gateway.channel_dispatch import _maybe_resolve_channel_approval
+from opensquilla.gateway.channel_dispatch import (
+    _maybe_resolve_channel_approval,
+    _reset_approval_probe_throttle,
+)
 
 
 @pytest.fixture(autouse=True)
 def _reset_state():
     reset_approval_queue()
     reset_short_codes()
+    _reset_approval_probe_throttle()
     yield
     reset_approval_queue()
     reset_short_codes()
+    _reset_approval_probe_throttle()
 
 
 def _pending_approval(
     owner_sender_id: str,
     *,
     origin_channel_name: str = "",
+    origin_channel_id: str = "",
+    session_key: str = "agent:main:chat",
     params: dict | None = None,
 ) -> tuple[str, str]:
     queue = get_approval_queue()
@@ -35,7 +42,7 @@ def _pending_approval(
         or {
             "toolName": "exec_command",
             "command": "rm target.txt",
-            "sessionKey": "agent:main:chat",
+            "sessionKey": session_key,
             "senderId": owner_sender_id,
             "channelKind": "feishu",
         },
@@ -43,9 +50,10 @@ def _pending_approval(
     code = bind_short_code(
         approval_id,
         namespace="exec",
-        session_key="agent:main:chat",
+        session_key=session_key,
         owner_sender_id=owner_sender_id,
         origin_channel_name=origin_channel_name,
+        origin_channel_id=origin_channel_id,
     )
     return approval_id, code
 
@@ -262,3 +270,153 @@ def test_sandbox_deny_remembers_and_fans_out(monkeypatch) -> None:
     entry = get_approval_queue().get(approval_id)
     assert entry.resolved is True
     assert entry.approved is False
+
+
+_SANDBOX_PARAMS = {
+    "approvalKind": "sandbox_network",
+    "host": "pypi.org",
+    "fingerprint": "fp-1",
+    "sessionKey": "agent:main:chat",
+    "senderId": "owner-1",
+    "choices": [
+        {"id": "allow_once", "label": "Allow once", "approved": True},
+        {"id": "allow_same_type", "label": "Allow same type", "approved": True},
+        {"id": "deny", "label": "Deny", "approved": False},
+    ],
+}
+
+
+def test_plain_approve_applies_sandbox_allow_once(monkeypatch) -> None:
+    # Sandbox kinds refuse empty choices — a plain Approve must select the
+    # primary allow_once choice, resolve the entry, and unblock the waiter
+    # (instead of failing validation and reporting "was already resolved").
+    applied: list[dict] = []
+
+    async def _fake_apply(params, *, choice, approved, session_manager, config):
+        applied.append({"choice": choice, "approved": approved})
+
+    monkeypatch.setattr(
+        "opensquilla.sandbox.escalation.apply_sandbox_approval_choice", _fake_apply
+    )
+
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1",
+        origin_channel_name="feishu-main",
+        params=dict(_SANDBOX_PARAMS),
+    )
+    queue = get_approval_queue()
+    waited: list[bool] = []
+
+    async def _run() -> None:
+        async def _waiter() -> None:
+            waited.append(await queue.wait(approval_id, timeout=5.0))
+
+        waiter_task = asyncio.create_task(_waiter())
+        await asyncio.sleep(0.05)
+        msg = IncomingMessage(
+            sender_id="owner-1", channel_id="c1", content=f"/approve {code}"
+        )
+        reply = await _maybe_resolve_channel_approval(
+            msg=msg, session_key="agent:main:chat"
+        )
+        assert reply is not None
+        assert f"Approved {code}" in reply.content
+        assert "already resolved" not in reply.content
+        await asyncio.wait_for(waiter_task, timeout=5.0)
+
+    asyncio.run(_run())
+
+    assert waited == [True]
+    assert applied == [{"choice": "allow_once", "approved": True}]
+    entry = queue.get(approval_id)
+    assert entry.resolved is True
+    assert entry.approved is True
+
+
+def test_sandbox_apply_failure_reopens_and_replies(monkeypatch) -> None:
+    # A transient storage failure while applying the grant must produce a
+    # reply (not an exception that burns the channel's restart budget) and
+    # leave the approval pending for a retry.
+    from opensquilla.session.storage import StorageBusyError
+
+    async def _busy_apply(params, *, choice, approved, session_manager, config):
+        raise StorageBusyError("database is locked")
+
+    monkeypatch.setattr(
+        "opensquilla.sandbox.escalation.apply_sandbox_approval_choice", _busy_apply
+    )
+
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1",
+        origin_channel_name="feishu-main",
+        params=dict(_SANDBOX_PARAMS),
+    )
+    msg = IncomingMessage(sender_id="owner-1", channel_id="c1", content=f"/approve {code}")
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+
+    assert reply is not None
+    assert "still pending" in reply.content
+    entry = get_approval_queue().get(approval_id)
+    assert entry.resolved is False
+
+
+def test_session_mismatch_gets_generic_reply() -> None:
+    # A live code probed from another session must be indistinguishable from
+    # an unknown code — response text is not an existence oracle.
+    approval_id, code = _pending_approval(owner_sender_id="owner-1")
+    msg = IncomingMessage(sender_id="owner-1", channel_id="c1", content=f"/approve {code}")
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:other")
+    )
+
+    assert reply is not None
+    assert f"No pending approval {code}" in reply.content
+    assert "session" not in reply.content
+    assert get_approval_queue().get(approval_id).resolved is False
+
+
+def test_origin_mismatch_gets_generic_reply() -> None:
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1", origin_channel_id="c-origin"
+    )
+    msg = IncomingMessage(
+        sender_id="owner-1", channel_id="c-other", content=f"/approve {code}"
+    )
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+
+    assert reply is not None
+    assert f"No pending approval {code}" in reply.content
+    assert "where it was requested" not in reply.content
+    assert get_approval_queue().get(approval_id).resolved is False
+
+
+def test_repeated_failed_probes_hit_cooldown() -> None:
+    # Five misses inside the window exhaust the probe budget; the next
+    # attempt gets a constant cooldown reply without touching the queue.
+    async def _run() -> None:
+        for idx in range(5):
+            msg = IncomingMessage(
+                sender_id="prober", channel_id="c1", content=f"/approve ZZZ{idx}"
+            )
+            reply = await _maybe_resolve_channel_approval(
+                msg=msg, session_key="agent:main:chat"
+            )
+            assert reply is not None
+            assert "No pending approval" in reply.content
+        msg = IncomingMessage(
+            sender_id="prober", channel_id="c1", content="/approve ZZZ9"
+        )
+        reply = await _maybe_resolve_channel_approval(
+            msg=msg, session_key="agent:main:chat"
+        )
+        assert reply is not None
+        assert "Too many failed approval attempts" in reply.content
+
+    asyncio.run(_run())

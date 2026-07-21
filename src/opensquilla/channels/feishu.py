@@ -870,8 +870,14 @@ class FeishuChannel:
             log.info("feishu.started", bot_open_id=self.bot_open_id)
             return
 
-        if not self.config.verification_token:
-            raise FeishuAuthError("Feishu webhook mode requires verification_token")
+        # Webhook ingress authenticates with the encrypt_key HMAC signature
+        # and/or the verification token; with neither, every request would be
+        # rejected (503) — fail closed at start instead of serving a dead
+        # endpoint.
+        if not self.config.verification_token and not self.config.encrypt_key:
+            raise FeishuAuthError(
+                "Feishu webhook mode requires verification_token or encrypt_key"
+            )
 
         await self._refresh_bot_identity()
         await self._transport.start(self._handle_inbound_event)
@@ -1068,7 +1074,18 @@ class FeishuChannel:
         clarify-card contract. The action ``value`` (short code + decision) is
         carried verbatim under ``metadata["approval_action"]`` so the dispatch
         intercept resolves it via the shared ``parse_approval_action`` helper.
+        Chat context embedded in the value at render time (``is_group``/
+        ``chat_type``/``thread_id``, mirroring the clarify card) is projected
+        into metadata so the session key rebuilt from this message matches the
+        originating turn's key — a group-origin approval tapped in that group
+        must not be misread as a DM.
         """
+        from opensquilla.channels.approval_prompt import (
+            DECISION_ALWAYS,
+            DECISION_APPROVE,
+            DECISION_DENY,
+        )
+
         event = raw.get("event", {})
         if not isinstance(event, dict):
             return None
@@ -1084,7 +1101,7 @@ class FeishuChannel:
         if not isinstance(code, str) or not code.strip():
             return None
         decision = str(value.get("decision") or "").lower()
-        if decision not in {"approve", "deny"}:
+        if decision not in {DECISION_APPROVE, DECISION_DENY, DECISION_ALWAYS}:
             return None
 
         operator = event.get("operator", {})
@@ -1098,18 +1115,40 @@ class FeishuChannel:
             or event.get("chat_id")
             or "unknown"
         )
+        # "always" selects the durable same-type grant; render the universal
+        # text-command spelling so transcripts/audit read the same as a typed
+        # "/approve <code> always".
+        if decision == DECISION_ALWAYS:
+            content = f"/approve {code.strip()} always"
+        else:
+            content = f"/{decision} {code.strip()}"
+        metadata: dict[str, Any] = {
+            "conversation_kind": "interaction",
+            "event_id": raw.get("header", {}).get("event_id"),
+            "message_type": "interactive",
+            "native_chat_id": channel_id,
+            "input_provenance": "approval_card",
+            "approval_action": dict(value),
+        }
+        # Only stamp chat context the card/event actually carries: cards
+        # rendered before this contract existed must keep their previous
+        # (DM-shaped) session key rather than being forced to group.
+        raw_is_group = value.get("is_group")
+        chat_type = value.get("chat_type") or event.get("chat_type")
+        if isinstance(raw_is_group, bool):
+            metadata["is_group"] = raw_is_group
+        elif isinstance(chat_type, str) and chat_type:
+            metadata["is_group"] = chat_type in {"group", "topic_group"}
+        if isinstance(chat_type, str) and chat_type:
+            metadata["chat_type"] = chat_type
+        thread_id = value.get("thread_id")
+        if isinstance(thread_id, str) and thread_id:
+            metadata["native_thread_id"] = thread_id
         return IncomingMessage(
             sender_id=sender_id,
             channel_id=channel_id,
-            content=f"/{decision} {code.strip()}",
-            metadata={
-                "conversation_kind": "interaction",
-                "event_id": raw.get("header", {}).get("event_id"),
-                "message_type": "interactive",
-                "native_chat_id": channel_id,
-                "input_provenance": "approval_card",
-                "approval_action": dict(value),
-            },
+            content=content,
+            metadata=metadata,
         )
 
     def _parse_clarify_card_action(self, raw: dict[str, Any]) -> IncomingMessage | None:

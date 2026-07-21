@@ -1194,6 +1194,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             entry_counts = {}
 
     result = []
+    channel_types = _channel_types_from_config(ctx.config)
     for s in sessions:
         # Fetch entry count for metadata
         entry_count = entry_counts.get(s.session_id, 0)
@@ -1251,7 +1252,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
             task_rows=task_rows,
             now_ms=now_ms,
             transcript_title=transcript_titles.get(s.session_id, ""),
-            channel_types=_channel_types_from_config(ctx.config),
+            channel_types=channel_types,
         )
         row.update(task_summary)
         row.update(view_fields)
@@ -1356,6 +1357,7 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
     transcript_titles = await _list_transcript_titles(storage, title_sessions)
     session_hits: list[dict[str, Any]] = []
     title_keys: set[str] = set()
+    channel_types = _channel_types_from_config(getattr(ctx, "config", None))
     for s in title_sessions:
         view = build_session_view_item(
             s,
@@ -1363,7 +1365,7 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
             task_rows=[],
             now_ms=now_ms,
             transcript_title=transcript_titles.get(getattr(s, "session_id", ""), ""),
-            channel_types=_channel_types_from_config(getattr(ctx, "config", None)),
+            channel_types=channel_types,
         )
         title_keys.add(canonicalize_session_key(s.session_key))
         session_hits.append(
@@ -1410,7 +1412,7 @@ async def _handle_sessions_search(params: dict | None, ctx: RpcContext) -> dict:
         storage,
         [canon for _, canon, _ in pending],
         now_ms,
-        channel_types=_channel_types_from_config(getattr(ctx, "config", None)),
+        channel_types=channel_types,
     )
     message_hits: list[dict[str, Any]] = []
     for raw_key, canon, row in pending:

@@ -217,3 +217,35 @@ async def test_channel_meta_command_handles_empty_or_disabled() -> None:
     assert reply is not None
     assert reply.content == "No meta-skills available."
     assert reply.metadata["command"] == "meta"
+
+
+def test_channel_admin_matcher_is_shared_across_rpc_and_dispatch():
+    # One matcher decides channel-admin standing everywhere: the command
+    # registry (operator Principal for channel RPC) and gateway dispatch
+    # (who may resolve sandbox approvals from chat) must never diverge on
+    # str vs list vs mixed-type configured entries.
+    from opensquilla.channels._util import sender_is_channel_admin
+    from opensquilla.gateway.channel_dispatch import _sender_is_channel_admin
+
+    cases = [
+        ("u-1", "u-1", True),
+        ("u-1", "u-2", False),
+        ("u-1", ["u-1", "u-2"], True),
+        ("u-1", ["u-2"], False),
+        ("42", [42, "u-2"], True),
+        ("u-1", ("u-1",), True),
+        ("u-1", {"u-1"}, True),
+        ("u-1", None, False),
+        ("u-1", 42, False),
+        ("", ["u-1"], False),
+    ]
+    for sender, configured, expected in cases:
+        assert sender_is_channel_admin(sender, configured=configured) is expected, (
+            sender,
+            configured,
+        )
+        config = SimpleNamespace(channel_admin_senders={"work": configured})
+        assert _sender_is_channel_admin(config, "work", sender) is expected, (
+            sender,
+            configured,
+        )

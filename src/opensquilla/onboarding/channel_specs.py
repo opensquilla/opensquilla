@@ -330,9 +330,10 @@ def _dingtalk_spec() -> ChannelSetupSpec:
         docs_hint="https://open.dingtalk.com/document/",
         fields=(
             *_common_fields(),
-            ChannelSetupField("client_id", "Client id", "text", required=True),
+            ChannelSetupField("client_id", "Client id", "text", required=True,
+                              group="credentials"),
             ChannelSetupField("client_secret", "Client secret", "password",
-                              required=True, secret=True),
+                              required=True, secret=True, group="credentials"),
         ),
     )
 
@@ -411,9 +412,10 @@ def _qq_spec() -> ChannelSetupSpec:
         can_probe=False,
         fields=(
             *_common_fields(),
-            ChannelSetupField("app_id", "App id", "text", required=True),
+            ChannelSetupField("app_id", "App id", "text", required=True,
+                              group="credentials"),
             ChannelSetupField("app_secret", "App secret", "password",
-                              required=True, secret=True),
+                              required=True, secret=True, group="credentials"),
         ),
     )
 

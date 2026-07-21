@@ -108,10 +108,12 @@ def _surface(
     origin_kind = _lower(origin.get("kind"))
 
     named = channel_types or {}
-    if last_channel in named:
-        return named[last_channel]
-    if channel in named:
-        return named[channel]
+    # The configured name→type map may carry plugin types outside the pinned
+    # surface enum; those must degrade to the fall-through checks (ending in
+    # "unknown") rather than widen the contract's closed union.
+    mapped = named.get(last_channel) or named.get(channel)
+    if mapped in _CHANNEL_SURFACES:
+        return mapped
     if last_channel in _CHANNEL_SURFACES:
         return last_channel
     if channel in _CHANNEL_SURFACES:

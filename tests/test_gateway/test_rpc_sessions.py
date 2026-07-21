@@ -5676,3 +5676,40 @@ class TestSessionsBootstrap:
 
         assert res.ok is False
         assert res.error.code == "UNAUTHORIZED"
+
+
+def test_session_view_plugin_channel_type_degrades_to_unknown_surface():
+    # docs/session-view-contract.md pins `surface` as a closed union: a
+    # configured name mapping to an out-of-enum plugin type (entry-point
+    # adapters) must degrade to "unknown", never widen the contract.
+    from opensquilla.gateway.session_view import build_session_view_item
+
+    session = FakeSession(
+        session_key="agent:main:whats-bot:direct:u-1",
+        last_channel="whats-bot",
+        last_to="u-1",
+    )
+    view = build_session_view_item(
+        session,
+        entry_count=0,
+        task_rows=[],
+        now_ms=0,
+        channel_types={"whats-bot": "whatsapp"},
+    )
+    assert view["surface"] == "unknown"
+
+    # A configured builtin type keeps resolving through the same map.
+    feishu_session = FakeSession(
+        session_key="agent:main:飞书:direct:u-1",
+        last_channel="飞书",
+        last_to="u-1",
+    )
+    feishu_view = build_session_view_item(
+        feishu_session,
+        entry_count=0,
+        task_rows=[],
+        now_ms=0,
+        channel_types={"飞书": "feishu"},
+    )
+    assert feishu_view["surface"] == "feishu"
+    assert feishu_view["sessionKind"] == "channel"

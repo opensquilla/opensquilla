@@ -30,6 +30,7 @@ from opensquilla.agents.scope import resolve_agent_model
 from opensquilla.artifacts import artifact_payload
 from opensquilla.channels._util import (
     measured_len,
+    sender_is_channel_admin,
     split_text_for_channel,
     truncate_to_limit,
 )
@@ -580,7 +581,19 @@ async def run_channel_dispatch(
             session_manager=session_manager,
         )
         if approval_reply is not None:
-            await channel.send(_preserve_route_channel_metadata(approval_reply, route_envelope))
+            try:
+                await channel.send(
+                    _preserve_route_channel_metadata(approval_reply, route_envelope)
+                )
+            except Exception as exc:  # noqa: BLE001 - reply delivery is best-effort
+                # The approval outcome is already recorded; a failed reply
+                # send must not escape the loop and burn the channel's
+                # restart budget.
+                log.warning(
+                    "channel.approval_reply_send_failed",
+                    channel=session_prefix,
+                    error_type=type(exc).__name__,
+                )
             if delivery_store is not None:
                 delivery_store.complete_inbound(
                     ingress_claim, "approval_resolved", reason=admission.reason
@@ -966,6 +979,59 @@ def _slash_command_head(content: str) -> str | None:
     return stripped.split(maxsplit=1)[0]
 
 
+# Failed approval-code attempts per (session, sender). Live-but-unauthorized
+# codes already get the same reply as unknown ones; this budget additionally
+# caps how fast an admitted sender can enumerate the code space at all.
+_APPROVAL_PROBE_WINDOW_S = 60.0
+_APPROVAL_PROBE_LIMIT = 5
+_approval_probe_failures: dict[str, list[float]] = {}
+
+
+def _reset_approval_probe_throttle() -> None:
+    """Clear recorded probe failures (test helper)."""
+    _approval_probe_failures.clear()
+
+
+def _approval_probe_key(session_key: str, sender_id: str) -> str:
+    return f"{session_key}\x00{sender_id}"
+
+
+def _approval_probe_throttled(probe_key: str) -> bool:
+    now = time.monotonic()
+    attempts = [
+        t
+        for t in _approval_probe_failures.get(probe_key, ())
+        if now - t < _APPROVAL_PROBE_WINDOW_S
+    ]
+    if attempts:
+        _approval_probe_failures[probe_key] = attempts
+    else:
+        _approval_probe_failures.pop(probe_key, None)
+    return len(attempts) >= _APPROVAL_PROBE_LIMIT
+
+
+def _record_approval_probe_failure(probe_key: str) -> None:
+    now = time.monotonic()
+    _approval_probe_failures.setdefault(probe_key, []).append(now)
+    # Opportunistic global prune so abandoned senders cannot grow the map
+    # without bound.
+    if len(_approval_probe_failures) > 1024:
+        for key in list(_approval_probe_failures):
+            kept = [
+                t
+                for t in _approval_probe_failures[key]
+                if now - t < _APPROVAL_PROBE_WINDOW_S
+            ]
+            if kept:
+                _approval_probe_failures[key] = kept
+            else:
+                _approval_probe_failures.pop(key, None)
+
+
+class _SandboxChoiceError(Exception):
+    """Sandbox choice validation failed before any queue state changed."""
+
+
 async def _maybe_resolve_channel_approval(
     *,
     msg: IncomingMessage,
@@ -984,12 +1050,15 @@ async def _maybe_resolve_channel_approval(
 
     Security: only the session owner (the ``sender_id`` that started the
     originating turn, recorded on the approval at request time) may resolve.
-    Any other sender is rejected without resolving. The ``always`` decision
-    additionally requires the sender to still be a configured channel admin
-    at resolution time — the card payload is never trusted for that. A plain
-    approval forces ``elevated_mode=None`` so it permits one gated command,
-    never session-wide elevation. Returns the reply to send, or ``None`` when
-    the message is not an approval action.
+    Any other sender is rejected without resolving. Cross-session and
+    cross-chat attempts get the same reply as an unknown code — response text
+    must not become a short-code existence oracle — and repeated failed
+    attempts per sender hit a cooldown. The ``always`` decision additionally
+    requires the sender to still be a configured channel admin at resolution
+    time — the card payload is never trusted for that. A plain approval
+    forces ``elevated_mode=None`` so it permits one gated command, never
+    session-wide elevation. Returns the reply to send, or ``None`` when the
+    message is not an approval action.
     """
     from opensquilla.channels.approval_prompt import (
         DECISION_ALWAYS,
@@ -1003,27 +1072,6 @@ async def _maybe_resolve_channel_approval(
         return None
     code, decision = parsed
     approved = decision != DECISION_DENY
-    binding = resolve_short_code(code)
-    if binding is None:
-        log.info("channel.approval_unknown_code", code=code, session_key=session_key)
-        return OutgoingMessage(content=f"No pending approval {code}.")
-
-    if binding.session_key and binding.session_key != session_key:
-        log.warning(
-            "channel.approval_session_mismatch",
-            code=code,
-            session_key=session_key,
-        )
-        return OutgoingMessage(content=f"Approval {code} belongs to another session.")
-
-    if binding.origin_channel_id and msg.channel_id != binding.origin_channel_id:
-        log.warning(
-            "channel.approval_origin_mismatch",
-            code=code,
-            session_key=session_key,
-            channel_id=msg.channel_id,
-        )
-        return OutgoingMessage(content=f"Approval {code} must be resolved where it was requested.")
 
     provenance = getattr(msg, "provenance", None)
     principal = getattr(provenance, "principal", None)
@@ -1033,13 +1081,58 @@ async def _maybe_resolve_channel_approval(
         if authenticated
         else (msg.sender_id or "").strip()
     )
+    probe_key = _approval_probe_key(session_key, sender_id)
+    if _approval_probe_throttled(probe_key):
+        log.warning(
+            "channel.approval_probe_throttled",
+            session_key=session_key,
+            sender_id=sender_id,
+        )
+        # Constant reply regardless of the attempted code: a throttled probe
+        # must learn nothing about code validity.
+        return OutgoingMessage(
+            content="Too many failed approval attempts — wait a minute and try again."
+        )
+
+    binding = resolve_short_code(code)
+    if binding is None:
+        log.info("channel.approval_unknown_code", code=code, session_key=session_key)
+        _record_approval_probe_failure(probe_key)
+        return OutgoingMessage(content=f"No pending approval {code}.")
+
+    # Cross-session and cross-chat attempts reuse the unknown-code reply on
+    # purpose: distinct texts would confirm that a guessed code is live and
+    # leak where it originates.
+    if binding.session_key and binding.session_key != session_key:
+        log.warning(
+            "channel.approval_session_mismatch",
+            code=code,
+            session_key=session_key,
+        )
+        _record_approval_probe_failure(probe_key)
+        return OutgoingMessage(content=f"No pending approval {code}.")
+
+    if binding.origin_channel_id and msg.channel_id != binding.origin_channel_id:
+        log.warning(
+            "channel.approval_origin_mismatch",
+            code=code,
+            session_key=session_key,
+            channel_id=msg.channel_id,
+        )
+        _record_approval_probe_failure(probe_key)
+        return OutgoingMessage(content=f"No pending approval {code}.")
+
     if not sender_id or sender_id != binding.owner_sender_id:
+        # Reaching this check requires matching the binding's session AND
+        # origin chat — where the prompt already displays the code — so the
+        # helpful reply reveals nothing that chat cannot already see.
         log.warning(
             "channel.approval_owner_mismatch",
             code=code,
             session_key=session_key,
             sender_id=sender_id,
         )
+        _record_approval_probe_failure(probe_key)
         return OutgoingMessage(
             content=(
                 "Only the session owner can resolve this. "
@@ -1079,10 +1172,42 @@ async def _maybe_resolve_channel_approval(
     except KeyError:
         log.info("channel.approval_expired", code=code, session_key=session_key)
         return OutgoingMessage(content=f"No pending approval {code}.")
+    except _SandboxChoiceError as exc:
+        # Malformed/incompatible choice payload — nothing was claimed, the
+        # approval is genuinely still pending (distinct from the resolved
+        # race below, which must stay idempotent).
+        log.warning(
+            "channel.approval_choice_invalid",
+            code=code,
+            session_key=session_key,
+            error=str(exc),
+        )
+        return OutgoingMessage(
+            content=(
+                f"Could not apply approval {code} — it is still pending. "
+                "Resolve it from the console."
+            )
+        )
     except ValueError:
         # Already resolved (race) — report idempotently rather than erroring.
         log.info("channel.approval_already_resolved", code=code, session_key=session_key)
         return OutgoingMessage(content=f"Approval {code} was already resolved.")
+    except Exception:
+        # Transient storage/session failures (e.g. a busy SQLite write while
+        # applying a grant) must not escape into the dispatch loop and burn
+        # the channel's restart budget. The decision helper reopens/releases
+        # queue state on failure, so the approval is still pending.
+        log.exception(
+            "channel.approval_resolution_failed",
+            code=code,
+            session_key=session_key,
+        )
+        return OutgoingMessage(
+            content=(
+                f"Could not apply approval {code} — it is still pending, "
+                "please try again."
+            )
+        )
 
     log.info(
         "channel.approval_resolved",
@@ -1099,12 +1224,7 @@ def _sender_is_channel_admin(config: Any, channel_name: str, sender_id: str) -> 
     admin_senders = getattr(config, "channel_admin_senders", None)
     if not isinstance(admin_senders, dict) or not channel_name or not sender_id:
         return False
-    configured = admin_senders.get(channel_name)
-    if isinstance(configured, str):
-        return sender_id == configured
-    if not isinstance(configured, list | tuple | set | frozenset):
-        return False
-    return sender_id in {str(item) for item in configured}
+    return sender_is_channel_admin(sender_id, configured=admin_senders.get(channel_name))
 
 
 async def _resolve_channel_approval_decision(
@@ -1138,8 +1258,16 @@ async def _resolve_channel_approval_decision(
     sandbox_approval = is_sandbox_approval_kind(pending.params.get("approvalKind"))
     choice: str | None = None
     if sandbox_approval and approved:
-        choice = "allow_same_type" if decision == DECISION_ALWAYS else None
-        validate_sandbox_approval_choice(pending.params, choice=choice, approved=True)
+        # Sandbox kinds refuse empty choices, so a plain Approve must select
+        # the primary one-shot choice explicitly; "always" selects the
+        # durable same-type grant.
+        choice = "allow_same_type" if decision == DECISION_ALWAYS else "allow_once"
+        try:
+            validate_sandbox_approval_choice(pending.params, choice=choice, approved=True)
+        except ValueError as exc:
+            # Nothing has been claimed yet — surface this as a validation
+            # failure, NOT as the caller's already-resolved ValueError race.
+            raise _SandboxChoiceError(str(exc)) from exc
         claim_token = queue.claim_resolution(approval_id)
         try:
             queue.finalize_claimed_resolution(

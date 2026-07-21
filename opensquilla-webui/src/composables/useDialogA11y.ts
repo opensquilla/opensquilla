@@ -1,15 +1,35 @@
-import { nextTick, watch, type Ref } from 'vue'
+import { nextTick, onUnmounted, watch, type Ref } from 'vue'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
 
 const FOCUSABLE = [
-  'button:not([disabled])',
-  'a[href]',
-  'input:not([disabled])',
-  'textarea:not([disabled])',
-  'select:not([disabled])',
-  'summary',
+  'button:not([disabled]):not([tabindex="-1"])',
+  'a[href]:not([tabindex="-1"])',
+  'input:not([disabled]):not([tabindex="-1"])',
+  'textarea:not([disabled]):not([tabindex="-1"])',
+  'select:not([disabled]):not([tabindex="-1"])',
+  'summary:not([tabindex="-1"])',
   '[tabindex]:not([tabindex="-1"])',
 ].join(', ')
+
+// Dialogs can nest transiently (for example, a discard confirmation opened
+// from the provider catalog). Keep one module-wide LIFO stack so only the
+// visually topmost dialog owns Escape and Tab. Component mount order is not a
+// reliable proxy: ConfirmModal is mounted globally before Settings dialogs.
+const openDialogStack: symbol[] = []
+
+function registerOpenDialog(token: symbol) {
+  const existing = openDialogStack.indexOf(token)
+  if (existing >= 0) openDialogStack.splice(existing, 1)
+  openDialogStack.push(token)
+}
+
+function unregisterOpenDialog(token: symbol): boolean {
+  const existing = openDialogStack.indexOf(token)
+  if (existing < 0) return false
+  const wasTopmost = existing === openDialogStack.length - 1
+  openDialogStack.splice(existing, 1)
+  return wasTopmost
+}
 
 interface DialogA11yOptions {
   // Element to focus when the dialog opens. Defaults to the first focusable
@@ -30,11 +50,15 @@ export function useDialogA11y(
   onClose: () => void,
   options: DialogA11yOptions = {},
 ) {
+  const dialogToken = Symbol('dialog-a11y')
   let invokerEl: HTMLElement | null = null
 
   function onKeydown(event: KeyboardEvent) {
+    if (event.defaultPrevented) return
     if (!isOpen.value) return
+    if (openDialogStack[openDialogStack.length - 1] !== dialogToken) return
     if (event.key === 'Escape') {
+      event.stopPropagation()
       event.preventDefault()
       onClose()
       return
@@ -62,6 +86,7 @@ export function useDialogA11y(
   watch(isOpen, (open, wasOpen) => {
     if (open && !wasOpen) {
       invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      registerOpenDialog(dialogToken)
       void nextTick(() => {
         const target = options.initialFocus?.value
           ?? rootRef.value?.querySelector<HTMLElement>(FOCUSABLE)
@@ -69,8 +94,14 @@ export function useDialogA11y(
         target?.focus()
       })
     } else if (!open && wasOpen) {
-      if (invokerEl && document.contains(invokerEl)) invokerEl.focus()
+      const wasTopmost = unregisterOpenDialog(dialogToken)
+      if (wasTopmost && invokerEl && document.contains(invokerEl)) invokerEl.focus()
       invokerEl = null
     }
+  }, { immediate: true })
+
+  onUnmounted(() => {
+    unregisterOpenDialog(dialogToken)
+    invokerEl = null
   })
 }

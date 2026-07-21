@@ -376,7 +376,9 @@ def test_interactive_onboard_prompts_router_defaults_before_persist(tmp_path, mo
     assert saved.llm.api_key == ""
     assert saved.llm.api_key_env == "OPENROUTER_API_KEY"
     assert saved.squilla_router.default_tier == "c2"
-    assert saved.llm.model == "z-ai/glm-5.2"
+    # The Router's default tier is independent from the provider's direct /
+    # fail-closed fallback model.
+    assert saved.llm.model == "deepseek/deepseek-v4-pro"
 
 
 def test_interactive_onboard_migration_defaults_to_all_sources_and_keeps_imported_provider(
@@ -755,7 +757,9 @@ def test_interactive_onboard_imported_provider_finalize_error_continues_setup(
     data = tomllib.loads(target.read_text())
     assert data["llm"]["provider"] == "openrouter"
     assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
-    assert data["llm"]["model"] == "deepseek/deepseek-v4-pro"
+    # Falling back to normal provider setup must preserve the imported direct
+    # model because it is an existing explicit provider choice.
+    assert data["llm"]["model"] == "anthropic/claude-sonnet-4.5"
 
 
 def test_onboard_migration_selection_summary_lists_checked_sources(tmp_path, monkeypatch):

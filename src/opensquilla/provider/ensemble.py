@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import random
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -15,13 +14,19 @@ import structlog
 
 from opensquilla.context_budget import ContextBudgetGovernor
 
+from .deployment import (
+    CredentialPoolAcquirer,
+    ProviderDeploymentResolution,
+    resolve_provider_deployment,
+)
+from .error_redaction import redact_upstream_error_code, redact_upstream_error_text
+from .failures import ProviderFailureKind, classify_provider_error
 from .model_catalog import resolve_effective_context_window, shared_catalog
 from .protocol import (
     LLMProvider,
     ProviderMetadata,
     project_provider_message_count,
 )
-from .registry import get_provider_spec
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
 from .types import (
     ChatConfig,
@@ -206,6 +211,18 @@ class EnsembleMemberConfig:
     max_tokens: int = 0
     thinking: str | None = None
     k: int = 1
+    # Non-secret pool attribution used to park this member's session-pinned
+    # credential after an auth/rate-limit/credits failure.
+    credential_pool_provider: str = ""
+    credential_pool_session_key: str = ""
+    # Deployment readiness is resolved once when the lineup is built.  An
+    # unavailable proposer remains part of the lineup so normal quorum and
+    # fallback semantics can account for it without attempting network I/O.
+    ready: bool = True
+    unavailable_reason: str = ""
+
+
+CredentialPoolFailureReporter = Callable[[str, str, ProviderFailureKind], None]
 
 
 @dataclass(frozen=True)
@@ -242,6 +259,7 @@ class _CandidateResult:
     message_limit_proof: ProviderMessageLimitProof | None = None
     execution: dict[str, Any] = field(default_factory=dict)
     usage_reported: bool = False
+    request_started: bool = False
 
     @property
     def ok(self) -> bool:
@@ -275,6 +293,7 @@ class _CandidateResult:
             "provider": self.provider,
             "model": self.model,
             "ok": self.ok,
+            "request_started": self.request_started,
             "stop_reason": self.stop_reason,
             "elapsed_ms": self.elapsed_ms,
             "ttft_ms": self.ttft_ms,
@@ -540,6 +559,16 @@ def _candidate_usage_rows(
     ]
 
 
+def _candidate_missing_usage_count(candidates: Sequence[_CandidateResult]) -> int:
+    """Count only requests that started but never produced a usage receipt."""
+
+    return sum(
+        1
+        for candidate in candidates
+        if candidate.request_started and not candidate.usage_reported
+    )
+
+
 def _uniform_message_limit_proof(
     candidates: Sequence[_CandidateResult],
 ) -> ProviderMessageLimitProof | None:
@@ -606,6 +635,9 @@ class EnsembleProvider:
         proposers: Sequence[EnsembleMemberConfig],
         aggregator: EnsembleMemberConfig,
         fallback_provider: LLMProvider | None = None,
+        fallback_provider_name: str = "",
+        fallback_model: str = "",
+        fallback_api_key: str = "",
         min_successful_proposers: int = 1,
         all_failed_policy: Literal["fallback_single", "error"] = "fallback_single",
         proposer_timeout_seconds: float = 3600.0,
@@ -620,11 +652,15 @@ class EnsembleProvider:
             tuple[str, str, str], _MemberRequestBudgetBinding
         ]
         | None = None,
+        _credential_pool_failure_reporter: CredentialPoolFailureReporter | None = None,
     ) -> None:
         self.profile_name = profile_name
         self.proposers = list(proposers)
         self.aggregator = aggregator
         self.fallback_provider = fallback_provider
+        self.fallback_provider_name = str(fallback_provider_name or "")
+        self.fallback_model = str(fallback_model or "")
+        self._fallback_api_key = str(fallback_api_key or "")
         self.min_successful_proposers = max(1, int(min_successful_proposers or 1))
         self.all_failed_policy = all_failed_policy
         self.proposer_timeout_seconds = float(proposer_timeout_seconds or 3600.0)
@@ -638,6 +674,38 @@ class EnsembleProvider:
         self._member_request_budget_bindings = dict(
             _member_request_budget_bindings or {}
         )
+        self._credential_pool_failure_reporter = _credential_pool_failure_reporter
+
+    def _report_member_credential_failure(
+        self,
+        member: EnsembleMemberConfig,
+        *,
+        message: str,
+        code: str,
+    ) -> None:
+        """Classify and report one pool-backed member failure; never raises."""
+        if (
+            not member.credential_pool_provider
+            or self._credential_pool_failure_reporter is None
+        ):
+            return
+        try:
+            kind = classify_provider_error(
+                provider_name=member.provider_config.provider,
+                status_code=int(code) if str(code).isdigit() else None,
+                raw_code=code,
+                message=message,
+            )
+            self._credential_pool_failure_reporter(
+                member.credential_pool_provider,
+                member.credential_pool_session_key,
+                kind,
+            )
+        except Exception:  # noqa: BLE001 - credential bookkeeping only
+            log.debug(
+                "llm_ensemble.credential_pool_report_failed",
+                provider=member.credential_pool_provider,
+            )
 
     def _member_request_budget_binding(
         self,
@@ -656,6 +724,8 @@ class EnsembleProvider:
     async def list_models(self) -> list[ModelInfo]:
         models: list[ModelInfo] = []
         for member in [*self.proposers, self.aggregator]:
+            if not member.ready:
+                continue
             try:
                 models.extend(await _build_provider(member.provider_config).list_models())
             except Exception:
@@ -703,6 +773,8 @@ class EnsembleProvider:
             projections.append(projection)
 
         for member in self.proposers:
+            if not member.ready:
+                continue
             member_config = _member_chat_config(config, member)
             _require_projection(
                 _build_provider(member.provider_config),
@@ -710,7 +782,7 @@ class EnsembleProvider:
                 synthetic_messages=additional_messages,
             )
 
-        if self.proposers:
+        if self.proposers and self.aggregator.ready:
             aggregator_config = _member_chat_config(config, self.aggregator)
             _require_projection(
                 _build_provider(self.aggregator.provider_config),
@@ -827,7 +899,6 @@ class EnsembleProvider:
             aggregator_cfg = aggregator_cfg.model_copy(
                 update={"timeout": self.aggregator_timeout_seconds}
             )
-        provider = _build_provider(self.aggregator.provider_config)
         proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
         aggregator_messages = self._build_aggregator_messages(messages, successful)
         trace = self._trace_payload(
@@ -843,15 +914,77 @@ class EnsembleProvider:
             final_request_messages=aggregator_messages,
             final_request_timeout_seconds=self.aggregator_timeout_seconds,
         )
+        if not self.aggregator.ready:
+            cfg = self.aggregator.provider_config
+            reason = self.aggregator.unavailable_reason or "deployment_unavailable"
+            error = ErrorEvent(
+                message=f"ensemble aggregator deployment is not ready: {reason}",
+                code="ensemble_aggregator_error",
+            )
+            yield EnsembleProgressEvent(
+                event_type="aggregator_start",
+                proposer_index=-1,
+                proposer_label="aggregator",
+                proposer_model=cfg.model,
+                proposer_provider=cfg.provider,
+                sample_index=0,
+            )
+            yield EnsembleProgressEvent(
+                event_type="aggregator_finish",
+                proposer_index=-1,
+                proposer_label="aggregator",
+                proposer_model=cfg.model,
+                proposer_provider=cfg.provider,
+                sample_index=0,
+                error=error.message,
+            )
+            yield replace(
+                error,
+                model_usage_breakdown=list(proposer_rows),
+                usage_missing_count=_candidate_missing_usage_count(candidates),
+            )
+            return
+        try:
+            provider = _build_provider(self.aggregator.provider_config)
+        except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
+            cfg = self.aggregator.provider_config
+            error = ErrorEvent(
+                message=(
+                    "ensemble aggregator could not be initialized: "
+                    f"{type(exc).__name__}"
+                ),
+                code="ensemble_aggregator_error",
+            )
+            yield EnsembleProgressEvent(
+                event_type="aggregator_start",
+                proposer_index=-1,
+                proposer_label="aggregator",
+                proposer_model=cfg.model,
+                proposer_provider=cfg.provider,
+                sample_index=0,
+            )
+            yield EnsembleProgressEvent(
+                event_type="aggregator_finish",
+                proposer_index=-1,
+                proposer_label="aggregator",
+                proposer_model=cfg.model,
+                proposer_provider=cfg.provider,
+                sample_index=0,
+                error=error.message,
+            )
+            yield replace(
+                error,
+                model_usage_breakdown=list(proposer_rows),
+                usage_missing_count=_candidate_missing_usage_count(candidates),
+            )
+            return
         async for event in self._stream_final_aggregator(
             provider=provider,
             messages=aggregator_messages,
             tools=tools,
             config=aggregator_cfg,
             prior_rows=proposer_rows,
-            prior_missing_count=sum(
-                1 for candidate in candidates if not candidate.usage_reported
-            ),
+            prior_missing_count=_candidate_missing_usage_count(candidates),
             trace=trace,
         ):
             yield event
@@ -1049,8 +1182,15 @@ class EnsembleProvider:
             result.error = f"proposer timed out after {self.proposer_timeout_seconds:g}s"
             result.error_code = "timeout"
         except Exception as exc:  # noqa: BLE001 - candidate failures are diagnostic data
-            result.error = str(exc)
-            result.error_code = type(exc).__name__
+            result.error = redact_upstream_error_text(
+                str(exc),
+                api_key=cfg.api_key,
+                max_len=2000,
+            )
+            result.error_code = redact_upstream_error_code(
+                type(exc).__name__,
+                api_key=cfg.api_key,
+            )
         finally:
             result.elapsed_ms = int((time.monotonic() - started) * 1000)
             if progress is not None:
@@ -1081,7 +1221,6 @@ class EnsembleProvider:
         config: ChatConfig | None,
         started: float,
     ) -> _CandidateResult:
-        provider = _build_provider(member.provider_config)
         chat_cfg = _member_chat_config(
             config,
             member,
@@ -1098,9 +1237,16 @@ class EnsembleProvider:
             timeout_seconds=self.proposer_timeout_seconds,
             request_budget_binding=self._member_request_budget_binding(member),
         )
+        if not member.ready:
+            reason = member.unavailable_reason or "deployment_unavailable"
+            result.error = f"proposer deployment is not ready: {reason}"
+            result.error_code = reason
+            return result
+        provider = _build_provider(member.provider_config)
         text_parts: list[str] = []
         tool_parts: list[str] = []
         got_done = False
+        result.request_started = True
         async for event in provider.chat(messages, tools=tools, config=chat_cfg):
             if isinstance(event, TextDeltaEvent):
                 if result.ttft_ms is None and event.text:
@@ -1129,9 +1275,21 @@ class EnsembleProvider:
                 result.stop_reason = event.stop_reason
                 result.model = event.model or result.model
             elif isinstance(event, ErrorEvent):
-                result.error = event.message
-                result.error_code = event.code
+                result.error = redact_upstream_error_text(
+                    event.message,
+                    api_key=member.provider_config.api_key,
+                    max_len=2000,
+                )
+                result.error_code = redact_upstream_error_code(
+                    event.code,
+                    api_key=member.provider_config.api_key,
+                )
                 result.message_limit_proof = event.message_limit_proof
+                self._report_member_credential_failure(
+                    member,
+                    message=result.error,
+                    code=result.error_code,
+                )
                 break
         result.text = _truncate_text("".join(text_parts + tool_parts), self.candidate_max_chars)
         if not got_done and not result.error:
@@ -1197,7 +1355,9 @@ class EnsembleProvider:
             "quorum_grace_seconds": self.quorum_grace_seconds,
             "content_max_chars": TRACE_CONTENT_MAX_CHARS,
             "final_request_role": final_request_role,
-            "llm_request_count": len(candidates) + (1 if final_request_role else 0),
+            "llm_request_count": sum(
+                1 for candidate in candidates if candidate.request_started
+            ),
             "selected_candidate_count": len(selected),
             "selected_candidate_indexes": [candidate.index for candidate in selected],
             "candidates": [
@@ -1210,7 +1370,10 @@ class EnsembleProvider:
         }
         if self.selection_plan:
             trace["selection_plan"] = _json_safe(self.selection_plan)
-        final_request: dict[str, Any] = {"role": final_request_role}
+        final_request: dict[str, Any] = {
+            "role": final_request_role,
+            "request_started": False,
+        }
         if final_request_member is not None:
             final_request["execution"] = _member_execution_trace(
                 final_request_member,
@@ -1309,6 +1472,7 @@ class EnsembleProvider:
                 cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
                 billed_cost=_summed_float(rows, "billed_cost"),
                 model=acc.model,
+                provider=self.aggregator.provider_config.provider,
                 cost_source=_rollup_cost_source(rows),
                 model_usage_breakdown=rows,
                 ensemble_trace=trace,
@@ -1324,6 +1488,7 @@ class EnsembleProvider:
 
         yield aggregator_progress("aggregator_start")
         try:
+            _mark_final_request_started(trace)
             stream = provider.chat(messages, tools=tools, config=config)
             timeout_seconds = (
                 self.aggregator_timeout_seconds
@@ -1360,11 +1525,28 @@ class EnsembleProvider:
                     yield done_event
                     return
                 elif isinstance(event, ErrorEvent):
+                    safe_event = replace(
+                        event,
+                        message=redact_upstream_error_text(
+                            event.message,
+                            api_key=self.aggregator.provider_config.api_key,
+                            max_len=2000,
+                        ),
+                        code=redact_upstream_error_code(
+                            event.code,
+                            api_key=self.aggregator.provider_config.api_key,
+                        ),
+                    )
+                    self._report_member_credential_failure(
+                        self.aggregator,
+                        message=safe_event.message,
+                        code=safe_event.code,
+                    )
                     yield aggregator_progress(
                         "aggregator_finish",
-                        error=event.message,
+                        error=safe_event.message,
                     )
-                    yield partial_error(event)
+                    yield partial_error(safe_event)
                     return
                 elif isinstance(event, TextDeltaEvent):
                     final_text_parts.append(event.text)
@@ -1383,8 +1565,13 @@ class EnsembleProvider:
             yield partial_error(error)
             return
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
+            safe_message = redact_upstream_error_text(
+                f"ensemble aggregator failed: {exc}",
+                api_key=self.aggregator.provider_config.api_key,
+                max_len=2000,
+            )
             error = ErrorEvent(
-                message=f"ensemble aggregator failed: {exc}",
+                message=safe_message,
                 code="ensemble_aggregator_error",
             )
             yield aggregator_progress("aggregator_finish", error=error.message)
@@ -1407,6 +1594,16 @@ class EnsembleProvider:
         code: str,
         candidates: Sequence[_CandidateResult],
     ) -> AsyncIterator[StreamEvent]:
+        proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
+        proposer_missing_count = _candidate_missing_usage_count(candidates)
+
+        def proposer_error(event: ErrorEvent) -> ErrorEvent:
+            return replace(
+                event,
+                model_usage_breakdown=list(proposer_rows),
+                usage_missing_count=proposer_missing_count,
+            )
+
         if self.all_failed_policy != "fallback_single" or self.fallback_provider is None:
             message_limit_proof = _uniform_message_limit_proof(candidates)
             if message_limit_proof is not None:
@@ -1414,13 +1611,15 @@ class EnsembleProvider:
                     (candidate.error for candidate in candidates if candidate.error),
                     reason,
                 )
-                yield ErrorEvent(
-                    message=first_error,
-                    code="400",
-                    message_limit_proof=message_limit_proof,
+                yield proposer_error(
+                    ErrorEvent(
+                        message=first_error,
+                        code="400",
+                        message_limit_proof=message_limit_proof,
+                    )
                 )
             else:
-                yield ErrorEvent(message=reason, code=code)
+                yield proposer_error(ErrorEvent(message=reason, code=code))
             return
         fallback_timeout_seconds = float(
             getattr(config, "timeout", ChatConfig().timeout)
@@ -1439,11 +1638,7 @@ class EnsembleProvider:
             final_request_messages=messages,
             final_request_timeout_seconds=fallback_timeout_seconds,
         )
-        proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
-        proposer_missing_count = sum(
-            1 for candidate in candidates if not candidate.usage_reported
-        )
-
+        trace["fallback_code"] = code
         def partial_error(event: ErrorEvent) -> ErrorEvent:
             return replace(
                 event,
@@ -1451,6 +1646,7 @@ class EnsembleProvider:
                 usage_missing_count=proposer_missing_count + 1,
             )
         final_text_parts: list[str] = []
+        _mark_final_request_started(trace)
         yield ProviderHeartbeatEvent(
             phase="ensemble_fallback",
             message="Ensemble quorum unavailable; waiting for fallback model",
@@ -1465,15 +1661,25 @@ class EnsembleProvider:
                 if isinstance(event, DoneEvent):
                     output_text = "".join(final_text_parts)
                     _attach_final_request_output(trace, event=event, output_text=output_text)
+                    executed_provider = str(
+                        getattr(self.fallback_provider, "active_provider_id", "")
+                        or self.fallback_provider_name
+                        or getattr(self.fallback_provider, "provider_name", "fallback")
+                    )
+                    executed_model = event.model or self.fallback_model
+                    final_request = trace.get("final_request")
+                    if isinstance(final_request, dict):
+                        execution = final_request.get("execution")
+                        if isinstance(execution, dict):
+                            execution["provider"] = executed_provider
+                            execution["model"] = executed_model
                     fallback_row = _done_usage_row(
                         event,
                         role="fallback_single",
                         profile=self.profile_name,
                         label="fallback",
-                        provider=str(
-                            getattr(self.fallback_provider, "provider_name", "fallback")
-                        ),
-                        model=event.model,
+                        provider=executed_provider,
+                        model=executed_model,
                     )
                     rows = [*proposer_rows, fallback_row]
                     yield replace(
@@ -1484,6 +1690,7 @@ class EnsembleProvider:
                         cached_tokens=_summed_int(rows, "cached_tokens"),
                         cache_write_tokens=_summed_int(rows, "cache_write_tokens"),
                         billed_cost=_summed_float(rows, "billed_cost"),
+                        provider=executed_provider,
                         cost_source=_rollup_cost_source(rows),
                         model_usage_breakdown=rows,
                         ensemble_trace=trace,
@@ -1491,7 +1698,19 @@ class EnsembleProvider:
                     )
                     return
                 if isinstance(event, ErrorEvent):
-                    yield partial_error(event)
+                    safe_event = replace(
+                        event,
+                        message=redact_upstream_error_text(
+                            event.message,
+                            api_key=self._fallback_api_key,
+                            max_len=2000,
+                        ),
+                        code=redact_upstream_error_code(
+                            event.code,
+                            api_key=self._fallback_api_key,
+                        ),
+                    )
+                    yield partial_error(safe_event)
                     return
                 if isinstance(event, TextDeltaEvent):
                     final_text_parts.append(event.text)
@@ -1504,6 +1723,18 @@ class EnsembleProvider:
                         f"{fallback_timeout_seconds:g}s"
                     ),
                     code="ensemble_fallback_timeout",
+                )
+            )
+            return
+        except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
+            yield partial_error(
+                ErrorEvent(
+                    message=redact_upstream_error_text(
+                        f"ensemble fallback failed: {exc}",
+                        api_key=self._fallback_api_key,
+                        max_len=2000,
+                    ),
+                    code="ensemble_fallback_error",
                 )
             )
             return
@@ -1612,6 +1843,8 @@ def _member_execution_trace(
             "base_url": cfg.base_url,
             "proxy_configured": bool(cfg.proxy),
             "provider_routing": _json_safe(dict(cfg.provider_routing)),
+            "deployment_ready": member.ready,
+            "deployment_unavailable_reason": member.unavailable_reason,
             "effective_context_window_tokens": (
                 request_budget_binding.context_window_tokens
                 if request_budget_binding is not None
@@ -1656,6 +1889,16 @@ def _request_execution_trace(
         "effective_timeout": getattr(chat_config, "timeout", None),
         "effective_tool_choice": _json_safe(getattr(chat_config, "tool_choice", None)),
     }
+
+
+def _mark_final_request_started(trace: dict[str, Any]) -> None:
+    """Record one actually invoked final request exactly once."""
+
+    final_request = trace.setdefault("final_request", {})
+    if final_request.get("request_started") is True:
+        return
+    final_request["request_started"] = True
+    trace["llm_request_count"] = int(trace.get("llm_request_count") or 0) + 1
 
 
 def _attach_final_request_output(
@@ -2486,8 +2729,11 @@ def _select_dynamic_candidate(
 def _dynamic_member_from_candidate(
     candidate: _DynamicCandidate,
     *,
+    config: Any,
     inherited: ProviderConfig,
     label: str,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> EnsembleMemberConfig:
     return _member_from_ref(
         _DynamicModelRef(
@@ -2495,8 +2741,11 @@ def _dynamic_member_from_candidate(
             model=candidate.model,
             thinking=candidate.thinking,
         ),
+        config=config,
         inherited=inherited,
         label=label,
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
     )
 
 
@@ -2505,6 +2754,8 @@ def _build_router_dynamic_members(
     config: Any,
     inherited_provider_config: ProviderConfig,
     turn_metadata: Mapping[str, Any] | None,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
     metadata = dict(turn_metadata or {})
     extra = metadata.get("routing_extra")
@@ -2535,8 +2786,11 @@ def _build_router_dynamic_members(
     proposers = [
         _dynamic_member_from_candidate(
             anchor,
+            config=config,
             inherited=inherited_provider_config,
             label="anchor",
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
         )
     ]
     slot_traces: list[dict[str, Any]] = [
@@ -2562,8 +2816,11 @@ def _build_router_dynamic_members(
         proposers.append(
             _dynamic_member_from_candidate(
                 candidate,
+                config=config,
                 inherited=inherited_provider_config,
                 label=slot,
+                credential_pool_acquirer=credential_pool_acquirer,
+                session_key=session_key,
             )
         )
         slot_traces.append(trace)
@@ -2580,8 +2837,11 @@ def _build_router_dynamic_members(
     )
     aggregator = _dynamic_member_from_candidate(
         aggregator_candidate,
+        config=config,
         inherited=inherited_provider_config,
         label="aggregator",
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
     )
     plan = {
         "strategy": "router_dynamic",
@@ -2620,20 +2880,29 @@ def _static_default_if_legacy(
 def _build_static_b5_members(
     profile: StaticB5Profile,
     *,
+    config: Any,
     inherited_provider_config: ProviderConfig,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
     proposers = [
         _member_from_ref(
             _static_b5_ref(profile.provider_id, model),
+            config=config,
             inherited=inherited_provider_config,
             label=f"proposer_{index + 1}",
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
         )
         for index, model in enumerate(profile.proposer_models)
     ]
     aggregator = _member_from_ref(
         _static_b5_ref(profile.provider_id, profile.aggregator_model),
+        config=config,
         inherited=inherited_provider_config,
         label="aggregator",
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
     )
     plan = {
         "strategy": profile.profile_name,
@@ -2681,6 +2950,8 @@ def _build_custom_b5_members(
     *,
     config: Any,
     inherited_provider_config: ProviderConfig,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> tuple[str, list[EnsembleMemberConfig], EnsembleMemberConfig, dict[str, Any]]:
     """Build the explicit user-authored lineup.
 
@@ -2698,8 +2969,11 @@ def _build_custom_b5_members(
     proposers = [
         _member_from_ref(
             _DynamicModelRef(provider=row.provider, model=row.model, thinking=None),
+            config=config,
             inherited=inherited_provider_config,
             label=row.role or f"proposer_{index + 1}",
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
         )
         for index, row in enumerate(proposer_rows)
     ]
@@ -2719,8 +2993,11 @@ def _build_custom_b5_members(
             model=aggregator_row.model,
             thinking=None,
         ),
+        config=config,
         inherited=inherited_provider_config,
         label="aggregator",
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
     )
     plan = {
         "strategy": CUSTOM_B5_SELECTION_MODE,
@@ -2742,11 +3019,14 @@ def _build_custom_b5_members(
 def custom_b5_lineup_ready(
     config: Any,
     inherited_provider_config: Any | None = None,
+    *,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> tuple[bool, str]:
     """Pre-wrap readiness gate for the custom lineup.
 
-    Returns (ready, reason). Mirrors the member key-resolution order of
-    ``_member_provider_config`` per member — a member whose provider cannot
+    Returns (ready, reason). Mirrors the shared deployment resolver per
+    member — a member whose provider cannot
     resolve any API key would post the conversation upstream with an empty
     bearer token, so the wrap must be skipped, same as the static-B5 gate.
     ``inherited_provider_config`` should be the selector's current config
@@ -2769,54 +3049,43 @@ def custom_b5_lineup_ready(
     if not [row for row in rows if row.role != "aggregator"]:
         return False, "no_proposers"
     for row in rows:
-        try:
-            member = _member_provider_config(
-                _DynamicModelRef(provider=row.provider, model=row.model),
-                inherited_cfg,
-            )
-        except Exception:
-            return False, f"unknown_provider:{row.provider}"
-        spec = get_provider_spec(member.provider)
-        if spec.requires_api_key() and not member.api_key.strip():
-            return False, f"missing_credential:{member.provider}"
+        resolution = resolve_provider_deployment(
+            config,
+            row.provider,
+            row.model,
+            inherited_provider_config=inherited_cfg,
+            replay_provider_state=(
+                str(row.provider or "").strip().lower()
+                == str(inherited_cfg.provider or "").strip().lower()
+            ),
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
+        )
+        if not resolution.ready:
+            return False, f"{resolution.reason}:{row.provider}"
     return True, ""
 
 
-def _secret_from_env(env_name: str) -> str:
-    return os.environ.get(env_name, "").strip() if env_name else ""
-
-
-def _member_provider_config(ref: Any, inherited: ProviderConfig) -> ProviderConfig:
+def _resolve_member_deployment(
+    ref: Any,
+    inherited: ProviderConfig,
+    *,
+    config: Any | None = None,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
+) -> ProviderDeploymentResolution:
     provider = str(getattr(ref, "provider", "") or inherited.provider).strip().lower()
     model = str(getattr(ref, "model", "") or "").strip()
     if not model:
         raise ValueError("llm_ensemble model ref requires a non-empty model")
-    same_provider = provider == str(inherited.provider or "").strip().lower()
-    api_key_env = str(getattr(ref, "api_key_env", "") or "").strip()
-    api_key = _secret_from_env(api_key_env)
-    if not api_key and same_provider:
-        api_key = inherited.api_key
-    if not api_key:
-        api_key = _secret_from_env(get_provider_spec(provider).env_key)
-    base_url = str(getattr(ref, "base_url", "") or "").strip()
-    if not base_url:
-        base_url = (
-            inherited.base_url
-            if same_provider
-            else get_provider_spec(provider).default_base_url
-        )
-    proxy = str(getattr(ref, "proxy", "") or "").strip()
-    if not proxy and same_provider:
-        proxy = inherited.proxy
-    provider_routing = inherited.provider_routing if same_provider else {}
-    return ProviderConfig(
-        provider=provider,
-        model=model,
-        api_key=api_key,
-        base_url=base_url,
-        org_id=inherited.org_id if same_provider else "",
-        proxy=proxy,
-        provider_routing=dict(provider_routing),
+    return resolve_provider_deployment(
+        config,
+        provider,
+        model,
+        inherited_provider_config=inherited,
+        overrides=ref,
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
     )
 
 
@@ -2824,10 +3093,13 @@ def static_b5_credential_available(
     config: Any,
     inherited_provider_config: Any,
     selection_mode: str = _STATIC_OPENROUTER_B5_PROFILE_NAME,
+    *,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> bool:
     """Return True when every static-B5 member resolves a non-empty API key.
 
-    Mirrors the ``_member_provider_config`` key-resolution order for the
+    Mirrors the shared deployment resolver's key-resolution order for the
     selected static B5 profile's members (all refs bound to the profile's
     provider with no member-level ``api_key_env``): the inherited provider
     key when the active provider matches the profile provider, then the
@@ -2858,11 +3130,15 @@ def static_b5_credential_available(
         )
     member_models = (*profile.proposer_models, profile.aggregator_model)
     return all(
-        bool(
-            _member_provider_config(
-                _static_b5_ref(profile.provider_id, model), inherited
-            ).api_key.strip()
-        )
+        resolve_provider_deployment(
+            config,
+            profile.provider_id,
+            model,
+            inherited_provider_config=inherited,
+            overrides=_static_b5_ref(profile.provider_id, model),
+            credential_pool_acquirer=credential_pool_acquirer,
+            session_key=session_key,
+        ).ready
         for model in member_models
     )
 
@@ -2870,16 +3146,49 @@ def static_b5_credential_available(
 def _member_from_ref(
     ref: Any,
     *,
+    config: Any | None = None,
     inherited: ProviderConfig,
     label: str,
+    credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    session_key: str = "",
 ) -> EnsembleMemberConfig:
+    resolution = _resolve_member_deployment(
+        ref,
+        inherited,
+        config=config,
+        credential_pool_acquirer=credential_pool_acquirer,
+        session_key=session_key,
+    )
+    provider_config = resolution.provider_config
+    if provider_config is None and resolution.provider and resolution.model:
+        # Preserve historical/unknown identities for lossless config and
+        # structured quorum accounting.  ``ready=False`` below guarantees
+        # this placeholder is never built and never reaches the network.
+        provider_config = ProviderConfig(
+            provider=resolution.provider,
+            model=resolution.model,
+            replay_provider_state=False,
+        )
+    if provider_config is None:
+        raise ValueError(
+            f"llm_ensemble deployment {resolution.provider}/{resolution.model} "
+            f"is not ready: {resolution.reason}"
+        )
     return EnsembleMemberConfig(
-        provider_config=_member_provider_config(ref, inherited),
+        provider_config=provider_config,
         label=label,
         temperature=getattr(ref, "temperature", None),
         max_tokens=int(getattr(ref, "max_tokens", 0) or 0),
         thinking=getattr(ref, "thinking", None),
         k=int(getattr(ref, "k", 1) or 1),
+        credential_pool_provider=(
+            resolution.provider if resolution.credential_source == "profile_pool" else ""
+        ),
+        credential_pool_session_key=(
+            session_key if resolution.credential_source == "profile_pool" else ""
+        ),
+        ready=resolution.ready,
+        unavailable_reason=resolution.reason,
     )
 
 
@@ -2957,6 +3266,10 @@ def build_ensemble_provider_from_config(
     _enable_member_request_budget_rebinding: bool = False,
     _model_catalog: Any | None = None,
     _context_overflow_threshold: float = 0.85,
+    _credential_pool_acquirer: CredentialPoolAcquirer | None = None,
+    _credential_pool_failure_reporter: CredentialPoolFailureReporter | None = None,
+    _session_key: str = "",
+    _fallback_selector: Any | None = None,
 ) -> EnsembleProvider:
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
@@ -2966,18 +3279,25 @@ def build_ensemble_provider_from_config(
     if static_profile is not None:
         profile_name, proposers, aggregator, selection_plan = _build_static_b5_members(
             static_profile,
+            config=config,
             inherited_provider_config=inherited_provider_config,
+            credential_pool_acquirer=_credential_pool_acquirer,
+            session_key=_session_key,
         )
     elif selection_mode == CUSTOM_B5_SELECTION_MODE:
         profile_name, proposers, aggregator, selection_plan = _build_custom_b5_members(
             config=config,
             inherited_provider_config=inherited_provider_config,
+            credential_pool_acquirer=_credential_pool_acquirer,
+            session_key=_session_key,
         )
     elif selection_mode == "router_dynamic":
         profile_name, proposers, aggregator, selection_plan = _build_router_dynamic_members(
             config=config,
             inherited_provider_config=inherited_provider_config,
             turn_metadata=turn_metadata,
+            credential_pool_acquirer=_credential_pool_acquirer,
+            session_key=_session_key,
         )
     else:
         raise ValueError(f"unknown llm_ensemble.selection_mode {selection_mode!r}")
@@ -3037,6 +3357,47 @@ def build_ensemble_provider_from_config(
     selection_plan["configured_shuffle_candidates"] = configured_shuffle_candidates
     selection_plan["effective_shuffle_candidates"] = shuffle_candidates
     selection_plan["quorum_grace_seconds"] = quorum_grace_seconds
+    inherited_provider = str(inherited_provider_config.provider or "").strip().lower()
+    cross_provider_lineup = any(
+        member.provider_config.provider.strip().lower() != inherited_provider
+        for member in [*proposers, aggregator]
+    )
+    if cross_provider_lineup:
+        # Once any member crosses providers, no member or single-provider
+        # fallback may replay provider-private history.  This covers both
+        # A -> B and a later B -> configured-primary-A transition.
+        def without_private_replay(member: EnsembleMemberConfig) -> EnsembleMemberConfig:
+            return replace(
+                member,
+                provider_config=replace(
+                    member.provider_config,
+                    provider_routing=dict(member.provider_config.provider_routing),
+                    replay_provider_state=False,
+                ),
+            )
+
+        proposers = [without_private_replay(member) for member in proposers]
+        aggregator = without_private_replay(aggregator)
+        disable_fallback_replay = getattr(
+            fallback_provider,
+            "disable_provider_state_replay",
+            None,
+        )
+        if callable(disable_fallback_replay):
+            disable_fallback_replay()
+        # The engine may wrap this ensemble in its per-turn selector after
+        # construction. Disable that clone as well so any later static *or
+        # plugin-provided* fallback adapter inherits the same no-replay
+        # boundary. Runtime passes a turn-local clone; shared selector state
+        # is never mutated here.
+        disable_selector_replay = getattr(
+            _fallback_selector,
+            "disable_provider_state_replay",
+            None,
+        )
+        if callable(disable_selector_replay):
+            disable_selector_replay()
+        selection_plan["provider_state_replay"] = "disabled_cross_provider"
     request_budget_bindings = (
         _runtime_member_request_budget_bindings(
             config=config,
@@ -3052,6 +3413,9 @@ def build_ensemble_provider_from_config(
         proposers=proposers,
         aggregator=aggregator,
         fallback_provider=fallback_provider,
+        fallback_provider_name=inherited_provider_config.provider,
+        fallback_model=inherited_provider_config.model,
+        fallback_api_key=inherited_provider_config.api_key,
         min_successful_proposers=min_successful_proposers,
         all_failed_policy=getattr(ensemble_cfg, "all_failed_policy", "fallback_single"),
         proposer_timeout_seconds=proposer_timeout_seconds,
@@ -3063,4 +3427,5 @@ def build_ensemble_provider_from_config(
         quorum_grace_seconds=quorum_grace_seconds,
         selection_plan=selection_plan,
         _member_request_budget_bindings=request_budget_bindings,
+        _credential_pool_failure_reporter=_credential_pool_failure_reporter,
     )

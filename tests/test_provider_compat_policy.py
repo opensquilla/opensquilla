@@ -61,7 +61,11 @@ def test_api_url_absorbs_any_version_suffix() -> None:
         ("https://x.example/v5", "https://x.example/v5/chat/completions"),
         ("https://x.example/api/v12", "https://x.example/api/v12/chat/completions"),
         ("https://x.example", "https://x.example/v1/chat/completions"),
-        ("https://x.example/v2beta", "https://x.example/v2beta/v1/chat/completions"),
+        ("https://x.example/v2beta", "https://x.example/v2beta/chat/completions"),
+        (
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+        ),
     ]:
         provider = OpenAIProvider(api_key="k", model="m", base_url=base)
         assert provider._api_url("/v1/chat/completions") == expected, base
@@ -79,7 +83,14 @@ def test_tokenrhythm_never_toggles_thinking_but_replays_v4_reasoning() -> None:
     # cost_cny is CNY — booking it as USD would corrupt cost rollups.
     assert policy.trust_billed_cost is False
     assert policy.allow_post_terminal_noop_choice is True
-    assert policy.post_terminal_metadata_keys == frozenset({"cost_cny", "trace_id"})
+    assert policy.post_terminal_metadata_keys == frozenset(
+        {
+            "billing_pending",
+            "cost_cny",
+            "reasoning_available",
+            "trace_id",
+        }
+    )
     assert _should_replay_reasoning_content(
         policy=policy, model="deepseek-v4-flash", caps=None
     )

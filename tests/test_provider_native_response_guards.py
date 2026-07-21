@@ -158,7 +158,9 @@ def test_tokenrhythm_accepts_only_inert_choice_usage_epilogue(
                     {"index": 0, "delta": {}, "finish_reason": "stop"}
                 ],
                 "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                "billing_pending": False,
                 "cost_cny": 0.000001,
+                "reasoning_available": True,
                 "trace_id": "trace-synthetic",
             },
         ),
@@ -178,6 +180,63 @@ def test_tokenrhythm_accepts_only_inert_choice_usage_epilogue(
     assert done[0].stop_reason == "stop"
     assert done[0].input_tokens == 3
     assert done[0].output_tokens == 2
+
+
+def test_tokenrhythm_one_token_length_epilogue_accepts_billing_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_body(
+        monkeypatch,
+        _sse(
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning_content": "synthetic reasoning",
+                        },
+                    }
+                ],
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "length"}],
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "delta": {}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "length"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                "billing_pending": False,
+                "cost_cny": 0.0,
+                "reasoning_available": True,
+                "trace_id": "trace-synthetic",
+            },
+        ),
+    )
+
+    events = _collect(
+        OpenAIProvider(
+            api_key="test",
+            model="deepseek-v4-flash",
+            provider_kind="tokenrhythm",
+        )
+    )
+
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = [event for event in events if isinstance(event, DoneEvent)]
+    assert len(done) == 1
+    assert done[0].stop_reason == "length"
+    assert done[0].input_tokens == 1
+    assert done[0].output_tokens == 1
 
 
 def test_openrouter_accepts_structurally_empty_choice_usage_epilogue(

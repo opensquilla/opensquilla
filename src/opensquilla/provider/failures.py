@@ -312,6 +312,10 @@ _SHARED_TAIL_MATCHERS: tuple[FailureMatcher, ...] = (
     FailureMatcher(ProviderFailureKind.PROVIDER_OVERLOADED, predicate=_is_gateway_transient),
     FailureMatcher(
         ProviderFailureKind.MALFORMED_RESPONSE,
+        raw_codes=frozenset({"invalid_stream_frame", "invalid_stream_order"}),
+    ),
+    FailureMatcher(
+        ProviderFailureKind.MALFORMED_RESPONSE,
         message_substrings=("malformed", "invalid json"),
     ),
     FailureMatcher(

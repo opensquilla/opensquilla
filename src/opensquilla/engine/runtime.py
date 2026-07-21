@@ -1481,6 +1481,21 @@ class _SelectorFallbackProvider:
     def provider_name(self) -> str:
         return getattr(self._provider, "provider_name", "")
 
+    @property
+    def active_provider_id(self) -> str:
+        """Configured identity of the selector deployment serving this turn."""
+        return str(
+            getattr(self._selector, "active_provider_id", "") or self.provider_name
+        )
+
+    def disable_provider_state_replay(self) -> None:
+        """Rebuild the active fallback chain without provider-private replay."""
+        disable = getattr(self._selector, "disable_provider_state_replay", None)
+        if not callable(disable):
+            return
+        disable()
+        self._provider = self._selector.resolve()
+
     def _realign_routed_model_after_fallback(self) -> None:
         """Failover changed the running model — telemetry must follow.
 
@@ -1494,7 +1509,13 @@ class _SelectorFallbackProvider:
         if metadata is None:
             return
         current_config = getattr(self._selector, "current_config", None)
+        metadata["executed_provider"] = str(
+            getattr(current_config, "provider", "")
+            or getattr(self._selector, "active_provider_id", "")
+            or self.provider_name
+        )
         model = str(getattr(current_config, "model", "") or "")
+        metadata["executed_model"] = model
         if not model or metadata.get("routed_model") in (None, model):
             return
         metadata["routed_model"] = model
@@ -1518,6 +1539,7 @@ class _SelectorFallbackProvider:
             return
         try:
             metadata["router_fallback_hops"] = int(metadata.get("router_fallback_hops") or 0) + 1
+            metadata.setdefault("router_fallback_reason", "selector_fallback")
         except Exception:  # noqa: BLE001 — telemetry only
             pass
 
@@ -5524,6 +5546,14 @@ class TurnRunner:
             initial_metadata["skill_catalog_generation"] = int(
                 getattr(skill_catalog, "generation", 0)
             )
+        initial_provider_config = getattr(cloned_selector, "current_config", None)
+        if initial_provider_config is not None:
+            initial_metadata["executed_provider"] = str(
+                getattr(initial_provider_config, "provider", "") or ""
+            )
+            initial_metadata["executed_model"] = str(
+                getattr(initial_provider_config, "model", "") or ""
+            )
         if gate_chat is not None:
             initial_metadata["router_vision_followup_gate_chat"] = gate_chat
         if gate_model:
@@ -5658,12 +5688,13 @@ class TurnRunner:
 
         ensemble_cfg = getattr(self._turn_config(), "llm_ensemble", None)
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
+            from opensquilla.engine.selector_override import (
+                acquire_profile_credential,
+                report_profile_credential_failure,
+            )
             from opensquilla.provider.ensemble import (
                 CUSTOM_B5_SELECTION_MODE,
                 build_ensemble_provider_from_config,
-                custom_b5_lineup_ready,
-                static_b5_credential_available,
-                static_b5_profile,
             )
 
             current_provider_config = (
@@ -5672,13 +5703,21 @@ class TurnRunner:
                 else None
             )
             selection_mode = str(getattr(ensemble_cfg, "selection_mode", "") or "")
-            # Gate against the same inherited config the builder will use, so
-            # the readiness check can never disagree with the actual members.
-            custom_b5_ready, custom_b5_reason = (
-                custom_b5_lineup_ready(self._turn_config(), current_provider_config)
+            # The shared deployment resolver marks an unexecutable member
+            # unavailable before any network call. Keep the ensemble wrapper so
+            # custom lineups can retain quorum semantics when only one provider
+            # is unavailable; only a structurally empty lineup is rejected here.
+            custom_has_proposer = (
+                any(
+                    getattr(candidate, "enabled", True) is not False
+                    and str(getattr(candidate, "provider", "") or "").strip()
+                    and str(getattr(candidate, "model", "") or "").strip()
+                    and str(getattr(candidate, "role", "") or "").strip().lower()
+                    != "aggregator"
+                    for candidate in (getattr(ensemble_cfg, "candidates", None) or [])
+                )
                 if selection_mode == CUSTOM_B5_SELECTION_MODE
-                and current_provider_config is not None
-                else (True, "")
+                else True
             )
             if current_provider_config is None:
                 log.warning(
@@ -5694,34 +5733,13 @@ class TurnRunner:
                     "llm_ensemble.wrap_skipped",
                     reason="incomplete_provider_selector_current_config",
                 )
-            elif static_b5_profile(selection_mode) is not None and not (
-                static_b5_credential_available(
-                    self._turn_config(),
-                    current_provider_config,
-                    selection_mode,
-                )
-            ):
-                # Without a credential for the static profile's provider the
-                # members can never succeed; wrapping would still post the
-                # conversation upstream with an empty bearer token on every
-                # turn. Keep the single-model provider instead.
+            elif not custom_has_proposer:
                 log.warning(
                     "llm_ensemble.wrap_skipped",
-                    reason=f"{selection_mode}_no_credential",
+                    reason=f"{selection_mode}_not_ready:no_proposers",
                 )
                 turn.metadata["ensemble_wrap_skipped_reason"] = (
-                    f"{selection_mode}_no_credential"
-                )
-            elif not custom_b5_ready:
-                # Same empty-bearer protection for the explicit custom
-                # lineup: a member whose provider resolves no key can never
-                # succeed, and a lineup without proposers cannot fuse.
-                log.warning(
-                    "llm_ensemble.wrap_skipped",
-                    reason=f"{selection_mode}_not_ready:{custom_b5_reason}",
-                )
-                turn.metadata["ensemble_wrap_skipped_reason"] = (
-                    f"{selection_mode}_not_ready:{custom_b5_reason}"
+                    f"{selection_mode}_not_ready:no_proposers"
                 )
             else:
                 turn.metadata["ensemble_enabled"] = True
@@ -5738,6 +5756,12 @@ class TurnRunner:
                     _context_overflow_threshold=(
                         AgentConfig().context_overflow_threshold
                     ),
+                    _credential_pool_acquirer=acquire_profile_credential,
+                    _credential_pool_failure_reporter=(
+                        report_profile_credential_failure
+                    ),
+                    _session_key=turn.session_key,
+                    _fallback_selector=cloned_selector,
                 )
 
         return turn, provider

@@ -145,11 +145,26 @@ def test_cross_provider_tier_warning_text() -> None:
     warnings = _cross_provider_tier_warnings(
         {"c2": {"provider": "openai", "model": "gpt-5.5"}},
         "openrouter",
+        tier_provider_mismatch="veto",
     )
     assert len(warnings) == 1
     assert "'c2'" in warnings[0]
     assert "'openai'" in warnings[0]
     assert "not enabled" in warnings[0]
+    assert "choice is vetoed" in warnings[0]
+    assert "current 'openrouter' deployment" in warnings[0]
+    assert "model will be requested" not in warnings[0]
+
+
+def test_cross_provider_tier_warning_preserves_legacy_route_semantics() -> None:
+    warnings = _cross_provider_tier_warnings(
+        {"c2": {"provider": "openai", "model": "gpt-5.5"}},
+        "openrouter",
+        tier_provider_mismatch="route",
+    )
+    assert len(warnings) == 1
+    assert "model will be requested from 'openrouter'" in warnings[0]
+    assert "choice is vetoed" not in warnings[0]
 
 
 def test_cross_provider_warning_flips_to_credential_check_when_enabled(monkeypatch) -> None:

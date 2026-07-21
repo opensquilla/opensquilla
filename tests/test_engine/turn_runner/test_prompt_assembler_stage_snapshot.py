@@ -476,6 +476,13 @@ async def test_prompt_assembler_stage_snapshot(
     # Successful path: build expected snapshot from the case definition.
     metadata_after_merge = dict(case["turn_metadata"])
     metadata_after_merge.update(case["prompt_metadata"])
+    if case.get("model"):
+        # Explicit per-turn model resolution now records the actual deployment
+        # identity before prompt assembly for additive Router telemetry.
+        metadata_after_merge.update(
+            executed_provider="override-resolved",
+            executed_model=case["model"],
+        )
     expected_resolved_model = (
         case.get("model") or case["turn_model"] or "claude-sonnet-4.5"
     )

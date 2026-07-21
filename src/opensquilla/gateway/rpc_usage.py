@@ -366,6 +366,7 @@ def _tracker_rows(ctx: RpcContext, *, now_ms: int) -> list[dict[str, Any]]:
             updated_at=now_ms,
         )
         row["modelBreakdown"] = getattr(usage, "model_breakdown", [])
+        row["deploymentBreakdown"] = getattr(usage, "deployment_breakdown", [])
         rows.append(row)
     return rows
 
@@ -566,6 +567,12 @@ def _append_tracker_only_rows(
             and not row.get("modelBreakdown")
         ):
             row["modelBreakdown"] = tracker_row["modelBreakdown"]
+        if (
+            tracker_row
+            and tracker_row.get("deploymentBreakdown")
+            and not row.get("deploymentBreakdown")
+        ):
+            row["deploymentBreakdown"] = tracker_row["deploymentBreakdown"]
         if tracker_row and _row_can_overlay_tracker_totals(row, tracker_row):
             _overlay_tracker_totals(row, tracker_row)
         _reconcile_breakdown_to_row(row)

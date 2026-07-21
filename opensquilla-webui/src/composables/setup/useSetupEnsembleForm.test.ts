@@ -241,7 +241,7 @@ describe('useSetupEnsembleForm — scheme switching', () => {
     expect(f.candidates.value[1]!.role).toBe('fast_check')
   })
 
-  it('activateForProvider only seeds tiers from the active provider', () => {
+  it('activateForProvider seeds mixed-provider tiers into a custom lineup', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig({})
     f.activateForProvider('volcengine', [
@@ -250,6 +250,7 @@ describe('useSetupEnsembleForm — scheme switching', () => {
     ])
     expect(f.candidates.value.map(c => `${c.provider}/${c.model}`)).toEqual([
       'volcengine/doubao-2.0-pro',
+      'openrouter/z-ai/glm-5.2',
     ])
   })
 })
@@ -291,6 +292,53 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
     expect(f.candidates.value.find(c => c.model === 'm1')!.role).toBe('')
   })
 
+  it('deduplicates proposer deployments across sources while retaining the aggregator slot', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        {
+          provider: ' Provider-A ',
+          model: 'shared-model',
+          source: 'legacy_model_options',
+          enabled: false,
+          role: 'critic',
+        },
+        {
+          provider: 'provider-a',
+          model: 'shared-model',
+          source: 'custom',
+          enabled: true,
+          role: 'primary',
+        },
+        {
+          provider: 'provider-a',
+          model: 'shared-model',
+          source: 'legacy_model_options',
+          enabled: true,
+          role: 'aggregator',
+        },
+      ],
+    })
+
+    expect(f.candidates.value).toEqual([
+      {
+        provider: 'provider-a',
+        model: 'shared-model',
+        source: 'custom',
+        enabled: true,
+        role: 'primary',
+      },
+      {
+        provider: 'provider-a',
+        model: 'shared-model',
+        source: 'legacy_model_options',
+        enabled: true,
+        role: 'aggregator',
+      },
+    ])
+  })
+
   it('replaces a proposer atomically without changing quorum or advisory roles', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig({
@@ -307,12 +355,13 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
     expect(makePanel(f, 'a').value.custom.proposerCount).toBe(3)
     f.replaceCandidate(
       { provider: 'a', model: 'primary-model', source: 'custom', role: 'primary' },
+      'b',
       'primary-model-next',
     )
 
     const expectedCandidates = [
       {
-        provider: 'a',
+        provider: 'b',
         model: 'primary-model-next',
         source: 'custom',
         enabled: true,
@@ -352,7 +401,8 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
       payload: f.payload(),
     }
     f.replaceCandidate(
-      { provider: 'a', model: 'primary-model-next', source: 'custom', role: 'primary' },
+      { provider: 'b', model: 'primary-model-next', source: 'custom', role: 'primary' },
+      'a',
       'critic-model',
     )
     expect({
@@ -402,6 +452,32 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
     expect(f.candidates.value).toEqual(expectedCandidates)
     expect(makePanel(f, 'a').value.custom.proposerCount).toBe(2)
     expect(f.payload()).toEqual({ candidates: expectedCandidates })
+  })
+
+  it('preserves aggregator source metadata when replacing its deployment', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        { provider: 'a', model: 'draft', source: 'custom', role: 'primary' },
+        {
+          provider: 'a',
+          model: 'old-fuser',
+          source: 'legacy_model_options',
+          role: 'aggregator',
+        },
+      ],
+    })
+
+    f.setAggregator('b', 'new-fuser')
+
+    expect(f.candidates.value.find(candidate => candidate.role === 'aggregator')).toEqual({
+      provider: 'b',
+      model: 'new-fuser',
+      source: 'legacy_model_options',
+      enabled: true,
+      role: 'aggregator',
+    })
   })
 
   it('keeps all six proposers when one also fills the aggregator slot', () => {
@@ -473,6 +549,79 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
     expect(f.candidates.value.map(c => c.model)).toEqual(['doubao-2.0-pro', 'deepseek-v4-flash'])
   })
 
+  it('importTierCandidates re-enables a matching disabled deployment', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [{
+        provider: 'volcengine',
+        model: 'deepseek-v4-flash',
+        source: 'custom',
+        enabled: false,
+        role: 'critic',
+      }],
+    })
+
+    f.importTierCandidates([
+      { provider: 'VOLCENGINE', model: 'deepseek-v4-flash', tier: 'c0' },
+    ])
+
+    expect(f.candidates.value).toEqual([{
+      provider: 'volcengine',
+      model: 'deepseek-v4-flash',
+      source: 'custom',
+      enabled: true,
+      role: 'fast_check',
+    }])
+  })
+
+  it('replacement wins over a hidden disabled row with the target identity', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        {
+          provider: 'provider-b',
+          model: 'target-model',
+          source: 'legacy_model_options',
+          enabled: false,
+          role: 'critic',
+        },
+        {
+          provider: 'provider-a',
+          model: 'current-model',
+          source: 'custom',
+          enabled: true,
+          role: 'primary',
+        },
+        { provider: 'provider-a', model: 'other-model' },
+      ],
+    })
+
+    f.replaceCandidate(
+      { provider: 'provider-a', model: 'current-model', source: 'custom', role: 'primary' },
+      'provider-b',
+      'target-model',
+    )
+
+    expect(f.candidates.value).toEqual([
+      {
+        provider: 'provider-b',
+        model: 'target-model',
+        source: 'custom',
+        enabled: true,
+        role: 'primary',
+      },
+      {
+        provider: 'provider-a',
+        model: 'other-model',
+        source: 'custom',
+        enabled: true,
+        role: '',
+      },
+    ])
+  })
+
   it('importTierCandidates can restrict new rows to the current provider', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig({
@@ -505,6 +654,75 @@ describe('useSetupEnsembleForm — custom lineup editing', () => {
       'deepseek/deepseek-v4-flash',
       'kimi-k2.6',
     ])
+  })
+
+  it('migrates a bare legacy model id through the active provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_dynamic',
+      model_options: ['deepseek-chat'],
+    })
+
+    f.migrateLegacyToCustom([], 'deepseek')
+
+    expect(f.candidates.value).toEqual([
+      {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        source: 'custom',
+        enabled: true,
+        role: '',
+      },
+    ])
+  })
+
+  it('migrates all six proposers plus the structurally separate aggregator', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_dynamic',
+      candidates: [
+        ...Array.from({ length: CUSTOM_B5_MAX_PROPOSERS }, (_, index) => ({
+          provider: 'provider-a',
+          model: `draft-${index}`,
+        })),
+        { provider: 'provider-b', model: 'fuser', role: 'aggregator' },
+      ],
+    })
+
+    f.migrateLegacyToCustom([], 'provider-a')
+
+    expect(f.candidates.value.filter(candidate => candidate.role !== 'aggregator'))
+      .toHaveLength(CUSTOM_B5_MAX_PROPOSERS)
+    expect(f.candidates.value.filter(candidate => candidate.role === 'aggregator'))
+      .toEqual([
+        {
+          provider: 'provider-b',
+          model: 'fuser',
+          source: 'custom',
+          enabled: true,
+          role: 'aggregator',
+        },
+      ])
+  })
+
+  it('keeps the same provider-model identity in proposer and aggregator roles', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_dynamic',
+      candidates: [
+        { provider: 'provider-a', model: 'shared' },
+        { provider: 'provider-a', model: 'shared', role: 'aggregator' },
+      ],
+    })
+
+    f.migrateLegacyToCustom([], 'provider-a')
+
+    expect(f.candidates.value.map(candidate => candidate.role)).toEqual(['', 'aggregator'])
+    expect(f.candidates.value.map(candidate => `${candidate.provider}/${candidate.model}`))
+      .toEqual(['provider-a/shared', 'provider-a/shared'])
   })
 
   it('migrateLegacyToCustom drops the untouched legacy OpenRouter template', () => {
@@ -677,6 +895,23 @@ describe('useSetupEnsembleForm — panel contract', () => {
     const legacy = panel.value.customCandidates
     expect(legacy.map(c => `${c.provider}:${c.model}`))
       .toEqual(['openrouter:deepseek/deepseek-v4-pro', 'deepseek:bare-model'])
+  })
+
+  it('keeps one legacy deployment visible in both proposer and aggregator slots', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_dynamic',
+      candidates: [
+        { provider: 'deepseek', model: 'shared-model' },
+        { provider: 'deepseek', model: 'shared-model', role: 'aggregator' },
+      ],
+    })
+
+    const legacy = makePanel(f, 'deepseek').value.customCandidates
+    expect(legacy.map(candidate => candidate.role)).toEqual(['', 'aggregator'])
+    expect(legacy.map(candidate => `${candidate.provider}:${candidate.model}`))
+      .toEqual(['deepseek:shared-model', 'deepseek:shared-model'])
   })
 
   it('hides the untouched legacy OpenRouter template from the candidate list', () => {

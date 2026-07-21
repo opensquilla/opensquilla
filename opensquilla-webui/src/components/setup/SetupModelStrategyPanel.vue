@@ -5,7 +5,11 @@ import Icon from '@/components/Icon.vue'
 import SetupModelCombobox from '@/components/setup/SetupModelCombobox.vue'
 import SetupTierTable from '@/components/setup/SetupTierTable.vue'
 import type { ModelStrategy } from '@/composables/setup/useSetupModelStrategyForm'
-import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
+import type {
+  SetupProviderCredentialStatus,
+  SetupProviderOption,
+  SetupTierRow,
+} from '@/composables/setup/useSetupRouterForm'
 import type {
   DiscoveredModelCatalog,
   DiscoveredModelsByProvider,
@@ -38,6 +42,8 @@ interface RouterPanelContract {
   textTiers: readonly string[]
   tierRows: readonly SetupTierRow[]
   tierLabel: (tier: string) => string
+  providerOptions: readonly SetupProviderOption[]
+  providerCredentialStatus: readonly SetupProviderCredentialStatus[]
   discoveredModelsByProvider?: DiscoveredModelsByProvider
   hasMixedTierProviders: boolean
 }
@@ -80,12 +86,13 @@ const emit = defineEmits<{
   updateStrategy: [value: ModelStrategy]
   updateRouterDefaultTier: [value: string]
   updateRouterVisualMode: [value: string]
-  updateTierField: [name: string, key: 'model' | 'thinkingLevel' | 'supportsImage', value: string | boolean]
+  updateTierField: [name: string, key: 'provider' | 'model' | 'thinkingLevel' | 'supportsImage', value: string | boolean]
   updateEnsembleScheme: [value: 'preset' | 'custom']
   addEnsembleCandidate: [provider: string, model: string, role: EnsembleCandidateRole]
   removeEnsembleCandidate: [candidate: EnsembleCandidateView]
-  replaceEnsembleCandidate: [candidate: EnsembleCandidateView, model: string]
+  replaceEnsembleCandidate: [candidate: EnsembleCandidateView, provider: string, model: string]
   setEnsembleAggregator: [provider: string, model: string]
+  requestProviderModels: [provider: string]
   importEnsembleTierCandidates: []
   migrateEnsembleLegacy: []
   updateEnsembleMinSuccessful: [value: number]
@@ -95,16 +102,23 @@ const emit = defineEmits<{
 
 const showRouterDetails = computed(() => props.panel.activeStrategy === 'router')
 const routerEditingDisabled = computed(() => !props.panel.hasSavedProvider)
+const newCandidateProvider = ref('')
 const newCandidateModel = ref('')
 const addCandidateOpen = ref(false)
 const aggregatorPickerOpen = ref(false)
 const replacementCandidate = ref<EnsembleCandidateView | null>(null)
+const replacementProvider = ref('')
 const replacementModel = ref('')
+const aggregatorProvider = ref('')
 const aggregatorModel = ref('')
 
 function displayProvider(provider: string): string {
   const normalized = String(provider || '').trim().toLowerCase()
   if (!normalized) return props.panel.providerLabel
+  const option = (props.panel.router.providerOptions || []).find(row => (
+    String(row.providerId || '').trim().toLowerCase() === normalized
+  ))
+  if (option?.label) return option.label
   if (normalized === 'openrouter') return 'OpenRouter'
   if (normalized === 'openai') return 'OpenAI'
   if (normalized === 'deepseek') return 'DeepSeek'
@@ -122,7 +136,7 @@ const defaultRouteModel = computed(() => {
 
 const ensembleScheme = computed(() => props.panel.ensemble.scheme)
 const customLineup = computed(() => props.panel.ensemble.custom)
-const candidateProviderId = computed(() => String(
+const activeProviderId = computed(() => String(
   props.panel.ensemble.activeProvider
   || customLineup.value.inheritedAggregatorProvider
   || '',
@@ -134,43 +148,64 @@ const currentModel = computed(() => (
   || props.panel.providerLabel
 ))
 const currentProvider = computed(() => displayProvider(
-  candidateProviderId.value,
+  activeProviderId.value,
 ) || props.panel.providerLabel)
 const emptyCandidateCatalog: DiscoveredModelCatalog = { models: [], source: 'none' }
 const candidateModelCatalog = computed(() => (
-  props.panel.router.discoveredModelsByProvider?.[candidateProviderId.value]
+  props.panel.router.discoveredModelsByProvider?.[newCandidateProvider.value]
   || emptyCandidateCatalog
 ))
-const replacementProviderId = computed(() => String(
-  replacementCandidate.value?.provider || candidateProviderId.value,
-).trim().toLowerCase())
 const replacementModelCatalog = computed(() => (
-  props.panel.router.discoveredModelsByProvider?.[replacementProviderId.value]
+  props.panel.router.discoveredModelsByProvider?.[replacementProvider.value]
   || emptyCandidateCatalog
 ))
+const aggregatorModelCatalog = computed(() => (
+  props.panel.router.discoveredModelsByProvider?.[aggregatorProvider.value]
+  || emptyCandidateCatalog
+))
+const configuredProviderIds = computed(() => new Set(
+  (props.panel.router.providerOptions || [])
+    .filter(option => option.disabled !== true)
+    .map(option => String(option.providerId || '').trim().toLowerCase())
+    .filter(Boolean),
+))
+function isConfiguredProvider(provider: string): boolean {
+  return configuredProviderIds.value.has(String(provider || '').trim().toLowerCase())
+}
 const canSubmitCandidate = computed(() => (
-  Boolean(candidateProviderId.value && newCandidateModel.value.trim())
+  Boolean(newCandidateProvider.value && newCandidateModel.value.trim())
+  && isConfiguredProvider(newCandidateProvider.value)
   && customLineup.value.canAddProposer
 ))
 const replacementDuplicate = computed(() => {
   const current = replacementCandidate.value
+  const nextProvider = replacementProvider.value.trim().toLowerCase()
   const nextModel = replacementModel.value.trim()
-  if (!current || !nextModel || nextModel === current.model) return false
+  if (!current || !nextProvider || !nextModel) return false
+  if (nextProvider === current.provider && nextModel === current.model) return false
   return customLineup.value.proposers.some(candidate => (
     candidate.key !== current.key
-    && candidate.provider === current.provider
+    && candidate.provider === nextProvider
     && candidate.model === nextModel
   ))
 })
 const canSubmitReplacement = computed(() => {
   const current = replacementCandidate.value
+  const nextProvider = replacementProvider.value.trim()
   const nextModel = replacementModel.value.trim()
-  return Boolean(current && nextModel && nextModel !== current.model && !replacementDuplicate.value)
+  return Boolean(
+    current
+    && nextProvider
+    && isConfiguredProvider(nextProvider)
+    && nextModel
+    && (nextProvider !== current.provider || nextModel !== current.model)
+    && !replacementDuplicate.value,
+  )
 })
 const currentAggregatorProvider = computed(() => (
   customLineup.value.aggregator?.provider
   || customLineup.value.inheritedAggregatorProvider
-  || candidateProviderId.value
+  || activeProviderId.value
 ))
 const currentAggregatorModel = computed(() => (
   customLineup.value.aggregator?.model
@@ -180,10 +215,11 @@ const currentAggregatorModel = computed(() => (
 const canSubmitAggregator = computed(() => {
   const nextModel = aggregatorModel.value.trim()
   return Boolean(
-    candidateProviderId.value
+    aggregatorProvider.value
+    && isConfiguredProvider(aggregatorProvider.value)
     && nextModel
     && (
-      candidateProviderId.value !== currentAggregatorProvider.value
+      aggregatorProvider.value !== currentAggregatorProvider.value
       || nextModel !== currentAggregatorModel.value
     ),
   )
@@ -192,6 +228,12 @@ const activeFacts = computed(() => (
   ensembleScheme.value === 'preset'
     ? props.panel.ensemble.presetFacts
     : customLineup.value.facts
+))
+const legacyProposers = computed(() => (
+  props.panel.ensemble.customCandidates.filter(candidate => candidate.role !== 'aggregator')
+))
+const legacyAggregators = computed(() => (
+  props.panel.ensemble.customCandidates.filter(candidate => candidate.role === 'aggregator')
 ))
 const quorumOptions = computed(() => Array.from(
   { length: Math.max(0, activeFacts.value.proposerCount - 1) },
@@ -204,15 +246,18 @@ const displayedMinSuccessful = computed(() => {
 })
 
 function closeLineupEditors() {
+  newCandidateProvider.value = ''
   newCandidateModel.value = ''
   replacementCandidate.value = null
+  replacementProvider.value = ''
   replacementModel.value = ''
+  aggregatorProvider.value = ''
   aggregatorModel.value = ''
   addCandidateOpen.value = false
   aggregatorPickerOpen.value = false
 }
 
-watch(candidateProviderId, () => {
+watch(activeProviderId, () => {
   // A model id is provider-scoped. Never carry a half-entered value across a
   // provider configuration change while the settings dialog remains mounted.
   closeLineupEditors()
@@ -221,15 +266,17 @@ watch(ensembleScheme, closeLineupEditors)
 watch(() => props.panel.activeStrategy, closeLineupEditors)
 
 function submitCandidate() {
-  const provider = candidateProviderId.value
+  const provider = newCandidateProvider.value
   const model = newCandidateModel.value.trim()
-  if (!provider || !model) return
+  if (!provider || !isConfiguredProvider(provider) || !model) return
   emit('addEnsembleCandidate', provider, model, '')
   closeLineupEditors()
 }
 
 function openCandidateEditor() {
   closeLineupEditors()
+  newCandidateProvider.value = activeProviderId.value
+  requestProviderModels(newCandidateProvider.value)
   addCandidateOpen.value = true
 }
 
@@ -238,22 +285,34 @@ function startCandidateReplacement(candidate: EnsembleCandidateView, event?: Mou
   menu?.removeAttribute('open')
   closeLineupEditors()
   replacementCandidate.value = candidate
+  replacementProvider.value = candidate.provider
+  requestProviderModels(replacementProvider.value)
 }
 
 function cancelCandidateReplacement() {
   replacementCandidate.value = null
+  replacementProvider.value = ''
   replacementModel.value = ''
 }
 
 function submitCandidateReplacement() {
   const current = replacementCandidate.value
+  const provider = replacementProvider.value.trim().toLowerCase()
   const model = replacementModel.value.trim()
-  if (!current || !model || model === current.model || replacementDuplicate.value) return
-  emit('replaceEnsembleCandidate', current, model)
+  if (
+    !current
+    || !provider
+    || !isConfiguredProvider(provider)
+    || !model
+    || replacementDuplicate.value
+  ) return
+  if (provider === current.provider && model === current.model) return
+  emit('replaceEnsembleCandidate', current, provider, model)
   closeLineupEditors()
 }
 
 function promoteAggregator(candidate: EnsembleCandidateView, event?: MouseEvent) {
+  if (!isConfiguredProvider(candidate.provider)) return
   const menu = (event?.currentTarget as HTMLElement | null)?.closest('details')
   menu?.removeAttribute('open')
   emit('setEnsembleAggregator', candidate.provider, candidate.model)
@@ -264,13 +323,18 @@ function toggleAggregatorPicker() {
   const shouldOpen = !aggregatorPickerOpen.value
   closeLineupEditors()
   aggregatorPickerOpen.value = shouldOpen
+  if (shouldOpen) {
+    aggregatorProvider.value = currentAggregatorProvider.value
+    requestProviderModels(aggregatorProvider.value)
+  }
 }
 
 function submitAggregator() {
-  const provider = candidateProviderId.value
+  const provider = aggregatorProvider.value
   const model = aggregatorModel.value.trim()
   if (
     !provider
+    || !isConfiguredProvider(provider)
     || !model
     || (
       provider === currentAggregatorProvider.value
@@ -279,6 +343,59 @@ function submitAggregator() {
   ) return
   emit('setEnsembleAggregator', provider, model)
   closeLineupEditors()
+}
+
+function providerOptionsFor(provider: string): SetupProviderOption[] {
+  const current = String(provider || '').trim().toLowerCase()
+  const seen = new Set<string>()
+  const options: SetupProviderOption[] = []
+  for (const option of props.panel.router.providerOptions || []) {
+    const providerId = String(option.providerId || '').trim().toLowerCase()
+    if (!providerId || seen.has(providerId)) continue
+    seen.add(providerId)
+    options.push({
+      providerId,
+      label: option.label || providerId,
+      disabled: option.disabled === true,
+    })
+  }
+  if (current && !seen.has(current)) {
+    options.push({
+      providerId: current,
+      label: `${current} (${t('setup.summary.notConfigured')})`,
+      disabled: true,
+    })
+  }
+  return options
+}
+
+function requestProviderModels(provider: string) {
+  const normalized = String(provider || '').trim().toLowerCase()
+  if (normalized) emit('requestProviderModels', normalized)
+}
+
+function changeCandidateProvider(provider: string) {
+  const normalized = provider.trim().toLowerCase()
+  if (normalized === newCandidateProvider.value) return
+  newCandidateProvider.value = normalized
+  newCandidateModel.value = ''
+  requestProviderModels(normalized)
+}
+
+function changeReplacementProvider(provider: string) {
+  const normalized = provider.trim().toLowerCase()
+  if (normalized === replacementProvider.value) return
+  replacementProvider.value = normalized
+  replacementModel.value = ''
+  requestProviderModels(normalized)
+}
+
+function changeAggregatorProvider(provider: string) {
+  const normalized = provider.trim().toLowerCase()
+  if (normalized === aggregatorProvider.value) return
+  aggregatorProvider.value = normalized
+  aggregatorModel.value = ''
+  requestProviderModels(normalized)
 }
 
 function candidateLabel(candidate: EnsembleCandidateView): string {
@@ -331,6 +448,12 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
     </div>
 
     <template v-else>
+      <div class="setup-model-strategy__provider-scope">
+        <span>{{ t('setup.modelStrategy.configuredProvidersOnly') }}</span>
+        <button type="button" class="setup-inline-link" @click="emit('goToSection', 'provider')">
+          {{ t('setup.modelStrategy.manageProviders') }}
+        </button>
+      </div>
       <p v-if="showRouterDetails && panel.router.hasMixedTierProviders" class="setup-model-strategy__notice">
         {{ t('setup.modelStrategy.crossProviderNotice') }}
       </p>
@@ -385,6 +508,8 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           :rows="panel.router.tierRows"
           :tier-label="panel.router.tierLabel"
           :disabled="routerEditingDisabled"
+          :provider-options="panel.router.providerOptions"
+          :provider-credential-status="panel.router.providerCredentialStatus"
           :models-by-provider="panel.router.discoveredModelsByProvider || {}"
           @update-tier-field="(name, key, value) => emit('updateTierField', name, key, value)"
         />
@@ -414,6 +539,83 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           >
             {{ t('setup.modelStrategy.legacyDynamicMigrate') }}
           </button>
+        </div>
+
+        <div
+          v-if="ensembleScheme === 'legacy'"
+          class="setup-model-strategy__lineup"
+          data-testid="ensemble-legacy-lineup"
+        >
+          <section class="setup-model-strategy__step">
+            <header class="setup-model-strategy__step-head">
+              <span class="setup-model-strategy__step-number" aria-hidden="true">1</span>
+              <span class="setup-model-strategy__step-title">{{ t('setup.modelStrategy.proposerSectionLabel') }}</span>
+              <span class="setup-model-strategy__step-role">{{ t('setup.modelStrategy.proposerRoleLabel') }}</span>
+              <span class="setup-model-strategy__count">
+                {{ t('setup.modelStrategy.proposerCountCompact', {
+                  count: legacyProposers.length,
+                  max: customLineup.maxProposers,
+                }) }}
+              </span>
+            </header>
+            <div
+              v-if="legacyProposers.length"
+              class="setup-model-strategy__candidate-list setup-model-strategy__candidate-list--grouped"
+              role="list"
+            >
+              <div
+                v-for="candidate in legacyProposers"
+                :key="candidate.key"
+                class="setup-model-strategy__candidate"
+                role="listitem"
+              >
+                <span class="setup-model-strategy__candidate-label">{{ candidateLabel(candidate) }}</span>
+                <span
+                  class="setup-model-strategy__credential"
+                  :class="{ 'is-missing': candidate.credential && !candidate.credential.available }"
+                >
+                  {{ credentialLabel(candidate) }}
+                </span>
+              </div>
+            </div>
+            <p v-else class="setup-model-strategy__notice">{{ t('setup.modelStrategy.ensembleEmpty') }}</p>
+          </section>
+
+          <section class="setup-model-strategy__step">
+            <header class="setup-model-strategy__step-head">
+              <span class="setup-model-strategy__step-number" aria-hidden="true">2</span>
+              <span class="setup-model-strategy__step-title">{{ t('setup.modelStrategy.aggregatorSectionLabel') }}</span>
+              <span class="setup-model-strategy__step-role">{{ t('setup.modelStrategy.aggregatorRoleLabel') }}</span>
+            </header>
+            <div class="setup-model-strategy__candidate-list setup-model-strategy__candidate-list--aggregator" role="list">
+              <div
+                v-for="candidate in legacyAggregators"
+                :key="candidate.key"
+                class="setup-model-strategy__candidate"
+                role="listitem"
+              >
+                <span class="setup-model-strategy__candidate-label">{{ candidateLabel(candidate) }}</span>
+                <span
+                  class="setup-model-strategy__credential"
+                  :class="{ 'is-missing': candidate.credential && !candidate.credential.available }"
+                >
+                  {{ credentialLabel(candidate) }}
+                </span>
+              </div>
+              <div
+                v-if="legacyAggregators.length === 0"
+                class="setup-model-strategy__candidate setup-model-strategy__candidate--inherited"
+                role="listitem"
+              >
+                <span class="setup-model-strategy__candidate-main">
+                  <span class="setup-model-strategy__candidate-label">
+                    {{ displayProvider(customLineup.inheritedAggregatorProvider) }} · {{ customLineup.inheritedAggregatorModel || currentModel }}
+                  </span>
+                  <span class="setup-model-strategy__candidate-source">{{ t('setup.modelStrategy.aggregatorInheritedNote') }}</span>
+                </span>
+              </div>
+            </div>
+          </section>
         </div>
 
         <div
@@ -580,6 +782,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
                     <button
                       type="button"
                       data-testid="ensemble-promote-aggregator"
+                      :disabled="!isConfiguredProvider(candidate.provider)"
                       @click="promoteAggregator(candidate, $event)"
                     >
                       <Icon name="fork" :size="14" aria-hidden="true" />
@@ -611,6 +814,22 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
               <span class="setup-model-strategy__editor-title">
                 {{ t('setup.modelStrategy.replaceCandidateTitle', { model: replacementCandidate.model }) }}
               </span>
+              <select
+                class="control-input setup-model-strategy__candidate-provider"
+                name="setup_model_strategy_replace_candidate_provider"
+                :value="replacementProvider"
+                :aria-label="t('setup.modelStrategy.addCandidateProviderLabel')"
+                @change="changeReplacementProvider(($event.target as HTMLSelectElement).value)"
+              >
+                <option
+                  v-for="option in providerOptionsFor(replacementProvider)"
+                  :key="option.providerId"
+                  :value="option.providerId"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
               <SetupModelCombobox
                 cell
                 class="setup-model-strategy__candidate-model"
@@ -653,17 +872,22 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
               class="setup-model-strategy__editor"
               data-testid="ensemble-add-proposer-editor"
             >
-              <div
-                class="control-input setup-model-strategy__candidate-provider-lock"
-                role="textbox"
-                aria-readonly="true"
+              <select
+                class="control-input setup-model-strategy__candidate-provider"
+                name="setup_model_strategy_add_candidate_provider"
+                :value="newCandidateProvider"
                 :aria-label="t('setup.modelStrategy.addCandidateProviderLabel')"
+                @change="changeCandidateProvider(($event.target as HTMLSelectElement).value)"
               >
-                <span class="setup-model-strategy__candidate-provider-label">
-                  {{ t('setup.modelStrategy.addCandidateProviderLabel') }}
-                </span>
-                <strong>{{ currentProvider }}</strong>
-              </div>
+                <option
+                  v-for="option in providerOptionsFor(newCandidateProvider)"
+                  :key="option.providerId"
+                  :value="option.providerId"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
               <SetupModelCombobox
                 cell
                 class="setup-model-strategy__candidate-model"
@@ -813,6 +1037,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
                   type="button"
                   class="setup-model-strategy__aggregator-option"
                   data-testid="ensemble-aggregator-option"
+                  :disabled="!isConfiguredProvider(candidate.provider)"
                   @click="promoteAggregator(candidate)"
                 >
                   <span>{{ candidateLabel(candidate) }}</span>
@@ -820,6 +1045,22 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
                 </button>
               </div>
               <span class="setup-model-strategy__editor-label">{{ t('setup.modelStrategy.aggregatorOtherModel') }}</span>
+              <select
+                class="control-input setup-model-strategy__candidate-provider"
+                name="setup_model_strategy_aggregator_provider"
+                :value="aggregatorProvider"
+                :aria-label="t('setup.modelStrategy.addCandidateProviderLabel')"
+                @change="changeAggregatorProvider(($event.target as HTMLSelectElement).value)"
+              >
+                <option
+                  v-for="option in providerOptionsFor(aggregatorProvider)"
+                  :key="option.providerId"
+                  :value="option.providerId"
+                  :disabled="option.disabled"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
               <SetupModelCombobox
                 cell
                 class="setup-model-strategy__candidate-model"
@@ -830,8 +1071,8 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
                   placeholder: t('setup.modelStrategy.addCandidateModelPlaceholder'),
                 }"
                 :value="aggregatorModel"
-                :models="candidateModelCatalog.models"
-                :model-source="candidateModelCatalog.source"
+                :models="aggregatorModelCatalog.models"
+                :model-source="aggregatorModelCatalog.source"
                 @update="aggregatorModel = $event"
               />
               <div class="setup-model-strategy__editor-actions">
@@ -998,6 +1239,30 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   line-height: 1.35;
 }
 
+.setup-model-strategy__provider-scope {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: var(--sp-2);
+  justify-content: space-between;
+}
+
+.setup-inline-link {
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+}
+
+.setup-inline-link:hover {
+  text-decoration: underline;
+}
+
 .setup-model-strategy__detail {
   border-top: 1px solid var(--border);
   padding-top: var(--sp-3);
@@ -1093,28 +1358,6 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   display: grid;
   gap: var(--sp-2);
   grid-template-columns: minmax(7rem, 0.4fr) minmax(10rem, 1fr) minmax(7rem, auto) auto;
-}
-
-.setup-model-strategy__candidate-provider-lock {
-  align-items: center;
-  background: var(--bg-elevated);
-  cursor: default;
-  display: flex;
-  gap: var(--sp-2);
-  overflow: hidden;
-}
-
-.setup-model-strategy__candidate-provider-label {
-  color: var(--muted);
-  flex: 0 0 auto;
-  font-size: var(--fs-xs);
-}
-
-.setup-model-strategy__candidate-provider-lock strong {
-  font-size: var(--fs-sm);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .setup-model-strategy__candidate-add .control-input {
@@ -1595,7 +1838,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   margin: 0;
 }
 
-.setup-model-strategy__candidate-provider-lock {
+.setup-model-strategy__candidate-provider {
   flex: 0 1 12rem;
   min-height: 2.25rem;
 }
@@ -1805,7 +2048,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
     flex-direction: column;
   }
 
-  .setup-model-strategy__candidate-provider-lock,
+  .setup-model-strategy__candidate-provider,
   .setup-model-strategy__candidate-model {
     flex-basis: auto;
     min-width: 0;

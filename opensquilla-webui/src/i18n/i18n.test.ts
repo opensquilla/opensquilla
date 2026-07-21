@@ -197,7 +197,7 @@ describe('catalog parity', () => {
       stepRegister: 'Create a TokenRhythm account',
       stepCopy: 'Copy your API key',
       stepPaste: 'Paste it into the API key field below',
-      stepSelectAndPaste: 'Select TokenRhythm above, then paste your API key',
+      stepSelectAndPaste: 'Choose Add provider, select TokenRhythm, then paste your API key',
       stepReplaceAndPaste: 'Choose Replace key below, then paste your API key',
     })
     expect(zhHans.setup.provider.recommendation).toEqual({
@@ -210,7 +210,7 @@ describe('catalog parity', () => {
       stepRegister: '注册 TokenRhythm 账户',
       stepCopy: '复制你的 API Key',
       stepPaste: '粘贴到下方 API key 输入框',
-      stepSelectAndPaste: '先在上方选择 TokenRhythm，再粘贴 API Key',
+      stepSelectAndPaste: '点击“添加服务商”，选择 TokenRhythm，然后粘贴 API Key',
       stepReplaceAndPaste: '先点击下方「更换密钥」，再粘贴 API Key',
     })
 

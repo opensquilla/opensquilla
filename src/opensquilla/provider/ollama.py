@@ -12,6 +12,11 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .error_redaction import (
+    redact_upstream_error_code,
+    redact_upstream_error_text,
+    redacted_httpx_error,
+)
 from .stream_assembly import ToolStreamAccumulator, ToolStreamProtocolError
 from .trace_recorder import LLMTraceRecorder
 from .types import (
@@ -132,12 +137,14 @@ class OllamaProvider:
         proxy: str | None = None,
         api_key: str | None = None,
         num_ctx: int | None = None,
+        provider_id: str | None = None,
     ) -> None:
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._proxy = proxy or None
         self._api_key = clean_header_secret(api_key, label="Ollama API key") if api_key else ""
         self._num_ctx = num_ctx or _OLLAMA_DEFAULT_NUM_CTX
+        self.provider_id = (provider_id or self.provider_name).strip()
 
     @property
     def model(self) -> str:
@@ -226,14 +233,24 @@ class OllamaProvider:
                     if response.status_code != 200:
                         body = await response.aread()
                         body_text = body.decode("utf-8", errors="replace")
+                        safe_body_text = redact_upstream_error_text(
+                            body_text,
+                            api_key=self._api_key,
+                            max_len=4000,
+                        )
+                        message = redact_upstream_error_text(
+                            f"HTTP {response.status_code}: {body_text}",
+                            api_key=self._api_key,
+                            max_len=2000,
+                        )
                         trace.record_error(
                             code=str(response.status_code),
-                            message=f"HTTP {response.status_code}: {body_text}",
+                            message=message,
                             status_code=response.status_code,
-                            response_body=body_text,
+                            response_body=safe_body_text,
                         )
                         yield ErrorEvent(
-                            message=f"HTTP {response.status_code}: {body_text}",
+                            message=message,
                             code=str(response.status_code),
                         )
                         return
@@ -258,7 +275,6 @@ class OllamaProvider:
                             trace.record_error(code="invalid_stream_frame", message=message)
                             yield ErrorEvent(message=message, code="invalid_stream_frame")
                             return
-                        trace.record_chunk(chunk)
                         if "error" in chunk and chunk["error"] is not None:
                             top_level_error = chunk["error"]
                             error_message = (
@@ -266,14 +282,24 @@ class OllamaProvider:
                                 if isinstance(top_level_error, dict)
                                 else str(top_level_error).strip() or "Ollama stream error"
                             )
+                            error_message = redact_upstream_error_text(
+                                error_message,
+                                api_key=self._api_key,
+                                max_len=2000,
+                            )
                             error_code = (
                                 str(top_level_error.get("code") or "stream_error")
                                 if isinstance(top_level_error, dict)
                                 else "stream_error"
                             )
+                            error_code = redact_upstream_error_code(
+                                error_code,
+                                api_key=self._api_key,
+                            )
                             trace.record_error(code=error_code, message=error_message)
                             yield ErrorEvent(message=error_message, code=error_code)
                             return
+                        trace.record_chunk(chunk)
                         msg_chunk = chunk.get("message", {})
                         if not isinstance(msg_chunk, dict):
                             message = "Ollama stream contained a malformed message"
@@ -412,26 +438,45 @@ class OllamaProvider:
                         stop_reason="stop",
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        model=self._model,
+                        provider=self.provider_id,
                     )
 
         except httpx.TimeoutException as exc:
-            trace.record_error(code="timeout", message=f"Request timed out: {exc}")
-            yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
+            message = redact_upstream_error_text(
+                f"Request timed out: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(code="timeout", message=message)
+            yield ErrorEvent(message=message, code="timeout")
         except httpx.RequestError as exc:
-            trace.record_error(code="request_error", message=f"Request error: {exc}")
-            yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+            message = redact_upstream_error_text(
+                f"Request error: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(code="request_error", message=message)
+            yield ErrorEvent(message=message, code="request_error")
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
-            log.exception(
+            message = redact_upstream_error_text(
+                f"Provider response handling failed: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            log.error(
                 "provider.stream_internal_error",
                 provider=self.provider_name,
                 model=self._model,
+                error=message,
+                exception_type=type(exc).__name__,
             )
             trace.record_error(
                 code="provider_internal",
-                message=f"Provider response handling failed: {exc}",
+                message=message,
             )
             yield ErrorEvent(
-                message=f"Provider response handling failed: {exc}",
+                message=message,
                 code="provider_internal",
             )
 
@@ -465,6 +510,10 @@ class OllamaProvider:
                     )
                     for m in data.get("models", [])
                 ]
+        except httpx.HTTPError as exc:
+            if raise_on_error:
+                raise redacted_httpx_error(exc, api_key=self._api_key) from None
+            return []
         except Exception:
             if raise_on_error:
                 raise

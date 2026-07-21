@@ -165,16 +165,26 @@ def test_anthropic_compatible_endpoints_use_authorization_bearer(
     )
     assert isinstance(provider, AnthropicProvider)
 
-    async def _collect() -> None:
-        async for _ in provider.chat([Message(role="user", content="hi")], config=ChatConfig()):
-            pass
+    async def _collect() -> DoneEvent:
+        done: DoneEvent | None = None
+        async for event in provider.chat(
+            [Message(role="user", content="hi")], config=ChatConfig()
+        ):
+            if isinstance(event, DoneEvent):
+                done = event
+        assert done is not None
+        return done
 
-    asyncio.run(_collect())
+    done = asyncio.run(_collect())
 
     headers = captured["headers"]
     assert captured["url"] == f"{expected_base_url}/v1/messages"
     assert headers["Authorization"] == "Bearer test-key"
     assert "x-api-key" not in headers
+    assert provider.provider_name == "anthropic"  # adapter family stays stable
+    assert provider.provider_id == provider_id
+    assert done.provider == provider_id
+    assert done.model == "MiniMax-M2.7"
 
 
 def test_direct_construction_defaults_to_x_api_key(monkeypatch) -> None:
@@ -209,15 +219,24 @@ def test_direct_construction_defaults_to_x_api_key(monkeypatch) -> None:
 
     provider = AnthropicProvider(api_key="test-key", model="claude-test")
 
-    async def _collect() -> None:
-        async for _ in provider.chat([Message(role="user", content="hi")], config=ChatConfig()):
-            pass
+    async def _collect() -> DoneEvent:
+        done: DoneEvent | None = None
+        async for event in provider.chat(
+            [Message(role="user", content="hi")], config=ChatConfig()
+        ):
+            if isinstance(event, DoneEvent):
+                done = event
+        assert done is not None
+        return done
 
-    asyncio.run(_collect())
+    done = asyncio.run(_collect())
 
     headers = captured["headers"]
     assert headers["x-api-key"] == "test-key"
     assert "Authorization" not in headers
+    assert provider.provider_name == "anthropic"
+    assert provider.provider_id == "anthropic"
+    assert done.provider == "anthropic"
 
 
 def test_anthropic_done_event_carries_cache_write_tokens(monkeypatch) -> None:

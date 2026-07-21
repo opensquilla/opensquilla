@@ -53,7 +53,7 @@ export function useSetupModelStrategyForm(
     if (next === 'router') {
       ensembleForm.setEnabled(false)
       if (routerForm.mode.value === 'disabled' || routerForm.mode.value === 'openrouter-mix') {
-        routerForm.setRouterMode('custom')
+        routerForm.enableFromSavedBinding()
       }
       return
     }

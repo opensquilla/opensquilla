@@ -18,8 +18,13 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.secrets import clean_header_secret
 
+from .error_redaction import (
+    redact_upstream_error_code,
+    redact_upstream_error_text,
+    redacted_httpx_error,
+)
 from .failures import retry_after_from_headers
-from .openai import _VERSIONED_BASE_URL_RE, _http_error_body_text, _resolve_llm_proxy
+from .openai import _http_error_body_text, _resolve_llm_proxy, _versioned_api_url
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .stream_assembly import ToolStreamAccumulator, ToolStreamProtocolError
 from .trace_recorder import LLMTraceRecorder
@@ -155,16 +160,25 @@ class OpenAIResponsesProvider:
         base_url: str = _OPENAI_RESPONSES_BASE,
         org_id: str | None = None,
         proxy: str | None = None,
+        provider_id: str | None = None,
     ) -> None:
         self._api_key = clean_header_secret(api_key, label="LLM API key")
         self._model = model
         self._base_url = base_url.rstrip("/")
         self._org_id = org_id
         self._proxy = _resolve_llm_proxy(proxy)
+        self.provider_id = (provider_id or self.provider_name).strip()
 
     @property
     def model(self) -> str:
         return self._model
+
+    def disable_provider_state_replay(self) -> None:
+        """Keep the cross-provider replay contract explicit for this adapter.
+
+        Responses requests are already stateless (``store: false``) and do not
+        replay provider-native response ids, so no mutable state is required.
+        """
 
     def provider_metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
@@ -172,6 +186,7 @@ class OpenAIResponsesProvider:
             provider_kind="openai_responses",
             model=self._model,
             base_url=self._base_url,
+            provider_id=self.provider_id,
         )
 
     def provider_connection_config(self) -> ProviderConnectionConfig:
@@ -183,9 +198,7 @@ class OpenAIResponsesProvider:
         )
 
     def _api_url(self, path: str) -> str:
-        if path.startswith("/v1/") and _VERSIONED_BASE_URL_RE.search(self._base_url):
-            return f"{self._base_url}{path[3:]}"
-        return f"{self._base_url}{path}"
+        return _versioned_api_url(self._base_url, path)
 
     def chat(
         self,
@@ -274,12 +287,22 @@ class OpenAIResponsesProvider:
                     json=payload,
                 )
         except httpx.TimeoutException as exc:
-            trace.record_error(code="timeout", message=f"Request timed out: {exc}")
-            yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
+            message = redact_upstream_error_text(
+                f"Request timed out: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(code="timeout", message=message)
+            yield ErrorEvent(message=message, code="timeout")
             return
         except httpx.RequestError as exc:
-            trace.record_error(code="request_error", message=f"Request error: {exc}")
-            yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+            message = redact_upstream_error_text(
+                f"Request error: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(code="request_error", message=message)
+            yield ErrorEvent(message=message, code="request_error")
             return
 
         if response.status_code != 200:
@@ -287,11 +310,21 @@ class OpenAIResponsesProvider:
             message = f"OpenAI Responses API error {response.status_code}"
             if detail:
                 message = f"{message}: {detail}"
+            message = redact_upstream_error_text(
+                message,
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            response_body = redact_upstream_error_text(
+                response.text,
+                api_key=self._api_key,
+                max_len=4000,
+            )
             trace.record_error(
                 code=str(response.status_code),
                 message=message,
                 status_code=response.status_code,
-                response_body=response.text,
+                response_body=response_body,
             )
             yield ErrorEvent(
                 message=message,
@@ -306,10 +339,15 @@ class OpenAIResponsesProvider:
         try:
             data = response.json()
         except json.JSONDecodeError:
+            response_body = redact_upstream_error_text(
+                response.text,
+                api_key=self._api_key,
+                max_len=4000,
+            )
             trace.record_error(
                 code="invalid_json",
                 message="Invalid JSON response from OpenAI Responses API",
-                response_body=response.text,
+                response_body=response_body,
             )
             yield ErrorEvent(
                 message="Invalid JSON response from OpenAI Responses API",
@@ -322,7 +360,11 @@ class OpenAIResponsesProvider:
             trace.record_error(
                 code="invalid_response",
                 message=message,
-                response_body=response.text,
+                response_body=redact_upstream_error_text(
+                    response.text,
+                    api_key=self._api_key,
+                    max_len=4000,
+                ),
             )
             yield ErrorEvent(message=message, code="invalid_response")
             return
@@ -342,7 +384,11 @@ class OpenAIResponsesProvider:
             trace.record_error(
                 code="invalid_response",
                 message=message,
-                response_body=response.text,
+                response_body=redact_upstream_error_text(
+                    response.text,
+                    api_key=self._api_key,
+                    max_len=4000,
+                ),
                 metadata={"response_status": response_status},
             )
             yield ErrorEvent(message=message, code="invalid_response")
@@ -553,6 +599,11 @@ class OpenAIResponsesProvider:
                     if isinstance(error, dict)
                     else "OpenAI Responses API response failed"
                 )
+                message = redact_upstream_error_text(
+                    message,
+                    api_key=self._api_key,
+                    max_len=2000,
+                )
             elif response_status == "cancelled":
                 code = "response_cancelled"
                 message = "OpenAI Responses API response was cancelled"
@@ -568,10 +619,23 @@ class OpenAIResponsesProvider:
                 code = "invalid_response_status"
                 status = response_status if isinstance(response_status, str) else "missing"
                 message = f"OpenAI Responses API returned invalid status: {status}"
+            code = redact_upstream_error_code(
+                code,
+                api_key=self._api_key,
+            )
+            message = redact_upstream_error_text(
+                message,
+                api_key=self._api_key,
+                max_len=2000,
+            )
             trace.record_error(
                 code=code,
                 message=message,
-                response_body=response.text,
+                response_body=redact_upstream_error_text(
+                    response.text,
+                    api_key=self._api_key,
+                    max_len=4000,
+                ),
                 metadata={"response_status": response_status},
             )
             yield ErrorEvent(message=message, code=code)
@@ -610,6 +674,7 @@ class OpenAIResponsesProvider:
             reasoning_tokens=reasoning_tokens,
             cached_tokens=cached_tokens,
             model=actual_model,
+            provider=self.provider_id,
         )
 
     async def list_models(self, *, raise_on_error: bool = False) -> list[ModelInfo]:
@@ -629,16 +694,19 @@ class OpenAIResponsesProvider:
                 proxy=self._proxy,
             ) as client:
                 response = await client.get(self._api_url("/v1/models"), headers=headers)
-        except httpx.HTTPError:
+        except httpx.HTTPError as exc:
             if raise_on_error:
-                raise
+                raise redacted_httpx_error(exc, api_key=self._api_key) from None
             return []
 
         if response.status_code != 200:
             if raise_on_error:
                 # 4xx/5xx raise a classifiable HTTPStatusError; an unexpected
                 # non-200 success shape still degrades to the empty list.
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise redacted_httpx_error(exc, api_key=self._api_key) from None
             return []
         try:
             data = response.json()
@@ -695,27 +763,61 @@ class OpenAIResponsesProvider:
             metadata={"timeout_seconds": cfg.timeout, "operation": "compact_window"},
         )
 
-        async with httpx.AsyncClient(
-            timeout=cfg.timeout,
-            trust_env=_trust_env(),
-            proxy=self._proxy,
-        ) as client:
-            response = await client.post(
-                endpoint,
-                headers=headers,
-                json=payload,
+        try:
+            async with httpx.AsyncClient(
+                timeout=cfg.timeout,
+                trust_env=_trust_env(),
+                proxy=self._proxy,
+            ) as client:
+                response = await client.post(
+                    endpoint,
+                    headers=headers,
+                    json=payload,
+                )
+        except httpx.TimeoutException as exc:
+            message = redact_upstream_error_text(
+                f"Request timed out: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
             )
+            trace.record_error(
+                code="timeout",
+                message=message,
+                metadata={"operation": "compact_window"},
+            )
+            raise redacted_httpx_error(exc, api_key=self._api_key) from None
+        except httpx.RequestError as exc:
+            message = redact_upstream_error_text(
+                f"Request error: {str(exc) or repr(exc)}",
+                api_key=self._api_key,
+                max_len=2000,
+            )
+            trace.record_error(
+                code="request_error",
+                message=message,
+                metadata={"operation": "compact_window"},
+            )
+            raise redacted_httpx_error(exc, api_key=self._api_key) from None
 
         if response.status_code != 200:
             detail = _http_error_body_text(response.text)
             message = f"OpenAI Responses compact API error {response.status_code}"
             if detail:
                 message = f"{message}: {detail}"
+            message = redact_upstream_error_text(
+                message,
+                api_key=self._api_key,
+                max_len=2000,
+            )
             trace.record_error(
                 code=str(response.status_code),
                 message=message,
                 status_code=response.status_code,
-                response_body=response.text,
+                response_body=redact_upstream_error_text(
+                    response.text,
+                    api_key=self._api_key,
+                    max_len=4000,
+                ),
                 metadata={"operation": "compact_window"},
             )
             raise RuntimeError(message)
@@ -726,7 +828,11 @@ class OpenAIResponsesProvider:
             trace.record_error(
                 code="invalid_json",
                 message="Invalid JSON response from OpenAI Responses compact API",
-                response_body=response.text,
+                response_body=redact_upstream_error_text(
+                    response.text,
+                    api_key=self._api_key,
+                    max_len=4000,
+                ),
                 metadata={"operation": "compact_window"},
             )
             raise RuntimeError("Invalid JSON response from OpenAI Responses compact API") from exc

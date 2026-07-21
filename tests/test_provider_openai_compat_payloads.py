@@ -16,6 +16,7 @@ from opensquilla.provider.openai import (
     _stream_timeout,
     _tool_schema_accepts_arguments,
 )
+from opensquilla.provider.selector import build_provider
 from opensquilla.provider.types import (
     ChatConfig,
     ContentBlockToolResult,
@@ -246,6 +247,44 @@ def _collect(provider: OpenAIProvider, cfg: ChatConfig) -> DoneEvent:
         return done
 
     return asyncio.run(_run())
+
+
+@pytest.mark.parametrize("provider_id", ["dashscope", "deepseek"])
+def test_registry_openai_compat_identity_survives_into_done_event(
+    monkeypatch: Any,
+    provider_id: str,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = build_provider(
+        provider=provider_id,
+        model="test-model",
+        api_key="test-key",
+    )
+
+    assert isinstance(provider, OpenAIProvider)
+    assert provider.provider_name == "openai"  # adapter family stays stable
+    assert provider.provider_id == provider_id
+    assert provider.provider_metadata().provider_kind == provider_id
+    assert provider.provider_metadata().provider_id == provider_id
+
+    done = _collect(provider, ChatConfig())
+    assert done.provider == provider_id
+    assert done.model == "test-model"
+
+
+def test_direct_openai_adapter_defaults_configured_identity_to_family(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(api_key="test-key", model="test-model")
+
+    done = _collect(provider, ChatConfig())
+
+    assert provider.provider_name == "openai"
+    assert provider.provider_id == "openai"
+    assert done.provider == "openai"
 
 
 def test_openrouter_stream_write_timeout_defaults_to_request_timeout(

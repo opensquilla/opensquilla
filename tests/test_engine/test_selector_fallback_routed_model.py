@@ -30,7 +30,7 @@ class _StubSelector:
 
     @property
     def current_config(self) -> SimpleNamespace:
-        return SimpleNamespace(model=self._fallback_model)
+        return SimpleNamespace(provider="fallback-provider", model=self._fallback_model)
 
 
 def test_fallback_realigns_routed_model_and_drops_savings() -> None:
@@ -49,6 +49,9 @@ def test_fallback_realigns_routed_model_and_drops_savings() -> None:
     assert wrapper.fallback_after_invalid_response("upstream 503") is True
 
     assert metadata["routed_model"] == "cheap/fallback"
+    assert metadata["executed_provider"] == "fallback-provider"
+    assert metadata["executed_model"] == "cheap/fallback"
+    assert metadata["router_fallback_reason"] == "selector_fallback"
     assert metadata["savings_pct"] == 0.0
     assert metadata["savings_max_price_per_m"] == 0.0
     assert metadata["savings_routed_price_per_m"] == 0.0
@@ -220,3 +223,77 @@ async def test_turn_without_fallback_hop_emits_exactly_one_router_decision(
     done_events = [event for event in events if isinstance(event, EngineDoneEvent)]
     assert len(done_events) == 1
     assert done_events[0].model == PRIMARY_MODEL
+
+
+async def test_blocked_cross_provider_route_passes_primary_model_to_agent_request(
+    monkeypatch: Any,
+) -> None:
+    foreign_model = "doubao-seed-1-6-251015"
+
+    async def blocked_pipeline(
+        self: TurnRunner,
+        message: str,
+        session_key: str,
+        provider: Any,
+        cloned_selector: Any,
+        tool_defs: list[Any],
+        base_prompt: str | tuple[str, str],
+        attachments: list[dict[str, Any]],
+        **_: Any,
+    ) -> tuple[TurnContext, Any]:
+        return (
+            TurnContext(
+                message=message,
+                session_key=session_key,
+                config=self._config,
+                provider=provider,
+                model=foreign_model,
+                tool_defs=tool_defs,
+                system_prompt=base_prompt,
+                attachments=attachments,
+                metadata={
+                    "routed_tier": "c0",
+                    "routed_provider": "volcengine",
+                    "routed_model": foreign_model,
+                    "routing_source": "router",
+                    "routing_applied": True,
+                    "routed_provider_blocked": "missing_credential",
+                    "routed_provider_fallback_reason": "missing_credential",
+                    "routed_provider_fallback_provider": "openrouter",
+                    "routed_provider_fallback_model": PRIMARY_MODEL,
+                    "executed_provider": "openrouter",
+                    "executed_model": PRIMARY_MODEL,
+                },
+            ),
+            provider,
+        )
+
+    observed_calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(TurnRunner, "_run_pipeline", blocked_pipeline)
+    runner = TurnRunner(
+        provider_selector=_ChainSelector(primary_fails=False),
+        provider_call_observer=lambda **payload: observed_calls.append(payload),
+    )
+
+    events = [
+        event
+        async for event in runner.run(
+            "hi",
+            "agent:main:blocked-cross-provider",
+            tool_context=ToolContext(is_owner=True, caller_kind=CallerKind.CLI),
+            history_has_persisted_user=False,
+            no_memory_capture=True,
+        )
+    ]
+
+    [router_event] = [
+        event for event in events if isinstance(event, RouterDecisionEvent)
+    ]
+    assert router_event.model == foreign_model
+    assert observed_calls
+    assert observed_calls[0]["provider_id"] == "openrouter"
+    assert observed_calls[0]["model"] == PRIMARY_MODEL
+
+    [done_event] = [event for event in events if isinstance(event, EngineDoneEvent)]
+    assert done_event.model == PRIMARY_MODEL
+    assert done_event.routed_model == foreign_model

@@ -5,6 +5,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ from opensquilla.provider.ensemble import (
     EnsembleMemberConfig,
     EnsembleProvider,
     _member_chat_config,
+    _member_from_ref,
     _MemberRequestBudgetBinding,
     build_ensemble_provider_from_config,
 )
@@ -43,6 +45,7 @@ class _FakePlan:
     gate: asyncio.Event | None = None
     started: asyncio.Event | None = None
     closed: asyncio.Event | None = None
+    failure: Exception | None = None
 
 
 @dataclass
@@ -93,6 +96,8 @@ class _FakeProvider:
                 await asyncio.sleep(plan.delay)
             if plan.gate is not None:
                 await plan.gate.wait()
+            if plan.failure is not None:
+                raise plan.failure
             for event in plan.events:
                 yield event
         finally:
@@ -141,6 +146,21 @@ def _openrouter_member(model: str, *, thinking: str | None = "high") -> Ensemble
         label=model,
         thinking=thinking,
     )
+
+
+def test_unknown_historical_member_is_unready_placeholder() -> None:
+    member = _member_from_ref(
+        SimpleNamespace(provider="historical-unknown", model="legacy-model"),
+        config=GatewayConfig(),
+        inherited=ProviderConfig(provider="openrouter", model="primary", api_key="key"),
+        label="legacy",
+    )
+
+    assert member.ready is False
+    assert member.unavailable_reason == "unknown_provider"
+    assert member.provider_config.provider == "historical-unknown"
+    assert member.provider_config.model == "legacy-model"
+    assert member.provider_config.api_key == ""
 
 
 class _BudgetCatalog:
@@ -417,6 +437,44 @@ async def test_ensemble_forwards_uniform_proposer_message_limit_proof(
 
 
 @pytest.mark.asyncio
+async def test_no_fallback_error_preserves_completed_proposer_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [
+                    TextDeltaEvent(text="draft"),
+                    DoneEvent(input_tokens=7, output_tokens=3, model="p1"),
+                ]
+            ),
+            "p2": _FakePlan([ErrorEvent(message="failed", code="500")]),
+            "agg": _FakePlan([]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="usage-preservation",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        all_failed_policy="error",
+        min_successful_proposers=2,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    [usage_row] = error.model_usage_breakdown
+    assert usage_row["profile"] == "usage-preservation"
+    assert usage_row["label"] == "p1"
+    assert usage_row["model"] == "p1"
+    assert usage_row["input_tokens"] == 7
+    assert usage_row["output_tokens"] == 3
+    assert error.usage_missing_count == 1
+
+
+@pytest.mark.asyncio
 async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggregator(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -547,10 +605,12 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
     assert first_candidate["execution"]["thinking_override"] == "high"
     assert first_candidate["execution"]["tools_enabled"] is False
     assert first_candidate["execution"]["effective_max_tokens"] == 16384
+    assert first_candidate["request_started"] is True
     assert first_candidate["content"]["text"] == "draft one"
     assert first_candidate["content"]["truncated"] is False
     final_request = done.ensemble_trace["final_request"]
     assert final_request["role"] == "aggregator"
+    assert final_request["request_started"] is True
     assert final_request["execution"]["model"] == "agg"
     assert final_request["execution"]["tools_enabled"] is True
     assert final_request["execution"]["tool_names"] == ["lookup"]
@@ -1077,6 +1137,8 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
         proposers=[_member("p1"), _member("p2")],
         aggregator=_member("agg"),
         fallback_provider=_FallbackProvider(),
+        fallback_provider_name="deepseek",
+        fallback_model="deepseek-chat",
         min_successful_proposers=2,
         proposer_timeout_seconds=1,
         aggregator_timeout_seconds=1,
@@ -1091,10 +1153,13 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
     assert done.input_tokens == 8
     assert done.output_tokens == 10
     assert done.model_usage_breakdown[-1]["role"] == "fallback_single"
+    assert done.model_usage_breakdown[-1]["provider"] == "deepseek"
     assert done.ensemble_trace is not None
     assert done.ensemble_trace["fallback_used"] is True
+    assert done.ensemble_trace["llm_request_count"] == 3
     assert "requires 2" in done.ensemble_trace["fallback_reason"]
     assert done.ensemble_trace["final_request"]["role"] == "fallback_single"
+    assert done.ensemble_trace["final_request"]["request_started"] is True
     assert done.ensemble_trace["final_request"]["output"]["text"] == "single"
     assert done.ensemble_trace["final_request"]["usage"]["model"] == "single"
 
@@ -1239,6 +1304,307 @@ async def test_fallback_stream_without_done_returns_incomplete_error(
     assert [row["model"] for row in error.model_usage_breakdown] == ["p1"]
     assert error.model_usage_breakdown[0]["input_tokens"] == 7
     assert error.usage_missing_count == 2  # failed proposer plus fallback
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_as_event", [True, False])
+async def test_ensemble_redacts_fallback_key_from_terminal_error(
+    monkeypatch: pytest.MonkeyPatch,
+    error_as_event: bool,
+) -> None:
+    api_key = "AIza"
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([ErrorEvent(message="failed", code="failed")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+
+    class _FallbackProvider:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                if error_as_event:
+                    yield ErrorEvent(
+                        message=f"fallback rejected credential {api_key}",
+                        code=f"auth-{api_key}",
+                    )
+                    return
+                raise RuntimeError(f"fallback transport echoed {api_key}")
+                yield TextDeltaEvent(text="unreachable")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        fallback_provider=_FallbackProvider(),
+        fallback_provider_name="deepseek",
+        fallback_model="deepseek-chat",
+        fallback_api_key=api_key,
+        min_successful_proposers=1,
+        all_failed_policy="fallback_single",
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert api_key not in repr(events)
+    terminal = next(event for event in events if isinstance(event, ErrorEvent))
+    assert api_key not in terminal.message
+    assert api_key not in terminal.code
+
+
+@pytest.mark.asyncio
+async def test_ensemble_aggregator_build_failure_returns_explicit_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft"), DoneEvent(model="p1")]
+            ),
+        }
+    )
+    def build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        if cfg.model == "missing-aggregator":
+            raise RuntimeError("synthetic constructor failure")
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("missing-aggregator"),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "ensemble_aggregator_error"
+    assert "could not be initialized" in error.message
+    assert [row["model"] for row in error.model_usage_breakdown] == ["p1"]
+    assert error.usage_missing_count == 0
+
+
+@pytest.mark.asyncio
+async def test_unready_aggregator_preserves_completed_proposer_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [
+                    TextDeltaEvent(text="draft"),
+                    DoneEvent(input_tokens=7, output_tokens=3, model="p1"),
+                ]
+            ),
+        }
+    )
+
+    def build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        assert cfg.model != "missing-aggregator"
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=replace(
+            _member("missing-aggregator"),
+            ready=False,
+            unavailable_reason="missing_credential",
+        ),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "ensemble_aggregator_error"
+    assert [row["model"] for row in error.model_usage_breakdown] == ["p1"]
+    assert error.model_usage_breakdown[0]["input_tokens"] == 7
+    assert error.usage_missing_count == 0
+
+
+@pytest.mark.asyncio
+async def test_ensemble_redacts_member_key_from_proposer_error_progress_and_trace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api_key = "AIza"
+    registry = _FakeRegistry(
+        {
+            "bad": _FakePlan(
+                [
+                    ErrorEvent(
+                        message=f"proposer rejected credential {api_key}",
+                        code=f"auth-{api_key}",
+                    )
+                ]
+            ),
+            "good": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="good")]),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    bad_member = replace(
+        _member("bad"),
+        provider_config=replace(_member("bad").provider_config, api_key=api_key),
+    )
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[bad_member, _member("good")],
+        aggregator=_member("agg"),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert api_key not in repr(events)
+    finish = next(
+        event
+        for event in events
+        if isinstance(event, EnsembleProgressEvent)
+        and event.event_type == "proposer_finish"
+        and event.proposer_model == "bad"
+    )
+    assert "proposer rejected credential" in finish.error
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    candidate = next(
+        row for row in done.ensemble_trace["candidates"] if row["model"] == "bad"
+    )
+    assert api_key not in json.dumps(candidate, sort_keys=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_as_event", [True, False])
+async def test_ensemble_redacts_aggregator_key_from_terminal_error_and_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    error_as_event: bool,
+) -> None:
+    api_key = "AIza"
+    aggregator_plan = (
+        _FakePlan(
+            [
+                ErrorEvent(
+                    message=f"aggregator rejected credential {api_key}",
+                    code=f"auth-{api_key}",
+                )
+            ]
+        )
+        if error_as_event
+        else _FakePlan([], failure=RuntimeError(f"aggregator transport echoed {api_key}"))
+    )
+    registry = _FakeRegistry(
+        {
+            "good": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="good")]),
+            "agg": aggregator_plan,
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    aggregator = replace(
+        _member("agg"),
+        provider_config=replace(_member("agg").provider_config, api_key=api_key),
+    )
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("good")],
+        aggregator=aggregator,
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert api_key not in repr(events)
+    terminal = next(event for event in events if isinstance(event, ErrorEvent))
+    progress = next(
+        event
+        for event in events
+        if isinstance(event, EnsembleProgressEvent)
+        and event.event_type == "aggregator_finish"
+    )
+    assert api_key not in terminal.message
+    assert api_key not in terminal.code
+    assert api_key not in progress.error
+
+
+@pytest.mark.asyncio
+async def test_unready_proposer_is_quorum_failure_without_provider_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="p1")]),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+
+    def build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        assert cfg.model != "missing-key"
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+    unavailable = replace(
+        _member("missing-key"),
+        ready=False,
+        unavailable_reason="missing_credential",
+    )
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1"), unavailable],
+        aggregator=_member("agg"),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert [call["model"] for call in registry.calls] == ["p1", "agg"]
+    unavailable_finish = next(
+        event
+        for event in events
+        if isinstance(event, EnsembleProgressEvent)
+        and event.event_type == "proposer_finish"
+        and event.proposer_model == "missing-key"
+    )
+    assert "missing_credential" in unavailable_finish.error
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["llm_request_count"] == 2
+    missing_trace = next(
+        row for row in done.ensemble_trace["candidates"] if row["model"] == "missing-key"
+    )
+    assert missing_trace["request_started"] is False
+    assert missing_trace["error_code"] == "missing_credential"
+    assert done.usage_missing_count == 0
 
 
 @pytest.mark.asyncio

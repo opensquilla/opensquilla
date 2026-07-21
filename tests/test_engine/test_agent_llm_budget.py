@@ -863,6 +863,66 @@ class _MixedBilledAndEstimatedCostProvider:
         return []
 
 
+class _EnsembleUsageBreakdownProvider:
+    provider_name = "ensemble"
+
+    def __init__(self, *, billed_cost: float, rows: list[dict[str, Any]]) -> None:
+        self.billed_cost = billed_cost
+        self.rows = rows
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderText(text="done")
+        yield ProviderDone(
+            stop_reason="stop",
+            input_tokens=sum(int(row.get("input_tokens") or 0) for row in self.rows),
+            output_tokens=sum(int(row.get("output_tokens") or 0) for row in self.rows),
+            billed_cost=self.billed_cost,
+            model="aggregator",
+            model_usage_breakdown=self.rows,
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
+class _RetryingEnsembleErrorProvider:
+    provider_name = "ensemble"
+
+    def __init__(self, *, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.calls: list[list[Message]] = []
+
+    def chat(
+        self,
+        messages: list[Message],
+        tools: list[Any] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[Any]:
+        self.calls.append(messages)
+        return self._stream()
+
+    async def _stream(self) -> AsyncIterator[Any]:
+        yield ProviderError(
+            message="aggregator failed after proposer usage",
+            code="500",
+            model_usage_breakdown=self.rows,
+            usage_missing_count=1,
+        )
+
+    async def list_models(self) -> list[Any]:
+        return []
+
+
 class _CompactingErrorSessionManager:
     def __init__(self, *, compact_raises: bool = False) -> None:
         self.calls: list[tuple[str, str]] = []
@@ -3104,6 +3164,182 @@ async def test_agent_labels_turn_cost_budget_error_as_mixed_when_billed_and_esti
         if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
     )
     assert "mixed cost basis" in error.message
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_cost_budget_prices_each_unbilled_ensemble_member(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.engine.pricing import PriceEntry
+
+    calls: list[tuple[str, str]] = []
+
+    def resolve(model_id: str, provider: str = "") -> Any:
+        calls.append((model_id, provider))
+        input_per_m = {("m1", "p1"): 100.0, ("m2", "p2"): 200.0}[
+            (model_id, provider)
+        ]
+        return SimpleNamespace(
+            entry=PriceEntry(input_per_m=input_per_m, output_per_m=0.0),
+            source="test",
+        )
+
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        resolve,
+    )
+    provider = _EnsembleUsageBreakdownProvider(
+        billed_cost=0.0,
+        rows=[
+            {
+                "provider": "p1",
+                "model": "m1",
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "billed_cost": 0.0,
+            },
+            {
+                "provider": "p2",
+                "model": "m2",
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "billed_cost": 0.0,
+            },
+        ],
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            provider_id="ensemble",
+            model_id="aggregator",
+            max_turn_cost_usd=0.25,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    error = next(
+        event
+        for event in events
+        if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
+    )
+    assert "$0.300000" in error.message
+    assert "estimated cost basis" in error.message
+    assert calls == [("m1", "p1"), ("m2", "p2")]
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_cost_budget_combines_billed_and_unbilled_ensemble_members(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.engine.pricing import PriceEntry
+
+    calls: list[tuple[str, str]] = []
+
+    def resolve(model_id: str, provider: str = "") -> Any:
+        calls.append((model_id, provider))
+        assert (model_id, provider) == ("m2", "p2")
+        return SimpleNamespace(
+            entry=PriceEntry(input_per_m=400.0, output_per_m=0.0),
+            source="test",
+        )
+
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        resolve,
+    )
+    provider = _EnsembleUsageBreakdownProvider(
+        billed_cost=0.25,
+        rows=[
+            {
+                "provider": "p1",
+                "model": "m1",
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "billed_cost": 0.25,
+            },
+            {
+                "provider": "p2",
+                "model": "m2",
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "billed_cost": 0.0,
+            },
+        ],
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            provider_id="ensemble",
+            model_id="aggregator",
+            max_turn_cost_usd=0.6,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    error = next(
+        event
+        for event in events
+        if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
+    )
+    assert "$0.650000" in error.message
+    assert "mixed cost basis" in error.message
+    assert calls == [("m2", "p2")]
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_cost_budget_stops_retry_after_ensemble_error_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.engine.pricing import PriceEntry
+
+    calls: list[tuple[str, str]] = []
+
+    def resolve(model_id: str, provider: str = "") -> Any:
+        calls.append((model_id, provider))
+        assert (model_id, provider) == ("m1", "p1")
+        return SimpleNamespace(
+            entry=PriceEntry(input_per_m=300.0, output_per_m=0.0),
+            source="test",
+        )
+
+    monkeypatch.setattr(
+        "opensquilla.engine.usage_accounting.resolve_model_price",
+        resolve,
+    )
+    provider = _RetryingEnsembleErrorProvider(
+        rows=[
+            {
+                "provider": "p1",
+                "model": "m1",
+                "input_tokens": 1000,
+                "output_tokens": 0,
+                "billed_cost": 0.0,
+            }
+        ]
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            provider_id="ensemble",
+            model_id="aggregator",
+            max_provider_retries=2,
+            max_turn_cost_usd=0.25,
+        ),
+    )
+
+    events = [event async for event in agent.run_turn("hello")]
+
+    error = next(
+        event
+        for event in events
+        if event.kind == "error" and event.code == "turn_cost_budget_exceeded"
+    )
+    assert "$0.300000" in error.message
+    assert "estimated cost basis" in error.message
+    assert len(provider.calls) == 1
+    assert calls == [("m1", "p1")]
 
 
 def test_with_model_usage_cost_fields_prices_unbilled_cache_reads_cache_aware() -> None:

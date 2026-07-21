@@ -51,6 +51,10 @@ def test_wheel_contains_migrations_and_built_usage_ui(tmp_path: Path) -> None:
     assert any(
         n.endswith("opensquilla/_migrations/V022__telemetry_daily_usage.py") for n in names
     ), f"V022 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    assert any(
+        n.endswith("opensquilla/_migrations/V023__router_deployment_telemetry.py")
+        for n in names
+    ), f"V023 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
     assert "opensquilla/gateway/static/dist/index.html" in names
     assert usage_query_is_built, "built Control UI does not contain the usage.query client"
 
@@ -105,6 +109,8 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
                 "        f'V021 missing in {d}';"
                 " assert (d / 'V022__telemetry_daily_usage.py').exists(),"
                 "        f'V022 missing in {d}';"
+                " assert (d / 'V023__router_deployment_telemetry.py').exists(),"
+                "        f'V023 missing in {d}';"
                 " print('OK', d)"
             ),
         ],
@@ -127,7 +133,7 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     reason="docker smoke is opt-in; it pulls external images",
 )
 def test_docker_image_resolves_migrations() -> None:
-    """`docker build` + `docker run` resolves _migrations through V022.
+    """`docker build` + `docker run` resolves _migrations through V023.
 
     Verifies (C1 v2): .dockerignore no longer excludes migrations/.
     """
@@ -151,6 +157,7 @@ def test_docker_image_resolves_migrations() -> None:
                 " assert (d / 'V010__meta_skill_runs.py').exists();"
                 " assert (d / 'V021__usage_ledger.py').exists();"
                 " assert (d / 'V022__telemetry_daily_usage.py').exists();"
+                " assert (d / 'V023__router_deployment_telemetry.py').exists();"
                 " print('OK', d)"
             ),
         ],

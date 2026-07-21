@@ -307,6 +307,7 @@ def _turn_usage_payload(
         "decision_id": getattr(done_event, "decision_id", None),
     }
     optional_fields = {
+        "provider": getattr(done_event, "provider", None),
         "image_route_reason": getattr(done_event, "image_route_reason", None),
         "vision_followup_gate_decision": getattr(
             done_event,

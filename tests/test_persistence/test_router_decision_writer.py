@@ -44,8 +44,13 @@ def _base_record(**overrides) -> dict:
         "probs": [0.05, 0.91, 0.03, 0.01],
         "flags": ["code", "multi_step"],
         "final_tier": "c2",
+        "requested_provider": "openrouter",
+        "requested_model": "deepseek/deepseek-chat",
         "provider": "openrouter",
         "model": "deepseek/deepseek-chat",
+        "executed_provider": "deepseek",
+        "executed_model": "deepseek-chat",
+        "fallback_reason": "profile_unavailable",
         "thinking_level": "medium",
         "source": "v4_phase3",
         "trail": [
@@ -93,6 +98,11 @@ def test_record_decision_inserts_row(tmp_path: Path) -> None:
     assert row["session_key"] == "agent:main:webchat:s1"
     assert row["proposed_tier"] == "c1"
     assert row["final_tier"] == "c2"
+    assert row["requested_provider"] == "openrouter"
+    assert row["requested_model"] == "deepseek/deepseek-chat"
+    assert row["executed_provider"] == "deepseek"
+    assert row["executed_model"] == "deepseek-chat"
+    assert row["fallback_reason"] == "profile_unavailable"
     assert row["executed_kind"] == "single"
     assert row["savings_pct"] == 42.5
     assert json.loads(row["probs"]) == [0.05, 0.91, 0.03, 0.01]
@@ -268,8 +278,10 @@ def test_list_decisions_orders_newest_first_and_parses_json(tmp_path: Path) -> N
     # Whitelisted columns only, JSON columns parsed back into structures.
     assert set(top) == {
         "decision_id", "session_key", "turn_index", "ts_ms", "classifier",
-        "proposed_tier", "confidence", "probs", "flags", "final_tier",
-        "provider", "model", "thinking_level", "source", "trail",
+            "proposed_tier", "confidence", "probs", "flags", "final_tier",
+            "requested_provider", "requested_model",
+            "provider", "model", "thinking_level", "source", "trail",
+            "executed_provider", "executed_model", "fallback_reason",
         "baseline_model", "savings_pct", "executed_kind", "ensemble_profile",
         "fallback_hops",
     }

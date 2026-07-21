@@ -93,6 +93,10 @@ class DoneEvent:
     # Number of physical ensemble legs that ended without a usage receipt.
     # Appended for source compatibility with positional constructors.
     usage_missing_count: int = 0
+    # Configured registry identity serving this response.  Appended for
+    # positional-construction compatibility; generic adapters default it to
+    # their family identity when constructed outside a selector.
+    provider: str = ""
 
     @property
     def upstream_cost_usd(self) -> float:

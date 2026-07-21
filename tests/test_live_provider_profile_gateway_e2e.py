@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import os
 import sys
 import tomllib
 from pathlib import Path
+
+import pytest
 
 
 def _load_e2e_module():
@@ -75,8 +79,45 @@ def test_live_gateway_profile_config_bounds_agent_runtime(tmp_path: Path) -> Non
 
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert data["agent_max_iterations"] <= 8
+    assert data["agent_max_provider_retries"] == 0
     assert data["agent_runtime_timeout_seconds"] < data["llm_request_timeout_seconds"]
     assert data["task_runtime"]["turn_hard_deadline_s"] < 120.0
+    assert data["privacy"]["disable_network_observability"] is True
+    assert data["tools"]["profile"] == "minimal"
+    assert data["tools"]["deny"] == ["*"]
+    assert data["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
+    if os.name != "nt":
+        assert config_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_live_gateway_inline_nonlegacy_profile_can_force_thinking_off(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "gateway.toml"
+    tiers = {
+        slot: {
+            "provider": "minimax",
+            "model": "MiniMax-M2.7",
+            "thinking_level": "off",
+            "image_only": slot != "c1",
+        }
+        for slot in ("c0", "c1", "c2", "c3")
+    }
+
+    e2e._write_config(
+        config_path,
+        "minimax",
+        "https://api.minimaxi.com/anthropic",
+        "MiniMax-M2.7",
+        max_tokens=64,
+        tier_overrides=tiers,
+        llm_thinking="off",
+    )
+
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert data["llm"]["thinking"] == "off"
+    assert "tier_profile" not in data["squilla_router"]
+    assert data["squilla_router"]["tiers"]["c1"]["thinking_level"] == "off"
 
 
 def test_profile_slot_targets_cover_slots_not_unique_models() -> None:
@@ -191,3 +232,206 @@ def test_router_step_is_extracted_from_decision_log() -> None:
     assert step["routed_tier"] == "c2"
     assert step["routing_source"] == "v4_phase3"
     assert step["confidence"] == 0.91
+
+
+def test_gateway_e2e_dotenv_loader_only_accepts_registry_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "providers.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "OPENAI_API_KEY=offline-test-secret",
+                "OPENAI_BASE_URL=https://attacker.invalid/v1",
+                "OPENAI_MODEL=attacker-model",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    e2e._load_env_quietly(env_file)
+
+    assert e2e.os.environ["OPENAI_API_KEY"] == "offline-test-secret"
+    assert "OPENAI_BASE_URL" not in e2e.os.environ
+    assert "OPENAI_MODEL" not in e2e.os.environ
+
+
+def test_gateway_e2e_rejects_non_registry_endpoint_before_any_live_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://attacker.invalid/v1")
+
+    with pytest.raises(ValueError, match="endpoint override rejected"):
+        e2e._run_provider("openai", max_tokens=1, timeout_seconds=1.0)
+
+
+def test_gateway_batch_always_removes_raw_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    raw_root = tmp_path / "opensquilla-raw-profile-gateway"
+
+    def fake_mkdtemp(*, prefix: str) -> str:
+        assert prefix
+        raw_root.mkdir()
+        return str(raw_root)
+
+    def fake_inner(**kwargs):
+        root = kwargs["tmp_path"]
+        (root / "turn-calls").mkdir()
+        (root / "turn-calls" / "raw.jsonl").write_text("raw")
+        raise RuntimeError("synthetic batch failure")
+
+    monkeypatch.setattr(e2e.tempfile, "mkdtemp", fake_mkdtemp)
+    monkeypatch.setattr(e2e, "_run_gateway_case_batch_in_temp", fake_inner)
+    with pytest.raises(RuntimeError, match="synthetic batch failure"):
+        e2e._run_gateway_case_batch(
+            provider="openai",
+            api_key="synthetic",
+            base_url="https://api.openai.com/v1",
+            tiers={"c1": {"provider": "openai", "model": "gpt-4.1-mini"}},
+            cases=[],
+            max_tokens=32,
+            timeout_seconds=1,
+            case_mode="test",
+        )
+    assert not raw_root.exists()
+
+
+def test_gateway_batch_isolates_user_state_and_profile_lock_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    temp_root = tmp_path / "opensquilla-profile-env"
+    temp_root.mkdir()
+    captured: dict[str, object] = {}
+
+    def fake_popen(*_args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(e2e, "_free_port", lambda: 18701)
+    monkeypatch.setattr(e2e.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        e2e,
+        "_wait_for_gateway_health",
+        lambda _proc, _port: (None, "synthetic offline stop"),
+    )
+    monkeypatch.setattr(e2e, "_stop_gateway", lambda _proc: ("", ""))
+
+    result = e2e._run_gateway_case_batch_in_temp(  # noqa: SLF001
+        provider="openai",
+        api_key="offline-profile-secret",
+        base_url="https://api.openai.com/v1",
+        tiers={"c1": {"provider": "openai", "model": "gpt-4.1-mini"}},
+        cases=[],
+        max_tokens=32,
+        timeout_seconds=1,
+        case_mode="test",
+        tmp_path=temp_root,
+    )
+
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["OPENSQUILLA_USER_STATE_DIR"] == str(temp_root / "user-state")
+    assert env["OPENSQUILLA_TEST_PROFILE_LOCK_ROOT"] == "1"
+    assert (temp_root / "user-state").is_dir()
+    assert captured["cwd"] == temp_root
+    assert result["error"] == "synthetic offline stop"
+
+
+def test_public_provider_summary_excludes_raw_turn_material() -> None:
+    raw = {
+        "provider": "openai",
+        "ok": True,
+        "models_covered": ["gpt-4.1-mini"],
+        "usage_from_turn_logs": {"input_tokens": 2, "output_tokens": 1},
+        "cases": [
+            {
+                "ok": True,
+                "actual_response_model": "gpt-4.1-mini",
+                "usage": {"input_tokens": 2, "output_tokens": 1},
+                "cost": {"opensquilla_estimated_cost_usd": 0.00001},
+                "latency_ms": 9,
+                "assistant_excerpt": "must not leave memory boundary",
+                "session_key": "must-not-report",
+                "marker": "must-not-report",
+                "accepted": {"raw": True},
+            }
+        ],
+    }
+    public = e2e._public_provider_result(raw)  # noqa: SLF001
+
+    serialized = str(public)
+    assert public["status"] == "passed"
+    assert public["cases"][0]["model"] == "gpt-4.1-mini"
+    assert public["latency_ms"] == 9
+    assert "assistant_excerpt" not in serialized
+    assert "session_key" not in serialized
+    assert "marker" not in serialized
+    assert "accepted" not in serialized
+
+    final_rows = e2e._public_report_rows([raw])  # noqa: SLF001
+    assert len(final_rows) == 1
+    assert set(final_rows[0]) == e2e._PUBLIC_RESULT_KEYS  # noqa: SLF001
+    final_serialized = json.dumps(final_rows)
+    assert "cases" not in final_serialized
+    assert "session_key" not in final_serialized
+    with pytest.raises(RuntimeError, match="invalid field set"):
+        e2e._assert_public_report_schema(  # noqa: SLF001
+            [{**final_rows[0], "session_key": "forbidden"}]
+        )
+
+
+def test_gateway_main_writes_and_prints_only_exact_public_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "gateway-profile.json"
+    monkeypatch.setattr(
+        e2e,
+        "_run_provider",
+        lambda *_args, **_kwargs: {
+            "provider": "openai",
+            "ok": True,
+            "models_covered": ["gpt-4.1-mini"],
+            "failure_kinds": [],
+            "cases": [
+                {
+                    "ok": True,
+                    "actual_response_model": "gpt-4.1-mini",
+                    "usage": {"input_tokens": 2, "output_tokens": 1},
+                    "cost": {"opensquilla_estimated_cost_usd": 0.00001},
+                    "latency_ms": 6,
+                    "session_key": "must-not-report",
+                    "assistant_excerpt": "must-not-report",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "live_provider_profile_gateway_e2e.py",
+            "--providers",
+            "openai",
+            "--no-env-file",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert e2e.main() == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert isinstance(payload, list) and len(payload) == 1
+    assert set(payload[0]) == e2e._PUBLIC_RESULT_KEYS  # noqa: SLF001
+    assert "must-not-report" not in json.dumps(payload)
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == payload
+    assert "coverage" in captured.err

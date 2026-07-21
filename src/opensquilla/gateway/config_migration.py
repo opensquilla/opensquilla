@@ -527,10 +527,13 @@ def _clear_mismatched_router_tier_profile(builder: _MigrationBuilder) -> None:
 
     Validation hard-fails when ``tier_profile`` no longer matches
     ``llm.provider`` — the classic hand-edit trap of switching providers
-    without clearing the profile pointer. Clear the profile instead: the
-    inline ``tiers`` table (full dumps always carry one) keeps governing.
-    Only fires when the payload states both values explicitly, so an
-    env-provided provider can never trigger a spurious clear.
+    without clearing the profile pointer. An atomic primary/profile activation
+    is the intentional exception: it leaves the router preset untouched and
+    demotes the preset's provider into ``llm_profiles``. Preserve that shape so
+    a persist/reload cycle keeps the same effective ladder. Otherwise clear the
+    profile and let the inline ``tiers`` table govern. Only fires when the
+    payload states both values explicitly, so an env-provided provider can
+    never trigger a spurious clear.
     """
     router = builder.payload.get("squilla_router")
     if not isinstance(router, dict):
@@ -545,6 +548,12 @@ def _clear_mismatched_router_tier_profile(builder: _MigrationBuilder) -> None:
     if not isinstance(provider, str) or not provider.strip():
         return
     if profile.strip().lower() == provider.strip().lower():
+        return
+    normalized_profile = profile.strip().lower()
+    profiles = builder.payload.get("llm_profiles")
+    if isinstance(profiles, dict) and any(
+        str(key or "").strip().lower() == normalized_profile for key in profiles
+    ):
         return
 
     router.pop("tier_profile", None)

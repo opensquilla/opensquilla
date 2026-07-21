@@ -83,7 +83,7 @@ def _effective_provider_config(
 def provider_preflight(bundle: AgentConfigBundle, model_override: str = "") -> tuple[bool, str]:
     """Return (ok, reason). ``ok`` False blocks the run with ``reason``.
 
-    Runs one live one-token request. Keyless providers (ollama, lm_studio, …)
+    Runs one small, provider-bounded live request. Keyless providers (ollama, lm_studio, …)
     and un-probeable configs pass without a network call.
     """
     from opensquilla.provider.registry import get_provider_spec

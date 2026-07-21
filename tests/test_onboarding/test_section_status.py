@@ -178,6 +178,44 @@ def test_ensemble_status_reports_candidate_provider_credentials(cfg, monkeypatch
     )
 
 
+def test_ensemble_status_uses_profile_credential_resolution(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek",
+        },
+        llm_profiles={
+            "OpenAI": {
+                "api_key": "sk-profile",
+            }
+        },
+    )
+    cfg.llm_ensemble.enabled = True
+    cfg.llm_ensemble.selection_mode = "router_dynamic"
+    cfg.llm_ensemble.candidates = [
+        {
+            "provider": "openai",
+            "model": "gpt-5-mini",
+            "source": "custom",
+            "enabled": True,
+        }
+    ]
+
+    status = get_onboarding_status(cfg)
+
+    by_provider = {
+        str(row["provider"]): row for row in status.ensemble_credential_status
+    }
+    assert by_provider["openai"] == {
+        "provider": "openai",
+        "available": True,
+        "source": "explicit",
+        "envKey": "OPENAI_API_KEY",
+    }
+
+
 def test_llm_credential_status_reports_explicit_key(cfg):
     cfg.llm = LlmProviderConfig(
         provider="deepseek",

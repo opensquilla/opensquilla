@@ -49,6 +49,26 @@ def test_usage_tracker_session_total_equals_sum_across_providers() -> None:
     assert usage._per_model["deepseek/m2"].input_tokens == 2000
 
 
+def test_deployment_breakdown_keeps_same_model_separate_across_providers() -> None:
+    usage = SessionUsage()
+    usage.add(100, 10, "shared-model", provider="provider-a", billed_cost=0.01)
+    usage.add(200, 20, "shared-model", provider="provider-b", billed_cost=0.02)
+
+    # Legacy field remains model-keyed for compatibility.
+    assert usage._per_model is not None
+    assert list(usage._per_model) == ["shared-model"]
+    assert usage._per_model["shared-model"].input_tokens == 300
+
+    by_deployment = {
+        (row["provider"], row["model"]): row for row in usage.deployment_breakdown
+    }
+    assert by_deployment[("provider-a", "shared-model")]["inputTokens"] == 100
+    assert by_deployment[("provider-b", "shared-model")]["inputTokens"] == 200
+    assert sum(row["billedCostUsd"] for row in by_deployment.values()) == pytest.approx(
+        usage.billed_cost
+    )
+
+
 def test_session_usage_add_default_cache_zero() -> None:
     """Existing positional callers (no cache kwargs) still work; cache fields stay at 0."""
     usage = SessionUsage(model_id="claude-opus-4-7")

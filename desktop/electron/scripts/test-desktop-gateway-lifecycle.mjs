@@ -112,6 +112,8 @@ async function runPendingSpawnAdmissionCase() {
 
   assert.equal(lifecycleAllowsProcessSpawn(true, false), false)
   assert.equal(lifecycleAllowsProcessSpawn(false, true), false)
+  assert.equal(lifecycleAllowsProcessSpawn(false, false, 1), false)
+  assert.equal(lifecycleAllowsProcessSpawn(false, false, 0), true)
   assert.equal(published, false)
 }
 

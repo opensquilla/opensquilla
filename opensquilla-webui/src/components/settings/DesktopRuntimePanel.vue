@@ -173,12 +173,15 @@ const hasMigrationBridge = computed(
   () => Boolean(desktopBridge?.migrationSummary && desktopBridge?.migrationRun),
 )
 
-async function loadStatus() {
+async function loadStatus(): Promise<GatewayStatus | null> {
   loading.value = true
   try {
-    gateway.value = await platform.gateway.getStatus()
+    const status = await platform.gateway.getStatus()
+    gateway.value = status
+    return status
   } catch (err) {
     pushToast(t('setup.runtime.statusReadFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
+    return null
   } finally {
     loading.value = false
   }
@@ -195,14 +198,21 @@ async function revealLog() {
 }
 
 async function restartGateway() {
-  if (!platform.gateway.retryStartup) return
+  if (!platform.gateway.retryStartup) return null
   busy.value = true
   try {
-    await platform.gateway.retryStartup()
+    const result = await platform.gateway.retryStartup()
+    if (!result.ok) {
+      pushToast(t('setup.runtime.restartFailed', {
+        error: result.error || t('errorBoundary.defaultMessage'),
+      }), { tone: 'danger' })
+      return null
+    }
     pushToast(t('setup.runtime.restarting'))
-    await loadStatus()
+    return await loadStatus()
   } catch (err) {
     pushToast(t('setup.runtime.restartFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
+    return null
   } finally {
     busy.value = false
   }
@@ -794,8 +804,8 @@ async function recheckLastMigrationSource() {
 }
 
 async function restartAfterMigration() {
-  await restartGateway()
-  if (gateway.value?.status === 'ready') await dismissLastMigrationResult()
+  const refreshedGateway = await restartGateway()
+  if (refreshedGateway?.status === 'ready') await dismissLastMigrationResult()
 }
 
 async function revealMigrationBackups() {

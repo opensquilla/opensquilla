@@ -9,6 +9,11 @@ export interface GatewayStatus {
   error?: string
 }
 
+export interface DesktopRetryStartupResult {
+  ok: boolean
+  error?: string
+}
+
 export type DesktopUpdateStatus =
   | 'idle'
   | 'checking'
@@ -139,7 +144,7 @@ export interface CliInvocation {
 export interface PlatformGatewayApi {
   getStatus(): Promise<GatewayStatus>
   revealLog?: () => Promise<boolean>
-  retryStartup?: () => Promise<unknown>
+  retryStartup?: () => Promise<DesktopRetryStartupResult>
   /** null when the shell predates the bridge or the lookup fails; callers
    *  fall back to the raw command. */
   getCliInvocation?: () => Promise<CliInvocation | null>

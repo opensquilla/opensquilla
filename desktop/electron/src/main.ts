@@ -6504,6 +6504,15 @@ function gatewayExitLooksLikeProfileInUse(output: string): boolean {
   return /OPENSQUILLA_PROFILE_IN_USE/i.test(output)
 }
 
+function desktopGatewayStillRunningMessage(): string {
+  return (
+    'OPENSQUILLA_PROFILE_IN_USE: A previous Desktop Gateway has not exited. ' +
+    'Wait for it to finish, or quit every OpenSquilla app or terminal using this profile, ' +
+    'then try again. If it will not exit, restart the computer. ' +
+    'Do not delete profile lock files.'
+  )
+}
+
 function classifyGatewayExitMessage(message: string, outputTail: string): string {
   if (gatewayExitLooksLikeProfileInUse(outputTail)) {
     return (
@@ -6696,6 +6705,21 @@ async function startGateway(): Promise<GatewayState> {
 
   assertSupportedMacInstallLocation()
 
+  // Retry, recovery, update, or quit may already have moved a child out of the
+  // current slot while its graceful shutdown still owns the profile lock. A
+  // separate activate/second-instance open flow must not bypass that drain and
+  // publish a replacement. Retry remains the explicit join operation; ordinary
+  // resume entry points fail closed until the tracked child has exited.
+  const alreadyStoppingGateways = liveLifecycleOwnedGatewayProcesses().filter(
+    (child) => child !== gatewayProcess,
+  )
+  if (alreadyStoppingGateways.length > 0) {
+    desktopLog('gateway_spawn_blocked_by_stopping_processes', {
+      pids: alreadyStoppingGateways.map((child) => child.pid),
+    })
+    throw new Error(desktopGatewayStillRunningMessage())
+  }
+
   if (gatewayProcess && gatewayState.owned) {
     if (hasGatewayProcessExited(gatewayProcess)) {
       gatewayProcess = null
@@ -6709,9 +6733,7 @@ async function startGateway(): Promise<GatewayState> {
       stopGateway()
       const exited = await waitForGatewayProcessExit(previousChild)
       if (!exited) {
-        throw new Error(
-          'OPENSQUILLA_PROFILE_IN_USE: The previous Desktop Gateway did not finish shutting down. Try again after it exits.',
-        )
+        throw new Error(desktopGatewayStillRunningMessage())
       }
     }
     gatewayState.status = 'stopped'
@@ -6763,7 +6785,15 @@ async function startGateway(): Promise<GatewayState> {
   // close writer/lifecycle admission before draining current children; an
   // in-flight start that had not published its child must not appear after an
   // empty stop/join snapshot and race the installer or a profile write.
-  if (!lifecycleAllowsProcessSpawn(isQuitting, desktopWriters.closed)) {
+  const liveOwnedGatewayCount = liveLifecycleOwnedGatewayProcesses().length
+  if (!lifecycleAllowsProcessSpawn(
+    isQuitting,
+    desktopWriters.closed,
+    liveOwnedGatewayCount,
+  )) {
+    if (liveOwnedGatewayCount > 0) {
+      throw new Error(desktopGatewayStillRunningMessage())
+    }
     throw new Error('Gateway startup was cancelled by an active lifecycle or profile operation.')
   }
   const url = `http://127.0.0.1:${port}`
@@ -11048,13 +11078,22 @@ ipcMain.handle('desktop:boot:retry', async () => {
   }
 
   // Otherwise force a real runtime restart. "Restart runtime" must relaunch the
-  // child even when the current gateway is healthy, so always tear an owned
-  // gateway down and wait for it to release its port + PID lock before
-  // openOrResumeDesktopApp respawns it — never reuse the existing one here.
-  if (gatewayProcess && gatewayState.owned) {
-    const previousChild = gatewayProcess
-    stopGateway()
-    await waitForGatewayProcessExit(previousChild)
+  // child even when the current gateway is healthy, so join every lifecycle-
+  // owned child before openOrResumeDesktopApp may respawn. This includes a
+  // child whose stop was already initiated by another flow. Timeout fails
+  // closed: spawning while any previous writer is live would race the profile
+  // lock and recreate the startup failure this recovery action is meant to fix.
+  const exited = await stopAndJoinAllLifecycleOwnedGateways()
+  if (!exited) {
+    const message = desktopGatewayStillRunningMessage()
+    gatewayState.status = 'error'
+    gatewayState.error = message
+    desktopLog('gateway_restart_wait_timeout', {
+      pids: liveLifecycleOwnedGatewayProcesses().map((child) => child.pid),
+    })
+    sendBootError(message)
+    await restoreMainWindowToBootPage()
+    return { ok: false, error: message }
   }
   clearReusableGatewayState()
   bootError = null

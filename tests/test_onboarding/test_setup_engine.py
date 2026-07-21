@@ -238,6 +238,8 @@ def test_setup_engine_applies_ensemble_with_keep_current_semantics(tmp_path):
         {
             "enabled": True,
             "selectionMode": "router_dynamic",
+            "rankingUserProfileGenerationEnabled": True,
+            "rankingUserProfileEnabled": False,
             "modelOptions": ["prov/model-a", "prov/model-b"],
             "minSuccessfulProposers": 2,
             "allFailedPolicy": "error",
@@ -249,6 +251,8 @@ def test_setup_engine_applies_ensemble_with_keep_current_semantics(tmp_path):
     ensemble = data["llm_ensemble"]
     assert ensemble["enabled"] is True
     assert ensemble["selection_mode"] == "router_dynamic"
+    assert ensemble["ranking_user_profile_generation_enabled"] is True
+    assert ensemble["ranking_user_profile_enabled"] is False
     assert ensemble["model_options"] == ["prov/model-a", "prov/model-b"]
     assert ensemble["min_successful_proposers"] == 2
     assert ensemble["all_failed_policy"] == "error"
@@ -262,6 +266,8 @@ def test_setup_engine_applies_ensemble_with_keep_current_semantics(tmp_path):
     ensemble = data["llm_ensemble"]
     assert ensemble["enabled"] is False
     assert ensemble["selection_mode"] == "router_dynamic"
+    assert ensemble["ranking_user_profile_generation_enabled"] is True
+    assert ensemble["ranking_user_profile_enabled"] is False
     assert ensemble["model_options"] == ["prov/model-a", "prov/model-b"]
     assert ensemble["min_successful_proposers"] == 2
     assert ensemble["all_failed_policy"] == "error"

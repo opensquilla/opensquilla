@@ -20,7 +20,8 @@ def test_llm_ensemble_defaults_to_disabled_for_model_router_first_install() -> N
     assert ensemble.enabled is False
     assert ensemble.mode == "b5_fusion"
     assert ensemble.selection_mode == "static_openrouter_b5"
-    assert ensemble.ranking_user_profile_enabled is True
+    assert ensemble.ranking_user_profile_generation_enabled is False
+    assert ensemble.ranking_user_profile_enabled is False
     assert ensemble.proposer_tools is False
     assert ensemble.aggregator_tools is True
     assert ensemble.min_successful_proposers == 1
@@ -60,19 +61,32 @@ def test_llm_ensemble_defaults_to_disabled_for_model_router_first_install() -> N
     assert provider.quorum_grace_seconds == 5.0
 
 
-def test_llm_ensemble_can_disable_ranking_user_profile_integration() -> None:
-    cfg = GatewayConfig(
+def test_llm_ensemble_user_profile_switches_are_independent() -> None:
+    generation_cfg = GatewayConfig(
         llm_ensemble={
             "selection_mode": "router_dynamic",
+            "ranking_user_profile_generation_enabled": True,
             "ranking_user_profile_enabled": False,
         }
     )
 
-    assert cfg.llm_ensemble.ranking_user_profile_enabled is False
-    assert (
-        cfg.to_toml_dict()["llm_ensemble"]["ranking_user_profile_enabled"]
-        is False
+    assert generation_cfg.llm_ensemble.ranking_user_profile_generation_enabled is True
+    assert generation_cfg.llm_ensemble.ranking_user_profile_enabled is False
+    serialized = generation_cfg.to_toml_dict()["llm_ensemble"]
+    assert serialized["ranking_user_profile_generation_enabled"] is True
+    assert serialized["ranking_user_profile_enabled"] is False
+
+    application_cfg = GatewayConfig(
+        llm_ensemble={
+            "selection_mode": "router_dynamic",
+            "ranking_user_profile_enabled": True,
+        }
     )
+    assert application_cfg.llm_ensemble.ranking_user_profile_generation_enabled is False
+    assert application_cfg.llm_ensemble.ranking_user_profile_enabled is True
+    serialized_application = application_cfg.to_toml_dict()["llm_ensemble"]
+    assert serialized_application["ranking_user_profile_generation_enabled"] is False
+    assert serialized_application["ranking_user_profile_enabled"] is True
 
 
 def test_static_openrouter_b5_does_not_need_model_options() -> None:
@@ -393,6 +407,7 @@ def test_router_dynamic_ensemble_uses_step2_tier1_single_proposer_bound(
     assert len(provider.proposers) == 1
     assert provider.min_successful_proposers == 1
     assert provider.selection_plan["ranking_version"] == "step2-ranking-v2"
+    assert provider.selection_plan["user_profile_enabled"] is False
     assert provider.selection_plan["N_min"] == 1
     assert provider.selection_plan["N_max"] == 1
     assert provider.selection_plan["selected_P"] == [
@@ -414,6 +429,7 @@ def test_router_dynamic_ensemble_uses_step2_greedy_c2_selection() -> None:
         llm_ensemble={
             "enabled": True,
             "selection_mode": "router_dynamic",
+            "ranking_user_profile_enabled": True,
             "model_options": [
                 "deepseek/deepseek-v4-pro",
                 "z-ai/glm-5.2",
@@ -438,6 +454,7 @@ def test_router_dynamic_ensemble_uses_step2_greedy_c2_selection() -> None:
     )
 
     assert provider.profile_name == "router_dynamic/c2"
+    assert provider.selection_plan["user_profile_enabled"] is True
     assert [member.label for member in provider.proposers] == [
         f"proposer_{index + 1}" for index in range(len(provider.proposers))
     ]

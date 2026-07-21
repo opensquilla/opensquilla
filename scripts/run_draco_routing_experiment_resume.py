@@ -2381,7 +2381,7 @@ async def build_experiment_provider(
         task_analysis = await analyze_task_with_provider(
             provider=analyzer_provider,
             message=turn.semantic_message,
-            user_profile=user_profile,
+            user_profile_enabled=user_profile_enabled,
             request_context=request_context,
             routed_tier=routed_tier,
             routing_confidence=routing_confidence,

@@ -225,11 +225,16 @@ enabled = true
 # "router_tree_baseline": frozen pre-Step2 local-tree slot-template baseline;
 #   supported through TOML/RPC/CLI but not offered in the Web UI.
 selection_mode = "static_openrouter_b5"
-# router_dynamic only: include the current user profile in task analysis,
-# permission/risk filters, cost/latency preferences, proposer-count bounds, and
-# S_user. Set false to bypass all user-profile effects (including the packaged
-# mock) while retaining task, model, and session routing signals.
-ranking_user_profile_enabled = true
+# router_dynamic only: convert thumbs on dynamic-routing decisions into user-
+# profile preference memory. General feedback for offline self-learning is
+# still recorded when this is false.
+ranking_user_profile_generation_enabled = false
+# router_dynamic only: apply the current user profile to permission/risk
+# filters, cost/latency preferences, proposer-count bounds, and S_user. The
+# profile is never sent to the task analyzer. This is independent from the
+# generation switch, so an existing/manual profile can be applied without
+# collecting new preference memory.
+ranking_user_profile_enabled = false
 # Explicit lineup for custom_b5 (ignored by the static profiles):
 # [[llm_ensemble.candidates]]
 # provider = "volcengine"

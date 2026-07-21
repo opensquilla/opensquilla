@@ -14,7 +14,9 @@ Privacy: the table stores enum tokens and numbers only — no prompt text
 operator-safe and, unlike ``meta.runs.list``, read-only principals need no
 per-session gating. The list and get surfaces observe routing without changing
 it. ``router.feedback.submit`` is the one handler that writes: its rating folds
-into the user profile ranking reads on the next turn — see its docstring.
+into the offline self-learning sidecar, and can optionally generate
+user-profile preference memory for a dynamic-ranking decision — see its
+docstring.
 """
 
 from __future__ import annotations
@@ -41,6 +43,16 @@ _DEFAULT_LIMIT = 50
 _MAX_LIMIT = 200
 
 _FEEDBACK_RATINGS = frozenset({"up", "down", "neutral"})
+
+
+def _is_router_dynamic_ensemble_decision(record: Mapping[str, Any]) -> bool:
+    """Return whether a persisted decision belongs to dynamic ensemble ranking."""
+    executed_kind = str(record.get("executed_kind") or "").strip().lower()
+    profile = str(record.get("ensemble_profile") or "").strip().lower()
+    return executed_kind == "ensemble" and (
+        profile == "router_dynamic" or profile.startswith("router_dynamic/")
+    )
+
 
 # snake_case DB column -> camelCase wire key, in canonical V017 column order.
 _WIRE_KEYS: tuple[tuple[str, str], ...] = (
@@ -133,11 +145,12 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     "this message's routing record expired".
 
     The rating never mutates the ``router_decisions`` table, and the trainer
-    still consumes the sidecar offline at dataset-build time. It also rides one
-    slower live path: the thumb is transcribed into a routing-preference memory
-    line, Dream consolidates it into MEMORY.md, and ranking projects that back
-    into the global user profile on a later dynamic-routing turn — so a thumb
-    here shifts ``S_user`` there, once consolidation has run.
+    still consumes the sidecar offline at dataset-build time. When user-profile
+    generation is explicitly enabled *and* the persisted decision came from
+    ``router_dynamic``, the thumb also rides one slower path: it is transcribed
+    into routing-preference memory, Dream consolidates it into ``MEMORY.md``,
+    and ranking can project that into the global user profile on a later turn.
+    Generation is default-off and independent from applying an existing profile.
     """
     p = params if isinstance(params, dict) else {}
     decision_id = sanitize_token(p.get("decisionId") or p.get("decision_id"))
@@ -173,6 +186,16 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
     session_key = str(record.get("session_key") or "")
     turn_index = int(record.get("turn_index") or 0)
     executed_kind = str(record.get("executed_kind") or "single")
+    ensemble_profile = str(record.get("ensemble_profile") or "")
+    config = getattr(ctx, "config", None)
+    ensemble_cfg = getattr(config, "llm_ensemble", None)
+    profile_generation_enabled = bool(
+        getattr(ensemble_cfg, "ranking_user_profile_generation_enabled", False)
+    )
+    profile_decision_eligible = _is_router_dynamic_ensemble_decision(record)
+    should_generate_profile = (
+        profile_generation_enabled and profile_decision_eligible
+    )
     ts_ms = record.get("ts_ms")
     decision_ts = (
         datetime.fromtimestamp(int(ts_ms) / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -180,24 +203,19 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
         else None
     )
 
-    from opensquilla.agents.scope import resolve_agent_workspace_dir
     from opensquilla.session.keys import parse_agent_id
     from opensquilla.squilla_router.self_learning.feedback import write_feedback
-    from opensquilla.squilla_router.self_learning.preference_projection import (
-        ROUTING_PREF_FILENAME,
-        transcribe_thumb,
-    )
 
     agent_id = parse_agent_id(session_key)
     rated_model = str(record.get("model") or "") or None
-    router_cfg = getattr(ctx.config, "squilla_router", None)
+    router_cfg = getattr(config, "squilla_router", None)
     sl_cfg = getattr(router_cfg, "self_learning", None)
     try:
         retention_days = int(getattr(sl_cfg, "retention_days", 30))
     except (TypeError, ValueError):
         retention_days = 30
 
-    def _write() -> None:
+    def _write() -> bool:
         write_feedback(
             agent_id,
             decision_id=decision_id,
@@ -209,34 +227,43 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
             decision_ts=decision_ts,
             retention_days=retention_days,
         )
-        # Transcribe the thumb into a routing-preference memory line, then let
-        # go: Dream consolidates memory/*.md into MEMORY.md on its own cadence,
-        # and _resolve_user_profile projects the consolidated lines back into
-        # history on a later turn. The note lands in the GLOBAL "main"
-        # workspace — the profile is global, so a thumb on any agent's decision
-        # shapes the one profile ranking reads — resolved the same way Dream
-        # resolves the workspace it scans (``resolve_agent_workspace_dir``).
-        line = transcribe_thumb(rated_model, rating)
-        if line is None:
-            # neutral revokes and an unresolvable model cannot be credited;
-            # either way there is nothing durable to append. The feedback row
-            # above still lands for the offline trainer.
-            return
+        if not should_generate_profile:
+            return False
+
         try:
-            workspace = resolve_agent_workspace_dir("main", getattr(ctx, "config", None))
+            from opensquilla.agents.scope import resolve_agent_workspace_dir
+            from opensquilla.squilla_router.self_learning.preference_projection import (
+                ROUTING_PREF_FILENAME,
+                transcribe_thumb,
+            )
+
+            # Transcribe the thumb into a routing-preference memory line, then
+            # let go: Dream consolidates memory/*.md into MEMORY.md on its own
+            # cadence, and _resolve_user_profile projects the consolidated
+            # lines back into history on a later turn. The note lands in the
+            # GLOBAL "main" workspace because the profile itself is global.
+            line = transcribe_thumb(rated_model, rating)
+            if line is None:
+                # neutral revokes and an unresolvable model cannot be credited;
+                # either way there is nothing durable to append. The feedback
+                # row above still lands for the offline trainer.
+                return False
+            workspace = resolve_agent_workspace_dir("main", config)
             note = workspace / "memory" / ROUTING_PREF_FILENAME
             note.parent.mkdir(parents=True, exist_ok=True)
             with note.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+            return True
         except Exception as exc:  # noqa: BLE001 — a memory-write miss must not lose the rating
             log.warning(
                 "router_feedback.preference_memory_write_failed",
                 decision_id=decision_id,
                 error=str(exc),
             )
+            return False
 
     try:
-        await anyio.to_thread.run_sync(_write)
+        profile_preference_recorded = await anyio.to_thread.run_sync(_write)
     except Exception as exc:  # noqa: BLE001 — a lost rating must not error the client
         log.warning(
             "router_feedback.write_failed", decision_id=decision_id, error=str(exc)
@@ -248,6 +275,10 @@ async def _handle_router_feedback_submit(params: Any, ctx: RpcContext) -> dict[s
         decision_id=decision_id,
         rating=rating,
         executed_kind=executed_kind,
+        ensemble_profile=ensemble_profile,
+        user_profile_generation_enabled=profile_generation_enabled,
+        user_profile_decision_eligible=profile_decision_eligible,
+        user_profile_preference_recorded=profile_preference_recorded,
         agent_id=agent_id,
     )
     return {"accepted": True, "recorded": rating}

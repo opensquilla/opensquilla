@@ -5987,12 +5987,12 @@ class TurnRunner:
                 turn.metadata.get("router_decision_id") or uuid.uuid4().hex
             )
             turn.metadata["ensemble_decision_id"] = ensemble_decision_id
-            ranking_user_profile_enabled = (
+            ranking_user_profile_application_enabled = (
                 bool(
                     getattr(
                         ensemble_cfg,
                         "ranking_user_profile_enabled",
-                        True,
+                        False,
                     )
                 )
                 if selection_mode == "router_dynamic"
@@ -6002,7 +6002,7 @@ class TurnRunner:
                 decision_id=ensemble_decision_id,
                 selection_mode=selection_mode,
                 turn_metadata=turn.metadata,
-                user_profile_enabled=ranking_user_profile_enabled,
+                user_profile_enabled=ranking_user_profile_application_enabled,
             )
             if current_provider_config is None:
                 log_ensemble_decision_skipped(
@@ -6111,7 +6111,7 @@ class TurnRunner:
                         )
                         user_profile = (
                             self._resolve_user_profile(ranking_config, self._config)
-                            if ranking_user_profile_enabled
+                            if ranking_user_profile_application_enabled
                             else None
                         )
                         analyzer_provider = self._router_dynamic_task_analyzer_provider(
@@ -6121,7 +6121,7 @@ class TurnRunner:
                         task_analysis = await analyze_task_with_provider(
                             provider=analyzer_provider,
                             message=turn.semantic_message,
-                            user_profile=user_profile,
+                            user_profile_enabled=user_profile is not None,
                             request_context=request_context,
                             routed_tier=routed_tier,
                             routing_confidence=routing_confidence,
@@ -6149,7 +6149,7 @@ class TurnRunner:
                             request_context.get("snapshot_hash")
                         )
                         turn.metadata["router_dynamic_user_profile"] = {
-                            "enabled": ranking_user_profile_enabled,
+                            "enabled": ranking_user_profile_application_enabled,
                             "source": (
                                 str(user_profile.get("profile_source") or "")
                                 if user_profile is not None

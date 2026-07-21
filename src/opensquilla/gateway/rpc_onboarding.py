@@ -1003,6 +1003,10 @@ async def _ensemble_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
             cfg,
             enabled=p.get("enabled"),
             selection_mode=p.get("selectionMode"),
+            ranking_user_profile_generation_enabled=p.get(
+                "rankingUserProfileGenerationEnabled"
+            ),
+            ranking_user_profile_enabled=p.get("rankingUserProfileEnabled"),
             model_options=p.get("modelOptions"),
             candidates=p.get("candidates"),
             min_successful_proposers=p.get("minSuccessfulProposers"),

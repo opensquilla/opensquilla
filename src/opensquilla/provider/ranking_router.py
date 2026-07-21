@@ -1984,7 +1984,7 @@ async def analyze_task_with_provider(
     *,
     provider: LLMProvider | None,
     message: str,
-    user_profile: Mapping[str, Any] | None,
+    user_profile_enabled: bool,
     request_context: Mapping[str, Any],
     routed_tier: str,
     routing_confidence: float,
@@ -2040,7 +2040,7 @@ async def analyze_task_with_provider(
             provider=provider_id or "unknown",
             model=model_id,
             routed_tier=_router_tier(routed_tier, effective_config),
-            user_profile_enabled=user_profile is not None,
+            user_profile_enabled=user_profile_enabled,
         )
         return TaskAnalysisResult(
             profile=fallback,
@@ -2119,7 +2119,7 @@ async def analyze_task_with_provider(
         input_chars=len(message),
         input_truncated=len(analysis_message) < len(message),
         request_context_hash=request_context.get("snapshot_hash"),
-        user_profile_enabled=user_profile is not None,
+        user_profile_enabled=user_profile_enabled,
     )
     usage: dict[str, Any] = {}
     normalization_issues: list[str] = []
@@ -2207,7 +2207,7 @@ async def analyze_task_with_provider(
             model=model_id,
             details=str(exc),
             routed_tier=_router_tier(routed_tier, effective_config),
-            user_profile_enabled=user_profile is not None,
+            user_profile_enabled=user_profile_enabled,
         )
         return TaskAnalysisResult(
             profile=fallback,
@@ -2242,7 +2242,7 @@ async def analyze_task_with_provider(
         input_tokens=usage.get("input_tokens", 0),
         output_tokens=usage.get("output_tokens", 0),
         billed_cost=usage.get("billed_cost", 0.0),
-        user_profile_enabled=user_profile is not None,
+        user_profile_enabled=user_profile_enabled,
         normalization_warnings=normalization_issues,
     )
     return TaskAnalysisResult(

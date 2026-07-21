@@ -3005,7 +3005,7 @@ def _build_router_dynamic_members(
             ranking_config=ranking_config,
         )
     user_profile_enabled = bool(
-        getattr(ensemble_cfg, "ranking_user_profile_enabled", True)
+        getattr(ensemble_cfg, "ranking_user_profile_enabled", False)
     )
     supplied_user_profile = inputs.get("user_profile")
     user_profile: Mapping[str, Any] | None = None

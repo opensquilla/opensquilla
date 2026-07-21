@@ -441,6 +441,8 @@ async def test_ensemble_configure_partial_payload_updates_and_persists(
         llm_ensemble={
             "enabled": False,
             "selection_mode": "router_dynamic",
+            "ranking_user_profile_generation_enabled": True,
+            "ranking_user_profile_enabled": False,
             "model_options": ["custom/model-a"],
         }
     )
@@ -459,12 +461,16 @@ async def test_ensemble_configure_partial_payload_updates_and_persists(
     assert res.payload["entry"]["enabled"] is True
     # Omitted params keep the operator's explicit values.
     assert res.payload["entry"]["selection_mode"] == "router_dynamic"
+    assert res.payload["entry"]["ranking_user_profile_generation_enabled"] is True
+    assert res.payload["entry"]["ranking_user_profile_enabled"] is False
     assert res.payload["entry"]["model_options"] == ["custom/model-a"]
     assert ctx.config.llm_ensemble.enabled is True
     assert ctx.config.llm_ensemble.selection_mode == "router_dynamic"
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
     assert persisted["llm_ensemble"]["enabled"] is True
     assert persisted["llm_ensemble"]["selection_mode"] == "router_dynamic"
+    assert persisted["llm_ensemble"]["ranking_user_profile_generation_enabled"] is True
+    assert persisted["llm_ensemble"].get("ranking_user_profile_enabled", False) is False
     assert persisted["llm_ensemble"]["model_options"] == ["custom/model-a"]
 
 
@@ -479,6 +485,8 @@ async def test_ensemble_configure_accepts_full_camel_case_payload(
         {
             "enabled": True,
             "selectionMode": "router_dynamic",
+            "rankingUserProfileGenerationEnabled": True,
+            "rankingUserProfileEnabled": False,
             "modelOptions": ["custom/model-a", "custom/model-b"],
             "minSuccessfulProposers": 2,
             "allFailedPolicy": "error",
@@ -490,12 +498,16 @@ async def test_ensemble_configure_accepts_full_camel_case_payload(
     assert res.payload["entry"] == {
         "enabled": True,
         "selection_mode": "router_dynamic",
+        "ranking_user_profile_generation_enabled": True,
+        "ranking_user_profile_enabled": False,
         "model_options": ["custom/model-a", "custom/model-b"],
         "min_successful_proposers": 2,
         "all_failed_policy": "error",
     }
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
     assert persisted["llm_ensemble"]["selection_mode"] == "router_dynamic"
+    assert persisted["llm_ensemble"]["ranking_user_profile_generation_enabled"] is True
+    assert persisted["llm_ensemble"]["ranking_user_profile_enabled"] is False
     assert persisted["llm_ensemble"]["min_successful_proposers"] == 2
     assert persisted["llm_ensemble"]["all_failed_policy"] == "error"
 

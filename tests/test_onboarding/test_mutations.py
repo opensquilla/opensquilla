@@ -409,6 +409,8 @@ def test_upsert_llm_ensemble_accepts_structured_candidates_partial_merge():
         llm_ensemble={
             "enabled": True,
             "selection_mode": "router_dynamic",
+            "ranking_user_profile_generation_enabled": True,
+            "ranking_user_profile_enabled": False,
             "model_options": ["legacy/model"],
             "min_successful_proposers": 2,
         }
@@ -429,6 +431,8 @@ def test_upsert_llm_ensemble_accepts_structured_candidates_partial_merge():
     assert res.changed is True
     assert res.config.llm_ensemble.enabled is True
     assert res.config.llm_ensemble.selection_mode == "router_dynamic"
+    assert res.config.llm_ensemble.ranking_user_profile_generation_enabled is True
+    assert res.config.llm_ensemble.ranking_user_profile_enabled is False
     assert res.config.llm_ensemble.model_options == ["legacy/model"]
     assert res.config.llm_ensemble.min_successful_proposers == 2
     assert [candidate.model_dump() for candidate in res.config.llm_ensemble.candidates] == [
@@ -449,6 +453,23 @@ def test_upsert_llm_ensemble_accepts_structured_candidates_partial_merge():
             "role": "",
         }
     ]
+    assert res.public_payload["ranking_user_profile_generation_enabled"] is True
+    assert res.public_payload["ranking_user_profile_enabled"] is False
+
+
+def test_upsert_llm_ensemble_can_toggle_profile_switches_independently():
+    cfg = GatewayConfig()
+
+    res = upsert_llm_ensemble(
+        cfg,
+        ranking_user_profile_generation_enabled=True,
+        ranking_user_profile_enabled=False,
+    )
+
+    assert res.config.llm_ensemble.ranking_user_profile_generation_enabled is True
+    assert res.config.llm_ensemble.ranking_user_profile_enabled is False
+    assert res.public_payload["ranking_user_profile_generation_enabled"] is True
+    assert res.public_payload["ranking_user_profile_enabled"] is False
 
 
 def test_upsert_llm_ensemble_keeps_legacy_model_options_payload():

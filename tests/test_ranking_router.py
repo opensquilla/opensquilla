@@ -821,7 +821,7 @@ async def test_task_analyzer_uses_provider_interface_and_validates_json() -> Non
     result = await analyze_task_with_provider(
         provider=provider,
         message="implement a parser",
-        user_profile=mock_user_profile(),
+        user_profile_enabled=True,
         request_context=_context(),
         routed_tier="c1",
         routing_confidence=0.8,
@@ -863,7 +863,7 @@ async def test_task_analyzer_omits_user_profile_and_correlates_logs() -> None:
         result = await analyze_task_with_provider(
             provider=provider,
             message="implement a parser",
-            user_profile=None,
+            user_profile_enabled=False,
             request_context=_context(),
             routed_tier="c1",
             routing_confidence=0.8,
@@ -890,14 +890,14 @@ async def test_task_analyzer_omits_user_profile_and_correlates_logs() -> None:
 
 
 @pytest.mark.asyncio
-async def test_task_analyzer_logs_supplied_profile_without_sending_it() -> None:
+async def test_task_analyzer_logs_profile_enabled_without_receiving_profile() -> None:
     provider = _AnalyzerProvider(json.dumps(_task_profile(tier=2)))
 
     with structlog.testing.capture_logs() as captured:
         await analyze_task_with_provider(
             provider=provider,
             message="implement a parser",
-            user_profile=mock_user_profile(),
+            user_profile_enabled=True,
             request_context=_context(),
             routed_tier="c1",
             routing_confidence=0.8,
@@ -927,7 +927,7 @@ async def test_task_analyzer_chat_parameters_are_loaded_from_ranking_config() ->
     result = await analyze_task_with_provider(
         provider=provider,
         message="implement a parser " * 100,
-        user_profile=mock_user_profile(config),
+        user_profile_enabled=True,
         request_context=_context(),
         routed_tier="c1",
         routing_confidence=0.8,
@@ -951,7 +951,7 @@ async def test_task_analyzer_incomplete_stream_falls_back_even_with_valid_json()
     result = await analyze_task_with_provider(
         provider=_AnalyzerProvider(json.dumps(_task_profile(tier=2)), include_done=False),
         message="hello",
-        user_profile=mock_user_profile(),
+        user_profile_enabled=True,
         request_context=_context(),
         routed_tier="c2",
         routing_confidence=0.77,
@@ -967,7 +967,7 @@ async def test_task_analyzer_malformed_output_falls_back_to_tree_router_profile(
     result = await analyze_task_with_provider(
         provider=_AnalyzerProvider("not-json"),
         message="hello",
-        user_profile=mock_user_profile(),
+        user_profile_enabled=True,
         request_context=_context(),
         routed_tier="c2",
         routing_confidence=0.77,
@@ -987,7 +987,7 @@ async def test_task_analyzer_invalid_required_constraint_uses_fallback() -> None
     result = await analyze_task_with_provider(
         provider=_AnalyzerProvider(json.dumps(malformed)),
         message="hello",
-        user_profile=mock_user_profile(),
+        user_profile_enabled=True,
         request_context=_context(),
         routed_tier="c2",
         routing_confidence=0.77,
@@ -1007,7 +1007,7 @@ async def test_task_analyzer_drops_invalid_optional_fields_without_full_fallback
     result = await analyze_task_with_provider(
         provider=_AnalyzerProvider(json.dumps(profile)),
         message="hello",
-        user_profile=mock_user_profile(),
+        user_profile_enabled=True,
         request_context=_context(),
         routed_tier="c1",
         routing_confidence=0.77,
@@ -1036,7 +1036,7 @@ async def test_task_analyzer_cannot_drop_an_actual_input_modality() -> None:
     result = await analyze_task_with_provider(
         provider=_AnalyzerProvider(json.dumps(incomplete)),
         message="review the attached diagram",
-        user_profile=mock_user_profile(),
+        user_profile_enabled=True,
         request_context=request_context,
         routed_tier="c2",
         routing_confidence=0.77,

@@ -946,6 +946,8 @@ def upsert_llm_ensemble(
     *,
     enabled: bool | None = None,
     selection_mode: str | None = None,
+    ranking_user_profile_generation_enabled: bool | None = None,
+    ranking_user_profile_enabled: bool | None = None,
     model_options: list[str] | None = None,
     candidates: list[dict[str, object]] | None = None,
     min_successful_proposers: int | str | None = None,
@@ -975,6 +977,14 @@ def upsert_llm_ensemble(
                 + ", ".join(_LLM_ENSEMBLE_SELECTION_MODES)
             )
         merged["selection_mode"] = mode_clean
+    if ranking_user_profile_generation_enabled is not None:
+        merged["ranking_user_profile_generation_enabled"] = bool(
+            ranking_user_profile_generation_enabled
+        )
+    if ranking_user_profile_enabled is not None:
+        merged["ranking_user_profile_enabled"] = bool(
+            ranking_user_profile_enabled
+        )
     if model_options is not None:
         if not isinstance(model_options, (list, tuple)):
             raise ValueError("model_options must be a list of model ids")
@@ -1028,10 +1038,20 @@ def upsert_llm_ensemble(
         # `configure ensemble --disabled` on a fresh config persists nothing
         # and is indistinguishable from a silent no-op.
         new_cfg.mark_force_persist("llm_ensemble.enabled")
+    if ranking_user_profile_generation_enabled is not None:
+        new_cfg.mark_force_persist(
+            "llm_ensemble.ranking_user_profile_generation_enabled"
+        )
+    if ranking_user_profile_enabled is not None:
+        new_cfg.mark_force_persist("llm_ensemble.ranking_user_profile_enabled")
 
     payload: dict[str, Any] = {
         "enabled": new_ensemble.enabled,
         "selection_mode": new_ensemble.selection_mode,
+        "ranking_user_profile_generation_enabled": (
+            new_ensemble.ranking_user_profile_generation_enabled
+        ),
+        "ranking_user_profile_enabled": new_ensemble.ranking_user_profile_enabled,
         "model_options": list(new_ensemble.model_options),
         "min_successful_proposers": new_ensemble.min_successful_proposers,
         "all_failed_policy": new_ensemble.all_failed_policy,

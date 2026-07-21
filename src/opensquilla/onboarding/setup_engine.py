@@ -146,6 +146,10 @@ class SetupEngine:
             # payload (``None``) never touch the stored [llm_ensemble] values.
             enabled = payload.get("enabled")
             selection_mode = payload.get("selectionMode")
+            profile_generation_enabled = payload.get(
+                "rankingUserProfileGenerationEnabled"
+            )
+            profile_application_enabled = payload.get("rankingUserProfileEnabled")
             model_options = payload.get("modelOptions")
             if model_options is not None and not isinstance(model_options, (list, tuple)):
                 raise ValueError("modelOptions must be a list of model ids")
@@ -161,6 +165,16 @@ class SetupEngine:
                 self.config,
                 enabled=None if enabled is None else bool(enabled),
                 selection_mode=None if selection_mode is None else str(selection_mode),
+                ranking_user_profile_generation_enabled=(
+                    None
+                    if profile_generation_enabled is None
+                    else bool(profile_generation_enabled)
+                ),
+                ranking_user_profile_enabled=(
+                    None
+                    if profile_application_enabled is None
+                    else bool(profile_application_enabled)
+                ),
                 model_options=(
                     None
                     if model_options is None

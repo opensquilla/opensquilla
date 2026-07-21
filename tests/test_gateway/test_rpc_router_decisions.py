@@ -101,6 +101,33 @@ def _base_record(**overrides) -> dict:
     return record
 
 
+def _dynamic_record(**overrides) -> dict:
+    record = _base_record(
+        executed_kind="ensemble",
+        ensemble_profile="router_dynamic/c2",
+    )
+    record.update(overrides)
+    return record
+
+
+def _feedback_ctx(
+    *,
+    generation_enabled: bool,
+    application_enabled: bool = False,
+    selection_mode: str = "router_dynamic",
+) -> RpcContext:
+    return RpcContext(
+        conn_id="test",
+        config=GatewayConfig(
+            llm_ensemble={
+                "selection_mode": selection_mode,
+                "ranking_user_profile_generation_enabled": generation_enabled,
+                "ranking_user_profile_enabled": application_enabled,
+            }
+        ),
+    )
+
+
 @pytest.fixture
 def writer(tmp_path: Path):
     """Real migrated DB + registered process-wide writer, torn down after."""
@@ -404,6 +431,7 @@ async def test_feedback_submit_records_to_sidecar(
     fb = load_feedback_map("main", home=tmp_path)
     assert fb["d" * 32].rating == "down"
     assert fb["d" * 32].executed_kind == "single"
+    assert not _routing_pref_note(tmp_path).exists()
 
 
 def _routing_pref_note(tmp_path: Path) -> Path:
@@ -415,7 +443,119 @@ def _routing_pref_note(tmp_path: Path) -> Path:
     return resolve_agent_workspace_dir("main", None) / "memory" / ROUTING_PREF_FILENAME
 
 
+async def test_profile_generation_defaults_off_for_dynamic_feedback(
+    writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
+) -> None:
+    """Default-off generation does not suppress the independent feedback row."""
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(_dynamic_record())
+
+    payload = await _handle_router_feedback_submit(
+        {"decisionId": "d" * 32, "rating": "up"},
+        RpcContext(conn_id="test"),
+    )
+
+    from opensquilla.squilla_router.self_learning.feedback import load_feedback_map
+
+    assert payload == {"accepted": True, "recorded": "up"}
+    assert load_feedback_map("main", home=tmp_path)["d" * 32].rating == "up"
+    assert not _routing_pref_note(tmp_path).exists()
+
+
+async def test_profile_application_does_not_implicitly_enable_generation(
+    writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(_dynamic_record())
+
+    await _handle_router_feedback_submit(
+        {"decisionId": "d" * 32, "rating": "up"},
+        _feedback_ctx(generation_enabled=False, application_enabled=True),
+    )
+
+    assert not _routing_pref_note(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("executed_kind", "ensemble_profile"),
+    [
+        ("single", "router_dynamic/c2"),
+        ("ensemble", None),
+        ("ensemble", "static_openrouter_b5"),
+        ("ensemble", "static_tokenrhythm_b5"),
+        ("ensemble", "custom_b5"),
+        ("ensemble", "router_tree_baseline"),
+        ("ensemble", "router_dynamic_bad"),
+    ],
+)
+async def test_profile_generation_ignores_non_dynamic_ranking_decisions(
+    executed_kind: str,
+    ensemble_profile: str | None,
+    writer: RouterDecisionWriter,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(
+        _base_record(
+            executed_kind=executed_kind,
+            ensemble_profile=ensemble_profile,
+        )
+    )
+
+    payload = await _handle_router_feedback_submit(
+        {"decisionId": "d" * 32, "rating": "up"},
+        _feedback_ctx(generation_enabled=True),
+    )
+
+    assert payload == {"accepted": True, "recorded": "up"}
+    assert not _routing_pref_note(tmp_path).exists()
+
+
+async def test_profile_generation_uses_persisted_decision_mode_not_current_mode(
+    writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(_dynamic_record())
+
+    await _handle_router_feedback_submit(
+        {"decisionId": "d" * 32, "rating": "up"},
+        _feedback_ctx(
+            generation_enabled=True,
+            selection_mode="static_openrouter_b5",
+        ),
+    )
+
+    assert _routing_pref_note(tmp_path).exists()
+
+
+async def test_profile_generation_failure_does_not_reject_feedback(
+    writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
+    writer.record_decision(_dynamic_record())
+
+    def fail_workspace_resolution(*args, **kwargs):
+        raise OSError("synthetic preference-memory failure")
+
+    monkeypatch.setattr(
+        "opensquilla.agents.scope.resolve_agent_workspace_dir",
+        fail_workspace_resolution,
+    )
+    payload = await _handle_router_feedback_submit(
+        {"decisionId": "d" * 32, "rating": "up"},
+        _feedback_ctx(generation_enabled=True),
+    )
+
+    from opensquilla.squilla_router.self_learning.feedback import load_feedback_map
+
+    assert payload == {"accepted": True, "recorded": "up"}
+    assert load_feedback_map("main", home=tmp_path)["d" * 32].rating == "up"
+
+
+@pytest.mark.parametrize("ensemble_profile", ["router_dynamic", "router_dynamic/c2"])
 async def test_feedback_submit_transcribes_the_thumb_into_a_preference_memory(
+    ensemble_profile: str,
     writer: RouterDecisionWriter, tmp_path: Path, monkeypatch
 ) -> None:
     """A thumb becomes a routing-preference line keyed on the model that replied.
@@ -425,11 +565,11 @@ async def test_feedback_submit_transcribes_the_thumb_into_a_preference_memory(
     read back — checked here by projecting the raw note.
     """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
-    writer.record_decision(_base_record())
+    writer.record_decision(_dynamic_record(ensemble_profile=ensemble_profile))
 
     await _handle_router_feedback_submit(
         {"decisionId": "d" * 32, "rating": "up"},
-        RpcContext(conn_id="test"),
+        _feedback_ctx(generation_enabled=True, application_enabled=False),
     )
 
     from opensquilla.squilla_router.self_learning.feedback import load_feedback_map
@@ -460,8 +600,8 @@ async def test_a_neutral_thumb_appends_nothing(
     folding a delta into a file.
     """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
-    writer.record_decision(_base_record())
-    ctx = RpcContext(conn_id="test")
+    writer.record_decision(_dynamic_record())
+    ctx = _feedback_ctx(generation_enabled=True)
 
     await _handle_router_feedback_submit(
         {"decisionId": "d" * 32, "rating": "neutral"}, ctx
@@ -475,8 +615,8 @@ async def test_a_down_after_up_reads_back_as_a_contradiction(
 ) -> None:
     """Reversing a preference: thumb down, and the projection cancels it out."""
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
-    writer.record_decision(_base_record())
-    ctx = RpcContext(conn_id="test")
+    writer.record_decision(_dynamic_record())
+    ctx = _feedback_ctx(generation_enabled=True)
 
     await _handle_router_feedback_submit({"decisionId": "d" * 32, "rating": "up"}, ctx)
     await _handle_router_feedback_submit({"decisionId": "d" * 32, "rating": "down"}, ctx)
@@ -503,8 +643,8 @@ async def test_concurrent_submits_need_no_lock(
     with the delta fold it protected.
     """
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(tmp_path))
-    writer.record_decision(_base_record())
-    ctx = RpcContext(conn_id="test")
+    writer.record_decision(_dynamic_record())
+    ctx = _feedback_ctx(generation_enabled=True)
 
     await asyncio.gather(
         *(

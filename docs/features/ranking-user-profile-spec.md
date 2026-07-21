@@ -21,22 +21,18 @@ The mock is inert, not merely approximate. With the shipped
   a constant `S_user` is a uniform offset across all candidates and **cannot
   change model ordering**.
 
-The observable consequence: toggling `ranking_user_profile_enabled` today
-changes rankings only through `_proposer_bounds` and `_cost_latency_weights`,
+Before profile projection was wired, toggling `ranking_user_profile_enabled`
+changed rankings only through `_proposer_bounds` and `_cost_latency_weights`,
 both of which read the same all-neutral mock preferences. The scoring half of
-the feature has never affected a routing decision.
+the feature therefore could not affect model ordering.
 
 Meanwhile real thumbs up/down feedback is already collected and persisted
 (`self_learning/feedback.py`), with a live Web UI and RPC intake. Nothing reads
 it for routing.
 
-There is also a privacy defect that is latent today: `ranking_router.py:2069`
-places the entire profile into the task analyzer's prompt and ships it to a
-third-party provider unredacted. `_canonical_hash` is applied to `task_profile`
-and `request_context` but never to `user_profile`. This contradicts the design
-doc's §3.8 claim that routing events carry no "raw user-profile payload" — the
-events are clean, but the analyzer request is not. It costs nothing today
-(the mock is all-neutral) and costs something the moment the profile is real.
+The task-analyzer boundary must remain stricter than the ranking boundary: the
+analyzer receives task/request context plus a boolean observability bit, never
+the profile object. Only the local ranking stage receives the resolved profile.
 
 ## Goals
 
@@ -49,7 +45,9 @@ events are clean, but the analyzer request is not. It costs nothing today
 - Stop sending the profile to the task analyzer.
 - Preserve the existing fail-open contract: no profile failure may fail a turn
   or abort ranking.
-- Keep `ranking_user_profile_enabled = false` a true ablation.
+- Keep `ranking_user_profile_enabled = false` a true application ablation.
+- Make preference-memory generation independently opt-in, and restrict it to
+  feedback on persisted `router_dynamic` ensemble decisions.
 
 ## Non-Goals
 
@@ -86,11 +84,13 @@ Ranking consumers (all already built, none change):
 - `_permission_matches` — `:2751`, case-insensitive against `model.model_id` or
   `model.identity`.
 
-Injection seams (two; they must not diverge):
+Application seams (two; they must not diverge):
 
-- `runtime.py:5508` — `mock_user_profile(ranking_config) if ranking_user_profile_enabled else None`.
+- `runtime.py` — resolves a profile only when `ranking_user_profile_enabled` is
+  true and selection mode is `router_dynamic`.
 - `ensemble.py:1715-1724` — prefers `inputs["user_profile"]` when supplied,
-  falls back to `mock_user_profile(ranking_config)`.
+  falls back to `mock_user_profile(ranking_config)` only when application is
+  enabled.
 
 Feedback:
 
@@ -152,9 +152,14 @@ on are the *same* sentence, not two representations that drift.
 
 ### 1. Transcribing a thumb into a preference memory
 
-On `router.feedback.submit`, after `write_feedback()` succeeds, the handler
-transcribes the thumb into one preference line and appends it to the Dream scan
-note. New module `self_learning/preference_projection.py`,
+On `router.feedback.submit`, after `write_feedback()` succeeds, the handler may
+transcribe the thumb into one preference line and append it to the Dream scan
+note. This happens only when
+`ranking_user_profile_generation_enabled = true` and the persisted decision has
+`executed_kind = "ensemble"` with `ensemble_profile = "router_dynamic"` or the
+`router_dynamic/...` namespace. The current config's selection mode is not used
+for attribution because it may have changed between the turn and the click.
+Module `self_learning/preference_projection.py` exposes
 `transcribe_thumb(model, rating) -> str | None`:
 
 - `up`   → `` - prefers routing to `model:<id>` ``
@@ -205,10 +210,11 @@ buys the deletion of the lock, the ordering contract, and the "impossible
 replay" problem the tally had.
 
 **`feedback.jsonl` is untouched.** `write_feedback()` / `load_feedback_map()`
-still record the raw thumb stream for the offline trainer
-(`alignment`/`dataset`); this change only *adds* the transcription beside it. The
-effective-rating semantics that trainer relies on (merge-then-filter,
-last-write-wins) are unchanged and still tested.
+always record the raw thumb stream for the offline trainer
+(`alignment`/`dataset`), even when profile generation is disabled or the
+decision is not dynamic ranking. The optional transcription is a separate
+side effect. The effective-rating semantics that trainer relies on
+(merge-then-filter, last-write-wins) are unchanged and still tested.
 
 **Privacy contract.** Model identity tokens, enum tokens, and integers only. No
 prompt text, no response text. The transcribed line carries a model id and a
@@ -305,10 +311,9 @@ asking. Every real consumer of the profile is local and deterministic, and
 nothing downstream reads a profile-derived field *from* the analyzer's
 response, so removing it from the prompt costs no signal.
 
-`analyze_task_with_provider(...)` keeps its `user_profile` parameter for one
-release, ignored except for the `user_profile_enabled` log field it already
-emits (`:1999`, `:2080`, `:2168`, `:2203`), then drops it. This avoids a
-same-release signature break at `runtime.py:5517-5531`.
+`analyze_task_with_provider(...)` receives only a `user_profile_enabled: bool`
+for observability. The resolved profile object is held by runtime and passed
+directly to ranking, so the analyzer function cannot accidentally serialize it.
 
 ### Observability
 
@@ -374,20 +379,24 @@ Existing coverage to preserve:
   `test_ranking_without_user_profile_bypasses_all_profile_effects`. The
   `enabled = false` ablation must stay exact.
 - `tests/test_ranking_router.py:854` —
-  `test_task_analyzer_uses_provider_interface_and_validates_json`. This is the
-  test Change 4 inverts: it supplies a profile and asserts it reaches the
-  analyzer payload, which is the privacy defect itself. It now asserts absence.
+  `test_task_analyzer_uses_provider_interface_and_validates_json`. It passes an
+  enabled boolean and asserts the analyzer payload contains no profile field.
 - `tests/test_ranking_router.py:858` —
-  `test_task_analyzer_omits_disabled_user_profile_and_correlates_logs`. Its
-  assertion still holds unchanged, but the name no longer describes it: omission
-  is unconditional now, not a property of the disabled path. Renamed to
-  `test_task_analyzer_omits_user_profile_and_correlates_logs`; it keeps the
-  `user_profile_enabled is False` log assertion for the `None` case.
+  `test_task_analyzer_omits_user_profile_and_correlates_logs`. Omission is
+  unconditional; the test also preserves the false observability bit when
+  profile application is disabled.
 
 New coverage, grouped by the seam each covers:
 
 *Transcription* (`test_gateway/test_rpc_router_decisions.py`):
 
+- Generation defaults off; a dynamic decision still writes `feedback.jsonl`
+  but no preference note.
+- Generation and application switches are independent in both directions.
+- Only persisted `router_dynamic` ensemble decisions are eligible; single,
+  static, custom, tree, missing, and lookalike profile names are ignored.
+- Attribution uses the persisted decision profile rather than the current
+  selection mode.
 - A thumb-up submit writes a `prefers routing to \`model:<id>\`` line into
   `memory/routing-preferences.md`, and `project_history` over that line yields
   the model as positive — the end-to-end join from click to ranking-visible
@@ -436,26 +445,27 @@ imports only the standard library, so `self_learning` never reaches into
 
 ## Rollout
 
-1. Change 4 (analyzer de-exposure) ships first, alone. It is a pure deletion,
-   depends on nothing else here, and closes the exposure before any real data
-   can flow.
-2. Changes 1-3 ship together. On first run there is no preference memory and no
-   `profile.json`, so memory reads empty, the projection is empty, and behavior
-   is identical to today.
-3. The profile only starts affecting routing after thumbs accumulate **and Dream
-   consolidates them into `MEMORY.md`** — the derivation is deliberately slower
-   than a direct write, trading immediacy for a single system of record. It also
-   ramps gradually: `confidence` saturates at 20 preference lines, so early
-   history moves `S_user` very little by design.
+1. Analyzer de-exposure keeps the raw profile object outside the analyzer API;
+   only an enabled boolean crosses that boundary for logs.
+2. Missing fields and fresh installs default both switches off, so they use
+   profile-free ranking and collect no new preference memory. An existing
+   config that explicitly sets the legacy application flag to true stays on.
+3. After generation is enabled, learned history becomes available only after
+   eligible thumbs accumulate **and Dream consolidates them into `MEMORY.md`**.
+   After application is enabled, ranking consumes the resolved profile. The
+   derivation is deliberately slower than a direct write, trading immediacy for
+   a single system of record. Confidence saturates at 20 preference lines, so
+   early history moves `S_user` very little by design.
 
-No migration, no backfill. Existing installs have no preference memory and
-resolve to `fallback_mock` until the first thumb is clicked and consolidated. A
-transcribed line becomes ranking-visible only once Dream promotes it; between the
-click and the next consolidation the preference is pending, not lost.
+No migration, no backfill. Explicit legacy
+`ranking_user_profile_enabled = true` remains an application opt-in, while the
+new missing generation field resolves to false. A transcribed line becomes
+ranking-visible only once Dream promotes it; between the click and the next
+consolidation the preference is pending, not lost.
 
 `docs/features/LLM-ensemble-design.md` §3.1 item 3, §3.9, and the
-`mock_user_profile` row of the §3.9 JSON table describe the mock as the
-implementation. Update them in the same change as 1-3.
+`mock_user_profile` row of the §3.9 JSON table are kept in sync with these
+generation, application, and source-of-truth boundaries.
 
 ## Revisit: ensemble attribution
 

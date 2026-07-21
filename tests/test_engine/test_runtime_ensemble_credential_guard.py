@@ -293,7 +293,11 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     )
     runner = TurnRunner(
         provider_selector=None,
-        config=_static_b5_config(selection_mode="router_dynamic"),
+        config=_static_b5_config(
+            selection_mode="router_dynamic",
+            ranking_user_profile_generation_enabled=False,
+            ranking_user_profile_enabled=True,
+        ),
     )
     selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
 
@@ -322,7 +326,8 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     assert analyzer_calls[0]["provider"] is fixed_analyzer_provider
     assert analyzer_calls[0]["analyzer_provider_id"] == TASK_ANALYZER_PROVIDER_ID
     assert analyzer_calls[0]["analyzer_model_id"] == TASK_ANALYZER_MODEL_ID
-    assert isinstance(analyzer_calls[0]["user_profile"], dict)
+    assert analyzer_calls[0]["user_profile_enabled"] is True
+    assert "user_profile" not in analyzer_calls[0]
     assert turn.metadata["routed_model_before_ensemble"] != TASK_ANALYZER_MODEL_ID
     assert turn.metadata["router_dynamic_task_analyzer"]["provider"] == (
         TASK_ANALYZER_PROVIDER_ID
@@ -332,7 +337,7 @@ async def test_router_dynamic_uses_fixed_opus_task_analyzer(
     )
 
 
-async def test_router_dynamic_can_bypass_user_profile_and_emits_decision_trace(
+async def test_router_dynamic_profile_application_defaults_off_independently(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -359,7 +364,7 @@ async def test_router_dynamic_can_bypass_user_profile_and_emits_decision_trace(
         provider_selector=None,
         config=_static_b5_config(
             selection_mode="router_dynamic",
-            ranking_user_profile_enabled=False,
+            ranking_user_profile_generation_enabled=True,
         ),
     )
     selector = _FakeSelector(provider="groq", api_key="sk-groq-synthetic")
@@ -377,7 +382,8 @@ async def test_router_dynamic_can_bypass_user_profile_and_emits_decision_trace(
 
     assert isinstance(provider, EnsembleProvider)
     assert len(analyzer_calls) == 1
-    assert analyzer_calls[0]["user_profile"] is None
+    assert analyzer_calls[0]["user_profile_enabled"] is False
+    assert "user_profile" not in analyzer_calls[0]
     decision_id = turn.metadata["ensemble_decision_id"]
     assert analyzer_calls[0]["decision_id"] == decision_id
     assert turn.metadata["router_dynamic_user_profile"] == {

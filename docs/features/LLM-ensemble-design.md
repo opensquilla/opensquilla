@@ -477,15 +477,23 @@ Before ranking, runtime builds four replaceable inputs:
    derived from SquillaRouter's `c0`-`c3` result. Invalid optional format or
    analyzer-confidence fields are dropped, recorded as normalization warnings,
    and do not discard an otherwise valid task profile.
-3. **User profile** — controlled by
-   `llm_ensemble.ranking_user_profile_enabled` (default `true`). When enabled,
-   runtime overlays the learned profile at `router/profile.json` — permissions,
-   cost/latency preference, and the feedback history derived from thumb
-   ratings — onto the `mock_user_profile` baseline, which supplies the shape
-   and every default the file does not carry. The file is refused whole and
-   the baseline used alone (`profile_source = fallback_mock`) when it is
-   missing, unreadable, or fails validation. When disabled, runtime builds no
-   profile at all and ranking receives none.
+3. **User profile** — application is controlled by
+   `llm_ensemble.ranking_user_profile_enabled` (default `false`). When enabled,
+   runtime overlays the hand-editable permission/preference fields at
+   `router/profile.json` and history projected from Dream-consolidated routing
+   preference lines in `MEMORY.md` onto the `mock_user_profile` baseline. The
+   baseline supplies the shape and every default the file does not carry. An
+   unreadable or invalid hand-editable file fails open to the baseline; invalid
+   memory lines are ignored. When disabled, runtime builds no profile at all
+   and ranking receives none.
+
+   Generation of new routing-preference memory from thumbs is separately
+   controlled by `llm_ensemble.ranking_user_profile_generation_enabled`
+   (default `false`). It accepts only feedback whose persisted decision is an
+   executed `router_dynamic` ensemble. General feedback sidecars used by the
+   offline self-learning loop are still written when generation is disabled.
+   The two switches are independent: operators can collect preferences before
+   applying them, or apply an existing/manual profile without collecting more.
 
    The profile is never sent to the task analyzer; only ranking reads it.
 4. **Model registry snapshot** — composed from the routed model, enabled
@@ -706,12 +714,15 @@ prompt, candidate answer, or raw user-profile payload.
 [llm_ensemble]
 enabled = true
 selection_mode = "router_dynamic"
-ranking_user_profile_enabled = true
+ranking_user_profile_generation_enabled = false
+ranking_user_profile_enabled = false
 ```
 
-Set `ranking_user_profile_enabled = false` for a user-profile-free ranking
-ablation. The switch affects only `router_dynamic`; the four fixed/custom/tree
-modes do not consume a user profile.
+Set `ranking_user_profile_generation_enabled = true` to transcribe thumbs from
+dynamic-ranking decisions into preference memory. Set
+`ranking_user_profile_enabled = true` to apply the resolved profile during
+ranking. Both switches affect only `router_dynamic`; the four fixed/custom/tree
+modes neither generate nor consume a user profile.
 
 Operators can extend the deployment pool with `llm_ensemble.candidates`,
 non-default `llm_ensemble.model_options`, and `squilla_router.tiers`. All
@@ -726,7 +737,7 @@ tunable Step2 behavior lives in
 | `task_profile_schema` | accepted task constraints and session intents |
 | `task_analyzer` | timeout, input/response limits, output tokens, temperature, thinking |
 | `fallback_task_profile` | deterministic analyzer-failure profile and tier risk |
-| `mock_user_profile` | baseline permissions, preferences, and history; the learned profile at `router/profile.json` is overlaid on it at the engine read seam, and it is used as-is when no valid file exists |
+| `mock_user_profile` | baseline profile shape/defaults; when application is enabled, hand-edited permission/preference fields from `router/profile.json` and Dream-projected history from `MEMORY.md` are overlaid at the engine read seam |
 | `synthetic_model` | facts and priors for deployments missing a catalog profile |
 | `hard_filter` | eligible/unavailable states and default required modalities |
 | `exploration` | reserved trace declaration; must remain `false` / propensity `1.0` until exploration is implemented |

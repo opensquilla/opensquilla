@@ -729,11 +729,15 @@ const ChatView = (() => {
     row.setAttribute('aria-label', role === 'user' ? 'User message actions' : 'Squilla message actions');
 
     if (role === 'assistant') {
+      const hasToolCalls = body.querySelectorAll('.chat-tools-collapse').length > 1;
       row.innerHTML =
         '<button type="button" class="msg-action" data-action="copy" title="Copy message" aria-label="Copy message">'
         + _iconCopySmall() + '</button>'
         + '<button type="button" class="msg-action" data-action="regenerate" title="Regenerate" aria-label="Regenerate response">'
-        + _iconRefreshSmall() + '</button>';
+        + _iconRefreshSmall() + '</button>'
+        + (hasToolCalls
+          ? '<button type="button" class="msg-action" data-action="collapse-all" title="Collapse all tool calls" aria-label="Collapse all tool calls">⤒</button>'
+          : '');
     } else {
       row.innerHTML =
         '<button type="button" class="msg-action" data-action="copy" title="Copy message" aria-label="Copy message">'
@@ -917,6 +921,15 @@ const ChatView = (() => {
         _regenerateAssistantBubble(bubble);
       } else if (action === 'edit') {
         _editUserBubble(bubble);
+      } else if (action === 'collapse-all') {
+        const details = bubble.querySelectorAll('.chat-tools-collapse:not(.chat-tools-collapse--running)');
+        const anyOpen = Array.from(details).some(d => d.hasAttribute('open'));
+        details.forEach(d => {
+          if (anyOpen) d.removeAttribute('open');
+          else d.setAttribute('open', '');
+        });
+        btn.title = anyOpen ? 'Expand all tool calls' : 'Collapse all tool calls';
+        btn.setAttribute('aria-label', btn.title);
       }
     });
   }

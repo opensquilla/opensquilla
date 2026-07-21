@@ -9,7 +9,57 @@ in the wild:
 - Absent: returns 0 cleanly.
 """
 
-from opensquilla.provider.openai import _provider_billed_cost, _usage_fields
+import hashlib
+import json
+
+import pytest
+
+from opensquilla.provider import DoneEvent
+from opensquilla.provider.openai import (
+    _apply_benchmark_cache_namespace,
+    _benchmark_cache_namespace,
+    _mark_stream_fallback_cost_unknown,
+    _openrouter_is_byok,
+    _provider_billed_cost,
+    _provider_cost_with_byok_evidence,
+    _provider_usage_evidence,
+    _sanitize_openrouter_metadata,
+    _usage_fields,
+)
+
+
+def test_benchmark_cache_namespace_is_fail_closed_and_not_persisted_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE_REQUIRED", "1")
+    with pytest.raises(ValueError, match="required but missing"):
+        _benchmark_cache_namespace()
+
+    monkeypatch.setenv("OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE", "not-hex")
+    with pytest.raises(ValueError, match="64 lowercase hex"):
+        _benchmark_cache_namespace()
+
+    raw = "a" * 64
+    expected_digest = f"sha256:{hashlib.sha256(raw.encode()).hexdigest()}"
+    monkeypatch.setenv("OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE", raw)
+    messages = [{"role": "system", "content": "system prompt"}]
+    assert (
+        _apply_benchmark_cache_namespace(messages, provider_kind="openrouter")
+        == expected_digest
+    )
+    assert messages[0]["content"].startswith(
+        f"[OpenSquilla benchmark cache namespace: {raw}]\n"
+    )
+    evidence = _provider_usage_evidence(
+        provider_kind="openrouter",
+        usage={"is_byok": False, "cost": 0.1},
+        router_metadata={},
+        response_ids=["gen-1"],
+        cache_namespace_sha256=expected_digest,
+    )
+    assert evidence["cache_namespace_sha256"] == expected_digest
+    assert raw not in json.dumps(evidence, sort_keys=True)
 
 
 def test_usage_fields_returns_zero_when_usage_missing() -> None:
@@ -69,6 +119,100 @@ def test_usage_cost_is_trusted_as_provider_bill_only_for_openrouter() -> None:
     assert _provider_billed_cost("openrouter", 0.012) == (0.012, "provider_billed")
     assert _provider_billed_cost("deepseek", 0.012) == (0.0, "none")
     assert _provider_billed_cost("volcengine", 0.012) == (0.0, "none")
+
+
+def test_openrouter_cost_requires_explicit_non_byok_evidence() -> None:
+    assert _openrouter_is_byok({"is_byok": False}) is False
+    assert _openrouter_is_byok({"is_byok": True}) is True
+    assert _openrouter_is_byok({}) is None
+    assert _openrouter_is_byok({"is_byok": "false"}) is None
+
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", 0.012, {"is_byok": False, "cost": 0.012}
+    ) == (0.012, "provider_billed")
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", 0.004, {"is_byok": True}
+    ) == (0.004, "openrouter_byok")
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", 0.012, {}
+    ) == (0.012, "provider_billed_unverified")
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", 0.0, {"is_byok": False, "cost": 0}
+    ) == (0.0, "provider_billed")
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", 0.0, {"is_byok": False}
+    ) == (0.0, "openrouter_billing_unverified")
+
+
+def test_openrouter_router_metadata_is_sanitized_and_persisted() -> None:
+    raw = {
+        "requested": "qwen/qwen3.7-max",
+        "strategy": "direct",
+        "attempt": 1,
+        "is_byok": False,
+        "summary": "must not be persisted",
+        "endpoints": {
+            "total": 1,
+            "available": [
+                {
+                    "provider": "Alibaba",
+                    "model": "qwen/qwen3.7-max-20260520",
+                    "selected": True,
+                    "private": "drop-me",
+                }
+            ],
+        },
+        "attempts": [
+            {
+                "provider": "Alibaba",
+                "model": "qwen/qwen3.7-max-20260520",
+                "status": 200,
+                "latency": 123,
+            }
+        ],
+        "pipeline": [
+            {"type": "context_compression", "name": "middle-out", "data": {"x": 1}}
+        ],
+    }
+
+    sanitized = _sanitize_openrouter_metadata(raw)
+    assert "summary" not in sanitized
+    assert "private" not in sanitized["endpoints"]["available"][0]
+    assert "latency" not in sanitized["attempts"][0]
+    assert "data" not in sanitized["pipeline"][0]
+    evidence = _provider_usage_evidence(
+        provider_kind="openrouter",
+        usage={"is_byok": False, "cost": 0.1},
+        router_metadata=raw,
+        response_ids=["gen-2", "gen-1", "gen-1"],
+    )
+    assert evidence["router_metadata"] == sanitized
+    assert evidence["response_ids"] == ["gen-1", "gen-2"]
+    assert _provider_cost_with_byok_evidence(
+        "openrouter", 0.0, {}
+    ) == (0.0, "openrouter_billing_unverified")
+
+
+def test_stream_fallback_retains_unknown_physical_request() -> None:
+    event = DoneEvent(
+        model="deepseek/deepseek-v4-pro",
+        input_tokens=10,
+        output_tokens=2,
+        billed_cost=0.01,
+        cost_source="provider_billed",
+    )
+
+    marked = _mark_stream_fallback_cost_unknown(
+        event,
+        provider_kind="openrouter",
+        requested_model="deepseek/deepseek-v4-pro",
+    )
+
+    assert isinstance(marked, DoneEvent)
+    assert marked.cost_source == "mixed"
+    assert marked.model_usage_breakdown[0]["role"] == "abandoned_stream_request"
+    assert marked.model_usage_breakdown[0]["cost_source"] == "none"
+    assert marked.model_usage_breakdown[1]["cost_source"] == "provider_billed"
 
 
 def test_usage_fields_falls_back_to_prompt_details_cache_creation() -> None:

@@ -18,6 +18,7 @@
     "model_usage_breakdown": [],
     "output_tokens": 3,
     "provider": "ollama",
+    "provider_usage": {},
     "reasoning_content": null,
     "reasoning_tokens": 0,
     "stop_reason": "stop",

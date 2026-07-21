@@ -28,6 +28,7 @@ from opensquilla.provider.ensemble import (
     _member_chat_config,
     _member_from_ref,
     _MemberRequestBudgetBinding,
+    _rollup_cost_source,
     build_ensemble_provider_from_config,
 )
 from opensquilla.provider.selector import ProviderConfig
@@ -37,6 +38,27 @@ from opensquilla.provider.types import (
     ProviderMessageLimitProof,
     StreamEvent,
 )
+
+
+def test_cost_source_rollup_preserves_byok_and_unverified_evidence() -> None:
+    assert _rollup_cost_source(
+        [{"billed_cost": 0.01, "cost_source": "openrouter_byok"}]
+    ) == "openrouter_byok"
+    assert _rollup_cost_source(
+        [{"billed_cost": 0.01, "cost_source": "provider_billed_unverified"}]
+    ) == "provider_billed_unverified"
+    assert _rollup_cost_source(
+        [
+            {"billed_cost": 0.01, "cost_source": "provider_billed"},
+            {"billed_cost": 0.01, "cost_source": "openrouter_byok"},
+        ]
+    ) == "mixed"
+    assert _rollup_cost_source(
+        [
+            {"billed_cost": 0.01, "cost_source": "provider_billed"},
+            {"billed_cost": 0.0, "cost_source": "none"},
+        ]
+    ) == "mixed"
 
 
 @dataclass
@@ -554,6 +576,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
             "label": "p1",
             "provider": "fake",
             "model": "p1",
+            "requested_model": "p1",
             "sample_index": 0,
             "input_tokens": 1,
             "output_tokens": 2,
@@ -562,6 +585,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
             "cache_write_tokens": 0,
             "billed_cost": 0.0,
             "cost_source": "none",
+            "provider_usage": {},
         },
         {
             "role": "proposer",
@@ -569,6 +593,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
             "label": "p2",
             "provider": "fake",
             "model": "p2",
+            "requested_model": "p2",
             "sample_index": 0,
             "input_tokens": 3,
             "output_tokens": 4,
@@ -577,6 +602,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
             "cache_write_tokens": 0,
             "billed_cost": 0.0,
             "cost_source": "none",
+            "provider_usage": {},
         },
         {
             "role": "aggregator",
@@ -584,6 +610,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
             "label": "aggregator",
             "provider": "fake",
             "model": "agg",
+            "requested_model": "agg",
             "sample_index": 0,
             "input_tokens": 5,
             "output_tokens": 6,
@@ -592,6 +619,7 @@ async def test_ensemble_runs_proposers_concurrently_and_tools_only_reach_aggrega
             "cache_write_tokens": 0,
             "billed_cost": 0.25,
             "cost_source": "provider_billed",
+            "provider_usage": {},
         },
     ]
     assert done.ensemble_trace is not None

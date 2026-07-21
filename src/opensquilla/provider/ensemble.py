@@ -243,6 +243,7 @@ class _CandidateResult:
     label: str
     provider: str
     model: str
+    requested_model: str = ""
     text: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
@@ -260,6 +261,7 @@ class _CandidateResult:
     execution: dict[str, Any] = field(default_factory=dict)
     usage_reported: bool = False
     request_started: bool = False
+    provider_usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -272,6 +274,7 @@ class _CandidateResult:
             "label": self.label,
             "provider": self.provider,
             "model": self.model,
+            "requested_model": self.requested_model or self.model,
             "sample_index": self.sample_index,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -280,6 +283,7 @@ class _CandidateResult:
             "cache_write_tokens": self.cache_write_tokens,
             "billed_cost": self.billed_cost,
             "cost_source": self.cost_source,
+            "provider_usage": dict(self.provider_usage),
             # Preserve the already-measured lifecycle duration when the final
             # done payload replaces the live progress rows in WebUI.
             "elapsed_ms": self.elapsed_ms,
@@ -323,6 +327,7 @@ class _AggregatorAccumulator:
     billed_cost: float = 0.0
     cost_source: str = "none"
     model: str = ""
+    provider_usage: dict[str, Any] = field(default_factory=dict)
 
     def usage_row(
         self,
@@ -340,6 +345,7 @@ class _AggregatorAccumulator:
             "label": label or member.label or role,
             "provider": cfg.provider,
             "model": self.model or cfg.model,
+            "requested_model": cfg.model,
             "sample_index": 0,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -348,6 +354,7 @@ class _AggregatorAccumulator:
             "cache_write_tokens": self.cache_write_tokens,
             "billed_cost": self.billed_cost,
             "cost_source": self.cost_source,
+            "provider_usage": dict(self.provider_usage),
             "elapsed_ms": max(0, int(elapsed_ms)),
         }
 
@@ -516,13 +523,11 @@ def _truncate_text(text: str, max_chars: int) -> str:
 
 def _rollup_cost_source(rows: Sequence[dict[str, Any]]) -> str:
     sources = {str(row.get("cost_source") or "none") for row in rows}
-    billed = sum(1 for row in rows if float(row.get("billed_cost") or 0.0) > 0)
-    if billed and billed == len(rows):
-        return "provider_billed"
-    if billed:
+    meaningful = sources - {"none", "unavailable"}
+    if len(sources) == 1 and len(meaningful) == 1:
+        return next(iter(meaningful))
+    if meaningful:
         return "mixed"
-    if sources - {"none", "unavailable"}:
-        return sorted(sources - {"none", "unavailable"})[0]
     return "none"
 
 
@@ -608,6 +613,7 @@ def _done_usage_row(
         "label": label,
         "provider": provider,
         "model": event.model or model,
+        "requested_model": model,
         "sample_index": 0,
         "input_tokens": event.input_tokens,
         "output_tokens": event.output_tokens,
@@ -616,6 +622,7 @@ def _done_usage_row(
         "cache_write_tokens": event.cache_write_tokens,
         "billed_cost": event.billed_cost,
         "cost_source": event.cost_source,
+        "provider_usage": dict(event.provider_usage),
     }
 
 
@@ -1152,6 +1159,7 @@ class EnsembleProvider:
             label=member.label or f"proposer_{index + 1}",
             provider=cfg.provider,
             model=cfg.model,
+            requested_model=cfg.model,
         )
         if progress is not None:
             progress(
@@ -1290,6 +1298,7 @@ class EnsembleProvider:
                 result.cost_source = event.cost_source
                 result.stop_reason = event.stop_reason
                 result.model = event.model or result.model
+                result.provider_usage = dict(event.provider_usage)
             elif isinstance(event, ErrorEvent):
                 result.error = redact_upstream_error_text(
                     event.message,
@@ -1503,6 +1512,7 @@ class EnsembleProvider:
                 billed_cost=event.billed_cost,
                 cost_source=event.cost_source,
                 model=event.model or self.aggregator.provider_config.model,
+                provider_usage=dict(event.provider_usage),
             )
             rows = [
                 *prior_rows,
@@ -1986,6 +1996,7 @@ def _attach_final_request_output(
         "cache_write_tokens": event.cache_write_tokens,
         "billed_cost": event.billed_cost,
         "cost_source": event.cost_source,
+        "provider_usage": dict(event.provider_usage),
     }
 
 

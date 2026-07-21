@@ -22,6 +22,13 @@
     "model_usage_breakdown": [],
     "output_tokens": 11,
     "provider": "openai",
+    "provider_usage": {
+      "completion_tokens": 11,
+      "completion_tokens_details": {
+        "reasoning_tokens": 6
+      },
+      "prompt_tokens": 18
+    },
     "reasoning_content": "Weigh the options.",
     "reasoning_tokens": 6,
     "stop_reason": "stop",

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -1135,6 +1136,210 @@ def _provider_billed_cost(provider_kind: str, raw_billed_cost: float) -> tuple[f
     return 0.0, "none"
 
 
+def _openrouter_is_byok(usage: Mapping[str, Any] | None) -> bool | None:
+    """Return OpenRouter's explicit per-call BYOK evidence without guessing."""
+    if not isinstance(usage, Mapping) or "is_byok" not in usage:
+        return None
+    value = usage.get("is_byok")
+    return value if isinstance(value, bool) else None
+
+
+def _openrouter_has_explicit_cost(usage: Mapping[str, Any] | None) -> bool:
+    if not isinstance(usage, Mapping):
+        return False
+    for key in ("cost", "total_cost"):
+        if key not in usage or isinstance(usage.get(key), bool):
+            continue
+        try:
+            value = float(usage[key])
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            return True
+    return False
+
+
+def _sanitize_openrouter_metadata(value: Any) -> dict[str, Any]:
+    """Retain only stable, non-prompt router attestation fields."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("requested", "strategy", "attempt", "is_byok", "region"):
+        item = value.get(key)
+        if item is None or isinstance(item, str | int | bool):
+            result[key] = item
+    endpoints = value.get("endpoints")
+    if isinstance(endpoints, Mapping):
+        available = endpoints.get("available")
+        result["endpoints"] = {
+            "total": endpoints.get("total"),
+            "available": [
+                {
+                    key: item.get(key)
+                    for key in ("provider", "model", "selected")
+                    if key in item
+                }
+                for item in available
+                if isinstance(item, Mapping)
+            ]
+            if isinstance(available, list)
+            else [],
+        }
+    attempts = value.get("attempts")
+    if isinstance(attempts, list):
+        result["attempts"] = [
+            {
+                key: item.get(key)
+                for key in ("provider", "model", "status")
+                if key in item
+            }
+            for item in attempts
+            if isinstance(item, Mapping)
+        ]
+    pipeline = value.get("pipeline")
+    if isinstance(pipeline, list):
+        result["pipeline"] = [
+            {
+                key: item.get(key)
+                for key in ("type", "name")
+                if key in item
+            }
+            for item in pipeline
+            if isinstance(item, Mapping)
+        ]
+    return result
+
+
+def _benchmark_cache_namespace() -> tuple[str, str]:
+    raw = os.environ.get("OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE", "").strip()
+    required = os.environ.get(
+        "OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE_REQUIRED", ""
+    ).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    if required and not raw:
+        raise ValueError("formal canary cache namespace is required but missing")
+    if raw and re.fullmatch(r"[0-9a-f]{64}", raw) is None:
+        raise ValueError("benchmark cache namespace must be 64 lowercase hex characters")
+    digest = f"sha256:{hashlib.sha256(raw.encode('utf-8')).hexdigest()}" if raw else ""
+    return raw, digest
+
+
+def _apply_benchmark_cache_namespace(
+    messages: list[dict[str, Any]], *, provider_kind: str
+) -> str:
+    """Isolate validation calls from provider-side implicit prompt caches."""
+
+    raw, digest = _benchmark_cache_namespace()
+    if provider_kind != "openrouter" or not raw:
+        return ""
+    if not messages:
+        raise ValueError("benchmark cache namespace requires at least one wire message")
+    marker = f"[OpenSquilla benchmark cache namespace: {raw}]\n"
+    first = messages[0]
+    content = first.get("content")
+    if isinstance(content, str):
+        first["content"] = marker + content
+    elif isinstance(content, list):
+        content.insert(0, {"type": "text", "text": marker})
+    else:
+        raise ValueError("benchmark cache namespace cannot prefix the first wire message")
+    return digest
+
+
+def _provider_usage_evidence(
+    *,
+    provider_kind: str,
+    usage: Any,
+    router_metadata: Any,
+    response_ids: list[str],
+    cache_namespace_sha256: str = "",
+) -> dict[str, Any]:
+    evidence = dict(usage) if isinstance(usage, Mapping) else {}
+    if provider_kind == "openrouter":
+        evidence["router_metadata"] = _sanitize_openrouter_metadata(router_metadata)
+        evidence["response_ids"] = sorted({item for item in response_ids if item})
+        if cache_namespace_sha256:
+            evidence["cache_namespace_sha256"] = cache_namespace_sha256
+    return evidence
+
+
+def _provider_cost_with_byok_evidence(
+    provider_kind: str,
+    raw_billed_cost: float,
+    usage: Mapping[str, Any] | None,
+) -> tuple[float, str]:
+    """Classify OpenRouter cost only when the response proves BYOK status.
+
+    ``provider_billed`` now means OpenRouter explicitly returned
+    ``is_byok=false`` for this call. A positive cost without that evidence is
+    preserved but marked unverified, while explicit BYOK is never presented as
+    an exact OpenRouter-billed result.
+    """
+    if provider_kind != "openrouter":
+        return _provider_billed_cost(provider_kind, raw_billed_cost)
+    is_byok = _openrouter_is_byok(usage)
+    if is_byok is True:
+        return raw_billed_cost, "openrouter_byok"
+    if is_byok is False:
+        if _openrouter_has_explicit_cost(usage):
+            return raw_billed_cost, "provider_billed"
+        return raw_billed_cost, "openrouter_billing_unverified"
+    if raw_billed_cost > 0.0:
+        return raw_billed_cost, "provider_billed_unverified"
+    return 0.0, "openrouter_billing_unverified"
+
+
+def _mark_stream_fallback_cost_unknown(
+    event: StreamEvent,
+    *,
+    provider_kind: str,
+    requested_model: str,
+) -> StreamEvent:
+    """Retain evidence that a stream request preceded a fallback request.
+
+    The abandoned stream may still be billed even when it returned no usable
+    usage payload. Marking the successful fallback as mixed prevents strict
+    benchmark accounting from treating two physical requests as one exact
+    request.
+    """
+    if not isinstance(event, DoneEvent):
+        return event
+    known_rows = list(event.model_usage_breakdown or [])
+    if not known_rows:
+        known_rows = [
+            {
+                "role": "fallback_non_stream",
+                "provider": provider_kind,
+                "model": event.model or requested_model,
+                "input_tokens": event.input_tokens,
+                "output_tokens": event.output_tokens,
+                "reasoning_tokens": event.reasoning_tokens,
+                "cached_tokens": event.cached_tokens,
+                "cache_write_tokens": event.cache_write_tokens,
+                "billed_cost": event.billed_cost,
+                "cost_source": event.cost_source,
+            }
+        ]
+    unknown_stream = {
+        "role": "abandoned_stream_request",
+        "provider": provider_kind,
+        "model": requested_model,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+        "cache_write_tokens": 0,
+        "billed_cost": 0.0,
+        "cost_source": "none",
+    }
+    return replace(
+        event,
+        cost_source="mixed",
+        model_usage_breakdown=[unknown_stream, *known_rows],
+        usage_missing_count=event.usage_missing_count + 1,
+    )
+
+
 def _resolve_tool_call_index(
     tc: Mapping[str, Any],
     tools_acc: ToolStreamAccumulator,
@@ -2251,6 +2456,27 @@ class OpenAIProvider:
             os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
             in {"1", "true", "yes", "on", "enabled"}
         )
+        self._openrouter_metadata_required = (
+            self._provider_kind == "openrouter"
+            and os.environ.get("OPENSQUILLA_OPENROUTER_METADATA_REQUIRED", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
+        self._openrouter_require_parameters = (
+            self._provider_kind == "openrouter"
+            and os.environ.get("OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
+        self._openrouter_disable_response_cache = (
+            self._provider_kind == "openrouter"
+            and os.environ.get("OPENSQUILLA_OPENROUTER_DISABLE_RESPONSE_CACHE", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        )
         # Opt-in reasoning-echo truncation: when a compat policy replays
         # assistant reasoning_content, every historical assistant message
         # carries its full reasoning bytes on every request. Limiting the
@@ -2370,6 +2596,10 @@ class OpenAIProvider:
             replay_provider_state=self._replay_provider_state,
             reasoning_echo_turns=self._reasoning_echo_turns,
         )
+        cache_namespace_sha256 = _apply_benchmark_cache_namespace(
+            openai_messages,
+            provider_kind=self._provider_kind,
+        )
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -2459,6 +2689,8 @@ class OpenAIProvider:
                         "order": [pinned_provider],
                         "allow_fallbacks": True,
                     }
+                if self._openrouter_require_parameters:
+                    payload["provider"]["require_parameters"] = True
 
         # Reasoning injection (gated on thinking being enabled). Gating —
         # which model/capability profile triggers a payload at all — lives
@@ -2568,6 +2800,10 @@ class OpenAIProvider:
             "Accept": "text/event-stream",
         }
         headers.update(provider_app_headers(self._base_url))
+        if self._openrouter_metadata_required:
+            headers["X-OpenRouter-Metadata"] = "enabled"
+        if self._openrouter_disable_response_cache:
+            headers["X-OpenRouter-Cache"] = "false"
         if self._org_id:
             headers["OpenAI-Organization"] = self._org_id
 
@@ -2835,6 +3071,8 @@ class OpenAIProvider:
                         return
 
                     response_ids: set[str] = set()
+                    raw_provider_usage: dict[str, Any] = {}
+                    router_metadata: dict[str, Any] = {}
                     trace_tool_calls: list[dict[str, Any]] = []
                     async for line in response.aiter_lines():
                         if not line.startswith("data:"):
@@ -2928,9 +3166,14 @@ class OpenAIProvider:
                         chunk_model = chunk.get("model")
                         if chunk_model:
                             actual_model = chunk_model
+                        chunk_router_metadata = chunk.get("openrouter_metadata")
+                        if isinstance(chunk_router_metadata, Mapping):
+                            router_metadata = dict(chunk_router_metadata)
 
                         # Usage may appear in the final chunk
                         if chunk.get("usage"):
+                            if isinstance(chunk["usage"], Mapping):
+                                raw_provider_usage = dict(chunk["usage"])
                             (
                                 input_tokens,
                                 output_tokens,
@@ -2939,9 +3182,10 @@ class OpenAIProvider:
                                 cache_write_tokens,
                                 raw_billed_cost,
                             ) = _usage_fields(chunk["usage"])
-                            billed_cost, cost_source = _provider_billed_cost(
+                            billed_cost, cost_source = _provider_cost_with_byok_evidence(
                                 self._provider_kind,
                                 raw_billed_cost,
+                                chunk["usage"],
                             )
                             _log_provider_cache_usage(
                                 provider_kind=self._provider_kind,
@@ -3482,8 +3726,13 @@ class OpenAIProvider:
                                 cfg=cfg,
                                 tools=tools,
                                 timeout_exc=empty_stream_exc,
+                                cache_namespace_sha256=cache_namespace_sha256,
                             ):
-                                yield fallback_event
+                                yield _mark_stream_fallback_cost_unknown(
+                                    fallback_event,
+                                    provider_kind=self._provider_kind,
+                                    requested_model=self._model,
+                                )
                             return
                         for pending_event in _segment_text_tool_events(
                             text_tool_normalizer.finish(
@@ -3736,8 +3985,13 @@ class OpenAIProvider:
                             cfg=cfg,
                             tools=tools,
                             timeout_exc=empty_stream_exc,
+                            cache_namespace_sha256=cache_namespace_sha256,
                         ):
-                            yield fallback_event
+                            yield _mark_stream_fallback_cost_unknown(
+                                fallback_event,
+                                provider_kind=self._provider_kind,
+                                requested_model=self._model,
+                            )
                         return
 
                     trace.record_response(
@@ -3771,6 +4025,13 @@ class OpenAIProvider:
                         model=actual_model,
                         cost_source=cost_source,
                         provider=self.provider_id,
+                        provider_usage=_provider_usage_evidence(
+                            provider_kind=self._provider_kind,
+                            usage=raw_provider_usage,
+                            router_metadata=router_metadata,
+                            response_ids=sorted(response_ids),
+                            cache_namespace_sha256=cache_namespace_sha256,
+                        ),
                     )
 
         except httpx.TimeoutException as exc:
@@ -3811,8 +4072,13 @@ class OpenAIProvider:
                         cfg=cfg,
                         tools=tools,
                         timeout_exc=exc,
+                        cache_namespace_sha256=cache_namespace_sha256,
                     ):
-                        yield fallback_event
+                        yield _mark_stream_fallback_cost_unknown(
+                            fallback_event,
+                            provider_kind=self._provider_kind,
+                            requested_model=self._model,
+                        )
                 except ToolStreamProtocolError as fallback_exc:
                     log.warning(
                         "provider.tool_stream_protocol_error",
@@ -3964,6 +4230,7 @@ class OpenAIProvider:
         cfg: ChatConfig,
         tools: list[ToolDefinition] | None,
         timeout_exc: httpx.TimeoutException,
+        cache_namespace_sha256: str = "",
     ) -> AsyncIterator[StreamEvent]:
         fallback_payload = dict(payload)
         fallback_payload["stream"] = False
@@ -4164,6 +4431,7 @@ class OpenAIProvider:
             return
 
         actual_model = data.get("model") or self._model
+        router_metadata = data.get("openrouter_metadata")
         (
             input_tokens,
             output_tokens,
@@ -4172,7 +4440,11 @@ class OpenAIProvider:
             cache_write_tokens,
             raw_billed_cost,
         ) = _usage_fields(data.get("usage"))
-        billed_cost, cost_source = _provider_billed_cost(self._provider_kind, raw_billed_cost)
+        billed_cost, cost_source = _provider_cost_with_byok_evidence(
+            self._provider_kind,
+            raw_billed_cost,
+            data.get("usage"),
+        )
         _log_provider_cache_usage(
             provider_kind=self._provider_kind,
             model=self._model,
@@ -4518,6 +4790,13 @@ class OpenAIProvider:
             model=actual_model,
             cost_source=cost_source,
             provider=self.provider_id,
+            provider_usage=_provider_usage_evidence(
+                provider_kind=self._provider_kind,
+                usage=data.get("usage"),
+                router_metadata=router_metadata,
+                response_ids=[str(data["id"])] if data.get("id") else [],
+                cache_namespace_sha256=cache_namespace_sha256,
+            ),
         )
 
     async def list_models(self, *, raise_on_error: bool = False) -> list[ModelInfo]:

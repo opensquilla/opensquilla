@@ -36,6 +36,10 @@
     "model_usage_breakdown": [],
     "output_tokens": 9,
     "provider": "openai",
+    "provider_usage": {
+      "completion_tokens": 9,
+      "prompt_tokens": 21
+    },
     "reasoning_content": null,
     "reasoning_tokens": 0,
     "stop_reason": "tool_calls",

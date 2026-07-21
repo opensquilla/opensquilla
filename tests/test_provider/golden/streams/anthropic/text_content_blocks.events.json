@@ -18,6 +18,7 @@
     "model_usage_breakdown": [],
     "output_tokens": 4,
     "provider": "anthropic",
+    "provider_usage": {},
     "reasoning_content": null,
     "reasoning_tokens": 0,
     "stop_reason": "end_turn",

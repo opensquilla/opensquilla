@@ -22,6 +22,13 @@
     "model_usage_breakdown": [],
     "output_tokens": 7,
     "provider": "openai",
+    "provider_usage": {
+      "completion_tokens": 7,
+      "completion_tokens_details": {
+        "reasoning_tokens": 5
+      },
+      "prompt_tokens": 16
+    },
     "reasoning_content": "Check the map. Pick a route.",
     "reasoning_tokens": 5,
     "stop_reason": "stop",

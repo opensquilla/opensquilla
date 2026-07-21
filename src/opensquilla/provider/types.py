@@ -97,6 +97,10 @@ class DoneEvent:
     # positional-construction compatibility; generic adapters default it to
     # their family identity when constructed outside a selector.
     provider: str = ""
+    # Raw, non-secret provider evidence associated with this physical request.
+    # OpenRouter benchmark runs use this for explicit BYOK and router-metadata
+    # attestation; callers must still treat unknown additive keys permissively.
+    provider_usage: dict[str, Any] = field(default_factory=dict)
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -160,6 +164,11 @@ class ErrorEvent:
     # partial envelope instead of discarding it as wholly unknown.
     model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
     usage_missing_count: int = 0
+    # Optional exact usage evidence for a physical request that was billed but
+    # must still fail (for example, missing required OpenRouter router
+    # metadata).  Runners can account for that request without treating it as
+    # a successful completion.
+    diagnostic_done: DoneEvent | None = None
 
 
 @dataclass

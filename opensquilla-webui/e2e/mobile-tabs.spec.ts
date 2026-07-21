@@ -11,12 +11,13 @@ async function openMobileChat(page: Page) {
 }
 
 test.describe('Mobile bottom tab bar', () => {
-  test('tabs are visible and navigate between Chat, Sessions, Overview, and Agents', async ({ page }) => {
+  test('tabs are visible and navigate between Chat, Sessions, Overview, and More', async ({ page }) => {
     await openMobileChat(page)
 
     const tabbar = page.locator('.mobile-tabbar')
     await expect(tabbar).toBeVisible()
-    await expect(tabbar.locator('.mobile-tab')).toHaveCount(5)
+    await expect(tabbar.locator('.mobile-tab')).toHaveCount(4)
+    await expect(tabbar.getByRole('link', { name: 'Agents' })).toHaveCount(0)
 
     // Chat is the active tab on the chat route.
     const chatTab = tabbar.getByRole('link', { name: 'Chat' })
@@ -31,10 +32,6 @@ test.describe('Mobile bottom tab bar', () => {
     await tabbar.getByRole('link', { name: 'Overview' }).click()
     await expect(page).toHaveURL(/\/overview$/)
     await expect(tabbar.getByRole('link', { name: 'Overview' })).toHaveClass(/is-active/)
-
-    await tabbar.getByRole('link', { name: 'Agents' }).click()
-    await expect(page).toHaveURL(/\/agents$/)
-    await expect(tabbar.getByRole('link', { name: 'Agents' })).toHaveClass(/is-active/)
 
     await chatTab.click()
     await expect(page).toHaveURL(/\/chat/)
@@ -55,11 +52,23 @@ test.describe('Mobile bottom tab bar', () => {
   test('More opens the sidebar drawer; the scrim closes it', async ({ page }) => {
     await openMobileChat(page)
 
-    await page.locator('.mobile-tabbar').getByRole('button', { name: 'More' }).click()
+    const more = page.locator('.mobile-tabbar').getByRole('button', { name: 'More' })
+    await more.click()
     await expect(page.locator('.sidebar.docked')).toBeVisible()
     await expect(page.locator('.sidebar-scrim')).toBeVisible()
+    await expect(page.locator('.sidebar-core .sidebar-fn-label')).toHaveText([
+      'Sessions', 'Overview', 'Skills', 'Cron',
+    ])
+
+    // Skills and Cron live in this same flat drawer instead of a nested Build
+    // disclosure. Selecting a row closes the drawer and navigates normally.
+    await page.locator('.sidebar-core').getByText('Skills', { exact: true }).click()
+    await expect(page).toHaveURL(/\/skills$/)
+    await expect(page.locator('.sidebar-scrim')).toHaveCount(0)
 
     // Tap outside the drawer to dismiss it.
+    await more.click()
+    await expect(page.locator('.sidebar-scrim')).toBeVisible()
     await page.locator('.sidebar-scrim').click({ position: { x: 350, y: 400 } })
     await expect(page.locator('.sidebar-scrim')).toHaveCount(0)
   })

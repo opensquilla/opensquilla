@@ -44,6 +44,8 @@ from opensquilla.session.storage import (
 )
 from opensquilla.session.tokenizer import estimate_tokens
 
+_SANDBOX_RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
+
 
 @dataclass(frozen=True, slots=True)
 class CanonicalTranscriptPage:
@@ -163,6 +165,7 @@ def _compaction_entry_payloads(entries: list[TranscriptEntry]) -> list[dict[str,
             "tool_call_id": e.tool_call_id,
             "reasoning_content": e.reasoning_content,
             "turn_usage": e.turn_usage,
+            "turn_context": e.turn_context,
         }
         for e in entries
     ]
@@ -180,9 +183,19 @@ def _transcript_preimage(entries: list[TranscriptEntry]) -> tuple[tuple[Any, ...
             entry.token_count,
             _stable_json(entry.tool_calls),
             _stable_json(entry.turn_usage),
+            _stable_json(entry.turn_context),
         )
         for entry in entries
     )
+
+
+def _branch_origin(parent_origin: Any) -> dict[str, Any] | None:
+    if not isinstance(parent_origin, dict):
+        return None
+    sandbox_context = parent_origin.get(_SANDBOX_RUN_CONTEXT_ORIGIN_KEY)
+    if not isinstance(sandbox_context, dict):
+        return None
+    return {_SANDBOX_RUN_CONTEXT_ORIGIN_KEY: dict(sandbox_context)}
 
 
 class SessionManager:
@@ -839,6 +852,7 @@ class SessionManager:
             model_provider=parent.model_provider,
             channel=parent.channel,
             chat_type=parent.chat_type,
+            origin=_branch_origin(parent.origin),
         )
 
         if fork_transcript:
@@ -917,6 +931,7 @@ class SessionManager:
                         tool_call_id=entry.tool_call_id,
                         reasoning_content=entry.reasoning_content,
                         turn_usage=entry.turn_usage,
+                        turn_context=entry.turn_context,
                         created_at=entry.created_at,
                         token_count=entry.token_count,
                         provenance_kind=entry.provenance_kind,
@@ -1048,6 +1063,7 @@ class SessionManager:
                 tool_call_id=entry.tool_call_id,
                 reasoning_content=entry.reasoning_content,
                 turn_usage=entry.turn_usage,
+                turn_context=entry.turn_context,
                 created_at=entry.created_at,
                 token_count=entry.token_count,
                 provenance_kind=entry.provenance_kind,
@@ -1125,6 +1141,7 @@ class SessionManager:
         tool_call_id: str | None = None,
         reasoning_content: str | None = None,
         turn_usage: dict[str, Any] | None = None,
+        turn_context: dict[str, Any] | None = None,
         token_count: int | None = None,
         provenance: dict[str, Any] | None = None,
         session_node: SessionNode | None = None,
@@ -1142,6 +1159,11 @@ class SessionManager:
 
         content = self._maybe_stamp_user_message(role, content)
 
+        if turn_context is None:
+            from opensquilla.session.turn_context import current_turn_context
+
+            turn_context = current_turn_context()
+
         entry = TranscriptEntry(
             session_id=node.session_id,
             session_key=session_key,
@@ -1151,6 +1173,7 @@ class SessionManager:
             tool_call_id=tool_call_id,
             reasoning_content=reasoning_content if role == "assistant" else None,
             turn_usage=turn_usage if role == "assistant" else None,
+            turn_context=dict(turn_context) if turn_context is not None else None,
             token_count=token_count,
         )
 
@@ -1227,6 +1250,20 @@ class SessionManager:
         if node is None:
             return False
         return await self._storage.delete_transcript_entry(node.session_id, message_id)
+
+    async def update_message_turn_context(
+        self,
+        session_key: str,
+        message_id: str,
+        turn_context: dict[str, Any],
+    ) -> bool:
+        """Persist the latest disposition for one causally identified input."""
+
+        return await self._storage.update_transcript_turn_context(
+            canonicalize_session_key(session_key),
+            message_id,
+            turn_context,
+        )
 
     async def get_transcript(
         self, session_key: str, limit: int | None = None
@@ -1713,6 +1750,7 @@ class SessionManager:
                 tool_calls=raw.get("tool_calls"),
                 tool_call_id=raw.get("tool_call_id"),
                 turn_usage=raw.get("turn_usage"),
+                turn_context=raw.get("turn_context"),
             )
             rewritten_entries.append(entry)
 

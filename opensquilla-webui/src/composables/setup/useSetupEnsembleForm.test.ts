@@ -652,7 +652,7 @@ describe('useSetupEnsembleForm — panel contract', () => {
     expect(makePanel(f, 'volcengine').value.custom.canAddProposer).toBe(false)
   })
 
-  it('surfaces the effective preset facts (quorum 3/4, 300/480s, 30s grace)', () => {
+  it('surfaces the effective preset facts (quorum 3/4, 300/480s, 5s grace)', () => {
     const f = useSetupEnsembleForm()
     f.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
     const facts = makePanel(f, 'openrouter').value.presetFacts
@@ -662,7 +662,7 @@ describe('useSetupEnsembleForm — panel contract', () => {
       proposerCount: 4,
       proposerTimeoutSeconds: 300,
       aggregatorTimeoutSeconds: 480,
-      quorumGraceSeconds: 30,
+      quorumGraceSeconds: 5,
     })
   })
 

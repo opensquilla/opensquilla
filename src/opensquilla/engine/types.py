@@ -65,7 +65,7 @@ class TextDeltaEvent:
     text: str = ""
     # Whether this text is the turn's final answer (render as a card) or
     # intermediate narration between tool calls (render as a lightweight purple
-    # ✱ line). Decided by the agent from whether the producing provider call
+    # ✻ line). Decided by the agent from whether the producing provider call
     # ended up making tool calls — see agent.py. Defaults to "answer" so any
     # producer that does not set it keeps the pre-existing card behavior.
     presentation: Literal["intermediate", "answer"] = "answer"
@@ -343,9 +343,9 @@ class MetaStepStateEvent:
     kind: Literal["meta_step_state"] = field(default="meta_step_state", init=False)
     run_id: str = ""
     step_id: str = ""
-    state: Literal[
-        "pending", "running", "succeeded", "failed", "skipped", "substituted"
-    ] = "pending"
+    state: Literal["pending", "running", "succeeded", "failed", "skipped", "substituted"] = (
+        "pending"
+    )
     status_text: str | None = None
     error: str | None = None
     substitute_for: str | None = None
@@ -507,6 +507,9 @@ class AgentConfig:
     # Prompt caching breakpoints (list of {"text": ..., "cache": "true"})
     cache_breakpoints: list[dict[str, str]] | None = None
     cache_mode: Literal["off", "auto", "on"] = "off"
+    # Optional final-answer JSON schema for provider-specific structured output.
+    output_json_schema: dict[str, Any] | None = None
+    output_json_schema_strict: bool = True
     # Per-turn volatile request context injected after persisted history
     # and before the current user turn. It is not persisted to history.
     request_context_prompt: str | None = None

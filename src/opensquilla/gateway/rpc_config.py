@@ -25,6 +25,11 @@ from opensquilla.gateway.config_secrets import (
 from opensquilla.gateway.config_secrets import (
     restore_redacted_values as _restore_redacted_values,
 )
+from opensquilla.gateway.model_routing import (
+    broadcast_model_routing_changed_if_needed,
+    model_routing_snapshot,
+    reconcile_model_routing_write,
+)
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.paths import default_opensquilla_home
 
@@ -661,6 +666,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     if ctx.config is None:
         raise ValueError("No config available")
 
+    old_model_routing = model_routing_snapshot(ctx.config)
     old_live_catalog_fingerprint = _live_catalog_fingerprint(ctx.config)
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
@@ -692,6 +698,11 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
+    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    if routing_changes:
+        routing_paths = set(routing_changes)
+        explicit_paths.update(routing_paths)
+        force_persist_paths.update(tuple(item.split(".")) for item in routing_paths)
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
@@ -724,11 +735,24 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     if linked_paths:
         response["linked"] = linked_paths
         await _reconcile_dream_crons_live(response)
+    model_routing = await broadcast_model_routing_changed_if_needed(
+        ctx,
+        previous=old_model_routing,
+        source="config.set",
+        config=new_config,
+    )
+    if model_routing is not None:
+        response["model_routing"] = model_routing
     return response
 
 
 @_d.method("config.patch", scope="operator.admin")
-async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+async def _handle_config_patch(
+    params: dict | None,
+    ctx: RpcContext,
+    *,
+    _model_routing_source: str = "config.patch",
+) -> dict[str, Any]:
     if not isinstance(params, dict):
         raise ValueError("params.patch or params.patches is required")
 
@@ -742,6 +766,7 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     if ctx.config is None:
         raise ValueError("No config available")
 
+    old_model_routing = model_routing_snapshot(ctx.config)
     old_live_catalog_fingerprint = _live_catalog_fingerprint(ctx.config)
     old_memory_fingerprint = _memory_restart_fingerprint(ctx.config)
     old_channels_fingerprint = _channels_restart_fingerprint(ctx.config)
@@ -799,6 +824,11 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
+    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    if routing_changes:
+        routing_paths = set(routing_changes)
+        explicit_paths.update(routing_paths)
+        force_persist_paths.update(tuple(item.split(".")) for item in routing_paths)
     if _memory_restart_required_for_paths(explicit_paths):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
@@ -837,6 +867,14 @@ async def _handle_config_patch(params: dict | None, ctx: RpcContext) -> dict[str
     if linked_paths:
         response["linked"] = linked_paths
         await _reconcile_dream_crons_live(response)
+    model_routing = await broadcast_model_routing_changed_if_needed(
+        ctx,
+        previous=old_model_routing,
+        source=_model_routing_source,
+        config=new_config,
+    )
+    if model_routing is not None:
+        response["model_routing"] = model_routing
     return response
 
 
@@ -856,7 +894,14 @@ async def _handle_config_patch_safe(params: dict | None, ctx: RpcContext) -> dic
     if unsafe_paths:
         raise ValueError(f"Path is not safe for operator.write: {unsafe_paths[0]}")
 
-    return cast(dict[str, Any], await _handle_config_patch(params, ctx))
+    return cast(
+        dict[str, Any],
+        await _handle_config_patch(
+            params,
+            ctx,
+            _model_routing_source="config.patch.safe",
+        ),
+    )
 
 
 @_d.method("config.apply", scope="operator.admin")
@@ -888,6 +933,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
         if ctx.config is not None and hasattr(ctx.config, "model_dump")
         else {}
     )
+    old_model_routing = model_routing_snapshot(ctx.config)
     config_payload, redacted_paths = _restore_redacted_values(config_payload, old_payload)
     config_payload = _strip_public_derived_config_fields(config_payload)
 
@@ -911,13 +957,22 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     _sync_image_generation(new_config)
     _sync_model_catalog_overrides(new_config)
     await _refresh_live_catalog_after_change(old_live_catalog_fingerprint, new_config)
-    return _change_meta(
+    response = _change_meta(
         old_memory_fingerprint=old_memory_fingerprint,
         old_channels_fingerprint=old_channels_fingerprint,
         old_sandbox_posture_fingerprint=old_sandbox_posture_fingerprint,
         old_dump=old_payload if isinstance(old_payload, dict) else {},
         new_config=new_config,
     )
+    model_routing = await broadcast_model_routing_changed_if_needed(
+        ctx,
+        previous=old_model_routing,
+        source="config.apply",
+        config=new_config,
+    )
+    if model_routing is not None:
+        response["model_routing"] = model_routing
+    return response
 
 
 def _get_config_attr(config: Any, path: str) -> Any:
@@ -989,6 +1044,7 @@ async def _handle_config_reload(params: dict | None, ctx: RpcContext) -> dict[st
     if ctx.config is None:
         raise ValueError("No config available")
 
+    old_model_routing = model_routing_snapshot(ctx.config)
     from opensquilla.onboarding.config_store import load_config, resolve_config_path
 
     target, _source = resolve_config_path(getattr(ctx.config, "config_path", None) or None)
@@ -1037,7 +1093,16 @@ async def _handle_config_reload(params: dict | None, ctx: RpcContext) -> dict[st
 
     await refresh_live_model_catalog(candidate)
 
-    return {"ok": True, "path": str(target), **change_meta}
+    response = {"ok": True, "path": str(target), **change_meta}
+    model_routing = await broadcast_model_routing_changed_if_needed(
+        ctx,
+        previous=old_model_routing,
+        source="config.reload",
+        config=candidate,
+    )
+    if model_routing is not None:
+        response["model_routing"] = model_routing
+    return response
 
 
 @_d.method("config.schema", scope="operator.admin")

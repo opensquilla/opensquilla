@@ -90,6 +90,9 @@ class DoneEvent:
     cost_source: str = "none"
     model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
     ensemble_trace: dict[str, Any] | None = None
+    # Number of physical ensemble legs that ended without a usage receipt.
+    # Appended for source compatibility with positional constructors.
+    usage_missing_count: int = 0
 
     @property
     def upstream_cost_usd(self) -> float:
@@ -148,6 +151,11 @@ class ErrorEvent:
     # source-compatible.  Only populated when an adapter has exact structured
     # evidence for a provider request limit.
     message_limit_proof: ProviderMessageLimitProof | None = None
+    # Ensemble wrappers may have consumed billable legs before the terminal
+    # failure.  Carry their known receipts so outer accounting can finalize a
+    # partial envelope instead of discarding it as wholly unknown.
+    model_usage_breakdown: list[dict[str, Any]] = field(default_factory=list)
+    usage_missing_count: int = 0
 
 
 @dataclass
@@ -299,6 +307,8 @@ class ChatConfig(BaseModel):
     # Prompt caching: when set, system prompt is split into cached/dynamic blocks
     cache_breakpoints: list[dict[str, str]] | None = None
     cache_mode: Literal["off", "auto", "on"] = "off"
+    output_json_schema: dict[str, Any] | None = None
+    output_json_schema_strict: bool = True
     model_capabilities: ModelCapabilities | None = None
     thinking_level: Any | None = None
     provider_request_max_chars: int = 0

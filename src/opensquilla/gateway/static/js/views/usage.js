@@ -13,6 +13,8 @@ const UsageView = (() => {
   let _sortAsc = false;
   let _chartMode = 'tokens';  // 'tokens' | 'cost'
   let _range = _normalizeRange(localStorage.getItem('opensquilla-usage-range'));
+  let _usageQueryUnavailable = false;
+  let _loadGeneration = 0;
 
   // Single source of truth: window.SquillaConstants.CNY_RATE (constants.js).
   // Captured into a local for hot paths so we don't dereference globals per row.
@@ -141,10 +143,17 @@ const UsageView = (() => {
 
     _el.querySelectorAll('.usage-range__btn').forEach(btn => {
       btn.addEventListener('click', () => {
+        const previousRange = _range;
         _range = _normalizeRange(btn.dataset.range);
         localStorage.setItem('opensquilla-usage-range', _range);
         _updateRangeBtns();
-        _renderUsageSections();
+        _loadData().then(loaded => {
+          if (!loaded && _lastStatus) {
+            _range = previousRange;
+            localStorage.setItem('opensquilla-usage-range', _range);
+            _updateRangeBtns();
+          }
+        });
       });
     });
 
@@ -170,6 +179,7 @@ const UsageView = (() => {
   }
 
   function destroy() {
+    _loadGeneration += 1;
     _unsubs.forEach(fn => fn());
     _unsubs = [];
     _intervals.forEach(id => clearInterval(id));
@@ -179,6 +189,7 @@ const UsageView = (() => {
     }
     _onVisibilityChange = null;
     _sessions = [];
+    _usageQueryUnavailable = false;
     _el = null;
     _rpc = null;
   }
@@ -247,7 +258,10 @@ const UsageView = (() => {
   function _rangeCutoffMs(range) {
     const activeRange = _normalizeRange(range || _range);
     if (activeRange === 'all') return null;
-    return Date.now() - (Number(activeRange) * 86400000);
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    start.setDate(start.getDate() - (Number(activeRange) - 1));
+    return start.getTime();
   }
 
   // Per-render cache: _renderUsageSections sets this once at the top so that
@@ -258,6 +272,7 @@ const UsageView = (() => {
   let _visibleCache = null;
   function _visibleSessions() {
     if (_visibleCache !== null) return _visibleCache;
+    if (_lastStatus && _lastStatus.source === 'usage_ledger') return _sessions;
     const cutoff = _rangeCutoffMs(_range);
     if (cutoff == null) return _sessions;
     return _sessions.filter(row => {
@@ -279,13 +294,40 @@ const UsageView = (() => {
       acc.cacheRead += Number(_rowVal(row, 'cache_read_tokens', 'cacheReadTokens') || 0);
       acc.cacheWrite += Number(_rowVal(row, 'cache_write_tokens', 'cacheWriteTokens') || 0);
       return acc;
-    }, { input: 0, output: 0, cost: 0, cacheRead: 0, cacheWrite: 0, sessions: rows.length });
+    }, {
+      input: 0,
+      output: 0,
+      cost: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      estimatedEventCount: 0,
+      missingCostEntries: 0,
+      sessions: rows.length,
+    });
   }
 
   function _rangeHiddenHint() {
-    const hidden = _undatedHiddenCount();
-    if (hidden <= 0) return '';
-    return `${hidden} undated legacy session${hidden === 1 ? '' : 's'} hidden`;
+    const notices = [];
+    if (_lastStatus && _lastStatus.timezoneFallback) {
+      const fallback = _lastStatus.timezoneFallback;
+      notices.push(
+        `Timezone ${fallback.requestedTimezone} is invalid; dates are grouped in ${fallback.effectiveTimezone}.`,
+      );
+    }
+    if (_lastStatus && _lastStatus.mode === 'ledger_partial') {
+      const legacy = _lastStatus.coverage && _lastStatus.coverage.legacyIncludedInTotals
+        ? ' Pre-ledger usage is included in the total but cannot be assigned to a date.'
+        : '';
+      notices.push(`Usage-ledger migration is still completing; all known usage is shown.${legacy}`);
+    } else if (_lastStatus && _lastStatus.mode === 'session_approximation') {
+      notices.push('Older Gateway: date ranges use approximate session-lifetime totals.');
+    } else {
+      const hidden = _undatedHiddenCount();
+      if (hidden > 0) {
+        notices.push(`${hidden} undated legacy session${hidden === 1 ? '' : 's'} hidden`);
+      }
+    }
+    return notices.join(' ');
   }
 
   function _renderRangeHint() {
@@ -373,27 +415,255 @@ const UsageView = (() => {
     }
   }
 
+  function _sessionNavigationKey(row) {
+    if (row && row._usageLedger) {
+      return _rowVal(row, 'sessionKey', 'session_key', 'key') || '';
+    }
+    return _rowVal(row || {}, 'session', 'sessionKey', 'key') || '';
+  }
+
+  function _sessionDisplayLabel(row) {
+    return _rowVal(
+      row || {},
+      'session', 'sessionKey', 'session_key', 'sessionId', 'session_id', 'key',
+    ) || '';
+  }
+
+  function _browserTimezone() {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch {
+      return 'UTC';
+    }
+  }
+
+  function _usagePreset() {
+    return {
+      all: 'all',
+      7: 'last_7_calendar_days',
+      14: 'last_14_calendar_days',
+      30: 'last_30_calendar_days',
+    }[_range] || 'last_7_calendar_days';
+  }
+
+  function _queryParams(timezone) {
+    return {
+      schemaVersion: 1,
+      range: { preset: _usagePreset() },
+      timezone,
+      include: { days: true, models: true, sessions: true },
+    };
+  }
+
+  function _supportsUsageQuery() {
+    const methods = _rpc && _rpc.hello && _rpc.hello.features && _rpc.hello.features.methods;
+    return !_usageQueryUnavailable && Array.isArray(methods) && methods.includes('usage.query');
+  }
+
+  function _methodNotFound(err) {
+    return Boolean(err && err.code === 'METHOD_NOT_FOUND') ||
+      /method not found/i.test(String(err && err.message || err || ''));
+  }
+
+  function _costUsd(source, prefix) {
+    const lead = prefix || '';
+    const camel = lead ? `${lead}CostNanos` : 'costNanos';
+    const snake = lead ? `${lead}_cost_nanos` : 'cost_nanos';
+    const nanos = _rowVal(source || {}, camel, snake);
+    if (nanos != null) return Number(nanos || 0) / 1_000_000_000;
+    const microCamel = lead ? `${lead}CostMicroUsd` : 'costMicroUsd';
+    const microSnake = lead ? `${lead}_cost_micro_usd` : 'cost_micro_usd';
+    const micros = _rowVal(source || {}, microCamel, microSnake);
+    if (micros != null) return Number(micros || 0) / 1_000_000;
+    const usdCamel = lead ? `${lead}CostUsd` : 'costUsd';
+    const usdSnake = lead ? `${lead}_cost_usd` : 'cost_usd';
+    return Number(_rowVal(source || {}, usdCamel, usdSnake) || 0);
+  }
+
+  function _normalizeTotals(source, fallbackSessions) {
+    const input = Number(_rowVal(source || {}, 'inputTokens', 'input_tokens') || 0);
+    const output = Number(_rowVal(source || {}, 'outputTokens', 'output_tokens') || 0);
+    return {
+      input,
+      output,
+      cacheRead: Number(_rowVal(source || {}, 'cacheReadTokens', 'cache_read_tokens') || 0),
+      cacheWrite: Number(_rowVal(source || {}, 'cacheWriteTokens', 'cache_write_tokens') || 0),
+      cost: _costUsd(source),
+      billedCost: _costUsd(source, 'billed'),
+      estimatedCost: _costUsd(source, 'estimated'),
+      estimatedEventCount: Number(_rowVal(source || {}, 'estimatedEventCount', 'estimated_event_count') || 0),
+      missingCostEntries: Number(_rowVal(source || {}, 'missingCostEntries', 'missing_cost_entries') || 0),
+      sessions: Number(_rowVal(source || {}, 'sessionCount', 'session_count') ?? fallbackSessions ?? 0),
+      totalTokens: Number(_rowVal(source || {}, 'totalTokens', 'total_tokens') ?? (input + output)),
+      costSource: String(_rowVal(source || {}, 'costSource', 'cost_source') || 'none'),
+    };
+  }
+
+  function _normalizeQuerySession(row) {
+    const totals = _normalizeTotals(row.totals || {}, 0);
+    const sessionKey = String(_rowVal(row, 'sessionKey', 'session_key') || '');
+    const sessionId = String(_rowVal(row, 'sessionId', 'session_id') || '');
+    return {
+      ...row,
+      _usageLedger: true,
+      session: sessionKey || sessionId,
+      sessionKey,
+      sessionId,
+      updatedAt: _rowVal(row, 'lastUsageAtMs', 'last_usage_at_ms'),
+      startedAt: _rowVal(row, 'firstUsageAtMs', 'first_usage_at_ms'),
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      cacheReadTokens: totals.cacheRead,
+      cacheWriteTokens: totals.cacheWrite,
+      costUsd: totals.cost,
+      billedCostUsd: totals.billedCost,
+      estimatedCostUsd: totals.estimatedCost,
+      estimatedEventCount: totals.estimatedEventCount,
+      missingCostEntries: totals.missingCostEntries,
+      costSource: totals.costSource,
+      modelBreakdown: row.modelBreakdown || row.model_breakdown || [],
+    };
+  }
+
+  function _normalizeQueryModel(row) {
+    const totals = _normalizeTotals(row.totals || {}, 0);
+    return {
+      model: row.model || 'unknown',
+      provider: row.provider || '',
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      cacheReadTokens: totals.cacheRead,
+      cacheWriteTokens: totals.cacheWrite,
+      costUsd: totals.cost,
+      sessions: Number(_rowVal(row, 'sessionCount', 'session_count') ?? totals.sessions),
+      costSource: totals.costSource,
+    };
+  }
+
+  function _normalizeQueryDay(row) {
+    const totals = _normalizeTotals(row.totals || {}, 0);
+    return {
+      _usageDay: true,
+      session: row.date || '',
+      inputTokens: totals.input,
+      outputTokens: totals.output,
+      cacheReadTokens: totals.cacheRead,
+      cacheWriteTokens: totals.cacheWrite,
+      costUsd: totals.cost,
+    };
+  }
+
+  function _normalizeQueryResponse(data) {
+    const sessions = Array.isArray(data.sessions) ? data.sessions.map(_normalizeQuerySession) : [];
+    const coverage = data.coverage || {};
+    const legacy = coverage.legacyUnattributed || coverage.legacy_unattributed || {};
+    return {
+      source: 'usage_ledger',
+      mode: coverage.status === 'complete' ? 'ledger_exact' : 'ledger_partial',
+      timezoneFallback: null,
+      totals: _normalizeTotals(data.totals || {}, sessions.length),
+      coverage: {
+        status: coverage.status || 'complete',
+        legacyIncludedInTotals: Boolean(legacy.includedInTotals || legacy.included_in_totals),
+      },
+      range: data.range || {},
+      models: Array.isArray(data.models) ? data.models.map(_normalizeQueryModel) : [],
+      days: Array.isArray(data.days) ? data.days.map(_normalizeQueryDay) : [],
+      sessions,
+    };
+  }
+
+  function _normalizeStatusResponse(status) {
+    return {
+      source: 'usage_status',
+      mode: 'session_approximation',
+      timezoneFallback: null,
+      totals: _range === 'all' ? {
+        input: Number(status.totalInputTokens || 0),
+        output: Number(status.totalOutputTokens || 0),
+        cacheRead: Number(status.totalCacheReadTokens || 0),
+        cacheWrite: Number(status.totalCacheWriteTokens || 0),
+        cost: Number(status.totalCostUsd || 0),
+        billedCost: 0,
+        estimatedCost: 0,
+        estimatedEventCount: 0,
+        missingCostEntries: 0,
+        sessions: Number(status.totalSessions || 0),
+        totalTokens: Number(status.totalTokens || 0),
+        costSource: 'mixed',
+      } : null,
+      coverage: { status: 'approximate', legacyIncludedInTotals: _range === 'all' },
+      range: { preset: _usagePreset(), timezone: _browserTimezone() },
+      models: [],
+      days: [],
+      sessions: status.sessions || [],
+    };
+  }
+
   // Cache last data for currency re-render
   let _lastStatus = null;
   // visibilitychange listener handle so destroy() can detach cleanly.
   let _onVisibilityChange = null;
 
   async function _loadData() {
-    if (!_el) return;
+    if (!_el) return false;
+    const generation = ++_loadGeneration;
     // Skip polling while the tab is hidden. The 60s interval still fires but
     // costs ~nothing; we resume on visibilitychange via the listener below.
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false;
     await _rpc.waitForConnection();
+    if (!_el || generation !== _loadGeneration) return false;
 
-    // usage.cost is a backend RPC still consumed by CLI / chat slash / HTTP /api/usage,
-    // but this view derives every visible metric from usage.status.sessions. Calling
-    // both used to double the polling cost for no rendering benefit.
-    _rpc.call('usage.status').then(status => {
-      if (!_el) return;
-      _lastStatus = status;
-      _sessions = status.sessions || [];
+    let normalized = null;
+    let transientQueryFailure = false;
+    const timezone = _browserTimezone();
+    const requestedPreset = _usagePreset();
+    if (_supportsUsageQuery()) {
+      try {
+        normalized = _normalizeQueryResponse(
+          await _rpc.call('usage.query', _queryParams(timezone)),
+        );
+      } catch (err) {
+        if (_methodNotFound(err)) {
+          _usageQueryUnavailable = true;
+        } else if (timezone !== 'UTC' && /timezone|time zone/i.test(String(err && err.message || err || ''))) {
+          try {
+            normalized = _normalizeQueryResponse(
+              await _rpc.call('usage.query', _queryParams('UTC')),
+            );
+            normalized.timezoneFallback = {
+              requestedTimezone: timezone,
+              effectiveTimezone: normalized.range && normalized.range.timezone || 'UTC',
+              reason: 'invalid_timezone',
+            };
+          } catch (utcErr) {
+            if (_methodNotFound(utcErr)) _usageQueryUnavailable = true;
+            else transientQueryFailure = true;
+          }
+        } else {
+          transientQueryFailure = true;
+        }
+      }
+    }
+    if (!normalized) {
+      try {
+        normalized = _normalizeStatusResponse(await _rpc.call('usage.status'));
+      } catch (err) {
+        if (_lastStatus && _lastStatus.source === 'usage_ledger' &&
+            _lastStatus.range && _lastStatus.range.preset === requestedPreset) return true;
+        UI.toast('Failed to load usage: ' + err.message, 'err');
+        return false;
+      }
+    }
+    if (transientQueryFailure && _lastStatus && _lastStatus.source === 'usage_ledger' &&
+        _lastStatus.range && _lastStatus.range.preset === requestedPreset) return true;
+    if (_el && generation === _loadGeneration) {
+      _lastStatus = normalized;
+      _sessions = normalized.sessions;
       _renderUsageSections();
-    }).catch(err => UI.toast('Failed to load usage: ' + err.message, 'err'));
+      return true;
+    }
+    return false;
   }
 
   function _renderUsageSections() {
@@ -417,7 +687,7 @@ const UsageView = (() => {
     if (!_el) return;
 
     const visibleRows = _visibleSessions();
-    const totals = _usageTotals(visibleRows);
+    const totals = status && status.totals ? status.totals : _usageTotals(visibleRows);
     const totalIn = totals.input;
     const totalOut = totals.output;
     const totalCache = totals.cacheRead;
@@ -450,13 +720,20 @@ const UsageView = (() => {
 
     if (costHintEl) {
       const sourceHint = _sourceCompositionHint(visibleRows);
+      const pricingHints = [];
+      if (totals.estimatedEventCount > 0) {
+        pricingHints.push(`includes ${totals.estimatedEventCount} estimated call${totals.estimatedEventCount === 1 ? '' : 's'}`);
+      }
+      if (totals.missingCostEntries > 0) {
+        pricingHints.push(`known cost only; ${totals.missingCostEntries} unpriced call${totals.missingCostEntries === 1 ? '' : 's'}, cost incomplete`);
+      }
       let currencyHint = '';
       if (_currency === 'CNY') {
         currencyHint = `≈ ${('$' + Number(totalCostUsd).toFixed(4))} USD`;
       } else if (_currency === 'USD') {
         currencyHint = `≈ ¥${(Number(totalCostUsd) * CNY_RATE).toFixed(4)} CNY`;
       }
-      costHintEl.textContent = [currencyHint, sourceHint].filter(Boolean).join(' · ');
+      costHintEl.textContent = [currencyHint, sourceHint, ...pricingHints].filter(Boolean).join(' · ');
       // Disclose that CNY values use a baked-in rate so users don't mistake
       // the estimate for live FX. Source: static/js/constants.js (CNY_RATE).
       const rateSetAt = (window.SquillaConstants && window.SquillaConstants.CNY_RATE_SET_AT) || '';
@@ -510,10 +787,11 @@ const UsageView = (() => {
       </td></tr>`;
     } else {
       sorted.forEach(row => {
-        const sessionKey = _rowVal(row, 'session', 'sessionKey', 'key') || '';
+        const sessionKey = _sessionNavigationKey(row);
+        const sessionLabel = _sessionDisplayLabel(row) || '—';
         const sessionLink = sessionKey
-          ? `<a href="#" class="usage-sess-link" data-key="${_esc(sessionKey)}" title="Open chat for ${_esc(sessionKey)}">${_esc(sessionKey)}</a>`
-          : '—';
+          ? `<a href="#" class="usage-sess-link" data-key="${_esc(sessionKey)}" title="Open chat for ${_esc(sessionKey)}">${_esc(sessionLabel)}</a>`
+          : _esc(sessionLabel);
         const cost = _rowVal(row, 'cost_usd', 'costUsd');
         const timestamp = _sessionTimestamp(row);
         const modified = timestamp != null ? UI.relTime(timestamp) : '—';
@@ -567,6 +845,13 @@ const UsageView = (() => {
   function _renderChartCaption() {
     const cap = _el && _el.querySelector('#usage-chart-caption');
     if (!cap) return;
+    if (_lastStatus && _lastStatus.source === 'usage_ledger') {
+      const days = _lastStatus.days || [];
+      const shown = Math.min(30, days.length);
+      const suffix = days.length > shown ? ` · showing ${shown} of ${days.length}` : '';
+      cap.textContent = `Daily usage${suffix}`;
+      return;
+    }
     // N = pool the chart actually plots (visible + non-zero token rows). Without
     // this, users with 25+ sessions couldn't tell that 5+ were silently dropped.
     const pool = _visibleSessions().filter(r => {
@@ -586,6 +871,9 @@ const UsageView = (() => {
     const legend = _el && _el.querySelector('#usage-bar-legend');
     if (!el) return;
     const visibleRows = _visibleSessions();
+    const serverDays = _lastStatus && _lastStatus.source === 'usage_ledger'
+      ? (_lastStatus.days || []).slice(-30)
+      : null;
 
     if (legend) {
       const showOutput = _chartMode === 'tokens';
@@ -596,7 +884,7 @@ const UsageView = (() => {
     }
 
     // Filter out sessions with zero tokens (unknown/placeholder rows), then sort and take top 20
-    const sorted = [...visibleRows].filter(r => {
+    const sorted = serverDays || [...visibleRows].filter(r => {
       const inp = Number(_rowVal(r, 'input_tokens', 'inputTokens') || 0);
       const out = Number(_rowVal(r, 'output_tokens', 'outputTokens') || 0);
       return (inp + out) > 0;
@@ -629,7 +917,8 @@ const UsageView = (() => {
 
     let html = '';
     sorted.forEach((row, i) => {
-      const fullLabel = (_rowVal(row, 'session', 'sessionKey', 'key') || '—');
+      const fullLabel = (_sessionDisplayLabel(row) || '—');
+      const navigationKey = _sessionNavigationKey(row);
       const label = fullLabel.length > 26 ? fullLabel.slice(0, 24) + '…' : fullLabel;
       let valueLabel, inputPct, outputPct, totalPct;
       if (_chartMode === 'cost') {
@@ -648,8 +937,10 @@ const UsageView = (() => {
         totalPct = inputPct + outputPct;
         valueLabel = _fmtNum(total);
       }
-      const sessionKey = _esc(fullLabel);
-      html += `<button class="usage-bar-row" type="button" data-session="${sessionKey}" title="Open ${sessionKey}" style="--i:${i}">
+      const sessionKey = _esc(navigationKey);
+      const tag = row._usageDay || !navigationKey ? 'div' : 'button';
+      const actionAttrs = row._usageDay || !navigationKey ? '' : ` type="button" data-session="${sessionKey}" title="Open ${sessionKey}"`;
+      html += `<${tag} class="usage-bar-row"${actionAttrs} style="--i:${i}">
         <span class="usage-bar-row__label">${_esc(label)}</span>
         <span class="usage-bar-row__track">
           <span class="usage-bar-row__fill usage-bar-row__fill--input" style="width:${inputPct.toFixed(1)}%"></span>
@@ -657,7 +948,7 @@ const UsageView = (() => {
           <span class="usage-bar-row__cap" style="left:${Math.min(100, totalPct).toFixed(1)}%"></span>
         </span>
         <span class="usage-bar-row__value usage-mono">${_esc(valueLabel)}</span>
-      </button>`;
+      </${tag}>`;
     });
     el.innerHTML = html;
 
@@ -833,7 +1124,10 @@ const UsageView = (() => {
       });
     });
 
-    const models = Object.values(map).sort((a, b) => b.costUsd - a.costUsd);
+    const serverModels = _lastStatus && _lastStatus.source === 'usage_ledger'
+      ? _lastStatus.models
+      : null;
+    const models = (serverModels || Object.values(map)).sort((a, b) => b.costUsd - a.costUsd);
     const totalCost = models.reduce((acc, m) => acc + m.costUsd, 0);
 
     if (meta) meta.textContent = `${models.length} model${models.length === 1 ? '' : 's'}`;
@@ -846,7 +1140,7 @@ const UsageView = (() => {
     let html = '';
     models.forEach((m, i) => {
       const share = totalCost > 0 ? (m.costUsd / totalCost) * 100 : 0;
-      const provider = (m.model || '').split('/')[0] || '';
+      const provider = m.provider || (m.model || '').split('/')[0] || '';
       const name = (m.model || '').split('/').slice(1).join('/') || m.model || 'unknown';
       const totalTokens = m.inputTokens + m.outputTokens;
       html += `<article class="usage-model-card" style="--i:${i}">
@@ -876,6 +1170,13 @@ const UsageView = (() => {
 
   function _exportCsv() {
     const headers = [
+      'row_type',
+      'aggregation_mode',
+      'coverage_status',
+      'range_preset',
+      'range_from_ms',
+      'range_to_ms',
+      'timezone',
       'session',
       'input_tokens',
       'output_tokens',
@@ -885,13 +1186,36 @@ const UsageView = (() => {
       'cost_cny',
       'billed_cost_usd',
       'estimated_cost_usd',
+      'estimated_event_count',
       'cost_source',
       'missing_cost_entries',
       'cost_ephemeral',
       'model'
     ];
+    const active = _lastStatus || {};
+    const activeRange = active.range || {};
+    const common = [
+      active.mode || 'session_approximation',
+      active.coverage && active.coverage.status || 'approximate',
+      activeRange.preset || _usagePreset(),
+      activeRange.fromMs ?? '',
+      activeRange.toMs ?? '',
+      activeRange.timezone || _browserTimezone(),
+    ];
+    const totals = active.totals || _usageTotals(_visibleSessions());
+    const summary = [
+      'summary', ...common, '',
+      totals.input ?? '', totals.output ?? '', totals.cacheRead ?? '', totals.cacheWrite ?? '',
+      totals.cost != null ? Number(totals.cost).toFixed(9) : '',
+      totals.cost != null ? (Number(totals.cost) * CNY_RATE).toFixed(9) : '',
+      totals.billedCost != null ? Number(totals.billedCost).toFixed(9) : '',
+      totals.estimatedCost != null ? Number(totals.estimatedCost).toFixed(9) : '',
+      totals.estimatedEventCount ?? '', totals.costSource || '', totals.missingCostEntries ?? '', 'false', '',
+    ];
     const visibleRows = _visibleSessions();
     const rows = visibleRows.map(row => [
+      'session',
+      ...common,
       _rowVal(row, 'session', 'sessionKey', 'key') || '',
       _rowVal(row, 'input_tokens', 'inputTokens') ?? '',
       _rowVal(row, 'output_tokens', 'outputTokens') ?? '',
@@ -901,16 +1225,20 @@ const UsageView = (() => {
       _rowVal(row, 'cost_usd', 'costUsd') != null ? (Number(_rowVal(row, 'cost_usd', 'costUsd')) * CNY_RATE).toFixed(6) : '',
       _rowVal(row, 'billed_cost_usd', 'billedCostUsd') != null ? Number(_rowVal(row, 'billed_cost_usd', 'billedCostUsd')).toFixed(6) : '',
       _rowVal(row, 'estimated_cost_usd', 'estimatedCostUsd') != null ? Number(_rowVal(row, 'estimated_cost_usd', 'estimatedCostUsd')).toFixed(6) : '',
+      _rowVal(row, 'estimated_event_count', 'estimatedEventCount') ?? '',
       _costSource(row),
       _rowVal(row, 'missing_cost_entries', 'missingCostEntries') ?? '',
       _rowVal(row, 'cost_ephemeral', 'costEphemeral') ? 'true' : 'false',
       row.model || '',
     ]);
-    const csv = [headers, ...rows].map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+    const csv = [headers, summary, ...rows].map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
     // Filename embeds the baked-in CNY rate so the cost_cny column is
     // self-describing if the file outlives the conversation it came from.
     const suffix = _range === 'all' ? 'all' : `${_range}d`;
-    _download(`opensquilla-usage-${suffix}-cny${CNY_RATE}.csv`, 'text/csv', csv);
+    const coverageSuffix = active.mode === 'session_approximation'
+      ? '-approximate'
+      : active.mode === 'ledger_partial' ? '-partial' : '';
+    _download(`opensquilla-usage-${suffix}${coverageSuffix}-cny${CNY_RATE}.csv`, 'text/csv', csv);
   }
 
   function _download(filename, mime, content) {

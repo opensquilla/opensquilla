@@ -18,7 +18,9 @@ from opensquilla.tools.types import (
 
 
 def _original_async(fn: Callable[..., Awaitable[str]]) -> Callable[..., Awaitable[str]]:
-    return fn.__wrapped__.__wrapped__  # type: ignore[attr-defined, no-any-return]
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__  # type: ignore[attr-defined]
+    return fn
 
 
 @pytest.fixture

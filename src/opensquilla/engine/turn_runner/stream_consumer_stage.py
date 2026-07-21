@@ -209,6 +209,7 @@ class _StreamState:
     turn_segments: list[dict] = field(default_factory=list)
     turn_artifacts: list[dict[str, Any]] = field(default_factory=list)
     artifact_delivery_failures: list[str] = field(default_factory=list)
+    artifact_delivery_failures_by_target: dict[str, str] = field(default_factory=dict)
     completed_meta_skill_without_text: str | None = None
 
 # ---------------------------------------------------------------------------
@@ -326,6 +327,16 @@ class _ToolUseStartHandler:
         )
         return event
 
+def _clear_artifact_delivery_failure(state: _StreamState, target_key: str) -> None:
+    failure_summary = state.artifact_delivery_failures_by_target.pop(target_key, None)
+    if failure_summary is None:
+        return
+    try:
+        state.artifact_delivery_failures.remove(failure_summary)
+    except ValueError:
+        pass
+
+
 class _ToolResultHandler:
     """Capture artifact-delivery failures and append the tool_result segment."""
 
@@ -333,17 +344,31 @@ class _ToolResultHandler:
         self,
         event: ToolResultEvent,
         state: _StreamState,
+        *,
+        tool_context: Any | None = None,
     ) -> ToolResultEvent:
         # Late imports keep the module import-cycle-free.
         from opensquilla.engine.runtime import (
             _artifact_delivery_failure_summary,
+            _artifact_delivery_target_keys,
             _persisted_tool_result_segment,
             _persisted_tool_use_input,
         )
 
         failure_summary = _artifact_delivery_failure_summary(event)
+        target_keys = _artifact_delivery_target_keys(
+            event,
+            tool_context=tool_context,
+            include_publish_name=not event.is_error,
+        )
         if failure_summary is not None:
+            for target_key in target_keys:
+                _clear_artifact_delivery_failure(state, target_key)
+                state.artifact_delivery_failures_by_target[target_key] = failure_summary
             state.artifact_delivery_failures.append(failure_summary)
+        elif not event.is_error:
+            for target_key in target_keys:
+                _clear_artifact_delivery_failure(state, target_key)
         if _is_completed_meta_invoke(event):
             state.completed_meta_skill_without_text = _meta_invoke_skill_name(event)
         if event.arguments is not None:
@@ -607,6 +632,8 @@ class _DoneHandler:
             artifact_event = _ArtifactEvent(**artifact)
             state.turn_artifacts.append(artifact)
             extra_yields.append(artifact_event)
+        for target_key in omitted_publish_result.resolved_target_keys:
+            _clear_artifact_delivery_failure(state, target_key)
         state.artifact_delivery_failures.extend(
             omitted_publish_result.failure_summaries
         )
@@ -1089,7 +1116,11 @@ class StreamConsumerStage:
             elif isinstance(event, ToolUseDeltaEvent):
                 transformed = event
             elif isinstance(event, ToolResultEvent):
-                transformed = self._tool_result_handler.handle(event, state)
+                transformed = self._tool_result_handler.handle(
+                    event,
+                    state,
+                    tool_context=inp.tool_context,
+                )
             elif isinstance(event, ArtifactEvent):
                 transformed = self._artifact_handler.handle(event, state)
             elif isinstance(event, ErrorEvent):

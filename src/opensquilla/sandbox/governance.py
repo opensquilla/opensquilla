@@ -279,6 +279,11 @@ class ApprovalGate:
         auditability. This call does **not** consult the ledger or the
         post-denial guard — that composition lives in :func:`gate_execution`.
         """
+        from opensquilla.tools.run_mode import full_host_access_active
+
+        if full_host_access_active():
+            return ALLOW
+
         fingerprint = action_fingerprint(request)
         if not policy.require_approval:
             _log_decision(
@@ -290,6 +295,31 @@ class ApprovalGate:
                 session_id=session_id,
             )
             return ALLOW
+        if request.run_mode == "trusted":
+            result = DenialResult(
+                reason=DenialReason.POLICY_DENIED,
+                suggested_next_step=SuggestedNextStep.ASK_USER,
+                level=policy.level,
+                action_fingerprint=fingerprint,
+                message=(
+                    "Trusted-Sandbox blocked this action before requesting approval. "
+                    "This operation requires elevated approval, but Trusted-Sandbox "
+                    "does not expose a visible approval surface for this tool call. "
+                    "Ask the user to switch to Full Host Access or retry with a "
+                    "narrower workspace-safe operation."
+                ),
+                retryable=False,
+            )
+            _log_decision(
+                request,
+                policy,
+                fingerprint,
+                decision="deny",
+                approval_required=True,
+                session_id=session_id,
+                reason=result.reason.value,
+            )
+            return result
         params: dict[str, object] = {
             "action_kind": request.action_kind,
             "argv": list(request.argv),
@@ -428,6 +458,11 @@ async def gate_execution(
     Any denial path records itself into the ledger so future calls see
     consistent state.
     """
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return ALLOW
+
     if await ledger.is_paused(session_id):
         return _pause_denial(request, policy, session_id)
 
@@ -530,6 +565,11 @@ async def on_successful_exec(
     The orchestration layer decides whether to surface stale cached output
     to the agent; here we only track what *would* be purged on denial.
     """
+    from opensquilla.tools.run_mode import full_host_access_active
+
+    if full_host_access_active():
+        return ""
+
     fp = action_fingerprint(request)
     target = cache if cache is not None else get_stale_output_cache()
     await target.record_success(session_id, fp, payload)

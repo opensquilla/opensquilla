@@ -89,7 +89,7 @@ test.describe('Settings modal', () => {
     await railTab(page, 'Model Routing').click()
     await expect(railTab(page, 'Model Routing')).toHaveAttribute('aria-selected', 'true')
     await expect(page).toHaveURL(/\/settings\/modelStrategy$/)
-    await expect(dialog(page).getByRole('heading', { name: 'Model routing', exact: true })).toBeVisible()
+    await expect(dialog(page).getByRole('radiogroup', { name: 'Model routing', exact: true })).toBeVisible()
 
     // Section navigation uses replace, so a single Back exits Settings rather
     // than walking section history.
@@ -541,5 +541,13 @@ test.describe('Settings modal', () => {
 
     // Client-only: none of this raises the settings dirty bar.
     await expect(dialog(page).locator('.settings-dirtybar')).toBeHidden()
+
+    // Long-lived Agent management is available only from this advanced escape
+    // hatch; routing through Vue preserves the /control base path.
+    await dialog(page).getByRole('button', { name: 'Open: Agent configuration (advanced)' }).click()
+    await expect(page).toHaveURL(/\/agents$/)
+    await expect(dialog(page)).toHaveCount(0)
+    await expect(page.locator('.agents-view, .agents-page, .ag-stage').first()).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Agents', level: 1 })).toBeFocused()
   })
 })

@@ -8,6 +8,11 @@ import pytest
 from opensquilla.engine.pipeline import TurnContext
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.steps.vision_followup_gate import apply_vision_followup_gate
+from opensquilla.engine.usage_accounting import (
+    UsageCallResult,
+    UsageCallStart,
+    UsageExecutionContext,
+)
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.provider.types import (
     ChatConfig,
@@ -125,6 +130,22 @@ class _RecordingSelector:
         )
 
 
+class _UsageSink:
+    def __init__(self) -> None:
+        self.started: list[UsageCallStart] = []
+        self.finalized: list[tuple[UsageCallStart, UsageCallResult]] = []
+        self.unknown: list[tuple[UsageCallStart, str]] = []
+
+    async def start(self, call: UsageCallStart) -> None:
+        self.started.append(call)
+
+    async def finalize(self, call: UsageCallStart, result: UsageCallResult) -> None:
+        self.finalized.append((call, result))
+
+    async def mark_unknown(self, call: UsageCallStart, reason: str) -> None:
+        self.unknown.append((call, reason))
+
+
 def _ctx(message: str, metadata: dict[str, Any] | None = None) -> TurnContext:
     config = GatewayConfig(llm={"provider": "openrouter"})
     return TurnContext(
@@ -227,6 +248,44 @@ async def test_runtime_gate_chat_uses_configured_lightweight_tier_model() -> Non
         )
     ]
     assert any(isinstance(event, TextDeltaEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_runtime_gate_chat_records_one_child_execution() -> None:
+    sink = _UsageSink()
+    config = GatewayConfig(llm={"provider": "openrouter"})
+    runner = TurnRunner(provider_selector=None, config=config, usage_event_sink=sink)
+    selector = _RecordingSelector()
+    parent = UsageExecutionContext(
+        execution_id="turn-1",
+        agent_run_id="turn-1",
+        turn_id="turn-1",
+        session_id="session-1",
+        session_epoch=3,
+        agent_id="main",
+        run_kind="webchat",
+    )
+
+    chat, _ = runner._make_vision_followup_gate_chat(selector, parent)
+    assert callable(chat)
+    _ = [
+        event
+        async for event in chat(
+            [Message(role="user", content="{}")],
+            tools=[],
+            config=ChatConfig(),
+        )
+    ]
+
+    assert len(sink.started) == 1
+    call = sink.started[0]
+    assert call.execution_id != "turn-1"
+    assert call.parent_turn_id == "turn-1"
+    assert call.session_id == "session-1"
+    assert call.session_epoch == 3
+    assert call.run_kind == "vision_followup_gate"
+    assert len(sink.finalized) == 1
+    assert sink.unknown == []
 
 
 @pytest.mark.asyncio

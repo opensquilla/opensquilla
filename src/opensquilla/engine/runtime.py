@@ -144,6 +144,7 @@ from opensquilla.engine.turn_runner.harness import (
     _TurnRunnerRouterContextAdapter,
     _TurnRunnerSessionIdResolverAdapter,
     _TurnRunnerSessionTotalsAdapter,
+    _TurnRunnerSkillCatalogResolverAdapter,
     _TurnRunnerSystemPromptRefreshAdapter,
     _TurnRunnerT3UpgradeCompactionAdapter,
     _TurnRunnerTimeoutBudgetAdapter,
@@ -162,6 +163,15 @@ from opensquilla.engine.types import (
     ThinkingLevel,
     ToolResultEvent,
     WarningEvent,
+)
+from opensquilla.engine.usage_accounting import (
+    UsageAccountingScope,
+    UsageAccountingUnavailableError,
+    UsageEventSink,
+    UsageExecutionContext,
+    account_provider_stream,
+    bind_usage_accounting_scope,
+    provider_accounts_physical_usage,
 )
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
@@ -238,7 +248,7 @@ from opensquilla.session.terminal_reply import (
     build_terminal_reply,
     sanitize_agent_error,
 )
-from opensquilla.tools.types import CallerKind, ToolContext
+from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext
 
 if TYPE_CHECKING:
     from opensquilla.engine.routing.health import ProviderHealthLedger
@@ -254,6 +264,9 @@ _LLM_TIMEOUT_ENVELOPE: dict[str, Any] = {
 _DEFAULT_AGENT_RUNTIME_TIMEOUT_SECONDS: float = 48 * 60 * 60
 _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS: float = 120.0
 _DEFAULT_LLM_TIMEOUT_SECONDS: float = _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
+_WEB_CHAT_META_EXEMPT_KEYS: Final[frozenset[str]] = frozenset(
+    {"meta_match", "meta_launch", "meta_resume"}
+)
 _ROUTER_PREV_ASSISTANT_MAX_CHARS: Final[int] = 8000
 _ROUTER_HISTORY_USER_MAX_CHARS: Final[int] = 8000
 _ROUTER_HISTORY_USER_MAX_TURNS: Final[int] = 4
@@ -269,7 +282,9 @@ _T3_FLUSH_FAILED: Final[str] = "flush_failed"
 _T3_COMPACT_FAILED: Final[str] = "compact_failed"
 _IMAGE_GENERATION_TOOL_NAMES: Final[frozenset[str]] = frozenset({"image_generate"})
 _ARTIFACT_DELIVERY_FAILURE_MARKER: Final[str] = "File delivery failed:"
-_ARTIFACT_DELIVERY_TOOL_NAME: Final[str] = "publish_artifact"
+_ARTIFACT_DELIVERY_TOOL_NAMES: Final[frozenset[str]] = frozenset(
+    {"publish_artifact", "create_pptx"}
+)
 _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS: Final[int] = 360
 _HOOKS_FEATURE_ENV: Final[str] = "OPENSQUILLA_HOOKS"
 
@@ -424,6 +439,28 @@ _SESSION_LOCK_BYPASS_ONLY: contextvars.ContextVar[set[int] | None] = contextvars
     "_session_lock_bypass_only",
     default=None,
 )
+# Gateway TaskRuntime installs the routing config captured when a turn is
+# accepted.  ContextVar keeps concurrent sessions isolated without mutating the
+# shared TurnRunner or GatewayConfig instances. Standalone/direct callers never
+# set it and continue to read the runner's live config exactly as before.
+_ACCEPTED_TURN_CONFIG: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "_accepted_turn_config",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def accepted_turn_config_scope(config: Any | None) -> Any:
+    """Use one acceptance-time routing snapshot for the enclosed turn."""
+
+    if config is None:
+        yield
+        return
+    token = _ACCEPTED_TURN_CONFIG.set(config)
+    try:
+        yield
+    finally:
+        _ACCEPTED_TURN_CONFIG.reset(token)
 
 
 def _compute_route_input_savings_usd(
@@ -645,6 +682,37 @@ def _strip_context_summary_marker(content: str) -> str:
     if content.startswith(_CONTEXT_SUMMARY_MARKER):
         return content[len(_CONTEXT_SUMMARY_MARKER) :].lstrip("\r\n")
     return content
+
+
+def _subagent_terminal_history_notice(entry: Any) -> str | None:
+    """Render trusted non-success subagent completions for the next model turn."""
+    if getattr(entry, "role", None) != "system":
+        return None
+    if getattr(entry, "provenance_kind", None) != "internal_system":
+        return None
+    if getattr(entry, "provenance_source_tool", None) != "subagent_completion":
+        return None
+    content = getattr(entry, "content", None)
+    if not isinstance(content, str) or not content:
+        return None
+    try:
+        payload = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "subagent_completion":
+        return None
+    status = str(payload.get("status") or "").strip().lower()
+    if status not in {"cancelled", "failed", "timeout", "abandoned"}:
+        return None
+    child_session_key = str(payload.get("child_session_key") or "unknown")[:200]
+    terminal_reason = str(payload.get("terminal_reason") or status)[:120]
+    return (
+        "[Trusted runtime status] "
+        f'Subagent {child_session_key} finished with status "{status}" '
+        f'(reason: "{terminal_reason}"). It is no longer running. '
+        "Do not wait for it or call sessions_yield for it. Continue from this terminal "
+        "state unless the user asks to start a replacement subagent."
+    )
 
 
 def _format_compaction_summary_context(summary_texts: list[str]) -> str | None:
@@ -1066,7 +1134,7 @@ def _persisted_tool_result_segment(
 
 
 def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:
-    if event.tool_name != _ARTIFACT_DELIVERY_TOOL_NAME or not event.is_error:
+    if event.tool_name not in _ARTIFACT_DELIVERY_TOOL_NAMES or not event.is_error:
         return None
     raw = event.result.strip()
     summary = raw
@@ -1086,20 +1154,121 @@ def _artifact_delivery_failure_summary(event: ToolResultEvent) -> str | None:
     summary = " ".join(summary.split())
     if len(summary) > _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS:
         summary = summary[: _ARTIFACT_DELIVERY_FAILURE_MAX_CHARS - 3].rstrip() + "..."
-    return summary or "publish_artifact failed"
+    return summary or f"{event.tool_name} failed"
 
+
+def _artifact_delivery_result_name(event: ToolResultEvent) -> str | None:
+    try:
+        parsed = json.loads(event.result)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    artifact = parsed.get("artifact")
+    if not isinstance(artifact, dict):
+        return None
+    name = artifact.get("name")
+    return name if isinstance(name, str) and name else None
+
+
+def _artifact_delivery_effective_publish_name(
+    arguments: dict[str, Any],
+    raw_target: str,
+) -> str | None:
+    """Mirror publish_artifact's effective public filename calculation."""
+
+    try:
+        target_name = Path(raw_target).name
+        raw_name = arguments.get("name")
+        requested_name = raw_name if isinstance(raw_name, str) else None
+        artifact_name = (requested_name or target_name).strip() or target_name
+        if (
+            requested_name
+            and not Path(artifact_name).suffix
+            and Path(target_name).suffix
+        ):
+            artifact_name = f"{artifact_name}{Path(target_name).suffix}"
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return artifact_name or None
+
+
+def _artifact_delivery_target_keys(
+    event: ToolResultEvent,
+    *,
+    tool_context: ToolContext | None = None,
+    include_publish_name: bool = False,
+) -> tuple[str, ...]:
+    if event.tool_name not in _ARTIFACT_DELIVERY_TOOL_NAMES:
+        return ()
+    arguments = event.arguments if isinstance(event.arguments, dict) else {}
+    from opensquilla.engine.artifact_delivery import (
+        artifact_delivery_name_target_key,
+        artifact_delivery_publish_target_key,
+    )
+
+    if event.tool_name == "publish_artifact":
+        raw_target = arguments.get("path")
+        if not isinstance(raw_target, str):
+            return ()
+        path_key = artifact_delivery_publish_target_key(
+            raw_target,
+            workspace_dir=tool_context.workspace_dir if tool_context is not None else None,
+        )
+        keys = [path_key] if path_key is not None else []
+        if not include_publish_name:
+            if "name" in arguments and isinstance(arguments.get("name"), str):
+                artifact_name = _artifact_delivery_effective_publish_name(
+                    arguments,
+                    raw_target,
+                )
+                if artifact_name is not None:
+                    return (artifact_delivery_name_target_key(artifact_name),)
+            return tuple(keys)
+
+        artifact_name = _artifact_delivery_result_name(event)
+        if artifact_name is None:
+            artifact_name = _artifact_delivery_effective_publish_name(
+                arguments,
+                raw_target,
+            )
+        if artifact_name is not None:
+            keys.append(artifact_delivery_name_target_key(artifact_name))
+        return tuple(dict.fromkeys(keys))
+
+    effective_name = _artifact_delivery_result_name(event) if not event.is_error else None
+    if effective_name is None:
+        raw_name = arguments.get("name") or "generated.pptx"
+        if not isinstance(raw_name, str):
+            return ()
+        # Match create_pptx's public name normalization: it publishes a basename
+        # and appends .pptx when omitted.
+        effective_name = Path(raw_name).name.strip()
+        if not effective_name or effective_name in {".", ".."}:
+            effective_name = "generated.pptx"
+        if not effective_name.lower().endswith(".pptx"):
+            effective_name = f"{effective_name}.pptx"
+    name_key = artifact_delivery_name_target_key(effective_name)
+    keys = [name_key]
+    if not event.is_error and tool_context is not None and tool_context.workspace_dir:
+        root_path_key = artifact_delivery_publish_target_key(
+            name_key.removeprefix("name:"),
+            workspace_dir=tool_context.workspace_dir,
+        )
+        if root_path_key is not None:
+            keys.append(root_path_key)
+    return tuple(dict.fromkeys(keys))
 
 def _artifact_delivery_failure_notice(*, partial: bool = False) -> str:
     if partial:
         return (
             f"{_ARTIFACT_DELIVERY_FAILURE_MARKER} some generated files were attached, "
             "but at least one file could not be attached. Ask me to resend the "
-            "missing file after I correct the generated file path."
+            "missing file after I correct or regenerate it."
         )
     return (
         f"{_ARTIFACT_DELIVERY_FAILURE_MARKER} no downloadable file was attached "
-        "to this response. Ask me to resend the file after I correct the generated "
-        "file path."
+        "to this response. Ask me to resend the file after I correct or regenerate it."
     )
 
 
@@ -1273,6 +1442,18 @@ class _SelectorFallbackProvider:
         return getattr(self._provider, name)
 
     @property
+    def accounts_physical_usage(self) -> bool:
+        """The wrapper, rather than Agent, owns every selector chain leg."""
+
+        return True
+
+    @property
+    def retry_failed_call_safe(self) -> bool:
+        """Whether replaying the currently active provider call is safe."""
+
+        return getattr(self._provider, "retry_failed_call_safe", True) is not False
+
+    @property
     def provider_name(self) -> str:
         return getattr(self._provider, "provider_name", "")
 
@@ -1422,69 +1603,93 @@ class _SelectorFallbackProvider:
             pre_text_buffer.clear()
             return drained
 
-        async for event in self._provider.chat(messages, tools=tools, config=config):
-            # Provider control events must cross this provider-domain wrapper
-            # unchanged and in real time.  Agent is the sole Provider→Engine
-            # normalization boundary.  Neither event counts as user-visible
-            # content, so a later pre-content error may still select fallback.
-            if isinstance(event, (ProviderHeartbeatEvent, ProviderEnsembleProgressEvent)):
-                yield event
-                continue
-            if isinstance(event, ProviderErrorEvent):
-                _report_credential_pool_failure(
-                    self.provider_name,
-                    self._turn_metadata,
-                    event,
-                )
-            if emitted_user_visible_content:
-                yield event
-                continue
-
-            if isinstance(event, ProviderErrorEvent) and _should_use_selector_fallback(
-                self.provider_name, event
-            ):
-                self._record_health_failure(event)
-                try:
-                    self._provider = self._selector.next_fallback_after_failure(
-                        RuntimeError(event.message)
+        active_provider = self._provider
+        active_provider_id, active_model = self._active_deployment()
+        primary_stream = account_provider_stream(
+            lambda: active_provider.chat(messages, tools=tools, config=config),
+            provider=active_provider_id,
+            model=active_model,
+        )
+        try:
+            async for event in primary_stream:
+                # Provider control events must cross this provider-domain wrapper
+                # unchanged and in real time.  Agent is the sole Provider→Engine
+                # normalization boundary.  Neither event counts as user-visible
+                # content, so a later pre-content error may still select fallback.
+                if isinstance(event, (ProviderHeartbeatEvent, ProviderEnsembleProgressEvent)):
+                    yield event
+                    continue
+                if isinstance(event, ProviderErrorEvent):
+                    _report_credential_pool_failure(
+                        self.provider_name,
+                        self._turn_metadata,
+                        event,
                     )
-                except Exception:
+                if emitted_user_visible_content:
+                    yield event
+                    continue
+
+                if isinstance(event, ProviderErrorEvent) and _should_use_selector_fallback(
+                    self.provider_name, event
+                ):
+                    self._record_health_failure(event)
+                    try:
+                        self._provider = self._selector.next_fallback_after_failure(
+                            RuntimeError(event.message)
+                        )
+                    except Exception:
+                        for buffered_event in drain_pre_text_buffer():
+                            yield buffered_event
+                        yield event
+                        return
+                    self._note_fallback_hop()
+                    self._skip_benched_fallbacks()
+                    self._realign_routed_model_after_fallback()
+                    # Close the failed physical leg before reserving the next
+                    # one; otherwise an early-consumer break can defer unknown
+                    # coverage until async-generator GC.
+                    await primary_stream.aclose()
+                    fallback_provider = self._provider
+                    fallback_provider_id, fallback_model = self._active_deployment()
+                    fallback_stream = account_provider_stream(
+                        lambda: fallback_provider.chat(
+                            messages,
+                            tools=tools,
+                            config=config,
+                        ),
+                        provider=fallback_provider_id,
+                        model=fallback_model,
+                    )
+                    try:
+                        async for fallback_event in fallback_stream:
+                            yield fallback_event
+                    finally:
+                        await fallback_stream.aclose()
+                    return
+
+                if _is_non_empty_provider_text_delta(event):
+                    for buffered_event in drain_pre_text_buffer():
+                        yield buffered_event
+                    emitted_user_visible_content = True
+                    self._record_health_success()
+                    yield event
+                    continue
+
+                if getattr(event, "kind", "") == "done":
                     for buffered_event in drain_pre_text_buffer():
                         yield buffered_event
                     yield event
-                    return
-                self._note_fallback_hop()
-                self._skip_benched_fallbacks()
-                self._realign_routed_model_after_fallback()
-                async for fallback_event in self._provider.chat(
-                    messages,
-                    tools=tools,
-                    config=config,
-                ):
-                    yield fallback_event
-                return
+                    continue
 
-            if _is_non_empty_provider_text_delta(event):
-                for buffered_event in drain_pre_text_buffer():
-                    yield buffered_event
-                emitted_user_visible_content = True
-                self._record_health_success()
-                yield event
-                continue
+                if isinstance(event, ProviderErrorEvent):
+                    for buffered_event in drain_pre_text_buffer():
+                        yield buffered_event
+                    yield event
+                    continue
 
-            if getattr(event, "kind", "") == "done":
-                for buffered_event in drain_pre_text_buffer():
-                    yield buffered_event
-                yield event
-                continue
-
-            if isinstance(event, ProviderErrorEvent):
-                for buffered_event in drain_pre_text_buffer():
-                    yield buffered_event
-                yield event
-                continue
-
-            pre_text_buffer.append(event)
+                pre_text_buffer.append(event)
+        finally:
+            await primary_stream.aclose()
 
         for buffered_event in drain_pre_text_buffer():
             yield buffered_event
@@ -2245,6 +2450,7 @@ class TurnRunner:
         meta_run_writer: MetaRunWriter | None = None,
         turn_error_writer: Any | None = None,
         provider_call_observer: Callable[..., None] | None = None,
+        usage_event_sink: UsageEventSink | None = None,
     ) -> None:
         self._provider_selector = provider_selector
         self._tool_registry = tool_registry
@@ -2261,6 +2467,10 @@ class TurnRunner:
         self._diagnostics_state = diagnostics_state
         self._meta_run_writer = meta_run_writer
         self._turn_error_writer = turn_error_writer
+        self._usage_event_sink = usage_event_sink
+        # Populated alongside the existing session-id lookup so live usage
+        # events retain reset fencing without a second storage round trip.
+        self._usage_session_epoch_by_key: dict[str, int] = {}
         # Optional gateway-injected provider-call observer (latency/health
         # sampling). Threaded onto AgentConfig via AgentBootstrapStage; None
         # keeps the engine gateway-agnostic.
@@ -2312,6 +2522,7 @@ class TurnRunner:
         self._provider_and_tools_stage = ProviderAndToolsStage(
             provider_resolver=_TurnRunnerProviderResolverAdapter(self),
             tool_builder=_TurnRunnerToolBuilderAdapter(self),
+            skill_catalog_resolver=_TurnRunnerSkillCatalogResolverAdapter(self),
         )
         # TurnRunner stage decomposition PromptAssemblerStage instance. Holds no
         # per-turn state. Active unconditionally as of.
@@ -2379,6 +2590,19 @@ class TurnRunner:
             session_totals=_TurnRunnerSessionTotalsAdapter(self),
             turn_error_persist=_TurnRunnerTurnErrorPersistAdapter(self),
         )
+
+    def _turn_config(self) -> Any:
+        """Return live config with this turn's accepted routing values overlaid."""
+
+        accepted = _ACCEPTED_TURN_CONFIG.get()
+        if accepted is None:
+            return self._config
+        overlay_live_config = getattr(accepted, "overlay_live_config", None)
+        if callable(overlay_live_config):
+            return overlay_live_config(self._config)
+        # Compatibility for direct callers that still install a complete
+        # config object in accepted_turn_config_scope().
+        return accepted
 
     @property
     def router_control_hold_store(self) -> RouterControlHoldStore:
@@ -2723,7 +2947,7 @@ class TurnRunner:
             tool_context,
             session_key=session_key,
             tool_run_budget_key=f"{session_key}:{uuid.uuid4().hex}",
-            router_control_config=getattr(self._config, "squilla_router", None),
+            router_control_config=getattr(self._turn_config(), "squilla_router", None),
             router_control_hold_store=self._router_control_hold_store,
             router_control_replay_depth=router_control_replay_depth,
             router_control_turn_hold_applied=False,
@@ -2952,38 +3176,60 @@ class TurnRunner:
             tool_handler = pt_out.tool_handler
             tool_context = pt_out.effective_tool_context
             tool_metadata = pt_out.tool_metadata
+            skill_catalog = pt_out.skill_catalog
 
-            pa_outcome = await self._prompt_assembler_stage.run(
-                PromptAssemblerStageInput(
-                    runtime_message=runtime_message,
-                    semantic_input=semantic_input,
-                    extra_prompt_context=extra_prompt_context,
-                    provider=provider,
-                    cloned_selector=cloned_selector,
-                    tool_defs=tool_defs,
-                    effective_tool_context=tool_context,
-                    tool_metadata=tool_metadata,
-                    session_key=session_key,
-                    agent_id=agent_id,
+            pipeline_usage_context: UsageExecutionContext | None = None
+            turn_usage_scope: UsageAccountingScope | None = None
+            if self._usage_event_sink is not None:
+                pipeline_session_id = await self._resolve_session_id_for_log(session_key)
+                pipeline_usage_context = UsageExecutionContext(
+                    execution_id=turn_id,
+                    agent_run_id=turn_id,
                     turn_id=turn_id,
-                    attachments=attachments,
-                    bootstrap_context_mode=bootstrap_context_mode,
-                    model=model,
-                    history_has_persisted_user=history_has_persisted_user,
-                    persist_input=persist_input,
-                    bound_user_message_id=bound_user_message_id,
-                    fresh_user_session=(
-                        fresh_user_session
-                        if fresh_user_session is not None
-                        else input_mode == "user"
-                        and run_kind == "default"
-                        and not history_has_persisted_user
-                    ),
-                    ingress_pipeline_steps=ingress_pipeline_steps,
-                    normalization_metadata=normalization_metadata,
-                    input_provenance=input_provenance,
+                    session_id=pipeline_session_id,
+                    session_epoch=self._usage_session_epoch_by_key.get(session_key, 0),
+                    agent_id=agent_id,
+                    run_kind=run_kind or "turn",
                 )
-            )
+                turn_usage_scope = UsageAccountingScope(
+                    sink=self._usage_event_sink,
+                    context=pipeline_usage_context,
+                )
+
+            with bind_usage_accounting_scope(turn_usage_scope):
+                pa_outcome = await self._prompt_assembler_stage.run(
+                    PromptAssemblerStageInput(
+                        runtime_message=runtime_message,
+                        semantic_input=semantic_input,
+                        extra_prompt_context=extra_prompt_context,
+                        provider=provider,
+                        cloned_selector=cloned_selector,
+                        tool_defs=tool_defs,
+                        effective_tool_context=tool_context,
+                        tool_metadata=tool_metadata,
+                        session_key=session_key,
+                        agent_id=agent_id,
+                        turn_id=turn_id,
+                        attachments=attachments,
+                        bootstrap_context_mode=bootstrap_context_mode,
+                        model=model,
+                        history_has_persisted_user=history_has_persisted_user,
+                        persist_input=persist_input,
+                        bound_user_message_id=bound_user_message_id,
+                        fresh_user_session=(
+                            fresh_user_session
+                            if fresh_user_session is not None
+                            else input_mode == "user"
+                            and run_kind == "default"
+                            and not history_has_persisted_user
+                        ),
+                        ingress_pipeline_steps=ingress_pipeline_steps,
+                        normalization_metadata=normalization_metadata,
+                        input_provenance=input_provenance,
+                        skill_catalog=skill_catalog,
+                        usage_execution_context=pipeline_usage_context,
+                    )
+                )
             pa_out = pa_outcome.require_output()
             provider = pa_out.provider
             turn = pa_out.turn
@@ -3043,7 +3289,7 @@ class TurnRunner:
             )
             if tool_context is not None:
                 tool_context.router_control_config = getattr(
-                    self._config, "squilla_router", None
+                    self._turn_config(), "squilla_router", None
                 )
                 tool_context.router_control_hold_store = self._router_control_hold_store
                 tool_context.router_control_replay_depth = router_control_replay_depth
@@ -3055,6 +3301,13 @@ class TurnRunner:
                 yield router_event
             active_provider_id = (
                 getattr(cloned_selector, "active_provider_id", "") or provider_name
+            )
+            runtime_timeout_override = self._web_chat_runtime_timeout_override(
+                session_key,
+                explicit=timeout,
+                tool_context=tool_context,
+                input_mode=input_mode,
+                turn_metadata=turn.metadata,
             )
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
@@ -3071,7 +3324,7 @@ class TurnRunner:
                     tool_context=tool_context,
                     session_key=session_key,
                     agent_id=agent_id,
-                    timeout=timeout,
+                    timeout=runtime_timeout_override,
                     max_iterations=max_iterations,
                     iteration_timeout=iteration_timeout,
                     tool_timeout=tool_timeout,
@@ -3079,6 +3332,9 @@ class TurnRunner:
                     max_provider_retries=max_provider_retries,
                     length_capped_continuations=length_capped_continuations,
                     active_provider_id=active_provider_id,
+                    turn_id=turn_id,
+                    run_kind=run_kind,
+                    session_epoch=self._usage_session_epoch_by_key.get(session_key, 0),
                 )
             )
             ab_out = ab_outcome.require_output()
@@ -3124,22 +3380,23 @@ class TurnRunner:
                         global_override=getattr(llm_cfg, "context_window_tokens", 0) or 0,
                     )
                     compaction_context_window_tokens = window
-            ch_outcome = await self._compaction_and_history_stage.run(
-                CompactionAndHistoryStageInput(
-                    agent=agent,
-                    context_window_tokens=agent_config.context_window_tokens,
-                    provider=provider,
-                    resolved_model=resolved_model,
-                    compaction_context_window_tokens=compaction_context_window_tokens,
-                    compaction_provider=provider,
-                    compaction_model=compaction_model,
-                    turn=turn,
-                    session_key=session_key,
-                    agent_id=agent_id,
-                    history_has_persisted_user=history_has_persisted_user,
-                    bound_user_message_id=bound_user_message_id,
+            with bind_usage_accounting_scope(turn_usage_scope):
+                ch_outcome = await self._compaction_and_history_stage.run(
+                    CompactionAndHistoryStageInput(
+                        agent=agent,
+                        context_window_tokens=agent_config.context_window_tokens,
+                        provider=provider,
+                        resolved_model=resolved_model,
+                        compaction_context_window_tokens=compaction_context_window_tokens,
+                        compaction_provider=provider,
+                        compaction_model=compaction_model,
+                        turn=turn,
+                        session_key=session_key,
+                        agent_id=agent_id,
+                        history_has_persisted_user=history_has_persisted_user,
+                        bound_user_message_id=bound_user_message_id,
+                    )
                 )
-            )
             ch_out = ch_outcome.require_output()
             agent.config.request_context_prompt = ch_out.final_request_context_prompt
 
@@ -3198,19 +3455,20 @@ class TurnRunner:
                 run_kind=run_kind,
                 heartbeat_ack_max_chars=heartbeat_ack_max_chars,
                 bootstrap_context_mode=bootstrap_context_mode,
-                router_cfg=getattr(self._config, "squilla_router", None),
+                router_cfg=getattr(self._turn_config(), "squilla_router", None),
                 session_manager_present=self._session_manager is not None,
                 state=stream_state,
                 tool_context=tool_context,
                 pending_input_provider=pending_input_provider,
             )
             router_control_replay_event: RouterControlReplayEvent | None = None
-            async for event in self._stream_consumer_stage.run(stream_inp):
-                if isinstance(event, RouterControlReplayEvent):
-                    router_control_replay_event = event
+            with bind_usage_accounting_scope(turn_usage_scope):
+                async for event in self._stream_consumer_stage.run(stream_inp):
+                    if isinstance(event, RouterControlReplayEvent):
+                        router_control_replay_event = event
+                        yield event
+                        break
                     yield event
-                    break
-                yield event
             if router_control_replay_event is not None:
                 async for replayed_event in self._run_turn(
                     message,
@@ -3474,11 +3732,19 @@ class TurnRunner:
                 fallback_error_class="agent_error",
                 fallback_error_message=str(exc) or "Agent error",
             )
-            event_code = (
-                error_code
-                if error_code in {"provider_request_too_large", "provider_output_truncated"}
-                else "agent_error"
-            )
+            if isinstance(exc, UsageAccountingUnavailableError):
+                event_code = UsageAccountingUnavailableError.code
+                error_code = event_code
+                error_message = str(exc) or (
+                    "Usage accounting is temporarily unavailable; retry the turn."
+                )
+            else:
+                event_code = (
+                    error_code
+                    if error_code
+                    in {"provider_request_too_large", "provider_output_truncated"}
+                    else "agent_error"
+                )
             log.error(
                 "turn_runner.failed",
                 session_key=session_key,
@@ -3681,6 +3947,12 @@ class TurnRunner:
         except Exception:
             return None
         session_id = getattr(node, "session_id", None)
+        if isinstance(session_id, str) and session_id:
+            try:
+                session_epoch = max(0, int(getattr(node, "epoch", 0) or 0))
+            except (TypeError, ValueError, OverflowError):
+                session_epoch = 0
+            self._usage_session_epoch_by_key[session_key] = session_epoch
         return session_id if isinstance(session_id, str) and session_id else None
 
     def _resolve_provider(self) -> tuple[Any | None, Any | None]:
@@ -3905,6 +4177,48 @@ class TurnRunner:
                 return float(value)
 
         return _DEFAULT_AGENT_RUNTIME_TIMEOUT_SECONDS
+
+    def _web_chat_runtime_timeout_override(
+        self,
+        session_key: str,
+        *,
+        explicit: float | None,
+        tool_context: ToolContext | None,
+        input_mode: str,
+        turn_metadata: Mapping[str, Any] | None,
+    ) -> float | None:
+        """Cap ordinary interactive Web turns without constraining long jobs."""
+
+        if explicit is not None:
+            return float(explicit)
+        cap = getattr(self._config, "web_chat_runtime_timeout_seconds", 0.0)
+        if not self._non_bool_number(cap) or cap <= 0:
+            return None
+        if tool_context is None or tool_context.caller_kind is not CallerKind.WEB:
+            return None
+        if tool_context.interaction_mode is not InteractionMode.INTERACTIVE:
+            return None
+        if input_mode != "user":
+            return None
+
+        metadata = turn_metadata or {}
+        if tool_context.coding_mode or bool(metadata.get("coding_mode")):
+            return None
+        if any(metadata.get(key) is not None for key in _WEB_CHAT_META_EXEMPT_KEYS):
+            return None
+
+        base_timeout = self._resolve_agent_runtime_timeout(session_key)
+        if base_timeout == 0:
+            return 0.0
+        effective_timeout = min(base_timeout, float(cap))
+        log.debug(
+            "turn_runner.web_chat_runtime_timeout",
+            session_key=session_key,
+            base_timeout_seconds=base_timeout,
+            cap_seconds=float(cap),
+            effective_timeout_seconds=effective_timeout,
+        )
+        return effective_timeout
 
     def _resolve_agent_max_iterations(
         self,
@@ -4271,10 +4585,35 @@ class TurnRunner:
             return float(gw_timeout)
         return _DEFAULT_LLM_REQUEST_TIMEOUT_SECONDS
 
+    def _resolve_skill_catalog(self) -> Any | None:
+        """Refresh and return the immutable catalog pinned to this turn.
+
+        Legacy/custom loaders that only expose ``load_all`` remain supported;
+        in that case ``_build_tools`` and the pipeline keep their compatibility
+        fallback instead of manufacturing a mutable pseudo-snapshot.
+        """
+        loader = self._skill_loader
+        if loader is None:
+            return None
+        refresh = getattr(loader, "refresh_if_changed", None)
+        snapshot = getattr(loader, "snapshot", None)
+        if not callable(refresh) or not callable(snapshot):
+            return None
+        try:
+            refresh(reason="turn")
+        except Exception as exc:  # noqa: BLE001 - preserve last-known-good catalog
+            log.warning("skills.catalog.turn_refresh_failed", error=str(exc))
+        try:
+            return snapshot()
+        except Exception as exc:  # noqa: BLE001 - legacy fail-open behavior
+            log.warning("skills.catalog.turn_snapshot_failed", error=str(exc))
+            return None
+
     def _build_tools(
         self,
         ctx: ToolContext | None = None,
         metadata: dict[str, Any] | None = None,
+        skill_catalog: Any | None = None,
     ) -> tuple[list, ToolHandler | None]:
         """Build tool definitions and handler from registry, filtered by ToolContext."""
         if self._tool_registry is None:
@@ -4288,7 +4627,9 @@ class TurnRunner:
         from opensquilla.tools.registry import filter_by_profile, resolve_profile
 
         loaded_skills: list[Any] = []
-        if self._skill_loader is not None:
+        if skill_catalog is not None:
+            loaded_skills = list(getattr(skill_catalog, "skills", ()))
+        elif self._skill_loader is not None:
             try:
                 loaded_skills = list(self._skill_loader.load_all())
             except Exception:
@@ -4309,13 +4650,17 @@ class TurnRunner:
                 ctx.denied_tools.add("meta_invoke")
         if metadata is not None:
             metadata["meta_skill_enabled"] = meta_skill_enabled
+            if skill_catalog is not None:
+                metadata["skill_catalog_generation"] = int(
+                    getattr(skill_catalog, "generation", 0)
+                )
 
         if ctx is not None:
             caller_ctx = ctx
             ctx = apply_tool_policy_from_config(
                 ctx,
                 available_tools=self._tool_registry.list_names(),
-                config=self._config,
+                config=self._turn_config(),
             )
             if ctx.tool_policy:
                 from opensquilla.tools.policy import apply_tool_policy_layer
@@ -4424,8 +4769,24 @@ class TurnRunner:
                         [
                             "Default execution target: sandbox",
                             (
+                                "Host filesystem: broadly readable; writes stay within "
+                                "declared writable roots by default."
+                            ),
+                            (
                                 "Host escalation: explicit host-affecting actions can run "
                                 "on the host when policy allows."
+                            ),
+                            (
+                                "Elevation: when a tool returns elevation_required, retry "
+                                "that exact action with sandbox_permissions="
+                                "require_escalated and a precise justification only when "
+                                "the user request warrants it. Never elevate a generic "
+                                "runtime or command failure."
+                            ),
+                            (
+                                "Review: elevation is independently authorized once for "
+                                "the exact arguments; explain denials before seeking a new "
+                                "explicit user instruction."
                             ),
                             (
                                 "Sandbox: enabled by default; do not treat it as a "
@@ -4769,7 +5130,7 @@ class TurnRunner:
             dynamic_blocks.append(volatile_block)
         if tool_defs and any(getattr(td, "name", "") == "router_control" for td in tool_defs):
             router_block = render_router_control_prompt_block(
-                getattr(self._config, "squilla_router", None)
+                getattr(self._turn_config(), "squilla_router", None)
             )
             if router_block:
                 dynamic_blocks.append(f"## Router Control\n\n{router_block}")
@@ -4853,7 +5214,12 @@ class TurnRunner:
             return content[:max_chars] + "\n..."
         return content
 
-    def _make_meta_llm_chat(self, provider: Any, session_key: str) -> Any:
+    def _make_meta_llm_chat(
+        self,
+        provider: Any,
+        session_key: str,
+        usage_execution_context: UsageExecutionContext | None = None,
+    ) -> Any:
         """Construct the (system_prompt, user_message) -> str callable that
         meta_resolution's awaiting branch invokes for ``nl_extract: true``.
 
@@ -4876,10 +5242,12 @@ class TurnRunner:
             base_config=AgentConfig(),
             usage_tracker=getattr(self, "_usage_tracker", None),
             session_key=session_key,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=usage_execution_context,
         )
 
     def _resolve_vision_followup_gate_model(self) -> str | None:
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         if router_cfg is None:
             return None
         configured_model = str(
@@ -4905,6 +5273,7 @@ class TurnRunner:
     def _make_vision_followup_gate_chat(
         self,
         cloned_selector: Any,
+        usage_execution_context: UsageExecutionContext | None = None,
     ) -> tuple[Any | None, str | None]:
         gate_model = self._resolve_vision_followup_gate_model()
         if not gate_model or cloned_selector is None:
@@ -4923,8 +5292,49 @@ class TurnRunner:
             tools: Any = None,
             config: Any = None,
         ) -> AsyncIterator[Any]:
-            async for event in gate_provider.chat(messages, tools=tools, config=config):
-                yield event
+            scope: UsageAccountingScope | None = None
+            if self._usage_event_sink is not None:
+                execution_id = uuid.uuid4().hex
+                parent = usage_execution_context
+                scope = UsageAccountingScope(
+                    sink=self._usage_event_sink,
+                    context=UsageExecutionContext(
+                        execution_id=execution_id,
+                        agent_run_id=execution_id,
+                        turn_id=execution_id,
+                        parent_turn_id=(
+                            parent.turn_id or parent.execution_id
+                            if parent is not None
+                            else None
+                        ),
+                        session_id=parent.session_id if parent is not None else None,
+                        session_epoch=parent.session_epoch if parent is not None else 0,
+                        agent_id=parent.agent_id if parent is not None else "",
+                        run_kind="vision_followup_gate",
+                    ),
+                )
+            provider_id = str(
+                getattr(gate_selector, "active_provider_id", "")
+                or getattr(gate_provider, "provider_name", "")
+                or ""
+            )
+            with bind_usage_accounting_scope(scope):
+                stream = (
+                    gate_provider.chat(messages, tools=tools, config=config)
+                    if scope is not None
+                    and provider_accounts_physical_usage(gate_provider)
+                    else account_provider_stream(
+                        lambda: gate_provider.chat(
+                            messages,
+                            tools=tools,
+                            config=config,
+                        ),
+                        provider=provider_id,
+                        model=gate_model,
+                    )
+                )
+                async for event in stream:
+                    yield event
 
         return _chat, gate_model
 
@@ -4962,6 +5372,8 @@ class TurnRunner:
         tool_context: ToolContext | None = None,
         normalization_metadata: dict[str, Any] | None = None,
         input_provenance: dict[str, Any] | None = None,
+        skill_catalog: Any | None = None,
+        usage_execution_context: UsageExecutionContext | None = None,
     ) -> tuple[Any, Any]:
         """Run the pre-turn pipeline and re-resolve provider if model changed.
 
@@ -4990,7 +5402,7 @@ class TurnRunner:
             commit_deferred_router_history,
         )
 
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         router_timeout = float(getattr(router_cfg, "routing_timeout_seconds", 5.0) or 5.0)
 
         def _copy_router_turn(turn: TurnContext) -> TurnContext:
@@ -5035,14 +5447,30 @@ class TurnRunner:
 
         _bounded_apply_squilla_router.__name__ = "apply_squilla_router"
 
-        gate_chat, gate_model = self._make_vision_followup_gate_chat(cloned_selector)
+        gate_chat, gate_model = self._make_vision_followup_gate_chat(
+            cloned_selector,
+            usage_execution_context,
+        )
+        agent_skill_loader = self._skill_loader
+        if skill_catalog is not None and self._skill_loader is not None:
+            from opensquilla.skills.loader import PinnedSkillLoader
+
+            agent_skill_loader = PinnedSkillLoader(skill_catalog, self._skill_loader)
         initial_metadata: dict[str, Any] = {
-            "skill_loader": self._skill_loader,
+            # Agent-side skill_view coercion, meta execution, and child
+            # orchestrators must resolve against the same generation used for
+            # prompt/tool selection. The pinned loader view preserves configured
+            # roots while keeping every catalog read free of filesystem probes.
+            "skill_loader": agent_skill_loader,
             "meta_run_writer": getattr(self, "_meta_run_writer", None),
             # PR9+: meta_resolution's awaiting branch calls this first when
             # the SKILL.md has ``nl_extract: true``. None keeps clarify reply
             # parsing on the deterministic compatibility path.
-            "meta_llm_chat": self._make_meta_llm_chat(provider, session_key),
+            "meta_llm_chat": self._make_meta_llm_chat(
+                provider,
+                session_key,
+                usage_execution_context,
+            ),
             "router_control_hold_store": self._router_control_hold_store,
             # Surface the resolved per-agent workspace so the meta_invoke
             # handler in Agent._run_one_streaming (agent.py ~L4724) can
@@ -5067,6 +5495,10 @@ class TurnRunner:
                 )
             ),
         }
+        if skill_catalog is not None:
+            initial_metadata["skill_catalog_generation"] = int(
+                getattr(skill_catalog, "generation", 0)
+            )
         if gate_chat is not None:
             initial_metadata["router_vision_followup_gate_chat"] = gate_chat
         if gate_model:
@@ -5151,7 +5583,7 @@ class TurnRunner:
         turn = TurnContext(
             message=message,
             session_key=session_key,
-            config=self._config,
+            config=self._turn_config(),
             provider=provider,
             model="",
             tool_defs=tool_defs,
@@ -5159,6 +5591,7 @@ class TurnRunner:
             attachments=attachments,
             metadata=initial_metadata,
             raw_message=semantic_message,
+            skill_catalog=skill_catalog,
         )
         turn = await run_pipeline(
             turn,
@@ -5190,7 +5623,7 @@ class TurnRunner:
                 turn_metadata=turn.metadata,
                 realign_routed_model=False,
                 tier_provider_config=cross_provider_tier_config(
-                    self._config,
+                    self._turn_config(),
                     turn.metadata,
                     turn.model,
                     active_provider_id=getattr(cloned_selector, "active_provider_id", ""),
@@ -5198,7 +5631,7 @@ class TurnRunner:
                 ),
             )
 
-        ensemble_cfg = getattr(self._config, "llm_ensemble", None)
+        ensemble_cfg = getattr(self._turn_config(), "llm_ensemble", None)
         if provider is not None and getattr(ensemble_cfg, "enabled", False):
             from opensquilla.provider.ensemble import (
                 CUSTOM_B5_SELECTION_MODE,
@@ -5217,7 +5650,7 @@ class TurnRunner:
             # Gate against the same inherited config the builder will use, so
             # the readiness check can never disagree with the actual members.
             custom_b5_ready, custom_b5_reason = (
-                custom_b5_lineup_ready(self._config, current_provider_config)
+                custom_b5_lineup_ready(self._turn_config(), current_provider_config)
                 if selection_mode == CUSTOM_B5_SELECTION_MODE
                 and current_provider_config is not None
                 else (True, "")
@@ -5238,7 +5671,7 @@ class TurnRunner:
                 )
             elif static_b5_profile(selection_mode) is not None and not (
                 static_b5_credential_available(
-                    self._config,
+                    self._turn_config(),
                     current_provider_config,
                     selection_mode,
                 )
@@ -5271,7 +5704,7 @@ class TurnRunner:
                     turn.model or getattr(current_provider_config, "model", "")
                 )
                 provider = build_ensemble_provider_from_config(
-                    config=self._config,
+                    config=self._turn_config(),
                     inherited_provider_config=current_provider_config,
                     fallback_provider=provider,
                     turn_metadata=turn.metadata,
@@ -5340,7 +5773,7 @@ class TurnRunner:
         context: dict[str, Any] = {}
         if user_texts:
             context["history_user_texts"] = user_texts[-_ROUTER_HISTORY_USER_MAX_TURNS:]
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         lookback = int(
             getattr(
                 router_cfg,
@@ -5573,7 +6006,7 @@ class TurnRunner:
             savings_telemetry = SavingsTelemetry()
             if turn_obj is not None:
                 metadata = turn_obj.metadata
-                router_cfg = getattr(self._config, "squilla_router", None)
+                router_cfg = getattr(self._turn_config(), "squilla_router", None)
                 squilla_router_tiers = getattr(router_cfg, "tiers", {})
 
                 # Squilla router
@@ -5865,7 +6298,7 @@ class TurnRunner:
         try:
             if turn_obj is None:
                 return
-            router_cfg = getattr(self._config, "squilla_router", None)
+            router_cfg = getattr(self._turn_config(), "squilla_router", None)
             sl = getattr(router_cfg, "self_learning", None)
             if sl is None or not getattr(sl, "enabled", False):
                 return
@@ -5908,7 +6341,7 @@ class TurnRunner:
         routes, flush failures that may still fall back to generic preflight,
         and compact failures that should trip the circuit without retrying.
         """
-        router_cfg = getattr(self._config, "squilla_router", None)
+        router_cfg = getattr(self._turn_config(), "squilla_router", None)
         upgrade_compaction_enabled = getattr(
             router_cfg,
             "upgrade_to_c3_compaction_enabled",
@@ -7022,6 +7455,7 @@ class TurnRunner:
 
         history: list[Message] = []
         summary_markers: list[str] = []
+        subagent_terminal_notices: list[str] = []
         emergency_override = getattr(self, "_emergency_compaction_overrides", {}).pop(
             session_key,
             None,
@@ -7072,7 +7506,7 @@ class TurnRunner:
         )
         lookback = int(
             getattr(
-                getattr(self._config, "squilla_router", None),
+                getattr(self._turn_config(), "squilla_router", None),
                 "vision_history_lookback_turns",
                 3,
             )
@@ -7132,6 +7566,11 @@ class TurnRunner:
             ):
                 summary_markers.append(_strip_context_summary_marker(entry.content))
                 continue
+            subagent_notice = _subagent_terminal_history_notice(entry)
+            if subagent_notice is not None:
+                subagent_terminal_notices.append(subagent_notice)
+                last_entry_was_user = False
+                continue
             if entry.role not in ("user", "assistant"):
                 continue
             raw_content = entry.content or ""
@@ -7174,6 +7613,10 @@ class TurnRunner:
             and history[-1].role == "user"
         ):
             history.pop()
+        history.extend(
+            Message(role="assistant", content=notice)
+            for notice in dict.fromkeys(subagent_terminal_notices)
+        )
         context_states = await self._load_context_states(session_key)
         provider = getattr(agent, "provider", None)
         provider_context = build_provider_compaction_context(

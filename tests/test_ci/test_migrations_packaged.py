@@ -1,4 +1,4 @@
-"""Verify migrations are packaged into the wheel and discoverable post-install.
+"""Verify migrations and the Control UI are packaged and discoverable post-install.
 
 Critical (C1): without this, default-enabled persistence would silently
 boot on an out-of-date schema after fresh install.
@@ -18,8 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
-def test_wheel_contains_v010_migration(tmp_path: Path) -> None:
-    """`uv build --wheel` packages migrations/ as opensquilla/_migrations/."""
+def test_wheel_contains_migrations_and_built_usage_ui(tmp_path: Path) -> None:
+    """The wheel carries both migration history and the built Usage client."""
     result = subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
         cwd=REPO_ROOT,
@@ -34,15 +34,27 @@ def test_wheel_contains_v010_migration(tmp_path: Path) -> None:
 
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = wheel.namelist()
+        javascript = [
+            name
+            for name in names
+            if name.startswith("opensquilla/gateway/static/dist/assets/")
+            and name.endswith(".js")
+        ]
+        usage_query_is_built = any(b"usage.query" in wheel.read(name) for name in javascript)
 
     assert any(
         n.endswith("opensquilla/_migrations/V010__meta_skill_runs.py") for n in names
     ), f"V010 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    assert any(
+        n.endswith("opensquilla/_migrations/V021__usage_ledger.py") for n in names
+    ), f"V021 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    assert "opensquilla/gateway/static/dist/index.html" in names
+    assert usage_query_is_built, "built Control UI does not contain the usage.query client"
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
 def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
-    """After pip-installing into a fresh venv, _resolve_migrations_dir() finds V010."""
+    """An installed wheel resolves both the historical and latest migration."""
     venv_dir = tmp_path / "venv"
     subprocess.run(
         ["uv", "venv", "--seed", str(venv_dir)],
@@ -86,6 +98,8 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
                 " d = _resolve_migrations_dir();"
                 " assert (d / 'V010__meta_skill_runs.py').exists(),"
                 "        f'V010 missing in {d}';"
+                " assert (d / 'V021__usage_ledger.py').exists(),"
+                "        f'V021 missing in {d}';"
                 " print('OK', d)"
             ),
         ],
@@ -108,7 +122,7 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     reason="docker smoke is opt-in; it pulls external images",
 )
 def test_docker_image_resolves_migrations() -> None:
-    """`docker build` + `docker run` resolves _migrations including V010.
+    """`docker build` + `docker run` resolves _migrations including V021.
 
     Verifies (C1 v2): .dockerignore no longer excludes migrations/.
     """
@@ -130,6 +144,7 @@ def test_docker_image_resolves_migrations() -> None:
                 "from opensquilla.gateway.boot import _resolve_migrations_dir;"
                 " d = _resolve_migrations_dir();"
                 " assert (d / 'V010__meta_skill_runs.py').exists();"
+                " assert (d / 'V021__usage_ledger.py').exists();"
                 " print('OK', d)"
             ),
         ],

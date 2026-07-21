@@ -438,6 +438,11 @@ class AgentFactoryPort(Protocol):
         turn_call_logger: TurnCallLogger | None,
         memory_sync_manager: Any | None,
         tool_context: ToolContext | None,
+        turn_id: str = "",
+        session_id: str | None = None,
+        session_epoch: int = 0,
+        agent_id: str = "",
+        run_kind: str = "agent",
     ) -> Agent: ...
 
 
@@ -483,6 +488,9 @@ class AgentBootstrapStageInput:
     max_provider_retries: int | None
     length_capped_continuations: int | None
     active_provider_id: str = ""
+    turn_id: str = ""
+    run_kind: str = "agent"
+    session_epoch: int = 0
 
 
 @dataclass(frozen=True)
@@ -818,6 +826,11 @@ class AgentBootstrapStage:
             turn_call_logger=inp.turn_call_logger,
             memory_sync_manager=memory.sync_manager,
             tool_context=inp.tool_context,
+            turn_id=inp.turn_id,
+            session_id=inp.session_id_for_log,
+            session_epoch=inp.session_epoch,
+            agent_id=inp.agent_id,
+            run_kind=inp.run_kind,
         )
 
         return StageOutcome.success(

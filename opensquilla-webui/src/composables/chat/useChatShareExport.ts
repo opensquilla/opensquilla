@@ -8,6 +8,8 @@ interface ChatShareExportOptions {
   /** Raw conversation title. The composable does all slugging and filename
       composition (CJK-safe) — callers must NOT pre-sanitize or pre-compose. */
   title: () => string
+  /** Localized provenance label preserved in every generated share image. */
+  aiGeneratedLabel: () => string
 }
 
 export interface ShareImageResult {
@@ -79,13 +81,18 @@ export function useChatShareExport(options: ChatShareExportOptions) {
     }
 
     await document.fonts?.ready
-    const stage = buildShareDom(sourceElements, theme)
+    const aiGeneratedLabel = options.aiGeneratedLabel()
+    const stage = buildShareDom(sourceElements, theme, aiGeneratedLabel)
 
     try {
       document.body.appendChild(stage)
       await waitForStablePaint()
       const contentCanvas = await captureStageWithDom(stage)
-      const { blob, width, height } = await composeShareTemplate(contentCanvas, stage)
+      const { blob, width, height } = await composeShareTemplate(
+        contentCanvas,
+        stage,
+        aiGeneratedLabel,
+      )
       const filename = shareExportFilename(options.title())
       return { blob, filename, width, height }
     } finally {
@@ -157,7 +164,11 @@ function selectedShareElements(thread: HTMLElement | null, selectedIds: Set<stri
   return elements.filter(element => selectedIds.has(element.dataset.shareMessageId || ''))
 }
 
-export function buildShareDom(sourceElements: HTMLElement[], theme: ShareExportTheme = 'light'): HTMLElement {
+export function buildShareDom(
+  sourceElements: HTMLElement[],
+  theme: ShareExportTheme = 'light',
+  aiGeneratedLabel = '',
+): HTMLElement {
   const stageWidth = EXPORT_WIDTH
   const stage = document.createElement('section')
   stage.id = SHARE_STAGE_ID
@@ -168,7 +179,7 @@ export function buildShareDom(sourceElements: HTMLElement[], theme: ShareExportT
   stage.dataset.theme = theme
   stage.setAttribute('aria-hidden', 'true')
   stage.className = 'chat-share-export-stage'
-  stage.dataset.shareTemplateMetrics = JSON.stringify(shareTemplateMetrics())
+  stage.dataset.shareTemplateMetrics = JSON.stringify(shareTemplateMetrics(aiGeneratedLabel))
   const tokens = shareThemeTokens(stage)
   stage.style.cssText = [
     'position:fixed',
@@ -234,7 +245,7 @@ function inlineBlobBackedImages(original: HTMLElement, clone: HTMLElement): void
   })
 }
 
-function shareTemplateMetrics() {
+function shareTemplateMetrics(aiGeneratedLabel: string) {
   return {
     width: SHARE_TEMPLATE_WIDTH,
     contentWidth: EXPORT_WIDTH,
@@ -247,6 +258,7 @@ function shareTemplateMetrics() {
     footerHeight: SHARE_TEMPLATE_FOOTER_HEIGHT,
     qrSize: SHARE_TEMPLATE_QR_SIZE,
     caption: SHARE_FOOTER_CAPTION,
+    disclaimer: aiGeneratedLabel,
   }
 }
 
@@ -472,6 +484,7 @@ async function captureStageWithDom(stage: HTMLElement): Promise<HTMLCanvasElemen
 async function composeShareTemplate(
   contentCanvas: HTMLCanvasElement,
   stage: HTMLElement,
+  aiGeneratedLabel: string,
 ): Promise<{ blob: Blob; width: number; height: number }> {
   const tokens = shareThemeTokens(stage)
   const contentHeight = Math.ceil((contentCanvas.height * EXPORT_WIDTH) / contentCanvas.width)
@@ -515,7 +528,7 @@ async function composeShareTemplate(
   context.strokeStyle = tokens.border
   context.stroke()
 
-  await drawTemplateFooter(context, cardY + contentHeight, tokens)
+  await drawTemplateFooter(context, cardY + contentHeight, tokens, aiGeneratedLabel)
 
   const blob = await blobFromCanvas(canvas)
   return { blob, width: SHARE_TEMPLATE_WIDTH, height }
@@ -553,15 +566,20 @@ async function drawTemplateFooter(
   context: CanvasRenderingContext2D,
   startY: number,
   tokens: ReturnType<typeof shareThemeTokens>,
+  aiGeneratedLabel: string,
 ) {
   const qr = await loadOptionalImage(staticAssetUrl('img/QRcode.png'))
 
-  // One cohesive, centered footer band: [QR][gap][caption], the whole group
-  // centered on the template width rather than pinned to opposite corners.
+  // One cohesive, centered footer band: [QR][gap][site + provenance], the
+  // whole group centered on the template width rather than pinned to opposite
+  // corners. The provenance survives when the image leaves the chat UI.
   const captionGap = 12
   context.font = `500 12px ${tokens.fontSans}`
   const captionWidth = context.measureText(SHARE_FOOTER_CAPTION).width
-  const groupWidth = (qr ? SHARE_TEMPLATE_QR_SIZE + captionGap : 0) + captionWidth
+  context.font = `400 11px ${tokens.fontSans}`
+  const disclaimerWidth = context.measureText(aiGeneratedLabel).width
+  const textWidth = Math.max(captionWidth, disclaimerWidth)
+  const groupWidth = (qr ? SHARE_TEMPLATE_QR_SIZE + captionGap : 0) + textWidth
   const groupX = Math.round((SHARE_TEMPLATE_WIDTH - groupWidth) / 2)
   const qrY = startY + 16
   const centerY = qrY + SHARE_TEMPLATE_QR_SIZE / 2
@@ -580,7 +598,10 @@ async function drawTemplateFooter(
   context.fillStyle = tokens.muted
   context.textAlign = 'left'
   context.textBaseline = 'middle'
-  context.fillText(SHARE_FOOTER_CAPTION, captionX, centerY)
+  context.font = `500 12px ${tokens.fontSans}`
+  context.fillText(SHARE_FOOTER_CAPTION, captionX, centerY - 9)
+  context.font = `400 11px ${tokens.fontSans}`
+  context.fillText(aiGeneratedLabel, captionX, centerY + 10)
   context.textBaseline = 'alphabetic'
 }
 

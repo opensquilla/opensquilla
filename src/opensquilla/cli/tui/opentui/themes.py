@@ -55,8 +55,7 @@ async def handle_theme_command(cmd: str, tui_output: object | None) -> None:
         from opensquilla.cli.ui import console  # noqa: PLC0415 - keep module import-light
 
         console.print(
-            "[yellow]Themes apply to the OpenTUI backend "
-            "(set OPENSQUILLA_TUI_BACKEND=opentui).[/yellow]"
+            "[yellow]Themes apply to the OpenTUI backend (start chat with --ui tui).[/yellow]"
         )
         return
 

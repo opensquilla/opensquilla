@@ -10,6 +10,27 @@ from opensquilla.tools.types import current_tool_context
 _VALID_RUN_MODES = frozenset({"standard", "trusted", "full"})
 
 
+def full_host_access_for_context(ctx: object | None) -> bool:
+    """Return Full Host Access state without consulting approval storage."""
+
+    if ctx is not None:
+        mode = getattr(ctx, "run_mode", None)
+        if getattr(mode, "value", mode) == "full":
+            return True
+        run_context_mode = getattr(getattr(ctx, "sandbox_run_context", None), "run_mode", None)
+        if getattr(run_context_mode, "value", run_context_mode) == "full":
+            return True
+        if getattr(ctx, "elevated", None) == "full":
+            return True
+    try:
+        from opensquilla.sandbox.integration import get_runtime
+
+        runtime = get_runtime()
+    except Exception:
+        return False
+    return bool(runtime is not None and not runtime.effective.sandbox_enabled)
+
+
 def current_run_mode() -> str | None:
     """Return the active Standard/Trusted/Full mode for this tool call."""
 
@@ -43,17 +64,20 @@ def current_run_mode() -> str | None:
 def full_host_access_active() -> bool:
     """True when the current tool call should use Full Host Access semantics."""
 
-    return current_run_mode() == "full"
+    if current_run_mode() == "full":
+        return True
+    return full_host_access_for_context(current_tool_context.get())
 
 
 def trusted_sandbox_active() -> bool:
     """True when the current tool call is in Managed Execution mode."""
 
-    return current_run_mode() == "trusted"
+    return not full_host_access_active() and current_run_mode() == "trusted"
 
 
 __all__ = [
     "current_run_mode",
     "full_host_access_active",
+    "full_host_access_for_context",
     "trusted_sandbox_active",
 ]

@@ -7,7 +7,11 @@ from enum import StrEnum
 from typing import Any
 
 from opensquilla.channels.types import IncomingMessage
-from opensquilla.sandbox.run_context import normalize_scope, run_context_from_origin_payload
+from opensquilla.sandbox.run_context import (
+    normalize_scope,
+    run_context_for_subagent,
+    run_context_from_origin_payload,
+)
 from opensquilla.sandbox.run_mode import RunMode, normalize_run_mode
 from opensquilla.session.keys import normalize_agent_id, parse_agent_id
 from opensquilla.tools.policy import apply_tool_policy_layer
@@ -306,15 +310,82 @@ def build_subagent_route_envelope(
     parent_task_id: str | None = None,
     spawn_depth: int = 0,
     origin: str = "sessions_spawn",
+    principal_is_owner: bool | None = None,
+    elevated: str | None = None,
+    run_mode: str | RunMode | None = None,
+    sandbox_run_context: Any | None = None,
+    sandbox_mounts: list[dict[str, Any]] | None = None,
 ) -> RouteEnvelope:
     """Build a route for a child subagent run."""
-    metadata = {
+    metadata: dict[str, Any] = {
         "parent_session_key": parent_session_key,
         "run_id": run_id,
         "parent_task_id": parent_task_id,
         "spawn_depth": spawn_depth,
         "origin": origin,
     }
+    if principal_is_owner is not None:
+        metadata["principal_is_owner"] = bool(principal_is_owner)
+    if elevated in ("on", "bypass", "full"):
+        metadata["elevated"] = elevated
+    normalized_run_mode: RunMode | None = None
+    if run_mode is not None:
+        try:
+            normalized_run_mode = normalize_run_mode(
+                run_mode.value if isinstance(run_mode, RunMode) else str(run_mode)
+            )
+        except ValueError:
+            normalized_run_mode = None
+    run_context_payload: dict[str, Any] | None = None
+    if sandbox_run_context is not None:
+        to_origin_payload = getattr(sandbox_run_context, "to_origin_payload", None)
+        if callable(to_origin_payload):
+            raw_payload = to_origin_payload()
+            if isinstance(raw_payload, dict):
+                run_context_payload = dict(raw_payload)
+        elif isinstance(sandbox_run_context, dict):
+            run_context_payload = dict(sandbox_run_context)
+    if run_context_payload is not None:
+        hydrated_context = run_context_from_origin_payload(
+            run_context_payload,
+            source="subagent_parent",
+            preserve_materialized_user_grants=True,
+        )
+        if hydrated_context is not None:
+            run_context_payload = run_context_for_subagent(
+                hydrated_context
+            ).to_origin_payload()
+        else:
+            for grant_key in ("mounts", "domains", "bundles", "public_network"):
+                raw_grants = run_context_payload.get(grant_key)
+                if isinstance(raw_grants, list):
+                    run_context_payload[grant_key] = [
+                        dict(item)
+                        for item in raw_grants
+                        if isinstance(item, dict)
+                        and normalize_scope(item.get("scope"), "chat") != "once"
+                    ]
+            run_context_payload["temporary_grants"] = []
+    if normalized_run_mode is None and run_context_payload is not None:
+        try:
+            normalized_run_mode = normalize_run_mode(run_context_payload.get("run_mode"))
+        except ValueError:
+            normalized_run_mode = None
+    if normalized_run_mode is not None:
+        metadata["run_mode"] = normalized_run_mode.value
+    if run_context_payload is not None:
+        metadata["sandbox_run_context"] = run_context_payload
+    if sandbox_mounts is not None:
+        metadata["sandbox_mounts"] = [
+            dict(item)
+            for item in sandbox_mounts
+            if isinstance(item, dict)
+            and normalize_scope(item.get("scope"), "chat") != "once"
+        ]
+    if normalized_run_mode is not None:
+        metadata["run_mode"] = normalized_run_mode.value
+        if normalized_run_mode is RunMode.FULL and principal_is_owner:
+            metadata["elevated"] = "full"
     return RouteEnvelope(
         source_kind=SourceKind.SUBAGENT,
         source_name="subagent",
@@ -331,6 +402,7 @@ def build_subagent_route_envelope(
         },
         metadata=metadata,
         interaction_mode=InteractionMode.UNATTENDED,
+        sandbox_run_context_fresh=run_context_payload is not None,
     )
 
 

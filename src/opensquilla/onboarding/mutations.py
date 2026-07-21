@@ -23,6 +23,10 @@ from opensquilla.gateway.config_secrets import (
     clear_runtime_secret_paths,
     inherit_runtime_secrets,
 )
+from opensquilla.gateway.model_routing import (
+    apply_model_routing_mode,
+    reconcile_model_routing_write,
+)
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.endpoint_identity import base_url_allows_credential_reuse
 from opensquilla.onboarding.image_generation_specs import (
@@ -726,6 +730,10 @@ def upsert_router(
 
     new_cfg = _clone(config)
     new_cfg.squilla_router = SquillaRouterConfig(**router_payload)
+    apply_model_routing_mode(
+        new_cfg,
+        "direct" if router_mode == "disabled" else "router",
+    )
     _sync_llm_model_to_router_default(new_cfg)
     public_payload["default_tier"] = new_cfg.squilla_router.default_tier
     public_payload["tiers"] = redact_router_tiers_payload(new_cfg.squilla_router.tiers)
@@ -820,6 +828,20 @@ def upsert_llm_ensemble(
 
     new_cfg = _clone(config)
     new_cfg.llm_ensemble = new_ensemble
+    routing_changes: dict[str, Any] = {}
+    if enabled is not None:
+        routing_changes = apply_model_routing_mode(
+            new_cfg,
+            "ensemble" if new_ensemble.enabled else "direct",
+        )
+    elif selection_mode is not None and new_ensemble.enabled:
+        # Changing a live Ensemble implementation can change whether it owns
+        # an internal Router dependency (dynamic/unknown vs static/custom),
+        # without clobbering an advanced prompt_only rollout phase.
+        routing_changes = reconcile_model_routing_write(
+            new_cfg,
+            {"llm_ensemble.selection_mode"},
+        )
     if enabled is not None:
         # An explicit enabled/disabled decision must be visible in the file
         # even when it equals the model default — otherwise a headless
@@ -841,7 +863,10 @@ def upsert_llm_ensemble(
         ]
     return MutationResult(
         config=new_cfg,
-        changed=current != new_ensemble.model_dump(mode="python"),
+        changed=(
+            current != new_ensemble.model_dump(mode="python")
+            or bool(routing_changes)
+        ),
         restart_required=False,
         warnings=[],
         public_payload=payload,

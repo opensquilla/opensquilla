@@ -5,6 +5,9 @@ import ControlSwitch from '@/components/ControlSwitch.vue'
 import MemoryLearningGroup from '@/components/settings/MemoryLearningGroup.vue'
 
 const { t } = useI18n()
+const emit = defineEmits<{
+  'open-agent-configuration': []
+}>()
 
 // Client-only "Labs" preferences. Each row reads/writes ONE localStorage key
 // directly. The chat composables that consume these read the value once at
@@ -66,6 +69,10 @@ function commitReveal() {
 function localStorageGet(key: string): string | null {
   try { return localStorage.getItem(key) } catch { return null }
 }
+
+const agentConfigAriaLabel = computed(() =>
+  `${t('setup.advanced.agentConfigAction')}: ${t('setup.advanced.agentConfigLabel')}`,
+)
 </script>
 
 <template>
@@ -139,6 +146,23 @@ function localStorageGet(key: string): string | null {
         <ControlSwitch name="labs_run_trace" :checked="runTrace" :aria-label="t('setup.advanced.runTraceAria')" @change="setRunTrace" />
       </div>
     </label>
+
+    <div class="control-row">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('setup.advanced.agentConfigLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.agentConfigDesc') }}</span>
+      </div>
+      <div class="control-row__control">
+        <button
+          type="button"
+          class="btn btn--ghost"
+          :aria-label="agentConfigAriaLabel"
+          @click="emit('open-agent-configuration')"
+        >
+          {{ t('setup.advanced.agentConfigAction') }}
+        </button>
+      </div>
+    </div>
   </section>
 </template>
 

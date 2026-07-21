@@ -1613,6 +1613,52 @@ def test_dashscope_cache_off_does_not_mark_messages(monkeypatch: Any) -> None:
     assert payload["messages"][1] == {"role": "user", "content": "hi"}
 
 
+def test_openrouter_sends_configured_json_output_schema(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-pro",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {"outcome": {"type": "string", "enum": ["allow", "deny"]}},
+        "required": ["outcome"],
+    }
+
+    _collect(
+        provider,
+        ChatConfig(output_json_schema=schema, output_json_schema_strict=False),
+    )
+
+    assert captured["payload"]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "structured_output",
+            "strict": False,
+            "schema": schema,
+        },
+    }
+
+
+def test_openrouter_omits_response_format_without_output_schema(monkeypatch: Any) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek/deepseek-v4-pro",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    _collect(provider, ChatConfig())
+
+    assert "response_format" not in captured["payload"]
+
+
 def test_dashscope_repeated_history_tool_calls_preserves_duplicate_replay_protocol(
     monkeypatch: Any,
 ) -> None:

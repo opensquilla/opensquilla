@@ -5,6 +5,7 @@ import json
 import sys
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -233,6 +234,104 @@ async def test_call_after_send_failure_raises_clear_connection_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_call_preserves_gateway_error_details_for_safe_fallback_decisions() -> None:
+    ws = _FakeWebSocket()
+    client = GatewayClient()
+    client._ws = ws  # noqa: SLF001
+
+    call_task = asyncio.create_task(
+        client._call("sessions.steer", {"key": "agent:main:x"})  # noqa: SLF001
+    )
+    await _wait_for(lambda: bool(ws.sent))
+    request_id = json.loads(ws.sent[0])["id"]
+    client._pending[request_id].set_result(  # noqa: SLF001
+        {
+            "ok": False,
+            "error": {
+                "code": "STEER_RACE_DIRTY",
+                "message": "rollback failed",
+                "details": {
+                    "fallback_safe": False,
+                    "orphan_message_id": "message-orphan",
+                },
+            },
+        }
+    )
+
+    with pytest.raises(GatewayRPCError) as raised:
+        await call_task
+    assert raised.value.code == "STEER_RACE_DIRTY"
+    assert raised.value.data == {
+        "fallback_safe": False,
+        "orphan_message_id": "message-orphan",
+    }
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_session_uses_additive_snapshot_rpc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    call = AsyncMock(return_value={"session": {"session_key": "agent:main:x"}})
+    monkeypatch.setattr(client, "_call", call)
+
+    result = await client.bootstrap_session("agent:main:x", limit=75)
+
+    assert result["session"]["session_key"] == "agent:main:x"
+    call.assert_awaited_once_with(
+        "sessions.bootstrap",
+        {"key": "agent:main:x", "limit": 75},
+    )
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_session_composes_preview4_read_only_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    rpc_call = AsyncMock(
+        side_effect=[
+            GatewayRPCError(
+                "sessions.bootstrap",
+                code="METHOD_NOT_FOUND",
+                message="Method not found: sessions.bootstrap",
+            ),
+            {
+                "session_key": "agent:main:canonical",
+                "session_id": "canonical",
+                "model": "openai/test",
+            },
+            {
+                "messages": [{"role": "user", "content": "hello"}],
+                "history_scope": "complete",
+                "canonical_available": True,
+            },
+        ]
+    )
+    monkeypatch.setattr(client, "_call", rpc_call)
+
+    result = await client.bootstrap_session("canonical", limit=75)
+
+    assert result["session"]["session_key"] == "agent:main:canonical"
+    assert result["history"]["messages"][0]["content"] == "hello"
+    assert result["queue"] == {
+        "mode": "followup",
+        "queued_count": 0,
+        "running_count": 0,
+    }
+    assert result["stream_cursor"] is None
+    assert result["compatibility"] == {"bootstrap": "legacy_gateway"}
+    assert rpc_call.await_args_list == [
+        call("sessions.bootstrap", {"key": "canonical", "limit": 75}),
+        call("sessions.resolve", {"key": "canonical"}),
+        call(
+            "chat.history",
+            {"sessionKey": "agent:main:canonical", "limit": 75},
+        ),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_session_history_forwards_optional_paging_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -271,6 +370,278 @@ async def test_session_history_forwards_optional_paging_fields(
     assert calls == [
         ("chat.history", {"sessionKey": "agent:main:test", "limit": 5})
     ]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_session_does_not_mask_non_capability_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    error = GatewayRPCError(
+        "sessions.bootstrap",
+        code="NOT_FOUND",
+        message="Session not found",
+    )
+    rpc_call = AsyncMock(side_effect=error)
+    monkeypatch.setattr(client, "_call", rpc_call)
+
+    with pytest.raises(GatewayRPCError) as raised:
+        await client.bootstrap_session("missing")
+
+    assert raised.value is error
+    rpc_call.assert_awaited_once_with(
+        "sessions.bootstrap",
+        {"key": "missing", "limit": 200},
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_multiplexer_broadcasts_without_cross_session_consumption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    call = AsyncMock(return_value={"replay_complete": True, "current_stream_seq": 4})
+    monkeypatch.setattr(client, "_call", call)
+    session_a = await client.subscribe_session_events("agent:main:a", since_stream_seq=3)
+    session_b = await client.subscribe_session_events("agent:main:b")
+    approvals = client.subscribe_global_events(
+        {"exec.approval.requested", "exec.approval.resolved"}
+    )
+
+    client._publish_event(  # noqa: SLF001
+        {
+            "type": "event",
+            "event": "session.event.text_delta",
+            "payload": {
+                "session_key": "agent:main:a",
+                "stream_seq": 4,
+                "text": "hello",
+            },
+        }
+    )
+    client._publish_event(  # noqa: SLF001
+        {
+            "type": "event",
+            "event": "exec.approval.requested",
+            "payload": {"approval_id": "approval-1", "session_key": "agent:main:a"},
+        }
+    )
+
+    assert (await session_a.get())["payload"]["text"] == "hello"
+    assert (await approvals.get())["payload"]["approval_id"] == "approval-1"
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(session_b.get(), timeout=0.01)
+    assert session_a.replay["current_stream_seq"] == 4
+    call.assert_any_await(
+        "sessions.messages.subscribe",
+        {"key": "agent:main:a", "since_stream_seq": 3},
+    )
+
+    await session_a.close()
+    await session_b.close()
+    await approvals.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message_filters_local_identity_without_dropping_external_or_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    session_key = "agent:main:shared"
+    idle = None
+    approvals = client.subscribe_global_events({"exec.approval.requested"})
+
+    async def call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if method == "sessions.messages.subscribe":
+            return {"replay_complete": True, "current_stream_seq": 0}
+        if method == "sessions.send":
+            assert params is not None
+            local_message_id = str(params["client_message_id"])
+            client._publish_event(  # noqa: SLF001
+                {
+                    "type": "event",
+                    "event": "session.event.text_delta",
+                    "payload": {
+                        "session_key": session_key,
+                        "stream_seq": 1,
+                        "turn_id": "turn-web",
+                        "client_message_id": "message-web",
+                        "surface_id": "web:other",
+                        "text": "external",
+                    },
+                }
+            )
+            client._publish_event(  # noqa: SLF001
+                {
+                    "type": "event",
+                    "event": "exec.approval.requested",
+                    "payload": {"approval_id": "approval-web", "session_key": session_key},
+                }
+            )
+            client._publish_event(  # noqa: SLF001
+                {
+                    "type": "event",
+                    "event": "session.event.done",
+                    "payload": {
+                        "session_key": session_key,
+                        "stream_seq": 2,
+                        "turn_id": "turn-local",
+                        "client_message_id": local_message_id,
+                        "surface_id": client.surface_id,
+                    },
+                }
+            )
+            return {
+                "turn_id": "turn-local",
+                "client_message_id": local_message_id,
+                "surface_id": client.surface_id,
+            }
+        return {}
+
+    monkeypatch.setattr(client, "_call", call)
+    idle = await client.subscribe_session_events(session_key)
+
+    events = [event async for event in client.send_message(session_key, "hello")]
+
+    assert [event["event"] for event in events] == ["session.event.done"]
+    assert (await idle.get())["payload"]["text"] == "external"
+    assert (await approvals.get())["payload"]["approval_id"] == "approval-web"
+    await idle.close()
+    await approvals.close()
+
+
+@pytest.mark.asyncio
+async def test_send_message_preserves_tui_client_message_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.tui.backend.input_identity import (
+        tui_input_identity_scope,
+        tui_turn_identity_sink_scope,
+    )
+
+    client = GatewayClient()
+    session_key = "agent:main:tui-identity"
+    sent_params: dict[str, Any] = {}
+    bound: list[tuple[str, str]] = []
+
+    async def call(method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if method == "sessions.messages.subscribe":
+            return {"replay_complete": True, "current_stream_seq": 0}
+        if method == "sessions.send":
+            assert params is not None
+            sent_params.update(params)
+            client._publish_event(  # noqa: SLF001
+                {
+                    "type": "event",
+                    "event": "session.event.done",
+                    "payload": {
+                        "session_key": session_key,
+                        "turn_id": "turn-durable",
+                        "client_message_id": params["client_message_id"],
+                        "surface_id": client.surface_id,
+                    },
+                }
+            )
+            return {
+                "turn_id": "turn-durable",
+                "client_message_id": params["client_message_id"],
+                "surface_id": client.surface_id,
+            }
+        return {}
+
+    async def bind(turn_id: str, client_message_id: str) -> None:
+        bound.append((turn_id, client_message_id))
+
+    monkeypatch.setattr(client, "_call", call)
+    with tui_input_identity_scope("client-from-composer"):
+        with tui_turn_identity_sink_scope(bind):
+            events = [event async for event in client.send_message(session_key, "hello")]
+
+    assert [event["event"] for event in events] == ["session.event.done"]
+    assert sent_params["client_message_id"] == "client-from-composer"
+    assert sent_params["_source"]["client_message_id"] == "client-from-composer"
+    assert bound == [("turn-durable", "client-from-composer")]
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_wakes_every_subscription() -> None:
+    client = GatewayClient()
+    global_events = client.subscribe_global_events({"exec.approval.resolved"})
+
+    client._mark_connection_failed(RuntimeError("socket gone"))  # noqa: SLF001
+
+    with pytest.raises(ConnectionError, match="Gateway connection lost"):
+        await global_events.get()
+
+
+@pytest.mark.asyncio
+async def test_late_turn_subscription_replays_client_backlog_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    session_key = "agent:main:shared"
+    monkeypatch.setattr(
+        client,
+        "_call",
+        AsyncMock(return_value={"replay_complete": True, "current_stream_seq": 0}),
+    )
+    discovery = await client.subscribe_session_events(session_key)
+
+    def publish(seq: int, event: str) -> None:
+        client._publish_event(  # noqa: SLF001
+            {
+                "type": "event",
+                "event": event,
+                "payload": {
+                    "session_key": session_key,
+                    "stream_seq": seq,
+                    "turn_id": "turn-web",
+                    "client_message_id": "client-web",
+                    "surface_id": "web:browser",
+                },
+            }
+        )
+
+    publish(1, "session.event.text_delta")
+    publish(2, "session.event.tool_use_start")
+    turn = await client.subscribe_session_events(session_key, since_stream_seq=1)
+    turn.bind_turn(turn_id="turn-web", client_message_id="client-web")
+
+    assert (await turn.get())["payload"]["stream_seq"] == 2
+    publish(3, "session.event.done")
+    assert (await turn.get())["payload"]["stream_seq"] == 3
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(turn.get(), timeout=0.01)
+
+    await turn.close()
+    await discovery.close()
+
+
+@pytest.mark.asyncio
+async def test_subscription_exposes_server_replay_gap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = GatewayClient()
+    monkeypatch.setattr(
+        client,
+        "_call",
+        AsyncMock(
+            return_value={
+                "replay_complete": False,
+                "replay_gap_reason": "buffer_window_missed",
+                "current_stream_seq": 42,
+            }
+        ),
+    )
+
+    subscription = await client.subscribe_session_events(
+        "agent:main:gap",
+        since_stream_seq=3,
+    )
+
+    assert subscription.needs_resync is True
+    assert subscription.gap_reason == "buffer_window_missed"
+    await subscription.close()
 
 
 @pytest.mark.asyncio

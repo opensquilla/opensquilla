@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -755,6 +756,7 @@ class MemoryRepairService:
         interval_seconds: float = 60.0,
         max_items_per_tick: int = 5,
         enabled: bool = True,
+        usage_event_sink: Any | None = None,
     ) -> None:
         self._session_manager = session_manager
         self._flush_service = flush_service
@@ -766,6 +768,7 @@ class MemoryRepairService:
         self._interval_seconds = max(float(interval_seconds), 0.01)
         self._max_items_per_tick = max(int(max_items_per_tick), 1)
         self._enabled = enabled
+        self._usage_event_sink = usage_event_sink
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
 
@@ -796,15 +799,40 @@ class MemoryRepairService:
         for current_agent_id in agent_ids:
             if len(results) >= limit_value:
                 break
-            results.extend(
-                await run_memory_repair_once(
-                    session_manager=self._session_manager,
-                    flush_service=self._flush_service,
-                    memory_roots=self._memory_roots,
-                    agent_id=current_agent_id,
-                    limit=limit_value - len(results),
+            usage_scope = None
+            if self._usage_event_sink is not None:
+                from opensquilla.engine.usage_accounting import (
+                    UsageAccountingScope,
+                    UsageExecutionContext,
                 )
-            )
+
+                execution_id = uuid.uuid4().hex
+                usage_scope = UsageAccountingScope(
+                    sink=self._usage_event_sink,
+                    context=UsageExecutionContext(
+                        execution_id=execution_id,
+                        agent_run_id=execution_id,
+                        turn_id=execution_id,
+                        session_id=uuid.uuid5(
+                            uuid.NAMESPACE_URL,
+                            f"opensquilla:system:memory-repair:{current_agent_id}",
+                        ).hex,
+                        agent_id=current_agent_id,
+                        run_kind="memory_repair",
+                    ),
+                )
+            from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+
+            with bind_usage_accounting_scope(usage_scope):
+                results.extend(
+                    await run_memory_repair_once(
+                        session_manager=self._session_manager,
+                        flush_service=self._flush_service,
+                        memory_roots=self._memory_roots,
+                        agent_id=current_agent_id,
+                        limit=limit_value - len(results),
+                    )
+                )
         return results[:limit_value]
 
     async def _loop(self) -> None:

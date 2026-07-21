@@ -369,18 +369,30 @@ async def _enforce_context_overflow(
         except Exception:  # noqa: BLE001
             pass
 
-    outcome = await apply_context_overflow_policy(
-        config=config,
-        message=message,
-        transcript=transcript,
-        session_key=session_key,
-        session_manager=ctx.session_manager,
-        compaction_config=await _build_context_overflow_compaction_config(ctx, session_key),
-        flush_service=getattr(ctx, "flush_service", None),
-        compaction_marker=getattr(ctx, "turn_runner", None),
-        policy_override=policy_override,
-        budget_override=budget_override,
+    from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+    from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+    usage_scope = await build_session_usage_scope(
+        getattr(ctx, "usage_event_sink", None),
+        ctx.session_manager,
+        session_key,
+        run_kind="session_compaction",
     )
+    with bind_usage_accounting_scope(usage_scope):
+        outcome = await apply_context_overflow_policy(
+            config=config,
+            message=message,
+            transcript=transcript,
+            session_key=session_key,
+            session_manager=ctx.session_manager,
+            compaction_config=await _build_context_overflow_compaction_config(
+                ctx, session_key
+            ),
+            flush_service=getattr(ctx, "flush_service", None),
+            compaction_marker=getattr(ctx, "turn_runner", None),
+            policy_override=policy_override,
+            budget_override=budget_override,
+        )
 
     if outcome.refusal is not None:
         log.warning(
@@ -480,6 +492,10 @@ async def _handle_chat_send(params: dict | None, ctx: RpcContext) -> dict:
             ("fork_before_message_id", "fork_before_message_id"),
             ("clientRequestId", "clientRequestId"),
             ("client_request_id", "client_request_id"),
+            ("clientMessageId", "clientMessageId"),
+            ("client_message_id", "client_message_id"),
+            ("surfaceId", "surfaceId"),
+            ("surface_id", "surface_id"),
         ):
             if source_key in params:
                 extra[target_key] = params[source_key]
@@ -543,7 +559,8 @@ async def _handle_chat_abort(params: dict | None, ctx: RpcContext) -> dict:
         "source": raw_params.get("source") or "webui_abort",
     }
     task_id = raw_params.get("taskId") or raw_params.get("task_id")
-    if isinstance(task_id, str) and task_id.strip():
+    source = str(abort_params["source"])
+    if source != "webui_stop" and isinstance(task_id, str) and task_id.strip():
         abort_params["task_id"] = task_id.strip()
     result = await _handle_sessions_abort(
         abort_params,

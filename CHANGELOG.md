@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Source checkouts can opt into the full-screen OpenTUI chat with shared
+  Gateway sessions, turn/tool/reasoning presentation, Router/Ensemble controls,
+  and guarded terminal restoration. Companion hosts remain development-only:
+  this change does not add release assets or alter the release installer.
+
+### Changed
+
+- `opensquilla chat` uses automatic renderer selection without treating stale
+  internal backend environment state as a user request. Release installs keep
+  the Python-native chat when no compatible host is installed.
+
 ### Fixed
 
 - OpenSquilla profile transfers now leave machine-local `code-task` run

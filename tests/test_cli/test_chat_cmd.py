@@ -250,6 +250,7 @@ class TestChatCommand:
         assert isinstance(request, chat_cmd._ChatCommandRequest)
         assert request.model == "openrouter/test"
         assert request.session_id == "agent:main:existing"
+        assert request.ui is None
         assert request.standalone is True
         assert request.workspace == "repo"
         assert request.workspace_strict is True
@@ -269,6 +270,9 @@ class TestChatCommand:
         assert result.exit_code == 0
         assert "--model" in result.output
         assert "--session" in result.output
+        assert "--ui" in result.output
+        assert "default: auto" in result.output
+        assert "RC default: plain" not in result.output
 
     def test_chat_invokes_run_chat(self) -> None:
         """Default chat calls run_chat with correct defaults."""
@@ -279,6 +283,7 @@ class TestChatCommand:
         mock_run.assert_called_once_with(
             model="",
             session_id="",
+            ui=None,
             standalone=False,
             workspace="",
             workspace_strict=None,
@@ -294,6 +299,7 @@ class TestChatCommand:
         mock_run.assert_called_once_with(
             model="ollama/llama3",
             session_id="",
+            ui=None,
             standalone=False,
             workspace="",
             workspace_strict=None,
@@ -309,18 +315,18 @@ class TestChatCommand:
         mock_run.assert_called_once_with(
             model="",
             session_id="abc123",
+            ui=None,
             standalone=False,
             workspace="",
             workspace_strict=None,
             timeout=None,
         )
 
-    def test_chat_rejects_unknown_tui_backend_before_launch(self) -> None:
+    def test_chat_rejects_unknown_public_ui_mode_before_launch(self) -> None:
         result = runner.invoke(
             app,
-            ["chat"],
+            ["chat", "--ui", "bogus"],
             env={
-                "OPENSQUILLA_TUI_BACKEND": "bogus",
                 "COLUMNS": "120",
                 "NO_COLOR": "1",
                 "TERM": "dumb",
@@ -328,9 +334,9 @@ class TestChatCommand:
         )
 
         assert result.exit_code == 2
-        assert "Unsupported TUI backend" in result.output
+        assert "Unsupported chat UI" in result.output
         assert "bogus" in result.output
-        assert "opentui" in result.output
+        assert "auto, plain, tui" in result.output
 
     def test_chat_timeout_option_forwarded(self) -> None:
         """--timeout option is forwarded to run_chat."""
@@ -341,6 +347,7 @@ class TestChatCommand:
         mock_run.assert_called_once_with(
             model="",
             session_id="",
+            ui=None,
             standalone=False,
             workspace="",
             workspace_strict=None,
@@ -358,9 +365,25 @@ class TestChatCommand:
         mock_run.assert_called_once_with(
             model="",
             session_id="",
+            ui=None,
             standalone=False,
             workspace="repo",
             workspace_strict=True,
+            timeout=None,
+        )
+
+    def test_chat_ui_option_forwarded(self) -> None:
+        mock_run = MagicMock()
+        with patch("opensquilla.cli.chat_cmd.run_chat", mock_run):
+            result = runner.invoke(app, ["chat", "--ui", "plain"])
+        assert result.exit_code == 0
+        mock_run.assert_called_once_with(
+            model="",
+            session_id="",
+            ui="plain",
+            standalone=False,
+            workspace="",
+            workspace_strict=None,
             timeout=None,
         )
 
@@ -386,6 +409,11 @@ class TestChatCommand:
         monkeypatch.setattr(
             chat_cmd._launch_bridge,
             "quiet_logs_for_interactive_chat",
+            lambda: None,
+        )
+        monkeypatch.setattr(
+            chat_cmd._launch_bridge,
+            "preflight_gateway_chat_or_exit",
             lambda: None,
         )
         monkeypatch.setattr(
@@ -1340,6 +1368,7 @@ class _FakeGatewayClient:
         self.create_calls: list[dict[str, object]] = []
         self.send_calls: list[dict[str, object]] = []
         self.resolve_calls: list[str] = []
+        self.bootstrap_calls: list[dict[str, object]] = []
         self.delete_calls: list[list[str]] = []
         self.history_calls: list[dict[str, object]] = []
         self.abort_calls: list[str] = []
@@ -1376,6 +1405,26 @@ class _FakeGatewayClient:
     async def resolve_session(self, key: str) -> dict[str, object]:
         self.resolve_calls.append(key)
         return self.resolved_payload
+
+    async def bootstrap_session(
+        self,
+        key: str,
+        *,
+        limit: int = 200,
+    ) -> dict[str, object]:
+        self.bootstrap_calls.append({"key": key, "limit": limit})
+        return {
+            "session": {
+                "session_key": key,
+                "model": self.resolved_payload.get("model"),
+            },
+            "history": {
+                "messages": [],
+                "history_scope": "complete",
+                "loaded_count": 0,
+                "canonical_available": True,
+            },
+        }
 
     async def delete_sessions(self, keys: list[str]) -> dict[str, object]:
         self.delete_calls.append(keys)

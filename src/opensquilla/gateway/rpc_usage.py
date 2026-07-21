@@ -6,7 +6,14 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
-from opensquilla.gateway.rpc import RpcContext, get_dispatcher
+from opensquilla.gateway.rpc import (
+    RpcContext,
+    RpcHandlerError,
+    RpcUnavailableError,
+    get_dispatcher,
+)
+from opensquilla.gateway.session_services import get_session_storage
+from opensquilla.gateway.usage_query import UsageQueryValidationError, query_usage_ledger
 from opensquilla.provider.model_catalog import (
     resolve_effective_context_window,
     shared_catalog,
@@ -596,6 +603,7 @@ async def _handle_usage_status(params: dict | None, ctx: RpcContext) -> dict[str
             "totalCacheWriteTokens": totals["cache_write"],
             "sessions": tracker_rows,
         }
+
     try:
         requested_session_key = None
         if isinstance(params, Mapping):
@@ -673,6 +681,26 @@ async def _handle_usage_status(params: dict | None, ctx: RpcContext) -> dict[str
             "totalCacheWriteTokens": totals["cache_write"],
             "sessions": tracker_rows,
         }
+
+
+@_d.method("usage.query", scope="operator.read")
+async def _handle_usage_query(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    """Aggregate timestamped usage events for one explicit calendar range.
+
+    This is intentionally additive.  ``usage.status`` and ``usage.cost`` keep
+    their session-lifetime wire contracts for older clients while new clients
+    opt in after discovering this method in the WebSocket hello payload.
+    """
+
+    if ctx.session_manager is None:
+        raise RpcUnavailableError("Durable usage accounting is not configured")
+    storage = get_session_storage(ctx.session_manager)
+    if storage is None or not hasattr(storage, "query_usage_events"):
+        raise RpcUnavailableError("Durable usage accounting is not available")
+    try:
+        return await query_usage_ledger(storage, params)
+    except UsageQueryValidationError as exc:
+        raise RpcHandlerError("INVALID_REQUEST", str(exc)) from exc
 
 
 @_d.method("usage.cost", scope="operator.read")

@@ -22,6 +22,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal, cast
 
+from opensquilla.engine.usage_accounting import (
+    account_provider_stream,
+    current_usage_accounting_scope,
+    provider_accounts_physical_usage,
+)
 from opensquilla.memory.archive import RawArchiveWriteResult, write_raw_fallback_archive
 from opensquilla.memory.flush import (
     build_flush_user_prompt_with_audit,
@@ -1141,21 +1146,43 @@ async def _provider_complete(
     if not callable(chat):
         raise TypeError(
             f"Provider {type(provider).__name__} supports neither complete() nor chat()"
+    )
+
+    config = ChatConfig(max_tokens=max_tokens)
+    scope = current_usage_accounting_scope()
+    close_stream = None
+    if scope is None:
+        stream = chat(messages, config=config)
+    elif provider_accounts_physical_usage(provider):
+        stream = chat(messages, config=config)
+        close_stream = stream
+    else:
+        metadata = provider_metadata(provider)
+        stream = account_provider_stream(
+            lambda: chat(messages, config=config),
+            provider=metadata.provider_name or metadata.provider_kind,
+            model=metadata.model,
         )
+        close_stream = stream
 
     chunks: list[str] = []
     done_event: Any | None = None
-    async for event in chat(messages, config=ChatConfig(max_tokens=max_tokens)):
-        kind = getattr(event, "kind", "")
-        if kind == "error" or type(event).__name__ == "ErrorEvent":
-            message = getattr(event, "message", "") or "provider error"
-            code = getattr(event, "code", "") or ""
-            raise ProviderCompletionError(message, code=str(code))
-        if kind == "done" or type(event).__name__ == "DoneEvent":
-            done_event = event
-        text = getattr(event, "text", "") or ""
-        if text and (kind == "text_delta" or "Delta" in type(event).__name__):
-            chunks.append(text)
+    try:
+        async for event in stream:
+            kind = getattr(event, "kind", "")
+            if kind == "error" or type(event).__name__ == "ErrorEvent":
+                message = getattr(event, "message", "") or "provider error"
+                code = getattr(event, "code", "") or ""
+                raise ProviderCompletionError(message, code=str(code))
+            if kind == "done" or type(event).__name__ == "DoneEvent":
+                done_event = event
+            text = getattr(event, "text", "") or ""
+            if text and (kind == "text_delta" or "Delta" in type(event).__name__):
+                chunks.append(text)
+    finally:
+        aclose = getattr(close_stream, "aclose", None)
+        if callable(aclose):
+            await aclose()
     return _CompletionResult(
         text="".join(chunks),
         usage=_usage_from_event(done_event, request_count=1),

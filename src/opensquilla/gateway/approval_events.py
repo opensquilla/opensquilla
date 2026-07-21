@@ -22,6 +22,9 @@ def approval_event_name(event: str, info: dict[str, Any]) -> str | None:
     """Wire event name for a queue transition, or None for unknown events."""
     if event not in _EVENT_SUFFIXES:
         return None
+    params = info.get("params")
+    if isinstance(params, dict) and params.get("humanActionable") is False:
+        return None
     namespace = str(info.get("namespace") or "exec")
     return f"{namespace}.approval.{event}"
 

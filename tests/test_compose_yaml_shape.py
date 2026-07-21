@@ -56,7 +56,10 @@ def test_docker_build_validates_generated_webui_before_python_packaging() -> Non
     dockerfile = _load_dockerfile()
     dockerignore = (_ROOT / ".dockerignore").read_text(encoding="utf-8")
 
-    assert "FROM --platform=$BUILDPLATFORM node:22.12.0-bookworm-slim AS webui-builder" in dockerfile
+    assert (
+        "FROM --platform=$BUILDPLATFORM node:22.12.0-bookworm-slim AS webui-builder"
+        in dockerfile
+    )
     assert "--mount=type=cache,target=/root/.npm,sharing=locked npm ci" in dockerfile
     assert "RUN npm run build:artifact" in dockerfile
     assert "ARG OPENSQUILLA_FORBID_PERSONAL_BGM=0" in dockerfile

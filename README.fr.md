@@ -364,21 +364,28 @@ Docker/bureau reçoivent à la place des étapes de suppression guidées. Consul
 
 OpenSquilla utilise une télémétrie d'installation anonyme pour estimer le nombre
 d'installations, l'adoption des versions et la compatibilité d'exécution. Les données
-sont envoyées au premier démarrage de la passerelle et une fois par version
-d'OpenSquilla. Les envois utilisent un délai d'expiration court et ne bloquent jamais
-le démarrage.
+sont envoyées uniquement au premier démarrage de la passerelle et une seule fois par
+version d'OpenSquilla. OpenSquilla agrège également localement, par date UTC, le nombre
+de tours de conversation de premier niveau terminés et l'utilisation des tokens. Au
+démarrage puis toutes les heures, OpenSquilla tente d'envoyer au même service de
+télémétrie les instantanés cumulés de la journée UTC restant à transmettre. OpenSquilla
+peut aussi effectuer des vérifications passives de mise à jour, notamment au lancement
+de l'application de bureau et, au maximum, une fois par jour pendant son exécution. Les
+envois utilisent un délai d'expiration court et ne bloquent jamais le démarrage.
 
 Ce qui est envoyé :
 
 - la version du schéma
 - un condensé `install_id` stable généré localement
 - la version d'OpenSquilla
-- le type d'événement (`install` ou `version_seen`)
+- le type d'événement (`install`, `version_seen` ou `daily_usage`)
 - la méthode d'installation (`pip`, `source`, `docker`, `desktop` ou `unknown`)
 - le système d'exploitation, la version de l'OS, l'architecture du processeur et la
   version majeure/mineure de Python
 - les horodatages de première observation et d'envoi
 - un marqueur d'environnement CI/test (`ci_environment`)
+- pour les événements d'utilisation quotidienne : la date UTC, le nombre de tours
+  terminés et les totaux de tokens d'entrée, de sortie, de cache et d'écriture en cache
 
 L'`install_id` est un condensé local SHA-256 à sens unique dérivé des adresses MAC
 utilisables, puis des adresses IP locales lorsqu'aucune MAC n'est disponible, avec une
@@ -389,13 +396,40 @@ configuration des fournisseurs, contenu de chat/session/mémoire/Agent, noms de 
 ou contenu de fichiers. L'IP source peut être visible des serveurs HTTP au niveau de la
 couche de transport, mais ne fait pas partie de la charge utile.
 
-Pour la désactiver :
+Pour désactiver avant le démarrage toute observabilité réseau qui n'est pas déclenchée
+par l'utilisateur :
+
+```sh
+OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
+```
+
+Ou dans la configuration :
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+Ce commutateur unifié couvre la télémétrie automatique d'installation, la télémétrie
+agrégée d'utilisation quotidienne, les vérifications passives de mise à jour ainsi que
+les vérifications automatiques effectuées au lancement de l'application de bureau et
+pendant son exécution. Tant que le commutateur unifié ou un ancien commutateur de
+désactivation compatible reste activé, même une vérification de mise à jour
+explicitement déclenchée par l'utilisateur ne peut pas le contourner. D'autres actions
+déclenchées par l'utilisateur peuvent toujours accéder à des services réseau après
+expression d'une intention explicite, par exemple pour ouvrir la page des versions,
+télécharger des fichiers de version ou utiliser des fournisseurs, des services de
+recherche ou des canaux configurés.
+
+Les anciennes variables d'environnement restent prises en charge :
 
 ```sh
 OPENSQUILLA_TELEMETRY_DISABLED=true
+OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-Les déploiements avancés peuvent utiliser leur propre point de terminaison :
+Les déploiements avancés peuvent utiliser leur propre point de terminaison de
+télémétrie d'installation :
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install

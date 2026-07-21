@@ -154,7 +154,8 @@ def _serialized_read[**P, R](
 # Version 7 added archived transcript rows for canonical recovery after compaction.
 # Version 8 added the derived_title column for LLM-generated session titles.
 # Version 9 added durable turn-ingress receipts.
-# Version 10 added the durable provider usage ledger.
+# Version 10 added the durable provider usage ledger and content-free daily usage
+# telemetry aggregates.
 SCHEMA_VERSION = 10
 
 # Session rows at or above this semantic version were created by fork logic
@@ -493,6 +494,19 @@ _CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE = (
     "coverage_entry_count"
     ")"
 )
+
+_CREATE_TELEMETRY_DAILY_USAGE = """
+CREATE TABLE IF NOT EXISTS telemetry_daily_usage (
+    day TEXT PRIMARY KEY,
+    conversation_turns INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    uploaded_at INTEGER
+)
+"""
 
 _CREATE_USAGE_EVENTS = """
 CREATE TABLE IF NOT EXISTS usage_events (
@@ -1113,6 +1127,7 @@ class SessionStorage:
         await self._conn.execute(_CREATE_IDX_TURN_INGRESS_ACCEPTED_SESSION)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
+        await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
         await self._conn.execute(_CREATE_USAGE_EVENTS)
         await self._conn.execute(_CREATE_USAGE_EVENT_ITEMS)
         await self._conn.execute(_CREATE_USAGE_LEDGER_STATE)
@@ -1199,6 +1214,78 @@ class SessionStorage:
                 finally:
                     await connection.close()
             self._usage_backfill_indexes_ready = True
+
+    async def record_daily_usage(
+        self,
+        *,
+        day: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        cache_write_tokens: int,
+        updated_at: int,
+    ) -> None:
+        """Atomically add one completed interactive turn to a UTC-day bucket."""
+        async with self._write_transaction("record_daily_usage") as conn:
+            await conn.execute(
+                """
+                INSERT INTO telemetry_daily_usage (
+                    day, conversation_turns, input_tokens, output_tokens,
+                    cached_tokens, cache_write_tokens, updated_at, uploaded_at
+                ) VALUES (?, 1, ?, ?, ?, ?, ?, NULL)
+                ON CONFLICT(day) DO UPDATE SET
+                    conversation_turns = conversation_turns + 1,
+                    input_tokens = input_tokens + excluded.input_tokens,
+                    output_tokens = output_tokens + excluded.output_tokens,
+                    cached_tokens = cached_tokens + excluded.cached_tokens,
+                    cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                    updated_at = excluded.updated_at,
+                    uploaded_at = NULL
+                """,
+                (
+                    day,
+                    input_tokens,
+                    output_tokens,
+                    cached_tokens,
+                    cache_write_tokens,
+                    updated_at,
+                ),
+            )
+
+    @_serialized_read
+    async def list_pending_daily_usage(self, *, before_day: str) -> list[dict[str, Any]]:
+        """Return unsent completed UTC-day aggregates in chronological order."""
+        async with self.conn.execute(
+            """
+            SELECT day, conversation_turns, input_tokens, output_tokens,
+                   cached_tokens, cache_write_tokens, updated_at, uploaded_at
+            FROM telemetry_daily_usage
+            WHERE day < ? AND uploaded_at IS NULL
+            ORDER BY day ASC
+            """,
+            (before_day,),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+    async def mark_daily_usage_uploaded(
+        self,
+        *,
+        day: str,
+        uploaded_at: int,
+        expected_conversation_turns: int,
+    ) -> bool:
+        """Mark a sent snapshot unless another turn changed it in flight."""
+        async with self._write_transaction("mark_daily_usage_uploaded") as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE telemetry_daily_usage
+                SET uploaded_at = ?
+                WHERE day = ? AND conversation_turns = ?
+                """,
+                (uploaded_at, day, expected_conversation_turns),
+            )
+            updated = int(cursor.rowcount or 0) > 0
+        return updated
 
     async def _migrate_epoch_column(self) -> None:
         """Idempotently add the epoch column to an existing sessions table.

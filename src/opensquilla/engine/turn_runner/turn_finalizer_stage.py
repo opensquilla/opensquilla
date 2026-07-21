@@ -399,6 +399,18 @@ class TurnErrorPersistPort(Protocol):
         event: ErrorEvent | None,
     ) -> None: ...
 
+
+@runtime_checkable
+class UsageTelemetryPort(Protocol):
+    """Best-effort local aggregation for a completed top-level turn."""
+
+    async def record_turn(self, *, run_kind: str, done_event: DoneEvent | None) -> None: ...
+
+
+class _NullUsageTelemetryPort:
+    async def record_turn(self, *, run_kind: str, done_event: DoneEvent | None) -> None:
+        return None
+
 # ---------------------------------------------------------------------------
 # Finalizer result values
 # ---------------------------------------------------------------------------
@@ -554,11 +566,13 @@ class TurnFinalizerStage:
         turn_memory_capture: TurnMemoryCapturePort,
         session_totals: SessionTotalsPort,
         turn_error_persist: TurnErrorPersistPort,
+        usage_telemetry: UsageTelemetryPort | None = None,
     ) -> None:
         self._transcript_append = transcript_append
         self._turn_memory_capture = turn_memory_capture
         self._session_totals = session_totals
         self._turn_error_persist = turn_error_persist
+        self._usage_telemetry = usage_telemetry or _NullUsageTelemetryPort()
 
     async def run(
         self,
@@ -692,6 +706,16 @@ class TurnFinalizerStage:
                     session_key=inp.session_key,
                     error=str(exc),
                 )
+
+        # 6. Aggregate telemetry governed by the unified privacy switch. The
+        # port stores counters only; failures must never alter the turn result.
+        try:
+            await self._usage_telemetry.record_turn(
+                run_kind=inp.run_kind,
+                done_event=inp.done_event,
+            )
+        except Exception as exc:  # noqa: BLE001 - log-and-continue intentional
+            log.warning("turn_runner.usage_telemetry_persist_failed", error=str(exc))
 
         return StageOutcome.success(
             TurnFinalizerStageOutput(

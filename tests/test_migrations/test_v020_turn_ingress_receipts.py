@@ -218,8 +218,13 @@ def test_schema_ahead_refuses_boot_without_v020(tmp_path: Path) -> None:
 
     older_build_dir = tmp_path / "migrations_without_v020"
     older_build_dir.mkdir()
+    unavailable = {
+        "V020__turn_ingress_receipts.py",
+        "V021__usage_ledger.py",
+        "V022__telemetry_daily_usage.py",
+    }
     for migration in MIGRATIONS_DIR.glob("V*.py"):
-        if migration.name != "V020__turn_ingress_receipts.py":
+        if migration.name not in unavailable:
             shutil.copy2(migration, older_build_dir / migration.name)
 
     with pytest.raises(SchemaAheadError, match=V020_ID):

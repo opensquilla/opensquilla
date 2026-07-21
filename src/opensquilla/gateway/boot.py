@@ -636,6 +636,7 @@ class ServiceContainer:
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
+    daily_usage_telemetry_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     deferred_warmups: list[Callable[[], Any]] = field(default_factory=list)
     _compaction_listener_remove: Callable[[], None] | None = None
     _approval_listener_remove: Callable[[], None] | None = None
@@ -686,6 +687,16 @@ class ServiceContainer:
             self._approval_channel_notifier_remove = None
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
+        daily_usage_task = self.daily_usage_telemetry_task
+        self.daily_usage_telemetry_task = None
+        if daily_usage_task is not None:
+            daily_usage_task.cancel()
+            try:
+                await daily_usage_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.debug("gateway.usage_telemetry_close_failed", exc_info=True)
         if self.heartbeat_watcher is not None:
             try:
                 await self.heartbeat_watcher.stop()
@@ -3091,6 +3102,25 @@ async def start_gateway_server(
     except BaseException:
         _pid_lock.release()
         raise
+
+    # Daily usage uses the existing telemetry service's dedicated /v1/usage
+    # route and the same unified privacy switch. Upload once at startup and
+    # every hour while the gateway is running; failures remain pending.
+    try:
+        from opensquilla.observability.usage_telemetry import (
+            run_daily_usage_upload_loop,
+        )
+
+        daily_usage_storage = get_session_storage(svc.session_manager)
+        if daily_usage_storage is not None:
+            svc.daily_usage_telemetry_task = create_background_task(
+                run_daily_usage_upload_loop(
+                    daily_usage_storage,
+                    config=config,
+                )
+            )
+    except Exception:
+        log.debug("gateway.usage_telemetry_upload_skipped", exc_info=True)
 
     # Some embedding/tests provide a service-shaped object from an older
     # bootstrap contract.  Treat the ledger sink as an optional additive

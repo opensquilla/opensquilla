@@ -12,6 +12,7 @@ import json
 import os
 import shlex
 import statistics
+import subprocess
 import sys
 import time
 import uuid
@@ -64,6 +65,12 @@ from opensquilla.engine.types import (
 from opensquilla.engine.types import (
     WarningEvent as AgentWarningEvent,
 )
+from opensquilla.eval.draco_artifact_integrity import (
+    compact_tool_result_diagnostic,
+    seal_result_row,
+    trace_row_from_result,
+    verify_result_row_evidence,
+)
 from opensquilla.eval.draco_experiment_config import (
     DracoEnsembleMemberConfig,
     DracoExperimentConfig,
@@ -71,6 +78,7 @@ from opensquilla.eval.draco_experiment_config import (
     load_draco_experiment_config,
     validate_reference_input,
 )
+from opensquilla.execution_status import compact_provider_status
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.provider.ensemble import (
@@ -100,6 +108,7 @@ from opensquilla.provider.types import (
     ToolUseStartEvent,
 )
 from opensquilla.result_budget import ToolRunBudgetPolicy
+from opensquilla.tool_boundary import ToolCall
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import CallerKind, InteractionMode, ToolContext, ToolSpec
@@ -154,6 +163,8 @@ SUPPORTED_TOOL_MODES = (
     TOOL_MODE_OPENROUTER_SERVER_TOOLS,
     TOOL_MODE_LOCAL_WEB_TOOLS,
 )
+BENCHMARK_WEB_PREFLIGHT_QUERY = "OpenAI official website"
+BENCHMARK_WEB_FETCH_PREFLIGHT_URL = "https://example.com/"
 DEFAULT_OPENROUTER_WEB_SEARCH_ENGINE = "exa"
 DEFAULT_OPENROUTER_WEB_SEARCH_MAX_RESULTS = 5
 DEFAULT_OPENROUTER_WEB_SEARCH_MAX_TOTAL_RESULTS = 10
@@ -209,6 +220,7 @@ GENERATION_MAX_ATTEMPTS = 3
 DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS = 2.0
 GENERATION_EMPTY_OUTPUT_ERROR = "empty_generation_output"
 GENERATION_MISSING_DONE_ERROR = "generation_missing_done"
+RUN_COMPATIBILITY_SCHEMA = "opensquilla.draco.run-compatibility/v1"
 
 
 def apply_b2_g12_argument_alignment(
@@ -767,6 +779,9 @@ def benchmark_tool_policy(args: argparse.Namespace | None = None) -> dict[str, A
                     "max_content_chars": approx_chars_for_content_tokens(
                         local_fetch_max_content_tokens
                     ),
+                    "allow_firecrawl": bool(
+                        getattr(args, "allow_firecrawl_web_fetch", False)
+                    ),
                 },
             },
             "contamination_blocked_domains": blocked_domains,
@@ -825,6 +840,25 @@ def validate_runner_mode_for_groups(runner_mode: str, groups: list[str]) -> None
             "OpenRouter Fusion experiment groups are provider-level server-side "
             "agent baselines; run "
             f"{','.join(fusion_groups)} with --runner-mode=provider"
+        )
+
+
+def validate_tool_mode_for_runner(
+    runner_mode: str,
+    tool_mode: str,
+    *,
+    smoke_only: bool = False,
+) -> None:
+    if smoke_only:
+        return
+    if tool_mode == TOOL_MODE_LOCAL_WEB_TOOLS and runner_mode != RUNNER_MODE_AGENT_LOOP:
+        raise ValueError(
+            "--tool-mode=local_web_tools requires --runner-mode=agent_loop so local "
+            "tool calls are executed rather than only forwarded to the provider."
+        )
+    if tool_mode == TOOL_MODE_OPENROUTER_SERVER_TOOLS and runner_mode != RUNNER_MODE_PROVIDER:
+        raise ValueError(
+            "--tool-mode=openrouter_server_tools requires --runner-mode=provider."
         )
 
 
@@ -1051,14 +1085,14 @@ def configure_local_web_search_runtime(
     credential_status = "not_required"
     if spec.requires_api_key:
         credential_status = "configured"
-        api_key = str(getattr(config, "search_api_key", "") or "").strip()
-        api_key_source = "config" if api_key else ""
+        if not env_key:
+            env_key = str(getattr(spec, "env_key", "") or "").strip()
+        if env_key and os.environ.get(env_key):
+            api_key = str(os.environ.get(env_key) or "")
+            api_key_source = f"env:{env_key}"
         if not api_key:
-            if not env_key:
-                env_key = str(getattr(spec, "env_key", "") or "").strip()
-            if env_key and os.environ.get(env_key):
-                api_key = str(os.environ.get(env_key) or "")
-                api_key_source = f"env:{env_key}"
+            api_key = str(getattr(config, "search_api_key", "") or "").strip()
+            api_key_source = "config" if api_key else ""
         if not api_key:
             env_hint = env_key or getattr(spec, "env_key", "") or "the provider API key env var"
             if not dry_run:
@@ -1126,6 +1160,28 @@ def configure_benchmark_sandbox_runtime(
     }
 
 
+def configure_local_web_fetch_runtime(tool_policy: dict[str, Any]) -> dict[str, Any]:
+    if tool_policy.get("tool_mode") != TOOL_MODE_LOCAL_WEB_TOOLS:
+        return {}
+    local_policy = tool_policy.get("local_web_tools") or {}
+    fetch_policy = local_policy.get("web_fetch") or {}
+    allow_firecrawl = bool(fetch_policy.get("allow_firecrawl"))
+    firecrawl_was_configured = bool(os.environ.get("FIRECRAWL_API_KEY", "").strip())
+    if firecrawl_was_configured and not allow_firecrawl:
+        os.environ.pop("FIRECRAWL_API_KEY", None)
+    return {
+        "extractor_mode": "auto_local_first",
+        "firecrawl_allowed": allow_firecrawl,
+        "firecrawl_api_key_active": firecrawl_was_configured and allow_firecrawl,
+        "firecrawl_disabled_for_reproducibility": (
+            firecrawl_was_configured and not allow_firecrawl
+        ),
+        "external_fetch_cost_tracking": (
+            "required_when_firecrawl_used" if allow_firecrawl else "not_applicable"
+        ),
+    }
+
+
 def blocked_domain_match(url: str, blocked_domains: list[str]) -> str:
     domain = normalize_domain(url)
     if not domain:
@@ -1150,11 +1206,14 @@ def filter_blocked_search_results(
     executed_query: str,
 ) -> dict[str, Any]:
     filtered = dict(payload)
-    results = filtered.get("results")
-    removed: list[dict[str, str]] = []
-    kept: list[Any] = []
-    if isinstance(results, list):
-        for item in results:
+    removed_by_field: dict[str, list[dict[str, str]]] = {}
+    for field_name in ("results", "sources"):
+        items = filtered.get(field_name)
+        removed: list[dict[str, str]] = []
+        kept: list[Any] = []
+        if not isinstance(items, list):
+            continue
+        for item in items:
             if not isinstance(item, dict):
                 kept.append(item)
                 continue
@@ -1168,13 +1227,19 @@ def filter_blocked_search_results(
                 )
             else:
                 kept.append(item)
-        filtered["results"] = kept
+        filtered[field_name] = kept
+        removed_by_field[field_name] = removed
     filtered["query"] = original_query
     filtered["executed_query"] = executed_query
     filtered["blocked_domains"] = blocked_domains
-    filtered["blocked_result_count"] = len(removed)
-    if removed:
-        filtered["blocked_results"] = removed
+    blocked_results = removed_by_field.get("results", [])
+    blocked_sources = removed_by_field.get("sources", [])
+    filtered["blocked_result_count"] = len(blocked_results)
+    filtered["blocked_source_count"] = len(blocked_sources)
+    if blocked_results:
+        filtered["blocked_results"] = blocked_results
+    if blocked_sources:
+        filtered["blocked_sources"] = blocked_sources
     return filtered
 
 
@@ -1195,7 +1260,11 @@ def build_local_web_tool_registry(tool_policy: dict[str, Any]) -> ToolRegistry:
             minimum=1,
             maximum=default_max_results,
         )
-        payload = await run_web_search_payload(executed_query, limit)
+        payload = await run_web_search_payload(
+            executed_query,
+            limit,
+            exclude_domains=blocked_domains,
+        )
         filtered = filter_blocked_search_results(
             payload,
             blocked_domains=blocked_domains,
@@ -1233,10 +1302,33 @@ def build_local_web_tool_registry(tool_policy: dict[str, Any]) -> ToolRegistry:
             minimum=100,
             maximum=default_fetch_max_chars,
         )
-        return await web_fetch(
+        content = await web_fetch(
             url,
             extract_mode=extract_mode,
             max_chars=effective_max_chars,
+        )
+        try:
+            payload = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            return content
+        final_url = str(payload.get("final_url") or payload.get("url") or "")
+        final_match = blocked_domain_match(final_url, blocked_domains)
+        if not final_match:
+            return content
+        return json.dumps(
+            {
+                "url": url,
+                "final_url": final_url,
+                "error_class": "BlockedDomain",
+                "error": (
+                    "This request redirected to a DRACO contamination-blocked domain "
+                    f"({final_match}); fetched content was discarded."
+                ),
+                "blocked_domain": final_match,
+                "blocked_domains": blocked_domains,
+            },
+            ensure_ascii=False,
+            indent=2,
         )
 
     registry.register(
@@ -1309,6 +1401,156 @@ def build_benchmark_tool_context(
             max_web_search_results=local_web_search_max_results(tool_policy),
         ),
     )
+
+
+async def run_local_web_tools_preflight(
+    tool_policy: dict[str, Any],
+    *,
+    dry_run: bool = False,
+    max_attempts: int = 3,
+    retry_backoff_seconds: float = 1.0,
+    call_timeout_seconds: float = 90.0,
+) -> dict[str, Any]:
+    """Fail fast unless the benchmark's real web tool path can search and fetch."""
+
+    if tool_policy.get("tool_mode") != TOOL_MODE_LOCAL_WEB_TOOLS:
+        return {}
+    if dry_run:
+        return {
+            "status": "skipped_dry_run",
+            "web_fetch_url": BENCHMARK_WEB_FETCH_PREFLIGHT_URL,
+            "preflight_calls": {"web_search": 0, "web_fetch": 0},
+            "cost_attribution": "no_preflight_calls_dry_run",
+        }
+
+    attempt_limit = max(1, int(max_attempts))
+    timeout = max(1.0, float(call_timeout_seconds))
+    call_counts = {"web_search": 0, "web_fetch": 0}
+
+    async def _attempt(attempt: int) -> dict[str, Any]:
+        registry = build_local_web_tool_registry(tool_policy)
+        context = build_benchmark_tool_context(
+            task_id=f"__local_web_tools_preflight_{attempt}__",
+            group="preflight",
+            tool_policy=tool_policy,
+        )
+        handler = build_tool_handler(registry, context)
+
+        async def _call(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            call_counts[tool_name] += 1
+            try:
+                result = await asyncio.wait_for(
+                    handler(
+                        ToolCall(
+                            tool_use_id=f"draco-preflight-{attempt}-{tool_name}",
+                            tool_name=tool_name,
+                            arguments=arguments,
+                        )
+                    ),
+                    timeout=timeout,
+                )
+            except TimeoutError as exc:
+                raise RuntimeError(
+                    f"DRACO local web tool {tool_name} preflight timed out after {timeout:.0f}s"
+                ) from exc
+            detail = str(result.content or "")[:500]
+            if result.is_error:
+                raise RuntimeError(
+                    f"DRACO local web tool {tool_name} preflight failed: {detail}"
+                )
+            try:
+                payload = json.loads(result.content)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"DRACO local web tool {tool_name} preflight returned non-JSON: {detail}"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise RuntimeError(
+                    f"DRACO local web tool {tool_name} preflight returned a non-object payload"
+                )
+            status = str(payload.get("status") or "").strip().casefold()
+            reason = str(payload.get("reason") or "").strip().casefold()
+            if (
+                payload.get("error")
+                or payload.get("error_class")
+                or status in {"error", "failed", "denied", "approval_denied"}
+                or "denied" in reason
+                or "policy" in reason
+            ):
+                raise RuntimeError(
+                    f"DRACO local web tool {tool_name} preflight failed: {detail}"
+                )
+            return payload
+
+        search_payload = await _call(
+            "web_search",
+            {"query": BENCHMARK_WEB_PREFLIGHT_QUERY, "max_results": 1},
+        )
+        search_results = search_payload.get("results")
+        if (
+            search_payload.get("ok") is False
+            or not isinstance(search_results, list)
+            or not search_results
+        ):
+            raise RuntimeError(
+                "DRACO local web tool web_search preflight returned invalid results"
+            )
+        if not any(
+            isinstance(item, dict)
+            and urlparse(str(item.get("url") or "")).scheme in {"http", "https"}
+            and bool(urlparse(str(item.get("url") or "")).netloc)
+            for item in search_results
+        ):
+            raise RuntimeError(
+                "DRACO local web tool web_search preflight returned no valid HTTP(S) result"
+            )
+
+        fetch_payload = await _call(
+            "web_fetch",
+            {
+                "url": BENCHMARK_WEB_FETCH_PREFLIGHT_URL,
+                "extract_mode": "text",
+                "max_chars": 1_000,
+            },
+        )
+        fetched_text = fetch_payload.get("text")
+        if not isinstance(fetched_text, str) or not fetched_text.strip():
+            raise RuntimeError("DRACO local web tool web_fetch preflight returned no text")
+        try:
+            fetch_status = int(fetch_payload.get("status"))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "DRACO local web tool web_fetch preflight returned no HTTP status"
+            ) from exc
+        if not 200 <= fetch_status < 400:
+            raise RuntimeError(
+                f"DRACO local web tool web_fetch preflight returned HTTP {fetch_status}"
+            )
+
+        return {
+            "status": "passed",
+            "attempts_used": attempt,
+            "web_search_query": BENCHMARK_WEB_PREFLIGHT_QUERY,
+            "web_search_result_count": len(search_results),
+            "web_fetch_url": BENCHMARK_WEB_FETCH_PREFLIGHT_URL,
+            "web_fetch_http_status": fetch_status,
+            "web_fetch_text_chars": len(fetched_text),
+            "preflight_calls": dict(call_counts),
+            "cost_attribution": "setup_preflight_excluded_from_benchmark_row_metrics",
+        }
+
+    last_error: RuntimeError | None = None
+    for attempt in range(1, attempt_limit + 1):
+        try:
+            return await _attempt(attempt)
+        except RuntimeError as exc:
+            last_error = exc
+            if attempt < attempt_limit and retry_backoff_seconds > 0:
+                await asyncio.sleep(float(retry_backoff_seconds) * (2 ** (attempt - 1)))
+    assert last_error is not None
+    raise RuntimeError(
+        f"DRACO local web tools preflight failed after {attempt_limit} attempt(s): {last_error}"
+    ) from last_error
 
 
 def generation_thinking_policy(args: argparse.Namespace | None = None) -> dict[str, Any]:
@@ -2514,6 +2756,23 @@ def aggregate_agent_model_usage(records: list[dict[str, Any]]) -> list[dict[str,
         payload = record["payload"]
         usage = payload.get("usage") if isinstance(payload, dict) else None
         if not isinstance(usage, dict):
+            rows.append(
+                {
+                    "role": "agent_llm_request_unknown",
+                    "agent_call_index": call_index,
+                    "agent_iteration": coerce_metric_int(payload.get("iteration")),
+                    "agent_call_attempt": coerce_metric_int(payload.get("attempt")),
+                    "model": "",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "billed_cost": 0.0,
+                    "cost_source": "none",
+                    "request_outcome": str(record.get("kind") or "unknown"),
+                }
+            )
             continue
         breakdown = usage.get("model_usage_breakdown")
         if isinstance(breakdown, list) and breakdown:
@@ -2739,6 +2998,10 @@ async def collect_agent_run(
                         tool_name=event.tool_name,
                         is_error=event.is_error,
                         result_chars=len(event.result or ""),
+                        execution_status=compact_provider_status(
+                            event.execution_status
+                        ),
+                        diagnostic=compact_tool_result_diagnostic(event.result),
                     )
                 elif isinstance(event, AgentRunHeartbeatEvent):
                     _trace(
@@ -3248,6 +3511,7 @@ async def judge_text(
     judge_repeats: int = 1,
     judge_concurrency: int = 1,
     judge_max_attempts: int = JUDGE_MAX_ATTEMPTS,
+    judge_semaphore: asyncio.Semaphore | None = None,
 ) -> dict[str, Any] | None:
     if not answer.strip():
         return None
@@ -3289,9 +3553,14 @@ async def judge_text(
     if judge_provider is None:
         return None
     max_attempts = bounded_judge_attempts(judge_max_attempts)
+    # One experiment-wide semaphore covers both structured rubric judging and
+    # the legacy single-call Judge path.  Otherwise task concurrency can
+    # silently multiply the configured Judge concurrency.
+    semaphore = judge_semaphore or asyncio.Semaphore(
+        max(1, int(judge_concurrency or 1))
+    )
     if criteria:
         repeats = max(1, int(judge_repeats or 1))
-        semaphore = asyncio.Semaphore(max(1, int(judge_concurrency or 1)))
 
         async def _guarded_judge(
             criterion: dict[str, Any],
@@ -3333,12 +3602,13 @@ async def judge_text(
     attempts: list[dict[str, Any]] = []
     last_result: RunResult | None = None
     for attempt_index in range(1, max_attempts + 1):
-        result = await collect_run(
-            judge_provider,
-            prompt,
-            timeout=120.0,
-            config=ChatConfig(temperature=0.0, thinking=False),
-        )
+        async with semaphore:
+            result = await collect_run(
+                judge_provider,
+                prompt,
+                timeout=120.0,
+                config=ChatConfig(temperature=0.0, thinking=False),
+            )
         last_result = result
         parsed = extract_json_object(result.final_text)
         attempts.append(
@@ -3602,6 +3872,7 @@ async def run_one(
     judge_repeats: int,
     judge_concurrency: int,
     judge_max_attempts: int,
+    judge_semaphore: asyncio.Semaphore | None,
     timeout: float,
     ensemble_proposer_timeout: float | None,
     ensemble_aggregator_timeout: float | None,
@@ -3617,6 +3888,7 @@ async def run_one(
     generation_max_attempts: int = GENERATION_MAX_ATTEMPTS,
     generation_retry_backoff: float = DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
     tools: list[ToolDefinition] | None = None,
+    run_compatibility_fingerprint: str = "",
 ) -> dict[str, Any]:
     spec = GROUP_SPECS[group]
     started = time.time()
@@ -3716,6 +3988,7 @@ async def run_one(
             judge_repeats=judge_repeats,
             judge_concurrency=judge_concurrency,
             judge_max_attempts=judge_max_attempts,
+            judge_semaphore=judge_semaphore,
         )
         if should_judge
         else None
@@ -3735,6 +4008,7 @@ async def run_one(
                     judge_repeats=judge_repeats,
                     judge_concurrency=judge_concurrency,
                     judge_max_attempts=judge_max_attempts,
+                    judge_semaphore=judge_semaphore,
                 )
             )
     fused_total = quality_total(judge)
@@ -3796,12 +4070,14 @@ async def run_one(
     )
     if attempt_usage_unknown_count:
         usage_unknown_count = attempt_usage_unknown_count
-    return {
+    row = {
         "task_id": task["id"],
         "group": group,
         "domain": task.get("domain", ""),
         "prompt": task["prompt"],
         "prompt_sha256": prompt_sha,
+        "task_input_sha256": canonical_json_sha256(task),
+        "run_compatibility_fingerprint": run_compatibility_fingerprint,
         "metadata": task.get("metadata", {}),
         "provider_spec": dict(spec),
         "routing_trace": run.routing_trace,
@@ -3890,6 +4166,8 @@ async def run_one(
             else None
         ),
     }
+    row["cost_accounting"] = row_cost_accounting(row)
+    return row
 
 
 def group_timeout_seconds(
@@ -3920,59 +4198,8 @@ def group_timeout_seconds(
     return max(float(requested_timeout), profile_budget)
 
 
-def compact_judge_summary(judge: dict[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(judge, dict):
-        return {}
-    return {
-        "mode": judge.get("mode"),
-        "score_status": judge.get("score_status"),
-        "quality_total": quality_total(judge),
-        "pass_rate": judge.get("pass_rate"),
-        "valid_pass_rate": judge.get("valid_pass_rate"),
-        "judge_error_count": judge.get("judge_error_count"),
-        "criteria_count": judge.get("criteria_count"),
-        "valid_criteria_count": judge.get("valid_criteria_count"),
-        "invalid_criteria_count": judge.get("invalid_criteria_count"),
-    }
-
-
 def trace_row(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "row_index": row.get("row_index"),
-        "task_id": row.get("task_id"),
-        "group": row.get("group"),
-        "domain": row.get("domain"),
-        "runner_mode": row.get("runner_mode"),
-        "tools_enabled": row.get("tools_enabled"),
-        "tool_policy": row.get("tool_policy") or {},
-        "generation_policy": row.get("generation_policy") or {},
-        "generation_config": row.get("generation_config") or {},
-        "routing_trace": row.get("routing_trace") or {},
-        "started_at": row.get("started_at"),
-        "completed_at": row.get("completed_at"),
-        "prompt_sha256": row.get("prompt_sha256"),
-        "final_text_sha256": row.get("final_text_sha256"),
-        "final_text_chars": row.get("final_text_chars"),
-        "error": row.get("error"),
-        "stream_tool_call_count": row.get("stream_tool_call_count"),
-        "server_tool_call_count": row.get("server_tool_call_count"),
-        "server_tool_use": row.get("server_tool_use") or {},
-        "total_tool_call_count": row.get("total_tool_call_count"),
-        "trajectory_steps": row.get("trajectory_steps"),
-        "llm_request_count": row.get("llm_request_count"),
-        "generation_attempt_count": row.get("generation_attempt_count"),
-        "generation_max_attempts": row.get("generation_max_attempts"),
-        "generation_retry_backoff_s": row.get("generation_retry_backoff_s"),
-        "generation_attempt_total_billed_cost": row.get("generation_attempt_total_billed_cost"),
-        "generation_retry_reasons": row.get("generation_retry_reasons") or [],
-        "execution": row.get("execution") or {},
-        "usage": row.get("usage") or {},
-        "run_trace": row.get("run_trace") or {},
-        "ensemble_trace": row.get("ensemble_trace") or {},
-        "judge": compact_judge_summary(row.get("judge")),
-        "candidate_judge_count": len(row.get("candidate_judges") or []),
-        "fusion_delta": row.get("fusion_delta"),
-    }
+    return trace_row_from_result(row)
 
 
 def percentile(values: list[int], pct: float) -> float:
@@ -4048,6 +4275,280 @@ def row_billed_cost(row: dict[str, Any]) -> float:
     return row_usage_number(row, "billed_cost")
 
 
+def _usage_token_count(usage: dict[str, Any]) -> int:
+    # OpenRouter reports reasoning_tokens as a completion/output-token detail,
+    # not an additional billed token bucket.  Keep it separately observable
+    # without adding it to input + output a second time.
+    return sum(
+        coerce_metric_int(usage.get(key))
+        for key in ("input_tokens", "output_tokens")
+    )
+
+
+def usage_cost_accounting(
+    usage: Any,
+    *,
+    expected_requests: int = 0,
+    scope: str,
+) -> dict[str, Any]:
+    usage_dict = usage if isinstance(usage, dict) else {}
+    breakdown = usage_dict.get("model_usage_breakdown")
+    units = (
+        [item for item in breakdown if isinstance(item, dict)]
+        if isinstance(breakdown, list) and breakdown
+        else ([usage_dict] if usage_dict else [])
+    )
+    observed = len(units)
+    request_count = max(max(0, int(expected_requests)), observed)
+    counts = {"exact": 0, "estimated": 0, "mixed": 0, "unknown": 0}
+    tokens = {"exact": 0, "estimated": 0, "mixed": 0, "unknown": 0}
+    recorded_cost = 0.0
+    for unit in units:
+        source = str(unit.get("cost_source") or "none").strip().casefold()
+        cost = unit.get("billed_cost")
+        has_cost = isinstance(cost, int | float)
+        if source == "provider_billed" and has_cost:
+            category = "exact"
+        elif source.startswith("opensquilla_") and has_cost:
+            category = "estimated"
+        elif source == "mixed" and has_cost:
+            category = "mixed"
+        else:
+            category = "unknown"
+        counts[category] += 1
+        tokens[category] += _usage_token_count(unit)
+        if has_cost and category != "unknown":
+            recorded_cost += float(cost)
+    missing = max(0, request_count - observed)
+    counts["unknown"] += missing
+    known_requests = counts["exact"] + counts["estimated"] + counts["mixed"]
+    total_tokens = sum(tokens.values())
+    return {
+        "scope": scope,
+        "request_count": request_count,
+        "usage_observed_request_count": observed,
+        "exact_request_count": counts["exact"],
+        "estimated_request_count": counts["estimated"],
+        "mixed_request_count": counts["mixed"],
+        "unknown_request_count": counts["unknown"],
+        "total_tokens": total_tokens,
+        "exact_tokens": tokens["exact"],
+        "estimated_tokens": tokens["estimated"],
+        "mixed_tokens": tokens["mixed"],
+        "unknown_tokens": tokens["unknown"],
+        "recorded_cost_usd": recorded_cost,
+        "known_request_coverage_pct": (
+            known_requests / request_count * 100.0 if request_count else 100.0
+        ),
+        "exact_request_coverage_pct": (
+            counts["exact"] / request_count * 100.0 if request_count else 100.0
+        ),
+        "known_token_coverage_pct": (
+            (total_tokens - tokens["unknown"]) / total_tokens * 100.0
+            if total_tokens
+            else (100.0 if not counts["unknown"] else 0.0)
+        ),
+        "cost_complete": counts["unknown"] == 0,
+        "cost_exact": (
+            counts["unknown"] == 0
+            and counts["estimated"] == 0
+            and counts["mixed"] == 0
+        ),
+    }
+
+
+def merge_cost_accounting(scope: str, accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    merged = {
+        "scope": scope,
+        "request_count": 0,
+        "usage_observed_request_count": 0,
+        "exact_request_count": 0,
+        "estimated_request_count": 0,
+        "mixed_request_count": 0,
+        "unknown_request_count": 0,
+        "total_tokens": 0,
+        "exact_tokens": 0,
+        "estimated_tokens": 0,
+        "mixed_tokens": 0,
+        "unknown_tokens": 0,
+        "recorded_cost_usd": 0.0,
+    }
+    for account in accounts:
+        for key in tuple(merged):
+            if key == "scope":
+                continue
+            value = account.get(key)
+            if isinstance(value, int | float):
+                merged[key] += value
+    requests = int(merged["request_count"])
+    known_requests = requests - int(merged["unknown_request_count"])
+    total_tokens = int(merged["total_tokens"])
+    merged.update(
+        {
+            "known_request_coverage_pct": (
+                known_requests / requests * 100.0 if requests else 100.0
+            ),
+            "exact_request_coverage_pct": (
+                int(merged["exact_request_count"]) / requests * 100.0
+                if requests
+                else 100.0
+            ),
+            "known_token_coverage_pct": (
+                (total_tokens - int(merged["unknown_tokens"])) / total_tokens * 100.0
+                if total_tokens
+                else (100.0 if not merged["unknown_request_count"] else 0.0)
+            ),
+            "cost_complete": int(merged["unknown_request_count"]) == 0,
+            "cost_exact": (
+                int(merged["unknown_request_count"]) == 0
+                and int(merged["estimated_request_count"]) == 0
+                and int(merged["mixed_request_count"]) == 0
+            ),
+        }
+    )
+    return merged
+
+
+def generation_cost_accounting(row: dict[str, Any]) -> dict[str, Any]:
+    accounts: list[dict[str, Any]] = []
+    execution = row.get("execution") or {}
+    attempts = execution.get("generation_attempts") if isinstance(execution, dict) else None
+    if isinstance(attempts, list):
+        for attempt in attempts:
+            run = attempt.get("run") if isinstance(attempt, dict) else None
+            if not isinstance(run, dict):
+                continue
+            accounts.append(
+                usage_cost_accounting(
+                    run.get("usage"),
+                    expected_requests=coerce_metric_int(run.get("llm_request_count")),
+                    scope="generation_attempt",
+                )
+            )
+    if not accounts:
+        accounts.append(
+            usage_cost_accounting(
+                row.get("usage"),
+                expected_requests=row_llm_request_count(row),
+                scope="generation_attempt",
+            )
+        )
+    return merge_cost_accounting("generation", accounts)
+
+
+def iter_judge_attempt_runs(judge: Any):
+    if not isinstance(judge, dict):
+        return
+    criteria = judge.get("criterion_judgments")
+    if isinstance(criteria, list):
+        for criterion in criteria:
+            attempts = criterion.get("judge_attempts") if isinstance(criterion, dict) else None
+            if not isinstance(attempts, list):
+                continue
+            for attempt in attempts:
+                run = attempt.get("run") if isinstance(attempt, dict) else None
+                if isinstance(run, dict):
+                    yield run
+        return
+    attempts = judge.get("judge_attempts")
+    if isinstance(attempts, list):
+        for attempt in attempts:
+            run = attempt.get("run") if isinstance(attempt, dict) else None
+            if isinstance(run, dict):
+                yield run
+
+
+def judge_cost_accounting(judge: Any, *, scope: str) -> dict[str, Any]:
+    accounts = [
+        usage_cost_accounting(
+            run.get("usage"),
+            expected_requests=coerce_metric_int(run.get("llm_request_count")),
+            scope=f"{scope}_attempt",
+        )
+        for run in iter_judge_attempt_runs(judge)
+    ]
+    return merge_cost_accounting(scope, accounts)
+
+
+def external_tool_cost_accounting(row: dict[str, Any]) -> dict[str, Any]:
+    tool_policy = row.get("tool_policy") or {}
+    mode = str(tool_policy.get("tool_mode") or TOOL_MODE_PROVIDER_ONLY)
+    tool_calls = row_total_tool_call_count(row)
+    local = tool_policy.get("local_web_tools") or {}
+    search = local.get("web_search") or {}
+    fetch = local.get("web_fetch") or {}
+    provider = str(search.get("provider") or "")
+    firecrawl_allowed = bool(fetch.get("allow_firecrawl"))
+    untracked_paid_path_configured = mode == TOOL_MODE_LOCAL_WEB_TOOLS and (
+        provider == "brave" or firecrawl_allowed
+    )
+    untracked_cost_possible = untracked_paid_path_configured and tool_calls > 0
+    return {
+        "scope": "external_tools",
+        "tool_call_count": tool_calls,
+        "recorded_cost_usd": 0.0,
+        "potentially_unpriced_tool_call_count_upper_bound": (
+            tool_calls if untracked_cost_possible else 0
+        ),
+        "cost_complete": not untracked_cost_possible,
+        "cost_exact": not untracked_cost_possible,
+        "note": (
+            "Brave/Firecrawl spend is not returned by the local tool API"
+            if untracked_cost_possible
+            else "no untracked paid local tool path configured"
+        ),
+    }
+
+
+def row_cost_accounting(row: dict[str, Any]) -> dict[str, Any]:
+    generation = generation_cost_accounting(row)
+    judge = judge_cost_accounting(row.get("judge"), scope="judge")
+    candidate_accounts = [
+        judge_cost_accounting(item, scope="candidate_judge")
+        for item in (row.get("candidate_judges") or [])
+    ]
+    candidate_judge = merge_cost_accounting("candidate_judge", candidate_accounts)
+    llm_total = merge_cost_accounting("llm_total", [generation, judge, candidate_judge])
+    external = external_tool_cost_accounting(row)
+    return {
+        "generation": generation,
+        "judge": judge,
+        "candidate_judge": candidate_judge,
+        "llm_total": llm_total,
+        "external_tools": external,
+        "recorded_total_cost_usd": float(llm_total["recorded_cost_usd"])
+        + float(external["recorded_cost_usd"]),
+        "result_cost_complete": bool(llm_total["cost_complete"])
+        and bool(external["cost_complete"]),
+        "result_cost_exact": bool(llm_total["cost_exact"])
+        and bool(external["cost_exact"]),
+        "scope_note": (
+            "Per-result cost includes all generation retries and recorded Judge attempts. "
+            "Whole-experiment spend must also retain failed/replaced shards and preflight calls."
+        ),
+    }
+
+
+def openrouter_non_byok_audit(row: dict[str, Any]) -> dict[str, Any]:
+    accounting = row.get("cost_accounting") or row_cost_accounting(row)
+    llm_total = accounting.get("llm_total") or {}
+    passed = bool(llm_total.get("cost_exact"))
+    return {
+        "pass": passed,
+        "policy": "every recorded or expected LLM request must prove is_byok=false",
+        "request_count": coerce_metric_int(llm_total.get("request_count")),
+        "exact_request_count": coerce_metric_int(llm_total.get("exact_request_count")),
+        "unverified_or_byok_request_count": (
+            coerce_metric_int(llm_total.get("request_count"))
+            - coerce_metric_int(llm_total.get("exact_request_count"))
+        ),
+        "note": (
+            "pass means every OpenRouter usage record was classified provider_billed "
+            "from explicit is_byok=false evidence; true or missing evidence fails closed"
+        ),
+    }
+
+
 def row_server_tool_call_count(row: dict[str, Any]) -> int:
     direct = row_metric_int(row, "server_tool_call_count")
     if direct:
@@ -4106,15 +4607,23 @@ def usage_unknown_count_from_usage_payload(usage: Any) -> int:
     if not isinstance(usage, dict):
         return 0
     breakdown = usage.get("model_usage_breakdown")
-    if not isinstance(breakdown, list):
-        return 0
+    units = (
+        [item for item in breakdown if isinstance(item, dict)]
+        if isinstance(breakdown, list) and breakdown
+        else [usage]
+    )
+    known_sources = {"provider_billed", "mixed"}
     return sum(
         1
-        for item in breakdown
-        if isinstance(item, dict)
-        and (
-            item.get("cost_source") == "unknown_canceled"
-            or item.get("error_code") == "early_stopped"
+        for item in units
+        if (
+            item.get("error_code") == "early_stopped"
+            or str(item.get("cost_source") or "none") == "unknown_canceled"
+            or (
+                _usage_token_count(item) > 0
+                and str(item.get("cost_source") or "none") not in known_sources
+                and not str(item.get("cost_source") or "none").startswith("opensquilla_")
+            )
         )
     )
 
@@ -4192,17 +4701,37 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for row in completed_rows
             if isinstance((row.get("judge") or {}).get("pass_rate"), int | float)
         ]
-        costs = [row_billed_cost(row) for row in group_rows]
-        completed_costs = [row_billed_cost(row) for row in completed_rows]
+        cost_accounts = [
+            row.get("cost_accounting") or row_cost_accounting(row) for row in group_rows
+        ]
+        completed_cost_accounts = [
+            row.get("cost_accounting") or row_cost_accounting(row)
+            for row in completed_rows
+        ]
+        generation_costs = [
+            float(account["generation"]["recorded_cost_usd"]) for account in cost_accounts
+        ]
+        judge_costs = [
+            float(account["judge"]["recorded_cost_usd"]) for account in cost_accounts
+        ]
+        candidate_judge_costs = [
+            float(account["candidate_judge"]["recorded_cost_usd"])
+            for account in cost_accounts
+        ]
+        costs = [float(account["recorded_total_cost_usd"]) for account in cost_accounts]
+        completed_costs = [
+            float(account["recorded_total_cost_usd"]) for account in completed_cost_accounts
+        ]
+        group_llm_cost = merge_cost_accounting(
+            "group_llm_total",
+            [account["llm_total"] for account in cost_accounts],
+        )
         visible_tokens = [
             int(row_usage_number(row, "input_tokens")) + int(row_usage_number(row, "output_tokens"))
             for row in group_rows
         ]
         reasoning_tokens = [int(row_usage_number(row, "reasoning_tokens")) for row in group_rows]
-        all_tokens = [
-            visible + reasoning
-            for visible, reasoning in zip(visible_tokens, reasoning_tokens, strict=False)
-        ]
+        all_tokens = list(visible_tokens)
         stream_tool_calls = [
             row_metric_int(row, "stream_tool_call_count", "tool_call_count") for row in group_rows
         ]
@@ -4210,7 +4739,10 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         total_tool_calls = [row_total_tool_call_count(row) for row in group_rows]
         trajectory_steps = [row_trajectory_steps(row) for row in group_rows]
         llm_requests = [row_llm_request_count(row) for row in group_rows]
-        usage_unknown = [row_usage_unknown_count(row) for row in group_rows]
+        usage_unknown = [
+            int(account["llm_total"]["unknown_request_count"])
+            for account in cost_accounts
+        ]
         summary["groups"][group] = {
             "rows": len(group_rows),
             "completed": len(completed_rows),
@@ -4230,6 +4762,33 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "avg_cost_usd": statistics.mean(costs) if costs else 0.0,
             "avg_cost_completed_usd": (
                 statistics.mean(completed_costs) if completed_costs else None
+            ),
+            "recorded_total_cost_usd": sum(costs),
+            "recorded_generation_cost_usd": sum(generation_costs),
+            "recorded_judge_cost_usd": sum(judge_costs),
+            "recorded_candidate_judge_cost_usd": sum(candidate_judge_costs),
+            "avg_recorded_generation_cost_usd": (
+                statistics.mean(generation_costs) if generation_costs else 0.0
+            ),
+            "avg_recorded_judge_cost_usd": (
+                statistics.mean(judge_costs) if judge_costs else 0.0
+            ),
+            "avg_recorded_candidate_judge_cost_usd": (
+                statistics.mean(candidate_judge_costs) if candidate_judge_costs else 0.0
+            ),
+            "known_cost_request_coverage_pct": group_llm_cost[
+                "known_request_coverage_pct"
+            ],
+            "exact_cost_request_coverage_pct": group_llm_cost[
+                "exact_request_coverage_pct"
+            ],
+            "unknown_cost_request_count": group_llm_cost["unknown_request_count"],
+            "unknown_cost_tokens": group_llm_cost["unknown_tokens"],
+            "llm_cost_complete_rows": sum(
+                1 for account in cost_accounts if account["llm_total"]["cost_complete"]
+            ),
+            "result_cost_complete_rows": sum(
+                1 for account in cost_accounts if account["result_cost_complete"]
             ),
             "avg_visible_tokens": (statistics.mean(visible_tokens) if visible_tokens else 0.0),
             "avg_reasoning_tokens": (
@@ -4267,9 +4826,18 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 item.get("avg_quality"),
                 baseline_item.get("avg_quality"),
             )
-            item[f"avg_cost_pct_delta_vs_{suffix}"] = numeric_pct_delta(
-                item.get("avg_cost_usd"),
-                baseline_item.get("avg_cost_usd"),
+            comparable_costs = (
+                item.get("result_cost_complete_rows") == item.get("rows")
+                and baseline_item.get("result_cost_complete_rows")
+                == baseline_item.get("rows")
+            )
+            item[f"avg_cost_pct_delta_vs_{suffix}"] = (
+                numeric_pct_delta(
+                    item.get("avg_cost_usd"),
+                    baseline_item.get("avg_cost_usd"),
+                )
+                if comparable_costs
+                else None
             )
     return summary
 
@@ -4351,21 +4919,28 @@ def render_markdown(
         *([fusion_line] if fusion_line else []),
         "Contamination blocked domains: "
         f"`{', '.join(blocked_domains) if blocked_domains else '(none)'}`.",
+        "Cost accounting: recorded LLM cost includes all generation retries, rubric Judge "
+        "attempts, and candidate Judge attempts. Unpriced requests remain unknown rather "
+        "than being treated as $0; cost deltas are blank unless both groups are complete. "
+        "Preflight and replaced/failed shard spend must be audited at the whole-experiment "
+        "level.",
         "",
         "| Group | Rows | Done | Avg Quality | AvgQ Scored | Avg Pass | "
-        "Judge Err | Avg $ | Avg $ Done | Avg Visible | Avg Reason | Avg Tokens | "
-        "Avg Tools | Tool % | Avg Steps | Avg LLM Req | Usage Unknown | p50 ms | p95 ms | "
+        "Judge Err | Avg Recorded LLM $ | Avg Gen $ | Avg Judge $ | Known Cost % | "
+        "Cost Complete | Avg Visible | Avg Reason | Avg Tokens | Avg Tools | Tool % | "
+        "Avg Steps | Avg LLM Req | Unknown Cost Req | p50 ms | p95 ms | "
         "AvgQ % vs B0 | Avg$ % vs B0 | "
         "AvgQ % vs B1 | Avg$ % vs B1 |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
         "---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | "
-        "---: | ---: | ---: | ---: |",
+        "---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for group, item in sorted(summary["groups"].items()):
         lines.append(
             "| {group} | {rows} | {done} | {quality} | {quality_scored} | "
-            "{pass_rate} | {judge_errors} | {cost:.6f} | "
-            "{cost_done} | {visible_tokens:.1f} | {reasoning_tokens:.1f} | "
+            "{pass_rate} | {judge_errors} | {cost:.6f} | {generation_cost:.6f} | "
+            "{judge_cost:.6f} | {known_cost:.1f}% | {cost_complete}/{rows} | "
+            "{visible_tokens:.1f} | {reasoning_tokens:.1f} | "
             "{tokens:.1f} | {tool_calls:.1f} | {tool_rate:.1f}% | "
             "{steps:.1f} | {llm_requests:.1f} | {usage_unknown:.1f} | "
             "{p50:.0f} | {p95:.0f} | "
@@ -4384,11 +4959,13 @@ def render_markdown(
                 ),
                 judge_errors=item["judge_errors"],
                 cost=item["avg_cost_usd"],
-                cost_done=(
-                    f"{item['avg_cost_completed_usd']:.6f}"
-                    if item["avg_cost_completed_usd"] is not None
-                    else ""
+                generation_cost=item["avg_recorded_generation_cost_usd"],
+                judge_cost=(
+                    item["avg_recorded_judge_cost_usd"]
+                    + item["avg_recorded_candidate_judge_cost_usd"]
                 ),
+                known_cost=item["known_cost_request_coverage_pct"],
+                cost_complete=item["result_cost_complete_rows"],
                 visible_tokens=item["avg_visible_tokens"],
                 reasoning_tokens=item["avg_reasoning_tokens"],
                 tokens=item["avg_total_tokens"],
@@ -4413,6 +4990,7 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "input",
         "resume_from_jsonl",
         "only_group_task_keys",
+        "expected_compatibility_manifest",
         "config",
         "experiment_config",
         "experiment_config_override",
@@ -4429,6 +5007,7 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "expand_ensemble_timeouts_to_task_timeout",
         "runner_mode",
         "agent_max_iterations",
+        "require_clean_source",
         "dry_run",
         "judge_model",
         "judge_repeats",
@@ -4442,6 +5021,8 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "contamination_blocked_domains",
         "local_web_search_provider",
         "local_web_search_api_key_env",
+        "allow_firecrawl_web_fetch",
+        "require_openrouter_non_byok",
         "openrouter_web_search_engine",
         "openrouter_web_search_max_results",
         "openrouter_web_search_max_total_results",
@@ -4511,6 +5092,363 @@ def command_payload(args: argparse.Namespace) -> dict[str, Any]:
         "pythonpath": pythonpath,
         "parsed_args": manifest_args(args),
     }
+
+
+def canonical_json_sha256(value: Any) -> str:
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return f"sha256:{hashlib.sha256(serialized.encode('utf-8')).hexdigest()}"
+
+
+def _sanitize_url_for_fingerprint(value: str) -> str:
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return "<configured>" if value else ""
+    if not parsed.scheme or not parsed.hostname:
+        return value
+    host = parsed.hostname
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return parsed._replace(netloc=host, query="", fragment="").geturl()
+
+
+def _sanitize_fingerprint_config(value: Any, *, key: str = "") -> Any:
+    normalized_key = key.casefold().replace("-", "_")
+    if normalized_key.endswith("_env") or normalized_key.endswith("_env_pool"):
+        return value
+    if normalized_key in {
+        "api_key",
+        "authorization",
+        "credential",
+        "credentials",
+        "password",
+        "secret",
+    } or normalized_key.endswith(("_api_key", "_password", "_secret")):
+        return "<redacted>" if value else ""
+    if isinstance(value, Mapping):
+        return {
+            str(item_key): _sanitize_fingerprint_config(item_value, key=str(item_key))
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_fingerprint_config(item, key=key) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_fingerprint_config(item, key=key) for item in value]
+    if normalized_key in {"base_url", "proxy"} and isinstance(value, str):
+        return _sanitize_url_for_fingerprint(value)
+    return value
+
+
+def gateway_execution_contract(config: GatewayConfig) -> dict[str, Any]:
+    dumped = config.model_dump(mode="json")
+    relevant = {
+        key: dumped.get(key)
+        for key in (
+            "llm",
+            "llm_profiles",
+            "llm_ensemble",
+            "model_catalog",
+            "models",
+            "squilla_router",
+        )
+    }
+    return _sanitize_fingerprint_config(relevant)
+
+
+def resolved_llm_runtime_contract(config: GatewayConfig) -> dict[str, Any]:
+    runtime = resolve_llm_runtime_config(config)
+    key_fingerprint = (
+        f"sha256:{hashlib.sha256(runtime.api_key.encode('utf-8')).hexdigest()}"
+        if runtime.api_key
+        else ""
+    )
+    trust_environment = os.environ.get("OPENSQUILLA_TRUST_ENV", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    ambient_proxies = {}
+    if trust_environment:
+        ambient_proxies = {
+            name: _sanitize_url_for_fingerprint(os.environ.get(name, ""))
+            for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
+            if os.environ.get(name)
+        }
+    cache_namespace = os.environ.get(
+        "OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE", ""
+    ).strip()
+    return {
+        "provider": runtime.provider,
+        "model": runtime.model,
+        "api_key_sha256": key_fingerprint,
+        "api_key_from_env": runtime.api_key_from_env,
+        "base_url": _sanitize_url_for_fingerprint(runtime.base_url),
+        "base_url_from_env": runtime.base_url_from_env,
+        "proxy": _sanitize_url_for_fingerprint(runtime.proxy),
+        "provider_routing": dict(sorted(runtime.provider_routing.items())),
+        "provider_routing_strict": (
+            os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        ),
+        "stream_error_frames": (
+            os.environ.get("OPENSQUILLA_PROVIDER_STREAM_ERROR_FRAMES", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        ),
+        "router_metadata_required": (
+            os.environ.get("OPENSQUILLA_OPENROUTER_METADATA_REQUIRED", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        ),
+        "require_parameters": (
+            os.environ.get("OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        ),
+        "response_cache_disabled": (
+            os.environ.get("OPENSQUILLA_OPENROUTER_DISABLE_RESPONSE_CACHE", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        ),
+        "cache_namespace_enabled": bool(cache_namespace),
+        "cache_namespace_required": (
+            os.environ.get("OPENSQUILLA_BENCHMARK_CACHE_NAMESPACE_REQUIRED", "")
+            .strip()
+            .lower()
+            in {"1", "true", "yes", "on", "enabled"}
+        ),
+        "cache_namespace_sha256": (
+            f"sha256:{hashlib.sha256(cache_namespace.encode('utf-8')).hexdigest()}"
+            if cache_namespace
+            else ""
+        ),
+        "trust_env": trust_environment,
+        "ambient_proxies": ambient_proxies,
+    }
+
+
+def source_provenance() -> dict[str, Any]:
+    runner_path = Path(__file__).resolve()
+    payload: dict[str, Any] = {
+        "runner_path": str(runner_path),
+        "runner_sha256": hashlib.sha256(runner_path.read_bytes()).hexdigest(),
+    }
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        tracked_diff = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--binary",
+                "HEAD",
+                "--",
+                "scripts",
+                "src",
+                "configs",
+                "pyproject.toml",
+                "uv.lock",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+        untracked = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "--",
+                "scripts",
+                "src",
+                "configs",
+                "pyproject.toml",
+                "uv.lock",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.splitlines()
+        source_digest = hashlib.sha256()
+        source_digest.update(head.encode("utf-8"))
+        source_digest.update(b"\0")
+        source_digest.update(tracked_diff.encode("utf-8"))
+        for relative in sorted(untracked):
+            untracked_path = ROOT / relative
+            if not untracked_path.is_file():
+                continue
+            source_digest.update(b"\0")
+            source_digest.update(relative.encode("utf-8"))
+            source_digest.update(b"\0")
+            source_digest.update(hashlib.sha256(untracked_path.read_bytes()).digest())
+        tracked_dirty = bool(tracked_diff)
+        payload.update(
+            {
+                "git_head": head,
+                "git_tracked_dirty": tracked_dirty,
+                "git_untracked_file_count": len(untracked),
+                "git_dirty": tracked_dirty or bool(untracked),
+                "source_tree_sha256": source_digest.hexdigest(),
+            }
+        )
+    except (OSError, subprocess.SubprocessError):
+        payload.update(
+            {
+                "git_head": None,
+                "git_tracked_dirty": None,
+                "git_untracked_file_count": None,
+                "git_dirty": None,
+                "source_tree_sha256": None,
+            }
+        )
+    return payload
+
+
+def build_run_compatibility(
+    *,
+    args: argparse.Namespace,
+    config: GatewayConfig,
+    groups: list[str],
+    group_tool_policies: dict[str, dict[str, Any]],
+    generation_policy: dict[str, Any],
+) -> dict[str, Any]:
+    bundle = getattr(args, "_draco_experiment_config_bundle", None)
+    effective_experiment_config = (
+        bundle.config.model_dump(mode="json")
+        if isinstance(bundle, DracoExperimentConfigBundle)
+        else None
+    )
+    if isinstance(effective_experiment_config, dict):
+        # Scheduling-only concurrency may change between a canary, a full run,
+        # and retry waves without changing any model, prompt, or scoring semantics.
+        runner_config = effective_experiment_config.get("runner")
+        if isinstance(runner_config, dict):
+            runner_config.pop("concurrency", None)
+        judge_config = effective_experiment_config.get("judge")
+        if isinstance(judge_config, dict):
+            judge_config.pop("concurrency", None)
+    source = dict(getattr(args, "_source_provenance", {}) or {})
+    source_identity = {
+        "git_head": source.get("git_head"),
+        "source_tree_sha256": source.get("source_tree_sha256"),
+    }
+    gateway_contract = gateway_execution_contract(config)
+    runtime_contract = resolved_llm_runtime_contract(config)
+    contracts: dict[str, dict[str, Any]] = {}
+    fingerprints: dict[str, str] = {}
+    for group in groups:
+        tool_contract = json.loads(
+            json.dumps(group_tool_policies[group], ensure_ascii=False)
+        )
+        local_tool_contract = tool_contract.get("local_web_tools")
+        if isinstance(local_tool_contract, dict):
+            local_tool_contract.pop("preflight", None)
+        contract = {
+            "schema": RUN_COMPATIBILITY_SCHEMA,
+            "benchmark": "DRACO",
+            "group": group,
+            "group_spec": GROUP_SPECS[group],
+            "source_identity": source_identity,
+            "runner": {
+                "mode": args.runner_mode,
+                "agent_max_iterations": args.agent_max_iterations,
+            },
+            "tools": tool_contract,
+            "generation": {
+                "policy": generation_policy,
+                "max_attempts": args.generation_max_attempts,
+                "retry_backoff_seconds": args.generation_retry_backoff,
+            },
+            "judge": {
+                "model": args.judge_model,
+                "repeats": args.judge_repeats,
+                "max_attempts": args.judge_max_attempts,
+                "judge_candidates": args.judge_candidates,
+            },
+            "timeouts": {
+                "task_seconds": args.timeout,
+                "proposer_seconds": args.ensemble_proposer_timeout,
+                "aggregator_seconds": args.ensemble_aggregator_timeout,
+                "proposer_early_stop_success_count": (
+                    args.ensemble_proposer_early_stop_success_count
+                ),
+                "proposer_early_stop_after_seconds": args.ensemble_proposer_early_stop_after,
+                "expand_to_task_timeout": args.expand_ensemble_timeouts_to_task_timeout,
+            },
+            "gateway_execution": gateway_contract,
+            "resolved_llm_runtime": runtime_contract,
+            "cost_policy": {
+                "require_openrouter_non_byok": bool(
+                    getattr(args, "require_openrouter_non_byok", False)
+                )
+            },
+            "experiment_config": (
+                effective_experiment_config
+                if GROUP_SPECS[group].get("experiment_config")
+                else None
+            ),
+            "dry_run": bool(args.dry_run),
+        }
+        contracts[group] = contract
+        fingerprints[group] = canonical_json_sha256(contract)
+    return {
+        "schema": RUN_COMPATIBILITY_SCHEMA,
+        "fingerprints": fingerprints,
+        "contracts": contracts,
+    }
+
+
+def validate_expected_run_compatibility(
+    *,
+    path: Path,
+    actual: dict[str, Any],
+    groups: list[str],
+) -> None:
+    if not path.is_file():
+        raise ValueError(f"expected compatibility manifest does not exist: {path}")
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    expected = manifest.get("run_compatibility") if isinstance(manifest, dict) else None
+    expected_fingerprints = (
+        expected.get("fingerprints") if isinstance(expected, dict) else None
+    )
+    actual_fingerprints = actual.get("fingerprints")
+    if not isinstance(expected_fingerprints, dict):
+        raise ValueError(f"manifest lacks run_compatibility fingerprints: {path}")
+    if not isinstance(actual_fingerprints, dict):
+        raise ValueError("current run compatibility fingerprints are unavailable")
+    mismatches = [
+        group
+        for group in groups
+        if str(expected_fingerprints.get(group) or "")
+        != str(actual_fingerprints.get(group) or "")
+    ]
+    if mismatches:
+        raise ValueError(
+            "current run configuration is incompatible with the expected manifest for "
+            f"groups: {', '.join(mismatches)}"
+        )
 
 
 def write_command_file(
@@ -4598,12 +5536,13 @@ def write_manifest(
     summary: dict[str, Any] | None = None,
     tool_policy: dict[str, Any] | None = None,
     command: dict[str, Any] | None = None,
+    failure: dict[str, Any] | None = None,
 ) -> None:
     policy = tool_policy or benchmark_tool_policy(args)
     generation_policy = generation_thinking_policy(args)
     payload: dict[str, Any] = {
         "benchmark": "DRACO",
-        "runner": "scripts/run_draco_routing_experiment.py",
+        "runner": f"scripts/{Path(__file__).name}",
         "runner_mode": getattr(args, "runner_mode", DEFAULT_DRACO_RUNNER_MODE),
         "agent_max_iterations": getattr(
             args,
@@ -4624,7 +5563,13 @@ def write_manifest(
         "task_ids": [str(task["id"]) for task in tasks],
         "rows_written": rows_written,
         "artifacts": artifacts,
+        "source_provenance": dict(
+            getattr(args, "_source_provenance", None) or source_provenance()
+        ),
     }
+    run_compatibility = getattr(args, "_run_compatibility", None)
+    if isinstance(run_compatibility, dict):
+        payload["run_compatibility"] = run_compatibility
     benchmark_alignments = dict(getattr(args, "_benchmark_alignments", {}) or {})
     if benchmark_alignments:
         payload["benchmark_alignments"] = benchmark_alignments
@@ -4635,10 +5580,201 @@ def write_manifest(
         payload["command"] = command
     if summary is not None:
         payload["summary"] = summary
+    if failure is not None:
+        payload["failure"] = failure
+    resume_selection = getattr(args, "_resume_selection", None)
+    if isinstance(resume_selection, dict):
+        payload["resume_selection"] = resume_selection
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def load_selected_group_task_keys(
+    *,
+    tasks: list[dict[str, Any]],
+    groups: list[str],
+    only_keys_path: Path | None,
+) -> set[tuple[str, str]]:
+    selected_keys = {(group, str(task["id"])) for task in tasks for group in groups}
+    if only_keys_path is None:
+        return selected_keys
+
+    path = Path(only_keys_path)
+    if not path.is_file():
+        raise ValueError(f"group/task key JSONL does not exist: {path}")
+    requested_keys: set[tuple[str, str]] = set()
+    with path.open("r", encoding="utf-8") as only_fh:
+        for line_number, line in enumerate(only_fh, start=1):
+            if not line.strip():
+                continue
+            try:
+                key_row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"invalid group/task key JSONL at {path}:{line_number}: {exc}"
+                ) from exc
+            if not isinstance(key_row, dict):
+                raise ValueError(
+                    f"group/task key JSONL row is not an object at {path}:{line_number}"
+                )
+            key = (
+                str(key_row.get("group") or ""),
+                str(key_row.get("task_id") or ""),
+            )
+            if not all(key):
+                raise ValueError(
+                    f"missing group or task_id in group/task key JSONL at "
+                    f"{path}:{line_number}"
+                )
+            requested_keys.add(key)
+    unknown_keys = requested_keys - selected_keys
+    if unknown_keys:
+        preview = ", ".join(
+            f"{group}/{task_id}" for group, task_id in sorted(unknown_keys)[:5]
+        )
+        raise ValueError(f"group/task key JSONL contains unknown keys: {preview}")
+    return selected_keys & requested_keys
+
+
+def strict_resume_row_invalid_reasons(
+    row: dict[str, Any],
+    *,
+    expected_prompt_sha256: str,
+    expected_task_input_sha256: str,
+    expected_run_compatibility_fingerprint: str,
+    require_openrouter_non_byok: bool = False,
+) -> list[str]:
+    """Match the strict result audit and reject incompatible historical rows."""
+
+    reasons: list[str] = []
+    if not verify_result_row_evidence(row):
+        reasons.append("invalid_result_evidence")
+    if row.get("error"):
+        reasons.append("error")
+    if not str(row.get("final_text") or "").strip():
+        reasons.append("empty_final_text")
+    if row.get("quality_total") is None:
+        reasons.append("missing_quality_total")
+    if str(row.get("prompt_sha256") or "") != expected_prompt_sha256:
+        reasons.append("prompt_hash_mismatch")
+    task_input_sha256 = str(row.get("task_input_sha256") or "")
+    if not task_input_sha256:
+        reasons.append("missing_task_input_sha256")
+    elif task_input_sha256 != expected_task_input_sha256:
+        reasons.append("task_input_hash_mismatch")
+    run_fingerprint = str(row.get("run_compatibility_fingerprint") or "")
+    if not run_fingerprint:
+        reasons.append("missing_run_compatibility_fingerprint")
+    elif run_fingerprint != expected_run_compatibility_fingerprint:
+        reasons.append("run_compatibility_fingerprint_mismatch")
+
+    if require_openrouter_non_byok:
+        recomputed_non_byok = openrouter_non_byok_audit(row)
+        stored_non_byok = row.get("openrouter_non_byok_audit")
+        if (
+            recomputed_non_byok.get("pass") is not True
+            or coerce_metric_int(recomputed_non_byok.get("request_count")) <= 0
+            or coerce_metric_int(
+                recomputed_non_byok.get("unverified_or_byok_request_count")
+            )
+            != 0
+            or not isinstance(stored_non_byok, dict)
+            or stored_non_byok != recomputed_non_byok
+        ):
+            reasons.append("openrouter_non_byok_unverified")
+
+    judge = row.get("judge") or {}
+    if not isinstance(judge, dict) or judge.get("score_status") != "complete":
+        reasons.append("judge_incomplete")
+    if not isinstance(judge, dict) or judge.get("judge_error_count") != 0:
+        reasons.append("judge_errors")
+
+    trace = row.get("ensemble_trace") or {}
+    if isinstance(trace, dict):
+        total = trace.get("total_candidates")
+        successful = trace.get("successful_proposers")
+        if total is not None and (successful is None or successful < total):
+            reasons.append("incomplete_ensemble")
+
+    group = str(row.get("group") or "")
+    spec = GROUP_SPECS.get(group) or {}
+    expected_model = spec.get("model") if spec.get("kind") == "single" else None
+    if expected_model is not None:
+        provider_spec = row.get("provider_spec") or {}
+        actual_model = provider_spec.get("model") if isinstance(provider_spec, dict) else None
+        if actual_model != expected_model:
+            reasons.append("wrong_fixed_model")
+    return reasons
+
+
+def load_strict_completed_group_task_keys(
+    *,
+    resume_paths: list[Path],
+    selected_keys: set[tuple[str, str]],
+    prompt_hashes: dict[str, str],
+    task_input_hashes: dict[str, str],
+    run_compatibility_fingerprints: dict[str, str],
+    require_openrouter_non_byok: bool = False,
+) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+    completed_keys: set[tuple[str, str]] = set()
+    invalid_attempts = 0
+    matching_attempts = 0
+    invalid_reason_counts: dict[str, int] = {}
+    for resume_path in resume_paths:
+        path = Path(resume_path)
+        if not path.is_file():
+            raise ValueError(f"resume JSONL does not exist: {path}")
+        with path.open("r", encoding="utf-8") as resume_fh:
+            for line_number, line in enumerate(resume_fh, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    prior_row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"invalid resume JSONL at {path}:{line_number}: {exc}"
+                    ) from exc
+                if not isinstance(prior_row, dict):
+                    raise ValueError(f"resume JSONL row is not an object at {path}:{line_number}")
+                key = (
+                    str(prior_row.get("group") or ""),
+                    str(prior_row.get("task_id") or ""),
+                )
+                if key not in selected_keys:
+                    continue
+                matching_attempts += 1
+                expected_hash = prompt_hashes.get(key[1])
+                reasons = strict_resume_row_invalid_reasons(
+                    prior_row,
+                    expected_prompt_sha256=expected_hash or "",
+                    expected_task_input_sha256=task_input_hashes.get(key[1], ""),
+                    expected_run_compatibility_fingerprint=(
+                        run_compatibility_fingerprints.get(key[0], "")
+                    ),
+                    require_openrouter_non_byok=require_openrouter_non_byok,
+                )
+                if expected_hash is None or reasons:
+                    invalid_attempts += 1
+                    for reason in reasons:
+                        invalid_reason_counts[reason] = invalid_reason_counts.get(reason, 0) + 1
+                    continue
+                completed_keys.add(key)
+    return completed_keys, {
+        "resume_source_count": len(resume_paths),
+        "matching_attempt_count": matching_attempts,
+        "strict_valid_pair_count": len(completed_keys),
+        "strict_invalid_attempt_count": invalid_attempts,
+        "strict_invalid_reason_counts": dict(sorted(invalid_reason_counts.items())),
+    }
+
+
 async def amain(args: argparse.Namespace) -> int:
+    args._source_provenance = source_provenance()
+    if getattr(args, "require_clean_source", False) and (
+        args._source_provenance.get("git_dirty") is not False
+    ):
+        raise ValueError(
+            "--require-clean-source requires a clean, readable Git worktree before launch"
+        )
     groups = parse_groups(args.groups)
     alignment = apply_b2_g12_argument_alignment(args, groups)
     bundle = getattr(args, "_draco_experiment_config_bundle", None)
@@ -4691,36 +5827,162 @@ async def amain(args: argparse.Namespace) -> int:
         )
     )
     tool_policy = benchmark_tool_policy(args)
-    if (
-        args.runner_mode == RUNNER_MODE_AGENT_LOOP
-        and tool_policy.get("tool_mode") == TOOL_MODE_OPENROUTER_SERVER_TOOLS
-    ):
-        raise ValueError(
-            "--runner-mode=agent_loop requires executable local tools; use "
-            "--tool-mode=local_web_tools, or use --runner-mode=provider for "
-            "OpenRouter server-side tools."
-        )
+    smoke_only = bool(getattr(args, "local_web_tools_smoke_only", False))
+    if smoke_only and bool(getattr(args, "dry_run", False)):
+        raise ValueError("--local-web-tools-smoke-only cannot be combined with --dry-run")
+    if smoke_only and tool_policy.get("tool_mode") != TOOL_MODE_LOCAL_WEB_TOOLS:
+        raise ValueError("--local-web-tools-smoke-only requires --tool-mode=local_web_tools")
+    validate_tool_mode_for_runner(
+        args.runner_mode,
+        str(tool_policy.get("tool_mode") or ""),
+        smoke_only=smoke_only,
+    )
     generation_policy = generation_thinking_policy(args)
     config = GatewayConfig.load(args.config)
     # Process-local credentials take precedence over any inline value in the
-    # reference config. The value is never serialized into benchmark artifacts.
+    # reference config. Only an irreversible key fingerprint enters the run
+    # compatibility contract.
     api_key_env = str(getattr(config.llm, "api_key_env", "") or "").strip()
     process_api_key = os.environ.get(api_key_env or "OPENROUTER_API_KEY", "").strip()
     if process_api_key:
         config.llm.api_key = process_api_key
+    expected_compatibility_manifest = getattr(
+        args,
+        "expected_compatibility_manifest",
+        None,
+    )
+    selected_keys = load_selected_group_task_keys(
+        tasks=tasks,
+        groups=groups,
+        only_keys_path=getattr(args, "only_group_task_keys", None),
+    )
+    prompt_hashes = {
+        str(task["id"]): text_sha256(str(task.get("prompt") or "")) for task in tasks
+    }
+    task_input_hashes = {
+        str(task["id"]): canonical_json_sha256(task) for task in tasks
+    }
+    if getattr(args, "only_group_task_keys", None) is not None:
+        print(
+            f"selection: restricted run to {len(selected_keys)} group/task pairs",
+            file=sys.stderr,
+            flush=True,
+        )
     sandbox_runtime = configure_benchmark_sandbox_runtime(config, tool_policy)
+    fetch_runtime = configure_local_web_fetch_runtime(tool_policy)
     search_runtime = configure_local_web_search_runtime(
         config,
         tool_policy,
         dry_run=bool(getattr(args, "dry_run", False)),
     )
-    if search_runtime or sandbox_runtime:
+    if search_runtime or sandbox_runtime or fetch_runtime:
         local_web_tools = dict(tool_policy.get("local_web_tools") or {})
         if search_runtime:
             local_web_tools["search_runtime"] = search_runtime
         if sandbox_runtime:
             local_web_tools["sandbox_runtime"] = sandbox_runtime
+        if fetch_runtime:
+            local_web_tools["fetch_runtime"] = fetch_runtime
         tool_policy = {**tool_policy, "local_web_tools": local_web_tools}
+    stable_group_tool_policies = benchmark_tool_policies_for_groups(
+        tool_policy,
+        groups,
+        args=args,
+    )
+    args._run_compatibility = build_run_compatibility(
+        args=args,
+        config=config,
+        groups=groups,
+        group_tool_policies=stable_group_tool_policies,
+        generation_policy=generation_policy,
+    )
+    if expected_compatibility_manifest is not None:
+        validate_expected_run_compatibility(
+            path=expected_compatibility_manifest,
+            actual=args._run_compatibility,
+            groups=groups,
+        )
+    completed_keys, resume_audit = load_strict_completed_group_task_keys(
+        resume_paths=list(getattr(args, "resume_from_jsonl", []) or []),
+        selected_keys=selected_keys,
+        prompt_hashes=prompt_hashes,
+        task_input_hashes=task_input_hashes,
+        run_compatibility_fingerprints=args._run_compatibility["fingerprints"],
+        require_openrouter_non_byok=bool(
+            getattr(args, "require_openrouter_non_byok", False)
+        ),
+    )
+    scheduled_keys = selected_keys - completed_keys
+    args._resume_selection = {
+        "selected_pair_count": len(selected_keys),
+        "scheduled_pair_count": len(scheduled_keys),
+        "scheduled_pairs": [
+            {"group": group, "task_id": str(task["id"])}
+            for task in tasks
+            for group in groups
+            if (group, str(task["id"])) in scheduled_keys
+        ],
+        **resume_audit,
+    }
+    if completed_keys:
+        print(
+            f"resume: skipped {len(completed_keys)} strictly valid group/task pairs; "
+            f"scheduled {len(scheduled_keys)} remaining pairs",
+            file=sys.stderr,
+            flush=True,
+        )
+    if not scheduled_keys and not smoke_only:
+        print(
+            "resume: no pending group/task pairs; no preflight, provider, Judge, or "
+            "output artifacts were created",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 0
+    preflight_started_at = time.time()
+    try:
+        web_preflight = await run_local_web_tools_preflight(
+            tool_policy,
+            dry_run=bool(getattr(args, "dry_run", False)),
+        )
+    except Exception as exc:
+        if not smoke_only:
+            output_dir = args.output_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
+            failure_stamp = time.strftime("%Y%m%d-%H%M%S")
+            failure_manifest = output_dir / (
+                f"draco_run_{failure_stamp}.preflight-failed.manifest.json"
+            )
+            write_manifest(
+                failure_manifest,
+                args=args,
+                stamp=failure_stamp,
+                status="preflight_failed",
+                started_at=preflight_started_at,
+                finished_at=time.time(),
+                tasks=tasks,
+                groups=groups,
+                artifacts={"manifest_json": str(failure_manifest)},
+                tool_policy=tool_policy,
+                command=command_payload(args),
+                failure={
+                    "stage": "local_web_tools_preflight",
+                    "error_class": type(exc).__name__,
+                    "error": str(exc)[:1000],
+                    "model_or_judge_started": False,
+                },
+            )
+        raise
+    if web_preflight:
+        local_web_tools = dict(tool_policy.get("local_web_tools") or {})
+        local_web_tools["preflight"] = web_preflight
+        tool_policy = {**tool_policy, "local_web_tools": local_web_tools}
+    if smoke_only:
+        print(
+            json.dumps({"local_web_tools_preflight": web_preflight}, ensure_ascii=False),
+            flush=True,
+        )
+        return 0
     inherited = inherited_provider_config(config)
     group_tool_policies = benchmark_tool_policies_for_groups(
         tool_policy,
@@ -4766,6 +6028,9 @@ async def amain(args: argparse.Namespace) -> int:
     command_path = output_dir / f"draco_run_{stamp}.command.txt"
     summary_json_path = jsonl_path.with_suffix(".summary.json")
     semaphore = asyncio.Semaphore(max(1, args.concurrency))
+    judge_semaphore = asyncio.Semaphore(
+        max(1, int(getattr(args, "judge_concurrency", 1) or 1))
+    )
     rows: list[dict[str, Any]] = []
     artifacts = {
         "results_jsonl": str(jsonl_path),
@@ -4805,6 +6070,7 @@ async def amain(args: argparse.Namespace) -> int:
                 judge_repeats=args.judge_repeats,
                 judge_concurrency=getattr(args, "judge_concurrency", 1),
                 judge_max_attempts=getattr(args, "judge_max_attempts", JUDGE_MAX_ATTEMPTS),
+                judge_semaphore=judge_semaphore,
                 timeout=args.timeout,
                 ensemble_proposer_timeout=getattr(args, "ensemble_proposer_timeout", None),
                 ensemble_aggregator_timeout=getattr(args, "ensemble_aggregator_timeout", None),
@@ -4838,85 +6104,18 @@ async def amain(args: argparse.Namespace) -> int:
                     DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
                 ),
                 tools=group_tools,
+                run_compatibility_fingerprint=args._run_compatibility["fingerprints"][
+                    group
+                ],
             )
 
-    selected_keys = {
-        (group, str(task["id"]))
-        for task in tasks
-        for group in groups
-    }
-    only_keys_path = getattr(args, "only_group_task_keys", None)
-    if only_keys_path is not None:
-        path = Path(only_keys_path)
-        if not path.is_file():
-            raise ValueError(f"group/task key JSONL does not exist: {path}")
-        requested_keys: set[tuple[str, str]] = set()
-        with path.open("r", encoding="utf-8") as only_fh:
-            for line_number, line in enumerate(only_fh, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    key_row = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"invalid group/task key JSONL at {path}:{line_number}: {exc}"
-                    ) from exc
-                key = (
-                    str(key_row.get("group") or ""),
-                    str(key_row.get("task_id") or ""),
-                )
-                if not all(key):
-                    raise ValueError(
-                        f"missing group or task_id in group/task key JSONL at "
-                        f"{path}:{line_number}"
-                    )
-                requested_keys.add(key)
-        unknown_keys = requested_keys - selected_keys
-        if unknown_keys:
-            preview = ", ".join(f"{group}/{task_id}" for group, task_id in sorted(unknown_keys)[:5])
-            raise ValueError(f"group/task key JSONL contains unknown keys: {preview}")
-        selected_keys &= requested_keys
-        print(
-            f"selection: restricted run to {len(selected_keys)} group/task pairs",
-            file=sys.stderr,
-            flush=True,
-        )
-    completed_keys: set[tuple[str, str]] = set()
-    for resume_path in list(getattr(args, "resume_from_jsonl", []) or []):
-        path = Path(resume_path)
-        if not path.is_file():
-            raise ValueError(f"resume JSONL does not exist: {path}")
-        with path.open("r", encoding="utf-8") as resume_fh:
-            for line_number, line in enumerate(resume_fh, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    prior_row = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ValueError(
-                        f"invalid resume JSONL at {path}:{line_number}: {exc}"
-                    ) from exc
-                key = (
-                    str(prior_row.get("group") or ""),
-                    str(prior_row.get("task_id") or ""),
-                )
-                if key in selected_keys:
-                    completed_keys.add(key)
-
     pending = [
-        _guarded(task, group)
+        asyncio.create_task(_guarded(task, group))
         for task in tasks
         for group in groups
-        if (group, str(task["id"])) in selected_keys
-        and (group, str(task["id"])) not in completed_keys
+        if (group, str(task["id"])) in scheduled_keys
     ]
-    if completed_keys:
-        print(
-            f"resume: skipped {len(completed_keys)} completed group/task pairs; "
-            f"scheduled {len(pending)} remaining pairs",
-            file=sys.stderr,
-            flush=True,
-        )
+    cost_audit_failure: dict[str, Any] | None = None
     with (
         jsonl_path.open("w", encoding="utf-8") as fh,
         trace_path.open("w", encoding="utf-8") as trace_fh,
@@ -4924,12 +6123,36 @@ async def amain(args: argparse.Namespace) -> int:
         for row_index, coro in enumerate(asyncio.as_completed(pending), start=1):
             row = await coro
             row["row_index"] = row_index
+            if getattr(args, "require_openrouter_non_byok", False):
+                audit = openrouter_non_byok_audit(row)
+                row["openrouter_non_byok_audit"] = audit
+                if not audit["pass"]:
+                    if not row.get("error"):
+                        row["error"] = "openrouter_non_byok_verification_failed"
+                    cost_audit_failure = {
+                        "stage": "openrouter_non_byok_audit",
+                        "group": row.get("group"),
+                        "task_id": row.get("task_id"),
+                        "audit": audit,
+                        "model_or_judge_started": True,
+                    }
+            row = seal_result_row(row)
+            trace_value = trace_row(row)
+            result_line = json.dumps(row, ensure_ascii=False, allow_nan=False)
+            trace_line = json.dumps(trace_value, ensure_ascii=False, allow_nan=False)
             rows.append(row)
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            fh.write(result_line + "\n")
             fh.flush()
-            trace_fh.write(json.dumps(trace_row(row), ensure_ascii=False) + "\n")
+            trace_fh.write(trace_line + "\n")
             trace_fh.flush()
             print(f"{row['group']} {row['task_id']} error={bool(row['error'])}", flush=True)
+            if cost_audit_failure is not None:
+                break
+    if cost_audit_failure is not None:
+        for task in pending:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
     summary = summarize(rows)
     summary_path = jsonl_path.with_suffix(".md")
     summary_path.write_text(
@@ -4951,7 +6174,7 @@ async def amain(args: argparse.Namespace) -> int:
         manifest_path,
         args=args,
         stamp=stamp,
-        status="complete",
+        status=("cost_audit_failed" if cost_audit_failure is not None else "complete"),
         started_at=run_started_at,
         finished_at=time.time(),
         tasks=tasks,
@@ -4961,6 +6184,7 @@ async def amain(args: argparse.Namespace) -> int:
         summary=summary,
         tool_policy=manifest_tool_policy,
         command=command,
+        failure=cost_audit_failure,
     )
     print(f"wrote {jsonl_path}")
     print(f"wrote {trace_path}")
@@ -4971,7 +6195,7 @@ async def amain(args: argparse.Namespace) -> int:
     for key, path in artifacts.items():
         if key.startswith("experiment_config_"):
             print(f"wrote {path}")
-    return 0
+    return 2 if cost_audit_failure is not None else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -4985,6 +6209,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Skip group/task pairs already present in this JSONL; repeatable. "
             "New results are always written to a separate timestamped JSONL."
+        ),
+    )
+    parser.add_argument(
+        "--expected-compatibility-manifest",
+        type=Path,
+        default=None,
+        help=(
+            "Fail before preflight or model calls unless the current per-group run "
+            "fingerprints match this manifest."
         ),
     )
     parser.add_argument(
@@ -5102,7 +6335,20 @@ def build_parser() -> argparse.ArgumentParser:
             "0 means unlimited."
         ),
     )
+    parser.add_argument(
+        "--require-clean-source",
+        action="store_true",
+        help="Refuse to start unless the benchmark source worktree is clean and identifiable.",
+    )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--local-web-tools-smoke-only",
+        action="store_true",
+        help=(
+            "Configure local benchmark web tools, run a real search/fetch preflight, "
+            "then exit before any model or judge calls."
+        ),
+    )
     parser.add_argument("--judge-model", default="")
     parser.add_argument("--judge-repeats", type=int, default=3)
     parser.add_argument("--judge-concurrency", type=int, default=1)
@@ -5161,6 +6407,22 @@ def build_parser() -> argparse.ArgumentParser:
             "Environment variable that contains the local web_search provider API key. "
             "Use BRAVE_SEARCH_API_KEY for --local-web-search-provider=brave. "
             "The key value is never written to benchmark command/manifest files."
+        ),
+    )
+    parser.add_argument(
+        "--allow-firecrawl-web-fetch",
+        action="store_true",
+        help=(
+            "Allow web_fetch to escalate short/failed local extraction to paid Firecrawl. "
+            "Disabled by default so benchmark tool spend is reproducible."
+        ),
+    )
+    parser.add_argument(
+        "--require-openrouter-non-byok",
+        action="store_true",
+        help=(
+            "Fail the experiment unless every OpenRouter LLM usage record proves "
+            "is_byok=false. Missing evidence fails closed."
         ),
     )
     parser.add_argument(

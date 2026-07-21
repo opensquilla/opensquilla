@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -14,8 +16,16 @@ from opensquilla.provider.ensemble import (
 )
 from opensquilla.provider.selector import ProviderConfig
 from opensquilla.provider.types import ChatConfig
+from opensquilla.sandbox.config import SandboxSettings
+from opensquilla.sandbox.integration import configure_runtime, reset_runtime
+from opensquilla.sandbox.run_context import PublicNetworkGrant, RunContext
+from opensquilla.sandbox.run_mode import RunMode
+from opensquilla.tool_boundary import ToolCall
+from opensquilla.tools.types import current_tool_context
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "scripts" / "run_draco_routing_experiment.py"
+RESUME_SCRIPT_PATH = SCRIPT_PATH.with_name("run_draco_routing_experiment_resume.py")
+ROOT = SCRIPT_PATH.parent.parent
 
 
 def _load_runner():
@@ -34,8 +44,174 @@ def _load_runner():
 runner = _load_runner()
 
 
+def _load_resume_runner():
+    spec = importlib.util.spec_from_file_location(
+        "run_draco_routing_experiment_resume_under_test",
+        RESUME_SCRIPT_PATH,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def configured_tool_runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Exercise web-tool behavior through a granted Standard sandbox context."""
+
+    configure_runtime(
+        SandboxSettings(),
+        approval_queue=runner._BenchmarkApprovalQueue(),
+        workspace=tmp_path,
+    )
+    original_builder = runner.build_benchmark_tool_context
+
+    def _standard_context(**kwargs):
+        context = original_builder(**kwargs)
+        context.run_mode = RunMode.STANDARD.value
+        context.sandbox_run_context = RunContext(
+            run_mode=RunMode.STANDARD,
+            workspace=str(tmp_path),
+            public_network=(PublicNetworkGrant(scope="chat", source="test"),),
+            source="test_standard_network_grant",
+        )
+        return context
+
+    monkeypatch.setattr(runner, "build_benchmark_tool_context", _standard_context)
+    try:
+        yield
+    finally:
+        reset_runtime()
+
+
+@pytest.mark.asyncio
+async def test_judge_concurrency_is_capped_across_concurrent_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    peak = 0
+
+    async def fake_judge_criterion(*, criterion, repeat_index, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return {
+            **criterion,
+            "repeat_index": repeat_index,
+            "verdict": "MET",
+            "met": True,
+            "rationale": "ok",
+        }
+
+    monkeypatch.setattr(runner, "judge_criterion", fake_judge_criterion)
+    task = {
+        "id": "task-1",
+        "prompt": "prompt",
+        "rubric": {
+            "id": "rubric-1",
+            "sections": [
+                {
+                    "id": "section-1",
+                    "title": "Section",
+                    "criteria": [
+                        {"id": f"criterion-{index}", "weight": 1, "requirement": "x"}
+                        for index in range(3)
+                    ],
+                }
+            ],
+        },
+    }
+    shared = asyncio.Semaphore(2)
+    await asyncio.gather(
+        *[
+            runner.judge_text(
+                judge_provider=object(),
+                task=task,
+                answer="answer",
+                dry_run=False,
+                judge_repeats=1,
+                judge_concurrency=6,
+                judge_semaphore=shared,
+            )
+            for _ in range(2)
+        ]
+    )
+
+    assert peak == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "module",
+    [runner, _load_resume_runner()],
+    ids=["main", "resume"],
+)
+async def test_legacy_judge_uses_the_experiment_wide_semaphore(
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    active = 0
+    peak = 0
+
+    async def fake_collect_run(*_args, **_kwargs):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return module.RunResult(
+            final_text=json.dumps(
+                {
+                    "scores": {
+                        "accuracy": 5,
+                        "completeness": 5,
+                        "objectivity": 5,
+                        "citation": 5,
+                    },
+                    "total": 20,
+                    "rationale": "ok",
+                }
+            ),
+            done=None,
+        )
+
+    monkeypatch.setattr(module, "collect_run", fake_collect_run)
+    shared = asyncio.Semaphore(2)
+    task = {"id": "task-1", "prompt": "prompt", "rubric": "legacy rubric"}
+    await asyncio.gather(
+        *[
+            module.judge_text(
+                judge_provider=object(),
+                task=task,
+                answer="answer",
+                dry_run=False,
+                judge_concurrency=8,
+                judge_semaphore=shared,
+            )
+            for _ in range(5)
+        ]
+    )
+
+    assert peak == 2
+
+
 def _experiment_config():
     return runner.load_draco_experiment_config(runner.DEFAULT_B2_EXPERIMENT_CONFIG_PATH).config
+
+
+def test_reasoning_tokens_are_not_double_counted_as_total_tokens() -> None:
+    usage = {
+        "input_tokens": 50,
+        "output_tokens": 100,
+        "reasoning_tokens": 80,
+    }
+
+    assert runner._usage_token_count(usage) == 150
+    assert _load_resume_runner()._usage_token_count(usage) == 150
 
 
 def _openrouter_config() -> tuple[GatewayConfig, ProviderConfig]:
@@ -161,6 +337,980 @@ def test_local_brave_runtime_allows_missing_key_only_for_dry_run(
     assert configure_calls == []
     with pytest.raises(ValueError, match="requires an API key"):
         runner.configure_local_web_search_runtime(config, policy, dry_run=False)
+
+
+def test_explicit_brave_environment_key_overrides_stale_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "fresh-env-key")
+    configure_calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web.configure_search",
+        lambda **kwargs: configure_calls.append(kwargs),
+    )
+    config = GatewayConfig(search_api_key="stale-config-key")
+    args = runner.build_parser().parse_args(
+        [
+            "--input",
+            "tasks.jsonl",
+            "--groups",
+            "B1",
+            "--tool-mode",
+            "local_web_tools",
+            "--local-web-search-provider",
+            "brave",
+            "--local-web-search-api-key-env",
+            "BRAVE_SEARCH_API_KEY",
+        ]
+    )
+
+    runtime = runner.configure_local_web_search_runtime(
+        config,
+        runner.benchmark_tool_policy(args),
+    )
+
+    assert runtime["api_key_source"] == "env:BRAVE_SEARCH_API_KEY"
+    assert configure_calls[0]["api_key"] == "fresh-env-key"
+
+
+def _local_web_tool_policy():
+    args = runner.build_parser().parse_args(
+        [
+            "--input",
+            "tasks.jsonl",
+            "--groups",
+            "B1",
+            "--tool-mode",
+            "local_web_tools",
+        ]
+    )
+    return runner.benchmark_tool_policy(args)
+
+
+def test_benchmark_tool_context_does_not_force_full_host_access() -> None:
+    policy = _local_web_tool_policy()
+
+    context = runner.build_benchmark_tool_context(
+        task_id="task-1",
+        group="B1",
+        tool_policy=policy,
+    )
+
+    assert context.run_mode is None
+    assert context.sandbox_run_context is None
+    assert context.allowed_tools == {"web_search", "web_fetch"}
+
+
+@pytest.mark.asyncio
+async def test_local_web_preflight_does_not_enable_full_host_access(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_tool_runtime,
+) -> None:
+    calls = {"search": 0, "fetch": 0}
+
+    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+        calls["search"] += 1
+        assert "OpenAI official website" in query
+        assert max_results == 1
+        assert "github.com" in exclude_domains
+        return {
+            "query": query,
+            "results": [
+                {
+                    "title": "OpenAI",
+                    "url": "https://openai.com/",
+                    "snippet": "Official site",
+                }
+            ],
+        }
+
+    async def _fake_fetch(
+        url: str,
+        *,
+        extract_mode: str,
+        max_chars: int | None,
+        extractor: str,
+    ):
+        from opensquilla.tools.run_mode import full_host_access_active
+
+        calls["fetch"] += 1
+        assert full_host_access_active() is False
+        assert url == "https://example.com/"
+        assert extract_mode == "text"
+        assert max_chars == 1_000
+        assert extractor == "auto"
+        return {
+            "url": url,
+            "final_url": url,
+            "status": 200,
+            "text": "<external-content>Example Domain</external-content>",
+        }
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web.run_web_search_payload",
+        _fake_search,
+    )
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _fake_fetch,
+    )
+
+    result = await runner.run_local_web_tools_preflight(_local_web_tool_policy())
+
+    assert result["status"] == "passed"
+    assert "run_mode" not in result
+    assert result["web_search_result_count"] == 1
+    assert result["web_fetch_http_status"] == 200
+    assert result["attempts_used"] == 1
+    assert result["preflight_calls"] == {"web_search": 1, "web_fetch": 1}
+    assert calls == {"search": 1, "fetch": 1}
+
+
+@pytest.mark.asyncio
+async def test_local_web_fetch_keeps_draco_contamination_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fetch_called = False
+
+    async def _fake_fetch(*args, **kwargs):
+        nonlocal fetch_called
+        fetch_called = True
+        return {"status": 200, "text": "should not be fetched"}
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _fake_fetch,
+    )
+    policy = _local_web_tool_policy()
+    registry = runner.build_local_web_tool_registry(policy)
+    context = runner.build_benchmark_tool_context(
+        task_id="task-1",
+        group="B1",
+        tool_policy=policy,
+    )
+    handler = runner.build_tool_handler(registry, context)
+
+    result = await handler(
+        ToolCall(
+            tool_use_id="blocked-fetch",
+            tool_name="web_fetch",
+            arguments={"url": "https://github.com/openai/example"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert fetch_called is False
+    assert payload["error_class"] == "BlockedDomain"
+    assert payload["blocked_domain"] == "github.com"
+
+
+@pytest.mark.asyncio
+async def test_local_web_preflight_fails_closed_on_denial_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_tool_runtime,
+) -> None:
+    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+        return {
+            "query": query,
+            "results": [{"title": "OpenAI", "url": "https://openai.com/"}],
+        }
+
+    async def _denied_fetch(*args, **kwargs):
+        return {
+            "status": "error",
+            "reason": "policy_denied",
+            "error": "network denied",
+        }
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web.run_web_search_payload",
+        _fake_search,
+    )
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _denied_fetch,
+    )
+
+    with pytest.raises(RuntimeError, match="web_fetch preflight failed"):
+        await runner.run_local_web_tools_preflight(
+            _local_web_tool_policy(),
+            max_attempts=1,
+        )
+
+
+@pytest.mark.asyncio
+async def test_benchmark_tools_respect_ambient_standard_context(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_tool_runtime,
+) -> None:
+    observed: list[tuple[bool, str | None]] = []
+
+    async def _fake_fetch(
+        url: str,
+        *,
+        extract_mode: str,
+        max_chars: int | None,
+        extractor: str,
+    ):
+        from opensquilla.tools.run_mode import full_host_access_active
+
+        active = current_tool_context.get()
+        observed.append((full_host_access_active(), active.task_id if active else None))
+        return {"url": url, "final_url": url, "status": 200, "text": "ok"}
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _fake_fetch,
+    )
+    policy = _local_web_tool_policy()
+    benchmark_context = runner.build_benchmark_tool_context(
+        task_id="benchmark-task",
+        group="B1",
+        tool_policy=policy,
+    )
+    ambient = runner.ToolContext(
+        run_mode="standard",
+        sandbox_run_context=benchmark_context.sandbox_run_context,
+        task_id="outer-task",
+    )
+    handler = runner.build_tool_handler(
+        runner.build_local_web_tool_registry(policy),
+        benchmark_context,
+    )
+
+    token = current_tool_context.set(ambient)
+    try:
+        result = await handler(
+            ToolCall(
+                tool_use_id="ambient-override",
+                tool_name="web_fetch",
+                arguments={"url": "https://example.com/"},
+            )
+        )
+        assert result.is_error is False
+        assert current_tool_context.get() is ambient
+    finally:
+        current_tool_context.reset(token)
+    assert observed == [(False, "outer-task")]
+
+
+@pytest.mark.asyncio
+async def test_local_web_search_filters_results_sources_and_internal_fetches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+        captured.update(
+            query=query,
+            max_results=max_results,
+            exclude_domains=list(exclude_domains),
+        )
+        return {
+            "query": query,
+            "results": [
+                {"title": "blocked", "url": "https://github.com/example"},
+                {"title": "allowed", "url": "https://example.com/allowed"},
+            ],
+            "sources": [
+                {"url": "https://huggingface.co/datasets/example", "text": "blocked"},
+                {"url": "https://example.com/source", "text": "allowed"},
+            ],
+        }
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web.run_web_search_payload",
+        _fake_search,
+    )
+    policy = _local_web_tool_policy()
+    context = runner.build_benchmark_tool_context(
+        task_id="search-task",
+        group="B1",
+        tool_policy=policy,
+    )
+    handler = runner.build_tool_handler(
+        runner.build_local_web_tool_registry(policy),
+        context,
+    )
+    result = await handler(
+        ToolCall(
+            tool_use_id="search-contamination",
+            tool_name="web_search",
+            arguments={"query": "test"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert captured["max_results"] == runner.local_web_search_max_results(policy)
+    assert "github.com" in captured["exclude_domains"]
+    assert [item["url"] for item in payload["results"]] == [
+        "https://example.com/allowed"
+    ]
+    assert [item["url"] for item in payload["sources"]] == [
+        "https://example.com/source"
+    ]
+    assert payload["blocked_result_count"] == 1
+    assert payload["blocked_source_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_local_web_fetch_discards_blocked_redirect_content(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_tool_runtime,
+) -> None:
+    async def _redirected_fetch(*args, **kwargs):
+        return {
+            "url": "https://example.com/start",
+            "final_url": "https://github.com/private/answer",
+            "status": 200,
+            "text": "must not reach the model",
+        }
+
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _redirected_fetch,
+    )
+    policy = _local_web_tool_policy()
+    context = runner.build_benchmark_tool_context(
+        task_id="redirect-task",
+        group="B1",
+        tool_policy=policy,
+    )
+    handler = runner.build_tool_handler(
+        runner.build_local_web_tool_registry(policy),
+        context,
+    )
+    result = await handler(
+        ToolCall(
+            tool_use_id="redirect-contamination",
+            tool_name="web_fetch",
+            arguments={"url": "https://example.com/start"},
+        )
+    )
+
+    payload = json.loads(result.content)
+    assert payload["error_class"] == "BlockedDomain"
+    assert payload["blocked_domain"] == "github.com"
+    assert "must not reach the model" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_local_web_preflight_retries_and_records_all_setup_calls(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_tool_runtime,
+) -> None:
+    fetch_attempt = 0
+
+    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+        return {"query": query, "results": [{"url": "https://openai.com/"}]}
+
+    async def _flaky_fetch(*args, **kwargs):
+        nonlocal fetch_attempt
+        fetch_attempt += 1
+        if fetch_attempt == 1:
+            return {"status": 503, "text": "temporarily unavailable"}
+        return {
+            "url": "https://example.com/",
+            "final_url": "https://example.com/",
+            "status": 200,
+            "text": "Example Domain",
+        }
+
+    monkeypatch.setattr("opensquilla.tools.builtin.web.run_web_search_payload", _fake_search)
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _flaky_fetch,
+    )
+
+    result = await runner.run_local_web_tools_preflight(
+        _local_web_tool_policy(),
+        retry_backoff_seconds=0,
+    )
+
+    assert result["attempts_used"] == 2
+    assert result["preflight_calls"] == {"web_search": 2, "web_fetch": 2}
+
+
+@pytest.mark.asyncio
+async def test_local_web_preflight_times_out_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_tool_runtime,
+) -> None:
+    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+        return {"query": query, "results": [{"url": "https://openai.com/"}]}
+
+    async def _hanging_fetch(*args, **kwargs):
+        await asyncio.sleep(1)
+        return {"status": 200, "text": "too late"}
+
+    monkeypatch.setattr("opensquilla.tools.builtin.web.run_web_search_payload", _fake_search)
+    monkeypatch.setattr(
+        "opensquilla.tools.builtin.web_fetch.run_web_fetch_payload",
+        _hanging_fetch,
+    )
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        await runner.run_local_web_tools_preflight(
+            _local_web_tool_policy(),
+            max_attempts=1,
+            call_timeout_seconds=0.01,
+        )
+
+
+def test_runner_tool_mode_combinations_fail_closed() -> None:
+    with pytest.raises(ValueError, match="requires --runner-mode=agent_loop"):
+        runner.validate_tool_mode_for_runner("provider", "local_web_tools")
+    with pytest.raises(ValueError, match="requires --runner-mode=provider"):
+        runner.validate_tool_mode_for_runner("agent_loop", "openrouter_server_tools")
+    runner.validate_tool_mode_for_runner(
+        "provider",
+        "local_web_tools",
+        smoke_only=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_preflight_failure_writes_audit_manifest_before_any_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text(
+        json.dumps({"id": "task-1", "prompt": "test prompt"}) + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    args = runner.build_parser().parse_args(
+        [
+            "--input",
+            str(input_path),
+            "--output-dir",
+            str(output_dir),
+            "--groups",
+            "B1",
+            "--runner-mode",
+            "agent_loop",
+            "--tool-mode",
+            "local_web_tools",
+            "--local-web-search-provider",
+            "duckduckgo",
+        ]
+    )
+
+    monkeypatch.setattr(runner.GatewayConfig, "load", lambda _path: GatewayConfig())
+    monkeypatch.setattr(
+        runner,
+        "configure_local_web_search_runtime",
+        lambda *_args, **_kwargs: {"provider": "duckduckgo"},
+    )
+
+    async def _failed_preflight(*_args, **_kwargs):
+        raise RuntimeError("synthetic preflight failure")
+
+    monkeypatch.setattr(runner, "run_local_web_tools_preflight", _failed_preflight)
+
+    with pytest.raises(RuntimeError, match="synthetic preflight failure"):
+        await runner.amain(args)
+
+    manifests = list(output_dir.glob("*.preflight-failed.manifest.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+    assert manifest["status"] == "preflight_failed"
+    assert manifest["failure"]["stage"] == "local_web_tools_preflight"
+    assert manifest["failure"]["model_or_judge_started"] is False
+    assert manifest["rows_written"] == 0
+    assert not list(output_dir.glob("draco_ensemble_*.jsonl"))
+
+
+def test_local_web_fetch_runtime_disables_hidden_firecrawl_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "secret-not-serialized")
+    policy = _local_web_tool_policy()
+
+    runtime = runner.configure_local_web_fetch_runtime(policy)
+
+    assert runtime["firecrawl_allowed"] is False
+    assert runtime["firecrawl_api_key_active"] is False
+    assert runtime["firecrawl_disabled_for_reproducibility"] is True
+    assert "FIRECRAWL_API_KEY" not in runner.os.environ
+
+
+def test_cost_accounting_includes_judge_and_never_prices_unknown_as_zero() -> None:
+    generation_usage = {
+        "model_usage_breakdown": [
+            {
+                "model": "known",
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "billed_cost": 0.10,
+                "cost_source": "provider_billed",
+            },
+            {
+                "model": "unknown",
+                "input_tokens": 200,
+                "output_tokens": 40,
+                "billed_cost": 0.0,
+                "cost_source": "none",
+            },
+        ]
+    }
+    judge_attempts = [
+        {
+            "attempt": 1,
+            "run": {
+                "llm_request_count": 1,
+                "usage": {
+                    "input_tokens": 50,
+                    "output_tokens": 5,
+                    "billed_cost": 0.03,
+                    "cost_source": "provider_billed",
+                },
+            },
+        },
+        {
+            "attempt": 2,
+            "run": {
+                "llm_request_count": 1,
+                "usage": {
+                    "input_tokens": 60,
+                    "output_tokens": 6,
+                    "billed_cost": 0.04,
+                    "cost_source": "provider_billed",
+                },
+            },
+        },
+    ]
+    row = {
+        "tool_policy": {"tool_mode": "provider_only"},
+        "llm_request_count": 2,
+        "execution": {
+            "generation_attempts": [
+                {
+                    "attempt": 1,
+                    "run": {"llm_request_count": 2, "usage": generation_usage},
+                }
+            ]
+        },
+        "judge": {
+            "criterion_judgments": [
+                {
+                    "judge_attempts": judge_attempts,
+                    # This is a duplicate of the final attempt and must not be counted.
+                    "judge_run": judge_attempts[-1]["run"],
+                }
+            ]
+        },
+        "candidate_judges": [],
+    }
+
+    accounting = runner.row_cost_accounting(row)
+
+    assert runner.usage_unknown_count_from_usage_payload(generation_usage) == 1
+    assert accounting["generation"]["request_count"] == 2
+    assert accounting["generation"]["unknown_request_count"] == 1
+    assert accounting["generation"]["unknown_tokens"] == 240
+    assert accounting["generation"]["recorded_cost_usd"] == pytest.approx(0.10)
+    assert accounting["judge"]["request_count"] == 2
+    assert accounting["judge"]["recorded_cost_usd"] == pytest.approx(0.07)
+    assert accounting["llm_total"]["recorded_cost_usd"] == pytest.approx(0.17)
+    assert accounting["result_cost_complete"] is False
+
+
+def test_resume_runner_does_not_force_full_host_access() -> None:
+    resume_runner = _load_resume_runner()
+    args = resume_runner.build_parser().parse_args(
+        [
+            "--input",
+            "tasks.jsonl",
+            "--groups",
+            "B1",
+            "--tool-mode",
+            "local_web_tools",
+        ]
+    )
+    policy = resume_runner.benchmark_tool_policy(args)
+
+    context = resume_runner.build_benchmark_tool_context(
+        task_id="task-1",
+        group="B1",
+        tool_policy=policy,
+    )
+
+    assert context.run_mode is None
+    assert context.sandbox_run_context is None
+
+
+def test_agent_llm_error_without_usage_is_counted_as_unknown_cost() -> None:
+    breakdown = runner.aggregate_agent_model_usage(
+        [
+            {
+                "kind": "llm_error",
+                "payload": {"iteration": 2, "attempt": 1, "error": "timeout"},
+            }
+        ]
+    )
+
+    assert len(breakdown) == 1
+    assert breakdown[0]["role"] == "agent_llm_request_unknown"
+    accounting = runner.usage_cost_accounting(
+        {"model_usage_breakdown": breakdown},
+        expected_requests=1,
+        scope="generation",
+    )
+    assert accounting["unknown_request_count"] == 1
+    assert accounting["cost_exact"] is False
+
+
+def test_main_and_resume_share_identical_critical_runtime_functions() -> None:
+    resume_runner = _load_resume_runner()
+    critical = (
+        "validate_tool_mode_for_runner",
+        "configure_benchmark_sandbox_runtime",
+        "configure_local_web_fetch_runtime",
+        "filter_blocked_search_results",
+        "build_local_web_tool_registry",
+        "build_benchmark_tool_context",
+        "run_local_web_tools_preflight",
+        "usage_cost_accounting",
+        "merge_cost_accounting",
+        "row_cost_accounting",
+        "canonical_json_sha256",
+        "gateway_execution_contract",
+        "resolved_llm_runtime_contract",
+        "build_run_compatibility",
+        "openrouter_non_byok_audit",
+        "judge_text",
+        "run_one",
+        "trace_row",
+    )
+
+    for name in critical:
+        assert inspect.getsource(getattr(runner, name)) == inspect.getsource(
+            getattr(resume_runner, name)
+        )
+
+
+def test_resume_only_skips_strict_valid_matching_prompt(tmp_path: Path) -> None:
+    resume_runner = _load_resume_runner()
+    prompt_hash = resume_runner.text_sha256("same prompt")
+    valid = resume_runner.seal_result_row({
+        "group": "B1",
+        "task_id": "task-1",
+        "prompt_sha256": prompt_hash,
+        "task_input_sha256": "sha256:task-input",
+        "run_compatibility_fingerprint": "sha256:run-contract",
+        "error": None,
+        "final_text": "answer",
+        "quality_total": 80.0,
+        "judge": {"score_status": "complete", "judge_error_count": 0},
+        "ensemble_trace": {},
+    })
+    failed = resume_runner.seal_result_row(
+        {**valid, "task_id": "task-2", "error": "provider failure"}
+    )
+    wrong_prompt = resume_runner.seal_result_row(
+        {**valid, "task_id": "task-3", "prompt_sha256": "wrong"}
+    )
+    path = tmp_path / "prior.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(row) for row in (valid, failed, wrong_prompt)) + "\n",
+        encoding="utf-8",
+    )
+    selected = {("B1", "task-1"), ("B1", "task-2"), ("B1", "task-3")}
+
+    completed, audit = resume_runner.load_strict_completed_group_task_keys(
+        resume_paths=[path],
+        selected_keys=selected,
+        prompt_hashes={task_id: prompt_hash for _, task_id in selected},
+        task_input_hashes={task_id: "sha256:task-input" for _, task_id in selected},
+        run_compatibility_fingerprints={"B1": "sha256:run-contract"},
+    )
+
+    assert completed == {("B1", "task-1")}
+    assert audit["matching_attempt_count"] == 3
+    assert audit["strict_valid_pair_count"] == 1
+    assert audit["strict_invalid_attempt_count"] == 2
+
+
+def test_resume_rejects_legacy_or_incompatible_contract_rows(tmp_path: Path) -> None:
+    resume_runner = _load_resume_runner()
+    prompt_hash = resume_runner.text_sha256("same prompt")
+    base = {
+        "group": "B1",
+        "prompt_sha256": prompt_hash,
+        "task_input_sha256": "sha256:task-input",
+        "run_compatibility_fingerprint": "sha256:old-contract",
+        "error": None,
+        "final_text": "answer",
+        "quality_total": 80.0,
+        "judge": {"score_status": "complete", "judge_error_count": 0},
+        "ensemble_trace": {},
+    }
+    legacy = {
+        key: value
+        for key, value in {**base, "task_id": "task-1"}.items()
+        if key not in {"task_input_sha256", "run_compatibility_fingerprint"}
+    }
+    mismatched = resume_runner.seal_result_row({**base, "task_id": "task-2"})
+    path = tmp_path / "prior.jsonl"
+    path.write_text(
+        "\n".join(json.dumps(row) for row in (legacy, mismatched)) + "\n",
+        encoding="utf-8",
+    )
+
+    completed, audit = resume_runner.load_strict_completed_group_task_keys(
+        resume_paths=[path],
+        selected_keys={("B1", "task-1"), ("B1", "task-2")},
+        prompt_hashes={"task-1": prompt_hash, "task-2": prompt_hash},
+        task_input_hashes={"task-1": "sha256:task-input", "task-2": "sha256:task-input"},
+        run_compatibility_fingerprints={"B1": "sha256:new-contract"},
+    )
+
+    assert completed == set()
+    assert audit["strict_invalid_reason_counts"] == {
+        "invalid_result_evidence": 1,
+        "missing_run_compatibility_fingerprint": 1,
+        "missing_task_input_sha256": 1,
+        "run_compatibility_fingerprint_mismatch": 1,
+    }
+
+
+def test_resume_requires_recomputed_non_byok_cost_evidence() -> None:
+    resume_runner = _load_resume_runner()
+    prompt_hash = resume_runner.text_sha256("same prompt")
+    base = {
+        "group": "B1",
+        "task_id": "task-1",
+        "prompt_sha256": prompt_hash,
+        "task_input_sha256": "sha256:task-input",
+        "run_compatibility_fingerprint": "sha256:run-contract",
+        "error": None,
+        "final_text": "answer",
+        "quality_total": 80.0,
+        "judge": {"score_status": "complete", "judge_error_count": 0},
+        "ensemble_trace": {},
+    }
+    invalid = resume_runner.seal_result_row(base)
+    invalid_reasons = resume_runner.strict_resume_row_invalid_reasons(
+        invalid,
+        expected_prompt_sha256=prompt_hash,
+        expected_task_input_sha256="sha256:task-input",
+        expected_run_compatibility_fingerprint="sha256:run-contract",
+        require_openrouter_non_byok=True,
+    )
+    assert "openrouter_non_byok_unverified" in invalid_reasons
+
+    exact = {
+        **base,
+        "cost_accounting": {
+            "llm_total": {
+                "cost_exact": True,
+                "request_count": 1,
+                "exact_request_count": 1,
+            }
+        },
+    }
+    exact["openrouter_non_byok_audit"] = resume_runner.openrouter_non_byok_audit(
+        exact
+    )
+    sealed_exact = resume_runner.seal_result_row(exact)
+    exact_reasons = resume_runner.strict_resume_row_invalid_reasons(
+        sealed_exact,
+        expected_prompt_sha256=prompt_hash,
+        expected_task_input_sha256="sha256:task-input",
+        expected_run_compatibility_fingerprint="sha256:run-contract",
+        require_openrouter_non_byok=True,
+    )
+    assert exact_reasons == []
+
+
+def _compatibility_for(
+    module,
+    *,
+    concurrency: int = 1,
+    judge_repeats: int = 3,
+    api_key: str = "benchmark-key-secret",
+):
+    args = module.build_parser().parse_args(
+        [
+            "--input",
+            "tasks.jsonl",
+            "--groups",
+            "B1",
+            "--concurrency",
+            str(concurrency),
+            "--judge-model",
+            "google/gemini-3.1-pro-preview",
+            "--judge-repeats",
+            str(judge_repeats),
+        ]
+    )
+    args._source_provenance = {
+        "git_head": "a" * 40,
+        "source_tree_sha256": "b" * 64,
+    }
+    policy = module.benchmark_tool_policy(args)
+    generation = module.generation_thinking_policy(args)
+    config = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-pro",
+            "api_key": api_key,
+        }
+    )
+    return module.build_run_compatibility(
+        args=args,
+        config=config,
+        groups=["B1"],
+        group_tool_policies=module.benchmark_tool_policies_for_groups(
+            policy,
+            ["B1"],
+            args=args,
+        ),
+        generation_policy=generation,
+    )
+
+
+def test_run_compatibility_is_shared_by_main_and_resume_and_excludes_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", raising=False)
+    resume_runner = _load_resume_runner()
+    main_contract = _compatibility_for(runner, concurrency=1)
+    resume_contract = _compatibility_for(resume_runner, concurrency=5)
+
+    assert main_contract["fingerprints"] == resume_contract["fingerprints"]
+    assert "benchmark-key-secret" not in json.dumps(main_contract)
+    changed_key = _compatibility_for(runner, api_key="different-benchmark-key")
+    assert changed_key["fingerprints"]["B1"] != main_contract["fingerprints"]["B1"]
+    changed_judge = _compatibility_for(runner, judge_repeats=2)
+    assert changed_judge["fingerprints"]["B1"] != main_contract["fingerprints"]["B1"]
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "1")
+    strict = _compatibility_for(runner)
+    assert strict["fingerprints"]["B1"] != main_contract["fingerprints"]["B1"]
+
+
+def _b2_compatibility_for(
+    module, *, runner_concurrency: int, judge_concurrency: int
+):
+    args = module.build_parser().parse_args(
+        [
+            "--input",
+            "tasks.jsonl",
+            "--groups",
+            "B2",
+            "--experiment-config",
+            str(ROOT / "configs" / "benchmarks" / "draco_b2_g12.json"),
+            "--experiment-config-set",
+            f"runner.concurrency={runner_concurrency}",
+            "--experiment-config-set",
+            f"judge.concurrency={judge_concurrency}",
+        ]
+    )
+    module.apply_b2_g12_argument_alignment(args, ["B2"])
+    args._source_provenance = {
+        "git_head": "a" * 40,
+        "source_tree_sha256": "b" * 64,
+    }
+    policy = module.benchmark_tool_policy(args)
+    config = GatewayConfig(
+        llm={"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}
+    )
+    return module.build_run_compatibility(
+        args=args,
+        config=config,
+        groups=["B2"],
+        group_tool_policies=module.benchmark_tool_policies_for_groups(
+            policy,
+            ["B2"],
+            args=args,
+        ),
+        generation_policy=module.generation_thinking_policy(args),
+    )
+
+
+def test_b2_compatibility_excludes_effective_scheduling_concurrency() -> None:
+    canary = _b2_compatibility_for(
+        runner,
+        runner_concurrency=1,
+        judge_concurrency=1,
+    )
+    full = _b2_compatibility_for(
+        runner,
+        runner_concurrency=5,
+        judge_concurrency=6,
+    )
+
+    assert canary["fingerprints"]["B2"] == full["fingerprints"]["B2"]
+    experiment = canary["contracts"]["B2"]["experiment_config"]
+    assert "concurrency" not in experiment["runner"]
+    assert "concurrency" not in experiment["judge"]
+    provider_routing = canary["contracts"]["B2"]["resolved_llm_runtime"][
+        "provider_routing"
+    ]
+    assert provider_routing["deepseek/deepseek-v4-pro"] == "deepseek"
+    assert provider_routing["google/gemini-3.1-pro-preview"] == "google-ai-studio"
+    assert provider_routing["moonshotai/kimi-k2.7-code"] == "moonshotai"
+    assert provider_routing["qwen/qwen3.7-max"] == "alibaba"
+    assert provider_routing["z-ai/glm-5.2"] == "z-ai"
+
+
+def test_resume_expected_manifest_rejects_incompatible_contract(tmp_path: Path) -> None:
+    resume_runner = _load_resume_runner()
+    actual = _compatibility_for(resume_runner)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "run_compatibility": {
+                    "fingerprints": {"B1": "sha256:different"}
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="incompatible"):
+        resume_runner.validate_expected_run_compatibility(
+            path=manifest,
+            actual=actual,
+            groups=["B1"],
+        )
+
+
+def test_task_input_hash_covers_rubric_not_only_prompt() -> None:
+    first = {"id": "task-1", "prompt": "same", "rubric": {"criteria": ["a"]}}
+    second = {"id": "task-1", "prompt": "same", "rubric": {"criteria": ["b"]}}
+
+    assert runner.text_sha256(first["prompt"]) == runner.text_sha256(second["prompt"])
+    assert runner.canonical_json_sha256(first) != runner.canonical_json_sha256(second)
+
+
+def test_openrouter_non_byok_audit_fails_closed() -> None:
+    exact = {
+        "cost_accounting": {
+            "llm_total": {
+                "cost_exact": True,
+                "request_count": 2,
+                "exact_request_count": 2,
+            }
+        }
+    }
+    unverified = {
+        "cost_accounting": {
+            "llm_total": {
+                "cost_exact": False,
+                "request_count": 2,
+                "exact_request_count": 1,
+            }
+        }
+    }
+
+    assert runner.openrouter_non_byok_audit(exact)["pass"] is True
+    audit = runner.openrouter_non_byok_audit(unverified)
+    assert audit["pass"] is False
+    assert audit["unverified_or_byok_request_count"] == 1
 
 
 def test_b2_provider_alignment_pins_effective_member_configuration() -> None:
@@ -363,6 +1513,69 @@ def test_manifest_records_effective_and_requested_b2_alignment(tmp_path: Path) -
     assert alignment["effective_args"]["concurrency"] == 2
     assert alignment["effective_config"]["ensemble"]["wait_for_all_proposers"] is True
     assert alignment["reference"]["source_commit"] == ("153e5ff267950b0e285efcdb180cea8724c0471d")
+    assert len(manifest["source_provenance"]["runner_sha256"]) == 64
+    assert "git_head" in manifest["source_provenance"]
+
+
+def test_manifest_reuses_source_provenance_frozen_at_process_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args = runner.build_parser().parse_args(
+        ["--input", "tasks.jsonl", "--groups", "B1"]
+    )
+    args._source_provenance = {
+        "runner_path": "/frozen/runner.py",
+        "runner_sha256": "a" * 64,
+        "git_head": "b" * 40,
+        "git_dirty": False,
+        "source_tree_sha256": "c" * 64,
+    }
+    monkeypatch.setattr(
+        runner,
+        "source_provenance",
+        lambda: {"runner_sha256": "changed-after-start"},
+    )
+    path = tmp_path / "manifest.json"
+
+    runner.write_manifest(
+        path,
+        args=args,
+        stamp="test",
+        status="complete",
+        started_at=1.0,
+        tasks=[{"id": "task-1"}],
+        groups=["B1"],
+        artifacts={},
+    )
+
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    assert manifest["source_provenance"] == args._source_provenance
+
+
+def test_source_provenance_detects_tracked_changes_against_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            stdout = "a" * 40 + "\n"
+        elif command[:3] == ["git", "diff", "--binary"]:
+            stdout = "tracked diff\n"
+        else:
+            stdout = ""
+        return runner.subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(runner.subprocess, "run", fake_run)
+
+    provenance = runner.source_provenance()
+
+    diff_command = next(command for command in commands if command[1] == "diff")
+    assert diff_command.count("HEAD") == 1
+    assert provenance["git_tracked_dirty"] is True
+    assert provenance["git_dirty"] is True
 
 
 def test_experiment_config_artifacts_save_source_effective_and_resolution(

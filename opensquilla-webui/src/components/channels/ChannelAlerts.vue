@@ -8,37 +8,62 @@ import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ChannelPairing } from '@/composables/channels/useChannelMembers'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   pendingPairing?: ChannelPairing | null
   /** More pending requests than the one shown inline. */
   pendingOverflow?: number
   /** First-pairing bootstrap: no approved members and no admins yet. */
   defaultAsAdmin?: boolean
+  /**
+   * Host-owned "approve as admin" state. When supplied, the checkbox is fully
+   * controlled — toggles emit `setAsAdmin` and the host (the drill page, which
+   * single-sources the override in its members store) owns the value, so this
+   * banner and the Members row can never disagree about the same pairing.
+   * Leave undefined for the local fallback used by the dashboard cards.
+   */
+  asAdminChecked?: boolean
   errorText?: string
   /** Offer the jump into credential editing on the error banner. */
   showFixCredentials?: boolean
   busy?: boolean
-}>()
+}>(), { asAdminChecked: undefined })
 
 const emit = defineEmits<{
   approve: [asAdmin: boolean]
   reject: []
   restart: []
   fixCredentials: []
+  setAsAdmin: [asAdmin: boolean]
 }>()
 
 const { t } = useI18n()
 
-// An entry here is an explicit operator choice overriding the bootstrap
-// default — for THIS pairing only. When the banner moves on to a different
-// pairing request the override resets, so a choice made for one sender can
-// never silently apply to the next.
-const adminOverride = ref<boolean | null>(null)
-watch(() => props.pendingPairing?.pairingId, () => {
-  adminOverride.value = null
+// Local fallback only (no `asAdminChecked` prop): an entry here is an explicit
+// operator choice overriding the bootstrap default, recorded WITH the pairing
+// it was made for. Keying by pairingId means a transient blip (the pairing
+// facts briefly failing and re-resolving to the SAME request) cannot wipe the
+// choice, while a DIFFERENT request never inherits it.
+const adminOverride = ref<{ pairingId: string; value: boolean } | null>(null)
+watch(() => props.pendingPairing?.pairingId, id => {
+  if (id && adminOverride.value && id !== adminOverride.value.pairingId) {
+    adminOverride.value = null
+  }
 })
-function asAdminChecked(): boolean {
-  return adminOverride.value ?? Boolean(props.defaultAsAdmin)
+function isChecked(): boolean {
+  if (props.asAdminChecked !== undefined) return props.asAdminChecked
+  const pairing = props.pendingPairing
+  if (pairing && adminOverride.value?.pairingId === pairing.pairingId) {
+    return adminOverride.value.value
+  }
+  return Boolean(props.defaultAsAdmin)
+}
+function setChecked(value: boolean): void {
+  if (props.asAdminChecked !== undefined) {
+    emit('setAsAdmin', value)
+    return
+  }
+  const pairing = props.pendingPairing
+  if (pairing) adminOverride.value = { pairingId: pairing.pairingId, value }
 }
 </script>
 
@@ -55,9 +80,9 @@ function asAdminChecked(): boolean {
       <label class="chal__asadmin" :title="t('console.channels.pairings.asAdminHint')">
         <input
           type="checkbox"
-          :checked="asAdminChecked()"
+          :checked="isChecked()"
           :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pendingPairing.senderName || pendingPairing.senderId })"
-          @change="adminOverride = ($event.target as HTMLInputElement).checked"
+          @change="setChecked(($event.target as HTMLInputElement).checked)"
         />
         <span>{{ t(defaultAsAdmin ? 'console.channels.pairings.asAdminBootstrap' : 'console.channels.pairings.asAdmin') }}</span>
       </label>
@@ -66,7 +91,7 @@ function asAdminChecked(): boolean {
         class="btn btn--primary chal__btn"
         :disabled="busy"
         :aria-label="t('console.channels.pairings.approveLabel', { sender: pendingPairing.senderName || pendingPairing.senderId })"
-        @click.stop="emit('approve', asAdminChecked())"
+        @click.stop="emit('approve', isChecked())"
       >{{ t('console.channels.pairings.approve') }}</button>
       <button
         type="button"

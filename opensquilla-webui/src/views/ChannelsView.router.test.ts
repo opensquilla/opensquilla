@@ -44,7 +44,7 @@ function channelCard(root: ParentNode, name: string): HTMLElement {
   return card
 }
 
-async function mountWithRealRouter() {
+async function mountWithRealRouter(options: { webHistory?: boolean } = {}) {
   vi.resetModules()
 
   const { KeepAlive, createApp, defineComponent, h, nextTick, ref } = await import('vue')
@@ -123,10 +123,12 @@ async function mountWithRealRouter() {
   vi.doMock('@/components/LoadingSpinner.vue', () => ({ default: emptyStub('loading-spinner') }))
 
   // Same module registry as the component's own vue-router import.
-  const { RouterView, createMemoryHistory, createRouter } = await import('vue-router')
+  const { RouterView, createMemoryHistory, createRouter, createWebHistory } = await import('vue-router')
   const Component = (await import('./ChannelsView.vue')).default
 
-  const history = createMemoryHistory()
+  // Web history (happy-dom's real History) when a test needs the maintained
+  // back/forward state (history.state.forward); memory history otherwise.
+  const history = options.webHistory ? createWebHistory() : createMemoryHistory()
   // finalizeNavigation calls history.push only when a PUSH actually lands —
   // a push superseded by a same-tick replace never reaches it.
   const historyPush = vi.spyOn(history, 'push')
@@ -287,6 +289,84 @@ describe('ChannelsView with a real router', () => {
       expect(surface.querySelector<HTMLInputElement>('[data-field="name"] input')?.value).toBe('draft-1')
       expect(router.currentRoute.value.query.compose).toBe('1')
       expect(router.currentRoute.value.query.type).toBe('slack')
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('keep-editing after browser Back restores the drill entry from history forward', async () => {
+    const ctx = await mountWithRealRouter({ webHistory: true })
+    const { app, el, flush, router } = ctx
+    try {
+      await flush()
+      channelCard(el, 'ops-slack').click()
+      await flush()
+      const page = el.querySelector<HTMLElement>('.chd')!
+      buttonWithText(page, 'Edit').click()
+      await flush()
+      const input = page.querySelector<HTMLInputElement>('[data-field="slack_channel_id"] input')!
+      input.value = 'C123'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flush()
+
+      router.back()
+      await flush(10)
+      // Back landed on the dashboard entry; the guard held the drill view.
+      expect(router.currentRoute.value.query.channel).toBeUndefined()
+      expect(el.querySelector('.chd')).toBeTruthy()
+
+      const goSpy = vi.spyOn(router, 'go')
+      const replaceSpy = vi.spyOn(router, 'replace')
+      buttonWithText(el, 'Keep editing').click()
+      await flush(10)
+      // The still-intact FORWARD entry is reused — no replace rewrites the
+      // dashboard entry underneath the popstate.
+      expect(goSpy).toHaveBeenCalledWith(1)
+      expect(replaceSpy).not.toHaveBeenCalled()
+      expect(router.currentRoute.value.query.channel).toBe('ops-slack')
+      expect(router.currentRoute.value.query.edit).toBe('1')
+      expect(page.querySelector<HTMLInputElement>('[data-field="slack_channel_id"] input')?.value).toBe('C123')
+
+      // The dashboard entry survived: Back still returns to it.
+      router.back()
+      await flush(10)
+      expect(router.currentRoute.value.query.channel).toBeUndefined()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('a superseded discard guard does not cancel the pending navigation', async () => {
+    const ctx = await mountWithRealRouter()
+    const { app, el, flush, router } = ctx
+    try {
+      await flush()
+      channelCard(el, 'ops-slack').click()
+      await flush()
+      const page = el.querySelector<HTMLElement>('.chd')!
+      buttonWithText(page, 'Edit').click()
+      await flush()
+      const input = page.querySelector<HTMLInputElement>('[data-field="slack_channel_id"] input')!
+      input.value = 'C123'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flush()
+
+      // Browser Back raises the query-driven discard guard…
+      router.back()
+      await flush(6)
+      expect(buttonWithText(el, 'Keep editing')).toBeTruthy()
+
+      // …then the user clicks through to another page. The route-leave guard
+      // supersedes the pending confirm, and the superseded handler must NOT
+      // fire its URL-restoring replace (that used to cancel this navigation).
+      const nav = router.push('/overview')
+      await flush()
+      buttonWithText(el, 'Discard').click()
+      await flush(6)
+      const failure = await nav
+      expect(failure).toBeUndefined()
+      expect(router.currentRoute.value.path).toBe('/overview')
+      expect(el.querySelector('[data-testid="overview-view"]')).toBeTruthy()
     } finally {
       app.unmount()
     }

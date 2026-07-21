@@ -129,6 +129,8 @@ async function mountChannelsView(options: {
   initialPairings?: Array<Record<string, unknown>>
   /** When set, config.get rejects (admin counts become unknown). */
   configGetError?: boolean
+  /** When set, approve commits but the asAdmin grant fails non-fatally. */
+  adminGrantFails?: boolean
   /** When set, onboarding.channel.probe rejects with this message. */
   draftProbeError?: { message: string }
   /** Initial route query (deep-link scenarios). */
@@ -290,6 +292,11 @@ async function mountChannelsView(options: {
       pairings = pairings.map(pairing => pairing.pairingId === params?.pairingId
         ? { ...pairing, status: 'approved', approvedAt: '2026-07-13T10:00:00Z' }
         : pairing)
+      // Mirrors the backend contract: the approval COMMITS even when the
+      // admin grant fails, reported non-fatally via adminGranted + warnings.
+      if (params?.asAdmin && options.adminGrantFails) {
+        return { status: 'approved', adminGranted: false, warnings: ['admin grant failed'] }
+      }
       if (params?.asAdmin) {
         const target = pairings.find(pairing => pairing.pairingId === params?.pairingId)
         if (target) {
@@ -752,6 +759,77 @@ describe('ChannelsView dashboard home', () => {
       app.unmount()
     }
   })
+
+  it('keeps the last-good pending banner and override across a transient facts failure', async () => {
+    let fail = false
+    const loadPairings = vi.fn(async () => {
+      if (fail) throw new Error('store offline')
+      return {
+        pairings: [
+          { pairingId: 'pair-pending', pairingCode: 'AB12CD34', channelName: 'ops-slack', senderId: 'U-PENDING', senderName: 'Pending User', status: 'pending' },
+          { pairingId: 'pair-approved', channelName: 'ops-slack', senderId: 'U-APPROVED', senderName: 'Approved User', status: 'approved' },
+        ],
+      }
+    })
+    const { app, el, flush, nextTick } = await mountChannelsView({ loadPairings })
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      const box = ops.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+
+      // One failed poll must NOT blip the banner out (which would wipe the
+      // operator's explicit as-admin choice): last-good facts stand in.
+      fail = true
+      buttonWithText(el, 'Refresh').click()
+      await flush()
+      await flush()
+      const after = channelCard(el, 'ops-slack')
+      expect(after.textContent).toContain('Pending User')
+      const values = Array.from(after.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      expect(values[1]).toBe('1')
+      expect(after.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!.checked).toBe(true)
+
+      // The next healthy poll re-resolves the SAME request — still overridden.
+      fail = false
+      buttonWithText(el, 'Refresh').click()
+      await flush()
+      await flush()
+      expect(channelCard(el, 'ops-slack').querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!.checked).toBe(true)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('surfaces a failed admin grant after an as-admin card approve', async () => {
+    const { app, el, flush, nextTick, pushToast } = await mountChannelsView({ adminGrantFails: true })
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      const box = ops.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      // The approval committed but the grant failed: plain approve success
+      // plus an actionable warning — never a false admin-success toast.
+      expect(pushToast).toHaveBeenCalledWith('Approved pairing access for Pending User', { tone: 'ok' })
+      expect(pushToast).toHaveBeenCalledWith(
+        'Approved Pending User, but the admin grant failed — retry from the members list.',
+        { tone: 'danger' },
+      )
+      expect(pushToast).not.toHaveBeenCalledWith('Approved Pending User as a channel admin', { tone: 'ok' })
+    } finally {
+      app.unmount()
+    }
+  })
 })
 
 describe('ChannelsView drill-in page', () => {
@@ -1065,6 +1143,94 @@ describe('ChannelsView members section', () => {
         pairingId: 'pair-pending',
         asAdmin: true,
       })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('single-sources the as-admin override between the drill banner and the members row', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, nextTick } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const banner = page.querySelector<HTMLElement>('.chal--pending')!
+      const panel = membersPanel(page)
+      const bannerBox = banner.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      const rowBox = panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      expect(bannerBox.checked).toBe(false)
+      expect(rowBox.checked).toBe(false)
+
+      // Tick the members row: the banner reads the same store-backed value.
+      rowBox.checked = true
+      rowBox.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      expect(bannerBox.checked).toBe(true)
+
+      // Untick on the banner: the row follows — ONE override, two surfaces.
+      bannerBox.checked = false
+      bannerBox.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      expect(rowBox.checked).toBe(false)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('routes the drill banner approve through the members confirmation gate', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, nextTick, rpcCall, confirm, pushToast } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const banner = page.querySelector<HTMLElement>('.chal--pending')!
+      const box = banner.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+
+      banner.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      // Same gate as the Members row (the admin-aware confirm) — the drill
+      // page never offers two different risk gates for the same grant. Only
+      // the dashboard card quick-approve stays confirmation-free.
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Approve pairing request?',
+        body: expect.stringContaining('admin access'),
+      }))
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
+        channelName: 'ops-slack',
+        pairingId: 'pair-pending',
+        asAdmin: true,
+      })
+      expect(pushToast).toHaveBeenCalledWith('Approved Pending User as a channel admin', { tone: 'ok' })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('surfaces a failed admin grant after an as-admin approve from the panel', async () => {
+    const ctx = await mountChannelsView({ adminGrantFails: true })
+    const { app, flush, nextTick, pushToast } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const panel = membersPanel(page)
+      const box = panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      panel.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      expect(pushToast).toHaveBeenCalledWith('Approved pairing access for Pending User', { tone: 'ok' })
+      expect(pushToast).toHaveBeenCalledWith(
+        'Approved Pending User, but the admin grant failed — retry from the members list.',
+        { tone: 'danger' },
+      )
+      // The members list still reloads: the approval itself committed.
+      expect(panel.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
     } finally {
       app.unmount()
     }
@@ -1424,6 +1590,29 @@ describe('ChannelsView compose takeover', () => {
     }
   })
 
+  it('moves focus into the takeover on open and returns it to the invoker on exit', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush } = ctx
+    try {
+      await flush()
+      const addButton = buttonWithText(el, 'Add channel')
+      addButton.focus()
+      addButton.click()
+      await flush()
+      // aria-modal demands managed focus: the surface takes it on open…
+      const surface = el.querySelector<HTMLElement>('.chc__surface')!
+      expect(document.activeElement).toBe(surface)
+
+      // …and the invoker gets it back when the takeover dismisses.
+      surface.querySelector<HTMLButtonElement>('.chc__back')!.click()
+      await flush()
+      expect(el.querySelector('.chc')).toBeNull()
+      expect(document.activeElement).toBe(addButton)
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
   it('renders a recognition-first gallery: brand-mark cards with credential footnotes', async () => {
     const ctx = await mountChannelsView()
     try {
@@ -1437,7 +1626,10 @@ describe('ChannelsView compose takeover', () => {
 
       const slackCard = surface.querySelector<HTMLElement>('[data-channel-type="slack"]')!
       expect(slackCard.querySelector('.brand-mark')).toBeTruthy()
-      expect(slackCard.querySelector('.ctg__cred')?.textContent).toBe('Bot token · Signing secret')
+      // The footnote honors show_when against the spec defaults: the
+      // webhook-only signing secret is not part of the default (socket)
+      // setup path, so it must not join the credential mix.
+      expect(slackCard.querySelector('.ctg__cred')?.textContent).toBe('Bot token')
       // Matrix has no dedicated credential fields — the footnote derives from
       // its required fields instead of rendering blank.
       const matrixCard = surface.querySelector<HTMLElement>('[data-channel-type="matrix"]')!

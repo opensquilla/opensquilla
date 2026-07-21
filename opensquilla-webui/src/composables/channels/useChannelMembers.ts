@@ -211,11 +211,24 @@ export function useChannelMembers() {
         // payload and never touches channel_admin_senders.
         const params: Record<string, unknown> = { channelName: name, pairingId: pairing.pairingId }
         if (asAdmin) params.asAdmin = true
-        await rpc.call('channels.pairing.approve', params)
-        announcement.value = asAdmin
-          ? t('console.channels.pairings.approveAdminSuccess', { sender })
-          : t('console.channels.pairings.approveSuccess', { sender })
-        pushToast(announcement.value, { tone: 'ok' })
+        const res = await rpc.call<{ adminGranted?: boolean; warnings?: string[] }>(
+          'channels.pairing.approve', params)
+        // The backend commits the approval even when the admin grant fails
+        // (adminGranted:false + warnings) — surface that instead of falsely
+        // announcing an admin success.
+        if (asAdmin && res?.adminGranted === false) {
+          announcement.value = t('console.channels.pairings.approveSuccess', { sender })
+          pushToast(announcement.value, { tone: 'ok' })
+          pushToast(
+            t('console.channels.pairings.adminGrantFailedAfterApprove', { sender }),
+            { tone: 'danger' },
+          )
+        } else {
+          announcement.value = asAdmin
+            ? t('console.channels.pairings.approveAdminSuccess', { sender })
+            : t('console.channels.pairings.approveSuccess', { sender })
+          pushToast(announcement.value, { tone: 'ok' })
+        }
         await load(name)
       } catch (err) {
         error.value = t('console.channels.pairings.approveFailed', { sender, error: errorMessage(err) })

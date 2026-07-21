@@ -129,15 +129,20 @@
       </div>
 
       <!-- The same alert strip the dashboard card renders, so the two
-           surfaces cannot drift. -->
+           surfaces cannot drift. The as-admin checkbox is controlled by the
+           members store here: the banner and the Members row for the same
+           pairing share ONE override, and the approve runs through the same
+           confirmed members flow as the row. -->
       <ChannelAlerts
         :pending-pairing="drillPending"
         :pending-overflow="Math.max(0, drillPendingCount - 1)"
         :default-as-admin="drillDefaultAsAdmin"
+        :as-admin-checked="drillAsAdminChecked"
         :error-text="drillErrorText"
         :show-fix-credentials="!editMode"
-        :busy="pairingBusy(selectedName)"
-        @approve="asAdmin => approvePairing(selectedName, drillPending, asAdmin)"
+        :busy="drillPairingBusy"
+        @approve="approveDrillPending"
+        @set-as-admin="setDrillAsAdmin"
         @reject="rejectPairing(selectedName, drillPending)"
         @restart="restartChannel(selectedChannel)"
         @fix-credentials="enterEdit"
@@ -456,15 +461,20 @@ const probeResults = ref<Record<string, ProbeResult>>({})
 const editor = useChannelEditor()
 const editMode = ref(false)
 const editorSaving = ref(false)
+/** Discard-guard verdict: true = discard the draft and proceed, false = the
+ *  operator chose "keep editing" (restore the URL), 'superseded' = a NEWER
+ *  guarded action took this question over — the stale handler must neither
+ *  restore the URL nor cancel the newer flow. */
+type DiscardVerdict = boolean | 'superseded'
 // Pending inline discard confirmation (the centralized guard's UI state).
-const discardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
+const discardRequest = ref<{ resolve: (verdict: DiscardVerdict) => void } | null>(null)
 // Compose takeover: a SECOND editor instance so an add-channel draft can
 // never cross-contaminate the selected channel's edit draft.
 const composeEditor = useChannelEditor()
 const composeMode = ref(false)
 const composeType = ref('')
 const composeSaving = ref(false)
-const composeDiscardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
+const composeDiscardRequest = ref<{ resolve: (verdict: DiscardVerdict) => void } | null>(null)
 // Members (pairings + channel admins) for the drilled-in channel — state owned
 // here so it survives section scrolling; ChannelMembersPanel renders it.
 const members = useChannelMembers()
@@ -579,8 +589,8 @@ onUnmounted(teardownLive)
 // The guard only answers the confirm — the actual draft teardown happens in
 // onDeactivated, after the navigation has finalized (see above).
 onBeforeRouteLeave(async () => {
-  if (draftDirty.value && !(await confirmDiscardDraft())) return false
-  if (composeDirty.value && !(await confirmDiscardCompose())) return false
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return false
+  if (composeDirty.value && (await confirmDiscardCompose()) !== true) return false
   return true
 })
 
@@ -590,7 +600,7 @@ onBeforeRouteLeave(async () => {
  */
 async function openChannelCompose(): Promise<void> {
   if (composeMode.value) return
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   if (editMode.value) discardDraftAndExitEdit()
   if (selectedName.value) forceCloseDetail()
   composeMode.value = true
@@ -681,10 +691,21 @@ async function loadHomeFacts(only?: string[]): Promise<void> {
     const next: Record<string, HomeFacts> = { ...homeFacts.value }
     for (const [name, rows] of pairingsByName) {
       const adminList = adminsMap ? adminsMap[name] : null
+      // A transient per-channel failure keeps the LAST-GOOD facts instead of
+      // overwriting them with unknown: the pending banner must not blip out
+      // (wiping the operator's as-admin choice) on one failed poll, and a
+      // channel never fetched still degrades to unknown (—), never to zeros.
+      const previous = homeFacts.value[name]
       next[name] = {
-        members: rows ? rows.filter(pairing => pairing.status === 'approved').length : null,
-        admins: adminsMap ? (Array.isArray(adminList) ? adminList.length : 0) : null,
-        pending: rows ? rows.filter(pairing => pairing.status === 'pending') : null,
+        members: rows
+          ? rows.filter(pairing => pairing.status === 'approved').length
+          : previous?.members ?? null,
+        admins: adminsMap
+          ? (Array.isArray(adminList) ? adminList.length : 0)
+          : previous?.admins ?? null,
+        pending: rows
+          ? rows.filter(pairing => pairing.status === 'pending')
+          : previous?.pending ?? null,
       }
     }
     homeFacts.value = next
@@ -779,11 +800,20 @@ async function approvePairing(name: string, pairing: ChannelPairing | null, asAd
       // payload and never touches channel_admin_senders.
       const params: Record<string, unknown> = { channelName: name, pairingId: pairing.pairingId }
       if (asAdmin) params.asAdmin = true
-      await rpc.call('channels.pairing.approve', params)
-      pushToast(
-        t(asAdmin ? 'console.channels.pairings.approveAdminSuccess' : 'console.channels.pairings.approveSuccess', { sender }),
-        { tone: 'ok' },
-      )
+      const res = await rpc.call<{ adminGranted?: boolean; warnings?: string[] }>(
+        'channels.pairing.approve', params)
+      // The backend commits the approval even when the admin grant fails
+      // (adminGranted:false + warnings) — surface that instead of falsely
+      // toasting an admin success.
+      if (asAdmin && res?.adminGranted === false) {
+        pushToast(t('console.channels.pairings.approveSuccess', { sender }), { tone: 'ok' })
+        pushToast(t('console.channels.pairings.adminGrantFailedAfterApprove', { sender }), { tone: 'danger' })
+      } else {
+        pushToast(
+          t(asAdmin ? 'console.channels.pairings.approveAdminSuccess' : 'console.channels.pairings.approveSuccess', { sender }),
+          { tone: 'ok' },
+        )
+      }
     } catch (err) {
       pushToast(t('console.channels.pairings.approveFailed', { sender, error: errorMessage(err) }), { tone: 'danger' })
     }
@@ -846,11 +876,13 @@ const editorBarVisible = computed(() =>
  * short-circuit at each call site); a dirty one raises the inline
  * destructive-ghost pair in the floating bar and resolves with the verdict.
  */
-function confirmDiscardDraft(): Promise<boolean> {
+function confirmDiscardDraft(): Promise<DiscardVerdict> {
   if (!draftDirty.value) return Promise.resolve(true)
-  // A newer guarded action supersedes a pending one, which resolves as "keep".
-  if (discardRequest.value) discardRequest.value.resolve(false)
-  return new Promise<boolean>(resolve => {
+  // A newer guarded action supersedes a pending one. The distinct verdict
+  // (not `false`) lets the stale handler skip its keep-editing URL restore,
+  // which would otherwise cancel the newer action's in-flight navigation.
+  if (discardRequest.value) discardRequest.value.resolve('superseded')
+  return new Promise<DiscardVerdict>(resolve => {
     discardRequest.value = { resolve }
   })
 }
@@ -879,7 +911,7 @@ function enterEdit(): void {
 }
 
 async function requestExitEdit(): Promise<void> {
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   discardDraftAndExitEdit()
 }
 
@@ -953,10 +985,10 @@ const composeDirty = computed(() => composeEditor.form.isDirty.value)
 
 /** Compose twin of confirmDiscardDraft(): the inline destructive-ghost pair
  *  renders in the takeover footer, never a modal. */
-function confirmDiscardCompose(): Promise<boolean> {
+function confirmDiscardCompose(): Promise<DiscardVerdict> {
   if (!composeDirty.value) return Promise.resolve(true)
-  if (composeDiscardRequest.value) composeDiscardRequest.value.resolve(false)
-  return new Promise<boolean>(resolve => {
+  if (composeDiscardRequest.value) composeDiscardRequest.value.resolve('superseded')
+  return new Promise<DiscardVerdict>(resolve => {
     composeDiscardRequest.value = { resolve }
   })
 }
@@ -970,12 +1002,15 @@ function exitCompose(): void {
   composeMode.value = false
   composeType.value = ''
   composeSaving.value = false
-  resolveComposeDiscard(false)
+  // Compose is closing: a still-pending discard question is moot, and its
+  // handler must not fire the keep-editing URL restore.
+  composeDiscardRequest.value?.resolve('superseded')
+  composeDiscardRequest.value = null
   composeEditor.reset()
 }
 
 async function requestExitCompose(): Promise<void> {
-  if (composeDirty.value && !(await confirmDiscardCompose())) return
+  if (composeDirty.value && (await confirmDiscardCompose()) !== true) return
   exitCompose()
 }
 
@@ -986,7 +1021,7 @@ function pickComposeType(type: string): void {
 
 /** [Change] on the receipt chip: back to the gallery, guarded when dirty. */
 async function requestComposeRepick(): Promise<void> {
-  if (composeDirty.value && !(await confirmDiscardCompose())) return
+  if (composeDirty.value && (await confirmDiscardCompose()) !== true) return
   composeType.value = ''
   composeEditor.reset()
   void composeEditor.loadCatalog()
@@ -1053,7 +1088,7 @@ async function handleComposeSaveResult(result: Awaited<ReturnType<typeof compose
 async function openChannel(ch: Channel): Promise<void> {
   // The dirty short-circuit keeps the clean path synchronous (no microtask
   // gap between click and drill) while every dirty exit hits the guard.
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   applySelection(channelKey(ch))
   // Entering drill-in is a history PUSH: Back returns to the dashboard.
   syncQuery('push')
@@ -1072,7 +1107,7 @@ function applySelection(name: string): void {
 
 /** Guarded exit used by the breadcrumb (‹ Channels). */
 async function requestLeaveDetail(): Promise<void> {
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   leaveDetail()
 }
 
@@ -1125,6 +1160,32 @@ const drillDefaultAsAdmin = computed(() =>
   members.adminSenders.value.length === 0)
 const drillErrorText = computed(() =>
   selectedChannel.value ? cardErrorText(selectedChannel.value) : '')
+
+// The drill banner's "as admin" checkbox is CONTROLLED by the members store:
+// the store's per-pairing override map is the single source of truth, so the
+// banner and the Members row for the same request always read (and write)
+// one value.
+const drillAsAdminChecked = computed(() =>
+  drillPending.value ? members.asAdminChecked(drillPending.value) : false)
+
+function setDrillAsAdmin(value: boolean): void {
+  if (drillPending.value) members.setAsAdminChecked(drillPending.value, value)
+}
+
+const drillPairingBusy = computed(() =>
+  pairingBusy(selectedName.value) ||
+  (drillPending.value ? members.actionPending(drillPending.value, 'approve') : false))
+
+// The drill page hosts BOTH the banner and the Members rows: the banner
+// approve reuses the members flow (same confirmation gate, admin-aware), so
+// one page never has two different risk gates for the same grant. The
+// dashboard card quick-approve stays confirmation-free (see approvePairing).
+async function approveDrillPending(asAdmin: boolean): Promise<void> {
+  const pairing = drillPending.value
+  if (!pairing) return
+  await members.approve(pairing, asAdmin)
+  await Promise.all([loadHomeFacts(), refresh()])
+}
 
 function sectionEl(section: SectionId): HTMLElement | null {
   return pageRef.value?.querySelector<HTMLElement>(`#chd-section-${section}`) ?? null
@@ -1287,6 +1348,26 @@ function syncQuery(mode: 'push' | 'replace'): void {
   void router[mode]({ query })
 }
 
+/** "Keep editing" after the drill URL was left behind. Drill-in is a history
+ *  PUSH, so when browser Back raised the guard the drill entry still sits
+ *  FORWARD in history — going forward restores it WITHOUT rewriting the
+ *  dashboard entry underneath (a replace here would erase it, breaking a
+ *  later Back). A bare /channels reached any other way (no matching forward
+ *  entry) restores the query in place instead. */
+function restoreDrillUrl(): void {
+  const state = router.options.history.state as Record<string, unknown> | null | undefined
+  const forward = typeof state?.forward === 'string' ? state.forward : ''
+  const queryIndex = forward.indexOf('?')
+  const forwardChannel = queryIndex >= 0
+    ? new URLSearchParams(forward.slice(queryIndex + 1)).get('channel')
+    : null
+  if (forwardChannel && forwardChannel === selectedName.value) {
+    router.go(1)
+    return
+  }
+  syncQuery('replace')
+}
+
 // Legacy tab values keep resolving: capabilities folded into diagnostics.
 function normalizeTab(tab: string): DetailTab | '' {
   if (tab === 'capabilities') return 'diagnostics'
@@ -1325,7 +1406,9 @@ function applyChannelQuery(name: string, tab: DetailTab | '', edit: boolean): vo
 // guards as its button-driven twin: compose enter/repick and channel switch
 // confirm a dirty edit/compose draft, compose exit confirms a dirty compose
 // draft, and leaving drill-in confirms a dirty edit draft. "Keep editing"
-// restores the previous URL with a replace.
+// restores the previous URL (via the still-intact forward history entry when
+// browser Back raised the guard); a superseded confirm does neither — the
+// newer guarded action owns the flow.
 function applyDetailQuery(): void {
   if (route.path !== '/channels') return
   lastSyncedQuery = serializeOwned(ownedQueryOf(route.query))
@@ -1335,9 +1418,9 @@ function applyDetailQuery(): void {
     const dirty = composeMode.value ? composeDirty.value : draftDirty.value
     if (dirty) {
       const confirmDiscard = composeMode.value ? confirmDiscardCompose : confirmDiscardDraft
-      void confirmDiscard().then(ok => {
-        if (ok) applyComposeQuery(type)
-        else syncQuery('replace')
+      void confirmDiscard().then(verdict => {
+        if (verdict === true) applyComposeQuery(type)
+        else if (verdict === false) syncQuery('replace')
       })
       return
     }
@@ -1347,11 +1430,11 @@ function applyDetailQuery(): void {
   if (composeMode.value) {
     // Back (or a bare /channels URL) exits compose — guarded when dirty.
     if (composeDirty.value) {
-      void confirmDiscardCompose().then(ok => {
-        if (ok) {
+      void confirmDiscardCompose().then(verdict => {
+        if (verdict === true) {
           exitCompose()
           applyDetailQuery()
-        } else {
+        } else if (verdict === false) {
           syncQuery('replace')
         }
       })
@@ -1367,9 +1450,9 @@ function applyDetailQuery(): void {
     // Browser Back (or a hand-edited URL) leaving the drill-in page runs the
     // same discard guard the breadcrumb does; "keep editing" restores the URL.
     if (draftDirty.value) {
-      void confirmDiscardDraft().then(ok => {
-        if (ok) leaveDetail()
-        else syncQuery('replace')
+      void confirmDiscardDraft().then(verdict => {
+        if (verdict === true) leaveDetail()
+        else if (verdict === false) restoreDrillUrl()
       })
       return
     }
@@ -1378,9 +1461,9 @@ function applyDetailQuery(): void {
   }
   if (name !== selectedName.value) {
     if (selectedName.value && draftDirty.value) {
-      void confirmDiscardDraft().then(ok => {
-        if (ok) applyChannelQuery(name, tab, edit)
-        else syncQuery('replace')
+      void confirmDiscardDraft().then(verdict => {
+        if (verdict === true) applyChannelQuery(name, tab, edit)
+        else if (verdict === false) syncQuery('replace')
       })
       return
     }

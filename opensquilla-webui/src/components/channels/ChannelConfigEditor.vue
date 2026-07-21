@@ -286,9 +286,13 @@ function onCancelReplace(name: string) {
 /* Read mode is a fact sheet, not a form: on wide panels the record flows in
    two columns so a saved channel reads at a glance instead of as a strip. */
 @media (min-width: 1100px) {
-  .cfge:not(.is-edit) section.cfge__group { column-gap: 56px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
+  .cfge:not(.is-edit) section.cfge__group { column-gap: 56px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); row-gap: var(--sp-4); }
   .cfge:not(.is-edit) section.cfge__group > .cfge__group-title,
   .cfge:not(.is-edit) section.cfge__group > .cfge__note { grid-column: 1 / -1; }
+  /* The strip layout's sibling margin (below) misaligns the first row of each
+     grid column and doubles the rhythm inside cells — the grid's row-gap owns
+     the spacing here. */
+  .cfge:not(.is-edit) section.cfge__group > .cfge__row { margin-top: 0; }
 }
 .cfge:not(.is-edit) .cfge__row { min-height: 32px; }
 .cfge__group-title {

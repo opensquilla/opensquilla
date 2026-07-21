@@ -7793,6 +7793,22 @@ const ChatView = (() => {
           </span>
           <span class="msg-artifact-card__action" aria-hidden="true">Download</span>
         </a>`;
+      } else if (mime.startsWith('text/html') || _artifactExtension(name) === 'html' || _artifactExtension(name) === 'htm') {
+        const htmlPreviewUrl = _artifactPreviewUrl(artifact || {});
+        html += `<div class="msg-artifact-html-preview">
+          <div class="msg-artifact-html-preview__header">
+            <span class="msg-artifact-html-preview__name">${_esc(name)}</span>
+            <a class="msg-artifact-html-preview__download" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" title="Download ${_escAttr(name)}">Download</a>
+          </div>
+          ${htmlPreviewUrl
+            ? `<iframe class="msg-artifact-html-preview__frame"
+                src="${_escAttr(htmlPreviewUrl)}"
+                sandbox="allow-scripts"
+                loading="lazy"
+                title="${_escAttr(name)}"></iframe>`
+            : `<div class="msg-artifact-html-preview__unavailable">Preview unavailable</div>`
+          }
+        </div>`;
       } else {
         html += `<a class="msg-artifact-chip" href="${_escAttr(downloadHref)}" download="${_escAttr(name)}" data-artifact-category="${_escAttr(category)}" data-artifact-download="${_escAttr(downloadUrl)}" data-artifact-id="${_escAttr(artifact?.id || '')}" data-artifact-name="${_escAttr(name)}" title="${_escAttr(name)}">
           <span class="msg-file-chip__icon" aria-hidden="true">${_esc(_artifactCategoryLabel(category))}</span>

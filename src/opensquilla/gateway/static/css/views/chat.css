@@ -1364,6 +1364,58 @@
   padding: 3px 8px;
 }
 
+.msg-artifact-html-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-top: var(--sp-2);
+  overflow: hidden;
+  width: 100%;
+}
+
+.msg-artifact-html-preview__header {
+  align-items: center;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  font-size: var(--fs-xs);
+  justify-content: space-between;
+  padding: 6px 10px;
+}
+
+.msg-artifact-html-preview__name {
+  color: var(--text-2);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg-artifact-html-preview__download {
+  color: var(--accent);
+  flex-shrink: 0;
+  font-weight: 600;
+  margin-left: var(--sp-2);
+  text-decoration: none;
+}
+
+.msg-artifact-html-preview__download:hover {
+  text-decoration: underline;
+}
+
+.msg-artifact-html-preview__frame {
+  border: 0;
+  display: block;
+  height: 400px;
+  width: 100%;
+}
+
+.msg-artifact-html-preview__unavailable {
+  color: var(--text-3);
+  font-size: var(--fs-sm);
+  padding: var(--sp-4);
+  text-align: center;
+}
+
 .msg.user .msg-body.msg-body--has-attachments {
   align-items: flex-end;
   background: transparent;

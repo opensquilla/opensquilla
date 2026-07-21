@@ -277,6 +277,10 @@ def _apply_run_context_route_metadata(
         preserve_materialized_user_grants=True,
     )
     route_envelope.metadata["run_mode"] = run_context.run_mode.value
+    # A persisted (non-default) run context reflects a genuine per-session
+    # /sandbox choice; routing uses this to avoid upgrading an explicit
+    # Managed-Execution selection to channel-admin Full Host Access.
+    route_envelope.metadata["run_mode_explicit"] = run_context.source != "default"
     route_envelope.metadata["sandbox_mounts"] = (
         filtered_run_context.to_origin_payload()["mounts"]
         if filtered_run_context is not None

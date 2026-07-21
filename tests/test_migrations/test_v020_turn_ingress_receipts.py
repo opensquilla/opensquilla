@@ -220,7 +220,8 @@ def test_schema_ahead_refuses_boot_without_v020(tmp_path: Path) -> None:
     older_build_dir.mkdir()
     unavailable = {
         "V020__turn_ingress_receipts.py",
-        "V021__telemetry_daily_usage.py",
+        "V021__usage_ledger.py",
+        "V022__telemetry_daily_usage.py",
     }
     for migration in MIGRATIONS_DIR.glob("V*.py"):
         if migration.name not in unavailable:

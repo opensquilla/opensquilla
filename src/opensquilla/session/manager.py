@@ -44,6 +44,8 @@ from opensquilla.session.storage import (
 )
 from opensquilla.session.tokenizer import estimate_tokens
 
+_SANDBOX_RUN_CONTEXT_ORIGIN_KEY = "sandbox_run_context"
+
 
 @dataclass(frozen=True, slots=True)
 class CanonicalTranscriptPage:
@@ -185,6 +187,15 @@ def _transcript_preimage(entries: list[TranscriptEntry]) -> tuple[tuple[Any, ...
         )
         for entry in entries
     )
+
+
+def _branch_origin(parent_origin: Any) -> dict[str, Any] | None:
+    if not isinstance(parent_origin, dict):
+        return None
+    sandbox_context = parent_origin.get(_SANDBOX_RUN_CONTEXT_ORIGIN_KEY)
+    if not isinstance(sandbox_context, dict):
+        return None
+    return {_SANDBOX_RUN_CONTEXT_ORIGIN_KEY: dict(sandbox_context)}
 
 
 class SessionManager:
@@ -841,6 +852,7 @@ class SessionManager:
             model_provider=parent.model_provider,
             channel=parent.channel,
             chat_type=parent.chat_type,
+            origin=_branch_origin(parent.origin),
         )
 
         if fork_transcript:

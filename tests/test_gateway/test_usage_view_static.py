@@ -14,8 +14,94 @@ def test_usage_view_renders_cost_source_badges_and_exports_fields() -> None:
     assert "{ key: 'cost_source', label: 'Source' }" in source
     assert "billed_cost_usd" in source
     assert "estimated_cost_usd" in source
+    assert "estimated_event_count" in source
     assert "missing_cost_entries" in source
     assert "cost_ephemeral" in source
+    assert "'aggregation_mode'" in source
+    assert "'coverage_status'" in source
+    assert "'-approximate'" in source
+
+
+def test_usage_view_negotiates_query_v1_and_falls_back_without_an_error_toast() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+    start = source.index("async function _loadData()")
+    end = source.index("  function _renderUsageSections()", start)
+    body = source[start:end]
+
+    assert "_rpc.hello.features.methods" in source
+    assert "methods.includes('usage.query')" in source
+    assert "schemaVersion: 1" in source
+    assert "include: { days: true, models: true, sessions: true }" in source
+    assert "await _rpc.call('usage.query'" in body
+    assert "_methodNotFound(err)" in body
+    assert "_usageQueryUnavailable = true" in body
+    assert "await _rpc.call('usage.status')" in body
+    # The query failure itself is silent: only failure of the compatibility
+    # endpoint leaves the page in an error state.
+    assert body.count("UI.toast('Failed to load usage:") == 1
+
+
+def test_usage_view_uses_server_totals_and_calendar_day_fallback() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+    cutoff_start = source.index("function _rangeCutoffMs(range)")
+    cutoff_end = source.index("  // Per-render cache", cutoff_start)
+    cutoff = source[cutoff_start:cutoff_end]
+    metrics_start = source.index("function _renderMetrics(status)")
+    metrics_end = source.index("  function _renderTable()", metrics_start)
+    metrics = source[metrics_start:metrics_end]
+
+    assert "new Date(now.getFullYear(), now.getMonth(), now.getDate())" in cutoff
+    assert "start.setDate(start.getDate() - (Number(activeRange) - 1))" in cutoff
+    assert "86400000" not in cutoff
+    assert "status && status.totals ? status.totals" in metrics
+    assert "costNanos" in source
+    assert "/ 1_000_000_000" in source
+
+
+def test_usage_view_surfaces_partial_and_estimated_coverage() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+
+    assert "mode: coverage.status === 'complete' ? 'ledger_exact' : 'ledger_partial'" in source
+    assert "Usage-ledger migration is still completing" in source
+    assert "cannot be assigned to a date" in source
+    assert "estimatedEventCount" in source
+    assert "estimated call" in source
+    assert "known cost only" in source
+    assert "cost incomplete" in source
+    assert "Timezone ${fallback.requestedTimezone} is invalid" in source
+    assert "dates are grouped in ${fallback.effectiveTimezone}" in source
+    assert "reason: 'invalid_timezone'" in source
+
+
+def test_usage_view_keeps_same_range_ledger_data_on_transient_failure() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+    start = source.index("async function _loadData()")
+    end = source.index("  function _renderUsageSections()", start)
+    body = source[start:end]
+
+    assert "const requestedPreset = _usagePreset();" in body
+    assert "transientQueryFailure = true;" in body
+    assert "_lastStatus.source === 'usage_ledger'" in body
+    assert "_lastStatus.range.preset === requestedPreset" in body
+
+
+def test_usage_view_uses_server_day_buckets_for_the_ledger_chart() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+
+    assert "function _normalizeQueryDay(row)" in source
+    assert "data.days.map(_normalizeQueryDay)" in source
+    assert "(_lastStatus.days || []).slice(-30)" in source
+    assert "Daily usage" in source
+    assert "row._usageDay || !navigationKey ? 'div' : 'button'" in source
+
+
+def test_usage_view_does_not_link_deleted_ledger_sessions_by_id() -> None:
+    source = USAGE_JS.read_text(encoding="utf-8")
+
+    assert "function _sessionNavigationKey(row)" in source
+    assert "if (row && row._usageLedger)" in source
+    assert "_rowVal(row, 'sessionKey', 'session_key')" in source
+    assert "session: sessionKey || sessionId" in source
 
 
 def test_usage_sessions_default_to_modified_time_sort() -> None:

@@ -34,6 +34,7 @@ from opensquilla.engine.cache_break_monitor import (
     notify_compaction,
     record_prompt_state,
 )
+from opensquilla.engine.elevation_triage import RuleAssessment, local_elevation_assessment
 from opensquilla.engine.fallback import FallbackPolicy, backoff_sleep
 from opensquilla.engine.final_diff_contract import (
     FinalDiffContractObservation,
@@ -92,6 +93,18 @@ from opensquilla.engine.tool_result_store import (
 )
 from opensquilla.engine.tool_token_estimate import estimate_tokens as get_approx_tokens
 from opensquilla.engine.usage import model_usage_cost_fields
+from opensquilla.engine.usage_accounting import (
+    UsageAccountingScope,
+    UsageCallStart,
+    UsageEventSink,
+    UsageExecutionContext,
+    bind_usage_accounting_scope,
+    current_usage_accounting_scope,
+    has_known_provider_usage_receipt,
+    normalize_provider_usage,
+    provider_accounts_physical_usage,
+    start_usage_call,
+)
 from opensquilla.execution_status import (
     mark_execution_status_truncated,
     runtime_execution_status,
@@ -148,6 +161,8 @@ from opensquilla.result_budget import (
 )
 from opensquilla.router_control import router_control_replay_event_from_payload
 from opensquilla.safety.secret_redaction import redact_secret_value
+from opensquilla.sandbox.approval_runtime import ApprovalAction, SuspendedToolRequest
+from opensquilla.sandbox.elevation import ElevationAction
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
@@ -172,6 +187,10 @@ from opensquilla.tool_boundary import AgentToolHandler as ToolHandler
 from opensquilla.tools.projected_arguments import find_projected_tool_argument
 from opensquilla.tools.registry import ToolRegistry
 from opensquilla.tools.types import ToolContext, current_tool_context
+from opensquilla.usage_reasons import (
+    normalize_usage_unknown_reason,
+    provider_error_usage_reason,
+)
 
 from .context import ContextAssembly
 from .subagent import SubagentManager, SubagentSpec
@@ -931,6 +950,64 @@ def _pending_approval_payload(content: str) -> dict[str, Any] | None:
     return payload
 
 
+def _suspend_tool_request(
+    tool_call: ToolCall,
+    payload: dict[str, Any],
+) -> SuspendedToolRequest:
+    """Capture the original provider request plus its full model arguments."""
+
+    from opensquilla.gateway.approval_queue import get_approval_queue
+
+    raw_action: dict[str, Any] = {}
+    retry_context: dict[str, Any] = {}
+    approval_session_key = ""
+    try:
+        entry = get_approval_queue().get(str(payload["approval_id"]))
+        if isinstance(entry.params.get("action"), dict):
+            raw_action = dict(entry.params["action"])
+        for key in (
+            "backendRetry",
+            "sandboxOriginalOutput",
+            "sandboxBackend",
+            "sandboxBackendNotes",
+            "retryReason",
+        ):
+            if key in entry.params:
+                retry_context[key] = entry.params[key]
+        approval_session_key = str(entry.params.get("sessionKey") or "")
+    except (KeyError, TypeError):
+        pass
+    if tool_call.tool_name == "apply_patch":
+        kind = "apply_patch"
+    elif tool_call.tool_name == "execute_code":
+        kind = "code"
+    elif payload.get("approvalKind") == "sandbox_network":
+        kind = "network"
+    elif tool_call.tool_name in {"write_file", "edit_file", "delete_file"}:
+        kind = "filesystem"
+    elif tool_call.tool_name in {"image", "pdf", "audio"}:
+        kind = "media"
+    else:
+        kind = "exec_command"
+    action = ApprovalAction(
+        kind=kind,  # type: ignore[arg-type]
+        call_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        cwd=Path(str(raw_action.get("cwd") or ".")).expanduser().resolve(strict=False),
+        payload={
+            "arguments": dict(tool_call.arguments),
+            "elevation": raw_action,
+            "retry_context": retry_context,
+        },
+        justification=str(raw_action.get("justification") or ""),
+    )
+    return SuspendedToolRequest(
+        tool_call=tool_call,
+        action=action,
+        metadata={"session_key": approval_session_key},
+    )
+
+
 async def _wait_for_pending_approval_resolution(
     payload: dict[str, Any],
     *,
@@ -942,9 +1019,160 @@ async def _wait_for_pending_approval_resolution(
     try:
         from opensquilla.gateway.approval_queue import get_approval_queue
 
-        await get_approval_queue().wait(approval_id, timeout=timeout)
+        queue = get_approval_queue()
+        await queue.wait(approval_id, timeout=max(0.0, timeout))
     except KeyError:
         return
+
+
+async def _review_pending_elevation_if_configured(
+    payload: dict[str, Any],
+    *,
+    transcript: list[Message],
+    runtime_events_path: str | None,
+    suspended_action: ApprovalAction | None = None,
+) -> RuleAssessment | None:
+    """Resolve one internal elevation record through deterministic local rules."""
+
+    approval_id = payload.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return None
+
+    from opensquilla.gateway.approval_queue import get_approval_queue
+    queue = get_approval_queue()
+    try:
+        entry = queue.get(approval_id)
+    except KeyError:
+        return None
+    params = entry.params
+    approval_kind = str(params.get("approvalKind") or "")
+    if (
+        entry.namespace != "exec"
+        or approval_kind not in {"sandbox_elevation", "sandbox_network"}
+        or params.get("reviewer") != "auto_review"
+        or params.get("humanActionable") is not False
+    ):
+        return None
+    if entry.resolved:
+        return None
+
+    fingerprint = str(
+        (
+            params.get("reviewFingerprint")
+            if approval_kind == "sandbox_network"
+            else params.get("fingerprint")
+        )
+        or ""
+    )
+    append_runtime_event(
+        runtime_events_path,
+        {
+            "event_type": "sandbox_elevation_review",
+            "phase": "started",
+            "review_id": approval_id,
+            "approval_id": approval_id,
+            "fingerprint": fingerprint,
+            "humanActionable": False,
+            "reviewer": "deterministic_rules",
+            "action": (
+                suspended_action.audit_payload() if suspended_action is not None else None
+            ),
+        },
+    )
+
+    review_source = "rules"
+    try:
+        raw_action = params.get("action")
+        if not isinstance(raw_action, dict):
+            raise ValueError("missing_canonical_elevation_action")
+        action = ElevationAction.from_canonical_payload(raw_action)
+        if action.fingerprint() != fingerprint:
+            raise ValueError("elevation_action_fingerprint_mismatch")
+        assessment = local_elevation_assessment(action, transcript)
+    except Exception as exc:
+        review_source = "rules_integrity_failure"
+        assessment = RuleAssessment(
+            risk_level="critical",
+            user_authorization="unknown",
+            outcome="deny",
+            rationale=(
+                "The exact approval action failed canonical integrity validation: "
+                f"{str(exc) or type(exc).__name__}"
+            ),
+            human_confirmation_allowed=False,
+        )
+
+    updated_params = dict(params)
+    requires_human_confirmation = (
+        assessment.risk_level == "critical" and assessment.human_confirmation_allowed
+    )
+    updated_params.update(
+        {
+            "reviewRiskLevel": assessment.risk_level,
+            "reviewAuthorization": assessment.user_authorization,
+            "reviewOutcome": assessment.outcome,
+            "reviewStatus": assessment.status,
+            "reviewRationale": assessment.rationale,
+            "reviewSource": review_source,
+        }
+    )
+    if requires_human_confirmation:
+        updated_params.update(
+            {
+                "reviewer": "user",
+                "humanActionable": True,
+                "ruleReviewOutcome": assessment.outcome,
+                "reviewStatus": "human_confirmation_required",
+            }
+        )
+    try:
+        queue.update_params(approval_id, updated_params)
+        if not requires_human_confirmation:
+            queue.resolve(approval_id, assessment.outcome == "allow")
+    except ValueError:
+        # Another resolver won the race. Never override an existing decision.
+        return None
+
+    if assessment.outcome == "allow" and approval_kind == "sandbox_network":
+        from opensquilla.sandbox.escalation import grant_auto_review_network_once
+
+        grant_auto_review_network_once(updated_params)
+
+    append_runtime_event(
+        runtime_events_path,
+        {
+            "event_type": "sandbox_elevation_review",
+            "phase": "completed",
+            "review_id": approval_id,
+            "approval_id": approval_id,
+            "fingerprint": fingerprint,
+            "humanActionable": False,
+            "risk_level": assessment.risk_level,
+            "authorization": assessment.user_authorization,
+            "outcome": assessment.outcome,
+            "status": assessment.status,
+            "rationale": assessment.rationale,
+            "attempt": assessment.attempt_count,
+            "latency_ms": assessment.latency_ms,
+            "human_confirmation_required": requires_human_confirmation,
+            "review_source": review_source,
+        },
+    )
+    logger.info(
+        "sandbox_elevation.review_completed",
+        approval_id=approval_id,
+        fingerprint=fingerprint,
+        risk_level=assessment.risk_level,
+        authorization=assessment.user_authorization,
+        outcome=assessment.outcome,
+        source=review_source,
+        status=(
+            "human_confirmation_required"
+            if requires_human_confirmation
+            else assessment.status
+        ),
+    )
+    return None if requires_human_confirmation else assessment
 
 
 @functools.lru_cache(maxsize=4096)
@@ -1365,6 +1593,8 @@ def _chat_config_with_thinking_disabled(chat_cfg: ChatConfig) -> ChatConfig:
         stop_sequences=chat_cfg.stop_sequences,
         cache_breakpoints=chat_cfg.cache_breakpoints,
         cache_mode=chat_cfg.cache_mode,
+        output_json_schema=chat_cfg.output_json_schema,
+        output_json_schema_strict=chat_cfg.output_json_schema_strict,
         model_capabilities=chat_cfg.model_capabilities,
         thinking_level=None,
         provider_request_max_chars=chat_cfg.provider_request_max_chars,
@@ -1452,6 +1682,8 @@ class Agent:
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
         failure_injector: FailureInjector | None = None,
+        usage_event_sink: UsageEventSink | None = None,
+        usage_execution_context: UsageExecutionContext | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
@@ -1502,6 +1734,12 @@ class Agent:
         # it is unset; a test passes an explicit FailureInjector to script the
         # retry/rotate/fallback chain without a network or a real provider.
         self._failure_injector: FailureInjector | None = failure_injector
+        # Optional provider-call ledger boundary.  Keeping both values out of
+        # AgentConfig prevents persistence concerns from leaking into provider
+        # request configuration.  With no sink, every accounting branch below
+        # is skipped and the historical runtime path is unchanged.
+        self._usage_event_sink = usage_event_sink
+        self._usage_execution_context = usage_execution_context
         if self.tool_handler is not None and self._tool_context is not None:
             self.tool_handler = self._bind_tool_handler_context(
                 self.tool_handler,
@@ -3723,6 +3961,97 @@ class Agent:
     def set_history(self, messages: list[Message]) -> None:
         self._history = list(messages)
 
+    def history_snapshot(self) -> list[Message]:
+        """Return a detached history list for read-only session forks."""
+
+        return list(self._history)
+
+    def _usage_context_for_turn(self) -> UsageExecutionContext:
+        """Return the injected execution identity or a safe direct-Agent fallback."""
+
+        if self._usage_execution_context is not None:
+            return self._usage_execution_context
+        execution_id = uuid.uuid4().hex
+        return UsageExecutionContext(
+            execution_id=execution_id,
+            agent_run_id=execution_id,
+            agent_id=str(
+                self.config.tool_result_store_agent_id
+                or (self.config.metadata or {}).get("agent_id")
+                or ""
+            ),
+            run_kind="agent",
+        )
+
+    async def _usage_call_start(
+        self,
+        scope: UsageAccountingScope,
+    ) -> UsageCallStart | None:
+        return await start_usage_call(
+            scope,
+            provider=str(
+                self.config.provider_id
+                or getattr(self.provider, "provider_name", "")
+                or ""
+            ),
+            model=str(self.config.model_id or ""),
+        )
+
+    async def _usage_call_finalize(
+        self,
+        call: UsageCallStart,
+        provider_done: object,
+    ) -> None:
+        scope = current_usage_accounting_scope()
+        sink = scope.sink if scope is not None else self._usage_event_sink
+        if sink is None:
+            return
+        result = normalize_provider_usage(
+            provider_done,
+            default_provider=call.provider,
+            default_model=call.model,
+            completed_at_ms=time.time_ns() // 1_000_000,
+        )
+        finalize_task = asyncio.create_task(sink.finalize(call, result))
+        try:
+            await asyncio.shield(finalize_task)
+        except asyncio.CancelledError:
+            # A provider usage receipt already exists.  Finish its durable
+            # write before allowing turn cancellation to unwind.
+            with contextlib.suppress(Exception):
+                await finalize_task
+            raise
+        except Exception as exc:  # noqa: BLE001 - sink owns persistence/retry policy
+            # The durable started row remains available to gateway recovery.
+            # Never discard an already-generated provider response because a
+            # terminal ledger update is temporarily unavailable.
+            logger.warning(
+                "usage_accounting.finalize_failed",
+                event_id=call.event_id,
+                error=str(exc),
+            )
+
+    async def _usage_call_unknown(self, call: UsageCallStart, reason: str) -> None:
+        scope = current_usage_accounting_scope()
+        sink = scope.sink if scope is not None else self._usage_event_sink
+        if sink is None:
+            return
+        stable_reason = normalize_usage_unknown_reason(reason)
+        unknown_task = asyncio.create_task(sink.mark_unknown(call, stable_reason))
+        try:
+            await asyncio.shield(unknown_task)
+        except asyncio.CancelledError:
+            with contextlib.suppress(Exception):
+                await unknown_task
+            raise
+        except Exception as exc:  # noqa: BLE001 - preserve the original turn outcome
+            logger.warning(
+                "usage_accounting.mark_unknown_failed",
+                event_id=call.event_id,
+                reason=stable_reason,
+                error=str(exc),
+            )
+
     async def run_turn(
         self,
         message: str,
@@ -3747,13 +4076,26 @@ class Agent:
             # them at the start of the next turn so a later access re-prompts
             # instead of being silently allowed for the whole session (issue #418).
             prune_once_mount_grants(self._session_key)
-        async for event in self._turn_generator(
-            message,
-            extra_messages,
-            semantic_message,
-            pending_input_provider=pending_input_provider,
-        ):
-            yield event
+        scope = current_usage_accounting_scope()
+        if self._usage_event_sink is not None:
+            context = self._usage_context_for_turn()
+            if not (
+                scope is not None
+                and scope.sink is self._usage_event_sink
+                and scope.context.execution_id == context.execution_id
+            ):
+                scope = UsageAccountingScope(
+                    sink=self._usage_event_sink,
+                    context=context,
+                )
+        with bind_usage_accounting_scope(scope):
+            async for event in self._turn_generator(
+                message,
+                extra_messages,
+                semantic_message,
+                pending_input_provider=pending_input_provider,
+            ):
+                yield event
 
     async def _turn_generator(
         self,
@@ -3769,6 +4111,7 @@ class Agent:
         self._focused_retrieved_tool_result_handles = set()
         self._current_turn_message = message
         _meta_invoke_turn_count.set(0)
+        usage_scope = current_usage_accounting_scope()
 
         # ------ IDLE → THINKING ------
         yield self._transition(AgentState.THINKING)
@@ -3933,6 +4276,8 @@ class Agent:
                 self.config.cache_breakpoints
             ),
             cache_mode=self.config.cache_mode,
+            output_json_schema=self.config.output_json_schema,
+            output_json_schema_strict=self.config.output_json_schema_strict,
             model_capabilities=self.config.model_capabilities,
             thinking_level=(
                 self.config.thinking if isinstance(self.config.thinking, ThinkingLevel) else None
@@ -3986,6 +4331,17 @@ class Agent:
         )
         turn_llm_calls = 0
         turn_tool_errors = 0
+        async def _review_inflight_sandbox_request(
+            payload: dict[str, object],
+        ) -> RuleAssessment | None:
+            return await _review_pending_elevation_if_configured(
+                dict(payload),
+                transcript=turn_messages,
+                runtime_events_path=self.config.runtime_events_path,
+            )
+
+        if self._tool_context is not None:
+            self._tool_context.on_sandbox_auto_review = _review_inflight_sandbox_request
         last_actual_model = ""
         turn_model_usage_breakdown: list[dict[str, Any]] = []
         last_ensemble_trace: dict[str, Any] | None = None
@@ -4725,6 +5081,14 @@ class Agent:
                             failure_kind=failure_kind,
                         )
 
+                    usage_call: UsageCallStart | None = None
+                    usage_call_terminal = False
+                    usage_unknown_reason = "provider_stream_ended_without_usage"
+                    if usage_scope is not None and not provider_accounts_physical_usage(
+                        self.provider
+                    ):
+                        usage_call = await self._usage_call_start(usage_scope)
+
                     try:
                         if self._failure_injector is None:
                             raw_stream = self.provider.chat(
@@ -5096,8 +5460,32 @@ class Agent:
                             elif isinstance(raw_ev, ProviderDoneEvent):
                                 # Call ended. All text was already streamed live as
                                 # it arrived, so there is nothing held to flush here.
+                                if _got_done_event:
+                                    # One physical stream owns one receipt. A
+                                    # malformed adapter repeating Done must not
+                                    # duplicate either legacy or ledger totals.
+                                    continue
                                 provider_done_for_log = raw_ev
                                 _got_done_event = True
+                                physical_usage_provider = str(
+                                    getattr(
+                                        raw_ev,
+                                        "_opensquilla_usage_provider",
+                                        "",
+                                    )
+                                    or ""
+                                )
+                                physical_usage_model = str(
+                                    getattr(raw_ev, "_opensquilla_usage_model", "")
+                                    or raw_ev.model
+                                    or self.config.model_id
+                                    or ""
+                                )
+                                if usage_call is not None and not usage_call_terminal:
+                                    # A malformed provider that emits duplicate Done
+                                    # events still finalizes this call envelope once.
+                                    usage_call_terminal = True
+                                    await self._usage_call_finalize(usage_call, raw_ev)
                                 iter_input_tokens = raw_ev.input_tokens
                                 iter_output_tokens = raw_ev.output_tokens
                                 iter_reasoning_tokens = raw_ev.reasoning_tokens
@@ -5124,13 +5512,14 @@ class Agent:
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             price=resolve_model_price(
-                                                raw_ev.model or self.config.model_id or "",
-                                                self.config.provider_id,
+                                                physical_usage_model,
+                                                physical_usage_provider
+                                                or self.config.provider_id,
                                             ).entry,
                                         ).cost_usd
                                         total_cost_usd_accum_has_estimate = True
-                                if raw_ev.model:
-                                    last_actual_model = raw_ev.model
+                                if physical_usage_model:
+                                    last_actual_model = physical_usage_model
                                 # Usage/cost accounting is billed-attempt based: discarded
                                 # invalid responses still consumed provider tokens, but
                                 # they must not be appended to conversation history or the
@@ -5176,7 +5565,7 @@ class Agent:
                                                 ),
                                                 model_id=str(
                                                     usage_row.get("model")
-                                                    or self.config.model_id
+                                                    or physical_usage_model
                                                     or ""
                                                 ),
                                                 cache_read_tokens=_usage_int(cache_read or 0),
@@ -5188,6 +5577,7 @@ class Agent:
                                                 ),
                                                 provider=str(
                                                     usage_row.get("provider")
+                                                    or physical_usage_provider
                                                     or self.config.provider_id
                                                     or getattr(self.provider, "provider_name", "")
                                                     or ""
@@ -5198,12 +5588,13 @@ class Agent:
                                             self._session_key,
                                             input_tokens=raw_ev.input_tokens,
                                             output_tokens=raw_ev.output_tokens,
-                                            model_id=raw_ev.model or self.config.model_id or "",
+                                            model_id=physical_usage_model,
                                             cache_read_tokens=raw_ev.cached_tokens,
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             billed_cost=raw_ev.billed_cost,
                                             provider=(
-                                                self.config.provider_id
+                                                physical_usage_provider
+                                                or self.config.provider_id
                                                 or getattr(self.provider, "provider_name", "")
                                             ),
                                         )
@@ -5216,6 +5607,16 @@ class Agent:
 
                             elif isinstance(raw_ev, ProviderErrorEvent):
                                 provider_error_for_log = raw_ev
+                                usage_unknown_reason = provider_error_usage_reason(
+                                    raw_ev.code
+                                )
+                                if (
+                                    usage_call is not None
+                                    and not usage_call_terminal
+                                    and has_known_provider_usage_receipt(raw_ev)
+                                ):
+                                    usage_call_terminal = True
+                                    await self._usage_call_finalize(usage_call, raw_ev)
                                 # One-shot thinking/reasoning fallback
                                 _err_lower = raw_ev.message.lower()
                                 if (
@@ -5252,6 +5653,7 @@ class Agent:
                                     error=raw_ev.error,
                                 )
                     except _IterationStreamTimeoutError:
+                        usage_unknown_reason = "iteration_timeout"
                         _notify_call_outcome(ok=False, failure_kind="iteration_timeout")
                         if artifact_delivery_final_response_pending:
                             yield _finish_artifact_delivery_degraded(
@@ -5273,17 +5675,28 @@ class Agent:
                         )
                         yield terminal_error
                         break
+                    except asyncio.CancelledError:
+                        usage_unknown_reason = "cancelled"
+                        raise
                     except TimeoutError:
                         # Total-deadline timeout raised by the stream wrapper:
                         # record the failed call, then propagate unchanged.
+                        usage_unknown_reason = "total_timeout"
                         _notify_call_outcome(ok=False, failure_kind="total_timeout")
                         raise
                     except Exception:
                         # A provider stream that raises (instead of yielding a
                         # ProviderErrorEvent) must still enter the stats before
                         # the exception propagates unchanged.
+                        usage_unknown_reason = "provider_exception"
                         _notify_call_outcome(ok=False, failure_kind="raised")
                         raise
+                    finally:
+                        if usage_call is not None and not usage_call_terminal:
+                            await self._usage_call_unknown(
+                                usage_call,
+                                usage_unknown_reason,
+                            )
 
                     call_duration_ms = int((time.monotonic() - call_started_at) * 1000)
                     _notify_call_outcome(
@@ -6568,6 +6981,8 @@ class Agent:
                             self.config.cache_breakpoints
                         ),
                         cache_mode=chat_cfg.cache_mode,
+                        output_json_schema=chat_cfg.output_json_schema,
+                        output_json_schema_strict=chat_cfg.output_json_schema_strict,
                         model_capabilities=self.config.model_capabilities,
                         thinking_level=(
                             self.config.thinking
@@ -7554,53 +7969,116 @@ class Agent:
                         result,
                         tool_call=result_tool_call,
                     )
-                    yield ToolResultEvent(
-                        tool_use_id=projected_result.tool_use_id,
-                        tool_name=projected_result.tool_name,
-                        result=projected_result.content,
-                        is_error=projected_result.is_error,
-                        arguments=tc.arguments,
-                        execution_status=projected_result.execution_status,
-                    )
-                    replay_event = router_control_replay_event_from_payload(result.content)
-                    if replay_event is not None:
-                        yield replay_event
                     pending_approval = _pending_approval_payload(result.content)
                     if pending_approval is not None and not tc.arguments.get("approval_id"):
+                        suspended = _suspend_tool_request(tc, pending_approval)
+                        assessment = await _review_pending_elevation_if_configured(
+                            pending_approval,
+                            transcript=turn_messages,
+                            runtime_events_path=self.config.runtime_events_path,
+                            suspended_action=suspended.action,
+                        )
+                        # Human-owned approvals need a lifecycle event so the UI can
+                        # render its card. Automatic rule reviews remain internal.
+                        if assessment is None:
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
                         await _wait_for_pending_approval_resolution(
                             pending_approval,
                             timeout=_cap_timeout_by_deadlines(self._approval_wait_timeout()),
                         )
-                        retry_arguments = dict(tc.arguments)
-                        retry_arguments["approval_id"] = pending_approval["approval_id"]
-                        retry_call = ToolCall(
-                            tool_use_id=tc.tool_use_id,
-                            tool_name=tc.tool_name,
-                            arguments=retry_arguments,
-                            synthetic_from_text=tc.synthetic_from_text,
-                            origin_trace=tc.origin_trace,
-                        )
-                        result = await _run_one(retry_call)
-                        result_tool_call = retry_call
-                        for artifact in result.artifacts:
-                            yield ArtifactEvent(**_artifact_event_kwargs(artifact))
-                        projected_result = await self._project_tool_result_for_delivery(
-                            result,
-                            tool_call=result_tool_call,
-                        )
+                        approval_entry = None
+                        from opensquilla.gateway.approval_queue import get_approval_queue
+
+                        try:
+                            approval_entry = get_approval_queue().get(
+                                str(pending_approval["approval_id"])
+                            )
+                        except KeyError:
+                            approval_entry = None
+                        if approval_entry is None or not approval_entry.resolved:
+                            turn_yielded = True
+                        elif not approval_entry.approved:
+                            suspended.deny(str(pending_approval["approval_id"]))
+                            rationale = str(
+                                approval_entry.params.get("reviewRationale") or ""
+                            ).strip()
+                            result = ToolResult(
+                                tool_use_id=tc.tool_use_id,
+                                tool_name=tc.tool_name,
+                                content=json.dumps(
+                                    {
+                                        "status": "approval_denied",
+                                        "approval_id": pending_approval["approval_id"],
+                                        "message": rationale
+                                        or "The exact elevated action was not approved.",
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                is_error=False,
+                            )
+                            projected_result = await self._project_tool_result_for_delivery(
+                                result,
+                                tool_call=tc,
+                            )
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
+                            if approval_entry.resolution == "expired":
+                                turn_yielded = True
+                        else:
+                            resumed_call = suspended.approve(
+                                str(pending_approval["approval_id"])
+                            )
+                            result = await _run_one(suspended.begin_execution())
+                            suspended.complete()
+                            result_tool_call = resumed_call
+                            for artifact in result.artifacts:
+                                yield ArtifactEvent(**_artifact_event_kwargs(artifact))
+                            projected_result = await self._project_tool_result_for_delivery(
+                                result,
+                                tool_call=result_tool_call,
+                            )
+                            yield ToolResultEvent(
+                                tool_use_id=projected_result.tool_use_id,
+                                tool_name=projected_result.tool_name,
+                                result=projected_result.content,
+                                is_error=projected_result.is_error,
+                                arguments=tc.arguments,
+                                execution_status=projected_result.execution_status,
+                            )
+                            replay_event = router_control_replay_event_from_payload(
+                                result.content
+                            )
+                            if replay_event is not None:
+                                yield replay_event
+                            if _pending_approval_payload(result.content) is not None:
+                                turn_yielded = True
+                    else:
                         yield ToolResultEvent(
                             tool_use_id=projected_result.tool_use_id,
                             tool_name=projected_result.tool_name,
                             result=projected_result.content,
                             is_error=projected_result.is_error,
-                            arguments=retry_arguments,
+                            arguments=tc.arguments,
                             execution_status=projected_result.execution_status,
                         )
-                        replay_event = router_control_replay_event_from_payload(result.content)
+                        replay_event = router_control_replay_event_from_payload(
+                            result.content
+                        )
                         if replay_event is not None:
                             yield replay_event
-                        if _pending_approval_payload(result.content) is not None:
-                            turn_yielded = True
                     executed_results.append(result)
                     while self._pending_warnings:
                         yield self._pending_warnings.pop(0)
@@ -11924,6 +12402,8 @@ class Agent:
             workspace_dir=str(workspace_dir) if workspace_dir else None,
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=self._usage_execution_context,
         )
         llm_chat = (
             getattr(self, "_test_llm_chat_override", None)
@@ -11933,6 +12413,8 @@ class Agent:
                     base_config=self.config,
                     usage_tracker=self._usage_tracker,
                     session_key=self._session_key,
+                    usage_event_sink=self._usage_event_sink,
+                    usage_execution_context=self._usage_execution_context,
                 )
                 if self.provider is not None
                 else None
@@ -12154,6 +12636,8 @@ class Agent:
                 workspace_dir=str(workspace_dir) if workspace_dir else None,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
+                usage_event_sink=self._usage_event_sink,
+                usage_execution_context=self._usage_execution_context,
             )
             llm_chat = getattr(self, "_test_llm_chat_override", None) or (
                 make_llm_chat_from_provider(
@@ -12161,6 +12645,8 @@ class Agent:
                     base_config=self.config,
                     usage_tracker=self._usage_tracker,
                     session_key=self._session_key,
+                    usage_event_sink=self._usage_event_sink,
+                    usage_execution_context=self._usage_execution_context,
                 )
                 if self.provider is not None
                 else None
@@ -12383,6 +12869,8 @@ class Agent:
             workspace_dir=str(workspace_dir) if workspace_dir else None,
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=self._usage_execution_context,
         )
         llm_chat = getattr(self, "_test_llm_chat_override", None) or (
             make_llm_chat_from_provider(
@@ -12390,6 +12878,8 @@ class Agent:
                 base_config=self.config,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
+                usage_event_sink=self._usage_event_sink,
+                usage_execution_context=self._usage_execution_context,
             )
             if self.provider is not None
             else None
@@ -12932,6 +13422,11 @@ class Agent:
     # ------------------------------------------------------------------
 
     def _make_child_agent(self, spec: SubagentSpec, depth: int) -> Agent:
+        from opensquilla.sandbox.run_context import (
+            RunContext,
+            normalize_scope,
+            run_context_for_subagent,
+        )
         from opensquilla.session.keys import parse_agent_id
         from opensquilla.tools.types import (
             SUBAGENT_TOOL_DENY,
@@ -12943,6 +13438,59 @@ class Agent:
 
         parent_session_key = self._session_key or "unknown"
         subagent_label = spec.label or "subagent"
+        parent_ctx = current_tool_context.get() or self._tool_context
+        parent_run_context = getattr(parent_ctx, "sandbox_run_context", None)
+        if isinstance(parent_run_context, RunContext):
+            parent_run_context = run_context_for_subagent(parent_run_context)
+        parent_sandbox_mounts = [
+            dict(item)
+            for item in (getattr(parent_ctx, "sandbox_mounts", None) or [])
+            if isinstance(item, dict)
+            and normalize_scope(item.get("scope"), "chat") != "once"
+        ]
+        parent_run_mode = getattr(parent_ctx, "run_mode", None)
+        if parent_run_mode is None:
+            run_context_mode = getattr(parent_run_context, "run_mode", None)
+            parent_run_mode = getattr(run_context_mode, "value", run_context_mode)
+        parent_elevated = getattr(parent_ctx, "elevated", None)
+        if parent_run_mode not in {"standard", "trusted", "full"}:
+            if parent_elevated == "full":
+                parent_run_mode = "full"
+            elif parent_elevated in {"on", "bypass"}:
+                parent_run_mode = "trusted"
+            else:
+                parent_run_mode = None
+
+        child_usage_context: UsageExecutionContext | None = None
+        if self._usage_event_sink is not None:
+            child_execution_id = uuid.uuid4().hex
+            parent_usage_context = self._usage_execution_context
+            child_usage_context = UsageExecutionContext(
+                execution_id=child_execution_id,
+                agent_run_id=child_execution_id,
+                turn_id=child_execution_id,
+                parent_turn_id=(
+                    parent_usage_context.turn_id or parent_usage_context.execution_id
+                    if parent_usage_context is not None
+                    else None
+                ),
+                session_id=(
+                    parent_usage_context.session_id
+                    if parent_usage_context is not None
+                    else None
+                ),
+                session_epoch=(
+                    parent_usage_context.session_epoch
+                    if parent_usage_context is not None
+                    else 0
+                ),
+                agent_id=(
+                    parent_usage_context.agent_id
+                    if parent_usage_context is not None
+                    else parse_agent_id(parent_session_key)
+                ),
+                run_kind="subagent",
+            )
 
         # Schema-time filtering: subagents cannot see dangerous tools
         filtered_defs = [td for td in self.tool_definitions if td.name not in SUBAGENT_TOOL_DENY]
@@ -12958,6 +13506,10 @@ class Agent:
             channel_id=f"subagent:{parent_session_key}",
             sender_id=parent_session_key,
             denied_tools=set(SUBAGENT_TOOL_DENY),
+            run_mode=parent_run_mode,
+            sandbox_mounts=parent_sandbox_mounts,
+            sandbox_run_context=parent_run_context,
+            elevated=parent_elevated if parent_run_mode == "full" else None,
             tool_result_store_dir=self.config.tool_result_store_dir,
             tool_result_store_session_id=(
                 self.config.tool_result_store_session_id or parent_session_key
@@ -13115,6 +13667,9 @@ class Agent:
             tool_definitions=filtered_defs,
             tool_handler=_subagent_tool_handler,
             subagent_manager=SubagentManager(spawn_depth=depth),
+            tool_context=subagent_ctx,
+            usage_event_sink=self._usage_event_sink,
+            usage_execution_context=child_usage_context,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

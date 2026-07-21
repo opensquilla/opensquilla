@@ -45,6 +45,13 @@ from urllib.parse import urlparse
 from opensquilla.sandbox.backend import Backend, NoopBackend, UnavailableBackend, select_backend
 from opensquilla.sandbox.capability_profile import capability_profile_for_command
 from opensquilla.sandbox.config import EffectiveMode, SandboxSettings
+from opensquilla.sandbox.elevation import (
+    ApprovalReviewerName,
+    ElevationAction,
+    ElevationGateResult,
+    consume_approved_elevation,
+    gate_elevated_action,
+)
 from opensquilla.sandbox.escalation import (
     build_network_approval_params,
     build_package_bundle_approval_params,
@@ -74,6 +81,7 @@ from opensquilla.sandbox.path_validation import (
     normalize_mount_access,
     normalize_path,
 )
+from opensquilla.sandbox.permissions import FileSystemPermissionProfile
 from opensquilla.sandbox.policy import LevelHints, build_policy, select_level
 from opensquilla.sandbox.run_context import DomainGrant, PackageBundleGrant, RunContext
 from opensquilla.sandbox.run_context_service import auto_add_trusted_domain_grant
@@ -150,6 +158,7 @@ class SandboxRuntime:
     ledger: DenialLedger
     cache: StaleOutputCache
     workspace: Path
+    approval_queue: Any
 
 
 @dataclass(frozen=True)
@@ -197,7 +206,8 @@ def configure_runtime(
             backend = UnavailableBackend(str(exc))
             log.warning(
                 "sandbox.backend_unavailable: backend=auto reason=%s; "
-                "runtime will fail closed on sandboxed subprocess execution",
+                "Managed Execution will request an exact reviewed host retry; "
+                "Standard mode remains fail closed",
                 exc,
             )
         if backend.name == "noop" and settings.backend != "noop":
@@ -206,12 +216,14 @@ def configure_runtime(
             )
 
     if approval_queue is not None:
-        gate = ApprovalGate(approval_queue)
+        queue = approval_queue
+        gate = ApprovalGate(queue)
     else:
         # Lazy import: avoids a circular import when gateway is not yet loaded.
         from opensquilla.gateway.approval_queue import get_approval_queue
 
-        gate = ApprovalGate(get_approval_queue())
+        queue = get_approval_queue()
+        gate = ApprovalGate(queue)
 
     ws = workspace if workspace is not None else Path.cwd()
     _runtime = SandboxRuntime(
@@ -222,6 +234,7 @@ def configure_runtime(
         ledger=ledger,
         cache=cache,
         workspace=ws,
+        approval_queue=queue,
     )
     log.info(
         "sandbox.runtime_configured: backend=%s level=%s grading=%s insecure=%s",
@@ -244,6 +257,45 @@ def get_runtime() -> SandboxRuntime | None:
     than relying on the ``None`` branch.
     """
     return _runtime
+
+
+def active_file_system_profile(
+    workspace: Path | None = None,
+) -> FileSystemPermissionProfile | None:
+    """Return the canonical default profile used by sandboxed direct tools.
+
+    In-process filesystem tools cannot rely on a backend mount namespace to
+    enforce the policy.  They must resolve paths against the same profile that
+    a standard sandboxed subprocess receives.
+    """
+
+    from opensquilla.tools.types import current_tool_context
+
+    tool_context = current_tool_context.get()
+    override = (
+        tool_context.sandbox_file_system_profile
+        if tool_context is not None
+        else None
+    )
+    if isinstance(override, FileSystemPermissionProfile):
+        return override
+
+    runtime = get_runtime()
+    if runtime is None or not runtime.effective.sandbox_enabled:
+        return None
+    effective_workspace = (
+        workspace.expanduser().resolve(strict=False)
+        if workspace is not None
+        else _resolve_workspace(runtime, None).expanduser().resolve(strict=False)
+    )
+    policy = build_policy(
+        SecurityLevel.STANDARD,
+        "fs.write",
+        effective_workspace,
+        runtime.settings,
+        session_mounts=_session_mounts_for_policy(effective_workspace),
+    )
+    return policy.file_system
 
 
 def reset_runtime() -> None:
@@ -318,6 +370,14 @@ def _resolve_workspace(runtime: SandboxRuntime, cwd: str | None) -> Path:
 
 
 def _resolve_request_run_mode(runtime: SandboxRuntime | None) -> str:
+    try:
+        from opensquilla.tools.run_mode import current_run_mode
+
+        mode = current_run_mode()
+        if mode is not None:
+            return mode
+    except Exception:  # pragma: no cover - defensive against tool-context imports
+        pass
     context = current_tool_run_context()
     if isinstance(context, RunContext):
         return context.run_mode.value
@@ -731,6 +791,29 @@ async def gate_action(
         hints=hints,
         session_mounts=_session_mounts_for_policy(workspace),
     )
+    run_context = current_tool_run_context()
+    configured_mode = getattr(rt.settings, "run_mode", None)
+    try:
+        from opensquilla.tools.run_mode import current_run_mode
+
+        active_mode = current_run_mode()
+    except Exception:  # pragma: no cover - defensive against tool-context cycles
+        active_mode = None
+    managed_execution = bool(
+        active_mode == RunMode.TRUSTED.value
+        or (run_context is not None and run_context.run_mode == RunMode.TRUSTED)
+        or (
+            active_mode is None
+            and run_context is None
+            and configured_mode is not None
+            and normalize_run_mode(configured_mode) == RunMode.TRUSTED
+        )
+    )
+    if managed_execution and policy.require_approval:
+        # Managed Execution reviews only an exact host escape. Waiting on the
+        # legacy policy approval gate here can block a sandboxed tool for five
+        # minutes before it ever reaches the deterministic elevation rules.
+        policy = dataclasses.replace(policy, require_approval=False)
     request = build_request(
         action_kind=action_kind,
         argv=argv,
@@ -805,6 +888,15 @@ def _network_grant_workspace(request: SandboxRequest, runtime: SandboxRuntime) -
     if context is not None and context.workspace:
         return context.workspace
     return str(getattr(runtime, "workspace", None) or request.cwd)
+
+
+def _configured_approval_reviewer(runtime: SandboxRuntime | object) -> ApprovalReviewerName:
+    settings = getattr(runtime, "settings", None)
+    reviewer = str(getattr(settings, "approvals_reviewer", "user") or "user")
+    return cast(
+        "ApprovalReviewerName",
+        reviewer if reviewer in {"user", "auto_review"} else "user",
+    )
 
 
 def _current_sandbox_persistence_handles() -> tuple[Any | None, Any | None]:
@@ -1379,6 +1471,7 @@ async def _preflight_cached_network_artifact_access(
                 session_key=_resolve_session_id(runtime, None),
                 workspace=_network_grant_workspace(request, runtime),
                 fingerprint=fingerprint,
+                reviewer=_configured_approval_reviewer(runtime),
             )
             if params is not None:
                 return request_sandbox_approval(
@@ -1438,6 +1531,7 @@ async def _preflight_request_package_bundle(
         session_key=_resolve_session_id(runtime, None),
         workspace=_network_grant_workspace(request, runtime),
         fingerprint=fingerprint,
+        reviewer=_configured_approval_reviewer(runtime),
     )
     return request_sandbox_approval(
         params,
@@ -1713,12 +1807,9 @@ async def escalate_backend_denial(
     policy: SandboxPolicy,
     *,
     runtime: SandboxRuntime | None = None,
-) -> ApprovalDecision:
-    """Return a fail-closed denial for backend sandbox failures.
-
-    Standard and Trusted sandbox modes must not recover by re-running on the
-    host. Full Host Access is the explicit host execution mode.
-    """
+    review_action: ElevationAction | None = None,
+) -> DenialResult | ElevationGateResult:
+    """Suspend one attributable failure for a fresh broader-context review."""
     fp = action_fingerprint(request)
     notes_str = "; ".join(result.backend_notes)
     rt = runtime or get_runtime()
@@ -1732,27 +1823,156 @@ async def escalate_backend_denial(
             retryable=False,
         )
 
-    session_id = _resolve_session_id(rt, None)
-    message = f"Sandbox denied the command ({notes_str})."
     if _runtime_is_full_host_access(rt):
-        message = (
-            f"{message} Full Host Access is active, so no sandbox escalation prompt was created."
+        denial = DenialResult(
+            reason=DenialReason.SEATBELT_DENIED,
+            suggested_next_step=SuggestedNextStep.ASK_USER,
+            level=policy.level,
+            action_fingerprint=fp,
+            message=(
+                f"Sandbox denied the command ({notes_str}). Full Host Access is active, "
+                "so no sandbox retry was requested."
+            ),
+            retryable=False,
         )
-    denial = DenialResult(
-        reason=DenialReason.SEATBELT_DENIED,
-        suggested_next_step=SuggestedNextStep.ASK_USER,
-        level=policy.level,
-        action_fingerprint=fp,
-        message=message,
-        retryable=False,
+        return denial
+
+    output = result.stdout
+    if result.stderr:
+        output = f"{output}{result.stderr}"
+    action = review_action or ElevationAction(
+        tool_name=request.argv[0] if request.argv else request.action_kind,
+        action_kind=request.action_kind,
+        argv=request.argv,
+        cwd=str(request.cwd),
+        sandbox_permissions="require_escalated",
+        justification="command failed; retry without sandbox?",
+        risk_markers=tuple(result.backend_notes),
     )
-    await rt.ledger.record_denial(
-        session_id,
-        fp,
-        denial.reason,
-        threshold_eligible=False,
+    return gate_elevated_action(
+        action,
+        approval_id=None,
+        session_key=_resolve_session_id(rt, None),
+        queue=rt.approval_queue,  # type: ignore[arg-type]
+        file_system_profile=getattr(policy, "file_system", None),
+        metadata={
+            "backendRetry": True,
+            "sandboxRequestFingerprint": fp,
+            "sandboxOriginalOutput": output,
+            "sandboxBackend": str(getattr(result, "backend_used", rt.backend.name)),
+            "sandboxBackendNotes": list(result.backend_notes),
+            "retryReason": action.justification,
+        },
     )
-    return denial
+
+
+async def escalate_unavailable_backend_in_managed_mode(
+    error: SandboxBackendError,
+    request: SandboxRequest,
+    policy: SandboxPolicy,
+    *,
+    runtime: SandboxRuntime | None = None,
+    review_action: ElevationAction | None = None,
+) -> DenialResult | ElevationGateResult | None:
+    """Turn a missing sandbox backend into one exact Managed host retry."""
+
+    context = current_tool_run_context()
+    try:
+        mode = (
+            context.run_mode
+            if context is not None
+            else normalize_run_mode(request.run_mode, default=RunMode.STANDARD)
+        )
+    except ValueError:
+        return None
+    if mode != RunMode.TRUSTED:
+        return None
+    rt = runtime or get_runtime()
+    if rt is None or not isinstance(rt.backend, UnavailableBackend):
+        return None
+    reason = str(error) or "sandbox backend unavailable"
+    return await escalate_backend_denial(
+        SandboxResult(
+            returncode=-1,
+            stdout="",
+            stderr=reason,
+            wall_time_s=0.0,
+            timed_out=False,
+            backend_used=rt.backend.name,
+            backend_notes=("backend_unavailable", reason),
+        ),
+        request,
+        policy,
+        runtime=rt,
+        review_action=review_action,
+    )
+
+
+def consume_backend_denial_retry(
+    approval_id: str | None,
+    request: SandboxRequest,
+    policy: SandboxPolicy,
+    *,
+    runtime: SandboxRuntime | None = None,
+) -> ElevationGateResult | None:
+    """Consume an approved retry only when it still names the same request."""
+
+    if not approval_id:
+        return None
+    rt = runtime or get_runtime()
+    if rt is None:
+        return None
+    try:
+        entry = rt.approval_queue.get(approval_id)
+    except (AttributeError, KeyError):
+        return None
+    if not bool(entry.params.get("backendRetry")):
+        return None
+    if str(entry.params.get("sandboxRequestFingerprint") or "") != action_fingerprint(request):
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="approval_action_mismatch",
+            approval_id=approval_id,
+            reason="approval_action_mismatch",
+        )
+    raw_action = entry.params.get("action")
+    if not isinstance(raw_action, dict):
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="approval_action_mismatch",
+            approval_id=approval_id,
+            reason="approval_action_mismatch",
+        )
+    try:
+        action = ElevationAction.from_canonical_payload(raw_action)
+    except ValueError:
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="approval_action_mismatch",
+            approval_id=approval_id,
+            reason="approval_action_mismatch",
+        )
+    profile = getattr(policy, "file_system", None)
+    if profile is not None and not profile.unsandboxed_execution_allowed:
+        return ElevationGateResult(
+            requested=True,
+            allowed=False,
+            status="elevation_forbidden_denied_reads",
+            approval_id=approval_id,
+            reason=(
+                "Unsandboxed retry cannot be granted while the active filesystem "
+                "profile contains denied reads."
+            ),
+        )
+    return consume_approved_elevation(
+        rt.approval_queue,  # type: ignore[arg-type]
+        approval_id,
+        action,
+        expected_session_key=_resolve_session_id(rt, None),
+    )
 
 
 def _runtime_is_full_host_access(runtime: SandboxRuntime) -> bool:
@@ -1774,11 +1994,14 @@ def _runtime_is_full_host_access(runtime: SandboxRuntime) -> bool:
 
 __all__ = [
     "SandboxRuntime",
+    "active_file_system_profile",
     "action_fingerprint",
     "build_request",
     "configure_runtime",
+    "consume_backend_denial_retry",
     "current_managed_network_proxy_url",
     "escalate_backend_denial",
+    "escalate_unavailable_backend_in_managed_mode",
     "gate_action",
     "get_runtime",
     "guard_in_process_network_action",

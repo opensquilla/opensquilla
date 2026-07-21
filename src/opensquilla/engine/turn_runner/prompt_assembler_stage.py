@@ -75,6 +75,7 @@ class RunPipelineRequest:
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
     skill_catalog: Any | None = None
+    usage_execution_context: Any | None = None
 
 # ---------------------------------------------------------------------------
 # Ports — narrow Protocols so the stage is unit-testable without the full
@@ -242,6 +243,7 @@ class PromptAssemblerStageInput:
     normalization_metadata: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | str | None = None
     skill_catalog: Any | None = None
+    usage_execution_context: Any | None = None
 
 @dataclass(frozen=True)
 class PromptAssemblerStageOutput:
@@ -435,6 +437,7 @@ class PromptAssemblerStage:
             normalization_metadata=inp.normalization_metadata,
             input_provenance=inp.input_provenance,
             skill_catalog=inp.skill_catalog,
+            usage_execution_context=inp.usage_execution_context,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
 

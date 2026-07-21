@@ -392,6 +392,7 @@ import { useBgm } from './composables/useBgm'
 import { useSidebarLayout } from './composables/useSidebarLayout'
 import { useDocumentEvent } from './composables/useDocumentEvent'
 import { useAgentOptions } from './composables/useAgentOptions'
+import { useSessionListSubscription } from './composables/useSessionListSubscription'
 import { useToasts } from './composables/useToasts'
 import { useNavigation } from './app/useNavigation'
 import { useSurfaceSkin } from './themes/useSurfaceSkin'
@@ -761,6 +762,7 @@ const sidebarSections = computed((): SidebarSection[] => {
   return arrangeSidebarSections(sidebarSessionItems.value).map(section => ({
     ...section,
     rows: section.rows.map((row): SidebarSectionRow => {
+      if (row.rowKind === 'workspace') return { ...row, agentName: '' }
       const source = byKey.get(row.key)
       const title = renameOverrides.value[row.key]
         || (source ? sidebarConversationTitle(source) : row.title)
@@ -774,7 +776,6 @@ const sidebarSections = computed((): SidebarSection[] => {
 })
 
 let sessionRefreshTimer: ReturnType<typeof setTimeout> | null = null
-let rpcUnsubSessionsChanged: (() => void) | null = null
 
 // Hide the bottom tab bar while the on-screen keyboard owns the bottom edge.
 // A visual-viewport shrink well beyond browser-chrome changes (>140px) is the
@@ -1080,6 +1081,14 @@ function scheduleSessionRefresh() {
   }, 150)
 }
 
+const sessionListSubscription = useSessionListSubscription({
+  rpc: rpcStore,
+  isConnected: () => rpcStore.isConnected,
+  refresh: loadSessions,
+  scheduleRefresh: scheduleSessionRefresh,
+  warn: (message, error) => console.warn(`[App] ${message}:`, errorMessage(error)),
+})
+
 function handleKeydown(e: KeyboardEvent) {
   // Chord bindings carry the primary modifier as Cmd on Apple platforms and Ctrl
   // elsewhere — and require the other modifier to be absent — so we never match
@@ -1298,8 +1307,8 @@ onMounted(() => {
   syncTopbarReserve()
   loadAgents()
   loadSessions()
-  rpcUnsubSessionsChanged = rpcStore.on('sessions.changed', scheduleSessionRefresh)
-  // Keep the approval badge/count live app-wide.
+  sessionListSubscription.subscribe()
+  // Keep the approval badge/count live app-wide, not just on the Approvals page.
   subscribeApprovals()
   // Seed now in case the socket is already connected (the `_state` listener
   // covers later reconnects); recovers a request pending before mount.
@@ -1318,7 +1327,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', scheduleTopbarReserve)
   window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
-  if (rpcUnsubSessionsChanged) rpcUnsubSessionsChanged()
+  sessionListSubscription.cleanup()
   unsubscribeApprovals()
   if (titleDebounce) {
     clearTimeout(titleDebounce)

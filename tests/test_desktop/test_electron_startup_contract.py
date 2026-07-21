@@ -1387,6 +1387,23 @@ def test_packaged_gateway_smoke_profile_satisfies_recovery_guard(
     assert report.effective_workspace == workspace
 
 
+def test_desktop_gateway_bundle_collects_usage_ledger_and_query_ui() -> None:
+    """PyInstaller's collected package must contain both sides of the upgrade."""
+
+    build_script = _read("desktop/electron/scripts/build-gateway.mjs")
+    migration = ROOT / "migrations" / "V021__usage_ledger.py"
+    dist_dir = ROOT / "src" / "opensquilla" / "gateway" / "static" / "dist"
+
+    assert "'--collect-all',\n  'opensquilla'," in build_script
+    assert migration.is_file()
+    assert (dist_dir / "index.html").is_file()
+    javascript = sorted((dist_dir / "assets").glob("*.js"))
+    assert javascript
+    assert any(b"usage.query" in path.read_bytes() for path in javascript), (
+        "desktop Control UI bundle was not rebuilt with usage.query"
+    )
+
+
 def test_windows_release_workflow_fails_fast_after_gateway_build_failure() -> None:
     workflow = _read(".github/workflows/wheelhouse-release.yml")
     windows_build = _section(

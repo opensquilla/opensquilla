@@ -1018,6 +1018,8 @@
       "ariaLabel": "Requiere atención",
       "allClear": "Todo en orden",
       "costToday": "{amount} hoy",
+      "costTodayLabel": "Coste de hoy",
+      "costTotal": "{amount} en total",
       "needsApproval": "Requiere aprobación",
       "openBlocked": "abrir la sesión bloqueada →",
       "nothingWaiting": "nada pendiente de ti",
@@ -1750,6 +1752,14 @@
     },
     "costHintTitle": "Los valores en CNY usan la tasa fija integrada {rate}. Verifícala con el tipo de cambio actual para uso contable.",
     "rangeHiddenHint": "{count} sesiones heredadas sin fecha ocultas",
+    "coverage": {
+      "approximate": "Gateway antiguo: los rangos de fechas son aproximaciones de totales por sesión.",
+      "partial": "La migración del libro de uso sigue en curso; se muestra todo el uso conocido.",
+      "timezoneFallback": "La zona horaria {requested} no es válida; las fechas se agrupan según {effective}.",
+      "legacyIncluded": "El uso anterior al libro se incluye en el total, pero no puede asignarse a una fecha.",
+      "estimated": "Incluye {count} llamadas estimadas.",
+      "unpriced": "Se muestra el coste conocido; {count} llamadas no tienen precio, por lo que el coste está incompleto."
+    },
     "chart": {
       "metric": "Métrica del gráfico",
       "dateRange": "Rango de fechas",
@@ -1761,6 +1771,7 @@
       "output": "Salida",
       "emptyWindow": "No hay datos en la ventana seleccionada.",
       "openSession": "Abrir {session}",
+      "daily": "Uso diario",
       "topByCost": "Sesiones principales por coste",
       "topByTokens": "Sesiones principales por total de tokens",
       "showingOf": "mostrando {shown} de {total}"
@@ -1902,6 +1913,8 @@
     "placeholder": "Envía un mensaje...",
     "placeholderCompact": "Mensaje...",
     "placeholderLanding": "Asigna una tarea o pregunta lo que quieras",
+    "aiDisclaimer": "Contenido generado por IA, solo como referencia. Verifica la información importante.",
+    "aiGeneratedLabel": "Contenido generado por IA, solo como referencia.",
     "removeAttachment": "Quitar adjunto",
     "remove": "Quitar",
     "attachFiles": "Adjuntar archivos",

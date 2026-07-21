@@ -51,7 +51,7 @@ OFFLINE_MARKER_EXCLUSIONS = {
 }
 RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_artifact_validation.py",
-    "tests/test_ci/test_migration_v021.py",
+    "tests/test_ci/test_migration_v022.py",
     "tests/test_ci/test_session_storage_connection_contract.py",
     "tests/test_channels/test_stream_terminal_routing.py",
     "tests/test_engine/test_agent_canonical_text_contract.py",

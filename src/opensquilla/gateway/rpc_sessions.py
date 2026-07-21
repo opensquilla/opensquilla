@@ -9,10 +9,12 @@ import sqlite3
 import time
 import uuid
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from opensquilla.agents.scope import default_workspace_dir, resolve_agent_workspace_dir
 from opensquilla.artifacts import enrich_artifact_event_dict
 from opensquilla.engine.cache_break_monitor import notify_compaction
 from opensquilla.engine.start_turn import reserve_turn_via_runtime, start_turn_via_runtime
@@ -41,6 +43,7 @@ from opensquilla.gateway.turn_ingress import (
 )
 from opensquilla.paths import media_root_from_config
 from opensquilla.sandbox.run_context import (
+    RUN_CONTEXT_ORIGIN_KEY,
     get_run_context,
     run_context_from_origin_payload,
 )
@@ -310,6 +313,7 @@ _STREAM_IDLE_TIMEOUT_MESSAGE = "Session event stream idle before terminal event"
 _RESET_RUNTIME_SETTLE_SECONDS = 0.25
 _RESET_RUNTIME_CANCEL_DRAIN_SECONDS = 2.0
 _ABORT_RUNTIME_CANCEL_DRAIN_SECONDS = 2.0
+_ABORT_TREE_STABILIZATION_PASSES = 8
 _ACTIVE_TASK_STATUSES = frozenset({"queued", "running"})
 
 
@@ -333,6 +337,64 @@ async def _active_task_runtime_ids(task_runtime: Any, session_key: str) -> tuple
         if isinstance(task_id, str) and task_id and task_id not in task_ids:
             task_ids.append(task_id)
     return tuple(task_ids)
+
+
+def _session_row_value(row: Any, name: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+async def _session_tree_keys(session_manager: Any, root_key: str) -> tuple[str, ...]:
+    """Return root plus every recursively spawned child session in BFS order."""
+    list_sessions = getattr(session_manager, "list_sessions", None)
+    if not callable(list_sessions):
+        return (root_key,)
+
+    seen = {root_key}
+    ordered = [root_key]
+    parents = [root_key]
+    page_size = 100
+    while parents:
+        parent_key = parents.pop(0)
+        offset = 0
+        while True:
+            try:
+                rows = await list_sessions(
+                    spawned_by=parent_key,
+                    limit=page_size,
+                    offset=offset,
+                )
+            except TypeError:
+                try:
+                    rows = await list_sessions(limit=10000)
+                except Exception:
+                    rows = []
+                rows = [
+                    row
+                    for row in rows
+                    if _session_row_value(row, "spawned_by") == parent_key
+                    or _session_row_value(row, "parent_session_key") == parent_key
+                ]
+                offset = -1
+            except Exception:
+                log.warning(
+                    "sessions.abort.descendant_list_failed",
+                    parent_session_key=parent_key,
+                )
+                rows = []
+
+            for row in rows:
+                child_key = _session_row_value(row, "session_key")
+                if not isinstance(child_key, str) or not child_key or child_key in seen:
+                    continue
+                seen.add(child_key)
+                ordered.append(child_key)
+                parents.append(child_key)
+            if offset < 0 or len(rows) < page_size:
+                break
+            offset += page_size
+    return tuple(ordered)
 
 
 async def _drain_cancelled_task_runtime(
@@ -624,6 +686,58 @@ async def _bootstrap_agent_identity(ctx: RpcContext, agent_id: str) -> dict[str,
     payload["emoji"] = _bootstrap_identity_text(identity.get("emoji"), limit=16)
     payload["theme"] = _bootstrap_identity_text(identity.get("theme"), limit=48)
     return payload
+
+
+def _normalize_workspace_display_path(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return str(Path(text).expanduser().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError):
+        return text
+
+
+def _same_workspace_path(left: str, right: str | Path) -> bool:
+    try:
+        return Path(left).expanduser().resolve(strict=False) == Path(right).expanduser().resolve(
+            strict=False
+        )
+    except (OSError, RuntimeError, ValueError):
+        return str(left).rstrip("/\\") == str(right).rstrip("/\\")
+
+
+def _is_default_opensquilla_workspace(workspace: str) -> bool:
+    return _same_workspace_path(workspace, default_workspace_dir())
+
+
+def _workspace_metadata_for_session(session: Any, config: Any) -> dict[str, str]:
+    origin = getattr(session, "origin", None)
+    origin_map = origin if isinstance(origin, dict) else {}
+    context_payload = origin_map.get(RUN_CONTEXT_ORIGIN_KEY)
+    workspace = (
+        context_payload.get("workspace") if isinstance(context_payload, dict) else None
+    )
+    workspace_path = _normalize_workspace_display_path(workspace)
+
+    if workspace_path is None:
+        session_key = str(getattr(session, "session_key", "") or "")
+        agent_id = _effective_agent_id_for_session(session, session_key)
+        workspace_path = _normalize_workspace_display_path(
+            str(resolve_agent_workspace_dir(agent_id, config))
+        )
+
+    if workspace_path is None or _is_default_opensquilla_workspace(workspace_path):
+        return {}
+
+    label = Path(workspace_path).name or workspace_path
+    return {
+        "workspace": workspace_path,
+        "workspaceLabel": label,
+        "workspaceDisplayPath": workspace_path,
+    }
 
 
 def _context_window_tokens(params: dict | None, ctx: RpcContext) -> int:
@@ -1128,6 +1242,7 @@ async def _handle_sessions_list(params: dict | None, ctx: RpcContext) -> dict:
         )
         row.update(task_summary)
         row.update(view_fields)
+        row.update(_workspace_metadata_for_session(s, ctx.config))
         result.append(row)
 
     return {"sessions": result, "count": len(result), "ts": now_ms}
@@ -3048,26 +3163,124 @@ async def _handle_sessions_abort(params: dict | None, ctx: RpcContext) -> dict:
 
     task_runtime = getattr(ctx, "task_runtime", None)
     if task_runtime is not None:
+        from opensquilla.gateway.approval_queue import get_approval_queue
+        from opensquilla.gateway.subagent_announce import (
+            cancel_background_completion_for_session,
+        )
+
         requested_task_id = _optional_string_param(params, "task_id", "taskId")
-        active_task_ids = await _active_task_runtime_ids(task_runtime, key)
         if requested_task_id is not None:
+            await cancel_background_completion_for_session(key)
+            get_approval_queue().resolve_pending_for_session(key, approved=False)
+            active_task_ids = await _active_task_runtime_ids(task_runtime, key)
             if active_task_ids and requested_task_id not in active_task_ids:
                 return {"aborted": False, "key": key}
             active_task_ids = (requested_task_id,)
-        cancelled_count = await _cancel_task_runtime(
-            task_runtime,
-            session_key=key,
-            task_id=requested_task_id,
-            source=_cancel_source_from_params(params, "sessions_abort"),
-            reason="user_abort",
-        )
-        if cancelled_count > 0:
-            await _drain_cancelled_task_runtime(
+            cancelled_count = await _cancel_task_runtime(
                 task_runtime,
                 session_key=key,
-                task_ids=active_task_ids,
+                task_id=requested_task_id,
+                source=_cancel_source_from_params(params, "sessions_abort"),
+                reason="user_abort",
             )
-        return {"aborted": cancelled_count > 0, "key": key}
+            if cancelled_count > 0:
+                await _drain_cancelled_task_runtime(
+                    task_runtime,
+                    session_key=key,
+                    task_ids=active_task_ids,
+                )
+            return {"aborted": cancelled_count > 0, "key": key}
+
+        cancel_source = _cancel_source_from_params(params, "sessions_abort")
+        approval_queue = get_approval_queue()
+        processed_keys: set[str] = set()
+        cancel_requested_task_ids: set[str] = set()
+        cancelled_tasks = 0
+        cancelled_session_keys: set[str] = set()
+        cancelled_groups = 0
+        resolved_approvals = 0
+
+        # Re-scan after each drained batch. A child may have committed a nested
+        # spawn immediately before receiving cancellation; the next pass picks
+        # that session up before the abort is considered complete.
+        for pass_index in range(_ABORT_TREE_STABILIZATION_PASSES):
+            tree_keys = await _session_tree_keys(ctx.session_manager, key)
+            new_keys = [
+                session_key
+                for session_key in tree_keys
+                if session_key not in processed_keys
+            ]
+            drains: list[tuple[str, tuple[str, ...]]] = []
+            cancelled_this_pass = 0
+            for session_key in tree_keys:
+                first_visit = session_key in new_keys
+                if first_visit:
+                    processed_keys.add(session_key)
+                    cancelled_groups += await cancel_background_completion_for_session(
+                        session_key
+                    )
+                active_task_ids = await _active_task_runtime_ids(task_runtime, session_key)
+                new_active_task_ids = tuple(
+                    task_id
+                    for task_id in active_task_ids
+                    if task_id not in cancel_requested_task_ids
+                )
+                if not first_visit and not new_active_task_ids:
+                    continue
+                cancelled_count = await _cancel_task_runtime(
+                    task_runtime,
+                    session_key=session_key,
+                    source=cancel_source,
+                    reason="user_abort",
+                )
+                cancelled_tasks += cancelled_count
+                cancelled_this_pass += cancelled_count
+                resolved_approvals += approval_queue.resolve_pending_for_session(
+                    session_key,
+                    approved=False,
+                )
+                if cancelled_count > 0:
+                    cancel_requested_task_ids.update(new_active_task_ids)
+                    cancelled_session_keys.add(session_key)
+                    drains.append((session_key, new_active_task_ids))
+
+            for session_key, active_task_ids in drains:
+                await _drain_cancelled_task_runtime(
+                    task_runtime,
+                    session_key=session_key,
+                    task_ids=active_task_ids,
+                )
+            if pass_index > 0 and not new_keys and cancelled_this_pass == 0:
+                break
+        else:
+            log.warning(
+                "sessions.abort.tree_stabilization_exhausted",
+                session_key=key,
+                passes=_ABORT_TREE_STABILIZATION_PASSES,
+            )
+
+        aborted = any((cancelled_tasks, cancelled_groups, resolved_approvals))
+        if aborted:
+            await _emit_to_subscribers(
+                ctx,
+                key,
+                "sessions.changed",
+                build_sessions_changed_payload(
+                    key,
+                    "task_terminal",
+                    run_status="cancelled",
+                    last_task={
+                        "status": "cancelled",
+                        "terminal_reason": "user_abort",
+                    },
+                ),
+            )
+        return {
+            "aborted": aborted,
+            "key": key,
+            "cancelled_tasks": cancelled_tasks,
+            "cancelled_sessions": len(cancelled_session_keys),
+        }
 
     # Cancel running agent task via registry
     registry = get_agent_task_registry()
@@ -3362,10 +3575,23 @@ async def _handle_sessions_reset(params: dict | None, ctx: RpcContext) -> dict[s
             new_epoch,
         )
 
+    async def _run_accounted() -> dict[str, Any]:
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            ctx.session_manager,
+            key,
+            run_kind="memory_flush",
+        )
+        with bind_usage_accounting_scope(usage_scope):
+            return await _run_locked()
+
     if lock is None:
-        return await _run_locked()
+        return await _run_accounted()
     async with lock:
-        return await _run_locked()
+        return await _run_accounted()
 
 
 async def _ensure_and_emit_reset_epoch(
@@ -3834,10 +4060,23 @@ async def _handle_sessions_context_compact(params: dict | None, ctx: RpcContext)
         )
         return payload
 
+    async def _run_accounted() -> dict[str, Any]:
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            ctx.session_manager,
+            key,
+            run_kind="session_compaction",
+        )
+        with bind_usage_accounting_scope(usage_scope):
+            return await _run_locked()
+
     if lock is None:
-        return await _run_locked()
+        return await _run_accounted()
     async with lock:
-        return await _run_locked()
+        return await _run_accounted()
 
 
 @_d.method("sessions.compact", scope="operator.write")
@@ -3994,10 +4233,23 @@ async def _handle_sessions_truncate(params: dict | None, ctx: RpcContext) -> dic
             payload["flush_receipt"] = flush_receipt_to_dict(receipt)
         return payload
 
+    async def _run_accounted() -> dict[str, Any]:
+        from opensquilla.engine.usage_accounting import bind_usage_accounting_scope
+        from opensquilla.gateway.usage_ledger_runtime import build_session_usage_scope
+
+        usage_scope = await build_session_usage_scope(
+            getattr(ctx, "usage_event_sink", None),
+            ctx.session_manager,
+            key,
+            run_kind="memory_flush",
+        )
+        with bind_usage_accounting_scope(usage_scope):
+            return await _run_locked()
+
     if lock is None:
-        return await _run_locked()
+        return await _run_accounted()
     async with lock:
-        return await _run_locked()
+        return await _run_accounted()
 
 
 @_d.method("sessions.subscribe", scope="operator.read")
@@ -4041,6 +4293,11 @@ async def _handle_sessions_messages_subscribe(params: dict | None, ctx: RpcConte
     storage = get_session_storage(getattr(ctx, "session_manager", None))
     task_rows = await _list_task_rows(ctx, storage, key)
     task_state = _task_state_summary(task_rows)
+    from opensquilla.gateway.subagent_announce import (
+        active_background_completion_group_ids,
+    )
+
+    active_task_group_ids = await active_background_completion_group_ids(key)
 
     return {
         "subscribed": subscription_mgr is not None,
@@ -4049,6 +4306,7 @@ async def _handle_sessions_messages_subscribe(params: dict | None, ctx: RpcConte
         "replay_complete": replay.replay_complete,
         "replay_gap_reason": replay.gap_reason,
         "replayed_count": replayed_count,
+        "active_task_group_ids": active_task_group_ids,
         **task_state,
     }
 

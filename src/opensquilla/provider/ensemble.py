@@ -241,6 +241,7 @@ class _CandidateResult:
     error_code: str = ""
     message_limit_proof: ProviderMessageLimitProof | None = None
     execution: dict[str, Any] = field(default_factory=dict)
+    usage_reported: bool = False
 
     @property
     def ok(self) -> bool:
@@ -516,7 +517,8 @@ def _summed_float(rows: Sequence[dict[str, Any]], key: str) -> float:
 
 def _candidate_has_usage(candidate: _CandidateResult) -> bool:
     return bool(
-        candidate.ok
+        candidate.usage_reported
+        or candidate.ok
         or candidate.input_tokens
         or candidate.output_tokens
         or candidate.reasoning_tokens
@@ -847,6 +849,9 @@ class EnsembleProvider:
             tools=tools,
             config=aggregator_cfg,
             prior_rows=proposer_rows,
+            prior_missing_count=sum(
+                1 for candidate in candidates if not candidate.usage_reported
+            ),
             trace=trace,
         ):
             yield event
@@ -1113,6 +1118,7 @@ class EnsembleProvider:
                     tool_parts.append(f"\n[tool_args:{event.arguments}]")
             elif isinstance(event, DoneEvent):
                 got_done = True
+                result.usage_reported = True
                 result.input_tokens = event.input_tokens
                 result.output_tokens = event.output_tokens
                 result.reasoning_tokens = event.reasoning_tokens
@@ -1239,6 +1245,7 @@ class EnsembleProvider:
         tools: list[ToolDefinition] | None,
         config: ChatConfig,
         prior_rows: list[dict[str, Any]],
+        prior_missing_count: int,
         trace: dict[str, Any],
     ) -> AsyncIterator[StreamEvent]:
         final_text_parts: list[str] = []
@@ -1305,6 +1312,14 @@ class EnsembleProvider:
                 cost_source=_rollup_cost_source(rows),
                 model_usage_breakdown=rows,
                 ensemble_trace=trace,
+                usage_missing_count=prior_missing_count,
+            )
+
+        def partial_error(event: ErrorEvent) -> ErrorEvent:
+            return replace(
+                event,
+                model_usage_breakdown=list(prior_rows),
+                usage_missing_count=prior_missing_count + 1,
             )
 
         yield aggregator_progress("aggregator_start")
@@ -1349,7 +1364,7 @@ class EnsembleProvider:
                         "aggregator_finish",
                         error=event.message,
                     )
-                    yield event
+                    yield partial_error(event)
                     return
                 elif isinstance(event, TextDeltaEvent):
                     final_text_parts.append(event.text)
@@ -1365,7 +1380,7 @@ class EnsembleProvider:
                 code="ensemble_aggregator_timeout",
             )
             yield aggregator_progress("aggregator_finish", error=error.message)
-            yield error
+            yield partial_error(error)
             return
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
             error = ErrorEvent(
@@ -1373,14 +1388,14 @@ class EnsembleProvider:
                 code="ensemble_aggregator_error",
             )
             yield aggregator_progress("aggregator_finish", error=error.message)
-            yield error
+            yield partial_error(error)
             return
         error = ErrorEvent(
             message="ensemble aggregator stream ended before DoneEvent",
             code="ensemble_aggregator_incomplete",
         )
         yield aggregator_progress("aggregator_finish", error=error.message)
-        yield error
+        yield partial_error(error)
 
     async def _fallback_or_error(
         self,
@@ -1425,6 +1440,16 @@ class EnsembleProvider:
             final_request_timeout_seconds=fallback_timeout_seconds,
         )
         proposer_rows = _candidate_usage_rows(candidates, profile=self.profile_name)
+        proposer_missing_count = sum(
+            1 for candidate in candidates if not candidate.usage_reported
+        )
+
+        def partial_error(event: ErrorEvent) -> ErrorEvent:
+            return replace(
+                event,
+                model_usage_breakdown=list(proposer_rows),
+                usage_missing_count=proposer_missing_count + 1,
+            )
         final_text_parts: list[str] = []
         yield ProviderHeartbeatEvent(
             phase="ensemble_fallback",
@@ -1462,23 +1487,31 @@ class EnsembleProvider:
                         cost_source=_rollup_cost_source(rows),
                         model_usage_breakdown=rows,
                         ensemble_trace=trace,
+                        usage_missing_count=proposer_missing_count,
                     )
                     return
                 if isinstance(event, ErrorEvent):
-                    yield event
+                    yield partial_error(event)
                     return
                 if isinstance(event, TextDeltaEvent):
                     final_text_parts.append(event.text)
                 yield event
         except TimeoutError:
-            yield ErrorEvent(
-                message=f"ensemble fallback timed out after {fallback_timeout_seconds:g}s",
-                code="ensemble_fallback_timeout",
+            yield partial_error(
+                ErrorEvent(
+                    message=(
+                        "ensemble fallback timed out after "
+                        f"{fallback_timeout_seconds:g}s"
+                    ),
+                    code="ensemble_fallback_timeout",
+                )
             )
             return
-        yield ErrorEvent(
-            message="ensemble fallback stream ended before DoneEvent",
-            code="ensemble_fallback_incomplete",
+        yield partial_error(
+            ErrorEvent(
+                message="ensemble fallback stream ended before DoneEvent",
+                code="ensemble_fallback_incomplete",
+            )
         )
 
 

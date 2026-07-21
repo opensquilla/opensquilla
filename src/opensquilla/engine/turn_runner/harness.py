@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -72,6 +73,7 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     TurnMemoryCapturePort,
     UsageTelemetryPort,
 )
+from opensquilla.engine.usage_accounting import UsageExecutionContext
 from opensquilla.provider.model_catalog import resolve_effective_context_window
 from opensquilla.session.compaction_lifecycle import normalize_flush_triggers_strict
 
@@ -255,6 +257,7 @@ class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
             "normalization_metadata": request.normalization_metadata,
             "input_provenance": request.input_provenance,
             "skill_catalog": request.skill_catalog,
+            "usage_execution_context": request.usage_execution_context,
         }
         accepted_kwargs = {
             name: value
@@ -728,9 +731,31 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
         turn_call_logger: TurnCallLogger | None,
         memory_sync_manager: Any | None,
         tool_context: ToolContext | None,
+        turn_id: str = "",
+        session_id: str | None = None,
+        session_epoch: int = 0,
+        agent_id: str = "",
+        run_kind: str = "agent",
     ) -> Agent:
         from opensquilla.engine.agent import Agent
 
+        # Embedding hosts and older test adapters may provide the historical
+        # runner surface without the additive ledger dependency.  Treat that
+        # exactly like an explicitly disabled sink so the upgrade remains
+        # source-compatible outside the Gateway bootstrap.
+        usage_event_sink = getattr(self._runner, "_usage_event_sink", None)
+        usage_execution_context = None
+        if usage_event_sink is not None:
+            execution_id = turn_id or uuid.uuid4().hex
+            usage_execution_context = UsageExecutionContext(
+                execution_id=execution_id,
+                agent_run_id=execution_id,
+                turn_id=turn_id or None,
+                session_id=session_id,
+                session_epoch=max(0, int(session_epoch)),
+                agent_id=agent_id,
+                run_kind=run_kind or "agent",
+            )
         return Agent(
             provider=provider,
             config=config,
@@ -743,6 +768,8 @@ class _TurnRunnerAgentFactoryAdapter(AgentFactoryPort):
             session_flush_service=self._runner._session_flush_service,
             tool_registry=self._runner._tool_registry,
             tool_context=tool_context,
+            usage_event_sink=usage_event_sink,
+            usage_execution_context=usage_execution_context,
         )
 
 

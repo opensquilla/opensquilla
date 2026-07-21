@@ -1018,6 +1018,8 @@
       "ariaLabel": "Nécessite votre attention",
       "allClear": "Tout est en ordre",
       "costToday": "{amount} aujourd'hui",
+      "costTodayLabel": "Coût aujourd’hui",
+      "costTotal": "{amount} au total",
       "needsApproval": "Approbation requise",
       "openBlocked": "ouvrir la session bloquée →",
       "nothingWaiting": "rien n'attend de vous",
@@ -1750,6 +1752,14 @@
     },
     "costHintTitle": "Les valeurs en CNY utilisent le taux intégré {rate}. Vérifiez par rapport au taux de change actuel pour un usage comptable.",
     "rangeHiddenHint": "{count} sessions héritées sans date masquées",
+    "coverage": {
+      "approximate": "Ancienne Gateway : les plages de dates sont estimées à partir des totaux de session.",
+      "partial": "La migration du registre d’usage continue ; tout l’usage connu est affiché.",
+      "timezoneFallback": "Le fuseau {requested} est invalide ; les dates sont regroupées selon {effective}.",
+      "legacyIncluded": "L’usage antérieur au registre est inclus dans le total, sans pouvoir être attribué à une date.",
+      "estimated": "Inclut {count} appels estimés.",
+      "unpriced": "Le coût connu est affiché ; {count} appels n’ont pas de prix, le coût est donc incomplet."
+    },
     "chart": {
       "metric": "Métrique du graphique",
       "dateRange": "Plage de dates",
@@ -1761,6 +1771,7 @@
       "output": "Sortie",
       "emptyWindow": "Aucune donnée dans la fenêtre sélectionnée.",
       "openSession": "Ouvrir {session}",
+      "daily": "Utilisation quotidienne",
       "topByCost": "Principales sessions par coût",
       "topByTokens": "Principales sessions par total de jetons",
       "showingOf": "affichage de {shown} sur {total}"
@@ -1902,6 +1913,8 @@
     "placeholder": "Envoyer un message...",
     "placeholderCompact": "Message...",
     "placeholderLanding": "Assignez une tâche ou demandez n'importe quoi",
+    "aiDisclaimer": "Contenu généré par l’IA, fourni à titre indicatif. Vérifiez les informations importantes.",
+    "aiGeneratedLabel": "Contenu généré par l’IA, fourni à titre indicatif.",
     "removeAttachment": "Supprimer la pièce jointe",
     "remove": "Supprimer",
     "attachFiles": "Joindre des fichiers",

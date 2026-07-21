@@ -1188,7 +1188,15 @@ async def test_fallback_stream_without_done_returns_incomplete_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _FakeRegistry(
-        {"p1": _FakePlan([ErrorEvent(message="nope", code="boom")])}
+        {
+            "p1": _FakePlan(
+                [
+                    TextDeltaEvent(text="draft"),
+                    DoneEvent(input_tokens=7, output_tokens=3, model="p1"),
+                ]
+            ),
+            "p2": _FakePlan([ErrorEvent(message="nope", code="boom")]),
+        }
     )
     monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
 
@@ -1211,10 +1219,10 @@ async def test_fallback_stream_without_done_returns_incomplete_error(
 
     provider = EnsembleProvider(
         profile_name="default",
-        proposers=[_member("p1")],
+        proposers=[_member("p1"), _member("p2")],
         aggregator=_member("agg"),
         fallback_provider=_PartialFallback(),
-        min_successful_proposers=1,
+        min_successful_proposers=2,
         proposer_timeout_seconds=1,
         aggregator_timeout_seconds=1,
         shuffle_candidates=False,
@@ -1228,6 +1236,9 @@ async def test_fallback_stream_without_done_returns_incomplete_error(
     )
     error = next(event for event in events if isinstance(event, ErrorEvent))
     assert error.code == "ensemble_fallback_incomplete"
+    assert [row["model"] for row in error.model_usage_breakdown] == ["p1"]
+    assert error.model_usage_breakdown[0]["input_tokens"] == 7
+    assert error.usage_missing_count == 2  # failed proposer plus fallback
 
 
 @pytest.mark.asyncio
@@ -1404,6 +1415,8 @@ async def test_ensemble_emits_aggregator_finish_before_terminal_error(
     ]
     assert expected_error in aggregator_progress[-1].error
     assert terminal_error.code == expected_code
+    assert [row["model"] for row in terminal_error.model_usage_breakdown] == ["p1"]
+    assert terminal_error.usage_missing_count == 1  # aggregator supplied no receipt
     assert events.index(aggregator_progress[-1]) < events.index(terminal_error)
 
 
@@ -1510,6 +1523,7 @@ async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
     assert slow_closed.is_set() is True
     assert [call["model"] for call in registry.calls] == ["p1", "p2", "p3", "p4", "agg"]
     done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.usage_missing_count == 1
     assert done.ensemble_trace is not None
     assert done.ensemble_trace["successful_proposers"] == 3
     assert done.ensemble_trace["selected_candidate_count"] == 3

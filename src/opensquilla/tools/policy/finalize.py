@@ -150,6 +150,24 @@ def _denial_reason(content: Any) -> str:
 def _has_live_approval_surface(ctx: ToolContext | None) -> bool:
     return ctx is None or ctx.interaction_mode is InteractionMode.INTERACTIVE
 
+
+def _uses_automatic_review(payload: dict[str, Any]) -> bool:
+    approval_id = payload.get("approval_id")
+    if not isinstance(approval_id, str) or not approval_id:
+        return False
+    try:
+        from opensquilla.gateway.approval_queue import get_approval_queue
+
+        entry = get_approval_queue().get(approval_id)
+    except (KeyError, RuntimeError):
+        return False
+    return bool(
+        entry.namespace == "exec"
+        and entry.params.get("reviewer") == "auto_review"
+        and entry.params.get("humanActionable") is False
+    )
+
+
 async def finalize(
     call: ToolCall,
     ctx: ToolContext | None,
@@ -240,7 +258,7 @@ async def finalize(
     # ---------------- Approval-on-unsupported-surface branch ----------------
     if not _has_live_approval_surface(ctx):
         pending = _extract_pending_approval(result)
-        if pending is not None:
+        if pending is not None and not _uses_automatic_review(pending):
             surface = ctx.caller_kind.value if ctx else "unknown"
             log.warning(
                 "dispatch.approval_required_unsupported_surface",

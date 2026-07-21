@@ -600,6 +600,52 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
         await services.close()
 
 
+@pytest.mark.asyncio
+async def test_build_services_normalizes_default_full_host_access_for_sandbox_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.gateway import boot
+
+    captured_settings: list[Any] = []
+
+    def fake_configure_runtime(settings: Any, **kwargs: Any) -> Any:
+        captured_settings.append(settings)
+        return SimpleNamespace(
+            effective=SimpleNamespace(
+                sandbox_enabled=False,
+                as_dict=lambda: {"sandbox_enabled": False},
+            )
+        )
+
+    monkeypatch.setattr("opensquilla.sandbox.integration.configure_runtime", fake_configure_runtime)
+
+    config = GatewayConfig(
+        state_dir=str(tmp_path / "state"),
+        workspace_dir=str(tmp_path / "workspace"),
+        control_ui={"enabled": False},
+        channels={"channels": []},
+        mcp={"enabled": False},
+        memory={"flush_enabled": False},
+        sandbox={"auto_setup": False},
+    )
+
+    services = await boot.build_services(
+        config=config,
+        session_db_path=str(tmp_path / "sessions.sqlite"),
+        seed_agent_workspaces=False,
+    )
+    try:
+        assert len(captured_settings) == 1
+        runtime_settings = captured_settings[0]
+        assert runtime_settings.run_mode == "full"
+        assert runtime_settings.sandbox is False
+        assert runtime_settings.security_grading is False
+        assert runtime_settings.network_default == "none"
+    finally:
+        await services.close()
+
+
 class _FakeDreamScheduler:
     def __init__(self, jobs: list[CronJob] | None = None) -> None:
         self.jobs = jobs or []

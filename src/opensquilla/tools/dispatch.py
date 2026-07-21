@@ -396,6 +396,7 @@ def _unwrap_nested_json_arguments(
         arguments=parsed_arguments,
         synthetic_from_text=tool_call.synthetic_from_text,
         origin_trace=tool_call.origin_trace,
+        continuation=tool_call.continuation,
     )
 
 
@@ -785,6 +786,7 @@ def _strip_provider_replay_arguments(tool_call: ToolCall) -> ToolCall:
         },
         synthetic_from_text=tool_call.synthetic_from_text,
         origin_trace=tool_call.origin_trace,
+        continuation=tool_call.continuation,
     )
 
 
@@ -839,6 +841,7 @@ def _normalize_common_tool_argument_aliases(
         arguments=result.arguments,
         synthetic_from_text=tool_call.synthetic_from_text,
         origin_trace=tool_call.origin_trace,
+        continuation=tool_call.continuation,
     ), None
 
 
@@ -930,7 +933,6 @@ async def preflight_tool_call(
 ) -> ToolResult | None:
     """Return a denial envelope when a tool call fails dispatch preflight."""
     known = frozenset(known_skill_names or ())
-
     injection_envelope = _check_injection_guard(tool_call, ctx)
     if injection_envelope is not None:
         return injection_envelope
@@ -1058,7 +1060,6 @@ def build_tool_handler(
 
     async def _handler(tool_call: ToolCall) -> ToolResult:  # type: ignore[return]
         effective_ctx = current_tool_context.get() or ctx
-
         # 1. Ingress injection guard.
         injection_envelope = _check_injection_guard(tool_call, effective_ctx)
         if injection_envelope is not None:
@@ -1073,6 +1074,19 @@ def build_tool_handler(
         injection_envelope = _check_injection_guard(tool_call, effective_ctx)
         if injection_envelope is not None:
             return injection_envelope
+
+        runtime_only_supplied = sorted(
+            set(tool_call.arguments) & registered.spec.runtime_only_arguments
+        )
+        if tool_call.continuation is None and runtime_only_supplied:
+            return _build_invalid_attempt_result(
+                tool_call,
+                reason_code="runtime_only_tool_argument",
+                user_message=(
+                    "Runtime-only continuation arguments cannot be supplied by the model: "
+                    + ", ".join(runtime_only_supplied)
+                ),
+            )
 
         non_executable_arguments = _check_non_executable_arguments(tool_call, effective_ctx)
         if non_executable_arguments is not None:
@@ -1133,9 +1147,7 @@ def build_tool_handler(
         decision = run_chain_with_emit(dispatch_input, emit=_emit_policy_log)
         if not decision.allowed:
             if decision.envelope is None:
-                raise RuntimeError(
-                    "PolicyCheck returned a denial without an envelope"
-                )
+                raise RuntimeError("PolicyCheck returned a denial without an envelope")
             if hook_call is not None:
                 for hook in hooks:
                     try:
@@ -1152,7 +1164,30 @@ def build_tool_handler(
                         )
             return decision.envelope
 
-        # 5. Handler dispatch inside the request-scoped contextvar.
+        # 5. Handler dispatch inside the request-scoped contextvar. Runtime
+        # continuation authority is injected only after model-argument schema
+        # and policy checks, so it never becomes provider-visible input.
+        if tool_call.continuation is not None and not tool_call.continuation.matches(
+            tool_use_id=tool_call.tool_use_id,
+            session_key=(effective_ctx.session_key if effective_ctx is not None else None),
+        ):
+            return _build_invalid_attempt_result(
+                tool_call,
+                reason_code="approval_continuation_mismatch",
+                user_message=(
+                    "The approved continuation does not belong to this tool call "
+                    "and session."
+                ),
+            )
+        execution_arguments = dict(tool_call.arguments)
+        if (
+            tool_call.continuation is not None
+            and "approval_id" in registered.spec.runtime_only_arguments
+        ):
+            execution_arguments.setdefault(
+                "approval_id",
+                tool_call.continuation.approval_id,
+            )
         run_budget_tracker = _run_budget_tracker_for(effective_ctx)
         try:
             run_budget_policy = _resolve_run_budget_policy(effective_ctx)
@@ -1160,7 +1195,7 @@ def build_tool_handler(
                 tool_name=tool_call.tool_name,
                 arguments=clamp_tool_arguments(
                     tool_call.tool_name,
-                    dict(tool_call.arguments),
+                    execution_arguments,
                     run_budget_policy,
                 ),
             )

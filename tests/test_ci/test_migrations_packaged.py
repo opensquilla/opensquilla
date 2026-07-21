@@ -38,6 +38,9 @@ def test_wheel_contains_v010_migration(tmp_path: Path) -> None:
     assert any(
         n.endswith("opensquilla/_migrations/V010__meta_skill_runs.py") for n in names
     ), f"V010 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    assert any(
+        n.endswith("opensquilla/_migrations/V022__telemetry_daily_usage.py") for n in names
+    ), f"V022 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
@@ -86,6 +89,8 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
                 " d = _resolve_migrations_dir();"
                 " assert (d / 'V010__meta_skill_runs.py').exists(),"
                 "        f'V010 missing in {d}';"
+                " assert (d / 'V022__telemetry_daily_usage.py').exists(),"
+                "        f'V022 missing in {d}';"
                 " print('OK', d)"
             ),
         ],
@@ -108,7 +113,7 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     reason="docker smoke is opt-in; it pulls external images",
 )
 def test_docker_image_resolves_migrations() -> None:
-    """`docker build` + `docker run` resolves _migrations including V010.
+    """`docker build` + `docker run` resolves _migrations through V022.
 
     Verifies (C1 v2): .dockerignore no longer excludes migrations/.
     """
@@ -130,6 +135,7 @@ def test_docker_image_resolves_migrations() -> None:
                 "from opensquilla.gateway.boot import _resolve_migrations_dir;"
                 " d = _resolve_migrations_dir();"
                 " assert (d / 'V010__meta_skill_runs.py').exists();"
+                " assert (d / 'V022__telemetry_daily_usage.py').exists();"
                 " print('OK', d)"
             ),
         ],

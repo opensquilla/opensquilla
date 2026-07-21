@@ -43,11 +43,13 @@ OFFLINE_MARKER_EXCLUSIONS = {
     "tests/test_skills/test_meta_skill_creator_smoke_live.py",
 }
 RECENTLY_ADDED_ACTIVE_TESTS = {
+    "tests/test_ci/test_migration_v022.py",
     "tests/test_gateway/test_config_profile_paths.py",
     "tests/test_memory/test_store_vec_extension_cleanup.py",
     "tests/test_migration/test_import_receipt_verification_cli.py",
     "tests/test_migration/test_source_snapshot_windows.py",
     "tests/test_migrations/test_migrator_diagnostics.py",
+    "tests/test_observability/test_usage_telemetry.py",
     "tests/test_recovery/test_atomic_and_locking.py",
     "tests/test_recovery/test_cleanup.py",
     "tests/test_recovery/test_engine.py",

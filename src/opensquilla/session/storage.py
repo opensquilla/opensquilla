@@ -330,6 +330,19 @@ _CREATE_IDX_MEMORY_DURABLE_RECEIPTS_COVERAGE = (
     ")"
 )
 
+_CREATE_TELEMETRY_DAILY_USAGE = """
+CREATE TABLE IF NOT EXISTS telemetry_daily_usage (
+    day TEXT PRIMARY KEY,
+    conversation_turns INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cached_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    uploaded_at INTEGER
+)
+"""
+
 _CREATE_EPOCH_ROLLBACK_TRIGGER = """
 CREATE TRIGGER IF NOT EXISTS prevent_epoch_rollback
 BEFORE UPDATE OF epoch ON sessions
@@ -455,6 +468,7 @@ class SessionStorage:
         await self._conn.execute(_CREATE_IDX_AGENT_TASKS_STATUS_UPDATED)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
+        await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
         # FTS5 full-text search index + auto-sync triggers
         await self._conn.execute(_CREATE_TRANSCRIPT_FTS)
         await self._conn.execute(_CREATE_FTS_TRIGGER_INSERT)
@@ -480,6 +494,76 @@ class SessionStorage:
             await self._conn.execute(_CREATE_IDX_SESSIONS_UPDATED)
         await self._conn.commit()
         await self.mark_abandoned_agent_tasks()
+
+    async def record_daily_usage(
+        self,
+        *,
+        day: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int,
+        cache_write_tokens: int,
+        updated_at: int,
+    ) -> None:
+        """Atomically add one completed interactive turn to a UTC-day bucket."""
+        await self.conn.execute(
+            """
+            INSERT INTO telemetry_daily_usage (
+                day, conversation_turns, input_tokens, output_tokens,
+                cached_tokens, cache_write_tokens, updated_at, uploaded_at
+            ) VALUES (?, 1, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT(day) DO UPDATE SET
+                conversation_turns = conversation_turns + 1,
+                input_tokens = input_tokens + excluded.input_tokens,
+                output_tokens = output_tokens + excluded.output_tokens,
+                cached_tokens = cached_tokens + excluded.cached_tokens,
+                cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                updated_at = excluded.updated_at,
+                uploaded_at = NULL
+            """,
+            (
+                day,
+                input_tokens,
+                output_tokens,
+                cached_tokens,
+                cache_write_tokens,
+                updated_at,
+            ),
+        )
+        await self.conn.commit()
+
+    async def list_pending_daily_usage(self, *, before_day: str) -> list[dict[str, Any]]:
+        """Return unsent completed UTC-day aggregates in chronological order."""
+        async with self.conn.execute(
+            """
+            SELECT day, conversation_turns, input_tokens, output_tokens,
+                   cached_tokens, cache_write_tokens, updated_at, uploaded_at
+            FROM telemetry_daily_usage
+            WHERE day < ? AND uploaded_at IS NULL
+            ORDER BY day ASC
+            """,
+            (before_day,),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+    async def mark_daily_usage_uploaded(
+        self,
+        *,
+        day: str,
+        uploaded_at: int,
+        expected_conversation_turns: int,
+    ) -> bool:
+        """Mark a sent snapshot unless another turn changed it in flight."""
+        cursor = await self.conn.execute(
+            """
+            UPDATE telemetry_daily_usage
+            SET uploaded_at = ?
+            WHERE day = ? AND conversation_turns = ?
+            """,
+            (uploaded_at, day, expected_conversation_turns),
+        )
+        await self.conn.commit()
+        return int(cursor.rowcount or 0) > 0
 
     async def _migrate_epoch_column(self) -> None:
         """Idempotently add the epoch column to an existing sessions table.

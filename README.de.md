@@ -371,24 +371,30 @@ Entfernungsschritte angeboten. Die vollständige Referenz findest du in
 
 ## Installationsdatenschutz
 
-OpenSquilla verwendet anonyme Installationstelemetrie, um
-Installationszahlen, Versionsverbreitung und Laufzeitkompatibilität
-abzuschätzen. Die Daten werden beim ersten Gateway-Start und einmal pro
-OpenSquilla-Version gesendet. Uploads verwenden ein kurzes Timeout und
-blockieren den Start nie.
+OpenSquilla verwendet anonyme Installationstelemetrie, um die Anzahl der Installationen,
+die Verbreitung von Versionen und die Laufzeitkompatibilität abzuschätzen. Die Daten
+werden nur beim ersten Start des Gateways gesendet und für jede OpenSquilla-Version nur
+einmal. Außerdem fasst OpenSquilla lokal nach UTC-Datum die Anzahl abgeschlossener
+Dialogrunden auf oberster Ebene und die Token-Nutzung zusammen. Beim Start sowie
+anschließend stündlich versucht OpenSquilla, noch ausstehende kumulierte Tagesstände an
+denselben Telemetriedienst zu übermitteln. OpenSquilla kann auch passive
+Aktualisierungsprüfungen durchführen, darunter beim Start der Desktop-Anwendung und
+während ihres Betriebs höchstens einmal täglich. Uploads verwenden ein kurzes Timeout
+und blockieren den Start nie.
 
 Was gesendet wird:
 
 - Schemaversion
 - lokal erzeugter, stabiler `install_id`-Digest
 - OpenSquilla-Version
-- Ereignistyp (`install` oder `version_seen`)
-- Installationsmethode (`pip`, `source`, `docker`, `desktop` oder
-  `unknown`)
+- Ereignistyp (`install`, `version_seen` oder `daily_usage`)
+- Installationsmethode (`pip`, `source`, `docker`, `desktop` oder `unknown`)
 - Betriebssystem, Betriebssystemversion, CPU-Architektur sowie
   Python-Haupt-/Nebenversion
 - Zeitstempel des ersten Auftretens und des Versands
 - CI-/Testumgebungs-Marker (`ci_environment`)
+- bei täglichen Nutzungsereignissen: UTC-Datum, Anzahl abgeschlossener Dialogrunden
+  sowie Summen der Input-, Output-, Cache- und Cache-Write-Tokens
 
 Die `install_id` ist ein lokaler, einseitiger SHA-256-Digest, abgeleitet
 aus nutzbaren MAC-Adressen, dann aus lokalen IP-Adressen, wenn keine MAC
@@ -400,13 +406,39 @@ Provider-Konfiguration, Chat-/Sitzungs-/Gedächtnis-/Agent-Inhalte,
 Dateinamen oder Dateiinhalte. Die Quell-IP kann für HTTP-Server auf der
 Transportschicht sichtbar sein, ist aber nicht Teil der Nutzlast.
 
-Zum Deaktivieren:
+Um vor dem Start alle nicht vom Benutzer ausgelösten Netzwerkbeobachtungen zu
+deaktivieren:
+
+```sh
+OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
+```
+
+Oder in der Konfiguration:
+
+```toml
+[privacy]
+disable_network_observability = true
+```
+
+Dieser einheitliche Schalter umfasst die automatische Installationstelemetrie, die
+täglich zusammengefasste Nutzungstelemetrie, passive Aktualisierungsprüfungen sowie
+automatische Aktualisierungsprüfungen beim Start der Desktop-Anwendung und während
+ihres Betriebs. Solange der einheitliche oder ein kompatibler älterer
+Deaktivierungsschalter aktiv ist, können auch ausdrücklich vom Benutzer ausgelöste
+Prüfungen auf verfügbare Aktualisierungen ihn nicht umgehen. Andere vom Benutzer
+ausgelöste Aktionen können nach eindeutiger Absicht weiterhin auf Netzwerkdienste
+zugreifen, etwa beim Öffnen der Release-Seite, beim Herunterladen von Release-Dateien
+oder bei der Nutzung konfigurierter Provider, Suchdienste oder Kanäle.
+
+Ältere Umgebungsvariablen werden weiterhin unterstützt:
 
 ```sh
 OPENSQUILLA_TELEMETRY_DISABLED=true
+OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-Fortgeschrittene Deployments können einen eigenen Endpunkt verwenden:
+Fortgeschrittene Bereitstellungen können einen eigenen Installationstelemetrie-Endpunkt
+verwenden:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install

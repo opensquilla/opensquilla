@@ -309,20 +309,22 @@ opensquilla uninstall --purge-all      # 全部（会要求你输入确认）
 ## 安装隐私
 
 OpenSquilla 使用匿名安装遥测来估算安装数量、版本采纳情况和运行时兼容性。数据只在网关
-首次启动时上报，并且每个 OpenSquilla 版本只上报一次。OpenSquilla 也可能执行被动更新
-检查，包括桌面启动时以及应用持续运行期间最多每日一次的自动更新检查。上传设了很短的
-超时，绝不会阻塞启动。
+首次启动时上报，并且每个 OpenSquilla 版本只上报一次。它还会在本地按 UTC 日期汇总已完成
+的顶层对话次数和 token 用量，并在启动时及此后每小时尝试向遥测服务上报待发送的 UTC
+当日累计快照。OpenSquilla 也可能执行被动更新检查，包括桌面启动时以及应用持续运行期间
+最多每日一次的自动更新检查。上传设了很短的超时，绝不会阻塞启动。
 
 发送的内容:
 
 - schema 版本
 - 本地生成的稳定 `install_id` 摘要
 - OpenSquilla 版本
-- 事件类型(`install` 或 `version_seen`)
+- 事件类型(`install`、`version_seen` 或 `daily_usage`)
 - 安装方式(`pip`、`source`、`docker`、`desktop` 或 `unknown`)
 - 操作系统、系统版本、CPU 架构，以及 Python 主/次版本号
 - 首次见到与发送的时间戳
 - CI/测试环境标记(`ci_environment`)
+- 每日用量事件中的 UTC 日期、完成对话次数及 input/output/cache/cache-write token 汇总
 
 `install_id` 是一个本地单向 SHA-256 摘要，由可用的 MAC 地址派生；无 MAC 时使用本地 IP
 地址，并以一个随机持久化值兜底。原始 MAC/IP 值不会被上传。
@@ -343,7 +345,7 @@ OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
 disable_network_observability = true
 ```
 
-这个统一开关覆盖自动安装遥测、被动更新检查，以及桌面启动时和应用持续运行期间的自动更新检查。只要统一或兼容退出开关仍启用，用户显式触发的更新可用性检查也不会绕过它。其他用户主动操作仍可能在明确意图后访问网络服务，例如打开发布页、下载发布资产，以及使用已配置的提供商、搜索或渠道。
+这个统一开关覆盖自动安装遥测、每日汇总用量遥测、被动更新检查，以及桌面启动时和应用持续运行期间的自动更新检查。只要统一或兼容退出开关仍启用，用户显式触发的更新可用性检查也不会绕过它。其他用户主动操作仍可能在明确意图后访问网络服务，例如打开发布页、下载发布资产，以及使用已配置的提供商、搜索或渠道。
 
 旧环境变量仍兼容:
 
@@ -352,7 +354,7 @@ OPENSQUILLA_TELEMETRY_DISABLED=true
 OPENSQUILLA_UPDATE_CHECK_DISABLED=true
 ```
 
-进阶部署可以使用自己的端点:
+进阶部署可以使用自己的安装遥测端点:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install

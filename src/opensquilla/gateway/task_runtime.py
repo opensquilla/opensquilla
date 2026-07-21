@@ -547,6 +547,7 @@ class TaskRuntime:
         provenance: dict[str, Any] | None = None,
         stream_event_sink: TaskStreamEventSink | None = None,
     ) -> TaskHandle:
+        """Enqueue a system follow-up without classifying it as a user turn."""
         session_key = canonicalize_session_key(session_key)
         cached = self._last_envelope_by_session.get(session_key)
         if cached is None:
@@ -561,6 +562,7 @@ class TaskRuntime:
                 envelope,
                 message,
                 mode="followup",
+                run_kind="runtime_send",
                 stream_event_sink=stream_event_sink,
             )
         if provenance is None:
@@ -568,6 +570,7 @@ class TaskRuntime:
                 cached,
                 message,
                 mode="followup",
+                run_kind="runtime_send",
                 stream_event_sink=stream_event_sink,
             )
         # Caller-provided provenance is a one-shot override: build an
@@ -580,6 +583,7 @@ class TaskRuntime:
             ephemeral,
             message,
             mode="followup",
+            run_kind="runtime_send",
             stream_event_sink=stream_event_sink,
             update_envelope_cache=False,
         )

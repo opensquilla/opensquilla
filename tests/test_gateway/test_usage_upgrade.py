@@ -242,6 +242,17 @@ async def test_v020_database_reaches_service_ready_with_live_sink(
         assert [row.session_id for row in baselines] == ["legacy-session"]
     finally:
         await services.close()
+        # build_services is a real boot: it configures the process-global
+        # sandbox runtime (with this config's bypass permissions the runtime
+        # reports sandbox-disabled, which makes every later ApprovalGate in
+        # the same process short-circuit to full-host ALLOW) and binds the
+        # approval-queue singleton. Drop both so later tests in this process
+        # rebuild them instead of inheriting boot state.
+        from opensquilla.gateway.approval_queue import reset_approval_queue
+        from opensquilla.sandbox.integration import reset_runtime
+
+        reset_runtime()
+        reset_approval_queue()
 
 
 def test_usage_query_is_advertised_without_protocol_or_legacy_rpc_breakage() -> None:

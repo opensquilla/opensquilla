@@ -94,6 +94,13 @@ async def test_records_only_completed_interactive_turns(tmp_path, monkeypatch):
             storage, config=config, run_kind="subagent", done_event=_done(), now=now
         )
         assert not await usage_telemetry.record_completed_turn(
+            storage,
+            config=config,
+            run_kind="runtime_send",
+            done_event=_done(),
+            now=now,
+        )
+        assert not await usage_telemetry.record_completed_turn(
             storage, config=config, run_kind="default", done_event=None, now=now
         )
 

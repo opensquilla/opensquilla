@@ -3,6 +3,7 @@ import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
+import { approvePairingParams, errorMessage, withPendingKey } from '@/composables/channels/shared'
 
 // Members state for one selected channel: pairing requests, approved access,
 // and channel-admin standing. Owned by the /channels view (state survives tab
@@ -24,8 +25,17 @@ interface PairingsResponse {
   pairings?: ChannelPairing[]
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+/**
+ * First-pairing admin bootstrap rule: the "approve as admin" checkbox may
+ * default on only when the channel is KNOWN to have no approved members and
+ * no admins yet. A null count means unknown (a failed fetch) and must never
+ * arm the default — fail closed.
+ */
+export function bootstrapAsAdminDefault(
+  approvedCount: number | null,
+  adminCount: number | null,
+): boolean {
+  return approvedCount === 0 && adminCount === 0
 }
 
 export function useChannelMembers() {
@@ -104,10 +114,10 @@ export function useChannelMembers() {
   // channel is KNOWN to have no approved members and no admins yet, so the
   // very first person approved becomes an admin unless the operator opts out.
   // An unknown admin list (failed config read) must never arm the default.
-  const noApprovedOrAdmins = computed(() =>
-    adminsKnown.value &&
-    !pairings.value.some(pairing => pairing.status === 'approved') &&
-    adminSenders.value.length === 0)
+  const noApprovedOrAdmins = computed(() => bootstrapAsAdminDefault(
+    pairings.value.filter(pairing => pairing.status === 'approved').length,
+    adminsKnown.value ? adminSenders.value.length : null,
+  ))
 
   // The bootstrap default is anchored to the UNFILTERED first pending request:
   // a search query must not move the pre-checked default onto whichever row
@@ -133,18 +143,6 @@ export function useChannelMembers() {
 
   function actionPending(pairing: ChannelPairing, action: string): boolean {
     return pendingActions.value.has(actionKey(pairing, action))
-  }
-
-  async function withPendingKey(key: string, run: () => Promise<void>): Promise<void> {
-    if (pendingActions.value.has(key)) return
-    pendingActions.value = new Set(pendingActions.value).add(key)
-    try {
-      await run()
-    } finally {
-      const next = new Set(pendingActions.value)
-      next.delete(key)
-      pendingActions.value = next
-    }
   }
 
   // Bounded config read: fetch only channel_admin_senders (config.get takes a
@@ -204,15 +202,11 @@ export function useChannelMembers() {
       primaryClass: 'btn--primary',
     })
     if (!confirmed) return
-    await withPendingKey(actionKey(pairing, pairing.status === 'revoked' ? 'reapprove' : 'approve'), async () => {
+    await withPendingKey(pendingActions, actionKey(pairing, pairing.status === 'revoked' ? 'reapprove' : 'approve'), async () => {
       error.value = ''
       try {
-        // Only include asAdmin when set: a plain approval keeps its minimal
-        // payload and never touches channel_admin_senders.
-        const params: Record<string, unknown> = { channelName: name, pairingId: pairing.pairingId }
-        if (asAdmin) params.asAdmin = true
         const res = await rpc.call<{ adminGranted?: boolean; warnings?: string[] }>(
-          'channels.pairing.approve', params)
+          'channels.pairing.approve', approvePairingParams(name, pairing.pairingId, asAdmin))
         // The backend commits the approval even when the admin grant fails
         // (adminGranted:false + warnings) — surface that instead of falsely
         // announcing an admin success.
@@ -252,7 +246,7 @@ export function useChannelMembers() {
       primaryClass: admin ? 'btn--primary' : undefined,
     })
     if (!confirmed) return
-    await withPendingKey(actionKey(pairing, 'admin'), async () => {
+    await withPendingKey(pendingActions, actionKey(pairing, 'admin'), async () => {
       error.value = ''
       try {
         await rpc.call('channels.admin.set', {
@@ -287,7 +281,7 @@ export function useChannelMembers() {
       primaryLabel: t('console.channels.pairings.removeAdmin'),
     })
     if (!confirmed) return
-    await withPendingKey(adminOnlyKey(senderId), async () => {
+    await withPendingKey(pendingActions, adminOnlyKey(senderId), async () => {
       error.value = ''
       try {
         await rpc.call('channels.admin.set', { channelName: name, senderId, admin: false })
@@ -309,7 +303,7 @@ export function useChannelMembers() {
       primaryLabel: t('console.channels.pairings.revoke'),
     })
     if (!confirmed) return
-    await withPendingKey(actionKey(pairing, 'revoke'), async () => {
+    await withPendingKey(pendingActions, actionKey(pairing, 'revoke'), async () => {
       error.value = ''
       try {
         await rpc.call('channels.pairing.revoke', { channelName: name, pairingId: pairing.pairingId })
@@ -335,6 +329,7 @@ export function useChannelMembers() {
     revokedPairings,
     adminOnlySenders,
     pendingCount,
+    noApprovedOrAdmins,
     isChannelAdmin,
     asAdminChecked,
     isBootstrapPairing,

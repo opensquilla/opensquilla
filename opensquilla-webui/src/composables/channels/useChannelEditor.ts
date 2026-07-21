@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
+import { errorMessage } from '@/composables/channels/shared'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import {
   REDACTED_SENTINEL,
@@ -110,10 +111,6 @@ export function _resetChannelCatalogForTests(): void {
   catalogInflight = null
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
-
 export function useChannelEditor() {
   const rpc = useRpcStore()
   const form = useSetupChannelsForm()
@@ -140,12 +137,7 @@ export function useChannelEditor() {
   const specFields = computed<ChannelEditorFieldSpec[]>(() => spec.value?.fields ?? [])
   const canEdit = computed(() => phase.value === 'active' && spec.value !== null)
 
-  const panel = form.createPanel({
-    channelRuntimeRows: computed(() => []),
-    catalogChannels: computed(() => catalog.value),
-    channelSpec: spec,
-    channelSpecFields: specFields,
-  })
+  const panel = form.createPanel(specFields)
 
   async function ensureCatalog(refresh = false): Promise<ChannelEditorSpec[]> {
     // Cold-load guard: panels can mount before the WS handshake completes;
@@ -320,11 +312,6 @@ export function useChannelEditor() {
     return specFields.value.map(f => f.name).filter(name => changed.has(name))
   })
 
-  const editedFieldLabels = computed<string[]>(() => {
-    const labels = new Map(specFields.value.map(f => [f.name, f.label]))
-    return editedFields.value.map(name => labels.get(name) || name)
-  })
-
   // Saved-entry keys outside the spec (hand-edited extras) — shown read-only;
   // payload() carries them through untouched. With no spec at all (unknown
   // type) this becomes the whole read-only fallback rendering.
@@ -444,7 +431,6 @@ export function useChannelEditor() {
     entryType,
     extraRows,
     editedFields,
-    editedFieldLabels,
     fieldErrors,
     probe,
     saving,

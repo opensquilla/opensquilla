@@ -5713,3 +5713,39 @@ def test_session_view_plugin_channel_type_degrades_to_unknown_surface():
     )
     assert feishu_view["surface"] == "feishu"
     assert feishu_view["sessionKind"] == "channel"
+
+
+@pytest.mark.asyncio
+async def test_search_classifies_custom_named_channel_sessions(dispatcher):
+    # sessions.search must thread the configured name->type map exactly like
+    # sessions.list: a custom-named channel session's title hit carries the
+    # platform surface, not "unknown".
+    session = FakeSession(
+        session_key="agent:main:飞书:direct:ou_demo_user",
+        session_id="s-feishu",
+        display_name="Deploy planning",
+        last_channel="飞书",
+        last_to="ou_demo_user",
+        updated_at=2000,
+    )
+    config = GatewayConfig(
+        memory={"flush_enabled": False},
+        channels={
+            "channels": [
+                {
+                    "type": "feishu",
+                    "name": "飞书",
+                    "app_id": "cli_dummy",
+                    "app_secret": "dummy",
+                }
+            ]
+        },
+    )
+    ctx = make_ctx(session_manager=_SearchManager([session]), config=config)
+
+    res = await dispatcher.dispatch("r1", "sessions.search", {"query": "deploy"}, ctx)
+
+    assert res.ok is True
+    hits = res.payload["sessions"]
+    assert [row["key"] for row in hits] == ["agent:main:飞书:direct:ou_demo_user"]
+    assert hits[0]["surface"] == "feishu"

@@ -401,7 +401,8 @@ import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { useChannelEditor } from '@/composables/channels/useChannelEditor'
-import { useChannelMembers, type ChannelPairing } from '@/composables/channels/useChannelMembers'
+import { bootstrapAsAdminDefault, useChannelMembers, type ChannelPairing } from '@/composables/channels/useChannelMembers'
+import { approvePairingParams, errorMessage, withPendingKey } from '@/composables/channels/shared'
 import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
 import ChannelMembersPanel from '@/components/channels/ChannelMembersPanel.vue'
 import {
@@ -737,12 +738,8 @@ function connectedDuration(ch: Channel): string {
 function cardSubline(ch: Channel): string {
   const parts = [transportLabel(ch, t('console.channels.notReported'))]
   const botId = String(ch.bot_user_id || '')
-  if (botId) parts.push(t('console.channels.detail.bot', { id: shortId(botId) }))
+  if (botId) parts.push(t('console.channels.detail.bot', { id: truncateId(botId) }))
   return parts.join(' · ')
-}
-
-function shortId(id: string): string {
-  return id.length > 14 ? `${id.slice(0, 12)}…` : id
 }
 
 function cardPending(ch: Channel): ChannelPairing | null {
@@ -761,7 +758,7 @@ function cardPendingCount(ch: Channel): number {
 // unknown state (either fetch failed) must never default the grant on.
 function cardDefaultAsAdmin(ch: Channel): boolean {
   const facts = cardFacts(ch)
-  return Boolean(facts && facts.members === 0 && facts.admins === 0)
+  return bootstrapAsAdminDefault(facts?.members ?? null, facts?.admins ?? null)
 }
 
 function cardErrorText(ch: Channel): string {
@@ -781,27 +778,13 @@ function pairingBusy(name: string): boolean {
   return pendingActions.value.has(`${name}:pairing`)
 }
 
-async function withPendingKey(key: string, run: () => Promise<void>): Promise<void> {
-  if (pendingActions.value.has(key)) return
-  pendingActions.value = new Set(pendingActions.value).add(key)
-  try { await run() } finally {
-    const next = new Set(pendingActions.value)
-    next.delete(key)
-    pendingActions.value = next
-  }
-}
-
 async function approvePairing(name: string, pairing: ChannelPairing | null, asAdmin: boolean): Promise<void> {
   if (!pairing) return
   const sender = pairing.senderName || pairing.senderId
-  await withPendingKey(`${name}:pairing`, async () => {
+  await withPendingKey(pendingActions, `${name}:pairing`, async () => {
     try {
-      // Only include asAdmin when set: a plain approval keeps its minimal
-      // payload and never touches channel_admin_senders.
-      const params: Record<string, unknown> = { channelName: name, pairingId: pairing.pairingId }
-      if (asAdmin) params.asAdmin = true
       const res = await rpc.call<{ adminGranted?: boolean; warnings?: string[] }>(
-        'channels.pairing.approve', params)
+        'channels.pairing.approve', approvePairingParams(name, pairing.pairingId, asAdmin))
       // The backend commits the approval even when the admin grant fails
       // (adminGranted:false + warnings) — surface that instead of falsely
       // toasting an admin success.
@@ -824,7 +807,7 @@ async function approvePairing(name: string, pairing: ChannelPairing | null, asAd
 async function rejectPairing(name: string, pairing: ChannelPairing | null): Promise<void> {
   if (!pairing) return
   const sender = pairing.senderName || pairing.senderId
-  await withPendingKey(`${name}:pairing`, async () => {
+  await withPendingKey(pendingActions, `${name}:pairing`, async () => {
     try {
       await rpc.call('channels.pairing.revoke', { channelName: name, pairingId: pairing.pairingId })
       pushToast(t('console.channels.home.rejectSuccess', { sender }), { tone: 'ok' })
@@ -1154,10 +1137,7 @@ const drillPendingList = computed(() =>
   members.pairings.value.filter(pairing => pairing.status === 'pending'))
 const drillPending = computed(() => drillPendingList.value[0] || null)
 const drillPendingCount = computed(() => drillPendingList.value.length)
-const drillDefaultAsAdmin = computed(() =>
-  members.adminsKnown.value &&
-  !members.pairings.value.some(pairing => pairing.status === 'approved') &&
-  members.adminSenders.value.length === 0)
+const drillDefaultAsAdmin = computed(() => members.noApprovedOrAdmins.value)
 const drillErrorText = computed(() =>
   selectedChannel.value ? cardErrorText(selectedChannel.value) : '')
 
@@ -1494,7 +1474,7 @@ watch(() => route.query, () => {
 })
 
 async function withAction(ch: Channel, action: string, run: () => Promise<void>): Promise<void> {
-  await withPendingKey(`${channelKey(ch)}:${action}`, run)
+  await withPendingKey(pendingActions, `${channelKey(ch)}:${action}`, run)
 }
 
 function actionPending(ch: Channel, action: string): boolean { return pendingActions.value.has(`${channelKey(ch)}:${action}`) }
@@ -1561,9 +1541,8 @@ async function toggleChannel(ch: Channel): Promise<void> {
   })
 }
 
-function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
-
-// Pluralized restart count for the header facts line ("1 restart").
+// Middle-truncate a long bot id (7-char prefix … 4-char suffix) for the card
+// subline and the drill header; the copy button always carries the full id.
 function truncateId(id: string): string {
   return id.length > 14 ? `${id.slice(0, 7)}…${id.slice(-4)}` : id
 }
@@ -1577,6 +1556,7 @@ async function copyBotId(id: string) {
   }
 }
 
+// Pluralized restart count for the header facts line ("1 restart").
 function restartsLabel(ch: Channel): string {
   const count = ch.restart_attempts ?? 0
   return t('console.channels.detail.restarts', { count }, count)

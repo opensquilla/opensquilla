@@ -420,3 +420,85 @@ def test_repeated_failed_probes_hit_cooldown() -> None:
         assert "Too many failed approval attempts" in reply.content
 
     asyncio.run(_run())
+
+
+def test_sandbox_deny_fans_out_to_duplicate_pending_asks(monkeypatch) -> None:
+    # Two pending asks with the same sandbox fingerprint: denying one from
+    # chat must resolve the duplicate too, and both denials are remembered.
+    remembered: list[str] = []
+    monkeypatch.setattr(
+        "opensquilla.sandbox.escalation.remember_sandbox_approval_denial",
+        lambda params, approval_id: remembered.append(approval_id),
+    )
+
+    params = {
+        "approvalKind": "sandbox_network",
+        "host": "pypi.org",
+        "fingerprint": "fp-1",
+        "sessionKey": "agent:main:chat",
+        "senderId": "owner-1",
+    }
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1",
+        origin_channel_name="feishu-main",
+        params=dict(params),
+    )
+    queue = get_approval_queue()
+    duplicate_id = queue.request(namespace="exec", params=dict(params))
+    msg = IncomingMessage(sender_id="owner-1", channel_id="c1", content=f"/deny {code}")
+
+    reply = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+
+    assert reply is not None
+    assert f"Denied {code}" in reply.content
+    duplicate = queue.get(duplicate_id)
+    assert duplicate.resolved is True
+    assert duplicate.approved is False
+    assert set(remembered) == {approval_id, duplicate_id}
+
+
+def test_finalize_failure_releases_claim_so_a_retry_succeeds(monkeypatch) -> None:
+    # A failed finalize must release the resolution claim; otherwise the
+    # approval is stuck claimed-but-unresolved and no retry can ever land.
+    async def _fake_apply(params, *, choice, approved, session_manager, config):
+        return None
+
+    monkeypatch.setattr(
+        "opensquilla.sandbox.escalation.apply_sandbox_approval_choice", _fake_apply
+    )
+
+    approval_id, code = _pending_approval(
+        owner_sender_id="owner-1",
+        origin_channel_name="feishu-main",
+        params=dict(_SANDBOX_PARAMS),
+    )
+    queue = get_approval_queue()
+    real_finalize = queue.finalize_claimed_resolution
+    calls = {"count": 0}
+
+    def _flaky_finalize(*args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("storage hiccup")
+        return real_finalize(*args, **kwargs)
+
+    monkeypatch.setattr(queue, "finalize_claimed_resolution", _flaky_finalize)
+    msg = IncomingMessage(sender_id="owner-1", channel_id="c1", content=f"/approve {code}")
+
+    first = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+    assert first is not None
+    assert "still pending" in first.content
+    assert queue.get(approval_id).resolved is False
+
+    second = asyncio.run(
+        _maybe_resolve_channel_approval(msg=msg, session_key="agent:main:chat")
+    )
+    assert second is not None
+    assert f"Approved {code}" in second.content
+    entry = queue.get(approval_id)
+    assert entry.resolved is True
+    assert entry.approved is True

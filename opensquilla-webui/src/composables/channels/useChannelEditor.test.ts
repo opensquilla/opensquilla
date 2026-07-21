@@ -102,7 +102,6 @@ describe('useChannelEditor', () => {
     editor.updateField('slack_channel_id', 'C42')
     editor.updateField('connection_mode', 'socket')
     expect(editor.editedFields.value).toEqual(['connection_mode', 'slack_channel_id'])
-    expect(editor.editedFieldLabels.value).toEqual(['Connection mode', 'Default channel id'])
     editor.discard()
     expect(editor.form.isDirty.value).toBe(false)
     expect(editor.editedFields.value).toEqual([])

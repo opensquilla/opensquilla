@@ -503,6 +503,10 @@ describe('ChannelsView dashboard home', () => {
       const checkbox = ops.querySelector<HTMLInputElement>(
         '[aria-label="Approve Pending User as a channel admin"]')!
       expect(checkbox.checked).toBe(false)
+      // The plain label, not the first-pairing bootstrap wording.
+      const label = ops.querySelector<HTMLElement>('.chal__asadmin span')!
+      expect(label.textContent).toContain('as admin')
+      expect(label.textContent).not.toContain('This is me')
 
       ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
       await flush()
@@ -559,6 +563,9 @@ describe('ChannelsView dashboard home', () => {
       const checkbox = ops.querySelector<HTMLInputElement>(
         '[aria-label="Approve First User as a channel admin"]')!
       expect(checkbox.checked).toBe(true)
+      // First pairing on an empty channel: the label says who the grant is for.
+      expect(ops.querySelector('.chal__asadmin span')?.textContent)
+        .toContain('This is me — make channel admin')
       ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for First User"]')!.click()
       await flush()
       expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
@@ -876,6 +883,91 @@ describe('ChannelsView drill-in page', () => {
     }
   })
 
+  it('omits the restarts fact when there have been no restart attempts', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, channelsData } = ctx
+    try {
+      await flush()
+      channelsData.value = {
+        channels: [{ ...channelRows[0], restart_attempts: 0 }, ...channelRows.slice(1)],
+      }
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const facts = page.querySelector<HTMLElement>('.chd__factsline')!
+      expect(facts.textContent).not.toMatch(/restart/i)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('middle-truncates a long bot id in the header and copies the full id', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const ctx = await mountChannelsView()
+    const { app, flush, pushToast, channelsData } = ctx
+    try {
+      await flush()
+      channelsData.value = {
+        channels: [{ ...channelRows[0], bot_user_id: 'U-BOT-FEED-0123456789' }, ...channelRows.slice(1)],
+      }
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const botButton = page.querySelector<HTMLButtonElement>('.chd__botid')!
+      // 7-char prefix … 4-char suffix, never the raw 21-char id.
+      expect(botButton.textContent).toContain('Bot U-BOT-F…6789')
+      expect(botButton.textContent).not.toContain('U-BOT-FEED-0123456789')
+
+      botButton.click()
+      await flush()
+      // The clipboard always receives the FULL id, not the display form.
+      expect(writeText).toHaveBeenCalledWith('U-BOT-FEED-0123456789')
+      expect(pushToast).toHaveBeenCalledWith('Bot ID copied', { tone: 'ok' })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('holds the scrollspy during a section jump and re-arms after the window', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, nextTick } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      await flush()
+      const activeNav = () =>
+        page.querySelector<HTMLElement>('.chd__nav button.is-active')?.textContent || ''
+      // Fake only Date: the spy hold compares Date.now(), while flush() keeps
+      // relying on real setTimeout.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const navButtons = Array.from(page.querySelectorAll<HTMLButtonElement>('.chd__nav button'))
+        navButtons.find(button => button.textContent?.includes('Configuration'))!.click()
+        await nextTick()
+        expect(activeNav()).toContain('Configuration')
+
+        // A scroll inside the 800ms hold must not move the highlight off the
+        // clicked section (happy-dom rects all sit above the fold line, so a
+        // live spy would immediately jump to the last section).
+        window.dispatchEvent(new Event('scroll'))
+        await nextTick()
+        expect(activeNav()).toContain('Configuration')
+
+        // Past the hold the spy re-arms and tracks the viewport again.
+        vi.advanceTimersByTime(801)
+        window.dispatchEvent(new Event('scroll'))
+        await nextTick()
+        expect(activeNav()).toContain('Diagnostics')
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      app.unmount()
+    }
+  })
+
   it('returns home through the breadcrumb', async () => {
     const ctx = await mountChannelsView()
     const { app, el, flush, replace } = ctx
@@ -1132,6 +1224,10 @@ describe('ChannelsView members section', () => {
         '[aria-label="Approve Pending User as a channel admin"]')!
       // There is already an approved member, so the bootstrap default is off.
       expect(checkbox.checked).toBe(false)
+      // And the label keeps the plain wording, not the bootstrap string.
+      const label = panel.querySelector<HTMLElement>('.ch-pairing-asadmin span')!
+      expect(label.textContent).toContain('as admin')
+      expect(label.textContent).not.toContain('This is me')
       checkbox.checked = true
       checkbox.dispatchEvent(new Event('change', { bubbles: true }))
       await nextTick()

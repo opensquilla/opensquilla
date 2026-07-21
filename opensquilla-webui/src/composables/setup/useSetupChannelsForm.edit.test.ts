@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { REDACTED_SENTINEL, useSetupChannelsForm } from './useSetupChannelsForm'
+import { REDACTED_SENTINEL } from './channelRpc'
+import { useSetupChannelsForm } from './useSetupChannelsForm'
 
 const SLACK_SPEC = {
   type: 'slack',
@@ -34,7 +35,6 @@ describe('channel edit mode', () => {
   it('seeds non-secret values from the entry, pristine form is not dirty', () => {
     const form = editForm()
     expect(form.isEditing.value).toBe(true)
-    expect(form.editingName.value).toBe('team-slack')
     expect(form.isDirty.value).toBe(false)
     expect(form.payload().reply_in_thread).toBe(true)
   })
@@ -75,21 +75,10 @@ describe('channel edit mode', () => {
     expect(form.payload().agent_id).toBe('main')
   })
 
-  it('duplicateAsNew keeps non-secret values, blanks secrets, suggests a free name, counts as dirty', () => {
-    const form = editForm()
-    form.duplicateAsNew(SLACK_SPEC, ['team-slack', 'team-slack-copy'])
-    expect(form.isEditing.value).toBe(false)
-    expect(form.isDirty.value).toBe(true)
-    const payload = form.payload()
-    expect(payload.name).toBe('team-slack-copy-2')
-    expect(payload.reply_in_thread).toBe(true)
-    expect('token' in payload).toBe(false)
-    expect(JSON.stringify(payload)).not.toContain(REDACTED_SENTINEL)
-  })
-
   it('compose mode also scrubs a pasted literal sentinel', () => {
     const form = useSetupChannelsForm()
-    form.initFromCatalog([SLACK_SPEC])
+    form.selectChannelType('slack')
+    form.resetForSpec(SLACK_SPEC)
     form.updateField('name', 'x')
     form.updateField('token', REDACTED_SENTINEL)
     expect(JSON.stringify(form.payload())).not.toContain(REDACTED_SENTINEL)

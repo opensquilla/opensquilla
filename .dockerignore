@@ -3,6 +3,7 @@
 
 # --- VCS + editor + hidden local state -------------------------------------
 .*
+!opensquilla-webui/.node-version
 .vscode
 .idea
 .DS_Store
@@ -38,7 +39,8 @@ logs
 # --- Docs + tests NOT needed inside the runtime image -----------------------
 tests
 docs
-scripts
+scripts/*
+!scripts/verify_webui_artifact.py
 CHANGELOG.md
 KNOWN_LIMITATIONS.md
 
@@ -56,6 +58,8 @@ install.ps1
 dist
 build
 *.egg-info
+**/node_modules
+opensquilla-webui/test-results
 
 # --- CI / local tooling -----------------------------------------------------
 uv.lock

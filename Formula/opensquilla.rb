@@ -13,11 +13,16 @@ class Opensquilla < Formula
   head "https://github.com/OpenSquilla/opensquilla.git", branch: "main"
 
   depends_on "python@3.13"
+  depends_on "node" => :build
 
   # First-draft formula: pip_install_and_link resolves runtime deps from
   # PyPI at brew-install time. Once OpenSquilla ships a 0.1.0 tag, each runtime
   # dep will be pinned here as a `resource` block for audit-grade install.
   def install
+    cd "opensquilla-webui" do
+      system "npm", "ci"
+      system "npm", "run", "build"
+    end
     venv = virtualenv_create(libexec, "python3.13")
     venv.pip_install_and_link buildpath
   end

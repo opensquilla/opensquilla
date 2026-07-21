@@ -50,7 +50,7 @@ Para documentación de producto orientada a tareas, comienza por la [Guía de pr
 
 OpenSquilla funciona en Windows, macOS y Linux. Elige la ruta que se ajuste a tu caso de uso.
 
-Los instaladores de escritorio y la instalación rápida desde terminal te ofrecen una **versión** precompilada, sin necesidad de Git. Las otras dos —instalar desde el código fuente y desarrollar desde el código fuente— se compilan **a partir de un checkout de Git** (`git clone` + Git LFS).
+Los instaladores de escritorio y la instalación rápida desde terminal te ofrecen una **versión** precompilada, sin necesidad de Git. Las otras dos —instalar desde el código fuente y desarrollar desde el código fuente— compilan también la consola Vue **a partir de un checkout de Git** (`git clone` + Git LFS). Los wheels publicados y los instaladores de escritorio ya incluyen la consola; sus usuarios no necesitan Node.js ni npm.
 
 Los comandos de instalación de versiones usan los recursos de release publicados en GitHub. Las instalaciones del wheel de Python usan nombres de archivo de wheel con versión, porque los instaladores validan la versión incrustada en el nombre del archivo del wheel.
 
@@ -69,6 +69,7 @@ Para el uso de escritorio de 0.5.0 Preview 4, opta por los instaladores de escri
 | --- | :---: | :---: | :---: |
 | Python 3.12+ | mediante `uv` | mediante `uv` o el sistema | mediante `uv` |
 | Git + Git LFS | — | requerido | requerido |
+| Node.js 22.12+ + npm | — | requerido para compilar la Web UI | requerido para la Web UI y los wheels |
 | `uv` | se instala si falta | recomendado | requerido |
 
 El perfil predeterminado `recommended` instala **SquillaRouter** —el enrutador de modelos en el dispositivo de OpenSquilla— y sus recursos de modelo; `OPENSQUILLA_INSTALL_PROFILE=core` omite esas dependencias. El indicador de onboarding independiente `--router disabled` mantiene las dependencias instaladas, pero apaga el enrutador en tiempo de ejecución.
@@ -79,6 +80,7 @@ En las instalaciones desde terminal de macOS, el runtime LightGBM de SquillaRout
 
 Enlaces de instalación: [Git](https://git-scm.com/downloads) ·
 [Git LFS](https://git-lfs.com/) ·
+[Node.js](https://nodejs.org/en/download) ·
 [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 <a id="desktop-installers"></a>
@@ -177,7 +179,13 @@ Usa esta ruta para ejecutar OpenSquilla desde un checkout sin editarlo. El clon 
    powershell -ExecutionPolicy Bypass -File ./scripts/install_source.ps1
    ```
 
-   El script instala `.[recommended]` (SquillaRouter + memoria + modelos locales) en un entorno de usuario dedicado mediante `uv tool install`, recurriendo a `python -m pip install --user` cuando `uv` no está disponible. Abre una terminal nueva si `opensquilla` no está en el `PATH` tras la instalación.
+   El script ejecuta primero `npm ci` y `npm run build` en `opensquilla-webui`, y después instala `.[recommended]` (SquillaRouter + memoria + modelos locales) en un entorno de usuario dedicado mediante `uv tool install`, recurriendo a `python -m pip install --user` cuando `uv` no está disponible. Cada reinstalación desde el código fuente recrea `node_modules` y recompila la consola. La primera ejecución suele descargar más; la caché de npm reduce después el tráfico de red, pero no elimina todo el tiempo de compilación ni las escrituras de disco. Abre una terminal nueva si `opensquilla` no está en el `PATH` tras la instalación.
+
+   `pip install .`, `uv tool install .` y las instalaciones mediante una URL VCS
+   son rutas de compilación de bajo nivel, no sustitutos de este script. Un
+   checkout local necesita primero una Web UI compilada; un checkout creado por
+   una URL VCS no contiene el artefacto generado y se rechaza deliberadamente.
+   Usa el instalador desde el código fuente o un wheel oficial de la release.
 
 3. **(opcional) Instala extras avanzados.** La mayoría de los canales —Feishu, Telegram, DingTalk, QQ, WeCom, Slack y Discord— funcionan desde la instalación base. Los extras opcionales son:
 
@@ -198,13 +206,14 @@ Usa esta ruta para ejecutar OpenSquilla desde un checkout sin editarlo. El clon 
 <details>
 <summary>Instalar desde el código fuente: requisitos previos de terminal y opciones del instalador</summary>
 
-**Instalar los requisitos previos (Git, Git LFS, uv) desde una terminal**
+**Instalar los requisitos previos (Git, Git LFS, Node.js 22.12+ con npm, uv) desde una terminal**
 
 Windows PowerShell:
 
 ```powershell
 winget install --id Git.Git -e
 winget install --id GitHub.GitLFS -e
+winget install --id OpenJS.NodeJS.LTS -e
 powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
 git lfs install
 ```
@@ -212,19 +221,21 @@ git lfs install
 macOS (Homebrew):
 
 ```sh
-brew install git git-lfs uv
+brew install git git-lfs node uv
 git lfs install
 ```
 
 Debian / Ubuntu:
 
 ```sh
-sudo apt update && sudo apt install -y git git-lfs
+sudo apt update && sudo apt install -y git git-lfs curl
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git lfs install
 ```
 
-En Fedora usa `sudo dnf install -y git git-lfs`; en Arch usa `sudo pacman -S --needed git git-lfs`; luego instala `uv` con el comando `curl` anterior. Los cambios de PATH de estos instaladores se aplican a las nuevas sesiones de terminal.
+En Fedora usa `sudo dnf install -y git git-lfs`; en Arch usa `sudo pacman -S --needed git git-lfs`; instala también Node.js 22.12+ y npm desde la distribución o nodejs.org, y luego instala `uv` con el comando `curl` anterior. Los cambios de PATH de estos instaladores se aplican a las nuevas sesiones de terminal.
 
 **Variables de entorno del instalador y comprobaciones de PATH**
 
@@ -244,9 +255,17 @@ Verifica qué `opensquilla` ejecuta tu shell con `command -v opensquilla` (macOS
 Usa esta ruta cuando estés trabajando en el código fuente de OpenSquilla: haciendo cambios, ejecutando pruebas o depurando el comportamiento contra este checkout. No es la ruta de instalación habitual. A diferencia de [Instalar desde el código fuente](#install-from-source), esta ruta requiere `uv`: `uv sync` crea un `.venv` local del repositorio y `uv run` ejecuta los comandos contra los archivos de este checkout.
 
 ```sh
+cd opensquilla-webui
+npm ci
+npm run build
+cd ..
 uv sync --extra recommended --extra dev
 uv run opensquilla --help
 ```
+
+Vuelve a ejecutar `npm run build` después de cambiar la Web UI. Una compilación
+estándar del wheel falla si la consola falta o está obsoleta; `uv sync` editable
+sigue disponible para el trabajo exclusivo de backend.
 
 El extra `recommended` también incluye SquillaRouter para el desarrollo; el extra `dev` instala las herramientas de prueba, lint y comprobación de tipos. Instala extras adicionales en el mismo entorno que ejecutas:
 

@@ -61,7 +61,27 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     for name, (body, _mime) in _ASSETS.items():
         (static_dir / name).write_bytes(body)
     (static_dir / "readme.unknownext").write_bytes(b"hello")
+    dist_dir = static_dir / "dist"
+    (dist_dir / "assets").mkdir(parents=True)
+    (dist_dir / "index.html").write_text(
+        """<!doctype html>
+<link rel="stylesheet" href="./assets/control-ui.css">
+<script type="module" src="./assets/control-ui.js"></script>
+""",
+        encoding="utf-8",
+    )
+    (dist_dir / "assets" / "control-ui.js").write_bytes(b"export {};\n")
+    (dist_dir / "assets" / "control-ui.css").write_bytes(b"body{}\n")
+    for relative in (
+        "js/app.js",
+        "vendor/prism-core.min.js",
+        "vendor/prism-autoloader.min.js",
+    ):
+        path = static_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"export {};\n")
     monkeypatch.setattr(control_ui, "_STATIC_DIR", static_dir)
+    monkeypatch.setattr(control_ui, "_DIST_DIR", dist_dir)
     monkeypatch.delenv("OPENSQUILLA_STATIC_NO_CACHE", raising=False)
 
     config = GatewayConfig()
@@ -161,20 +181,18 @@ def test_missing_asset_still_404s(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_real_assets_pinned_on_polluted_host(
+def test_vite_and_legacy_assets_pinned_on_polluted_host(
     monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
 ) -> None:
-    # End-to-end against the real shipped static tree: the Vite module entry
-    # (the asset whose text/plain mislabel white-screens the Vue console), the
-    # legacy frontend entry, and the prism vendor scripts the white-screen
-    # reports also named.
+    # End-to-end against a synthetic static tree: the Vite module entry (the
+    # asset whose text/plain mislabel white-screens the Vue console), the legacy
+    # frontend entry, and the prism vendor scripts the white-screen reports also
+    # named. Keeping the fixture synthetic lets source-only checkouts run this
+    # regression test without a generated Control UI bundle.
     _pollute_mime_db(monkeypatch)
-    monkeypatch.delenv("OPENSQUILLA_STATIC_NO_CACHE", raising=False)
-    config = GatewayConfig()
-    config.control_ui.enabled = True
-    client = TestClient(Starlette(routes=create_control_ui_routes(config)))
 
-    vite_js_url, _css_urls = control_ui._read_vite_assets(config.control_ui.base_path)
+    vite_js_url, _css_urls = control_ui._read_vite_assets("/control")
     assert vite_js_url.startswith("/control/static/dist/assets/"), vite_js_url
 
     for path in (

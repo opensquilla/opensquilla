@@ -58,7 +58,9 @@ matches your use case.
 
 Desktop installers and Quick terminal install give you a prebuilt **release** —
 no Git required. The other two — Install from source and
-Develop from source — build **from a Git checkout** (`git clone` + Git LFS).
+Develop from source — build **from a Git checkout** (`git clone` + Git LFS),
+including the Vue control console. Release wheels and Desktop installers already
+contain that console, so their users do **not** need Node.js or npm.
 
 Release install commands use published GitHub release assets. Python wheel installs use versioned wheel filenames because installers validate the version
 embedded in the wheel filename.
@@ -80,6 +82,7 @@ the GitHub Release: `OpenSquilla-0.5.0-rc4-mac-arm64.dmg` on macOS and
 | --- | :---: | :---: | :---: |
 | Python 3.12+ | via `uv` | via `uv` or system | via `uv` |
 | Git + Git LFS | — | required | required |
+| Node.js 22.12+ + npm | — | required to build the Web UI | required for Web UI and wheels |
 | `uv` | installed if missing | recommended | required |
 
 The default `recommended` profile installs **SquillaRouter** —
@@ -105,6 +108,7 @@ until it is installed.
 
 Install links: [Git](https://git-scm.com/downloads) ·
 [Git LFS](https://git-lfs.com/) ·
+[Node.js](https://nodejs.org/en/download) ·
 [uv](https://docs.astral.sh/uv/getting-started/installation/).
 
 ### Desktop installers
@@ -229,12 +233,24 @@ modify the code.
    ```
 
    The script installs `.[recommended]` (SquillaRouter + memory + local
-   models) into a dedicated user environment via `uv tool install`,
+   models) into a dedicated user environment via `uv tool install`. Before the
+   Python install, it runs `npm ci` and `npm run build` in
+   `opensquilla-webui`. Every source reinstall recreates the locked
+   `node_modules` tree and rebuilds the console; the first run normally has the
+   largest dependency download, while a warm npm cache reduces later network
+   use but not all build time or disk writes. It then installs the built console
+   with the Python package,
    falling back to `python -m pip install --user` when `uv` is
    unavailable. If `opensquilla` is not on `PATH` after install (common
    on a fresh host where `~/.local/bin` is not yet on `PATH`), run
    `uv tool update-shell` and open a new terminal; see
    [Troubleshooting](#troubleshooting) for details.
+
+   Direct `pip install .`, `uv tool install .`, and VCS URL installs are
+   low-level source-build paths, not substitutes for this installer. A local
+   checkout works only after its Web UI has been built; a VCS URL checkout has
+   no generated artifact and is intentionally rejected. Use this source
+   installer or an official release wheel instead.
 
 3. **(optional) Install advanced extras.** Most channels — Feishu,
    Telegram, DingTalk, QQ, WeCom, Slack, and Discord — work from the
@@ -258,13 +274,14 @@ modify the code.
 <details>
 <summary>Install from source — terminal prerequisites and installer options</summary>
 
-**Install prerequisites (Git, Git LFS, uv) from a terminal**
+**Install prerequisites (Git, Git LFS, Node.js 22.12+ with npm, uv) from a terminal**
 
 Windows PowerShell:
 
 ```powershell
 winget install --id Git.Git -e
 winget install --id GitHub.GitLFS -e
+winget install --id OpenJS.NodeJS.LTS -e
 powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
 git lfs install
 ```
@@ -272,21 +289,24 @@ git lfs install
 macOS (Homebrew):
 
 ```sh
-brew install git git-lfs uv
+brew install git git-lfs node uv
 git lfs install
 ```
 
 Debian / Ubuntu:
 
 ```sh
-sudo apt update && sudo apt install -y git git-lfs
+sudo apt update && sudo apt install -y git git-lfs curl
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
 curl -LsSf https://astral.sh/uv/install.sh | sh
 git lfs install
 ```
 
 On Fedora use `sudo dnf install -y git git-lfs`; on Arch use
-`sudo pacman -S --needed git git-lfs`; then install `uv` with the
-`curl` command above. PATH changes from these installers apply to new
+`sudo pacman -S --needed git git-lfs`; install Node.js 22.12+ and npm from
+your distribution or nodejs.org, then install `uv` with the `curl` command
+above. PATH changes from these installers apply to new
 terminal sessions.
 
 **Installer environment variables and PATH checks**
@@ -313,9 +333,17 @@ checkout. It is not the normal install path. Unlike
 commands against the files in this checkout.
 
 ```sh
+cd opensquilla-webui
+npm ci
+npm run build
+cd ..
 uv sync --extra recommended --extra dev
 uv run opensquilla --help
 ```
+
+Run `npm run build` again after changing Web UI sources. Standard wheel builds
+fail closed when the generated console is missing or stale; editable `uv sync`
+installs remain available for backend-only work.
 
 The `recommended` extra includes SquillaRouter for development too;
 the `dev` extra installs the test, lint, and typecheck tools. Install

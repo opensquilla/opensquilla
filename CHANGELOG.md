@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `opensquilla chat` uses automatic renderer selection without treating stale
   internal backend environment state as a user request. Release installs keep
   the Python-native chat when no compatible host is installed.
+- Generated Vue control-console files are no longer tracked in Git. Release
+  wheels, Desktop installers, and container images still include the CI-built
+  console and require no Node.js at install time. Source installs and wheelhouse
+  builds now require Node.js 22.12+ with npm and build the console from the
+  locked frontend dependencies before packaging.
 
 ### Fixed
 

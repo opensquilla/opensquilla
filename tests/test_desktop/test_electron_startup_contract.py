@@ -1387,20 +1387,25 @@ def test_packaged_gateway_smoke_profile_satisfies_recovery_guard(
     assert report.effective_workspace == workspace
 
 
-def test_desktop_gateway_bundle_collects_usage_ledger_and_query_ui() -> None:
-    """PyInstaller's collected package must contain both sides of the upgrade."""
+def test_desktop_gateway_bundle_collects_usage_ledger_and_verifies_query_ui() -> None:
+    """PyInstaller's package contract covers both sides of the upgrade.
+
+    Source checkouts do not carry a generated Vite bundle. The release path
+    verifies that artifact before PyInstaller runs, while this test checks the
+    canonical Usage client source that feeds the bundle.
+    """
 
     build_script = _read("desktop/electron/scripts/build-gateway.mjs")
     migration = ROOT / "migrations" / "V021__usage_ledger.py"
-    dist_dir = ROOT / "src" / "opensquilla" / "gateway" / "static" / "dist"
+    usage_query = _read("opensquilla-webui/src/composables/usage/useUsageQuery.ts")
 
     assert "'--collect-all',\n  'opensquilla'," in build_script
     assert migration.is_file()
-    assert (dist_dir / "index.html").is_file()
-    javascript = sorted((dist_dir / "assets").glob("*.js"))
-    assert javascript
-    assert any(b"usage.query" in path.read_bytes() for path in javascript), (
-        "desktop Control UI bundle was not rebuilt with usage.query"
+    assert "const USAGE_QUERY_METHOD = 'usage.query'" in usage_query
+    assert "controlUiVerifier" in build_script
+    assert "spawnSync(process.execPath, [controlUiVerifier, controlUiDistDir]" in build_script
+    assert build_script.index("\nassertControlUiArtifactReady()\n") < build_script.index(
+        "'--collect-all',\n  'opensquilla',"
     )
 
 

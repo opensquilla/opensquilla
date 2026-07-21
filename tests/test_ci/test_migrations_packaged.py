@@ -6,6 +6,7 @@ boot on an out-of-date schema after fresh install.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -14,53 +15,60 @@ from pathlib import Path
 
 import pytest
 
+from scripts.verify_webui_artifact import MANIFEST_NAME
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SYNTHETIC_JS = b"window.__opensquillaPackagingProbe = true;\n"
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
-def test_wheel_contains_migrations_and_built_usage_ui(tmp_path: Path) -> None:
-    """The wheel carries both migration history and the built Usage client."""
-    result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    assert result.returncode == 0, f"uv build failed: {result.stderr}"
+def test_wheel_contains_migrations_and_webui_artifact(
+    isolated_core_wheel: Path,
+) -> None:
+    """The wheel carries migration history and the generated-artifact tree."""
 
-    wheels = list(tmp_path.glob("opensquilla-*.whl"))
-    assert len(wheels) == 1, f"Expected 1 wheel, got {wheels}"
-
-    with zipfile.ZipFile(wheels[0]) as wheel:
+    with zipfile.ZipFile(isolated_core_wheel) as wheel:
         names = wheel.namelist()
-        javascript = [
-            name
-            for name in names
-            if name.startswith("opensquilla/gateway/static/dist/assets/")
-            and name.endswith(".js")
-        ]
-        usage_query_is_built = any(b"usage.query" in wheel.read(name) for name in javascript)
+        packaged_probe = wheel.read("opensquilla/gateway/static/dist/assets/packaging-probe.js")
 
-    assert any(
-        n.endswith("opensquilla/_migrations/V010__meta_skill_runs.py") for n in names
-    ), f"V010 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
-    assert any(
-        n.endswith("opensquilla/_migrations/V021__usage_ledger.py") for n in names
-    ), f"V021 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    assert any(n.endswith("opensquilla/_migrations/V010__meta_skill_runs.py") for n in names), (
+        f"V010 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    )
+    assert any(n.endswith("opensquilla/_migrations/V021__usage_ledger.py") for n in names), (
+        f"V021 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    )
     assert any(
         n.endswith("opensquilla/_migrations/V022__telemetry_daily_usage.py") for n in names
     ), f"V022 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
     assert any(
-        n.endswith("opensquilla/_migrations/V023__router_deployment_telemetry.py")
-        for n in names
+        n.endswith("opensquilla/_migrations/V023__router_deployment_telemetry.py") for n in names
     ), f"V023 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
     assert "opensquilla/gateway/static/dist/index.html" in names
-    assert usage_query_is_built, "built Control UI does not contain the usage.query client"
+    assert f"opensquilla/gateway/static/dist/{MANIFEST_NAME}" in names
+    assert packaged_probe == SYNTHETIC_JS
+
+
+def test_usage_query_client_source_is_part_of_webui_build_inputs() -> None:
+    """Protect the Usage client and its post-Vite runtime bundle guard."""
+
+    source = (
+        REPO_ROOT / "opensquilla-webui" / "src" / "composables" / "usage" / "useUsageQuery.ts"
+    ).read_text(encoding="utf-8")
+    package = json.loads((REPO_ROOT / "opensquilla-webui" / "package.json").read_text())
+    bundle_guard = (
+        REPO_ROOT / "opensquilla-webui" / "scripts" / "check-runtime-bundle.mjs"
+    ).read_text(encoding="utf-8")
+
+    assert "const USAGE_QUERY_METHOD = 'usage.query'" in source
+    assert "check-runtime-bundle.mjs" in package["scripts"]["build:artifact"]
+    assert "usage.query" in bundle_guard
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
-def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
+def test_installed_wheel_resolves_migrations(
+    tmp_path: Path,
+    isolated_core_wheel: Path,
+) -> None:
     """An installed wheel resolves both the historical and latest migration."""
     venv_dir = tmp_path / "venv"
     subprocess.run(
@@ -73,15 +81,6 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     pip = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "pip"
     py = venv_dir / ("Scripts" if os.name == "nt" else "bin") / "python"
 
-    wheel_dir = tmp_path / "dist"
-    subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(wheel_dir)],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        timeout=180,
-    )
-    wheels = list(wheel_dir.glob("opensquilla-*.whl"))
     # 120s was tight enough that Windows CI runners began timing out as
     # the base dependency list grew (each transitive wheel adds I/O the
     # Defender real-time scanner has to walk through). Ubuntu still
@@ -90,7 +89,7 @@ def test_installed_wheel_resolves_migrations(tmp_path: Path) -> None:
     # built wheel installs cleanly into a fresh venv and the migration
     # resolver finds V010 afterwards.
     subprocess.run(
-        [str(pip), "install", str(wheels[0])],
+        [str(pip), "install", str(isolated_core_wheel)],
         check=True,
         capture_output=True,
         timeout=300,

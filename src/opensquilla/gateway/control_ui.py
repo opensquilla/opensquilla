@@ -242,7 +242,9 @@ def _read_vite_assets(base_path: str) -> tuple[str, list[str]]:
     """
     dist_index = _DIST_DIR / "index.html"
     if not dist_index.exists():
-        # Fallback: return empty assets; template serves a degraded experience.
+        # The template turns this into an actionable diagnostic instead of a
+        # blank Vue mount point. Standard distributions cannot reach this state
+        # because the Hatch build hook validates the artifact fail-closed.
         return ("", [])
 
     html = dist_index.read_text(encoding="utf-8")
@@ -278,6 +280,7 @@ def create_control_ui_routes(config: GatewayConfig) -> list[Route | Mount]:
             live_js, live_css_urls = _read_vite_assets(base)
             ctx["vite_js_url"] = live_js
             ctx["vite_css_urls"] = live_css_urls
+            ctx["webui_artifact_missing"] = not live_js
             # Back-compat single URL (first) for any consumer expecting one.
             ctx["vite_css_url"] = live_css_urls[0] if live_css_urls else ""
         html = template.render(**ctx)

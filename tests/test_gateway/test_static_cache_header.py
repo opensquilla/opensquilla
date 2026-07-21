@@ -132,6 +132,24 @@ def test_control_ui_defaults_to_vue_bootstrap(
     assert '/control/static/js/app.js' not in response.text
 
 
+def test_control_ui_explains_how_to_build_missing_vue_assets(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+    config = GatewayConfig()
+    config.control_ui.enabled = True
+    app = Starlette(routes=create_control_ui_routes(config))
+
+    response = TestClient(app).get("/control/")
+
+    assert response.status_code == 200
+    assert "Control UI assets are unavailable" in response.text
+    assert "npm ci &amp;&amp; npm run build" in response.text
+    assert "data-webui-artifact-missing" in response.text
+    assert '<div id="app"></div>' not in response.text
+
+
 def test_control_ui_legacy_frontend_uses_static_bootstrap() -> None:
     config = GatewayConfig()
     config.control_ui.enabled = True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -10,7 +11,7 @@ TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
 APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
 CHAT_JS = STATIC / "js" / "views" / "chat.js"
 CHAT_CSS = STATIC / "css" / "views" / "chat.css"
-WEBUI_DIST = STATIC / "dist"
+WEBUI_LOCALES = ROOT / "opensquilla-webui" / "src" / "locales"
 SANDBOX_JS = STATIC / "js" / "views" / "sandbox.js"
 SANDBOX_CSS = STATIC / "css" / "views" / "sandbox.css"
 APPROVALS_JS = STATIC / "js" / "views" / "approvals.js"
@@ -67,15 +68,18 @@ def test_chat_run_mode_control_remains_the_only_sandbox_frontend_control() -> No
     assert ".chat-sandbox-setup-banner" in chat_css
 
 
-def test_built_webui_run_mode_label_matches_managed_execution() -> None:
-    built_js = "\n".join(
-        path.read_text(encoding="utf-8") for path in sorted(WEBUI_DIST.rglob("*.js"))
-    )
+def test_webui_run_mode_locale_source_matches_managed_execution() -> None:
+    # The generated Vite bundle is deliberately absent from source checkouts.
+    # Assert the canonical locale inputs that the build consumes instead.
+    english_source = _read(WEBUI_LOCALES / "en.json")
+    chinese_source = _read(WEBUI_LOCALES / "zh-Hans.json")
+    english = json.loads(english_source)
+    chinese = json.loads(chinese_source)
 
-    assert "Trusted-Sandbox" not in built_js
-    assert "可信沙箱" not in built_js
-    assert "Managed Execution" in built_js
-    assert "托管执行" in built_js
+    assert english["chat"]["composer"]["runModeTrusted"] == "Managed Execution"
+    assert chinese["chat"]["composer"]["runModeTrusted"] == "托管执行"
+    assert "Trusted-Sandbox" not in english_source
+    assert "可信沙箱" not in chinese_source
 
 
 def test_static_rpc_caches_hello_for_late_chat_mounts() -> None:

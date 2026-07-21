@@ -280,24 +280,18 @@ def test_staged_companion_targets_keep_linux_and_windows_artifacts_isolated(
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv not on PATH")
-def test_core_wheel_stays_universal_and_excludes_host_artifacts(tmp_path: Path) -> None:
-    result = subprocess.run(
-        ["uv", "build", "--wheel", "--out-dir", str(tmp_path)],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-    assert result.returncode == 0, result.stderr
-    wheels = list(tmp_path.glob("opensquilla-*-py3-none-any.whl"))
-    assert len(wheels) == 1, list(tmp_path.iterdir())
+def test_core_wheel_stays_universal_and_excludes_host_artifacts(
+    isolated_core_wheel: Path,
+) -> None:
+    assert isolated_core_wheel.name.endswith("-py3-none-any.whl")
 
-    with zipfile.ZipFile(wheels[0]) as archive:
+    with zipfile.ZipFile(isolated_core_wheel) as archive:
         names = archive.namelist()
         wheel_metadata = next(name for name in names if name.endswith(".dist-info/WHEEL"))
         wheel_text = archive.read(wheel_metadata).decode()
     assert "Root-Is-Purelib: true" in wheel_text
     assert "Tag: py3-none-any" in wheel_text
+    assert "opensquilla/dist/workspace_state.py" in names
     forbidden_parts = {"node_modules", "bin", "build", "dist"}
     leaked = [
         name

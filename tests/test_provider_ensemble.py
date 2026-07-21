@@ -41,6 +41,8 @@ class _FakePlan:
     events: list[StreamEvent]
     delay: float = 0.0
     gate: asyncio.Event | None = None
+    started: asyncio.Event | None = None
+    closed: asyncio.Event | None = None
 
 
 @dataclass
@@ -84,12 +86,18 @@ class _FakeProvider:
             }
         )
         plan = self._registry.plans[self._cfg.model]
-        if plan.delay > 0:
-            await asyncio.sleep(plan.delay)
-        if plan.gate is not None:
-            await plan.gate.wait()
-        for event in plan.events:
-            yield event
+        if plan.started is not None:
+            plan.started.set()
+        try:
+            if plan.delay > 0:
+                await asyncio.sleep(plan.delay)
+            if plan.gate is not None:
+                await plan.gate.wait()
+            for event in plan.events:
+                yield event
+        finally:
+            if plan.closed is not None:
+                plan.closed.set()
 
     async def list_models(self) -> list[Any]:
         return []
@@ -1092,6 +1100,137 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
 
 
 @pytest.mark.asyncio
+async def test_fallback_timeout_is_absolute_and_cleanup_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {"p1": _FakePlan([ErrorEvent(message="nope", code="boom")])}
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS",
+        0.005,
+    )
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    release = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    closed = asyncio.Event()
+    cancellation_count = 0
+
+    class _CancellationResistantFallback:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                nonlocal cancellation_count
+                try:
+                    while not release.is_set():
+                        try:
+                            await release.wait()
+                        except asyncio.CancelledError:
+                            cancellation_count += 1
+                            cancellation_seen.set()
+                    yield TextDeltaEvent(text="late-after-timeout")
+                    await asyncio.Event().wait()
+                finally:
+                    closed.set()
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        fallback_provider=_CancellationResistantFallback(),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    started = time.monotonic()
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content="answer this")],
+            config=ChatConfig(timeout=0.02),
+        )
+    ]
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.3
+    assert cancellation_seen.is_set() is True
+    assert any(
+        isinstance(event, ProviderHeartbeatEvent)
+        and event.phase == "ensemble_fallback_wait"
+        for event in events
+    )
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "ensemble_fallback_timeout"
+    release.set()
+    await asyncio.wait_for(closed.wait(), timeout=0.5)
+    assert cancellation_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_fallback_stream_without_done_returns_incomplete_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {"p1": _FakePlan([ErrorEvent(message="nope", code="boom")])}
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+
+    class _PartialFallback:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                yield TextDeltaEvent(text="partial")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        fallback_provider=_PartialFallback(),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert any(
+        isinstance(event, TextDeltaEvent) and event.text == "partial"
+        for event in events
+    )
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "ensemble_fallback_incomplete"
+
+
+@pytest.mark.asyncio
 async def test_openrouter_members_get_member_specific_reasoning_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1325,6 +1464,8 @@ async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     slow_gate = asyncio.Event()
+    slow_closed = asyncio.Event()
+    aggregator_started = asyncio.Event()
     registry = _FakeRegistry(
         {
             "p1": _FakePlan([TextDeltaEvent(text="d1"), DoneEvent(model="p1")]),
@@ -1333,12 +1474,14 @@ async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
             "p4": _FakePlan(
                 [TextDeltaEvent(text="d4"), DoneEvent(model="p4")],
                 gate=slow_gate,
+                closed=slow_closed,
             ),
             "agg": _FakePlan(
                 [
                     TextDeltaEvent(text="final"),
                     DoneEvent(input_tokens=1, output_tokens=1, model="agg"),
-                ]
+                ],
+                started=aggregator_started,
             ),
         }
     )
@@ -1354,11 +1497,17 @@ async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
         shuffle_candidates=False,
     )
 
-    started = time.monotonic()
-    events = await _collect(provider)
-    elapsed = time.monotonic() - started
+    consume_task = asyncio.create_task(_collect(provider))
+    try:
+        await asyncio.wait_for(aggregator_started.wait(), timeout=1.0)
+        events = await asyncio.wait_for(consume_task, timeout=1.0)
+    finally:
+        if not consume_task.done():
+            consume_task.cancel()
+        await asyncio.gather(consume_task, return_exceptions=True)
 
-    assert elapsed < 0.5
+    assert slow_gate.is_set() is False
+    assert slow_closed.is_set() is True
     assert [call["model"] for call in registry.calls] == ["p1", "p2", "p3", "p4", "agg"]
     done = next(event for event in events if isinstance(event, DoneEvent))
     assert done.ensemble_trace is not None
@@ -1376,6 +1525,284 @@ async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
     assert "d2" in str(registry.calls[-1]["messages"][-1].content)
     assert "d3" in str(registry.calls[-1]["messages"][-1].content)
     assert "d4" not in str(registry.calls[-1]["messages"][-1].content)
+
+
+@pytest.mark.asyncio
+async def test_quorum_grace_keeps_a_final_proposer_that_finishes_in_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_gate = asyncio.Event()
+    grace_started = asyncio.Event()
+    real_asyncio_wait = asyncio.wait
+
+    async def observed_wait(
+        futures: set[asyncio.Task[Any]],
+        **kwargs: Any,
+    ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+        if kwargs.get("timeout") == 0.5:
+            grace_started.set()
+        return await real_asyncio_wait(futures, **kwargs)
+
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="d1"), DoneEvent(model="p1")]),
+            "p2": _FakePlan([TextDeltaEvent(text="d2"), DoneEvent(model="p2")]),
+            "p3": _FakePlan([TextDeltaEvent(text="d3"), DoneEvent(model="p3")]),
+            "p4": _FakePlan(
+                [TextDeltaEvent(text="d4"), DoneEvent(model="p4")],
+                gate=slow_gate,
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    monkeypatch.setattr("opensquilla.provider.ensemble.asyncio.wait", observed_wait)
+    provider = EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_member("p1"), _member("p2"), _member("p3"), _member("p4")],
+        aggregator=_member("agg"),
+        min_successful_proposers=3,
+        proposer_timeout_seconds=10,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0.5,
+        shuffle_candidates=False,
+    )
+
+    consume_task = asyncio.create_task(_collect(provider))
+    try:
+        await asyncio.wait_for(grace_started.wait(), timeout=1.0)
+        assert slow_gate.is_set() is False
+        slow_gate.set()
+        events = await asyncio.wait_for(consume_task, timeout=1.0)
+    finally:
+        if not consume_task.done():
+            consume_task.cancel()
+        await asyncio.gather(consume_task, return_exceptions=True)
+
+    assert [call["model"] for call in registry.calls] == [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "agg",
+    ]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["successful_proposers"] == 4
+    assert done.ensemble_trace["selected_candidate_indexes"] == [0, 1, 2, 3]
+    assert done.ensemble_trace["candidates"][3]["ok"] is True
+    assert "d4" in str(registry.calls[-1]["messages"][-1].content)
+
+
+@pytest.mark.asyncio
+async def test_failed_proposer_does_not_start_grace_before_success_quorum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quorum_gate = asyncio.Event()
+    straggler_gate = asyncio.Event()
+    waiting_below_quorum = asyncio.Event()
+    grace_started = asyncio.Event()
+    real_asyncio_wait = asyncio.wait
+
+    async def observed_wait(
+        futures: set[asyncio.Task[Any]],
+        **kwargs: Any,
+    ) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+        timeout = kwargs.get("timeout")
+        if timeout is None and len(futures) == 2:
+            waiting_below_quorum.set()
+        elif timeout == 0.02:
+            grace_started.set()
+        return await real_asyncio_wait(futures, **kwargs)
+
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="d1"), DoneEvent(model="p1")]),
+            "p2": _FakePlan([ErrorEvent(message="boom", code="upstream")]),
+            "p3": _FakePlan(
+                [TextDeltaEvent(text="d3"), DoneEvent(model="p3")],
+                gate=quorum_gate,
+            ),
+            "p4": _FakePlan(
+                [TextDeltaEvent(text="d4"), DoneEvent(model="p4")],
+                gate=straggler_gate,
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    monkeypatch.setattr("opensquilla.provider.ensemble.asyncio.wait", observed_wait)
+    provider = EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_member("p1"), _member("p2"), _member("p3"), _member("p4")],
+        aggregator=_member("agg"),
+        min_successful_proposers=2,
+        proposer_timeout_seconds=10,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0.02,
+        shuffle_candidates=False,
+    )
+
+    consume_task = asyncio.create_task(_collect(provider))
+    try:
+        await asyncio.wait_for(waiting_below_quorum.wait(), timeout=1.0)
+        assert grace_started.is_set() is False
+        quorum_gate.set()
+        await asyncio.wait_for(grace_started.wait(), timeout=1.0)
+        events = await asyncio.wait_for(consume_task, timeout=1.0)
+    finally:
+        if not consume_task.done():
+            consume_task.cancel()
+        await asyncio.gather(consume_task, return_exceptions=True)
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["successful_proposers"] == 2
+    assert done.ensemble_trace["selected_candidate_indexes"] == [0, 2]
+    assert done.ensemble_trace["candidates"][1]["error_code"] == "upstream"
+    assert done.ensemble_trace["candidates"][3]["error_code"] == "quorum_cancelled"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quorum_grace_seconds", [0.0, 0.02])
+async def test_unreachable_quorum_cancels_pending_and_uses_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    quorum_grace_seconds: float,
+) -> None:
+    slow_gate = asyncio.Event()
+    p3_closed = asyncio.Event()
+    p4_closed = asyncio.Event()
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([ErrorEvent(message="p1 failed", code="upstream")]),
+            "p2": _FakePlan([ErrorEvent(message="p2 failed", code="upstream")]),
+            "p3": _FakePlan(
+                [TextDeltaEvent(text="d3"), DoneEvent(model="p3")],
+                gate=slow_gate,
+                closed=p3_closed,
+            ),
+            "p4": _FakePlan(
+                [TextDeltaEvent(text="d4"), DoneEvent(model="p4")],
+                gate=slow_gate,
+                closed=p4_closed,
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="unused"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+
+    class _FallbackProvider:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                yield TextDeltaEvent(text="single")
+                yield DoneEvent(model="single")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_member("p1"), _member("p2"), _member("p3"), _member("p4")],
+        aggregator=_member("agg"),
+        fallback_provider=_FallbackProvider(),
+        min_successful_proposers=3,
+        proposer_timeout_seconds=10,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=quorum_grace_seconds,
+        shuffle_candidates=False,
+    )
+
+    events = await asyncio.wait_for(_collect(provider), timeout=1.0)
+
+    assert slow_gate.is_set() is False
+    assert p3_closed.is_set() is True
+    assert p4_closed.is_set() is True
+    assert "agg" not in [call["model"] for call in registry.calls]
+    progress = [event for event in events if isinstance(event, EnsembleProgressEvent)]
+    assert len([event for event in progress if event.event_type == "proposer_start"]) == 4
+    assert len([event for event in progress if event.event_type == "proposer_finish"]) == 4
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["successful_proposers"] == 0
+    assert done.ensemble_trace["total_candidates"] == 4
+    assert done.ensemble_trace["llm_request_count"] == 5
+    candidates = done.ensemble_trace["candidates"]
+    assert [candidate["error_code"] for candidate in candidates[:2]] == [
+        "upstream",
+        "upstream",
+    ]
+    assert [candidate["error_code"] for candidate in candidates[2:]] == [
+        "quorum_unreachable",
+        "quorum_unreachable",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_required_all_quorum_cancels_remaining_after_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    slow_gate = asyncio.Event()
+    slow_closed = asyncio.Event()
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([ErrorEvent(message="p1 failed", code="upstream")]),
+            "p2": _FakePlan(
+                [TextDeltaEvent(text="d2"), DoneEvent(model="p2")],
+                gate=slow_gate,
+                closed=slow_closed,
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="unused"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+
+    class _FallbackProvider:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                yield TextDeltaEvent(text="single")
+                yield DoneEvent(model="single")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1"), _member("p2")],
+        aggregator=_member("agg"),
+        fallback_provider=_FallbackProvider(),
+        min_successful_proposers=2,
+        proposer_timeout_seconds=10,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0,
+        shuffle_candidates=False,
+    )
+
+    events = await asyncio.wait_for(_collect(provider), timeout=1.0)
+
+    assert slow_gate.is_set() is False
+    assert slow_closed.is_set() is True
+    assert "agg" not in [call["model"] for call in registry.calls]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["candidates"][1]["error_code"] == "quorum_unreachable"
 
 
 @pytest.mark.asyncio

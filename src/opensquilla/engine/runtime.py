@@ -1297,6 +1297,12 @@ class _SelectorFallbackProvider:
         return getattr(self._provider, name)
 
     @property
+    def retry_failed_call_safe(self) -> bool:
+        """Whether replaying the currently active provider call is safe."""
+
+        return getattr(self._provider, "retry_failed_call_safe", True) is not False
+
+    @property
     def provider_name(self) -> str:
         return getattr(self._provider, "provider_name", "")
 

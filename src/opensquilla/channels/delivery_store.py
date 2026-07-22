@@ -164,6 +164,10 @@ class ChannelDeliveryStore:
         # degraded message is still processed instead of being dropped as a
         # duplicate for lacking an ``accepted`` row.
         self._unjournaled_events: set[str] = set()
+        # A pass-through claim is issued at most once while the journal remains
+        # unavailable. Keep the original marker as the same-process dedup trace
+        # and track its consumed claim separately.
+        self._claimed_unjournaled_events: set[str] = set()
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=FULL;")
         self._conn.execute("PRAGMA busy_timeout=30000;")
@@ -526,9 +530,9 @@ class ChannelDeliveryStore:
                 # the marker still exists, so both the marker and the row would
                 # hand out a claim and the message would dispatch twice. Treat
                 # the redelivery as a duplicate (mirroring the durable-duplicate
-                # return below) so it is not re-enqueued; the marker is
-                # reconciled — discarded — when :meth:`claim_inbound` issues the
-                # single pass-through claim it is owed.
+                # return below) so it is not re-enqueued. ``claim_inbound``
+                # either promotes the marker to a durable processing row or
+                # retains it after issuing one pass-through claim.
                 return False
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
@@ -584,44 +588,53 @@ class ChannelDeliveryStore:
         if event_key is None:
             return IngressClaim("", "")
         with self._lock:
+            if event_key in self._claimed_unjournaled_events:
+                return None
             if event_key in self._unjournaled_events:
                 # Accepted memory-only after a journal write failure: there is
-                # no ``accepted`` row to claim, so hand back the same
-                # pass-through claim eventless messages get. Returning ``None``
-                # here would drop the message as a duplicate.
-                self._unjournaled_events.discard(event_key)
-                # The marker was the only dedup trace, and it is both consumed
-                # here and lost on restart. Best-effort journal a finalized row
-                # so a later redelivery collides with the primary key in
-                # :meth:`accept_inbound` instead of committing a fresh
-                # ``accepted`` row that would dispatch the event a second time.
-                # ``completed`` (not ``processing``) keeps ``recover_inbound``
-                # from resurrecting the trace as pending work. If storage is
-                # still down the insert is skipped and behavior is unchanged.
-                trace_now = time.time()
+                # no ``accepted`` row to update. If storage has recovered,
+                # restore the ordinary durable claim lifecycle so completion,
+                # failure, payload scrubbing, and restart recovery all work.
+                token = uuid.uuid4().hex
+                now = time.time()
                 try:
                     self._conn.execute("BEGIN IMMEDIATE")
                     self._conn.execute(
                         "INSERT INTO channel_ingress "
                         "(event_key, channel_name, account_id, lane_key, message_json, "
-                        "state, disposition, attempts, accepted_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, 'completed', 'memory_only_passthrough', "
-                        "1, ?, ?)",
+                        "state, claim_token, claim_started_at, attempts, accepted_at, "
+                        "updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'processing', ?, ?, 1, ?, ?)",
                         (
                             event_key,
                             channel_name,
                             message.provenance.account_id or channel_name,
                             f"{message.channel_id}:{message.sender_id}",
                             _safe_message_json(message),
-                            trace_now,
-                            trace_now,
+                            token,
+                            now,
+                            now,
+                            now,
                         ),
                     )
                     self._conn.commit()
+                except sqlite3.IntegrityError:
+                    with contextlib.suppress(sqlite3.Error):
+                        self._conn.rollback()
+                    # Another writer already made this event durable. Its row
+                    # is now the dedup authority; do not dispatch this copy.
+                    self._unjournaled_events.discard(event_key)
+                    return None
                 except sqlite3.Error:
                     with contextlib.suppress(sqlite3.Error):
                         self._conn.rollback()
-                return IngressClaim("", "")
+                    # Preserve availability for the original delivery, while
+                    # retaining enough process-local state to reject both a
+                    # provider redelivery and a repeated direct claim.
+                    self._claimed_unjournaled_events.add(event_key)
+                    return IngressClaim("", "")
+                self._unjournaled_events.discard(event_key)
+                return IngressClaim(event_key, token)
         token = uuid.uuid4().hex
         now = time.time()
         with self._lock:

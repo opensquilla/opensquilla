@@ -111,28 +111,49 @@ def _blocked_journal(store: ChannelDeliveryStore) -> Iterator[None]:
         blocker.close()
 
 
-def test_journal_write_failure_degrades_to_memory_only_acceptance(tmp_path) -> None:
-    """A storage fault must not raise out of accept_inbound or lose the event."""
+def test_degraded_accept_recovers_to_durable_claim_and_completion(tmp_path) -> None:
+    """A recovered journal must restore the normal claim/finalize contract."""
     store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
     message = _message()
+    event_key = inbound_event_key("slack-main", message)
+    assert event_key is not None
 
     with _blocked_journal(store):
         assert store.accept_inbound("slack-main", message) is True
 
-    # The degraded event has no journal row, yet dispatch must still be able
-    # to claim and finalize it instead of skipping it as a duplicate.
+    # Once storage recovers, claiming the memory-only event must create the
+    # same durable processing record normal admission would have created.
     claim = store.claim_inbound("slack-main", message)
     assert claim is not None
-    assert claim.event_key == ""
-    store.complete_inbound(claim, "turn_dispatched")  # pass-through no-op
+    assert claim.event_key == event_key
+    assert claim.claim_token
+    assert event_key not in store._unjournaled_events
+    with sqlite3.connect(store.path) as connection:
+        processing = connection.execute(
+            "SELECT state, claim_token, attempts FROM channel_ingress WHERE event_key = ?",
+            (event_key,),
+        ).fetchone()
+    assert processing == ("processing", claim.claim_token, 1)
 
-    # Once storage recovers, the journal is used again.
-    follow_up = _message("event-2")
-    assert store.accept_inbound("slack-main", follow_up) is True
-    follow_claim = store.claim_inbound("slack-main", follow_up)
-    assert follow_claim is not None
-    assert follow_claim.event_key
-    assert store.diagnostics("slack-main")["ingress"]["processing"]["count"] == 1
+    # Failure and denied completion must use the ordinary durable transitions,
+    # including payload scrubbing for pre-admission denials.
+    store.fail_inbound(claim, RuntimeError("retry"))
+    retry_claim = store.claim_inbound("slack-main", message)
+    assert retry_claim is not None
+    assert retry_claim.event_key == event_key
+    store.complete_inbound(
+        retry_claim,
+        "admission_denied",
+        reason="pairing_required",
+        scrub_payload=True,
+    )
+    with sqlite3.connect(store.path) as connection:
+        completed = connection.execute(
+            "SELECT state, disposition, reason, message_json, attempts "
+            "FROM channel_ingress WHERE event_key = ?",
+            (event_key,),
+        ).fetchone()
+    assert completed == ("completed", "admission_denied", "pairing_required", "{}", 2)
     store.close()
 
 
@@ -173,58 +194,82 @@ def test_recovery_after_degraded_accept_does_not_double_dispatch(tmp_path) -> No
     assert _durable_ingress_count(store) == 0
     assert len(queue) == 1
 
-    # End to end, exactly one claim is dispatchable: the pending pass-through
-    # from delivery A. The marker is reconciled (discarded) as it is claimed.
+    # End to end, exactly one claim is dispatchable. Since storage recovered,
+    # claiming reconciles the marker into a durable processing record.
     claim = store.claim_inbound("slack-main", queue[0])
     assert claim is not None
-    assert claim.event_key == ""
+    assert claim.event_key == event_key
+    assert claim.claim_token
     assert event_key not in store._unjournaled_events
-    # No second dispatchable claim exists: the marker is gone and no durable
-    # 'accepted' row was ever written.
+    assert _durable_ingress_count(store) == 1
     assert store.claim_inbound("slack-main", message) is None
+    store.complete_inbound(claim, "turn_dispatched")
     store.close()
 
 
-def test_redelivery_after_passthrough_claim_does_not_double_dispatch(tmp_path) -> None:
-    """A redelivery arriving AFTER the pass-through claim must still be a
-    duplicate: the claim consumed the memory-only marker, so without a durable
-    trace the redelivery would journal a fresh 'accepted' row and hand out a
-    second claim for the same event."""
+def test_claim_while_journal_blocked_retains_same_process_dedupe(tmp_path) -> None:
+    """A pass-through claim must retain its marker while storage is unavailable."""
     store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
     message = _message()
     event_key = inbound_event_key("slack-main", message)
     assert event_key is not None
+    queue: list[IncomingMessage] = []
 
-    # Delivery A during a storage fault: memory-only acceptance, no durable row.
+    class Queue:
+        def put_nowait(self, item: IncomingMessage) -> None:
+            queue.append(item)
+
+    channel = SimpleNamespace(_delivery_store=store, _delivery_channel_name="slack-main")
+
+    # The original delivery remains available even though both acceptance and
+    # claim happen while SQLite is unavailable.
     with _blocked_journal(store):
-        assert store.accept_inbound("slack-main", message) is True
+        assert durable_enqueue(channel, message, Queue()) is True
+        claim = store.claim_inbound("slack-main", queue[0])
+        assert claim is not None
+        assert claim.event_key == ""
+        assert event_key in store._unjournaled_events
+        assert durable_enqueue(channel, message, Queue()) is False
+
+    # Recovery after the pass-through claim must not make a provider redelivery
+    # visible a second time in this process.
+    assert durable_enqueue(channel, message, Queue()) is False
+    assert len(queue) == 1
     assert event_key in store._unjournaled_events
     assert _durable_ingress_count(store) == 0
-
-    # Dispatch claims first: the marker is consumed by the pass-through claim.
-    claim = store.claim_inbound("slack-main", message)
-    assert claim is not None
-    assert claim.event_key == ""
-    assert event_key not in store._unjournaled_events
-
-    # Delivery B after storage recovers: the redelivery must be rejected — it
-    # must not commit an independently claimable 'accepted' row.
-    assert store.accept_inbound("slack-main", message) is False
-    with sqlite3.connect(store.path) as connection:
-        rows = connection.execute(
-            "SELECT state FROM channel_ingress WHERE event_key = ?", (event_key,)
-        ).fetchall()
-    assert len(rows) <= 1
-    assert all(row[0] != "accepted" for row in rows)
-    # Exactly ONE dispatchable claim across the whole sequence.
     assert store.claim_inbound("slack-main", message) is None
+    store.complete_inbound(claim, "turn_dispatched")  # pass-through no-op
     store.close()
 
 
-def test_redelivery_after_passthrough_claim_survives_restart(tmp_path) -> None:
-    """The dedup trace left by the pass-through claim must be durable: a
-    restart clears the in-memory marker set, so only a journal row can stop a
-    post-restart redelivery from dispatching the event a second time."""
+def test_degraded_claim_yields_to_another_store_durable_accept(tmp_path) -> None:
+    """A recovered PK race must leave exactly one store able to dispatch."""
+    path = tmp_path / "channel_delivery.sqlite"
+    degraded = ChannelDeliveryStore(path)
+    message = _message()
+    event_key = inbound_event_key("slack-main", message)
+    assert event_key is not None
+
+    with _blocked_journal(degraded):
+        assert degraded.accept_inbound("slack-main", message) is True
+
+    durable = ChannelDeliveryStore(path)
+    assert durable.accept_inbound("slack-main", message) is True
+
+    assert degraded.claim_inbound("slack-main", message) is None
+    assert event_key not in degraded._unjournaled_events
+    claim = durable.claim_inbound("slack-main", message)
+    assert claim is not None
+    assert claim.event_key == event_key
+    assert durable.claim_inbound("slack-main", message) is None
+
+    durable.complete_inbound(claim, "turn_dispatched")
+    durable.close()
+    degraded.close()
+
+
+def test_durable_claim_after_degraded_accept_recovers_after_restart(tmp_path) -> None:
+    """A crash after the reconciled claim must leave recoverable pending work."""
     path = tmp_path / "channel_delivery.sqlite"
     store = ChannelDeliveryStore(path)
     message = _message()
@@ -235,15 +280,20 @@ def test_redelivery_after_passthrough_claim_survives_restart(tmp_path) -> None:
         assert store.accept_inbound("slack-main", message) is True
     claim = store.claim_inbound("slack-main", message)
     assert claim is not None
-    assert claim.event_key == ""
+    assert claim.event_key == event_key
+    assert claim.claim_token
     store.close()
 
     restarted = ChannelDeliveryStore(path)
-    # The trace row must not be resurrected as recoverable pending work.
+    recovered = restarted.recover_inbound("slack-main")
+    assert len(recovered) == 1
+    assert recovered[0].provenance.event_id == "event-1"
+    recovered_claim = restarted.claim_inbound("slack-main", recovered[0])
+    assert recovered_claim is not None
+    assert recovered_claim.event_key == event_key
+    restarted.complete_inbound(recovered_claim, "turn_dispatched")
     assert restarted.recover_inbound("slack-main") == []
-    # A post-restart redelivery is a duplicate, not a second dispatch.
     assert restarted.accept_inbound("slack-main", message) is False
-    assert restarted.claim_inbound("slack-main", message) is None
     restarted.close()
 
 

@@ -156,7 +156,19 @@ async def _stream_with_heartbeats(
             if deadline is not None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise TimeoutError
+                    if not pending.done():
+                        raise TimeoutError
+                    # The stream completed this event before the deadline was
+                    # enforced (typically while suspended at a heartbeat
+                    # yield). Deliver the finished work — a completed, billed
+                    # response must not be reported as a timeout.
+                    try:
+                        event = pending.result()
+                    except StopAsyncIteration:
+                        return
+                    pending = asyncio.ensure_future(stream_iter.__anext__())
+                    yield event
+                    continue
                 wait_seconds = min(wait_seconds, remaining)
             done, _ = await asyncio.wait({pending}, timeout=wait_seconds)
             if not done:

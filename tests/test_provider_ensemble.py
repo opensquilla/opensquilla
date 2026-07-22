@@ -31,6 +31,7 @@ from opensquilla.provider.ensemble import (
     _member_chat_config,
     _member_from_ref,
     _MemberRequestBudgetBinding,
+    _stream_with_heartbeats,
     build_ensemble_provider_from_config,
 )
 from opensquilla.provider.selector import ProviderConfig
@@ -333,6 +334,74 @@ async def test_ensemble_emits_heartbeat_while_waiting_for_slow_aggregator(
         and event.phase == "ensemble_aggregator_wait"
         for event in events
     )
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_wrapper_delivers_final_event_completed_before_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A final event finished during a heartbeat yield must not become a timeout."""
+
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+
+    async def _source() -> AsyncIterator[StreamEvent]:
+        await asyncio.sleep(0.03)
+        yield DoneEvent(model="m")
+
+    wrapped = _stream_with_heartbeats(
+        _source(),
+        phase="unit",
+        message="waiting",
+        timeout_seconds=0.05,
+    )
+    events: list[StreamEvent] = []
+    try:
+        async for event in wrapped:
+            events.append(event)
+            if isinstance(event, ProviderHeartbeatEvent):
+                # Keep the consumer busy past the deadline while the source's
+                # final event completes behind the suspended heartbeat yield.
+                await asyncio.sleep(0.08)
+            if isinstance(event, DoneEvent):
+                break
+    finally:
+        await wrapped.aclose()
+
+    assert any(isinstance(event, ProviderHeartbeatEvent) for event in events)
+    assert any(isinstance(event, DoneEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_wrapper_still_times_out_when_no_event_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS",
+        0.01,
+    )
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    release = asyncio.Event()
+
+    async def _source() -> AsyncIterator[StreamEvent]:
+        await release.wait()
+        yield DoneEvent(model="m")
+
+    wrapped = _stream_with_heartbeats(
+        _source(),
+        phase="unit",
+        message="waiting",
+        timeout_seconds=0.03,
+    )
+    with pytest.raises(TimeoutError):
+        async for _ in wrapped:
+            pass
+    release.set()
 
 
 def _tool() -> ToolDefinition:

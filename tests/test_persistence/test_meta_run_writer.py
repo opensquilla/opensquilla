@@ -139,6 +139,40 @@ def test_step_lifecycle(writer: MetaRunWriter) -> None:
     assert steps[0].effective_skill == "alpha"
 
 
+def test_step_persistence_drops_current_run_receipt_proofs(writer: MetaRunWriter) -> None:
+    plan = _make_plan()
+    run_id = writer.begin_run_sync(
+        meta_skill_name=plan.name,
+        meta_plan=plan,
+        triggered_by="hard_takeover",
+        inputs={"q": "x"},
+        session_key=None,
+        turn_id=None,
+    )
+    proof = f"sha256:{'a' * 64}"
+    writer.begin_step_sync(
+        run_id=run_id,
+        step=plan.steps[0],
+        effective_skill="alpha",
+        rendered_inputs={
+            "runtime": {
+                "paid_submission_dispositions": '{"shot1":"receipt"}',
+                "paid_submission_receipt_proofs": {"shot1": proof},
+            },
+            "__opensquilla_paid_submission_receipt_proofs_v1__": proof,
+        },
+    )
+
+    [step] = writer.get_steps(run_id)
+    persisted = json.loads(step.rendered_inputs_json)
+    assert persisted == {
+        "runtime": {
+            "paid_submission_dispositions": '{"shot1":"receipt"}',
+        },
+    }
+    assert proof not in step.rendered_inputs_json
+
+
 def test_finish_step_works_after_usage_column_rollback(tmp_path: Path) -> None:
     db = str(tmp_path / "v014_schema.db")
     apply_pending(db, MIGRATIONS_DIR)

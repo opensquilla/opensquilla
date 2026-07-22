@@ -778,7 +778,9 @@ def test_image_policy_rejection_without_placeholder_persists_honest_failure(
         "status": "policy_rejected",
     }
     assert "policy_code=ContentPolicyViolation" in captured.err
-    assert "IMAGE_GENERATION_RECEIPT" not in captured.out
+    receipt_line = captured.out.strip()
+    assert receipt_line.startswith("IMAGE_GENERATION_RECEIPT: ")
+    assert json.loads(receipt_line.partition(": ")[2]) == receipt
 
 
 @pytest.mark.parametrize(

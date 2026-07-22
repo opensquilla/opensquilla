@@ -8,11 +8,14 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from opensquilla.engine.steps.meta_command import (
+    format_meta_replay_sentinel,
+    meta_command_launch,
     pending_meta_launch_peek,
     pending_meta_launch_pop,
     pending_meta_launch_put,
@@ -24,7 +27,9 @@ from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.task_runtime import TaskRuntime
 from opensquilla.session.manager import SessionManager
+from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
 from opensquilla.session.storage import SessionStorage
+from opensquilla.session.turn_context import current_turn_context, turn_context_scope
 
 SESSION_KEY = "agent:main:webchat:atomic-ingress"
 CLIENT_REQUEST_ID = "client-request-atomic-1"
@@ -131,6 +136,471 @@ def _assert_no_runtime_acceptance_state(runtime: TaskRuntime) -> None:
     assert runtime._tasks == {}
     assert runtime._pending_by_session == {}
     assert runtime._running_by_session == {}
+
+
+@pytest.mark.asyncio
+async def test_durable_manual_meta_control_survives_memory_loss_and_long_queue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = "durable-meta-control-after-restart"
+    db_path = tmp_path / "sessions.db"
+    response_payload: dict[str, Any]
+    async with _open_real_stack(db_path) as stack:
+        intent, disposition = await stack.storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+            meta_skill_name="meta-tiny",
+        )
+        assert disposition == "stamped"
+        # No in-process launch cache exists: this models a Gateway restart and
+        # also proves the old 15-minute monotonic staging TTL is irrelevant.
+        assert pending_meta_launch_peek(SESSION_KEY, client_request_id=request_id) is None
+        monkeypatch.setattr(
+            "opensquilla.engine.steps.meta_command.time.monotonic",
+            lambda: 10**12,
+        )
+
+        response = await get_dispatcher().dispatch(
+            "rpc-durable-meta-control",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": "/meta meta-tiny -- write a durable paper",
+                "clientRequestId": request_id,
+            },
+            stack.context,
+        )
+        await stack.wait_until_running()
+        assert response.ok is True
+        response_payload = dict(response.payload)
+
+        accepted = await stack.storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+        )
+        assert accepted is not None
+        assert accepted.intent_id == intent.intent_id
+        assert accepted.status == "accepted"
+        assert accepted.accepted_task_id == response.payload["task_id"]
+        accepted_task = await stack.storage.get_agent_task(response.payload["task_id"])
+        assert accepted_task is not None
+        assert accepted_task.queue_mode == "followup"
+
+        duplicate = await get_dispatcher().dispatch(
+            "rpc-durable-meta-control-duplicate",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": "/meta meta-tiny -- write a durable paper",
+                "clientRequestId": request_id,
+            },
+            stack.context,
+        )
+        assert duplicate.ok is True
+        assert duplicate.payload["replayed"] is True
+        assert duplicate.payload["task_id"] == response.payload["task_id"]
+        stack.release_handler.set()
+        await stack.runtime.wait(response.payload["task_id"], timeout=2.0)
+
+    # Reopen SQLite after the accepted task completed. The exact server-bound
+    # control remains on the transcript and can seed the engine without any
+    # module-level pending marker.
+    reopened = await SessionStorage.open(str(db_path))
+    try:
+        entries = await reopened.get_transcript(response_payload["session_id"])
+        turn_context = entries[0].turn_context
+        assert isinstance(turn_context, dict)
+        assert turn_context["meta_control"]["intent_id"] == intent.intent_id
+        launch_turn = SimpleNamespace(
+            session_key=SESSION_KEY,
+            message="/meta meta-tiny -- write a durable paper",
+            semantic_message="/meta meta-tiny -- write a durable paper",
+            metadata={},
+        )
+        with turn_context_scope(turn_context):
+            await meta_command_launch(launch_turn)
+        assert launch_turn.metadata["meta_launch"] == {
+            "name": "meta-tiny",
+            "request": "write a durable paper",
+        }
+    finally:
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_durable_meta_control_ordinary_turn_cannot_consume(
+    tmp_path: Path,
+) -> None:
+    request_id = "durable-meta-control-mismatch"
+    async with _open_real_stack(tmp_path / "sessions.db") as stack:
+        intent, _ = await stack.storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+            meta_skill_name="meta-tiny",
+        )
+        response = await get_dispatcher().dispatch(
+            "rpc-durable-meta-control-mismatch",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": "an ordinary message must not claim the staged control",
+                "clientRequestId": request_id,
+            },
+            stack.context,
+        )
+        await stack.wait_until_running()
+        assert response.ok is True
+        untouched = await stack.storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+        )
+        assert untouched is not None
+        assert untouched.intent_id == intent.intent_id
+        assert untouched.status == "staged"
+        entries = await stack.storage.get_transcript(stack.session_id)
+        assert "meta_control" not in (entries[0].turn_context or {})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "/meta unstaged-skill",
+        "/meta-replay 0123456789abcdef0123456789abcdef",
+    ],
+)
+async def test_request_bound_meta_control_without_matching_stage_fails_closed(
+    tmp_path: Path,
+    message: str,
+) -> None:
+    async with _open_real_stack(tmp_path / "sessions.db") as stack:
+        response = await get_dispatcher().dispatch(
+            "rpc-unstaged-meta-control",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": message,
+                "clientRequestId": "unstaged-meta-control",
+            },
+            stack.context,
+        )
+
+        assert response.ok is False
+        assert response.error is not None
+        assert response.error.code == "META_CONTROL_NOT_STAGED"
+        assert response.error.accepted is False
+        assert _table_counts(stack.db_path) == {
+            "transcript_entries": 0,
+            "agent_tasks": 0,
+            "turn_ingress_receipts": 0,
+        }
+
+
+@pytest.mark.asyncio
+async def test_durable_failed_step_replay_survives_commit_then_memory_loss(
+    tmp_path: Path,
+) -> None:
+    nonce = "0123456789abcdef0123456789abcdef"
+    request_id = "durable-replay-control"
+    db_path = tmp_path / "sessions.db"
+    async with _open_real_stack(db_path) as stack:
+        intent, _ = await stack.storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="replay",
+            correlation_id=f"nonce:{nonce}",
+            meta_skill_name="meta-tiny",
+            replay_run_id="source-run-1",
+            replay_mode="failed-step",
+        )
+        assert pending_meta_launch_peek(SESSION_KEY, client_request_id=request_id) is None
+        launch_text = format_meta_replay_sentinel(nonce)
+        response = await get_dispatcher().dispatch(
+            "rpc-durable-replay-control",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": launch_text,
+                "clientRequestId": request_id,
+            },
+            stack.context,
+        )
+        await stack.wait_until_running()
+        assert response.ok is True
+        entries = await stack.storage.get_transcript(stack.session_id)
+        turn_context = entries[0].turn_context
+        assert isinstance(turn_context, dict)
+        assert turn_context["meta_control"]["intent_id"] == intent.intent_id
+
+        replay_turn = SimpleNamespace(
+            session_key=SESSION_KEY,
+            message=launch_text,
+            semantic_message=launch_text,
+            metadata={},
+        )
+        with turn_context_scope(turn_context):
+            await meta_command_launch(replay_turn)
+        assert replay_turn.metadata["meta_replay"] == {
+            "run_id": "source-run-1",
+            "name": "meta-tiny",
+            "mode": "failed-step",
+        }
+
+
+@pytest.mark.asyncio
+async def test_queued_meta_control_reopens_and_reactivates_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """A crash after acceptance but before RUNNING cannot lose the launch."""
+
+    db_path = tmp_path / "sessions.db"
+    storage = await SessionStorage.open(str(db_path))
+    manager = SessionManager(storage)
+    session = await manager.create(SESSION_KEY, agent_id="main")
+    blocker_started = asyncio.Event()
+    hold_blocker = asyncio.Event()
+
+    async def _blocking_handler(_run: Any) -> None:
+        blocker_started.set()
+        await hold_blocker.wait()
+
+    runtime = TaskRuntime(
+        storage=storage,
+        turn_handler=_blocking_handler,
+        max_concurrency=1,
+        running_heartbeat_interval_s=None,
+    )
+    context = RpcContext(
+        conn_id="meta-restart-before-start",
+        principal=_PRINCIPAL,
+        config=GatewayConfig(
+            workspace_dir=str(tmp_path / "workspace"),
+            memory={"flush_enabled": False},
+            naming={"enabled": False},
+        ),
+        session_manager=manager,
+        task_runtime=runtime,
+    )
+    blocker = await get_dispatcher().dispatch(
+        "rpc-meta-restart-blocker",
+        "chat.send",
+        {
+            "sessionKey": SESSION_KEY,
+            "message": "occupy the only runtime slot",
+            "clientRequestId": "meta-restart-blocker",
+        },
+        context,
+    )
+    assert blocker.ok is True
+    await asyncio.wait_for(blocker_started.wait(), timeout=2.0)
+
+    request_id = "meta-restart-accepted-control"
+    launch_text = "/meta meta-tiny -- preserve exact semantic input"
+    await storage.stage_meta_control_intent(
+        session_key=SESSION_KEY,
+        control_kind="manual",
+        correlation_id=f"request:{request_id}",
+        meta_skill_name="meta-tiny",
+    )
+    accepted = await get_dispatcher().dispatch(
+        "rpc-meta-restart-control",
+        "chat.send",
+        {
+            "sessionKey": SESSION_KEY,
+            "message": launch_text,
+            "clientRequestId": request_id,
+        },
+        context,
+    )
+    assert accepted.ok is True
+    task_id = accepted.payload["task_id"]
+    queued = await storage.get_agent_task(task_id)
+    assert queued is not None
+    assert queued.status == "queued"
+    assert queued.details is not None
+    assert queued.details["meta_control_message"] == launch_text
+    assert queued.details["meta_control_semantic_message"] == launch_text
+    transcript = await storage.get_transcript(session.session_id)
+    control_entry = next(
+        entry
+        for entry in transcript
+        if entry.message_id == accepted.payload["message_id"]
+    )
+    assert control_entry.content != launch_text  # SessionManager applied its timestamp prefix.
+
+    # Model an abrupt process loss: close SQLite before cancelling in-memory
+    # coroutines, so their cancellation cleanup cannot rewrite durable state.
+    old_async_tasks = [
+        task.asyncio_task
+        for task in runtime._tasks.values()
+        if task.asyncio_task is not None
+    ]
+    await storage.close()
+    for old_task in old_async_tasks:
+        old_task.cancel()
+    await asyncio.gather(*old_async_tasks, return_exceptions=True)
+
+    reopened = await SessionStorage.open(str(db_path))
+    recovered_runs: list[tuple[Any, dict[str, Any] | None]] = []
+
+    async def _capture_recovered(run: Any) -> None:
+        turn_context = current_turn_context()
+        recovered_runs.append((run, dict(turn_context) if turn_context is not None else None))
+
+    recovered_runtime = TaskRuntime(
+        storage=reopened,
+        turn_handler=_capture_recovered,
+        max_concurrency=1,
+        running_heartbeat_interval_s=None,
+    )
+    try:
+        abandoned = await reopened.get_agent_task(task_id)
+        assert abandoned is not None
+        assert abandoned.status == "abandoned"
+        assert abandoned.terminal_reason == "meta_control_restart_before_start"
+
+        assert await recovered_runtime.recover_durable_meta_controls() == 1
+        completed = await recovered_runtime.wait(task_id, timeout=2.0)
+        assert completed.status == "succeeded"
+        assert len(recovered_runs) == 1
+        recovered_run, recovered_context = recovered_runs[0]
+        assert recovered_run.task_id == task_id
+        assert recovered_run.message == launch_text
+        assert recovered_run.semantic_message == launch_text
+        assert recovered_context is not None
+        assert recovered_context["meta_control"]["name"] == "meta-tiny"
+
+        # A second recovery pass and a response-loss retry both reuse the
+        # accepted identity without creating or executing another task.
+        assert await recovered_runtime.recover_durable_meta_controls() == 0
+        reopened_manager = SessionManager(reopened)
+        reopened_context = RpcContext(
+            conn_id="meta-restart-retry",
+            principal=_PRINCIPAL,
+            config=context.config,
+            session_manager=reopened_manager,
+            task_runtime=recovered_runtime,
+        )
+        duplicate = await get_dispatcher().dispatch(
+            "rpc-meta-restart-control-duplicate",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": launch_text,
+                "clientRequestId": request_id,
+            },
+            reopened_context,
+        )
+        assert duplicate.ok is True
+        assert duplicate.payload["replayed"] is True
+        assert duplicate.payload["task_id"] == task_id
+        assert len(recovered_runs) == 1
+        assert _table_counts(db_path) == {
+            "transcript_entries": 2,
+            "agent_tasks": 2,
+            "turn_ingress_receipts": 2,
+        }
+    finally:
+        await recovered_runtime.shutdown(cancel=True, timeout=2.0)
+        await reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_meta_control_recovery_drains_small_batches_past_pending_cap() -> None:
+    session_key = "agent:main:webchat:recovery-batches"
+    records: dict[str, AgentTaskRecord] = {}
+    claims: list[Any] = []
+    for index in range(3):
+        task_id = f"recovery-task-{index}"
+        message_id = f"recovery-message-{index}"
+        message = f"/meta meta-tiny -- batch {index}"
+        control = {
+            "version": 1,
+            "intent_id": f"intent-{index}",
+            "kind": "manual",
+            "name": "meta-tiny",
+            "correlation_id": f"request:batch-{index}",
+        }
+        task = AgentTaskRecord(
+            task_id=task_id,
+            session_key=session_key,
+            agent_id="main",
+            source_kind="web",
+            queue_mode="interrupt",
+            run_kind="session_turn",
+            status=AgentTaskStatus.ABANDONED,
+            terminal_reason="meta_control_restart_before_start",
+            details={
+                "source_name": "RPC",
+                "input_provenance": {},
+                "metadata": {"meta_control": control},
+                "persisted_user_message_id": message_id,
+                "persisted_user_message_ids": [message_id],
+                "meta_control_message": message,
+                "meta_control_semantic_message": message,
+            },
+        )
+        records[task_id] = task
+        claims.append(SimpleNamespace(
+            task=task,
+            entry=SimpleNamespace(
+                message_id=message_id,
+                session_id="recovery-session-id",
+                content=message,
+            ),
+        ))
+
+    claim_calls = 0
+
+    async def _claim(*, limit: int) -> list[Any]:
+        nonlocal claim_calls
+        claim_calls += 1
+        claimed = claims[:limit]
+        del claims[:limit]
+        return claimed
+
+    async def _update(task_id: str, **fields: Any) -> None:
+        record = records[task_id]
+        for field, value in fields.items():
+            setattr(record, field, value)
+
+    async def _get(task_id: str) -> AgentTaskRecord | None:
+        return records.get(task_id)
+
+    async def _update_context(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    storage = SimpleNamespace(
+        claim_recoverable_meta_control_tasks=_claim,
+        update_agent_task=_update,
+        get_agent_task=_get,
+        update_transcript_turn_context=_update_context,
+    )
+    seen: list[tuple[str, str]] = []
+
+    async def _handler(run: Any) -> None:
+        seen.append((run.task_id, run.queue_mode))
+
+    runtime = TaskRuntime(
+        storage=storage,
+        turn_handler=_handler,
+        max_concurrency=1,
+        max_pending_per_session=1,
+        running_heartbeat_interval_s=None,
+    )
+    assert await runtime.recover_durable_meta_controls(limit=1) == 3
+    for task_id in records:
+        assert (await runtime.wait(task_id, timeout=2.0)).status == "succeeded"
+    assert claim_calls == 4
+    assert sorted(seen) == [
+        ("recovery-task-0", "followup"),
+        ("recovery-task-1", "followup"),
+        ("recovery-task-2", "followup"),
+    ]
 
 
 @pytest.mark.asyncio

@@ -1736,11 +1736,16 @@ def test_paper_post_install_is_self_contained_and_runs_smoke_test(
     fonts.mkdir()
     (fonts / "NotoSansCJK-Regular.ttc").write_bytes(b"font")
     commands: list[tuple[list[str], Path]] = []
+    tex_sources: list[str] = []
 
-    def fake_run_checked(command: list[str], *, cwd: Path, **_kwargs: object) -> None:
+    def fake_run_checked(
+        command: list[str], *, cwd: Path, **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
         commands.append((command, cwd))
         if Path(command[0]).name == "xelatex":
             (cwd / "paper.pdf").write_bytes(b"%PDF-test")
+            tex_sources.append((cwd / "paper.tex").read_text(encoding="utf-8"))
+        return subprocess.CompletedProcess(command, 0, b"", b"")
 
     monkeypatch.setattr(manager, "_run_checked", fake_run_checked)
     manager._run_post_install(descriptor, tmp_path, (bin_dir,))
@@ -1755,6 +1760,60 @@ def test_paper_post_install_is_self_contained_and_runs_smoke_test(
     xelatex_commands = [command for command, _cwd in commands if Path(command[0]).name == "xelatex"]
     assert len(xelatex_commands) == 3
     assert all("-no-shell-escape" in command for command in xelatex_commands)
+    assert tex_sources
+    assert r'\XeTeXlinebreaklocale "zh"' in tex_sources[0]
+    assert r"\XeTeXlinebreakskip = 0pt plus 1pt" in tex_sources[0]
+    assert 70 <= len(manager._PAPER_CJK_WRAP_PROBE) <= 100
+    assert not any(character.isspace() for character in manager._PAPER_CJK_WRAP_PROBE)
+    probe_lines = [
+        line
+        for line in tex_sources[0].splitlines()
+        if manager._PAPER_CJK_WRAP_PROBE in line
+    ]
+    assert probe_lines == [manager._PAPER_CJK_WRAP_PROBE]
+
+
+def test_paper_smoke_source_rejects_missing_canonical_cjk_line_breaking() -> None:
+    source = manager._paper_probe_source()
+    for line in manager._PAPER_CJK_LINEBREAK_LINES:
+        broken = source.replace(f"{line}\n", "")
+        with pytest.raises(ToolchainProbeError, match="missing CJK line breaking"):
+            manager._validate_paper_probe_source(broken)
+
+
+def test_paper_post_install_rejects_severe_cjk_layout_overflow(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = replace(
+        _descriptor(),
+        post_install="paper-capability",
+        package_closure=(),
+        closure_source=None,
+    )
+    bin_dir = tmp_path / "Bundle/bin"
+    for name in ("kpsewhich", "xelatex", "bibtex"):
+        _make_executable(bin_dir / name)
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    (fonts / "NotoSansCJK-Regular.ttc").write_bytes(b"font")
+
+    def fake_run_checked(
+        command: list[str], *, cwd: Path, **_kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        if Path(command[0]).name == "xelatex":
+            (cwd / "paper.pdf").write_bytes(b"%PDF-test")
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            b"Overfull \\hbox (64.04889pt too wide) in paragraph at lines 10--20",
+            b"",
+        )
+
+    monkeypatch.setattr(manager, "_run_checked", fake_run_checked)
+
+    with pytest.raises(ToolchainProbeError, match=r"layout overflow: max=64\.05pt"):
+        manager._run_post_install(descriptor, tmp_path, (bin_dir,))
 
 
 def test_runtime_ignores_tampered_activation_receipt(tmp_path: Path) -> None:

@@ -67,6 +67,8 @@ export type HiddenControlDispatchReason =
   | 'queue_full'
   | 'discarded'
   | 'invalid_request'
+  | 'outbox_conflict'
+  | 'outbox_persist_failed'
   | 'send_rejected'
   | 'response_unknown'
 

@@ -36,12 +36,22 @@ META_SKILL_RUNTIME_ENV_PROVIDER_METADATA_KEY = "meta_skill_runtime_env_provider"
 _OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
 _SUPPORTED_ENV_ALIASES = frozenset({_OPENROUTER_API_KEY_ENV})
 _PROVIDER_CAPABILITY_SKILLS = frozenset(
-    {"nano-banana-pro", "seedance-2-prompt"}
+    {
+        "audio-cog",
+        "nano-banana-pro",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+        "seedance-2-prompt",
+    }
 )
 _PROVIDER_CAPABILITY_ENV_NAMES = frozenset(
     {"ARK_API_KEY", "OPENROUTER_API_KEY"}
 )
 _CONFIGURED_ENV_SENTINEL = "configured"
+_TRUSTED_PROVIDER_WORKFLOW_OVERRIDDEN_REASON = (
+    "A trusted provider workflow component is overridden by a higher-priority "
+    "skill source. Remove or rename that override before running this MetaSkill."
+)
 
 
 def configured_meta_readiness_env_aliases(
@@ -49,6 +59,7 @@ def configured_meta_readiness_env_aliases(
     *,
     parent_spec: Any,
     plan: Any,
+    skill_resolver: Any | None = None,
 ) -> tuple[str, ...]:
     """Return non-secret manifest env names satisfied by a provider connection.
 
@@ -60,7 +71,11 @@ def configured_meta_readiness_env_aliases(
     this helper.
     """
 
-    consumers = trusted_capability_consumers_for_meta_plan(parent_spec, plan)
+    consumers = trusted_capability_consumers_for_meta_plan(
+        parent_spec,
+        plan,
+        skill_resolver=skill_resolver,
+    )
     if not consumers:
         return ()
     requirements = capability_requirements_for_consumers(consumers)
@@ -80,6 +95,7 @@ def configured_meta_skill_runtime_env(
     parent_spec: Any,
     plan: Any,
     session_key: str = "",
+    skill_resolver: Any | None = None,
 ) -> dict[str, dict[str, str]]:
     """Resolve trusted, least-privilege child env for paid media skills.
 
@@ -97,12 +113,18 @@ def configured_meta_skill_runtime_env(
     transcripts, or persisted run inputs.
     """
 
+    consumers = trusted_capability_consumers_for_meta_plan(
+        parent_spec,
+        plan,
+        skill_resolver=skill_resolver,
+    )
     return capability_runtime_env_for_consumers(
         config,
-        _PROVIDER_CAPABILITY_SKILLS,
+        consumers,
         parent_spec=parent_spec,
         plan=plan,
         session_key=session_key,
+        skill_resolver=skill_resolver,
     )
 
 
@@ -112,6 +134,7 @@ def meta_readiness_context(
     env_aliases: object = (),
     parent_spec: Any | None = None,
     plan: Any | None = None,
+    skill_resolver: Any | None = None,
 ) -> EligibilityContext:
     """Build an eligibility context with trusted, non-secret env aliases.
 
@@ -124,12 +147,14 @@ def meta_readiness_context(
     trusted_consumers = trusted_capability_consumers_for_meta_plan(
         parent_spec,
         plan,
+        skill_resolver=skill_resolver,
     )
     aliases = set(
         configured_meta_readiness_env_aliases(
             config,
             parent_spec=parent_spec,
             plan=plan,
+            skill_resolver=skill_resolver,
         )
         if config is not None and trusted_consumers
         else ()
@@ -305,8 +330,13 @@ def assess_meta_skill_readiness(
             parent_plan = parse_meta_plan(spec)
         except (MetaPlanError, TypeError, ValueError):
             parent_plan = None
+    capability_skill_resolver: Any = skill_index if skill_index is not None else loader
     trusted_consumers = set(
-        trusted_capability_consumers_for_meta_plan(spec, parent_plan)
+        trusted_capability_consumers_for_meta_plan(
+            spec,
+            parent_plan,
+            skill_resolver=capability_skill_resolver,
+        )
     )
 
     base_ctx = ctx or EligibilityContext.auto()
@@ -318,6 +348,7 @@ def assess_meta_skill_readiness(
                     config,
                     parent_spec=spec,
                     plan=parent_plan,
+                    skill_resolver=capability_skill_resolver,
                 )
             )
         trusted_aliases.update(
@@ -339,6 +370,14 @@ def assess_meta_skill_readiness(
     if not verify_capabilities:
         eligibility_ctx.passive_managed_bins = True
     collector = _ReadinessCollector()
+    provider_workflow_trust_failed = (
+        getattr(spec, "name", None) in {"meta-short-drama", "AwesomeWebpageMetaSkill"}
+        and getattr(spec, "layer", None) == SkillLayer.BUNDLED
+        and parent_plan is not None
+        and not trusted_consumers
+    )
+    if provider_workflow_trust_failed:
+        collector.reasons.add(_TRUSTED_PROVIDER_WORKFLOW_OVERRIDDEN_REASON)
     seen: set[str] = set()
 
     def lookup(name: str) -> SkillSpec | None:
@@ -358,9 +397,14 @@ def assess_meta_skill_readiness(
         current_ctx = eligibility_ctx
         portable_aliases = (
             capability_manifest_env_aliases_for_consumers((current.name,))
-            if config is not None
-            and is_bundled
-            and current.name in trusted_consumers
+            if is_bundled
+            and (
+                (config is not None and current.name in trusted_consumers)
+                or (
+                    provider_workflow_trust_failed
+                    and current.name in _PROVIDER_CAPABILITY_SKILLS
+                )
+            )
             else ()
         )
         if portable_aliases:
@@ -455,7 +499,7 @@ def _collect_provider_readiness(
         if status.ready:
             continue
         collector.missing_provider_capabilities.add(requirement.capability_id)
-        missing_by_provider.setdefault(requirement.provider_id, []).append(
+        missing_by_provider.setdefault(status.provider_id, []).append(
             (requirement.capability_id, status.reason_code or "missing_connection")
         )
 
@@ -468,6 +512,9 @@ def _collect_provider_readiness(
         "invalid_proxy": "The configured provider proxy is invalid.",
         "runtime_unsupported": "This provider is not available in the current runtime.",
         "unknown_provider": "The configured provider is not recognized.",
+        "unsupported_profile_preference": (
+            "This capability's provider profile preference is not supported."
+        ),
     }
     for provider_id, missing in sorted(missing_by_provider.items()):
         capability_ids = tuple(sorted({capability for capability, _ in missing}))

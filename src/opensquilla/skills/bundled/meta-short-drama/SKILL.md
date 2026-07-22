@@ -1,6 +1,6 @@
 ---
 name: meta-short-drama
-description: "Use this meta-skill instead of answering directly when the current user asks to generate an AI short-drama or 短剧 from a topic. The workflow infers render style, character identity, and shot count (1-10, default 5) from the request (filling in conservative defaults when missing), drafts a strict shot-by-shot shooting script, pauses for one free-form review (the user can approve, adjust render style / character / shot count / shot details, or cancel in plain language), optionally re-drafts the script with the user's adjustments, generates one universal full-cast identity-reference image plus per-shot composition images, then per-shot video clips (each video anchored to BOTH the universal reference image and its own composition image so the character identity AND scene layout stay consistent), bookends them with a title card and an ending card, burns subtitles in the user's language, and saves the script alongside the final MP4. Do not use it for slide decks, document-decision analysis, single-image generation, isolated script writing, or pasted historical short-drama examples."
+description: "Use this meta-skill instead of answering directly when the current user asks to generate an AI short-drama or 短剧 from a topic. The workflow infers render style, character identity, and shot count (1-10, default 5) from the request (filling in conservative defaults when missing), drafts a strict shot-by-shot shooting script, and pauses for a free-form review. A direct approval can continue; an adjustment only re-drafts and previews the script, then requires a second explicit approval before any external media call. After approval it generates one universal full-cast identity-reference image plus per-shot composition images, then per-shot video clips (each video anchored to BOTH the universal reference image and its own composition image so the character identity AND scene layout stay consistent), bookends them with a title card and an ending card, burns subtitles in the user's language, and saves the script alongside the final MP4. Do not use it for slide decks, document-decision analysis, single-image generation, isolated script writing, or pasted historical short-drama examples."
 kind: meta
 meta_priority: 75
 always: false
@@ -42,13 +42,13 @@ request_template:
       default_zh: "跟随用户语言"
       default_en: "match the user's language"
   assumptions:
-    - "Pause for one free-form review before generating media."
+    - "Pause for a free-form review; if edits are requested, show the revised script and require a second explicit approval before generating media."
     - "Keep shot count between 1 and 10 and use conservative defaults when unspecified."
   assumptions_zh:
-    - "生成媒体前会暂停一次，允许用户自由审阅和修改。"
+    - "生成媒体前允许用户自由审阅；若提出修改，会先展示修订稿并再次要求明确批准。"
     - "镜头数量保持在 1 到 10 之间，未说明时使用保守默认值。"
   assumptions_en:
-    - "Pause for one free-form review before generating media."
+    - "Pause for a free-form review; if edits are requested, show the revised script and require a second explicit approval before generating media."
     - "Keep shot count between 1 and 10 and use conservative defaults when unspecified."
 output_contract:
   append_to_final_text: false
@@ -276,8 +276,9 @@ composition:
         content: "{{ outputs.script_draft }}"
 
     # =========================================================================
-    # 3. ONE combined review gate — free-form. The user can approve,
-    #    rewrite anything, or cancel.
+    # 3. Draft review gate — free-form. A direct approval authorizes media.
+    #    An adjustment only authorizes a free re-draft; the revised preview
+    #    gets its own explicit confirmation before any provider call.
     # =========================================================================
     - id: review_gate
       label: "审查门禁"
@@ -300,6 +301,9 @@ composition:
             - 想改分镜数 → 直接说 "5 个分镜" / "改成 7 镜头"
             - 想改某镜内容 → 直接说 "镜头2节奏快点" / "shot 3 换成屋顶场景"
             - 不想做了 → 说 "取消" / "cancel" / "停"
+
+          修改意见只会触发免费重拟稿，不代表同意调用媒体提供商。修改后
+          会展示修订稿，并要求你再次明确说“继续生成”才会产生外部调用。
 
           预估成本(选继续才会发生):
             - N 张镜头图 + 1 张全角色参考图 (nano-banana-pro)  ≈ N × $0.05 + $0.05-$0.10
@@ -326,7 +330,7 @@ composition:
 
           标 AUTO_FILLED: yes 的项是我替你填的，你可以改。脚本草稿已存到本次运行目录的 script.txt；如果你直接改文件，下一步会重新读盘并带入修改。
 
-          你怎么回都行：满意就说“继续”；想换风格、角色、分镜数或某个镜头，直接说你的修改；不想做了就说“取消”。
+          你怎么回都行：满意就说“继续”；想换风格、角色、分镜数或某个镜头，直接说你的修改；不想做了就说“取消”。修改意见只会触发免费重拟稿，不代表同意调用媒体提供商；修改后会展示修订稿，并要求你再次明确说“继续生成”。
 
           预估成本只会在你选择继续后发生，主要随镜头数和总时长变化。
 
@@ -344,7 +348,7 @@ composition:
 
           Items marked AUTO_FILLED: yes were filled conservatively and can be changed. The draft script was saved to script.txt in this run directory; if you edit that file directly, the next step will reread it and include your manual edits.
 
-          Reply naturally: say "continue" if it looks good, describe any style, character, shot-count, or shot-level changes, or say "cancel" to stop.
+          Reply naturally: say "continue" if it looks good, describe any style, character, shot-count, or shot-level changes, or say "cancel" to stop. An edit request only triggers a free re-draft and does not authorize any media provider call. After an edit, the revised preview requires a new explicit "continue generation" approval.
 
           Estimated media cost only happens if you continue, and mainly scales with shot count and total duration.
 
@@ -383,14 +387,13 @@ composition:
         timeout_hours: 24
 
     # =========================================================================
-    # 4. Deterministically normalize the free-form review. This local helper
-    #    is the sole authority for external-media consent: explicit approval
-    #    and recognizable adjustments proceed; explicit cancellation cancels;
-    #    empty, unclear, and off-topic replies hold without provider calls.
+    # 4. Deterministically classify the first review. Explicit approval may
+    #    proceed; recognizable adjustments emit DECISION: revise and cannot
+    #    authorize external media; cancel/unclear replies fail closed.
     # =========================================================================
-    - id: review_normalize
-      label: "审查归一"
-      label_en: "Review normalization"
+    - id: review_intent
+      label: "审查意图"
+      label_en: "Review intent"
       kind: skill_exec
       skill: short-drama-review-normalizer
       depends_on: [review_gate]
@@ -421,8 +424,8 @@ composition:
       label_en: "Script revision"
       kind: agent
       skill: ai-video-script
-      depends_on: [review_normalize, script_reread]
-      when: "'DECISION: proceed' in outputs.review_normalize and 'HAS_OVERRIDES: yes' in outputs.review_normalize"
+      depends_on: [review_intent, script_reread]
+      when: "'DECISION: revise' in outputs.review_intent and 'HAS_OVERRIDES: yes' in outputs.review_intent"
       with:
         task: |
           Re-draft the script applying the user's overrides. Keep the
@@ -447,10 +450,71 @@ composition:
           {{ outputs.script_reread | truncate(8000) }}
 
           Parsed overrides:
-          {{ outputs.review_normalize | truncate(1500) }}
+          {{ outputs.review_intent | truncate(1500) }}
 
           User original request:
           {{ inputs.user_message | xml_escape | truncate(800) }}
+
+    # =========================================================================
+    # 5b. Any revision gets a second visible user-input gate. Merely asking
+    #     for an edit cannot flow into this gate as provider authorization.
+    # =========================================================================
+    - id: revision_confirm_gate
+      label: "修订确认"
+      label_en: "Revision confirmation"
+      kind: user_input
+      depends_on: [review_intent, script_revised]
+      when: "'DECISION: revise' in outputs.review_intent"
+      clarify:
+        mode: form
+        intro: |
+          修订稿已就绪。请先审阅下面的完整预览。只有明确回复“继续生成”
+          / "approve" / "proceed" 才会把提示词和参考图发送给已配置的
+          外部媒体提供商并产生费用。修改意见本身从不代表授权。
+
+          === 修订稿预览 ===
+          {{ outputs.script_revised | truncate(5000) }}
+        intro_zh: |
+          修订稿已就绪。请审阅下面的预览。只有明确回复“继续生成”才会把提示词和参考图发送给已配置的外部媒体提供商并产生费用；修改意见本身从不代表授权。
+
+          === 修订稿预览 ===
+          {{ outputs.script_revised | truncate(5000) }}
+        intro_en: |
+          The revised script is ready. Review the preview below. Only a new explicit "continue generation", "approve", or "proceed" reply authorizes sending prompts and reference images to the configured external media providers and incurring cost. An edit request never counts as approval.
+
+          === Revised script preview ===
+          {{ outputs.script_revised | truncate(5000) }}
+        nl_extract: false
+        fields:
+          - name: review
+            type: string
+            required: true
+            prompt: |
+              用户对修订稿的整段确认回复。原样复制，不要总结或改写。
+              Copy the user's complete confirmation reply verbatim. Do not
+              summarize, paraphrase, translate, or infer approval.
+            prompt_zh: "用户对修订稿的整段确认回复。原样复制，不要总结或改写。"
+            prompt_en: "Copy the user's complete confirmation reply verbatim; do not summarize, paraphrase, translate, or infer approval."
+            max_chars: 4000
+        cancel_keywords: ["cancel", "取消", "算了", "停止", "stop", "abort"]
+        timeout_hours: 24
+
+    # =========================================================================
+    # 5c. Final deterministic media-consent authority. If the first reply was
+    #     an adjustment, only an explicit reply from revision_confirm_gate can
+    #     produce DECISION: proceed. Missing/unclear/cancelled replies fail closed.
+    # =========================================================================
+    - id: review_normalize
+      label: "审查归一"
+      label_en: "Review normalization"
+      kind: skill_exec
+      skill: short-drama-review-normalizer
+      depends_on: [review_intent, revision_confirm_gate]
+      with:
+        payload:
+          phase: "media_approval"
+          review: "{{ inputs.get('collected', {}).get('review_gate', {}).get('review', '') | truncate(4000) }}"
+          confirmation: "{{ inputs.get('collected', {}).get('revision_confirm_gate', {}).get('review', '') | truncate(4000) }}"
 
     # =========================================================================
     # 6. Pick the final script everyone downstream reads.
@@ -1977,6 +2041,7 @@ composition:
         run_dir: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}"
         runtime:
           paid_submission_dispositions: "{{ outputs.get('__opensquilla_paid_submission_dispositions_v1__', '{}') | truncate(8000) }}"
+          paid_submission_receipt_proofs: "{{ outputs.get('__opensquilla_paid_submission_receipt_proofs_v1__', '{}') | truncate(8000) }}"
           fallback_outputs:
             "1": "{{ outputs.get('shot1_video_fallback', '') | truncate(400) }}"
             "2": "{{ outputs.get('shot2_video_fallback', '') | truncate(400) }}"
@@ -2123,10 +2188,11 @@ composition:
 
 # meta-short-drama
 
-End-to-end short-drama generator with one free-form user-review gate
-before any paid external-media step. **1-10 shots** (default 5), title card + ending
-card, in-language burned subtitles, and the generated script is saved
-to disk regardless of outcome.
+End-to-end short-drama generator with an explicit-consent review flow before
+any paid external-media step. **1-10 shots** (default 5), title card + ending
+card, in-language burned subtitles, and the generated script is saved to disk
+regardless of outcome. A direct approval continues immediately; an edit only
+produces a revised preview and requires a second explicit approval.
 
 ## What it does
 
@@ -2134,14 +2200,17 @@ to disk regardless of outcome.
    IDENTITY_ANCHOR, and N_SHOTS (1-10). Fills in defaults when missing.
 2. **`script_draft`** calls `ai-video-script` with the inferred values
    pasted verbatim into every shot prompt.
-3. **`review_gate`** — single free-form pause. The user can approve,
-   rewrite render style / character / shot count / shot details, or
-   cancel in plain language.
-4. **`review_normalize`** is a local deterministic consent gate. Explicit
-   approval and recognizable short-drama adjustments proceed; explicit
-   cancellation cancels; empty, ambiguous, and off-topic replies emit
-   `DECISION: hold` and cannot start external media generation.
-5. **`script_revised`** (conditional) redrafts when overrides present.
+3. **`review_gate`** — free-form draft review. The user can approve,
+   request changes to render style / character / shot count / shot details,
+   or cancel in plain language.
+4. **`review_intent`** is local and deterministic. Explicit approval may
+   proceed, while a recognizable adjustment emits `DECISION: revise`; the
+   adjustment never authorizes an external call.
+5. **`script_revised`** (conditional) applies requested overrides, then
+   **`revision_confirm_gate`** shows the revised preview and requires a new
+   explicit approval. **`review_normalize`** is the final paid-media consent
+   authority; cancel, missing, ambiguous, off-topic, and further-edit replies
+   fail closed without provider calls.
 6. **`final_script`** echoes the canonical script.
 7. **`script_save`** writes `script.txt` to the run folder
    (always — even on cancel, so the user keeps the draft).

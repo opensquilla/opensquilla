@@ -664,9 +664,186 @@ async def test_scheduler_exposes_only_parent_owned_paid_disposition_to_audit(
 
 
 @pytest.mark.asyncio
-async def test_paid_disposition_runtime_key_cannot_be_claimed_as_a_plan_step() -> None:
+async def test_scheduler_exposes_current_run_receipt_proof_only_to_runtime() -> None:
+    from opensquilla.skills.meta.events import _StepDone
     from opensquilla.skills.meta.replay_safety import (
         PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
+        PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY,
+        PaidReceiptProofText,
+    )
+    from opensquilla.skills.meta.scheduler import run_dag
+    from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep
+
+    proof = "sha256:" + "a" * 64
+    plan = MetaPlan(
+        name="paid-receipt-proof-channel",
+        triggers=("x",),
+        priority=10,
+        steps=(
+            MetaStep(
+                id="shot1_video",
+                skill="seedance-2-prompt",
+                kind="skill_exec",
+                side_effect="external_paid_submit",
+            ),
+            MetaStep(
+                id="delivery_audit",
+                skill="short-drama-delivery-audit",
+                kind="skill_exec",
+                depends_on=("shot1_video",),
+                with_args={
+                    "proofs": (
+                        "{{ outputs.get("
+                        "'__opensquilla_paid_submission_receipt_proofs_v1__', "
+                        "'{}') }}"
+                    ),
+                },
+            ),
+        ),
+    )
+    observed: dict[str, dict[str, str]] = {}
+    observed_begin: list[dict[str, Any]] = []
+
+    async def dispatch_stub(step, effective_skill, inputs, outputs):
+        del effective_skill, inputs
+        if step.id == "shot1_video":
+            yield _StepDone(text=PaidReceiptProofText("clip.mp4", proof))
+            return
+        observed["dispositions"] = json.loads(
+            outputs[PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY]
+        )
+        observed["proofs"] = json.loads(
+            outputs[PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY]
+        )
+        yield _StepDone(text="audited")
+
+    async def preface_stub(step_id: str, effective_skill: str):
+        del step_id, effective_skill
+        if False:
+            yield None
+
+    async def begin_stub(
+        step_id: str,
+        effective_skill: str,
+        rendered_inputs: dict[str, Any],
+    ) -> None:
+        del effective_skill
+        if step_id == "delivery_audit":
+            observed_begin.append(rendered_inputs)
+
+    result: MetaResult | None = None
+    async for event in run_dag(
+        MetaMatch(plan=plan, inputs={}),
+        dispatch_step_stream=dispatch_stub,
+        yield_skill_view_preface=preface_stub,
+        on_step_begin=begin_stub,
+    ):
+        if isinstance(event, MetaResult):
+            result = event
+
+    assert observed == {
+        "dispositions": {"shot1_video": "receipt"},
+        "proofs": {"shot1_video": proof},
+    }
+    assert observed_begin == [{"proofs": "{}"}]
+    assert result is not None and result.ok is True
+    assert result.step_outputs["shot1_video"] == "clip.mp4"
+    assert type(result.step_outputs["shot1_video"]) is str
+    assert PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY not in result.step_outputs
+    assert PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY not in result.step_outputs
+
+
+@pytest.mark.asyncio
+async def test_scheduler_preserves_current_receipt_proof_across_paid_failover() -> None:
+    from opensquilla.skills.meta.events import _StepDone
+    from opensquilla.skills.meta.replay_safety import (
+        PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
+        PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY,
+        PaidReceiptProofError,
+        encode_paid_replay_safety,
+    )
+    from opensquilla.skills.meta.scheduler import run_dag
+    from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaStep
+
+    proof = "sha256:" + "b" * 64
+    plan = MetaPlan(
+        name="paid-policy-receipt-failover",
+        triggers=("x",),
+        priority=10,
+        steps=(
+            MetaStep(
+                id="shot1_video",
+                skill="seedance-2-prompt",
+                kind="skill_exec",
+                side_effect="external_paid_submit",
+                on_failure="shot1_video_fallback",
+            ),
+            MetaStep(
+                id="shot1_video_fallback",
+                skill="video-still-animator",
+                kind="skill_exec",
+            ),
+            MetaStep(
+                id="delivery_audit",
+                skill="short-drama-delivery-audit",
+                kind="skill_exec",
+                depends_on=("shot1_video", "shot1_video_fallback"),
+            ),
+        ),
+    )
+    observed: dict[str, dict[str, str]] = {}
+
+    async def dispatch_stub(step, effective_skill, inputs, outputs):
+        del effective_skill, inputs
+        if step.id == "shot1_video":
+            raise PaidReceiptProofError(
+                encode_paid_replay_safety(
+                    "provider policy rejection recorded",
+                    safe_no_submit=False,
+                ),
+                receipt_proof=proof,
+            )
+        if step.id == "delivery_audit":
+            observed["dispositions"] = json.loads(
+                outputs[PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY]
+            )
+            observed["proofs"] = json.loads(
+                outputs[PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY]
+            )
+        yield _StepDone(text=f"output:{step.id}")
+
+    async def preface_stub(step_id: str, effective_skill: str):
+        del step_id, effective_skill
+        if False:
+            yield None
+
+    async for _event in run_dag(
+        MetaMatch(plan=plan, inputs={}),
+        dispatch_step_stream=dispatch_stub,
+        yield_skill_view_preface=preface_stub,
+    ):
+        pass
+
+    assert observed == {
+        "dispositions": {"shot1_video": "maybe_accepted"},
+        "proofs": {"shot1_video": proof},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reserved_key",
+    [
+        "__opensquilla_paid_submission_dispositions_v1__",
+        "__opensquilla_paid_submission_receipt_proofs_v1__",
+    ],
+)
+async def test_paid_runtime_key_cannot_be_claimed_as_a_plan_step(
+    reserved_key: str,
+) -> None:
+    from opensquilla.skills.meta.replay_safety import (
+        PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
+        PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY,
     )
     from opensquilla.skills.meta.scheduler import run_dag
     from opensquilla.skills.meta.types import MetaMatch, MetaPlan, MetaResult, MetaStep
@@ -677,7 +854,7 @@ async def test_paid_disposition_runtime_key_cannot_be_claimed_as_a_plan_step() -
         priority=1,
         steps=(
             MetaStep(
-                id=PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
+                id=reserved_key,
                 skill="untrusted-child",
                 kind="skill_exec",
             ),
@@ -707,6 +884,10 @@ async def test_paid_disposition_runtime_key_cannot_be_claimed_as_a_plan_step() -
             result = event
 
     assert dispatched is False
+    assert reserved_key in {
+        PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
+        PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY,
+    }
     assert result is not None and result.ok is False
     assert result.error == "meta-skill plan uses a reserved runtime step id"
 
@@ -729,6 +910,23 @@ def test_paid_disposition_encoder_is_bounded_and_rejects_free_form_values() -> N
     assert len(decoded) == 64
     assert set(decoded.values()) == {"receipt"}
     assert "HTTP 429" not in encoded
+    assert "sk-secret" not in encoded
+
+
+def test_paid_receipt_proof_encoder_accepts_only_canonical_digests() -> None:
+    from opensquilla.skills.meta.replay_safety import (
+        encode_paid_submission_receipt_proofs,
+    )
+
+    encoded = encode_paid_submission_receipt_proofs(
+        {
+            "shot1_video": "sha256:" + "a" * 64,
+            "shot2_video": "sha256:not-a-digest",
+            "provider_error": "sk-secret raw provider prose",
+        }
+    )
+
+    assert json.loads(encoded) == {"shot1_video": "sha256:" + "a" * 64}
     assert "sk-secret" not in encoded
 
 

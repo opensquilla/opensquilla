@@ -12,6 +12,7 @@ Stdout is interpreted per ``parse`` (``text`` | ``json`` |
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import os
 import re
@@ -41,6 +42,8 @@ from opensquilla.skills.capability_runtime import (
 )
 from opensquilla.skills.meta.replay_safety import (
     SAFE_NO_SUBMIT_EXIT_CODE,
+    PaidReceiptProofError,
+    PaidReceiptProofText,
     encode_paid_replay_safety,
     is_external_paid_step,
 )
@@ -64,16 +67,60 @@ _PAID_MEDIA_TRUSTED_ENV = frozenset(
     }
 )
 _TRUSTED_ENV_ALLOWLIST: dict[str, frozenset[str]] = {
+    "audio-cog": _PAID_MEDIA_TRUSTED_ENV,
     "nano-banana-pro": _PAID_MEDIA_TRUSTED_ENV,
+    "nano-banana-pro-openrouter": _PAID_MEDIA_TRUSTED_ENV,
+    "openrouter-video-generator": _PAID_MEDIA_TRUSTED_ENV,
     "seedance-2-prompt": _PAID_MEDIA_TRUSTED_ENV,
 }
 _PAID_REPLAY_SAFE_EXIT_SKILLS = frozenset(_TRUSTED_ENV_ALLOWLIST)
 _PROFILE_POOL_SOURCE = "profile_pool"
+_BASE_ENV_KEYS = frozenset(
+    {
+        # Executable and platform discovery.
+        "path",
+        "pathext",
+        "systemroot",
+        "windir",
+        "comspec",
+        # Cross-platform temporary and home directories.
+        "temp",
+        "tmp",
+        "tmpdir",
+        "home",
+        "userprofile",
+        "homedrive",
+        "homepath",
+        # Basic user/terminal/locale compatibility.
+        "user",
+        "username",
+        "logname",
+        "shell",
+        "term",
+        "lang",
+        "language",
+        "tz",
+        # Common TLS trust-store overrides. These are paths, not provider
+        # credentials, and are needed in managed/corporate installations.
+        "ssl_cert_file",
+        "ssl_cert_dir",
+        "requests_ca_bundle",
+        "curl_ca_bundle",
+        "node_extra_ca_certs",
+        "git_ssl_cainfo",
+        "aws_ca_bundle",
+    }
+)
 _PROVIDER_FAILURE_EXIT_KINDS = {
     79: "auth_invalid",
     80: "insufficient_credits",
     81: "rate_limited",
 }
+_PAID_RECEIPT_STDOUT_LABELS = {
+    "nano-banana-pro": "IMAGE_GENERATION_RECEIPT:",
+    "seedance-2-prompt": "VIDEO_GENERATION_RECEIPT:",
+}
+_MAX_PAID_RECEIPT_BYTES = 64_000
 # String sequences (OSC/DCS/SOS/PM/APC) tolerate a missing terminator so a
 # diagnostic clipped by the subprocess cannot expose terminal control payloads.
 _ANSI_RE = re.compile(
@@ -100,18 +147,31 @@ def _is_sensitive_env_key(key: str) -> bool:
     )
 
 
-def _declared_ambient_secret_keys(
+def _minimal_skill_base_env(source: Mapping[str, str]) -> dict[str, str]:
+    """Copy only OS/runtime essentials, never the Gateway's full env."""
+
+    env = {
+        key: value
+        for key, value in source.items()
+        if key.casefold() in _BASE_ENV_KEYS or key.casefold().startswith("lc_")
+    }
+    if not any(key.casefold() == "path" for key in env):
+        env["PATH"] = os.defpath
+    return env
+
+
+def _declared_ambient_env_keys(
     skill_spec: Any,
     *,
     effective_skill: str,
 ) -> frozenset[str]:
-    """Return ambient secrets an exact code-owned skill may receive.
+    """Return ambient variables an exact code-owned skill may receive.
 
-    Workspace/project overrides are intentionally denied all ambient secrets.
-    Bundled skills retain only secret-shaped variables explicitly declared in
-    their eligibility metadata. Paid-media capability consumers receive no
-    ambient secrets at all: a validated parent's dedicated volatile key is
-    injected later, after this filter.
+    Workspace/project overrides receive no ambient variables beyond the
+    minimal OS allowlist. Bundled skills retain exactly the names explicitly
+    declared in eligibility metadata, including legacy opaque credential names
+    that do not contain ``key`` or ``token``. Paid-media capability consumers
+    receive none: a validated parent's volatile lease is injected later.
     """
 
     if getattr(skill_spec, "layer", None) != SkillLayer.BUNDLED:
@@ -130,10 +190,17 @@ def _declared_ambient_secret_keys(
         *(getattr(requires, "env", ()) or ()),
         *(getattr(requires, "env_any", ()) or ()),
     )
-    return frozenset(
-        name.casefold()
-        for name in declared
-        if isinstance(name, str) and name and _is_sensitive_env_key(name)
+    return frozenset(name for name in declared if isinstance(name, str) and name)
+
+
+def _ambient_value(source: Mapping[str, str], name: str) -> str | None:
+    value = source.get(name)
+    if value is not None or os.name != "nt":
+        return value
+    folded = name.casefold()
+    return next(
+        (candidate for key, candidate in source.items() if key.casefold() == folded),
+        None,
     )
 
 
@@ -188,7 +255,12 @@ def _report_profile_pool_failure(
         )
 
 
-def _sanitize_failure_stream(text: str, *, child_env: Mapping[str, str]) -> str:
+def _sanitize_failure_stream(
+    text: str,
+    *,
+    child_env: Mapping[str, str],
+    sensitive_values: set[str] | frozenset[str] = frozenset(),
+) -> str:
     """Return a bounded, terminal-safe, secret-redacted failure stream."""
 
     if not text:
@@ -202,6 +274,7 @@ def _sanitize_failure_stream(text: str, *, child_env: Mapping[str, str]) -> str:
         for key, value in child_env.items()
         if value and _is_sensitive_env_key(key)
     }
+    secret_values.update(value for value in sensitive_values if value)
     # Longest first prevents a shorter credential from exposing the remainder
     # of a longer credential that happens to contain it.
     for value in sorted(secret_values, key=len, reverse=True):
@@ -214,11 +287,20 @@ def _format_failure_detail(
     stderr_text: str,
     stdout_text: str,
     child_env: Mapping[str, str],
+    sensitive_values: set[str] | frozenset[str] = frozenset(),
 ) -> str:
     """Prefer stderr, append stdout when it fits, and cap the total detail."""
 
-    stderr = _sanitize_failure_stream(stderr_text, child_env=child_env)
-    stdout = _sanitize_failure_stream(stdout_text, child_env=child_env)
+    stderr = _sanitize_failure_stream(
+        stderr_text,
+        child_env=child_env,
+        sensitive_values=sensitive_values,
+    )
+    stdout = _sanitize_failure_stream(
+        stdout_text,
+        child_env=child_env,
+        sensitive_values=sensitive_values,
+    )
     if stderr and stdout:
         detail = f"stderr: {stderr}\nstdout: {stdout}"
     else:
@@ -226,6 +308,91 @@ def _format_failure_detail(
     if len(detail) <= _ERROR_DETAIL_MAX_CHARS:
         return detail
     return detail[: _ERROR_DETAIL_MAX_CHARS - 1].rstrip() + "…"
+
+
+def _canonical_receipt_bytes(value: object) -> bytes | None:
+    """Canonicalize one bounded JSON receipt without exposing its fields."""
+
+    if not isinstance(value, dict):
+        return None
+    try:
+        encoded = _json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
+        return None
+    return encoded if len(encoded) <= _MAX_PAID_RECEIPT_BYTES else None
+
+
+def _receipt_sidecar_path(argv: list[str], *, workdir: str | None) -> _Path | None:
+    """Resolve the exact paid entrypoint's single ``--filename`` sidecar."""
+
+    positions = [index for index, value in enumerate(argv) if value == "--filename"]
+    if len(positions) != 1 or positions[0] + 1 >= len(argv):
+        return None
+    raw_path = argv[positions[0] + 1]
+    if not raw_path:
+        return None
+    output_path = _Path(raw_path)
+    if not output_path.is_absolute():
+        output_path = _Path(workdir or os.getcwd()) / output_path
+    output_path = output_path.resolve()
+    return output_path.with_suffix(output_path.suffix + ".receipt.json")
+
+
+def _current_paid_receipt_proof(
+    *,
+    effective_skill: str,
+    skill_spec: Any,
+    argv: list[str],
+    workdir: str | None,
+    stdout_text: str,
+) -> str | None:
+    """Prove stdout and sidecar came from this exact bundled invocation.
+
+    Workspace sidecars are never sufficient.  The exact bundled subprocess
+    must emit one receipt line on the stdout captured for this invocation, and
+    its bounded JSON object must equal the sidecar present after the process
+    exits.  Only the canonical SHA-256 digest crosses the executor boundary.
+    """
+
+    label = _PAID_RECEIPT_STDOUT_LABELS.get(effective_skill)
+    if label is None or getattr(skill_spec, "layer", None) != SkillLayer.BUNDLED:
+        return None
+    candidates = [
+        line[len(label) :].strip()
+        for line in stdout_text.splitlines()
+        if line.startswith(label)
+    ]
+    if len(candidates) != 1:
+        return None
+    candidate = candidates[0]
+    if not candidate or len(candidate.encode("utf-8", errors="ignore")) > _MAX_PAID_RECEIPT_BYTES:
+        return None
+    try:
+        stdout_receipt = _json.loads(candidate)
+    except _json.JSONDecodeError:
+        return None
+    canonical = _canonical_receipt_bytes(stdout_receipt)
+    if canonical is None:
+        return None
+
+    receipt_path = _receipt_sidecar_path(argv, workdir=workdir)
+    if receipt_path is None:
+        return None
+    try:
+        if not receipt_path.is_file() or receipt_path.stat().st_size > _MAX_PAID_RECEIPT_BYTES:
+            return None
+        sidecar_receipt = _json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, _json.JSONDecodeError):
+        return None
+    if _canonical_receipt_bytes(sidecar_receipt) != canonical:
+        return None
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
 
 
 async def run_skill_exec_step(
@@ -455,22 +622,26 @@ async def run_skill_exec_step(
         raise RuntimeError(
             f"step {step.id!r}: entrypoint.env must be a mapping",
         )
-    # Do not hand the Gateway's complete credential environment to arbitrary
-    # skill subprocesses. Only an exact bundled skill may inherit a
-    # secret-shaped variable, and only when its manifest declares that name.
-    # Parent-resolved paid-media credentials take the stricter path below and
-    # are injected under one dedicated volatile name after ambient filtering.
-    allowed_ambient_secrets = _declared_ambient_secret_keys(
+    # Never start from the Gateway's complete environment: opaque credential
+    # names such as ``OPENROUTER_PROD`` cannot be detected reliably by name.
+    # Start with OS/runtime essentials, apply verified managed-toolchain
+    # additions, then copy only manifest-declared variables for an exact
+    # bundled skill. Paid-media consumers take the stricter lease-only path.
+    ambient_env = dict(os.environ)
+    declared_ambient_keys = _declared_ambient_env_keys(
         skill_spec,
         effective_skill=effective_skill,
     )
-    child_env = managed_skill_env(os.environ)
-    for key in tuple(child_env):
-        if (
-            _is_sensitive_env_key(key)
-            and key.casefold() not in allowed_ambient_secrets
-        ):
-            child_env.pop(key, None)
+    declared_ambient_key_folds = {key.casefold() for key in declared_ambient_keys}
+    child_env = managed_skill_env(_minimal_skill_base_env(ambient_env))
+    sensitive_values: set[str] = set()
+    for key in declared_ambient_keys:
+        value = _ambient_value(ambient_env, key)
+        if value:
+            child_env[key] = value
+            # A declared variable can be a credential regardless of its name.
+            # Track the value by provenance so failures redact it reliably.
+            sensitive_values.add(value)
     if isinstance(raw_env, dict):
         for key, value in raw_env.items():
             if not isinstance(key, str) or not key:
@@ -489,6 +660,12 @@ async def run_skill_exec_step(
             rendered_value = _render(value.replace("{baseDir}", base_dir))
             if rendered_value:
                 child_env[rendered_key] = rendered_value
+                if (
+                    rendered_key in declared_ambient_keys
+                    or rendered_key.casefold() in declared_ambient_key_folds
+                    or _is_sensitive_env_key(rendered_key)
+                ):
+                    sensitive_values.add(rendered_value)
 
     # Parent-resolved credentials override manifest/ambient values, but only
     # for the exact skill selected by MetaOrchestrator. Validate the in-memory
@@ -503,6 +680,7 @@ async def run_skill_exec_step(
             raise RuntimeError(f"step {step.id!r}: trusted child env is invalid")
         if key in allowed_trusted_keys and value:
             child_env[key] = value
+            sensitive_values.add(value)
 
     # Optional stdin: render Jinja template and pipe to the subprocess.
     stdin_raw = entrypoint.get("stdin")
@@ -584,11 +762,23 @@ async def run_skill_exec_step(
     stderr_bytes = completed.stderr
     stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace")
     stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace")
+    receipt_proof = (
+        _current_paid_receipt_proof(
+            effective_skill=effective_skill,
+            skill_spec=skill_spec,
+            argv=argv,
+            workdir=workdir,
+            stdout_text=stdout_text,
+        )
+        if is_external_paid_step(step)
+        else None
+    )
     if returncode != 0:
         detail = _format_failure_detail(
             stderr_text=stderr_text,
             stdout_text=stdout_text,
             child_env=child_env,
+            sensitive_values=sensitive_values,
         )
         if is_external_paid_step(step):
             if (
@@ -610,10 +800,13 @@ async def run_skill_exec_step(
                     and getattr(skill_spec, "layer", None) == SkillLayer.BUNDLED
                 ),
             )
-        raise RuntimeError(
-            f"skill {effective_skill!r} exited {returncode}: "
-            f"{detail}",
-        )
+        message = f"skill {effective_skill!r} exited {returncode}: {detail}"
+        if receipt_proof is not None:
+            raise PaidReceiptProofError(
+                message,
+                receipt_proof=receipt_proof,
+            )
+        raise RuntimeError(message)
 
     if parse_mode == "json":
         try:
@@ -622,11 +815,15 @@ async def run_skill_exec_step(
             raise RuntimeError(
                 f"skill {effective_skill!r} stdout was not valid JSON: {exc}",
             ) from exc
-        return _json.dumps(parsed, ensure_ascii=False)
-    if parse_mode == "lines":
+        result = _json.dumps(parsed, ensure_ascii=False)
+    elif parse_mode == "lines":
         lines = [ln for ln in stdout_text.splitlines() if ln.strip()]
-        return _json.dumps(lines, ensure_ascii=False)
-    return stdout_text.strip()
+        result = _json.dumps(lines, ensure_ascii=False)
+    else:
+        result = stdout_text.strip()
+    if receipt_proof is not None:
+        return PaidReceiptProofText(result, receipt_proof)
+    return result
 
 
 __all__ = ["run_skill_exec_step"]

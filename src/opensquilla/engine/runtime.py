@@ -5562,6 +5562,7 @@ class TurnRunner:
                     parent_spec=parent_spec,
                     plan=plan,
                     session_key=session_key,
+                    skill_resolver=agent_skill_loader,
                 )
             ),
             # Names only, likewise parent+plan scoped. A global alias would
@@ -5572,6 +5573,7 @@ class TurnRunner:
                     turn_config,
                     parent_spec=parent_spec,
                     plan=plan,
+                    skill_resolver=agent_skill_loader,
                 )
             ),
         }

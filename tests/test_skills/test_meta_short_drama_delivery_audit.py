@@ -101,6 +101,31 @@ def _video_receipt(job_id: str = "job-video-123") -> dict[str, object]:
     }
 
 
+def _current_run_evidence(
+    run_dir: Path,
+    *,
+    shot_numbers: tuple[int, ...] = (1,),
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Build the parent-owned evidence a current executor run would supply."""
+
+    paths = {"reference_image": run_dir / "reference.png.receipt.json"}
+    for number in shot_numbers:
+        paths[f"shot{number}_image"] = run_dir / f"{number}_shot.png.receipt.json"
+        paths[f"shot{number}_video"] = run_dir / f"{number}_shot.mp4.receipt.json"
+
+    dispositions: dict[str, str] = {}
+    proofs: dict[str, str] = {}
+    for step_id, path in paths.items():
+        if not path.is_file():
+            continue
+        receipt = json.loads(path.read_text(encoding="utf-8"))
+        proof = audit._canonical_receipt_proof(receipt)
+        assert proof is not None
+        dispositions[step_id] = "receipt"
+        proofs[step_id] = proof
+    return dispositions, proofs
+
+
 def _run_fixture(
     tmp_path: Path,
     *,
@@ -108,6 +133,7 @@ def _run_fixture(
     final_duration: float | None = None,
     fallback_outputs: dict[str, object] | None = None,
     paid_submission_dispositions: dict[str, object] | str | None = None,
+    paid_submission_receipt_proofs: dict[str, object] | str | None = None,
     image_overrides: dict[str, object] | None = None,
     video_overrides: dict[str, object] | None = None,
 ) -> dict[str, Any]:
@@ -133,10 +159,25 @@ def _run_fixture(
     def fake_probe(path: Path, _ffprobe: str) -> dict[str, object]:
         return {"decodable": True, "duration_s": media_durations[path.name]}
 
+    default_dispositions, default_proofs = _current_run_evidence(
+        tmp_path,
+        shot_numbers=tuple(range(1, len(durations) + 1)),
+    )
+    if isinstance(paid_submission_dispositions, dict):
+        default_dispositions.update(paid_submission_dispositions)
+        paid_submission_dispositions = default_dispositions
+    elif paid_submission_dispositions is None:
+        paid_submission_dispositions = default_dispositions
+    if isinstance(paid_submission_receipt_proofs, dict):
+        paid_submission_receipt_proofs = dict(paid_submission_receipt_proofs)
+    elif paid_submission_receipt_proofs is None:
+        paid_submission_receipt_proofs = default_proofs
+
     return audit.audit_delivery(
         tmp_path,
         fallback_outputs or {str(number): "" for number in range(1, len(durations) + 1)},
         paid_submission_dispositions=paid_submission_dispositions,
+        paid_submission_receipt_proofs=paid_submission_receipt_proofs,
         probe=fake_probe,
     )
 
@@ -201,6 +242,63 @@ def test_real_receipts_and_probed_content_plus_bookends_are_verified(tmp_path: P
     }
     assert verdict["safe_no_submit_assets"] == []
     assert verdict["issues"] == []
+
+
+def test_stale_sidecars_without_current_run_proof_cannot_confirm(tmp_path: Path) -> None:
+    verdict = _run_fixture(
+        tmp_path,
+        paid_submission_receipt_proofs={},
+    )
+
+    assert verdict["verified"] is False
+    assert verdict["status"] == "degraded"
+    assert verdict["paid_submission_dispositions"] == {
+        "reference_image": "receipt",
+        "shot1_image": "receipt",
+        "shot1_video": "receipt",
+    }
+    assert verdict["paid_submission_status_unknown_assets"] == [
+        "reference_image",
+        "shot1_image",
+        "shot1_video",
+    ]
+    assert {
+        issue["asset"]
+        for issue in verdict["issues"]
+        if issue["code"] == "RECEIPT_NOT_PROVEN_CURRENT_RUN"
+    } == {"reference_image", "shot1_image", "shot1_video"}
+
+
+def test_sidecar_changed_after_current_run_proof_cannot_confirm(tmp_path: Path) -> None:
+    _run_fixture(tmp_path)
+    dispositions, proofs = _current_run_evidence(tmp_path)
+    _write_json(
+        tmp_path / "1_shot.mp4.receipt.json",
+        _video_receipt("job-forged-after-proof"),
+    )
+
+    def fake_probe(path: Path, _ffprobe: str) -> dict[str, object]:
+        return {
+            "decodable": True,
+            "duration_s": 7.0 if path.name.startswith("final") else 3.0,
+        }
+
+    verdict = audit.audit_delivery(
+        tmp_path,
+        {"1": ""},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
+        probe=fake_probe,
+    )
+
+    assert verdict["paid_submission_dispositions"]["shot1_video"] == "receipt"
+    assert verdict["shots"][0]["video_submission_disposition"] == "receipt"
+    assert verdict["paid_submission_status_unknown_assets"] == ["shot1_video"]
+    assert any(
+        issue["code"] == "RECEIPT_NOT_PROVEN_CURRENT_RUN"
+        and issue["asset"] == "shot1_video"
+        for issue in verdict["issues"]
+    )
 
 
 @pytest.mark.parametrize(
@@ -401,9 +499,12 @@ def test_missing_video_receipt_and_executed_fallback_cannot_pass(tmp_path: Path)
     def fake_probe(path: Path, _ffprobe: str) -> dict[str, object]:
         return {"decodable": True, "duration_s": 7.0 if path.name.startswith("final") else 3.0}
 
+    dispositions, proofs = _current_run_evidence(tmp_path)
     verdict = audit.audit_delivery(
         tmp_path,
         {"1": "wrote 1_shot.mp4 sk-secret https://signed.example/video?token=private"},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
         probe=fake_probe,
     )
 
@@ -433,7 +534,14 @@ def test_missing_video_receipt_is_unknown_even_without_fallback_output(tmp_path:
     def fake_probe(path: Path, _ffprobe: str) -> dict[str, object]:
         return {"decodable": True, "duration_s": 7.0 if path.name.startswith("final") else 3.0}
 
-    verdict = audit.audit_delivery(tmp_path, {"1": ""}, probe=fake_probe)
+    dispositions, proofs = _current_run_evidence(tmp_path)
+    verdict = audit.audit_delivery(
+        tmp_path,
+        {"1": ""},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
+        probe=fake_probe,
+    )
 
     assert verdict["status"] == "degraded"
     assert verdict["may_have_been_billed"] is True
@@ -463,10 +571,13 @@ def test_parent_paid_disposition_controls_only_missing_receipt_billing_warning(
             "duration_s": 7.0 if path.name.startswith("final") else 3.0,
         }
 
+    dispositions, proofs = _current_run_evidence(tmp_path)
+    dispositions["shot1_video"] = disposition
     verdict = audit.audit_delivery(
         tmp_path,
         {"1": "local fallback completed; raw text is ignored"},
-        paid_submission_dispositions={"shot1_video": disposition},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
         probe=fake_probe,
     )
 
@@ -499,16 +610,19 @@ def test_free_form_or_oversized_dispositions_cannot_forge_safe_no_submit(
         }
 
     secret = "sk-secret-provider-prose"
-    forged = json.dumps(
+    valid_dispositions, proofs = _current_run_evidence(tmp_path)
+    valid_dispositions.update(
         {
             "shot1_video": f"safe_no_submit {secret}",
             "provider_error": f"HTTP 429 {secret}",
         }
     )
+    forged = json.dumps(valid_dispositions)
     verdict = audit.audit_delivery(
         tmp_path,
         {"1": "fallback"},
         paid_submission_dispositions=forged,
+        paid_submission_receipt_proofs=proofs,
         probe=fake_probe,
     )
 
@@ -522,6 +636,7 @@ def test_free_form_or_oversized_dispositions_cannot_forge_safe_no_submit(
         tmp_path,
         {"1": "fallback"},
         paid_submission_dispositions=oversized,
+        paid_submission_receipt_proofs=proofs,
         probe=fake_probe,
     )
     assert oversized_verdict["paid_submission_dispositions"]["shot1_video"] == "unknown"
@@ -540,7 +655,14 @@ def test_media_for_absent_shot_is_reported_as_unexpected_paid_evidence(
     def fake_probe(path: Path, _ffprobe: str) -> dict[str, object]:
         return {"decodable": True, "duration_s": 7.0 if path.name.startswith("final") else 3.0}
 
-    verdict = audit.audit_delivery(tmp_path, {"1": "", "2": ""}, probe=fake_probe)
+    dispositions, proofs = _current_run_evidence(tmp_path)
+    verdict = audit.audit_delivery(
+        tmp_path,
+        {"1": "", "2": ""},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
+        probe=fake_probe,
+    )
 
     assert verdict["status"] == "degraded"
     assert verdict["unexpected_paid_assets"] == ["shot2_image", "shot2_video"]
@@ -549,7 +671,11 @@ def test_media_for_absent_shot_is_reported_as_unexpected_paid_evidence(
         for issue in verdict["issues"]
         if issue["code"] == "UNEXPECTED_PAID_ASSET"
     ] == ["shot2_image", "shot2_video"]
-    assert verdict["may_have_been_billed"] is False
+    assert verdict["may_have_been_billed"] is True
+    assert verdict["paid_submission_status_unknown_assets"] == [
+        "shot2_image",
+        "shot2_video",
+    ]
 
 
 def test_policy_rejection_reason_survives_fallback_as_sanitized_degradation(
@@ -603,10 +729,19 @@ def test_missing_ffprobe_still_returns_complete_billing_verdict(
     _run_fixture(tmp_path)
     (tmp_path / "1_shot.mp4.receipt.json").unlink()
     monkeypatch.setattr(audit.shutil, "which", lambda _name: None)
+    dispositions, proofs = _current_run_evidence(tmp_path)
     monkeypatch.setattr(
         audit.sys,
         "stdin",
-        io.StringIO(json.dumps({"fallback_outputs": {"1": "wrote fallback"}})),
+        io.StringIO(
+            json.dumps(
+                {
+                    "fallback_outputs": {"1": "wrote fallback"},
+                    "paid_submission_dispositions": dispositions,
+                    "paid_submission_receipt_proofs": proofs,
+                }
+            )
+        ),
     )
 
     assert audit.main(["--run-dir", str(tmp_path), "--ffprobe", "missing-ffprobe-test"]) == 0
@@ -693,9 +828,13 @@ def test_policy_rejection_flows_once_through_declared_fallback_into_degraded_aud
         duration = 7.0 if path.name == "final_subtitled.mp4" else 3.0
         return {"decodable": True, "duration_s": duration}
 
+    dispositions, proofs = _current_run_evidence(run_dir)
+    dispositions["shot1_video"] = "maybe_accepted"
     verdict = audit.audit_delivery(
         run_dir,
         {"1": "wrote fallback 1_shot.mp4"},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
         probe=fake_probe,
     )
 
@@ -756,7 +895,14 @@ def test_unprobeable_final_video_blocks_delivery_verification(tmp_path: Path) ->
             raise RuntimeError("corrupt")
         return {"decodable": True, "duration_s": 3.0}
 
-    verdict = audit.audit_delivery(tmp_path, {"1": ""}, probe=selective_probe)
+    dispositions, proofs = _current_run_evidence(tmp_path)
+    verdict = audit.audit_delivery(
+        tmp_path,
+        {"1": ""},
+        paid_submission_dispositions=dispositions,
+        paid_submission_receipt_proofs=proofs,
+        probe=selective_probe,
+    )
 
     assert verdict["status"] == "blocked"
     assert verdict["verified"] is False

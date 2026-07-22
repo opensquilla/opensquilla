@@ -278,7 +278,10 @@ async def test_skill_exec_receives_managed_runtime_environment(
     captured: dict[str, object] = {}
 
     def fake_env(base: object) -> dict[str, str]:
-        assert base is os.environ
+        assert isinstance(base, dict)
+        assert base is not os.environ
+        assert base.get("PATH") == os.environ.get("PATH")
+        assert "PYTEST_CURRENT_TEST" not in base
         return {"PATH": "/managed:/system", MEDIA_FONTS_DIR_ENV: "/managed/fonts"}
 
     def fake_run(argv: list[str], **kwargs: object) -> SimpleNamespace:

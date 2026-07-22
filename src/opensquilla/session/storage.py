@@ -23,6 +23,7 @@ from opensquilla.session.models import (
     AgentTaskRecord,
     AgentTaskStatus,
     MemoryDurableReceipt,
+    MetaControlIntent,
     SessionContextState,
     SessionNode,
     SessionStatus,
@@ -94,6 +95,10 @@ class TurnIngressConflictError(ValueError):
     """Raised when a client request id is reused for a different turn payload."""
 
 
+class MetaControlIntentConflictError(ValueError):
+    """Raised when a durable MetaSkill control identity is reused incompatibly."""
+
+
 class TaskCollectionUnavailableError(RuntimeError):
     """Raised when a queued task stopped being collectable before acceptance."""
 
@@ -118,10 +123,21 @@ class TurnAcceptanceResult:
     reset_archive_snapshot: ResetArchiveSnapshot | None = None
 
 
+@dataclass(frozen=True)
+class RecoverableMetaControlTask:
+    """A never-started accepted control task claimed for restart recovery."""
+
+    task: AgentTaskRecord
+    entry: TranscriptEntry
+
+
 _SQLITE_BUSY_TIMEOUT_MS = 100
 _INTERACTIVE_BUSY_BUDGET_SECONDS = 2.0
 _BUSY_RETRY_INITIAL_SECONDS = 0.025
 _BUSY_RETRY_MAX_SECONDS = 0.250
+_META_CONTROL_STAGED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
+_META_CONTROL_STAGED_GC_BATCH = 128
+_META_CONTROL_RECOVERY_INVALID_REASON = "meta_control_recovery_invalid"
 
 
 def _is_sqlite_busy(exc: BaseException) -> bool:
@@ -155,8 +171,8 @@ def _serialized_read[**P, R](
 # Version 8 added the derived_title column for LLM-generated session titles.
 # Version 9 added durable turn-ingress receipts.
 # Version 10 added the durable provider usage ledger and content-free daily usage
-# telemetry aggregates.
-SCHEMA_VERSION = 10
+# telemetry aggregates. Version 11 added durable hidden MetaSkill control intents.
+SCHEMA_VERSION = 11
 
 # Session rows at or above this semantic version were created by fork logic
 # that records enough existing metadata for canonical coverage to be checked
@@ -456,6 +472,40 @@ ON turn_ingress_receipts(source_scope, request_session_key, client_request_id)
 _CREATE_IDX_TURN_INGRESS_ACCEPTED_SESSION = """
 CREATE INDEX IF NOT EXISTS idx_turn_ingress_receipts_accepted_session
 ON turn_ingress_receipts(accepted_session_key, accepted_at)
+"""
+
+_CREATE_META_CONTROL_INTENTS = """
+CREATE TABLE IF NOT EXISTS meta_control_intents (
+    intent_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    control_kind TEXT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    meta_skill_name TEXT NOT NULL,
+    replay_run_id TEXT,
+    replay_mode TEXT,
+    status TEXT NOT NULL DEFAULT 'staged',
+    accepted_source_scope TEXT,
+    accepted_request_session_key TEXT,
+    accepted_client_request_id TEXT,
+    accepted_request_fingerprint TEXT,
+    accepted_message_id TEXT,
+    accepted_task_id TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    CHECK (control_kind IN ('manual', 'replay')),
+    CHECK (status IN ('staged', 'accepted'))
+)
+"""
+
+_CREATE_IDX_META_CONTROL_CORRELATION = """
+CREATE UNIQUE INDEX IF NOT EXISTS uq_meta_control_intents_correlation
+ON meta_control_intents(session_key, control_kind, correlation_id)
+"""
+
+_CREATE_IDX_META_CONTROL_SESSION_STATUS = """
+CREATE INDEX IF NOT EXISTS idx_meta_control_intents_session_status
+ON meta_control_intents(session_key, status, created_at)
 """
 
 _CREATE_MEMORY_DURABLE_RECEIPTS = """
@@ -1125,6 +1175,9 @@ class SessionStorage:
         await self._conn.execute(_CREATE_TURN_INGRESS_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_TURN_INGRESS_REQUEST)
         await self._conn.execute(_CREATE_IDX_TURN_INGRESS_ACCEPTED_SESSION)
+        await self._conn.execute(_CREATE_META_CONTROL_INTENTS)
+        await self._conn.execute(_CREATE_IDX_META_CONTROL_CORRELATION)
+        await self._conn.execute(_CREATE_IDX_META_CONTROL_SESSION_STATUS)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
         await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
@@ -2631,6 +2684,10 @@ class SessionStorage:
                 "DELETE FROM turn_ingress_receipts WHERE accepted_session_key = ?",
                 (session_key,),
             )
+            await conn.execute(
+                "DELETE FROM meta_control_intents WHERE session_key = ?",
+                (session_key,),
+            )
             await conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
 
         assert session is not None
@@ -3161,13 +3218,21 @@ class SessionStorage:
                 SET status = ?,
                     updated_at = ?,
                     finished_at = COALESCE(finished_at, ?),
-                    terminal_reason = COALESCE(terminal_reason, ?)
+                    terminal_reason = CASE
+                        WHEN status = ? AND EXISTS (
+                            SELECT 1 FROM meta_control_intents AS intent
+                            WHERE intent.accepted_task_id = agent_tasks.task_id
+                              AND intent.status = 'accepted'
+                        ) THEN 'meta_control_restart_before_start'
+                        ELSE COALESCE(terminal_reason, ?)
+                    END
                 WHERE status IN (?, ?)
                 """,
                 (
                     AgentTaskStatus.ABANDONED,
                     ts,
                     ts,
+                    AgentTaskStatus.QUEUED,
                     "process_restart",
                     AgentTaskStatus.QUEUED,
                     AgentTaskStatus.RUNNING,
@@ -3203,6 +3268,131 @@ class SessionStorage:
                 ),
             )
         return count
+
+    async def claim_recoverable_meta_control_tasks(
+        self,
+        *,
+        limit: int = 64,
+    ) -> list[RecoverableMetaControlTask]:
+        """Claim accepted control tasks proven not to have started before restart.
+
+        Running tasks are deliberately excluded: provider side effects may have
+        occurred before the crash, so replaying them automatically would be
+        unsafe. A claimed queued task is returned with its original transcript
+        row and task identity; another crash marks it recoverable again.
+        """
+
+        bounded_limit = max(1, min(int(limit), 256))
+        recovered: list[RecoverableMetaControlTask] = []
+        now_ms = _now_ms()
+        async with self._write_transaction("claim_meta_control_recovery") as conn:
+            async def quarantine_invalid(task_id: str) -> None:
+                await conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET terminal_reason = ?, updated_at = ?,
+                        error_class = 'MetaControlRecoveryInvalid',
+                        error_message = 'Durable MetaSkill control recovery data is invalid.'
+                    WHERE task_id = ? AND status = ?
+                      AND terminal_reason = 'meta_control_restart_before_start'
+                    """,
+                    (
+                        _META_CONTROL_RECOVERY_INVALID_REASON,
+                        now_ms,
+                        task_id,
+                        AgentTaskStatus.ABANDONED,
+                    ),
+                )
+
+            # Invalid rows must not permanently head-of-line block later valid
+            # controls when callers use a small limit. Every selected row is
+            # either claimed or quarantined before the next bounded read.
+            while len(recovered) < bounded_limit:
+                remaining = bounded_limit - len(recovered)
+                async with conn.execute(
+                    """
+                    SELECT task.*
+                    FROM agent_tasks AS task
+                    JOIN meta_control_intents AS intent
+                      ON intent.accepted_task_id = task.task_id
+                    WHERE task.status = ?
+                      AND task.terminal_reason = 'meta_control_restart_before_start'
+                      AND intent.status = 'accepted'
+                    ORDER BY task.created_at ASC, task.task_id ASC
+                    LIMIT ?
+                    """,
+                    (AgentTaskStatus.ABANDONED, remaining),
+                ) as cur:
+                    task_rows = await cur.fetchall()
+                if not task_rows:
+                    break
+
+                for raw_task in task_rows:
+                    task = AgentTaskRecord(**_deserialize_row(dict(raw_task)))
+                    details = task.details if isinstance(task.details, dict) else {}
+                    metadata = details.get("metadata")
+                    message_id = details.get("persisted_user_message_id")
+                    if not isinstance(metadata, dict) or not isinstance(message_id, str):
+                        await quarantine_invalid(task.task_id)
+                        continue
+                    control = metadata.get("meta_control")
+                    if not isinstance(control, dict):
+                        await quarantine_invalid(task.task_id)
+                        continue
+                    async with conn.execute(
+                        """
+                        SELECT * FROM transcript_entries
+                        WHERE session_key = ? AND message_id = ? AND role = 'user'
+                        """,
+                        (task.session_key, message_id),
+                    ) as entry_cur:
+                        entry_row = await entry_cur.fetchone()
+                    if entry_row is None:
+                        await quarantine_invalid(task.task_id)
+                        continue
+                    entry = TranscriptEntry(**_deserialize_row(dict(entry_row)))
+                    if (
+                        not isinstance(entry.turn_context, dict)
+                        or entry.turn_context.get("meta_control") != control
+                    ):
+                        await quarantine_invalid(task.task_id)
+                        continue
+                    async with conn.execute(
+                        """
+                        UPDATE agent_tasks
+                        SET status = ?, updated_at = ?, finished_at = NULL,
+                            terminal_reason = NULL, error_class = NULL, error_message = NULL
+                        WHERE task_id = ? AND status = ?
+                          AND terminal_reason = 'meta_control_restart_before_start'
+                        """,
+                        (
+                            AgentTaskStatus.QUEUED,
+                            now_ms,
+                            task.task_id,
+                            AgentTaskStatus.ABANDONED,
+                        ),
+                    ) as update_cur:
+                        if int(update_cur.rowcount or 0) != 1:
+                            continue
+                    task.status = AgentTaskStatus.QUEUED
+                    task.updated_at = now_ms
+                    task.finished_at = None
+                    task.terminal_reason = None
+                    task.error_class = None
+                    task.error_message = None
+                    recovered.append(RecoverableMetaControlTask(task=task, entry=entry))
+
+            recovered_keys = sorted({item.task.session_key for item in recovered})
+            for session_key in recovered_keys:
+                await conn.execute(
+                    """
+                    UPDATE sessions
+                    SET status = ?, updated_at = ?, ended_at = NULL, runtime_ms = NULL
+                    WHERE session_key = ?
+                    """,
+                    (SessionStatus.RUNNING, now_ms, session_key),
+                )
+        return recovered
 
     # ── Transcript CRUD ──────────────────────────────────────────────────────
 
@@ -3463,6 +3653,132 @@ class SessionStorage:
             task_status=task_status,
         )
 
+    @staticmethod
+    async def _select_meta_control_intent(
+        conn: Any,
+        *,
+        session_key: str,
+        control_kind: str,
+        correlation_id: str,
+    ) -> MetaControlIntent | None:
+        async with conn.execute(
+            """
+            SELECT * FROM meta_control_intents
+            WHERE session_key = ? AND control_kind = ? AND correlation_id = ?
+            """,
+            (session_key, control_kind, correlation_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return MetaControlIntent(**_deserialize_row(dict(row))) if row is not None else None
+
+    async def stage_meta_control_intent(
+        self,
+        *,
+        session_key: str,
+        control_kind: str,
+        correlation_id: str,
+        meta_skill_name: str,
+        replay_run_id: str | None = None,
+        replay_mode: str | None = None,
+    ) -> tuple[MetaControlIntent, str]:
+        """Durably stage one manual launch or committed replay authorization.
+
+        Repeating the same coordinates is idempotent even after acceptance.
+        Reusing their correlation identity for a different skill/run/mode is a
+        hard conflict. Staged rows have a 30-day recovery window, far longer
+        than the browser outbox, so long turns and restarts remain safe without
+        allowing abandoned pre-send authorizations to grow forever.
+        """
+
+        session_key = canonicalize_session_key(session_key)
+        control_kind = control_kind.strip()
+        correlation_id = correlation_id.strip()
+        meta_skill_name = meta_skill_name.strip()
+        replay_run_id = replay_run_id.strip() if isinstance(replay_run_id, str) else None
+        replay_mode = replay_mode.strip() if isinstance(replay_mode, str) else None
+        if not session_key or not correlation_id or not meta_skill_name:
+            raise ValueError("meta control session, correlation, and skill are required")
+        if control_kind not in {"manual", "replay"}:
+            raise ValueError("meta control kind must be manual or replay")
+        if len(correlation_id) > 272:
+            raise ValueError("meta control correlation exceeds 272 characters")
+        if control_kind == "manual":
+            if not correlation_id.startswith("request:"):
+                raise ValueError("manual meta control requires a request correlation")
+            if replay_run_id is not None or replay_mode is not None:
+                raise ValueError("manual meta control cannot carry replay coordinates")
+        elif (
+            not correlation_id.startswith("nonce:")
+            or replay_run_id is None
+            or replay_mode not in {"failed-step", "partial-context"}
+        ):
+            raise ValueError("replay meta control requires nonce, run, and live mode")
+
+        async with self._write_transaction("stage_meta_control_intent") as conn:
+            cutoff_ms = _now_ms() - _META_CONTROL_STAGED_RETENTION_MS
+            await conn.execute(
+                """
+                DELETE FROM meta_control_intents
+                WHERE intent_id IN (
+                    SELECT intent_id FROM meta_control_intents
+                    WHERE status = 'staged' AND created_at < ?
+                    ORDER BY created_at ASC, intent_id ASC
+                    LIMIT ?
+                )
+                """,
+                (cutoff_ms, _META_CONTROL_STAGED_GC_BATCH),
+            )
+            existing = await self._select_meta_control_intent(
+                conn,
+                session_key=session_key,
+                control_kind=control_kind,
+                correlation_id=correlation_id,
+            )
+            if existing is not None:
+                if (
+                    existing.meta_skill_name != meta_skill_name
+                    or existing.replay_run_id != replay_run_id
+                    or existing.replay_mode != replay_mode
+                ):
+                    raise MetaControlIntentConflictError(
+                        "meta control identity was already used for another launch"
+                    )
+                return existing, "replayed"
+
+            intent = MetaControlIntent(
+                session_key=session_key,
+                control_kind=control_kind,
+                correlation_id=correlation_id,
+                meta_skill_name=meta_skill_name,
+                replay_run_id=replay_run_id,
+                replay_mode=replay_mode,
+            )
+            data = intent.model_dump()
+            columns = list(data)
+            await conn.execute(
+                f"INSERT INTO meta_control_intents ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                [_serialize(data[column]) for column in columns],
+            )
+            return intent, "stamped"
+
+    @_serialized_read
+    async def get_meta_control_intent(
+        self,
+        *,
+        session_key: str,
+        control_kind: str,
+        correlation_id: str,
+    ) -> MetaControlIntent | None:
+        """Return the exact durable control authorization, if one exists."""
+
+        return await self._select_meta_control_intent(
+            self.conn,
+            session_key=canonicalize_session_key(session_key),
+            control_kind=control_kind,
+            correlation_id=correlation_id,
+        )
+
     async def accept_turn(
         self,
         entry: TranscriptEntry,
@@ -3479,6 +3795,7 @@ class SessionStorage:
         initial_transcript_entries: tuple[TranscriptEntry, ...] = (),
         session_updates: dict[str, Any] | None = None,
         merge_into_task: bool = False,
+        meta_control_intent_id: str | None = None,
     ) -> TurnAcceptanceResult:
         """Commit one user message, task, and request receipt atomically.
 
@@ -3514,6 +3831,8 @@ class SessionStorage:
             raise ValueError("initial transcript entries require session_node")
         if merge_into_task and session_node is not None:
             raise ValueError("task collection cannot create, reset, or fork a session")
+        if merge_into_task and meta_control_intent_id is not None:
+            raise ValueError("a MetaSkill control turn cannot merge into another task")
         allowed_session_updates = {
             "last_channel",
             "last_to",
@@ -3548,6 +3867,55 @@ class SessionStorage:
                     fresh_user_session=fresh_user_session,
                     task_status=task_status,
                 )
+
+            if meta_control_intent_id is not None:
+                async with conn.execute(
+                    "SELECT * FROM meta_control_intents WHERE intent_id = ?",
+                    (meta_control_intent_id,),
+                ) as cur:
+                    control_row = await cur.fetchone()
+                if control_row is None:
+                    raise MetaControlIntentConflictError(
+                        "MetaSkill control authorization is missing"
+                    )
+                control = MetaControlIntent(**_deserialize_row(dict(control_row)))
+                if control.session_key != request_session_key:
+                    raise MetaControlIntentConflictError(
+                        "MetaSkill control authorization belongs to another session"
+                    )
+                if control.status != "staged":
+                    raise MetaControlIntentConflictError(
+                        "MetaSkill control authorization was already accepted"
+                    )
+                embedded = (
+                    entry.turn_context.get("meta_control")
+                    if isinstance(entry.turn_context, dict)
+                    else None
+                )
+                expected_embedded: dict[str, Any] = {
+                    "version": 1,
+                    "intent_id": control.intent_id,
+                    "kind": control.control_kind,
+                    "name": control.meta_skill_name,
+                    "correlation_id": control.correlation_id,
+                }
+                if control.control_kind == "replay":
+                    expected_embedded.update({
+                        "run_id": control.replay_run_id,
+                        "mode": control.replay_mode,
+                    })
+                if embedded != expected_embedded:
+                    raise MetaControlIntentConflictError(
+                        "MetaSkill control payload does not match its authorization"
+                    )
+                task_metadata = (task_record.details or {}).get("metadata")
+                if (
+                    not isinstance(task_metadata, dict)
+                    or task_metadata.get("meta_control") != expected_embedded
+                ):
+                    raise MetaControlIntentConflictError(
+                        "MetaSkill control task lost its authorized payload"
+                    )
 
             reset_archive_snapshot: ResetArchiveSnapshot | None = None
             if session_node is not None:
@@ -3810,6 +4178,31 @@ class SessionStorage:
                 f"VALUES ({placeholders})",
                 [_serialize(data[col]) for col in cols],
             )
+            if meta_control_intent_id is not None:
+                async with conn.execute(
+                    """
+                    UPDATE meta_control_intents
+                    SET status = 'accepted', accepted_source_scope = ?,
+                        accepted_request_session_key = ?, accepted_client_request_id = ?,
+                        accepted_request_fingerprint = ?, accepted_message_id = ?,
+                        accepted_task_id = ?, updated_at = ?
+                    WHERE intent_id = ? AND status = 'staged'
+                    """,
+                    (
+                        source_scope,
+                        request_session_key,
+                        client_request_id,
+                        request_fingerprint,
+                        entry.message_id,
+                        task_record.task_id,
+                        updated_at,
+                        meta_control_intent_id,
+                    ),
+                ) as cur:
+                    if int(cur.rowcount or 0) != 1:
+                        raise MetaControlIntentConflictError(
+                            "MetaSkill control authorization changed during acceptance"
+                        )
             return TurnAcceptanceResult(
                 receipt=receipt,
                 replayed=False,

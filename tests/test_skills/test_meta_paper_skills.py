@@ -234,6 +234,54 @@ def test_paper_artifact_runtime_persists_assembles_and_maps_citations(
     assert "SUMMARY: total_cite_keys=2, strong=2, ok=0, weak=0, invalid=0, unused=0" in mapped
 
 
+def test_paper_artifact_runtime_adds_dependency_free_cjk_line_breaking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    sections = {name: "" for name in PAPER_ARTIFACT_RUNTIME._SECTION_NAMES}
+    sections["introduction"] = (
+        r"\section{引言}"
+        "这是一段没有人工空格的连续中文正文，用于验证真实论文在页面边界处可以自然换行，"
+        "而不是依赖一个碰巧能够放进单行的短句。"
+    )
+    _run_paper_operation("persist_sections", sections=sections)
+    _run_paper_operation(
+        "assemble_manuscript_tex",
+        writing_plan="TITLE: 中文论文交付验证",
+    )
+
+    tex = (_paper_run_dir(tmp_path) / "paper.tex").read_text(encoding="utf-8")
+    locale = r'\XeTeXlinebreaklocale "zh"'
+    glue = r"\XeTeXlinebreakskip = 0pt plus 1pt"
+    assert tex.count(locale) == 1
+    assert tex.count(glue) == 1
+    assert tex.index(locale) < tex.index(r"\begin{document}")
+    assert tex.index(glue) < tex.index(r"\begin{document}")
+    assert "xeCJK" not in tex
+    assert "ctex" not in tex
+
+    minimal = (
+        r"\documentclass{article}"
+        "\n"
+        r"\begin{document}连续中文正文必须自然换行。\end{document}"
+    )
+    prepared = PAPER_ARTIFACT_RUNTIME._prepare_tex(minimal)
+    assert prepared.count(locale) == 1
+    assert prepared.count(glue) == 1
+    assert PAPER_ARTIFACT_RUNTIME._prepare_tex(prepared) == prepared
+
+    partially_configured = minimal.replace(
+        r"\begin{document}",
+        r'\XeTeXlinebreaklocale "ja"' + "\n" + r"\begin{document}",
+    )
+    normalized = PAPER_ARTIFACT_RUNTIME._prepare_tex(partially_configured)
+    assert normalized.count(r"\XeTeXlinebreaklocale") == 1
+    assert normalized.count(r"\XeTeXlinebreakskip") == 1
+    assert locale in normalized
+    assert r'\XeTeXlinebreaklocale "ja"' not in normalized
+
+
 def test_paper_artifact_runtime_cli_reads_json_from_stdin(tmp_path: Path) -> None:
     script = BUNDLED / "paper-artifact-runtime" / "scripts" / "run.py"
     payload = {

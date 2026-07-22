@@ -21,8 +21,9 @@ The store is intentionally minimal:
 * identified markers start with a short staging TTL. Durable chat acceptance
   promotes an exact, valid launch to accepted state before runtime activation;
   accepted markers never time-expire while their turn waits in a queue;
-* in-memory only (lost on gateway restart, which is fine: a restart drops
-  any half-issued ``/meta`` command and the surface can re-issue it);
+* retained as a compatibility cache; identified production launches are also
+  staged in the session database and bound to their accepted ingress turn, so
+  this cache may be empty after a gateway restart without losing the intent;
 * claimed only by its own launch turn — every surface stamps the launch and
   then sends a turn whose text is the ``/meta <name>`` sentinel, optionally
   followed by ``-- <request>``, so
@@ -602,6 +603,74 @@ def _parse_launch_text(text: str) -> tuple[str, str | None] | None:
     return name, suffix[2:].lstrip()
 
 
+def manual_meta_control_correlation(client_request_id: str) -> str:
+    """Return the content-free durable correlation for a manual launch."""
+
+    request_id = _normalize_client_request_id(client_request_id)
+    if request_id is None:
+        raise ValueError("manual meta control requires a client request id")
+    return f"request:{request_id}"
+
+
+def replay_meta_control_correlation(nonce: str) -> str:
+    """Return the content-free durable correlation for a committed replay."""
+
+    if not _valid_replay_nonce(nonce):
+        raise ValueError("meta replay nonce must be 32 lowercase hexadecimal characters")
+    return f"nonce:{nonce}"
+
+
+def parse_meta_control_sentinel(
+    message: object,
+    semantic_message: object,
+    *,
+    client_request_id: str,
+) -> dict[str, str] | None:
+    """Parse one exact hidden control turn for durable-intent lookup.
+
+    Message and semantic text may be identical projections of the same input.
+    Conflicting projections fail closed. A malformed replay command is never
+    reclassified as a manual launch.
+    """
+
+    values = [
+        value
+        for value in (message, semantic_message)
+        if isinstance(value, str) and value.strip()
+    ]
+    replay_commands = [_parse_replay_command(value) for value in values]
+    replay_commands = [parsed for parsed in replay_commands if parsed[0]]
+    if replay_commands:
+        if len(replay_commands) != len(values):
+            return None
+        nonces = {nonce for _is_command, nonce in replay_commands if nonce is not None}
+        if any(nonce is None for _is_command, nonce in replay_commands) or len(nonces) != 1:
+            return None
+        nonce = next(iter(nonces))
+        assert nonce is not None
+        return {
+            "kind": "replay",
+            "correlation_id": replay_meta_control_correlation(nonce),
+        }
+
+    launches = [_parse_launch_text(value) for value in values]
+    if not launches or any(parsed is None for parsed in launches):
+        return None
+    valid_launches = [parsed for parsed in launches if parsed is not None]
+    names = {parsed[0] for parsed in valid_launches}
+    if len(names) != 1:
+        return None
+    try:
+        correlation_id = manual_meta_control_correlation(client_request_id)
+    except ValueError:
+        return None
+    return {
+        "kind": "manual",
+        "name": next(iter(names)),
+        "correlation_id": correlation_id,
+    }
+
+
 def _launch_marker(ctx: TurnContext, name: str) -> dict[str, str] | None:
     """Return the launch marker when this turn strictly matches ``name``.
 
@@ -638,6 +707,21 @@ def _turn_client_request_id() -> str | None:
     return normalized if len(normalized) <= 256 else None
 
 
+def _durable_meta_control() -> dict[str, object] | None:
+    """Return the server-bound control payload carried by durable ingress."""
+
+    turn_context = current_turn_context()
+    if not isinstance(turn_context, dict):
+        return None
+    value = turn_context.get("meta_control")
+    if not isinstance(value, dict) or value.get("version") != 1:
+        return None
+    required = ("intent_id", "kind", "name", "correlation_id")
+    if any(not isinstance(value.get(field), str) or not value.get(field) for field in required):
+        return None
+    return value
+
+
 async def meta_command_launch(ctx: TurnContext) -> TurnContext:
     """Seed ``meta_launch`` from a pending ``/meta`` command, if any.
 
@@ -651,6 +735,59 @@ async def meta_command_launch(ctx: TurnContext) -> TurnContext:
     turn, so it cannot hijack the next message.
     """
     session_id = getattr(ctx, "session_key", "") or ""
+
+    # Identified launches and committed replays are bound to the accepted turn
+    # in SQLite. This path deliberately runs before the compatibility caches:
+    # clearing process memory (restart, long queue, worker replacement) cannot
+    # invalidate a control the durable ingress transaction already accepted.
+    durable_control = _durable_meta_control()
+    if durable_control is not None:
+        request_id = _turn_client_request_id() or ""
+        parsed = parse_meta_control_sentinel(
+            getattr(ctx, "message", ""),
+            getattr(ctx, "semantic_message", ""),
+            client_request_id=request_id,
+        )
+        kind = str(durable_control["kind"])
+        correlation_id = str(durable_control["correlation_id"])
+        if (
+            parsed is None
+            or parsed.get("kind") != kind
+            or parsed.get("correlation_id") != correlation_id
+        ):
+            if kind == "replay":
+                ctx.metadata["meta_replay_error"] = (
+                    "This replay request is invalid or does not match its accepted turn. "
+                    "Choose Retry failed step again."
+                )
+            return ctx
+        name = str(durable_control["name"])
+        if kind == "manual":
+            if parsed.get("name") != name:
+                return ctx
+            marker = _launch_marker(ctx, name)
+            if marker is not None:
+                ctx.metadata["meta_launch"] = marker
+            return ctx
+        if kind == "replay":
+            run_id = durable_control.get("run_id")
+            mode = durable_control.get("mode")
+            if (
+                isinstance(run_id, str)
+                and run_id
+                and isinstance(mode, str)
+                and mode in {"failed-step", "partial-context"}
+            ):
+                ctx.metadata["meta_replay"] = {
+                    "run_id": run_id,
+                    "name": name,
+                    "mode": mode,
+                }
+                return ctx
+            ctx.metadata["meta_replay_error"] = (
+                "This replay request is invalid. Choose Retry failed step again."
+            )
+            return ctx
 
     # Replay is deliberately checked before the ordinary /meta launch.  The
     # hidden turn carries no capability token: the token has already been

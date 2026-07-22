@@ -10,6 +10,7 @@ actual MP4 files before emitting one bounded JSON verdict.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -29,8 +30,10 @@ _INTEGER_FIELD_RE = re.compile(r"(?m)^([A-Z_]+):\s*(\d+)\s*$")
 _SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+\-]{0,159}$")
 _SAFE_POLICY_CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$")
 _MACHINE_STEP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+_MACHINE_RECEIPT_PROOF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_MACHINE_DISPOSITION_BYTES = 8_000
 _MAX_MACHINE_DISPOSITION_STEPS = 64
+_MAX_RECEIPT_BYTES = 64_000
 _PAID_SUBMISSION_DISPOSITIONS = frozenset(
     {"safe_no_submit", "maybe_accepted", "receipt"}
 )
@@ -71,6 +74,53 @@ def _normalize_paid_submission_dispositions(
         ):
             sanitized[step_id] = disposition
     return sanitized
+
+
+def _normalize_paid_submission_receipt_proofs(raw: object) -> dict[str, str]:
+    """Accept only bounded canonical digests from the parent executor."""
+
+    value = raw
+    if isinstance(value, str):
+        if len(value.encode("utf-8", errors="ignore")) > _MAX_MACHINE_DISPOSITION_BYTES:
+            return {}
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(value, Mapping):
+        return {}
+
+    sanitized: dict[str, str] = {}
+    for step_id in sorted(value, key=str):
+        if len(sanitized) >= _MAX_MACHINE_DISPOSITION_STEPS:
+            break
+        proof = value[step_id]
+        if (
+            isinstance(step_id, str)
+            and _MACHINE_STEP_ID_RE.fullmatch(step_id)
+            and isinstance(proof, str)
+            and _MACHINE_RECEIPT_PROOF_RE.fullmatch(proof)
+        ):
+            sanitized[step_id] = proof
+    return sanitized
+
+
+def _canonical_receipt_proof(value: object) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except (TypeError, ValueError, UnicodeError):
+        return None
+    if len(encoded) > _MAX_RECEIPT_BYTES:
+        return None
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _parse_script(script: str) -> tuple[list[dict[str, int]], int | None, list[dict[str, str]]]:
@@ -151,16 +201,26 @@ def _parse_script(script: str) -> tuple[list[dict[str, int]], int | None, list[d
     return shots, overview_duration, issues
 
 
-def _load_receipt(path: Path, *, asset: str) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
+def _load_receipt(
+    path: Path,
+    *,
+    asset: str,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, str] | None]:
     if not path.is_file():
-        return None, _issue("MISSING_RECEIPT", asset, f"missing {path.name}")
+        return None, None, _issue("MISSING_RECEIPT", asset, f"missing {path.name}")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return None, _issue("INVALID_RECEIPT", asset, f"invalid JSON in {path.name}")
+        raw = path.read_bytes()
+        if len(raw) > _MAX_RECEIPT_BYTES:
+            raise ValueError("receipt exceeds size limit")
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        return None, None, _issue("INVALID_RECEIPT", asset, f"invalid JSON in {path.name}")
     if not isinstance(value, dict):
-        return None, _issue("INVALID_RECEIPT", asset, f"{path.name} is not a JSON object")
-    return value, None
+        return None, None, _issue("INVALID_RECEIPT", asset, f"{path.name} is not a JSON object")
+    proof = _canonical_receipt_proof(value)
+    if proof is None:
+        return None, None, _issue("INVALID_RECEIPT", asset, f"invalid data in {path.name}")
+    return value, proof, None
 
 
 def _safe_token(value: object) -> str:
@@ -205,10 +265,10 @@ def _audit_image_receipt(
     path: Path,
     *,
     asset: str,
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
-    receipt, load_issue = _load_receipt(path, asset=asset)
+) -> tuple[dict[str, Any], str | None, list[dict[str, str]]]:
+    receipt, receipt_proof, load_issue = _load_receipt(path, asset=asset)
     if load_issue is not None or receipt is None:
-        return {}, [load_issue] if load_issue is not None else []
+        return {}, None, [load_issue] if load_issue is not None else []
 
     status = _safe_token(receipt.get("status"))
     provider = _safe_token(receipt.get("provider"))
@@ -255,13 +315,17 @@ def _audit_image_receipt(
         issues.append(_issue("IMAGE_MODEL_MISSING", asset, "receipt model is missing"))
     if status == "generated" and not request_id:
         issues.append(_issue("IMAGE_REQUEST_ID_MISSING", asset, "provider request_id is missing"))
-    return sanitized, issues
+    return sanitized, receipt_proof, issues
 
 
-def _audit_video_receipt(path: Path, *, asset: str) -> tuple[dict[str, str], list[dict[str, str]]]:
-    receipt, load_issue = _load_receipt(path, asset=asset)
+def _audit_video_receipt(
+    path: Path,
+    *,
+    asset: str,
+) -> tuple[dict[str, str], str | None, list[dict[str, str]]]:
+    receipt, receipt_proof, load_issue = _load_receipt(path, asset=asset)
     if load_issue is not None or receipt is None:
-        return {}, [load_issue] if load_issue is not None else []
+        return {}, None, [load_issue] if load_issue is not None else []
 
     provider = _safe_token(receipt.get("provider"))
     model = _safe_token(receipt.get("model"))
@@ -309,7 +373,7 @@ def _audit_video_receipt(path: Path, *, asset: str) -> tuple[dict[str, str], lis
         issues.append(
             _issue("VIDEO_PROVIDER_ID_MISSING", asset, "provider request_id/job_id is missing")
         )
-    return sanitized, issues
+    return sanitized, receipt_proof, issues
 
 
 def _has_issue(issues: list[dict[str, str]], code: str) -> bool:
@@ -434,6 +498,7 @@ def audit_delivery(
     fallback_outputs: Mapping[str, object],
     *,
     paid_submission_dispositions: Mapping[str, object] | str | None = None,
+    paid_submission_receipt_proofs: Mapping[str, object] | str | None = None,
     ffprobe: str = "ffprobe",
     probe: Probe = _probe_video,
 ) -> dict[str, Any]:
@@ -446,6 +511,9 @@ def audit_delivery(
     unexpected_paid_assets: list[str] = []
     machine_dispositions = _normalize_paid_submission_dispositions(
         paid_submission_dispositions
+    )
+    machine_receipt_proofs = _normalize_paid_submission_receipt_proofs(
+        paid_submission_receipt_proofs
     )
 
     def record_unknown_paid_submission(asset: str) -> None:
@@ -468,17 +536,29 @@ def audit_delivery(
         asset: str,
         step_id: str,
         conclusive_receipt: bool,
+        receipt_proof: str | None,
     ) -> None:
-        # A validated generated/policy receipt conclusively describes the
-        # provider outcome. Otherwise only the parent scheduler may prove that
-        # no submit occurred; receipt/maybe/unknown remain billing-ambiguous.
-        disposition = (
-            "confirmed"
-            if conclusive_receipt
-            else machine_dispositions.get(step_id, "unknown")
+        machine_disposition = machine_dispositions.get(step_id, "unknown")
+        proof_matches_current_run = (
+            conclusive_receipt
+            and receipt_proof is not None
+            and machine_receipt_proofs.get(step_id) == receipt_proof
+            and machine_disposition in {"receipt", "maybe_accepted"}
         )
+        # A sidecar is workspace evidence and can outlive a failed attempt.
+        # Upgrade only when its digest is carried by this run's exact bundled
+        # paid subprocess. Otherwise preserve the scheduler's billing state.
+        disposition = "confirmed" if proof_matches_current_run else machine_disposition
         paid_asset_dispositions[asset] = disposition
-        if not conclusive_receipt and disposition != "safe_no_submit":
+        if conclusive_receipt and not proof_matches_current_run:
+            issues.append(
+                _issue(
+                    "RECEIPT_NOT_PROVEN_CURRENT_RUN",
+                    asset,
+                    "receipt sidecar is not bound to this paid subprocess execution",
+                )
+            )
+        if not proof_matches_current_run and disposition != "safe_no_submit":
             record_unknown_paid_submission(asset)
 
     def record_unexpected_paid_asset(asset: str) -> None:
@@ -503,7 +583,7 @@ def audit_delivery(
     content_duration = sum(item["duration_s"] for item in shots)
     expected_final_duration = content_duration + BOOKEND_DURATION_S
 
-    reference_receipt, reference_issues = _audit_image_receipt(
+    reference_receipt, reference_proof, reference_issues = _audit_image_receipt(
         run_dir / "reference.png.receipt.json",
         asset="reference_image",
     )
@@ -512,17 +592,18 @@ def audit_delivery(
         asset="reference_image",
         step_id="reference_image",
         conclusive_receipt=_image_submission_status_is_conclusive(reference_receipt),
+        receipt_proof=reference_proof,
     )
 
     audited_shots: list[dict[str, Any]] = []
     for shot in shots:
         number = shot["number"]
         asset = f"shot{number}"
-        image_receipt, image_issues = _audit_image_receipt(
+        image_receipt, image_proof, image_issues = _audit_image_receipt(
             run_dir / f"{number}_shot.png.receipt.json",
             asset=f"{asset}_image",
         )
-        video_receipt, video_issues = _audit_video_receipt(
+        video_receipt, video_proof, video_issues = _audit_video_receipt(
             run_dir / f"{number}_shot.mp4.receipt.json",
             asset=f"{asset}_video",
         )
@@ -540,6 +621,7 @@ def audit_delivery(
             asset=f"{asset}_image",
             step_id=f"shot{number}_image",
             conclusive_receipt=_image_submission_status_is_conclusive(image_receipt),
+            receipt_proof=image_proof,
         )
 
         record_paid_submission_disposition(
@@ -549,6 +631,7 @@ def audit_delivery(
                 video_receipt,
                 video_issues,
             ),
+            receipt_proof=video_proof,
         )
 
         fallback_executed = bool(str(fallback_outputs.get(str(number)) or "").strip())
@@ -600,7 +683,7 @@ def audit_delivery(
         image_path = run_dir / f"{number}_shot.png"
         image_receipt_path = run_dir / f"{number}_shot.png.receipt.json"
         if image_path.is_file() or image_receipt_path.is_file():
-            image_receipt, image_issues = _audit_image_receipt(
+            image_receipt, image_proof, image_issues = _audit_image_receipt(
                 image_receipt_path,
                 asset=f"{asset}_image",
             )
@@ -610,13 +693,14 @@ def audit_delivery(
                 asset=f"{asset}_image",
                 step_id=f"shot{number}_image",
                 conclusive_receipt=_image_submission_status_is_conclusive(image_receipt),
+                receipt_proof=image_proof,
             )
 
         video_path = run_dir / f"{number}_shot.mp4"
         video_receipt_path = run_dir / f"{number}_shot.mp4.receipt.json"
         fallback_executed = bool(str(fallback_outputs.get(str(number)) or "").strip())
         if video_path.is_file() or video_receipt_path.is_file() or fallback_executed:
-            video_receipt, video_issues = _audit_video_receipt(
+            video_receipt, video_proof, video_issues = _audit_video_receipt(
                 video_receipt_path,
                 asset=f"{asset}_video",
             )
@@ -637,6 +721,7 @@ def audit_delivery(
                     video_receipt,
                     video_issues,
                 ),
+                receipt_proof=video_proof,
             )
 
     final_probe, final_probe_issues = _probe_or_issue(
@@ -710,19 +795,26 @@ def audit_delivery(
     }
 
 
-def _parse_runtime_stdin() -> tuple[dict[str, object], dict[str, str]]:
+def _parse_runtime_stdin() -> tuple[
+    dict[str, object],
+    dict[str, str],
+    dict[str, str],
+]:
     try:
         payload = json.load(sys.stdin)
     except (OSError, UnicodeError, json.JSONDecodeError):
-        return {}, {}
+        return {}, {}, {}
     if not isinstance(payload, dict):
-        return {}, {}
+        return {}, {}, {}
     raw_fallbacks = payload.get("fallback_outputs")
     fallbacks = raw_fallbacks if isinstance(raw_fallbacks, dict) else {}
     dispositions = _normalize_paid_submission_dispositions(
         payload.get("paid_submission_dispositions")
     )
-    return fallbacks, dispositions
+    receipt_proofs = _normalize_paid_submission_receipt_proofs(
+        payload.get("paid_submission_receipt_proofs")
+    )
+    return fallbacks, dispositions, receipt_proofs
 
 
 def _unavailable_probe(_path: Path, _ffprobe: str) -> dict[str, Any]:
@@ -736,11 +828,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     ffprobe_missing = shutil.which(args.ffprobe) is None and not Path(args.ffprobe).is_file()
-    fallback_outputs, paid_submission_dispositions = _parse_runtime_stdin()
+    (
+        fallback_outputs,
+        paid_submission_dispositions,
+        paid_submission_receipt_proofs,
+    ) = _parse_runtime_stdin()
     verdict = audit_delivery(
         Path(args.run_dir),
         fallback_outputs,
         paid_submission_dispositions=paid_submission_dispositions,
+        paid_submission_receipt_proofs=paid_submission_receipt_proofs,
         ffprobe=args.ffprobe,
         probe=_unavailable_probe if ffprobe_missing else _probe_video,
     )

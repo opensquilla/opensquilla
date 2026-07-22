@@ -27,6 +27,7 @@ from opensquilla.gateway.rpc import (
     get_dispatcher,
 )
 from opensquilla.gateway.scopes import ADMIN_SCOPE
+from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.persistence.meta_run_query import parse_since_ms
 from opensquilla.persistence.meta_run_writer import (
     RunRecord,
@@ -34,6 +35,7 @@ from opensquilla.persistence.meta_run_writer import (
     replay_inputs_are_modified,
     summarize_run_record,
 )
+from opensquilla.session.storage import MetaControlIntentConflictError
 from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.meta.author_seed import draft_meta_skill_seed
 from opensquilla.skills.meta.enabled import is_meta_skill_enabled
@@ -609,13 +611,34 @@ async def _handle_meta_runs_replay(params: Any, ctx: RpcContext) -> dict[str, An
 
     # The capability token ends here. Only a nonce-bound sentinel enters
     # chat.send, so the token can never be persisted in transcript/history or
-    # exposed to the provider. The pending payload retains the exact binding.
-    replay_nonce = pending_meta_replay_put(
-        session_key,
-        run_id=record.run_id,
-        name=record.meta_skill_name,
-        mode=mode,
-    )
+    # exposed to the provider. Production gateways stage its exact binding in
+    # the session database; the in-process store remains a compatibility path
+    # for storage-less embeddings and test doubles.
+    replay_nonce = uuid.uuid4().hex
+    storage = get_session_storage(getattr(ctx, "session_manager", None))
+    stage_control = getattr(storage, "stage_meta_control_intent", None)
+    if callable(stage_control):
+        try:
+            await stage_control(
+                session_key=session_key,
+                control_kind="replay",
+                correlation_id=f"nonce:{replay_nonce}",
+                meta_skill_name=record.meta_skill_name,
+                replay_run_id=record.run_id,
+                replay_mode=mode,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail closed after token consumption
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "could not durably stage the replay turn; prepare it again",
+            ) from exc
+    else:
+        replay_nonce = pending_meta_replay_put(
+            session_key,
+            run_id=record.run_id,
+            name=record.meta_skill_name,
+            mode=mode,
+        )
     if not replay_nonce:  # Defensive: validated coordinates should make this unreachable.
         raise RpcHandlerError(ERROR_UNAVAILABLE, "could not stage the replay turn")
     replay["replay_kind"] = "live-committed"
@@ -1051,11 +1074,36 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
             "error": format_meta_setup_error(name, readiness),
         }
 
-    launch_disposition = pending_meta_launch_put(
-        session_key,
-        name,
-        client_request_id=client_request_id,
-    )
+    storage = get_session_storage(getattr(ctx, "session_manager", None))
+    stage_control = getattr(storage, "stage_meta_control_intent", None)
+    if client_request_id is not None and callable(stage_control):
+        try:
+            _intent, launch_disposition = await stage_control(
+                session_key=session_key,
+                control_kind="manual",
+                correlation_id=f"request:{client_request_id}",
+                meta_skill_name=name,
+            )
+        except MetaControlIntentConflictError as exc:
+            raise RpcHandlerError(
+                "IDEMPOTENCY_CONFLICT",
+                "clientRequestId was already used for a different meta-skill launch",
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - authorization must be durable
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill launch could not be staged durably; retry shortly",
+                retryable=True,
+                accepted=False,
+            ) from exc
+    else:
+        launch_disposition = pending_meta_launch_put(
+            session_key,
+            name,
+            client_request_id=client_request_id,
+        )
     if launch_disposition == "conflict":
         raise RpcHandlerError(
             "IDEMPOTENCY_CONFLICT",

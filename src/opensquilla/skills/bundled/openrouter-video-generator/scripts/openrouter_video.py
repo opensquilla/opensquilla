@@ -12,9 +12,15 @@ import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "expired"}
+SAFE_NO_SUBMIT_EXIT_CODE = 78
+META_CAPABILITY_LEASE_REQUIRED_ENV = "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED"
+META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
+META_CAPABILITY_API_KEY_ENV = "OPENSQUILLA_META_CAPABILITY_API_KEY"
+META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
+META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
 
 
 def _safe_filename(value: str, default: str) -> str:
@@ -49,6 +55,38 @@ def _failure_reason(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
+def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
+    """Resolve a MetaSkill lease or the direct-CLI compatibility inputs."""
+
+    lease_required = os.environ.get(META_CAPABILITY_LEASE_REQUIRED_ENV) == "1"
+    if lease_required:
+        provider = os.environ.get(META_CAPABILITY_PROVIDER_ENV, "").strip().lower()
+        if provider != "openrouter":
+            return "", "", "", True
+        return (
+            os.environ.get(META_CAPABILITY_API_KEY_ENV, "").strip(),
+            os.environ.get(META_CAPABILITY_BASE_URL_ENV, "").strip().rstrip("/"),
+            os.environ.get(META_CAPABILITY_PROXY_ENV, "").strip(),
+            True,
+        )
+    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
+    return (
+        str(args.api_key.strip() or os.environ.get(api_key_env, "")),
+        args.base_url.strip().rstrip("/"),
+        "",
+        False,
+    )
+
+
+def _open_url(request: Request, *, timeout: float, proxy: str):
+    if not proxy:
+        return urlopen(request, timeout=timeout)
+    return build_opener(ProxyHandler({"http": proxy, "https": proxy})).open(
+        request,
+        timeout=timeout,
+    )
+
+
 def _request_json(
     url: str,
     *,
@@ -56,6 +94,7 @@ def _request_json(
     method: str = "GET",
     body: dict[str, object] | None = None,
     timeout: float = 60.0,
+    proxy: str = "",
 ) -> dict[str, object]:
     headers = {
         "Authorization": f"Bearer {key}",
@@ -66,7 +105,7 @@ def _request_json(
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = Request(url, data=data, headers=headers, method=method)
-    with urlopen(req, timeout=timeout) as resp:
+    with _open_url(req, timeout=timeout, proxy=proxy) as resp:
         parsed = json.loads(resp.read().decode("utf-8", "replace"))
     if not isinstance(parsed, dict):
         raise ValueError("response_not_object")
@@ -89,13 +128,14 @@ def _download(
     key: str,
     base_url: str,
     timeout: float = 120.0,
+    proxy: str = "",
 ) -> bytes:
     resolved_url = _resolve_url(url, base_url=base_url)
     headers = {}
     if _same_origin(resolved_url, base_url=base_url):
         headers["Authorization"] = f"Bearer {key}"
     req = Request(resolved_url, headers=headers, method="GET")
-    with urlopen(req, timeout=timeout) as resp:
+    with _open_url(req, timeout=timeout, proxy=proxy) as resp:
         return bytes(resp.read())
 
 
@@ -118,24 +158,27 @@ def main() -> int:
     if not prompt:
         prompt = "Create a short browser-playable video for this webpage."
 
-    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
-    key = str(args.api_key.strip() or os.environ.get(api_key_env, ""))
+    key, base_url, proxy, lease_required = _runtime_connection(args)
     missing = []
     if not key:
-        missing.append(api_key_env)
+        missing.append(
+            "provider_connection:openrouter"
+            if lease_required
+            else (args.api_key_env.strip() or "OPENROUTER_API_KEY")
+        )
+    if not base_url:
+        missing.append("provider_endpoint:openrouter")
     if not args.model:
         missing.append("awesome_webpage.openrouter.models.video_generation")
     if not args.output_dir:
         missing.append("awesome_webpage.output_dir")
     if missing:
         _failure("VIDEO_CONFIG_NEEDED", filename, missing=missing)
-        return 0
+        return SAFE_NO_SUBMIT_EXIT_CODE if lease_required else 0
 
     output_dir = Path(args.output_dir).expanduser()
     output_path = output_dir / filename
     local_path = f"project/assets/video/{filename}"
-    base_url = args.base_url.rstrip("/")
-
     try:
         submit = _request_json(
             f"{base_url}/videos",
@@ -147,6 +190,7 @@ def main() -> int:
                 "duration": args.duration,
                 "aspect_ratio": args.aspect_ratio,
             },
+            proxy=proxy,
         )
     except HTTPError as exc:
         _failure("VIDEO_GENERATION_FAILED", filename, phase="submit", status=exc.code)
@@ -171,7 +215,7 @@ def main() -> int:
     while status not in TERMINAL_STATUSES and time.time() < deadline:
         time.sleep(max(1.0, args.poll_interval))
         try:
-            last = _request_json(poll_url, key=key)
+            last = _request_json(poll_url, key=key, proxy=proxy)
         except HTTPError as exc:
             _failure(
                 "VIDEO_GENERATION_FAILED",
@@ -203,7 +247,12 @@ def main() -> int:
 
     try:
         download_url = _resolve_url(str(urls[0]), base_url=base_url)
-        body = _download(download_url, key=key, base_url=base_url)
+        body = _download(
+            download_url,
+            key=key,
+            base_url=base_url,
+            proxy=proxy,
+        )
     except HTTPError as exc:
         _failure(
             "VIDEO_GENERATION_FAILED",

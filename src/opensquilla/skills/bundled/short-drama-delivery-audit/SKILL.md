@@ -50,20 +50,23 @@ reports `VIDEO_POLICY_REJECTED`; raw provider text, signed URLs, request IDs,
 and secrets are discarded before this boundary.
 
 The parent scheduler supplies one bounded disposition per paid step. The only
-accepted values are `safe_no_submit`, `maybe_accepted`, and `receipt`; a
-conclusive generated/policy receipt upgrades the public asset disposition to
-`confirmed`. The scheduler derives these values from trusted executor exit and
-timeout handling, not child stdout/stderr, and the reserved runtime slot cannot
-be declared as a plan step.
+accepted values are `safe_no_submit`, `maybe_accepted`, and `receipt`. It also
+supplies a separate bounded SHA-256 proof only when the exact bundled paid
+subprocess emitted a sanitized receipt on this invocation and the emitted JSON
+matched the resulting sidecar. A conclusive generated/policy receipt upgrades
+the public asset disposition to `confirmed` only when that current-run proof
+matches. The reserved runtime slots cannot be declared as plan steps.
 
 When `safe_no_submit` accompanies a missing receipt and local fallback, the
 audit preserves the degraded provenance but does not claim that the provider
 may have billed the user. A `maybe_accepted`, `receipt`, missing, or malformed
-disposition without a conclusive receipt remains fail-closed: the audit emits
+disposition without a conclusive, current-run-proven receipt remains
+fail-closed: the audit emits
 `PAID_SUBMISSION_STATUS_UNKNOWN`, a sanitized asset-name list, and a static
 instruction to check provider history before starting a replacement. Raw
 fallback output, child failure text, and provider text never cross into the
-verdict.
+verdict. A stale or forged workspace sidecar by itself is reported as
+`RECEIPT_NOT_PROVEN_CURRENT_RUN` and can never become `confirmed`.
 
 Receipt or media evidence for a shot absent from the canonical script is
 reported as `UNEXPECTED_PAID_ASSET` and listed in `unexpected_paid_assets`.
@@ -82,6 +85,10 @@ delivery.
 - `with.runtime.paid_submission_dispositions`: bounded JSON object produced by
   the parent scheduler under its reserved output key. It contains only static
   step IDs and fixed disposition values.
+- `with.runtime.paid_submission_receipt_proofs`: bounded JSON object produced
+  by the parent scheduler under a second reserved output key. It contains only
+  static step IDs and canonical `sha256:<hex>` receipt digests from exact
+  bundled subprocess output captured during this run.
 - `with.runtime.fallback_outputs`: mapping of shot number to the corresponding
   fallback step output. A non-empty value proves that local substitution ran.
 

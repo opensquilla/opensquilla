@@ -74,13 +74,19 @@ from opensquilla.session.compaction_lifecycle import (
     pre_compaction_flush_requires_safe_receipt,
 )
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
-from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus, SessionStatus
+from opensquilla.session.models import (
+    AgentTaskRecord,
+    AgentTaskStatus,
+    MetaControlIntent,
+    SessionStatus,
+)
 from opensquilla.session.naming import (
     generate_session_title,
     is_naming_eligible,
     title_slot_is_empty,
 )
 from opensquilla.session.storage import (
+    MetaControlIntentConflictError,
     SessionStorage,
     StaleEpochError,
     StorageBusyError,
@@ -1964,6 +1970,71 @@ async def _handle_sessions_send(
         if stripped_message is not None:
             provider_message_text = stripped_message.strip()
 
+    durable_meta_control: MetaControlIntent | None = None
+    durable_meta_control_payload: dict[str, Any] | None = None
+    parsed_control: dict[str, str] | None = None
+    get_meta_control = getattr(storage, "get_meta_control_intent", None)
+    if callable(get_meta_control):
+        from opensquilla.engine.steps.meta_command import parse_meta_control_sentinel
+
+        parsed_control = parse_meta_control_sentinel(
+            provider_message_text,
+            semantic_message_text,
+            client_request_id=ingress_identity.client_request_id,
+        )
+        if parsed_control is not None:
+            candidate = await get_meta_control(
+                session_key=key,
+                control_kind=parsed_control["kind"],
+                correlation_id=parsed_control["correlation_id"],
+            )
+            if (
+                isinstance(candidate, MetaControlIntent)
+                and candidate.status == "staged"
+                and (
+                    candidate.control_kind != "manual"
+                    or candidate.meta_skill_name == parsed_control.get("name")
+                )
+            ):
+                durable_meta_control = candidate
+                durable_meta_control_payload = {
+                    "version": 1,
+                    "intent_id": candidate.intent_id,
+                    "kind": candidate.control_kind,
+                    "name": candidate.meta_skill_name,
+                    "correlation_id": candidate.correlation_id,
+                }
+                if candidate.control_kind == "replay":
+                    durable_meta_control_payload.update({
+                        "run_id": candidate.replay_run_id,
+                        "mode": candidate.replay_mode,
+                    })
+        explicit_request_id = any(
+            field in params for field in ("clientRequestId", "client_request_id")
+        )
+        if (
+            parsed_control is not None
+            and durable_meta_control is None
+            and explicit_request_id
+        ):
+            legacy_match = False
+            if parsed_control["kind"] == "manual":
+                from opensquilla.engine.steps.meta_command import pending_meta_launch_peek
+
+                pending_name = pending_meta_launch_peek(
+                    key,
+                    client_request_id=ingress_identity.client_request_id,
+                )
+                legacy_match = pending_name == parsed_control.get("name")
+            if not legacy_match:
+                raise RpcHandlerError(
+                    "META_CONTROL_NOT_STAGED",
+                    "This MetaSkill control is missing, expired, or already belongs to "
+                    "another accepted turn. Start it again from the MetaSkill action.",
+                    retryable=False,
+                    accepted=False,
+                )
+
     def _promote_pending_meta_launch() -> str | None:
         from opensquilla.engine.steps.meta_command import pending_meta_launch_promote
 
@@ -2066,9 +2137,14 @@ async def _handle_sessions_send(
             "surface_id": surface_id,
             "turn_context_intent": "send",
             "turn_context_revision": 1,
+            **(
+                {"meta_control": durable_meta_control_payload}
+                if durable_meta_control_payload is not None
+                else {}
+            ),
         },
     )
-    ingress_turn_context = {
+    ingress_turn_context: dict[str, Any] = {
         "turn_id": turn_id,
         "client_request_id": ingress_identity.client_request_id,
         "client_message_id": client_message_id,
@@ -2076,6 +2152,11 @@ async def _handle_sessions_send(
         "intent": "send",
         "disposition": "queued" if getattr(ctx, "task_runtime", None) is not None else "applied",
         "revision": 1,
+        **(
+            {"meta_control": durable_meta_control_payload}
+            if durable_meta_control_payload is not None
+            else {}
+        ),
     }
 
     task_runtime = task_runtime_candidate
@@ -2086,6 +2167,11 @@ async def _handle_sessions_send(
         or "followup"
     )
     runtime_mode = "interrupt" if requested_mode == "steer" else requested_mode
+    if durable_meta_control is not None:
+        # A control must begin a fresh pipeline turn and must not interrupt
+        # another accepted control. Collect could lose the pipeline marker;
+        # steer/interrupt could make recovered controls cancel one another.
+        runtime_mode = "followup"
     if atomic_intent_plan is not None and atomic_intent_plan.action == "reset":
         # A reset rotates the session identity. Any old-key task must be stopped
         # only after that rotation commits so it cannot append into the new epoch.
@@ -2104,6 +2190,14 @@ async def _handle_sessions_send(
             or callable(getattr(task_runtime, "try_collect_atomically", None))
         )
     )
+
+    if durable_meta_control is not None and not atomic_runtime_acceptance:
+        raise RpcHandlerError(
+            "META_CONTROL_DURABILITY_UNAVAILABLE",
+            "This MetaSkill control requires durable task ingress; retry after Gateway recovery",
+            retryable=True,
+            accepted=False,
+        )
 
     if atomic_runtime_acceptance:
         assert task_runtime is not None
@@ -2178,6 +2272,11 @@ async def _handle_sessions_send(
                     else ()
                 ),
                 merge_into_task=merge_into_task,
+                meta_control_intent_id=(
+                    durable_meta_control.intent_id
+                    if durable_meta_control is not None
+                    else None
+                ),
             )
             if not acceptance.replayed and not merge_into_task:
                 # This synchronous in-memory transition sits strictly after
@@ -2359,6 +2458,14 @@ async def _handle_sessions_send(
             _consumed_file_uuids = []
             raise RpcHandlerError(
                 "IDEMPOTENCY_CONFLICT",
+                str(exc),
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except MetaControlIntentConflictError as exc:
+            _consumed_file_uuids = []
+            raise RpcHandlerError(
+                "META_CONTROL_CONFLICT",
                 str(exc),
                 retryable=False,
                 accepted=False,

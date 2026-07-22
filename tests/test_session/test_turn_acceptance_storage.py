@@ -104,6 +104,145 @@ async def _receipt_rows(storage: SessionStorage) -> list[dict[str, Any]]:
 
 
 @pytest.mark.asyncio
+async def test_meta_control_staging_prunes_only_abandoned_rows_after_30_days(
+    tmp_path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        old, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:old-staged",
+            meta_skill_name="meta-paper-write",
+        )
+        accepted, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:old-accepted",
+            meta_skill_name="meta-paper-write",
+        )
+        await storage.conn.execute(
+            "UPDATE meta_control_intents SET created_at = 1 WHERE intent_id IN (?, ?)",
+            (old.intent_id, accepted.intent_id),
+        )
+        await storage.conn.execute(
+            "UPDATE meta_control_intents SET status = 'accepted' WHERE intent_id = ?",
+            (accepted.intent_id,),
+        )
+        await storage.conn.commit()
+
+        recent, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:recent-staged",
+            meta_skill_name="meta-paper-write",
+        )
+
+        assert await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:old-staged",
+        ) is None
+        assert await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:old-accepted",
+        ) is not None
+        assert await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:recent-staged",
+        ) == recent
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_meta_control_recovery_quarantines_invalid_head_before_claiming_valid(
+    tmp_path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        await storage.upsert_session(_session())
+
+        async def accept_control(index: int) -> AgentTaskRecord:
+            request_id = f"recovery-{index}"
+            message_id = f"recovery-message-{index}"
+            task_id = f"recovery-task-{index}"
+            created_at = 200 + index
+            intent, _ = await storage.stage_meta_control_intent(
+                session_key=SESSION_KEY,
+                control_kind="manual",
+                correlation_id=f"request:{request_id}",
+                meta_skill_name="meta-paper-write",
+            )
+            control = {
+                "version": 1,
+                "intent_id": intent.intent_id,
+                "kind": "manual",
+                "name": "meta-paper-write",
+                "correlation_id": f"request:{request_id}",
+            }
+            entry = TranscriptEntry(
+                session_id=SESSION_ID,
+                session_key=SESSION_KEY,
+                message_id=message_id,
+                role="user",
+                content=f"/meta meta-paper-write -- recovery {index}",
+                created_at=created_at,
+                turn_context={"meta_control": control},
+            )
+            task = AgentTaskRecord(
+                task_id=task_id,
+                session_key=SESSION_KEY,
+                agent_id="main",
+                source_kind="webui",
+                queue_mode="followup",
+                run_kind="web_turn",
+                status=AgentTaskStatus.QUEUED,
+                created_at=created_at,
+                updated_at=created_at,
+                details={
+                    "metadata": {"meta_control": control},
+                    "persisted_user_message_id": message_id,
+                },
+            )
+            await storage.accept_turn(
+                entry,
+                expected_epoch=0,
+                updated_at=created_at,
+                task_record=task,
+                source_scope="webui",
+                request_session_key=SESSION_KEY,
+                client_request_id=request_id,
+                request_fingerprint=f"sha256:{request_id}",
+                meta_control_intent_id=intent.intent_id,
+            )
+            return task
+
+        invalid = await accept_control(0)
+        valid = await accept_control(1)
+        assert await storage.mark_abandoned_agent_tasks(now_ms=300) == 2
+        await storage.conn.execute(
+            "UPDATE agent_tasks SET details = '{}' WHERE task_id = ?",
+            (invalid.task_id,),
+        )
+        await storage.conn.commit()
+
+        claimed = await storage.claim_recoverable_meta_control_tasks(limit=1)
+
+        assert [item.task.task_id for item in claimed] == [valid.task_id]
+        quarantined = await storage.get_agent_task(invalid.task_id)
+        assert quarantined is not None
+        assert quarantined.status == AgentTaskStatus.ABANDONED
+        assert quarantined.terminal_reason == "meta_control_recovery_invalid"
+        assert quarantined.error_class == "MetaControlRecoveryInvalid"
+        assert await storage.claim_recoverable_meta_control_tasks(limit=1) == []
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_accept_turn_commits_message_session_task_and_receipt_together(tmp_path) -> None:
     storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
     try:

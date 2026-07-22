@@ -31,6 +31,14 @@ _LEGACY_PAID_SKILL_NAMES = frozenset({"nano-banana-pro", "seedance-2-prompt"})
 PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY = (
     "__opensquilla_paid_submission_dispositions_v1__"
 )
+# Separate parent-owned channel containing proof that a receipt was emitted by
+# the exact bundled paid subprocess *during this scheduler run*.  The value is
+# never seeded from persisted/workspace output and is stripped before public
+# step output or persistence.  A receipt sidecar is therefore evidence only
+# when its canonical digest matches the proof for its paid step.
+PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY = (
+    "__opensquilla_paid_submission_receipt_proofs_v1__"
+)
 PAID_SUBMISSION_SAFE_NO_SUBMIT = "safe_no_submit"
 PAID_SUBMISSION_MAYBE_ACCEPTED = "maybe_accepted"
 PAID_SUBMISSION_RECEIPT = "receipt"
@@ -42,7 +50,35 @@ _PAID_SUBMISSION_DISPOSITIONS = frozenset(
     }
 )
 _MACHINE_STEP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
+_MACHINE_RECEIPT_PROOF_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _MAX_MACHINE_DISPOSITION_STEPS = 64
+
+
+class PaidReceiptProofText(str):
+    """A normal step-output string carrying parent-private receipt proof.
+
+    ``str`` compatibility keeps the executor/orchestrator protocol stable.
+    The scheduler immediately extracts the proof and stores only a plain
+    string in step outputs, so the attribute never reaches templates,
+    persistence, logs, or public events.
+    """
+
+    _opensquilla_paid_receipt_proof: str
+
+    def __new__(cls, value: str, receipt_proof: str) -> PaidReceiptProofText:
+        instance = super().__new__(cls, value)
+        instance._opensquilla_paid_receipt_proof = receipt_proof
+        return instance
+
+
+class PaidReceiptProofError(RuntimeError):
+    """Executor failure carrying a current-run sanitized receipt digest."""
+
+    _opensquilla_paid_receipt_proof: str
+
+    def __init__(self, message: str, *, receipt_proof: str) -> None:
+        super().__init__(message)
+        self._opensquilla_paid_receipt_proof = receipt_proof
 
 
 def encode_paid_replay_safety(error: str, *, safe_no_submit: bool) -> str:
@@ -90,6 +126,35 @@ def encode_paid_submission_dispositions(
         ):
             sanitized[step_id] = disposition
     return json.dumps(sanitized, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def encode_paid_submission_receipt_proofs(
+    proofs: Mapping[str, object],
+) -> str:
+    """Serialize bounded, secret-free current-run receipt digests."""
+
+    sanitized: dict[str, str] = {}
+    for step_id in sorted(proofs):
+        if len(sanitized) >= _MAX_MACHINE_DISPOSITION_STEPS:
+            break
+        proof = proofs[step_id]
+        if (
+            isinstance(step_id, str)
+            and _MACHINE_STEP_ID_RE.fullmatch(step_id)
+            and isinstance(proof, str)
+            and _MACHINE_RECEIPT_PROOF_RE.fullmatch(proof)
+        ):
+            sanitized[step_id] = proof
+    return json.dumps(sanitized, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+
+def paid_receipt_proof(value: object) -> str | None:
+    """Return a valid machine-attached proof without trusting string text."""
+
+    proof = getattr(value, "_opensquilla_paid_receipt_proof", None)
+    if isinstance(proof, str) and _MACHINE_RECEIPT_PROOF_RE.fullmatch(proof):
+        return proof
+    return None
 
 
 def public_step_error(error: object) -> str:
@@ -296,13 +361,18 @@ def paid_fresh_run_block_reason(*, plan: Any, persisted_steps: Any) -> str | Non
 __all__ = [
     "EXTERNAL_PAID_SUBMIT",
     "PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY",
+    "PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY",
     "PAID_SUBMISSION_MAYBE_ACCEPTED",
     "PAID_SUBMISSION_RECEIPT",
     "PAID_SUBMISSION_SAFE_NO_SUBMIT",
+    "PaidReceiptProofError",
+    "PaidReceiptProofText",
     "SAFE_NO_SUBMIT_EXIT_CODE",
     "encode_paid_submission_dispositions",
+    "encode_paid_submission_receipt_proofs",
     "encode_paid_replay_safety",
     "is_external_paid_step",
+    "paid_receipt_proof",
     "paid_live_replay_block_reason",
     "paid_fresh_run_block_reason",
     "paid_replay_is_safe",

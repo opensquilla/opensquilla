@@ -7,12 +7,25 @@ import type { FoldLiveTurnMode } from './useChatTurnLog'
 import type { Attachment, ChatMessage, ChatRenderedMessage } from '@/types/chat'
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
 import { FINISHED_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
+import {
+  listHiddenControls,
+  type HiddenControlStorage,
+} from '@/utils/chat/hiddenControlOutbox'
 
 const pushToast = vi.hoisted(() => vi.fn())
 
 vi.mock('@/composables/useToasts', () => ({
   useToasts: () => ({ pushToast }),
 }))
+
+function memoryStorage(): HiddenControlStorage {
+  const values = new Map<string, string>()
+  return {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => { values.set(key, value) },
+    removeItem: key => { values.delete(key) },
+  }
+}
 
 function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
   const rpc = {
@@ -65,6 +78,7 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     hasPendingAttachmentWork: () => false,
     enqueuePendingInput: vi.fn(() => true),
     popAllPendingIntoComposer: vi.fn(() => false),
+    hiddenControlStorage: memoryStorage(),
     executeSlashCommand: vi.fn(async () => false),
     closeSlashMenu: vi.fn(),
     autoResizeTextarea: vi.fn(),
@@ -154,6 +168,42 @@ describe('useChatSend attachment payloads', () => {
     expect(accepted.stream.endStreaming).not.toHaveBeenCalled()
   })
 
+  it('does not send a different payload under an existing hidden-control id', async () => {
+    const { api, rpc } = makeOptions()
+    rpc.call.mockRejectedValueOnce(new Error('response lost'))
+    await expect(api.dispatchHiddenSend('/meta first', '/meta first', 'immutable-id'))
+      .resolves.toMatchObject({ status: 'unknown' })
+
+    rpc.call.mockResolvedValue({ sessionKey: 'agent:main:webchat:test' })
+    await expect(api.dispatchHiddenSend('/meta second', '/meta second', 'immutable-id'))
+      .resolves.toMatchObject({ status: 'rejected', reason: 'outbox_conflict' })
+    expect(rpc.call).toHaveBeenCalledOnce()
+  })
+
+  it('drops only explicitly permanent hidden-control RPC rejections', async () => {
+    const permanent = makeOptions()
+    permanent.rpc.call.mockRejectedValue(Object.assign(new Error('invalid'), {
+      accepted: false,
+      retryable: false,
+    }))
+    await permanent.api.dispatchHiddenSend('/meta test', '/meta test', 'permanent-id')
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      permanent.options.hiddenControlStorage,
+    )).toEqual([])
+
+    const retryable = makeOptions()
+    retryable.rpc.call.mockRejectedValue(Object.assign(new Error('busy'), {
+      accepted: false,
+      retryable: true,
+    }))
+    await retryable.api.dispatchHiddenSend('/meta test', '/meta test', 'retryable-id')
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      retryable.options.hiddenControlStorage,
+    )).toHaveLength(1)
+  })
+
   it('coalesces concurrent retries with the same session and ingress id', async () => {
     let resolveSend: ((value: unknown) => void) | undefined
     const pendingSend = new Promise(resolve => { resolveSend = resolve })
@@ -167,6 +217,59 @@ describe('useChatSend attachment payloads', () => {
     expect(rpc.call).toHaveBeenCalledOnce()
     resolveSend?.({ sessionKey: 'agent:main:webchat:test' })
     await expect(first).resolves.toMatchObject({ status: 'accepted' })
+  })
+
+  it('restores a queued hidden control after remount and clears only on acceptance', async () => {
+    const first = makeOptions({ enqueueHiddenControl: vi.fn(() => true) })
+    first.stream.isStreaming.value = true
+    await expect(first.api.dispatchHiddenSend(
+      '/meta-replay 0123456789abcdef0123456789abcdef',
+      'Retry failed step',
+      'durable-replay-request',
+    )).resolves.toMatchObject({ status: 'queued' })
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toHaveLength(1)
+
+    const remounted = makeOptions({
+      hiddenControlStorage: first.options.hiddenControlStorage,
+    })
+    await remounted.api.restoreHiddenControls('agent:main:webchat:test')
+    expect(remounted.rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      clientRequestId: 'durable-replay-request',
+      message: '/meta-replay 0123456789abcdef0123456789abcdef',
+    }))
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toEqual([])
+  })
+
+  it('retains an ambiguous hidden send for an exact-id reconnect retry', async () => {
+    const first = makeOptions()
+    first.rpc.call.mockRejectedValue(new Error('response lost'))
+    await expect(first.api.dispatchHiddenSend(
+      '/meta meta-paper-write -- retained request',
+      '/meta meta-paper-write -- retained request',
+      'ambiguous-meta-request',
+    )).resolves.toMatchObject({ status: 'unknown' })
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toHaveLength(1)
+
+    const reconnected = makeOptions({
+      hiddenControlStorage: first.options.hiddenControlStorage,
+    })
+    await reconnected.api.restoreHiddenControls('agent:main:webchat:test')
+    expect(reconnected.rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      clientRequestId: 'ambiguous-meta-request',
+    }))
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toEqual([])
   })
 
   it('sends the selected sandbox run mode as trusted source metadata', async () => {

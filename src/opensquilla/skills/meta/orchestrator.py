@@ -100,6 +100,33 @@ slog = structlog.get_logger(__name__)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _META_RUN_INPUT_KEY = "meta_run_id"
 _SAFE_META_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+_PRIVATE_CURRENT_RUN_INPUT_KEYS = frozenset(
+    {
+        "paid_submission_receipt_proofs",
+        "__opensquilla_paid_submission_receipt_proofs_v1__",
+    }
+)
+
+
+def _persistence_safe_step_inputs(value: Any) -> Any:
+    """Remove current-process-only machine evidence before run persistence.
+
+    The delivery audit receives receipt proofs through its in-memory rendered
+    input, but those digests must not become replay material or history data.
+    Preserve the rest of the nested input shape for ordinary diagnostics.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            key: _persistence_safe_step_inputs(item)
+            for key, item in value.items()
+            if str(key) not in _PRIVATE_CURRENT_RUN_INPUT_KEYS
+        }
+    if isinstance(value, list):
+        return [_persistence_safe_step_inputs(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_persistence_safe_step_inputs(item) for item in value)
+    return value
 
 
 def _safe_meta_run_id(value: Any = "") -> str:
@@ -677,7 +704,7 @@ class MetaOrchestrator:
                 run_id=run_id,
                 step=step,
                 effective_skill=effective_skill,
-                rendered_inputs=rendered_inputs,
+                rendered_inputs=_persistence_safe_step_inputs(rendered_inputs),
             )
 
         async def on_step_finish(

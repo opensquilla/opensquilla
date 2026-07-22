@@ -39,6 +39,15 @@ _POST_INSTALL_TIMEOUT_SECONDS = 600.0
 _INSTALL_LOCK_TIMEOUT_SECONDS = 900.0
 _SAFE_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _PAYLOAD_MANIFEST_VERSION = 1
+_PAPER_CJK_LINEBREAK_LINES = (
+    r'\XeTeXlinebreaklocale "zh"',
+    r"\XeTeXlinebreakskip = 0pt plus 1pt",
+)
+_PAPER_CJK_WRAP_PROBE = (
+    "受管工具链必须为连续中文正文提供自然断点并保持页面边界。"
+    "这段文字用于覆盖真实论文中的中文短语、常用标点、引用说明与排版检查，"
+    "任何缺字、严重越界或未解析引用都必须阻止安装被标记为可用。"
+)
 
 ProgressCallback = Callable[[int, int], None]
 ProbeCallback = Callable[[ToolchainDescriptor, Path, tuple[Path, ...]], bool | None]
@@ -702,6 +711,91 @@ def _run_checked(
     return completed
 
 
+def _validate_paper_probe_quality(
+    probe_root: Path,
+    final_xelatex: subprocess.CompletedProcess[bytes],
+) -> None:
+    """Reject a TeX closure that compiles but degrades real CJK output."""
+
+    quality_log = (final_xelatex.stdout + final_xelatex.stderr).decode(
+        "utf-8", errors="replace"
+    )
+    paper_log = probe_root / "paper.log"
+    if paper_log.is_file():
+        quality_log += "\n" + paper_log.read_text(encoding="utf-8", errors="replace")
+    missing_glyphs = sorted(
+        set(re.findall(r"^Missing character:.*$", quality_log, re.MULTILINE))
+    )
+    severe_overfull = [
+        float(value)
+        for value in re.findall(
+            r"Overfull \\hbox \((\d+(?:\.\d+)?)pt too wide\)",
+            quality_log,
+        )
+        if float(value) >= 20.0
+    ]
+    unresolved = sorted(
+        {
+            line.strip()
+            for line in quality_log.splitlines()
+            if re.search(
+                r"LaTeX Warning: (?:Citation|Reference) .+ undefined|"
+                r"There were undefined references",
+                line,
+            )
+        }
+    )
+    if not (missing_glyphs or severe_overfull or unresolved):
+        return
+    details: list[str] = ["Paper toolchain output-quality smoke test failed"]
+    if missing_glyphs:
+        details.append(f"missing glyph warnings: {len(missing_glyphs)}")
+    if severe_overfull:
+        details.append(
+            f"layout overflow: max={max(severe_overfull):.2f}pt threshold=20.00pt"
+        )
+    if unresolved:
+        details.append(f"unresolved references: {len(unresolved)}")
+    raise ToolchainProbeError("; ".join(details))
+
+
+def _validate_paper_probe_source(source: str) -> None:
+    if any(line not in source for line in _PAPER_CJK_LINEBREAK_LINES):
+        raise ToolchainProbeError("Paper toolchain smoke test is missing CJK line breaking")
+    probe_lines = [line for line in source.splitlines() if _PAPER_CJK_WRAP_PROBE in line]
+    if probe_lines != [_PAPER_CJK_WRAP_PROBE]:
+        raise ToolchainProbeError(
+            "Paper toolchain smoke test must contain one uninterrupted CJK wrap probe"
+        )
+
+
+def _paper_probe_source() -> str:
+    source = r"""\documentclass{article}
+\usepackage{fontspec}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\setmainfont[FontIndex=2]{NotoSansCJK-Regular.ttc}
+\XeTeXlinebreaklocale "zh"
+\XeTeXlinebreakskip = 0pt plus 1pt
+\begin{document}
+\section{Capability smoke test}
+__OPENSQUILLA_CJK_WRAP_PROBE__
+The identity $e^{i\pi}+1=0$ is cited here~\cite{smoke}.
+
+第二个自然段再次验证中文换行。
+下载校验、字体发现、参考文献解析、数学公式、表格环境和超链接必须在同一个离线能力探针中协同工作；
+如果编译日志出现缺字、严重越界或未解析引用，安装就不能被标记为可用。
+\begin{tabular}{lr}\toprule Item & Value\\\midrule Test & 1\\\bottomrule\end{tabular}
+\bibliographystyle{plain}
+\bibliography{refs}
+\end{document}
+""".replace("__OPENSQUILLA_CJK_WRAP_PROBE__", _PAPER_CJK_WRAP_PROBE)
+    _validate_paper_probe_source(source)
+    return source
+
+
 def _paper_capability(
     descriptor: ToolchainDescriptor,
     payload: Path,
@@ -743,24 +837,7 @@ def _paper_capability(
 
     with tempfile.TemporaryDirectory(prefix="opensquilla-paper-probe-") as temp_name:
         probe_root = Path(temp_name)
-        (probe_root / "paper.tex").write_text(
-            r"""\documentclass{article}
-\usepackage{fontspec}
-\usepackage{amsmath}
-\usepackage{booktabs}
-\usepackage{geometry}
-\usepackage{hyperref}
-\setmainfont[FontIndex=2]{NotoSansCJK-Regular.ttc}
-\begin{document}
-\section{Capability smoke test}
-中文论文编译测试。The identity $e^{i\pi}+1=0$ is cited here~\cite{smoke}.
-\begin{tabular}{lr}\toprule Item & Value\\\midrule Test & 1\\\bottomrule\end{tabular}
-\bibliographystyle{plain}
-\bibliography{refs}
-\end{document}
-""",
-            encoding="utf-8",
-        )
+        (probe_root / "paper.tex").write_text(_paper_probe_source(), encoding="utf-8")
         (probe_root / "refs.bib").write_text(
             "@book{smoke, title={OpenSquilla Smoke Test}, author={Example, Ada}, year={2026}}\n",
             encoding="utf-8",
@@ -793,13 +870,14 @@ def _paper_capability(
             timeout=120,
             label="XeLaTeX bibliography smoke test",
         )
-        _run_checked(
+        final_xelatex = _run_checked(
             xelatex,
             cwd=probe_root,
             env=env,
             timeout=120,
             label="XeLaTeX final smoke test",
         )
+        _validate_paper_probe_quality(probe_root, final_xelatex)
         if not (probe_root / "paper.pdf").is_file():
             raise ToolchainProbeError("Paper toolchain smoke test did not produce a PDF")
 

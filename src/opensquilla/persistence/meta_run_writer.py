@@ -59,6 +59,12 @@ _REPLAY_INPUTS_MODIFIED_FIELD = "inputs_json_modified"
 _LEGACY_REDACTION_OVERFLOW_KEY = "_redaction_overflow"
 _REDACTION_MARKER = "[REDACTED]"
 _REDACTION_CLIP_SUFFIX = "…"
+_CURRENT_RUN_ONLY_INPUT_KEYS = frozenset(
+    {
+        "paid_submission_receipt_proofs",
+        "__opensquilla_paid_submission_receipt_proofs_v1__",
+    }
+)
 # Crockford Base32 — no I, L, O, U
 _BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
@@ -68,6 +74,22 @@ _BASE32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _ULID_LOCK = threading.Lock()
 _ULID_LAST_TS_MS: int = -1
 _ULID_LAST_RAND: int = 0
+
+
+def _drop_current_run_machine_evidence(value: Any) -> Any:
+    """Remove ephemeral receipt proof material from persistence payloads."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _drop_current_run_machine_evidence(item)
+            for key, item in value.items()
+            if str(key) not in _CURRENT_RUN_ONLY_INPUT_KEYS
+        }
+    if isinstance(value, list):
+        return [_drop_current_run_machine_evidence(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_drop_current_run_machine_evidence(item) for item in value)
+    return value
 _ULID_RAND_MAX = (1 << 80) - 1
 
 
@@ -671,7 +693,10 @@ class MetaRunWriter:
         effective_skill: str,
         rendered_inputs: Mapping[str, Any],
     ) -> None:
-        rendered_json = _redact_inputs_json(rendered_inputs, max_bytes=self._max_field_bytes)
+        rendered_json = _redact_inputs_json(
+            _drop_current_run_machine_evidence(rendered_inputs),
+            max_bytes=self._max_field_bytes,
+        )
         try:
             with self._lock:
                 self._conn.execute(

@@ -22,6 +22,15 @@ _SECTION_NAMES = (
     "discussion",
     "conclusion",
 )
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
+_XETEX_CJK_LINEBREAK_LINES = (
+    r'\XeTeXlinebreaklocale "zh"',
+    r"\XeTeXlinebreakskip = 0pt plus 1pt",
+)
+_XETEX_CJK_LINEBREAK_COMMAND_RE = re.compile(
+    r"^[ \t]*\\XeTeXlinebreak(?:locale|skip)\b[^\r\n]*(?:\r?\n|\Z)",
+    re.MULTILINE,
+)
 
 
 class PaperArtifactError(RuntimeError):
@@ -183,6 +192,32 @@ def _latex_escape(text: str) -> str:
     )
 
 
+def _ensure_xetex_cjk_line_breaking(tex: str) -> str:
+    """Install a dependency-free, deterministic CJK line-breaking preamble.
+
+    The managed TinyTeX closure includes XeTeX and ``fontspec`` but deliberately
+    does not fetch optional packages at runtime. XeTeX's built-in locale and
+    glue primitives provide natural line-break opportunities between CJK
+    characters without ``xeCJK``, ``ctex``, or a ``tlmgr`` network update.
+    Place the canonical settings at the end of the preamble so a generated
+    manuscript cannot accidentally leave an earlier incompatible setting in
+    effect.
+    """
+
+    if _CJK_RE.search(tex) is None:
+        return tex
+    begin_document = tex.find(r"\begin{document}")
+    if begin_document < 0:
+        raise PaperArtifactError(
+            "COMPILE_FAILED: CJK manuscript found but LaTeX preamble is missing"
+        )
+    preamble = _XETEX_CJK_LINEBREAK_COMMAND_RE.sub("", tex[:begin_document])
+    if preamble and not preamble.endswith("\n"):
+        preamble += "\n"
+    block = "\n".join(_XETEX_CJK_LINEBREAK_LINES) + "\n"
+    return preamble + block + tex[begin_document:]
+
+
 def assemble_manuscript_tex(payload: Mapping[str, Any]) -> str:
     """Assemble persisted section fragments into the run-owned manuscript."""
 
@@ -214,8 +249,8 @@ def assemble_manuscript_tex(payload: Mapping[str, Any]) -> str:
         title_match.group(1).strip() if title_match else topic_fallback
     ) or topic_fallback
     title_tex = _latex_escape(raw_title)
-    any_cjk = re.search(r"[一-鿿]", raw_title) is not None or any(
-        re.search(r"[一-鿿]", value) for value in section_text.values()
+    any_cjk = _CJK_RE.search(raw_title) is not None or any(
+        _CJK_RE.search(value) for value in section_text.values()
     )
     preamble = [
         r"\documentclass{article}",
@@ -223,6 +258,7 @@ def assemble_manuscript_tex(payload: Mapping[str, Any]) -> str:
         r"\setmainfont[FontIndex=2]{NotoSansCJK-Regular.ttc}"
         if any_cjk
         else r"% no CJK font",
+        *(_XETEX_CJK_LINEBREAK_LINES if any_cjk else ()),
         r"\usepackage{graphicx}",
         r"\usepackage{booktabs}",
         r"\usepackage{amsmath,amssymb}",
@@ -525,13 +561,13 @@ def _prepare_tex(tex_body: str) -> str:
         r"\\setmainfont[FontIndex=2]{NotoSansCJK-Regular.ttc}",
         tex_body,
     )
-    if re.search(r"[一-鿿]", tex_body) and "fontspec" not in tex_body:
+    if _CJK_RE.search(tex_body) and "fontspec" not in tex_body:
         tex_body = tex_body.replace(
             r"\documentclass{article}",
             r"\documentclass{article}" + "\n" + r"\usepackage{fontspec}",
             1,
         )
-    if re.search(r"[一-鿿]", tex_body) and "setmainfont" not in tex_body:
+    if _CJK_RE.search(tex_body) and "setmainfont" not in tex_body:
         tex_body = tex_body.replace(
             r"\usepackage{fontspec}",
             r"\usepackage{fontspec}"
@@ -571,6 +607,7 @@ def _prepare_tex(tex_body: str) -> str:
                 "COMPILE_FAILED: algorithm environment found but preamble is missing"
             )
         tex_body = tex_body[:begin_document] + insertion + tex_body[begin_document:]
+    tex_body = _ensure_xetex_cjk_line_breaking(tex_body)
     return _scrub_placeholder_table_cells(tex_body)
 
 

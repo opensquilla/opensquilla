@@ -1,0 +1,53 @@
+name: Managed Toolchain Artifact E2E
+
+"on":
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/managed-toolchain-artifacts.yml"
+      - "scripts/validate_managed_toolchain_artifacts.py"
+      - "src/opensquilla/skills/toolchains/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64 real artifacts
+            runner: ubuntu-24.04
+          - label: macOS real artifacts
+            runner: macos-14
+          - label: Windows x64 real artifacts
+            runner: windows-2022
+    env:
+      OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT: ${{ runner.temp }}/opensquilla-managed-toolchains
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install runtime dependencies
+        run: uv sync --frozen
+
+      - name: Validate real pinned archives and capability smokes
+        run: uv run --frozen python scripts/validate_managed_toolchain_artifacts.py

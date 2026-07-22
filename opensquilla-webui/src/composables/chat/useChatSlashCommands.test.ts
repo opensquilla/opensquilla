@@ -65,10 +65,12 @@ describe('useChatSlashCommands MetaSkill readiness', () => {
     expect(call).toHaveBeenCalledWith('meta.run', {
       name: 'meta-paper-write',
       sessionKey: 'agent:main:test',
+      clientRequestId: expect.any(String),
     })
     expect(dispatchHidden).toHaveBeenCalledWith(
       '/meta meta-paper-write -- Write a ten-page paper\nwith real cited sources',
       '/meta meta-paper-write -- Write a ten-page paper\nwith real cited sources',
+      expect.any(String),
     )
   })
 
@@ -122,6 +124,7 @@ describe('useChatSlashCommands MetaSkill readiness', () => {
     expect(call).toHaveBeenCalledWith('meta.run', {
       name: 'meta-paper-write',
       sessionKey: 'agent:main:test',
+      clientRequestId: expect.any(String),
     })
     expect(notify).toHaveBeenCalledOnce()
     expect(notify.mock.calls[0][0]).toContain('xelatex, bibtex')
@@ -174,6 +177,7 @@ describe('useChatSlashCommands MetaSkill readiness', () => {
     expect(call).toHaveBeenCalledWith('meta.run', {
       name: 'meta-paper-write',
       sessionKey: 'agent:main:test',
+      clientRequestId: expect.any(String),
     })
     expect(dispatchHidden).not.toHaveBeenCalled()
     expect(requestMetaSetup).not.toHaveBeenCalled()

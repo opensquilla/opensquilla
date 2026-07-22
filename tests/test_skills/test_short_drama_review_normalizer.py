@@ -72,13 +72,13 @@ def test_explicit_approval_proceeds_without_overrides(review: str) -> None:
         ("Change to 4 shots and make the ending warmer", "4"),
     ],
 )
-def test_meaningful_adjustment_proceeds_and_preserves_request(
+def test_meaningful_adjustment_requires_revision_and_preserves_request(
     review: str,
     shot_count: str,
 ) -> None:
     fields = _fields(normalizer.normalize_review({"review": review}))
 
-    assert fields["DECISION"] == "proceed"
+    assert fields["DECISION"] == "revise"
     assert fields["CONSENT_BASIS"] == "meaningful_adjustment"
     assert fields["HAS_OVERRIDES"] == "yes"
     assert fields["NEW_N_SHOTS"] == shot_count
@@ -220,7 +220,7 @@ def test_external_transfer_refusal_overrides_approval_and_adjustments(review: st
 def test_ordinary_local_edits_do_not_trigger_privacy_hold(review: str) -> None:
     fields = _fields(normalizer.normalize_review({"review": review}))
 
-    assert fields["DECISION"] == "proceed"
+    assert fields["DECISION"] == "revise"
     assert fields["CONSENT_BASIS"] == "meaningful_adjustment"
     assert fields["HAS_OVERRIDES"] == "yes"
     assert fields["NEW_NOTES"] == review
@@ -266,3 +266,86 @@ def test_untrusted_decision_text_cannot_smuggle_proceed_into_hold_output() -> No
     assert "proceed" not in "\n".join(
         value for key, value in fields.items() if key != "DECISION"
     )
+
+
+def test_adjustment_alone_never_becomes_media_approval() -> None:
+    fields = _fields(
+        normalizer.normalize_review(
+            {
+                "phase": "media_approval",
+                "review": "改成 7 个分镜，结尾更温暖",
+                "confirmation": "",
+            }
+        )
+    )
+
+    assert fields["DECISION"] == "hold"
+    assert fields["CONSENT_BASIS"] == "revision_confirmation_required"
+    assert fields["HAS_OVERRIDES"] == "no"
+
+
+def test_media_approval_keeps_single_gate_explicit_approval_path() -> None:
+    fields = _fields(
+        normalizer.normalize_review(
+            {
+                "phase": "media_approval",
+                "review": "继续生成",
+                "confirmation": "",
+            }
+        )
+    )
+
+    assert fields["DECISION"] == "proceed"
+    assert fields["CONSENT_BASIS"] == "explicit_approval"
+    assert fields["HAS_OVERRIDES"] == "no"
+
+
+@pytest.mark.parametrize("confirmation", ["继续生成", "approve", "proceed"])
+def test_revised_preview_requires_and_accepts_new_explicit_approval(
+    confirmation: str,
+) -> None:
+    adjustment = "改成 7 个分镜，结尾更温暖"
+    fields = _fields(
+        normalizer.normalize_review(
+            {
+                "phase": "media_approval",
+                "review": adjustment,
+                "confirmation": confirmation,
+            }
+        )
+    )
+
+    assert fields["DECISION"] == "proceed"
+    assert fields["CONSENT_BASIS"] == "explicit_approval_after_revision"
+    assert fields["HAS_OVERRIDES"] == "yes"
+    assert fields["NEW_N_SHOTS"] == "7"
+    assert fields["NEW_NOTES"] == adjustment
+
+
+@pytest.mark.parametrize(
+    ("confirmation", "decision", "basis"),
+    [
+        ("取消", "cancel", "explicit_cancel"),
+        ("cancel", "cancel", "explicit_cancel"),
+        ("镜头2再快一点", "hold", "revision_confirmation_required"),
+        ("谢谢", "hold", "revision_confirmation_required"),
+    ],
+)
+def test_revision_confirmation_cancel_and_non_approval_fail_closed(
+    confirmation: str,
+    decision: str,
+    basis: str,
+) -> None:
+    fields = _fields(
+        normalizer.normalize_review(
+            {
+                "phase": "media_approval",
+                "review": "风格改成水墨",
+                "confirmation": confirmation,
+            }
+        )
+    )
+
+    assert fields["DECISION"] == decision
+    assert fields["CONSENT_BASIS"] == basis
+    assert fields["HAS_OVERRIDES"] == "no"

@@ -59,7 +59,8 @@ recoverable through Retry and never silently degrades the requested output.
   the current Homebrew `ffmpeg-full` formula plus a pinned Noto CJK font. That
   formula and its dependencies are external Homebrew state and are not removed
   by OpenSquilla.
-- Real image/video generation currently resolves the OpenRouter capability from
+- Real image/audio/video generation for `meta-short-drama` and
+  `AwesomeWebpageMetaSkill` currently resolves the OpenRouter capability from
   the existing provider configuration: an active OpenRouter deployment, a saved
   secondary `llm_profiles.openrouter` connection, the legacy image-provider
   connection, or the canonical provider environment. If none is ready, Web chat
@@ -67,13 +68,18 @@ recoverable through Retry and never silently degrades the requested output.
   provider settings editor. Adding OpenRouter while another provider is primary
   saves a secondary profile; it does not switch the primary model or enable
   cross-provider routing. Saving a connection does not generate media or incur a
-  generation charge. The short-drama review gate remains the explicit boundary
-  before paid provider submits. Only secret-free readiness and provenance labels
-  enter run/UI data; execution receives one volatile provider/key/endpoint/proxy
-  tuple scoped to the exact bundled media child. The setup contract carries
+  generation charge. Each workflow has an explicit boundary before paid
+  provider submits. Short-drama revisions require another preview and approval;
+  AwesomeWebpage accepts only its exact provider-send-and-cost approval choice,
+  with no default or natural-language prefill, and treats edits/ambiguous notes
+  as not approved. Only secret-free readiness and provenance labels enter run/UI data;
+  execution receives one volatile provider/key/endpoint/proxy tuple scoped to
+  the exact bundled media child. The setup contract carries
   provider and capability identifiers rather than an OpenRouter-specific UI
   shape, so a future media adapter can add another provider without creating a
-  separate short-drama settings area.
+  separate workflow-specific settings area. Capability requirements carry an
+  ordered list of code-owned provider candidates and a profile preference;
+  OpenRouter is the only currently implemented candidate.
 
 Pinned downloads disclose source, license, version, and verified bytes before
 installation. Homebrew's floating formula discloses only OpenSquilla's pinned

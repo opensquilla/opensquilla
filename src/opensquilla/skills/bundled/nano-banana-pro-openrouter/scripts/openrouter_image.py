@@ -16,6 +16,13 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+SAFE_NO_SUBMIT_EXIT_CODE = 78
+META_CAPABILITY_LEASE_REQUIRED_ENV = "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED"
+META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
+META_CAPABILITY_API_KEY_ENV = "OPENSQUILLA_META_CAPABILITY_API_KEY"
+META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
+META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
+
 
 def _emit(label: str, payload: dict[str, Any]) -> None:
     print(f"{label}: {json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}")
@@ -364,6 +371,38 @@ def _same_origin(url: str, *, base_url: str) -> bool:
     return parsed.scheme == base.scheme and parsed.netloc == base.netloc
 
 
+def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
+    """Resolve a MetaSkill lease or the direct-CLI compatibility inputs."""
+
+    lease_required = os.environ.get(META_CAPABILITY_LEASE_REQUIRED_ENV) == "1"
+    if lease_required:
+        provider = os.environ.get(META_CAPABILITY_PROVIDER_ENV, "").strip().lower()
+        if provider != "openrouter":
+            return "", "", "", True
+        return (
+            os.environ.get(META_CAPABILITY_API_KEY_ENV, "").strip(),
+            os.environ.get(META_CAPABILITY_BASE_URL_ENV, "").strip().rstrip("/"),
+            os.environ.get(META_CAPABILITY_PROXY_ENV, "").strip(),
+            True,
+        )
+    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
+    return (
+        args.api_key.strip() or os.environ.get(api_key_env, ""),
+        args.base_url.strip().rstrip("/"),
+        "",
+        False,
+    )
+
+
+def _open_url(request: urllib.request.Request, *, timeout: float, proxy: str):
+    if not proxy:
+        return urllib.request.urlopen(request, timeout=timeout)
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+    )
+    return opener.open(request, timeout=timeout)
+
+
 def _extract_image_url(data: dict[str, Any]) -> str | None:
     for choice in data.get("choices") or []:
         message = choice.get("message") or {}
@@ -384,7 +423,13 @@ def _extract_image_url(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _decode_image(url: str, api_key: str, *, base_url: str) -> tuple[str, bytes]:
+def _decode_image(
+    url: str,
+    api_key: str,
+    *,
+    base_url: str,
+    proxy: str = "",
+) -> tuple[str, bytes]:
     if url.startswith("data:"):
         prefix, sep, encoded = url.partition(",")
         if not sep or ";base64" not in prefix:
@@ -399,7 +444,7 @@ def _decode_image(url: str, api_key: str, *, base_url: str) -> tuple[str, bytes]
             else {}
         )
         req = urllib.request.Request(resolved_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=45) as resp:
+        with _open_url(req, timeout=45, proxy=proxy) as resp:
             mime = resp.headers.get_content_type() or "image/png"
             return mime, resp.read()
     raise RuntimeError("unsupported_image_url")
@@ -452,6 +497,7 @@ def _generate_one(
     output_dir: Path,
     local_path_prefix: str,
     resolution: str,
+    proxy: str,
 ) -> dict[str, Any]:
     payload = {
         "model": model,
@@ -472,12 +518,17 @@ def _generate_one(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
+        with _open_url(req, timeout=90, proxy=proxy) as resp:
             data = json.loads(resp.read().decode("utf-8"))
         image_url = _extract_image_url(data)
         if not image_url:
             raise RuntimeError("provider_returned_no_image")
-        mime, image_bytes = _decode_image(image_url, api_key, base_url=base_url)
+        mime, image_bytes = _decode_image(
+            image_url,
+            api_key,
+            base_url=base_url,
+            proxy=proxy,
+        )
         if not mime.startswith("image/") or len(image_bytes) < 1024:
             raise RuntimeError("invalid_image_payload")
         ext = _extension_for_mime(mime)
@@ -554,8 +605,7 @@ def main() -> int:
     parser.add_argument("--local-path-prefix", default="project/assets/images")
     args = parser.parse_args()
 
-    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
-    api_key = args.api_key.strip() or os.environ.get(api_key_env, "")
+    api_key, base_url, proxy, lease_required = _runtime_connection(args)
     replacement_slot = (
         f"{args.local_path_prefix.rstrip('/')}/replace-with-generated-image.png"
     )
@@ -568,17 +618,31 @@ def main() -> int:
                 "replacement_slot": replacement_slot,
             },
         )
-        return 0
+        return SAFE_NO_SUBMIT_EXIT_CODE if lease_required else 0
     if not api_key:
         _emit(
             "IMAGE_CONFIG_NEEDED",
             {
-                "missing": [api_key_env],
+                "missing": [
+                    "provider_connection:openrouter"
+                    if lease_required
+                    else (args.api_key_env.strip() or "OPENROUTER_API_KEY")
+                ],
                 "reason": "missing_api_key",
                 "replacement_slot": replacement_slot,
             },
         )
-        return 0
+        return SAFE_NO_SUBMIT_EXIT_CODE if lease_required else 0
+    if not base_url:
+        _emit(
+            "IMAGE_CONFIG_NEEDED",
+            {
+                "missing": ["provider_endpoint:openrouter"],
+                "reason": "missing_provider_endpoint",
+                "replacement_slot": replacement_slot,
+            },
+        )
+        return SAFE_NO_SUBMIT_EXIT_CODE if lease_required else 0
 
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -626,11 +690,12 @@ def main() -> int:
                     slot_id=job["slot_id"],
                     prompt=job["prompt"],
                     model=args.model.strip(),
-                    base_url=args.base_url.rstrip("/"),
+                    base_url=base_url,
                     api_key=api_key,
                     output_dir=output_dir,
                     local_path_prefix=args.local_path_prefix,
                     resolution=args.resolution,
+                    proxy=proxy,
                 ),
                 jobs,
             )

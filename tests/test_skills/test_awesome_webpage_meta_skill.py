@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+from argparse import Namespace
 from pathlib import Path
 
 import yaml
@@ -147,9 +148,8 @@ def test_awesome_webpage_config_contract_keeps_runtime_values_in_config() -> Non
     fm = _frontmatter()
     cfg = fm["config"]["awesome_webpage"]
 
-    assert cfg["provider"] == "openrouter"
-    assert cfg["openrouter"]["api_key"] is None
-    assert cfg["openrouter"]["api_key_env"] == "OPENROUTER_API_KEY"
+    assert "provider" not in cfg
+    assert set(cfg["openrouter"]) == {"models"}
     assert set(cfg["openrouter"]["models"]) == {
         "page_generation",
         "image_generation",
@@ -197,6 +197,7 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
         "ask_audio",
         "ask_video",
         "ask_style",
+        "media_provider_approval",
     ]
     assert cfg["media_strategy"]["aigc_policy"] == "search_images_direct_generate_audio_video"
 
@@ -267,11 +268,17 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
     assert "outputs.media_slots_normalize | truncate(2200)" in audio_script_task
     assert steps["audio_aigc"]["kind"] == "skill_exec"
     assert steps["video_aigc"]["kind"] == "skill_exec"
-    assert steps["audio_aigc"]["depends_on"] == ["audio_script"]
+    assert steps["audio_aigc"]["depends_on"] == [
+        "audio_script",
+        "media_provider_approval",
+    ]
     assert "payload" in steps["audio_aigc"]["with"]
     assert "outputs.audio_script | tojson" in steps["audio_aigc"]["with"]["payload"]
     assert "Generate the narration" not in str(steps["audio_aigc"]["with"])
-    assert steps["video_aigc"]["depends_on"] == ["page_outline"]
+    assert steps["video_aigc"]["depends_on"] == [
+        "page_outline",
+        "media_provider_approval",
+    ]
     assert "outputs.media_strategy" not in steps["audio_aigc"]["when"]
     assert "outputs.media_strategy" not in steps["video_aigc"]["when"]
     image_aigc_when = steps["image_aigc"]["when"]
@@ -281,9 +288,10 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
     assert "include_video" in steps["video_aigc"]["when"]
     assert "include_audio" in steps["audio_aigc"]["when"]
     assert "include_images" in steps["image_aigc"]["when"]
-    assert "api_key" in steps["image_aigc"]["with"]
-    assert "api_key" in steps["audio_aigc"]["with"]
-    assert "api_key" in steps["video_aigc"]["with"]
+    for step_id in ("image_aigc", "audio_aigc", "video_aigc"):
+        assert {"api_key", "api_key_env", "base_url"}.isdisjoint(
+            steps[step_id]["with"]
+        )
     assert "video_aigc" not in steps["webpage_generation"]["depends_on"]
     assert "media_slots_normalize" in steps["webpage_generation"]["depends_on"]
     assert "media_manifest_normalize" not in steps["webpage_generation"]["depends_on"]
@@ -369,6 +377,7 @@ def test_awesome_webpage_media_strategy_covers_video_and_required_modalities() -
         "media_strategy",
         "image_download",
         "media_slots_normalize",
+        "media_provider_approval",
     ]
     image_payload = steps["image_aigc"]["with"]["payload"]
     assert "media_slots" in image_payload
@@ -428,6 +437,9 @@ def test_image_aigc_runs_when_search_download_produces_no_images() -> None:
     inputs = {
         "collected": {
             "ask_images": {"include_images": "YES"},
+            "media_provider_approval": {
+                "approval": "APPROVE_MEDIA_SEND_AND_COST",
+            },
         },
     }
 
@@ -470,7 +482,14 @@ def test_image_aigc_runs_when_search_download_produces_no_images() -> None:
     )
     assert not evaluate_when(
         when,
-        inputs={"collected": {"ask_images": {"include_images": "NO"}}},
+        inputs={
+            "collected": {
+                "ask_images": {"include_images": "NO"},
+                "media_provider_approval": {
+                    "approval": "APPROVE_MEDIA_SEND_AND_COST",
+                },
+            }
+        },
         outputs={
             "media_strategy": "IMAGE_SEARCH_READY",
             "image_download": "",
@@ -539,23 +558,21 @@ def test_awesome_webpage_media_entrypoints_are_code_backed(tmp_path: Path) -> No
     assert image.entrypoint is not None
     assert image.entrypoint["command"] == "python {baseDir}/scripts/openrouter_image.py"
     assert "--api-key" not in image.entrypoint["args"]
-    assert "--api-key-env" in image.entrypoint["args"]
-    assert image.entrypoint["env"][
-        "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
-    ] == (
-        "{{ with.api_key | default('') }}"
-    )
+    assert "--api-key-env" not in image.entrypoint["args"]
+    assert "--base-url" not in image.entrypoint["args"]
+    assert image.entrypoint["env"] == {
+        "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED": "1"
+    }
 
     assert audio is not None
     assert audio.entrypoint is not None
     assert audio.entrypoint["command"] == "python {baseDir}/scripts/openrouter_audio.py"
     assert "--api-key" not in audio.entrypoint["args"]
-    assert "--api-key-env" in audio.entrypoint["args"]
-    assert audio.entrypoint["env"][
-        "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
-    ] == (
-        "{{ with.api_key | default('') }}"
-    )
+    assert "--api-key-env" not in audio.entrypoint["args"]
+    assert "--base-url" not in audio.entrypoint["args"]
+    assert audio.entrypoint["env"] == {
+        "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED": "1"
+    }
     assert audio.entrypoint["parse"] == "text"
 
     assert video is not None
@@ -564,12 +581,11 @@ def test_awesome_webpage_media_entrypoints_are_code_backed(tmp_path: Path) -> No
         "python {baseDir}/scripts/openrouter_video.py"
     )
     assert "--api-key" not in video.entrypoint["args"]
-    assert "--api-key-env" in video.entrypoint["args"]
-    assert video.entrypoint["env"][
-        "{{ with.api_key_env | default('OPENROUTER_API_KEY') }}"
-    ] == (
-        "{{ with.api_key | default('') }}"
-    )
+    assert "--api-key-env" not in video.entrypoint["args"]
+    assert "--base-url" not in video.entrypoint["args"]
+    assert video.entrypoint["env"] == {
+        "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED": "1"
+    }
     assert video.entrypoint["parse"] == "text"
 
 
@@ -699,8 +715,9 @@ def test_openrouter_video_resolves_relative_polling_url(
         method: str = "GET",
         body: dict[str, object] | None = None,
         timeout: float = 60.0,
+        proxy: str = "",
     ) -> dict[str, object]:
-        del body, timeout
+        del body, timeout, proxy
         assert key == "sk-or-test"
         requests.append((method, url))
         if method == "POST":
@@ -720,8 +737,9 @@ def test_openrouter_video_resolves_relative_polling_url(
         key: str,
         base_url: str,
         timeout: float = 120.0,
+        proxy: str = "",
     ) -> bytes:
-        del key, base_url, timeout
+        del key, base_url, timeout, proxy
         assert url == "https://storage.example/video.mp4"
         return b"video-bytes"
 
@@ -971,6 +989,97 @@ def test_openrouter_media_entrypoints_return_config_needed_without_key(
     assert not video.stderr
 
 
+def test_openrouter_media_entrypoints_fail_safe_before_submit_without_meta_lease(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    for name in (
+        "OPENROUTER_API_KEY",
+        "OPENSQUILLA_META_CAPABILITY_PROVIDER",
+        "OPENSQUILLA_META_CAPABILITY_API_KEY",
+        "OPENSQUILLA_META_CAPABILITY_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    env = {
+        **os.environ,
+        "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED": "1",
+    }
+    cases = (
+        (
+            BUNDLED / "nano-banana-pro-openrouter" / "scripts" / "openrouter_image.py",
+            "google/gemini-3-pro-image-preview",
+            "IMAGE_CONFIG_NEEDED",
+            b"image prompt",
+        ),
+        (
+            BUNDLED / "audio-cog" / "scripts" / "openrouter_audio.py",
+            "openai/gpt-audio-mini",
+            "AUDIO_CONFIG_NEEDED",
+            b"audio script",
+        ),
+        (
+            BUNDLED
+            / "openrouter-video-generator"
+            / "scripts"
+            / "openrouter_video.py",
+            "bytedance/seedance-2.0-fast",
+            "VIDEO_CONFIG_NEEDED",
+            b"video prompt",
+        ),
+    )
+    for script, model, label, stdin in cases:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--model",
+                model,
+                "--output-dir",
+                str(tmp_path / script.parent.parent.name),
+            ],
+            input=stdin,
+            capture_output=True,
+            check=False,
+            env=env,
+        )
+
+        assert result.returncode == 78
+        assert label in result.stdout.decode("utf-8")
+        assert "provider_connection:openrouter" in result.stdout.decode("utf-8")
+        assert not result.stderr
+
+
+def test_openrouter_media_adapters_prefer_parent_lease_over_direct_cli_inputs(
+    monkeypatch,
+) -> None:
+    lease_key = "synthetic-parent-lease-key"
+    lease_base = "https://leased-openrouter.example.test/v1"
+    lease_proxy = "http://leased-proxy.example.test:8080"
+    monkeypatch.setenv("OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED", "1")
+    monkeypatch.setenv("OPENSQUILLA_META_CAPABILITY_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENSQUILLA_META_CAPABILITY_API_KEY", lease_key)
+    monkeypatch.setenv("OPENSQUILLA_META_CAPABILITY_BASE_URL", lease_base)
+    monkeypatch.setenv("OPENSQUILLA_META_CAPABILITY_PROXY", lease_proxy)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "ambient-key-must-not-win")
+    args = Namespace(
+        api_key="cli-key-must-not-win",
+        api_key_env="OPENROUTER_API_KEY",
+        base_url="https://cli-endpoint.example.test/v1",
+    )
+
+    for module in (
+        _load_openrouter_image_module(),
+        _load_openrouter_audio_module(),
+        _load_openrouter_video_module(),
+    ):
+        assert module._runtime_connection(args) == (
+            lease_key,
+            lease_base,
+            lease_proxy,
+            True,
+        )
+
+
 def test_awesome_webpage_steps_pass_resolved_output_dir() -> None:
     text = SKILL_MD.read_text(encoding="utf-8")
     assert "{{ inputs.workspace_dir }}/awesome-webpage-output" in text
@@ -1114,7 +1223,7 @@ def test_webpage_source_validate_marks_malformed_non_empty_source_invalid(
     assert "WEBPAGE_SOURCE_INVALID" in output
 
 
-def test_awesome_webpage_media_steps_forward_configured_openrouter_settings() -> None:
+def test_awesome_webpage_media_steps_forward_models_but_not_credentials() -> None:
     fm = _frontmatter()
     steps = {step["id"]: step for step in fm["composition"]["steps"]}
     inputs = {
@@ -1157,10 +1266,98 @@ def test_awesome_webpage_media_steps_forward_configured_openrouter_settings() ->
     }
     for step_id, model in expected_models.items():
         rendered = render_with_args(steps[step_id]["with"], inputs=inputs, outputs=outputs)
-        assert rendered["api_key"] == "sk-configured"
-        assert rendered["api_key_env"] == "CUSTOM_OPENROUTER_KEY"
-        assert rendered["base_url"] == "https://openrouter.example/v1"
         assert rendered["model"] == model
+        assert {"api_key", "api_key_env", "base_url"}.isdisjoint(rendered)
+
+
+def test_awesome_webpage_paid_media_requires_explicit_provider_approval() -> None:
+    fm = _frontmatter()
+    steps = {step["id"]: step for step in fm["composition"]["steps"]}
+    gate = steps["media_provider_approval"]
+
+    assert gate["kind"] == "user_input"
+    assert gate["depends_on"] == ["page_outline", "media_strategy"]
+    assert gate["clarify"]["mode"] == "form"
+    assert gate["clarify"]["nl_extract"] is False
+    field = gate["clarify"]["fields"][0]
+    assert field["name"] == "approval"
+    assert field["type"] == "enum"
+    assert field["required"] is True
+    assert field["choices"] == [
+        "APPROVE_MEDIA_SEND_AND_COST",
+        "DECLINE_MEDIA_GENERATION",
+    ]
+    assert "default" not in field
+    assert "发送" in gate["clarify"]["intro_zh"]
+    assert "费用" in gate["clarify"]["intro_zh"]
+    assert "sent" in gate["clarify"]["intro_en"]
+    assert "charges" in gate["clarify"]["intro_en"]
+
+    paid_step_ids = ("image_aigc", "audio_aigc", "video_aigc")
+    exact_approval = (
+        "inputs.get('collected', {}).get('media_provider_approval', {})"
+        ".get('approval', '') == 'APPROVE_MEDIA_SEND_AND_COST' and not "
+        "inputs.get('collected', {}).get('media_provider_approval', {})"
+        ".get('additional_notes', '')"
+    )
+    for step_id in paid_step_ids:
+        step = steps[step_id]
+        assert step["side_effect"] == "external_paid_submit"
+        assert "media_provider_approval" in step["depends_on"]
+        assert exact_approval in step["when"]
+        assert {"api_key", "api_key_env", "base_url"}.isdisjoint(step["with"])
+
+    serialized_paid_steps = json.dumps(
+        [steps[step_id]["with"] for step_id in paid_step_ids],
+        sort_keys=True,
+    )
+    assert "api_key" not in serialized_paid_steps
+    assert "base_url" not in serialized_paid_steps
+    serialized_composition = json.dumps(fm["composition"], sort_keys=True)
+    assert "api_key" not in serialized_composition
+    assert "base_url" not in serialized_composition
+
+    common_inputs = {
+        "collected": {
+            "ask_images": {"include_images": "YES"},
+            "ask_audio": {"include_audio": "YES"},
+            "ask_video": {"include_video": "YES"},
+        }
+    }
+    outputs = {"media_strategy": "NEEDS_AIGC_IMAGE", "image_download": ""}
+    for answer in (None, "DECLINE_MEDIA_GENERATION", "revise", "maybe"):
+        inputs = json.loads(json.dumps(common_inputs))
+        if answer is not None:
+            inputs["collected"]["media_provider_approval"] = {"approval": answer}
+        for step_id in paid_step_ids:
+            assert not evaluate_when(
+                steps[step_id]["when"],
+                inputs=inputs,
+                outputs=outputs,
+            )
+
+    approved_with_revision = json.loads(json.dumps(common_inputs))
+    approved_with_revision["collected"]["media_provider_approval"] = {
+        "approval": "APPROVE_MEDIA_SEND_AND_COST",
+        "additional_notes": "revise the visual direction first",
+    }
+    for step_id in paid_step_ids:
+        assert not evaluate_when(
+            steps[step_id]["when"],
+            inputs=approved_with_revision,
+            outputs=outputs,
+        )
+
+    approved_inputs = json.loads(json.dumps(common_inputs))
+    approved_inputs["collected"]["media_provider_approval"] = {
+        "approval": "APPROVE_MEDIA_SEND_AND_COST",
+    }
+    for step_id in paid_step_ids:
+        assert evaluate_when(
+            steps[step_id]["when"],
+            inputs=approved_inputs,
+            outputs=outputs,
+        )
 
 
 def test_awesome_webpage_media_bind_validate_is_deterministic() -> None:

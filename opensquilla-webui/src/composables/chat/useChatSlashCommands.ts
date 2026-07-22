@@ -1,6 +1,7 @@
 import { ref, type Ref } from 'vue'
 import i18n from '@/i18n'
 import type { MetaSetupReadiness } from '@/types/metaSetup'
+import { createClientRequestId } from '@/utils/chat/messageIdentity'
 
 type RpcClient = {
   waitForConnection: () => Promise<void>
@@ -74,7 +75,11 @@ export interface UseChatSlashCommandsOptions {
   notify: (message: string) => void
   // Send a turn whose provider text bypasses slash parsing (mirrors the TUI
   // override path). Used by /meta <name> to trigger the launch after meta.run.
-  dispatchHidden: (providerText: string, displayText: string) => void
+  dispatchHidden: (
+    providerText: string,
+    displayText: string,
+    clientRequestId?: string,
+  ) => unknown
   // Open a persistent, explicitly-confirmed setup flow. Older embeddings can
   // omit this callback and keep the compact toast fallback.
   requestMetaSetup?: (
@@ -298,6 +303,7 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         if (!invocation) break
         const { skillName, launchText } = invocation
         const originatingSessionKey = options.sessionKey.value
+        const clientRequestId = createClientRequestId()
         // Stamp the launch, then trigger a turn so the pipeline seeds the
         // marker and the orchestrator runs the skill.
         options.rpc.call<{
@@ -305,13 +311,17 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
           error?: string
           setup_required?: boolean
           readiness?: MetaSetupReadiness
-        }>('meta.run', { name: skillName, sessionKey: originatingSessionKey })
+        }>('meta.run', {
+          name: skillName,
+          sessionKey: originatingSessionKey,
+          clientRequestId,
+        })
           .then((result) => {
             // meta.run may resolve after navigation. Never launch or open setup
             // in whichever chat happens to be active by then.
             if (options.sessionKey.value !== originatingSessionKey) return
             if (result?.ok) {
-              options.dispatchHidden(launchText, launchText)
+              options.dispatchHidden(launchText, launchText, clientRequestId)
             } else if (result?.setup_required) {
               const readiness = result.readiness || {}
               if (options.requestMetaSetup) {

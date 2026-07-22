@@ -520,12 +520,39 @@ def test_short_drama_delivery_waits_for_final_media_and_audits_fallbacks(
     assert "configured external image/video providers" in str(review_clarify["intro_en"])
     assert review_clarify["nl_extract"] is False
 
+    review_intent = steps["review_intent"]
+    assert review_intent["kind"] == "skill_exec"
+    assert review_intent["skill"] == "short-drama-review-normalizer"
+    assert review_intent["depends_on"] == ["review_gate"]
+    assert review_intent["with"]["payload"]["review"].startswith(
+        "{{ inputs.get('collected', {}).get('review_gate', {})"
+    )
+
+    script_revised = steps["script_revised"]
+    assert script_revised["depends_on"] == ["review_intent", "script_reread"]
+    assert script_revised["when"] == (
+        "'DECISION: revise' in outputs.review_intent and "
+        "'HAS_OVERRIDES: yes' in outputs.review_intent"
+    )
+
+    revision_confirm = steps["revision_confirm_gate"]
+    assert revision_confirm["kind"] == "user_input"
+    assert revision_confirm["depends_on"] == ["review_intent", "script_revised"]
+    assert revision_confirm["when"] == "'DECISION: revise' in outputs.review_intent"
+    assert revision_confirm["clarify"]["nl_extract"] is False
+    assert "revised script" in str(revision_confirm["clarify"]["intro_en"]).lower()
+    assert "new explicit" in str(revision_confirm["clarify"]["intro_en"]).lower()
+
     review_normalize = steps["review_normalize"]
     assert review_normalize["kind"] == "skill_exec"
     assert review_normalize["skill"] == "short-drama-review-normalizer"
-    assert review_normalize["depends_on"] == ["review_gate"]
+    assert review_normalize["depends_on"] == ["review_intent", "revision_confirm_gate"]
+    assert review_normalize["with"]["payload"]["phase"] == "media_approval"
     assert review_normalize["with"]["payload"]["review"].startswith(
         "{{ inputs.get('collected', {}).get('review_gate', {})"
+    )
+    assert review_normalize["with"]["payload"]["confirmation"].startswith(
+        "{{ inputs.get('collected', {}).get('revision_confirm_gate', {})"
     )
 
     review_spec = loader.get_by_name("short-drama-review-normalizer")
@@ -661,6 +688,10 @@ def test_short_drama_delivery_waits_for_final_media_and_audits_fallbacks(
     }
     assert delivery_audit["with"]["runtime"]["paid_submission_dispositions"] == (
         "{{ outputs.get('__opensquilla_paid_submission_dispositions_v1__', '{}') "
+        "| truncate(8000) }}"
+    )
+    assert delivery_audit["with"]["runtime"]["paid_submission_receipt_proofs"] == (
+        "{{ outputs.get('__opensquilla_paid_submission_receipt_proofs_v1__', '{}') "
         "| truncate(8000) }}"
     )
 

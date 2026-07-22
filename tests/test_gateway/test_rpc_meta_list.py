@@ -76,8 +76,10 @@ def test_meta_list_returns_only_invokable_meta_skills() -> None:
             "missing_env_any": [],
             "missing_skills": [],
             "missing_capabilities": [],
+            "missing_provider_capabilities": [],
             "reasons": [],
             "setup_actions": [],
+            "manual_setup_actions": [],
         },
         {
             "name": "beta-meta",
@@ -89,8 +91,10 @@ def test_meta_list_returns_only_invokable_meta_skills() -> None:
             "missing_env_any": [],
             "missing_skills": [],
             "missing_capabilities": [],
+            "missing_provider_capabilities": [],
             "reasons": [],
             "setup_actions": [],
+            "manual_setup_actions": [],
         },
     ]
 
@@ -113,8 +117,8 @@ def test_meta_list_disabled_when_master_gate_off() -> None:
 def test_meta_list_uses_passive_readiness(monkeypatch) -> None:
     calls: list[bool] = []
 
-    def assess(spec, *, skill_index, ctx=None, verify_capabilities=True):
-        del spec, skill_index, ctx
+    def assess(spec, *, skill_index, ctx=None, verify_capabilities=True, config=None):
+        del spec, skill_index, ctx, config
         calls.append(verify_capabilities)
         return MetaSkillReadiness(ready=True)
 
@@ -129,7 +133,9 @@ def test_meta_list_uses_passive_readiness(monkeypatch) -> None:
     assert calls == [False]
 
 
-def test_meta_list_uses_active_openrouter_config_for_env_readiness(monkeypatch) -> None:
+def test_meta_list_does_not_expose_active_openrouter_config_to_untrusted_meta(
+    monkeypatch,
+) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     spec = _make_spec("media-meta", kind="meta")
     spec.metadata = SkillPlatformMeta(
@@ -151,6 +157,8 @@ def test_meta_list_uses_active_openrouter_config_for_env_readiness(monkeypatch) 
         )
     )
 
-    assert payload["skills"][0]["ready"] is True
-    assert payload["skills"][0]["missing_env_any"] == []
+    assert payload["skills"][0]["ready"] is False
+    assert payload["skills"][0]["missing_env_any"] == [["OPENROUTER_API_KEY"]]
+    assert payload["skills"][0]["missing_provider_capabilities"] == []
+    assert payload["skills"][0]["manual_setup_actions"] == []
     assert "synthetic-openrouter-config-key" not in repr(payload)

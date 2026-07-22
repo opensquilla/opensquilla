@@ -12715,6 +12715,7 @@ class Agent:
             env_aliases=aliases,
             parent_spec=parent_spec,
             plan=plan,
+            skill_resolver=metadata.get("skill_loader"),
         )
 
     async def _run_one_streaming(
@@ -13371,8 +13372,15 @@ class Agent:
             and getattr(skill_spec, "disable_model_invocation", False)
         )
         if getattr(skill_spec, "disable_model_invocation", False) and not retired_replay:
+            description = str(getattr(skill_spec, "description", "")).strip().lower()
+            unavailable_message = f"{name!r} is not available for invocation."
+            if description.startswith("retired compatibility"):
+                unavailable_message = (
+                    f"{name!r} has been retired and is not available for new runs. "
+                    "Previously saved runs remain available for inspection, resume, or replay."
+                )
             async for ev in self._emit_terminal_text(
-                f"{name!r} is not available for invocation.", iterations=0
+                unavailable_message, iterations=0
             ):
                 yield ev
             return

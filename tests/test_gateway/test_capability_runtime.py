@@ -11,12 +11,17 @@ import pytest
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import reset_profile_credential_pools
 from opensquilla.skills.capability_runtime import (
+    CAPABILITY_AUDIO_GENERATE,
+    CAPABILITY_IMAGE_GENERATE,
+    CAPABILITY_VIDEO_GENERATE,
     META_CAPABILITY_API_KEY_ENV,
     META_CAPABILITY_BASE_URL_ENV,
     META_CAPABILITY_INTERNAL_CREDENTIAL_LEASE_TOKEN,
     META_CAPABILITY_INTERNAL_CREDENTIAL_SOURCE,
     META_CAPABILITY_INTERNAL_PROVIDER,
     META_CAPABILITY_INTERNAL_SESSION_KEY,
+    CapabilityProviderCandidate,
+    CapabilityRequirement,
     capability_requirements_for_consumers,
     capability_runtime_env_for_consumers,
     lease_capability_connection,
@@ -105,7 +110,19 @@ def _trusted_short_drama(tmp_path: Path):
     assert spec is not None
     plan = parse_meta_plan(spec)
     assert plan is not None
-    return spec, plan
+    return spec, plan, loader
+
+
+def _trusted_awesome_webpage(tmp_path: Path):
+    loader = SkillLoader(
+        bundled_dir=_BUNDLED,
+        snapshot_path=tmp_path / "awesome-capability-snapshot.json",
+    )
+    spec = loader.get_by_name("AwesomeWebpageMetaSkill")
+    assert spec is not None
+    plan = parse_meta_plan(spec)
+    assert plan is not None
+    return spec, plan, loader
 
 
 @pytest.fixture(autouse=True)
@@ -297,13 +314,14 @@ def test_profile_pool_readiness_does_not_prevent_session_pinned_lease(
     # The real bundled parent-plan gate carries the opaque lease only in the
     # executor's parent-side trusted mapping. Both consumers share one exact
     # provider pin for this run.
-    parent_spec, plan = _trusted_short_drama(tmp_path)
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
     runtime_env = capability_runtime_env_for_consumers(
         config,
         ["nano-banana-pro", "seedance-2-prompt"],
         parent_spec=parent_spec,
         plan=plan,
         session_key="agent:main:pool",
+        skill_resolver=loader,
     )
     image_env = runtime_env["nano-banana-pro"]
     video_env = runtime_env["seedance-2-prompt"]
@@ -572,7 +590,7 @@ def test_runtime_env_is_consumer_scoped_and_never_repr_exposes_connection(
     tmp_path: Path,
 ) -> None:
     secret = "synthetic-runtime-secret"
-    parent_spec, plan = _trusted_short_drama(tmp_path)
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
     config = _config(
         llm=_active(
             "openrouter",
@@ -587,6 +605,7 @@ def test_runtime_env_is_consumer_scoped_and_never_repr_exposes_connection(
         parent_spec=parent_spec,
         plan=plan,
         session_key="agent:main:scoped",
+        skill_resolver=loader,
     )
 
     assert set(env) == {"nano-banana-pro"}
@@ -618,7 +637,7 @@ def test_paid_step_contract_drift_revokes_all_capability_consumers(
     field: str,
     value: str,
 ) -> None:
-    parent_spec, plan = _trusted_short_drama(tmp_path)
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
     steps = list(plan.steps)
     paid_index = next(
         index for index, step in enumerate(steps) if step.id == "reference_image"
@@ -626,7 +645,78 @@ def test_paid_step_contract_drift_revokes_all_capability_consumers(
     steps[paid_index] = replace(steps[paid_index], **{field: value})
     drifted = replace(plan, steps=tuple(steps))
 
-    assert trusted_capability_consumers_for_meta_plan(parent_spec, drifted) == ()
+    assert (
+        trusted_capability_consumers_for_meta_plan(
+            parent_spec,
+            drifted,
+            skill_resolver=loader,
+        )
+        == ()
+    )
+
+
+def test_non_paid_review_step_drift_revokes_all_capability_consumers(
+    tmp_path: Path,
+) -> None:
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
+    steps = list(plan.steps)
+    review_index = next(
+        index for index, step in enumerate(steps) if step.id == "review_normalize"
+    )
+    steps[review_index] = replace(
+        steps[review_index],
+        skill="short-drama-delivery-audit",
+    )
+    drifted = replace(plan, steps=tuple(steps))
+
+    # The paid steps and their `when` expressions are untouched.  A subset-
+    # only validator would still grant a key even though the producer of the
+    # consent signal is no longer the current reviewed step.
+    assert (
+        trusted_capability_consumers_for_meta_plan(
+            parent_spec,
+            drifted,
+            skill_resolver=loader,
+        )
+        == ()
+    )
+
+
+def test_workspace_shadow_of_review_normalizer_revokes_provider_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
+    resolved = {spec.name: spec for spec in loader.load_all()}
+    bundled_normalizer = resolved["short-drama-review-normalizer"]
+    resolved["short-drama-review-normalizer"] = replace(
+        bundled_normalizer,
+        layer=SkillLayer.WORKSPACE,
+        base_dir=str(tmp_path / "shadowed-review-normalizer"),
+    )
+    lease_calls = 0
+
+    def forbidden_lease(*_args, **_kwargs):
+        nonlocal lease_calls
+        lease_calls += 1
+        raise AssertionError("a shadowed consent producer must not acquire a lease")
+
+    monkeypatch.setattr(
+        "opensquilla.skills.capability_runtime.lease_capability_connection",
+        forbidden_lease,
+    )
+
+    env = capability_runtime_env_for_consumers(
+        _config(llm=_active("openrouter")),
+        ["nano-banana-pro", "seedance-2-prompt"],
+        parent_spec=parent_spec,
+        plan=plan,
+        session_key="agent:main:shadowed-review",
+        skill_resolver=resolved,
+    )
+
+    assert env == {}
+    assert lease_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -638,7 +728,7 @@ def test_non_bundled_parent_cannot_lease_genuine_bundled_children(
     monkeypatch: pytest.MonkeyPatch,
     layer: SkillLayer,
 ) -> None:
-    parent_spec, plan = _trusted_short_drama(tmp_path)
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
     untrusted_parent = replace(parent_spec, layer=layer)
     lease_calls = 0
 
@@ -658,6 +748,159 @@ def test_non_bundled_parent_cannot_lease_genuine_bundled_children(
         parent_spec=untrusted_parent,
         plan=plan,
         session_key="agent:main:untrusted-parent",
+        skill_resolver=loader,
+    )
+
+    assert env == {}
+    assert lease_calls == 0
+
+
+def test_awesome_webpage_capabilities_use_ordered_provider_candidates() -> None:
+    requirements = capability_requirements_for_consumers(
+        [
+            "nano-banana-pro-openrouter",
+            "audio-cog",
+            "openrouter-video-generator",
+        ]
+    )
+
+    assert {requirement.capability_id for requirement in requirements} == {
+        CAPABILITY_AUDIO_GENERATE,
+        CAPABILITY_IMAGE_GENERATE,
+        CAPABILITY_VIDEO_GENERATE,
+    }
+    for requirement in requirements:
+        assert [candidate.provider_id for candidate in requirement.provider_candidates] == [
+            "openrouter"
+        ]
+        assert requirement.provider_candidates[0].profile_preference == (
+            "active_then_provider_profile"
+        )
+
+
+def test_capability_resolution_uses_next_ready_ordered_candidate() -> None:
+    requirement = CapabilityRequirement(
+        capability_id="synthetic.ordered",
+        consumer="synthetic-consumer",
+        provider_candidates=(
+            CapabilityProviderCandidate(
+                provider_id="not-a-provider",
+                model="synthetic-model",
+            ),
+            CapabilityProviderCandidate(
+                provider_id="openrouter",
+                model="synthetic-openrouter-model",
+            ),
+        ),
+    )
+    config = _config(
+        profiles={"openrouter": _profile(api_key="synthetic-secondary-key")}
+    )
+
+    lease = lease_capability_connection(
+        config,
+        requirement,
+        session_key="agent:main:ordered-candidate",
+    )
+
+    assert lease.ready is True
+    assert lease.status.provider_id == "openrouter"
+    assert lease.api_key == "synthetic-secondary-key"
+
+
+def test_trusted_awesome_webpage_leases_only_exact_paid_media_children(
+    tmp_path: Path,
+) -> None:
+    secret = "synthetic-awesome-runtime-secret"
+    parent_spec, plan, loader = _trusted_awesome_webpage(tmp_path)
+    config = _config(
+        llm=_active(
+            "openrouter",
+            api_key=secret,
+            base_url="https://openrouter.ai/api/v1",
+        )
+    )
+
+    consumers = trusted_capability_consumers_for_meta_plan(
+        parent_spec,
+        plan,
+        skill_resolver=loader,
+    )
+    env = capability_runtime_env_for_consumers(
+        config,
+        [*consumers, "awesome-webpage-image-download", "filesystem"],
+        parent_spec=parent_spec,
+        plan=plan,
+        session_key="agent:main:awesome-runtime",
+        skill_resolver=loader,
+    )
+
+    assert consumers == (
+        "audio-cog",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+    )
+    assert set(env) == set(consumers)
+    for values in env.values():
+        assert values[META_CAPABILITY_API_KEY_ENV] == secret
+        assert values[META_CAPABILITY_BASE_URL_ENV] == "https://openrouter.ai/api/v1"
+    assert secret not in repr(
+        capability_requirements_for_consumers(consumers)
+    )
+
+
+def test_awesome_approval_or_paid_step_drift_revokes_all_provider_leases(
+    tmp_path: Path,
+) -> None:
+    parent_spec, plan, loader = _trusted_awesome_webpage(tmp_path)
+    for step_id, changes in (
+        ("media_provider_approval", {"depends_on": ("page_outline",)}),
+        ("image_aigc", {"when": "true"}),
+        ("audio_aigc", {"side_effect": ""}),
+        ("video_aigc", {"skill": "audio-cog"}),
+    ):
+        steps = list(plan.steps)
+        index = next(i for i, step in enumerate(steps) if step.id == step_id)
+        steps[index] = replace(steps[index], **changes)
+        drifted = replace(plan, steps=tuple(steps))
+
+        assert trusted_capability_consumers_for_meta_plan(
+            parent_spec,
+            drifted,
+            skill_resolver=loader,
+        ) == ()
+
+
+def test_awesome_workspace_shadow_of_paid_child_revokes_provider_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parent_spec, plan, loader = _trusted_awesome_webpage(tmp_path)
+    resolved = {spec.name: spec for spec in loader.load_all()}
+    resolved["audio-cog"] = replace(
+        resolved["audio-cog"],
+        layer=SkillLayer.WORKSPACE,
+        base_dir=str(tmp_path / "shadowed-audio-cog"),
+    )
+    lease_calls = 0
+
+    def forbidden_lease(*_args, **_kwargs):
+        nonlocal lease_calls
+        lease_calls += 1
+        raise AssertionError("a shadowed child must not acquire a provider lease")
+
+    monkeypatch.setattr(
+        "opensquilla.skills.capability_runtime.lease_capability_connection",
+        forbidden_lease,
+    )
+
+    env = capability_runtime_env_for_consumers(
+        _config(llm=_active("openrouter")),
+        ["audio-cog", "nano-banana-pro-openrouter", "openrouter-video-generator"],
+        parent_spec=parent_spec,
+        plan=plan,
+        session_key="agent:main:shadowed-awesome",
+        skill_resolver=resolved,
     )
 
     assert env == {}

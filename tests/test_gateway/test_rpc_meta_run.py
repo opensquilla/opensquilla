@@ -23,6 +23,8 @@ from opensquilla.engine.steps.meta_command import (
 from opensquilla.gateway.rpc.registry import RpcContext, RpcHandlerError
 from opensquilla.gateway.rpc_meta_runs import _handle_meta_run
 from opensquilla.gateway.scopes import METHOD_SCOPES, WRITE_SCOPE
+from opensquilla.session.manager import SessionManager
+from opensquilla.session.storage import SessionStorage
 from opensquilla.session.turn_context import turn_context_scope
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.types import (
@@ -105,6 +107,70 @@ def test_meta_run_valid_invokable_skill_stamps_launch(tmp_path: Path) -> None:
     assert payload == {"ok": True, "name": "meta-tiny", "sessionKey": "sess-run-1"}
     # Store was stamped — the next turn would pop this exact name.
     assert pending_meta_launch_pop("sess-run-1") == "meta-tiny"
+
+
+@pytest.mark.asyncio
+async def test_meta_run_identified_launch_is_durable_across_gateway_reopen(
+    tmp_path: Path,
+) -> None:
+    session_key = "agent:main:webchat:durable-meta-run"
+    request_id = "durable-meta-run-request"
+    db_path = tmp_path / "sessions.db"
+    storage = await SessionStorage.open(str(db_path))
+    manager = SessionManager(storage, inject_time_prefix=False)
+    await manager.create(session_key, agent_id="main")
+    loader = _make_loader_with_meta(tmp_path)
+    ctx = RpcContext(
+        conn_id="test",
+        config=_enabled_cfg(),
+        skill_loader=loader,
+        session_manager=manager,
+    )
+    try:
+        first = await _handle_meta_run(
+            {
+                "name": "meta-tiny",
+                "sessionKey": session_key,
+                "clientRequestId": request_id,
+            },
+            ctx,
+        )
+        assert first["replayed"] is False
+        assert pending_meta_launch_peek(
+            session_key,
+            client_request_id=request_id,
+        ) is None
+    finally:
+        await storage.close()
+
+    reopened = await SessionStorage.open(str(db_path))
+    try:
+        intent = await reopened.get_meta_control_intent(
+            session_key=session_key,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+        )
+        assert intent is not None
+        assert intent.meta_skill_name == "meta-tiny"
+        assert intent.status == "staged"
+
+        reopened_manager = SessionManager(reopened, inject_time_prefix=False)
+        replayed = await _handle_meta_run(
+            {
+                "name": "meta-tiny",
+                "sessionKey": session_key,
+                "clientRequestId": request_id,
+            },
+            RpcContext(
+                conn_id="test-reopened",
+                config=_enabled_cfg(),
+                    skill_loader=loader,
+                session_manager=reopened_manager,
+            ),
+        )
+        assert replayed["replayed"] is True
+    finally:
+        await reopened.close()
 
 
 def test_meta_run_client_request_id_is_idempotent_after_launch_is_consumed(

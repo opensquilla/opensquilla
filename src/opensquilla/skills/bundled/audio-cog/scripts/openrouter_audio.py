@@ -13,7 +13,14 @@ import wave
 from collections.abc import Iterable
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener, urlopen
+
+SAFE_NO_SUBMIT_EXIT_CODE = 78
+META_CAPABILITY_LEASE_REQUIRED_ENV = "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED"
+META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
+META_CAPABILITY_API_KEY_ENV = "OPENSQUILLA_META_CAPABILITY_API_KEY"
+META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
+META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
 
 SAMPLE_RATE = 24_000
 
@@ -106,6 +113,38 @@ def _failure(label: str, filename: str, **extra: object) -> None:
     _print_record(label, payload)
 
 
+def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
+    """Resolve a MetaSkill lease or the direct-CLI compatibility inputs."""
+
+    lease_required = os.environ.get(META_CAPABILITY_LEASE_REQUIRED_ENV) == "1"
+    if lease_required:
+        provider = os.environ.get(META_CAPABILITY_PROVIDER_ENV, "").strip().lower()
+        if provider != "openrouter":
+            return "", "", "", True
+        return (
+            os.environ.get(META_CAPABILITY_API_KEY_ENV, "").strip(),
+            os.environ.get(META_CAPABILITY_BASE_URL_ENV, "").strip().rstrip("/"),
+            os.environ.get(META_CAPABILITY_PROXY_ENV, "").strip(),
+            True,
+        )
+    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
+    return (
+        str(args.api_key.strip() or os.environ.get(api_key_env, "")),
+        args.base_url.strip().rstrip("/"),
+        "",
+        False,
+    )
+
+
+def _open_url(request: Request, *, timeout: float, proxy: str):
+    if not proxy:
+        return urlopen(request, timeout=timeout)
+    return build_opener(ProxyHandler({"http": proxy, "https": proxy})).open(
+        request,
+        timeout=timeout,
+    )
+
+
 def _failure_reason(exc: BaseException) -> str:
     if isinstance(exc, URLError):
         return exc.reason.__class__.__name__
@@ -149,24 +188,27 @@ def main() -> int:
     filename = _safe_filename(args.filename, "narration.wav")
     messages, script_text = _audio_messages(sys.stdin.read())
 
-    api_key_env = args.api_key_env.strip() or "OPENROUTER_API_KEY"
-    key = str(args.api_key.strip() or os.environ.get(api_key_env, ""))
+    key, base_url, proxy, lease_required = _runtime_connection(args)
     missing = []
     if not key:
-        missing.append(api_key_env)
+        missing.append(
+            "provider_connection:openrouter"
+            if lease_required
+            else (args.api_key_env.strip() or "OPENROUTER_API_KEY")
+        )
+    if not base_url:
+        missing.append("provider_endpoint:openrouter")
     if not args.model:
         missing.append("awesome_webpage.openrouter.models.audio_generation")
     if not args.output_dir:
         missing.append("awesome_webpage.output_dir")
     if missing:
         _failure("AUDIO_CONFIG_NEEDED", filename, missing=missing)
-        return 0
+        return SAFE_NO_SUBMIT_EXIT_CODE if lease_required else 0
 
     output_dir = Path(args.output_dir).expanduser()
     output_path = output_dir / filename
     local_path = f"project/assets/audio/{filename}"
-    base_url = args.base_url.rstrip("/")
-
     body = json.dumps(
         {
             "model": args.model,
@@ -188,7 +230,7 @@ def main() -> int:
     )
 
     try:
-        with urlopen(req, timeout=180) as resp:
+        with _open_url(req, timeout=180, proxy=proxy) as resp:
             pcm = _iter_sse_audio_chunks(resp)
     except HTTPError as exc:
         _failure("AUDIO_GENERATION_FAILED", filename, status=exc.code)

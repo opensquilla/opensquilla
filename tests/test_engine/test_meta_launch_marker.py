@@ -77,11 +77,13 @@ def _meta_spec(
     name: str = "meta-tiny",
     *,
     disable_model_invocation: bool = False,
+    description: str = "Synthetic test MetaSkill.",
 ) -> SimpleNamespace:
     """A synthetic meta SkillSpec-like object."""
     return SimpleNamespace(
         name=name,
         kind="meta",
+        description=description,
         disable_model_invocation=disable_model_invocation,
     )
 
@@ -389,6 +391,7 @@ async def test_run_meta_resume_binds_current_bundled_parent_to_persisted_plan(
                     parent_spec=spec,
                     plan=persisted_plan,
                     session_key="agent:main:test-launch",
+                    skill_resolver=loader,
                 )
             ),
         },
@@ -1139,6 +1142,37 @@ async def test_run_meta_launch_refuses_disabled_skill(
     )
     # Still finalizes with a terminal DoneEvent.
     _done_event_of(events)
+
+
+@pytest.mark.asyncio
+async def test_run_meta_launch_explains_retired_compatibility_tombstone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.skills.meta.types import MetaResult
+
+    spec = _meta_spec(
+        "meta-retired",
+        disable_model_invocation=True,
+        description="Retired compatibility definition for historical runs.",
+    )
+    agent = _build_agent(
+        loader=_StubLoader(spec),
+        writer=_StubWriter(awaiting=None),
+        extra_metadata={"meta_launch": {"name": "meta-retired"}},
+    )
+    captured = _install_orchestrator_spy(
+        agent,
+        monkeypatch,
+        result=MetaResult(ok=True, final_text="SHOULD NOT RUN"),
+    )
+
+    events = await _drain(agent, "meta-retired")
+    text = _streamed_text(events)
+
+    assert "has been retired" in text
+    assert "not available for new runs" in text
+    assert "saved runs remain available" in text
+    assert captured["called"] is False
 
 
 @pytest.mark.asyncio

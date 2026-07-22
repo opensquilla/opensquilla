@@ -122,6 +122,7 @@ The retained built-in MetaSkills cover a focused set of high-value task classes.
 | --- | --- |
 | `meta-paper-write` | Supports academic drafts, manuscript structure, citation planning, experiment placeholders, and LaTeX/PDF paths. |
 | `meta-short-drama` | Produces short-drama scripts, visual prompts, video assembly plans, subtitles, and rendered local video artifacts. |
+| `AwesomeWebpageMetaSkill` | Builds a packaged local multimedia webpage with researched content, generated media, validation, and usage guidance. |
 | `meta-skill-creator` | Turns repeated multi-skill collaboration patterns into new MetaSkill proposals. |
 
 These are designed around quality over quantity. Immature, duplicate, or
@@ -170,17 +171,26 @@ resolves a moving TeX Live package repository during installation. Fixed paper
 downloads total about 226 MB on macOS, 165–172 MB on Linux, and 265 MB on
 Windows; extracted installations are larger.
 
-`meta-short-drama` also needs an OpenRouter connection for its real image/video
-provider calls. Readiness reuses an active OpenRouter provider, a saved
+`meta-short-drama` and `AwesomeWebpageMetaSkill` also need an OpenRouter
+connection for their real media provider calls. Readiness reuses an active
+OpenRouter provider, a saved
 secondary `llm_profiles.openrouter` profile, the legacy image-provider
 connection, or the canonical provider environment without copying a secret into
 run metadata. If none is ready, the setup card opens the existing provider
 settings editor and preserves the original MetaSkill request. When another
 provider is primary, saving OpenRouter creates a secondary profile and does not
 switch the primary model or enable routing. Saving or rechecking the connection
-does not make a media request; the later script-review confirmation is still the
-explicit boundary before paid image/video submits. A missing connection blocks
-the run instead of producing a fake local substitute.
+does not make a media request. Short-drama's later script-review confirmation
+is still the explicit boundary before paid image/video submits; an edit request
+only creates a revised preview and requires a new approval. AwesomeWebpage has
+its own required, no-default provider-send-and-cost approval choice. Ambiguous
+answers or any revision note do not authorize image/audio/video submission.
+Both workflows lease the credential, endpoint, and proxy to exact bundled media
+children in process memory only; these values never enter the plan, transcript,
+or run database. A missing connection blocks the run instead of producing a
+fake local substitute. Provider requirements are expressed as ordered
+code-owned candidates with a profile preference; OpenRouter is the only current
+candidate, so future providers do not require workflow-specific settings UI.
 
 An existing system installation may satisfy readiness when it passes the same
 full capability probe. The Skill page remains useful for inventory, but launch

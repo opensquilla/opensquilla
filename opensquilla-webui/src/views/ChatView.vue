@@ -1285,7 +1285,11 @@ const chatSlashCommands = useChatSlashCommands({
   setCompactInFlight,
   showCompactStatus,
   notify: (message: string) => pushToast(message, { duration: 6000 }),
-  dispatchHidden: (providerText: string, displayText: string) => dispatchHiddenForMeta(providerText, displayText),
+  dispatchHidden: (
+    providerText: string,
+    displayText: string,
+    clientRequestId?: string,
+  ) => dispatchHiddenForMeta(providerText, displayText, clientRequestId),
   requestMetaSetup,
 })
 const {
@@ -1359,10 +1363,21 @@ const chatSend = useChatSend({
   autoResizeTextarea,
   scrollToBottom,
 })
-const { onSend, onStop, dispatchHiddenSend, sendHiddenMetaPreflightConfirmation } = chatSend
+const {
+  onSend,
+  onStop,
+  dispatchHiddenSend,
+  restoreHiddenControls,
+  sendHiddenMetaPreflightConfirmation,
+} = chatSend
 sendCurrentInput = onSend
 dispatchHiddenForMeta = dispatchHiddenSend
 dispatchHiddenControl = dispatchHiddenSend
+
+async function restoreDurableMetaControls(targetSessionKey: string): Promise<void> {
+  await restoreMetaSetupJob(targetSessionKey)
+  await restoreHiddenControls(targetSessionKey)
+}
 
 // Deny notes ride the normal send path: queued while the turn is streaming,
 // sent immediately otherwise.
@@ -1431,7 +1446,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   popAllPendingIntoComposer,
   saveWidgetState,
   subscribeSession,
-  onSessionSubscribed: () => restoreMetaSetupJob(sessionKey.value),
+  onSessionSubscribed: () => restoreDurableMetaControls(sessionKey.value),
   loadHistory,
   loadCurrentSessionUsage,
 })
@@ -2291,7 +2306,7 @@ onMounted(async () => {
   // A provider handoff may immediately resume the original hidden send. Wait
   // until replay/subscription is established so no early stream frame is lost.
   const sessionSubscribed = await sessionSubscription
-  if (sessionSubscribed) await restoreMetaSetupJob(initialSession.sessionKey)
+  if (sessionSubscribed) await restoreDurableMetaControls(initialSession.sessionKey)
 
   // Focus textarea on desktop
   if (isDesktopViewport.value) {
@@ -2340,7 +2355,7 @@ watch(() => route.query.session, async (newSession) => {
       routeSession: newSession,
     })
     const switched = await switchToSession(newSession)
-    if (switched) await restoreMetaSetupJob(newSession)
+    if (switched) await restoreDurableMetaControls(newSession)
   }
 })
 

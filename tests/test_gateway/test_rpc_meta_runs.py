@@ -33,6 +33,8 @@ from opensquilla.gateway.rpc_meta_runs import (
 from opensquilla.gateway.scopes import ADMIN_SCOPE, METHOD_SCOPES, READ_SCOPE
 from opensquilla.persistence.meta_run_writer import open_meta_run_writer
 from opensquilla.persistence.migrator import apply_pending
+from opensquilla.session.manager import SessionManager
+from opensquilla.session.storage import SessionStorage
 from opensquilla.skills.meta.inputs import make_meta_inputs
 from opensquilla.skills.meta.scheduler import _preflight_missing_fields
 from opensquilla.skills.meta.types import MetaPlan, MetaResult, MetaStep
@@ -851,6 +853,59 @@ def test_meta_runs_live_replay_prepare_commit_is_one_time_and_token_free_on_turn
         if replay_nonce:
             pending_meta_replay_pop("sess-1", replay_nonce)
         writer.close()
+
+
+@pytest.mark.asyncio
+async def test_meta_runs_live_replay_commit_is_durable_across_gateway_reopen(
+    tmp_path: Path,
+) -> None:
+    writer, run_id = _seed_writer(
+        tmp_path,
+        final_status="failed",
+        final_result=MetaResult(ok=False, error="failed", failed_step_id="s1"),
+    )
+    session_db = tmp_path / "sessions.db"
+    storage = await SessionStorage.open(str(session_db))
+    manager = SessionManager(storage, inject_time_prefix=False)
+    await manager.create("sess-1", agent_id="main")
+    ctx = RpcContext(
+        conn_id="test",
+        meta_run_writer=writer,
+        session_manager=manager,
+    )
+    try:
+        prepared = await _handle_meta_runs_replay({
+            "runId": run_id,
+            "mode": "failed-step",
+            "sessionKey": "sess-1",
+            "prepareLive": True,
+        }, ctx)
+        token = prepared["replay"]["live_replay"]["replay_token"]
+        committed = await _handle_meta_runs_replay({
+            "runId": run_id,
+            "mode": "failed-step",
+            "sessionKey": "sess-1",
+            "replayToken": token,
+        }, ctx)
+        nonce = committed["replay"]["launch_text"].removeprefix("/meta-replay ")
+        assert pending_meta_replay_count("sess-1") == 0
+    finally:
+        await storage.close()
+        writer.close()
+
+    reopened = await SessionStorage.open(str(session_db))
+    try:
+        intent = await reopened.get_meta_control_intent(
+            session_key="sess-1",
+            control_kind="replay",
+            correlation_id=f"nonce:{nonce}",
+        )
+        assert intent is not None
+        assert intent.status == "staged"
+        assert intent.replay_run_id == run_id
+        assert intent.replay_mode == "failed-step"
+    finally:
+        await reopened.close()
 
 
 def test_live_replay_prepare_rejects_possibly_billed_paid_submit(tmp_path: Path) -> None:

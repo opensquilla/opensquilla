@@ -23,6 +23,12 @@ import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
 import { createClientMessageId, createClientRequestId } from '@/utils/chat/messageIdentity'
 import {
+  type HiddenControlStorage,
+  listHiddenControls,
+  persistHiddenControlResult,
+  removeHiddenControl,
+} from '@/utils/chat/hiddenControlOutbox'
+import {
   FINISHED_STREAM_TASK_ID,
   PENDING_STREAM_TASK_ID,
   STOPPED_STREAM_TASK_ID,
@@ -228,6 +234,7 @@ export interface UseChatSendOptions {
     owner?: PendingQueueOwner,
   ) => boolean
   popAllPendingIntoComposer: () => boolean
+  hiddenControlStorage?: HiddenControlStorage | null
   executeSlashCommand: (text: string) => Promise<boolean>
   closeSlashMenu: () => void
   autoResizeTextarea: () => void
@@ -918,6 +925,24 @@ export function useChatSend(options: UseChatSendOptions) {
     const existing = hiddenDispatchInFlight.get(hiddenDispatchKey)
     if (existing) return existing
 
+    // Persist before either local queueing or RPC. The payload contains only
+    // the already-visible control turn (never provider credentials), while its
+    // stable request id lets Gateway ingress collapse response-loss retries.
+    const persistResult = persistHiddenControlResult({
+      sessionKey: requestSessionKey,
+      clientRequestId: stableClientRequestId,
+      providerText,
+      displayText,
+    }, options.hiddenControlStorage)
+    if (persistResult === 'conflict' || persistResult === 'failed' || persistResult === 'invalid') {
+      return Promise.resolve(hiddenDispatchResult(
+        'rejected',
+        persistResult === 'conflict' ? 'outbox_conflict' : 'outbox_persist_failed',
+        stableClientRequestId,
+        requestSessionKey,
+      ))
+    }
+
     const operation = performHiddenSend(
       providerText,
       displayText,
@@ -1002,6 +1027,14 @@ export function useChatSend(options: UseChatSendOptions) {
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      // A resolved chat.send response proves durable ingress acceptance. Clear
+      // the browser outbox before any local session handoff work, which can
+      // fail independently without making an exact-id resend necessary.
+      removeHiddenControl(
+        requestSessionKey,
+        stableClientRequestId,
+        options.hiddenControlStorage,
+      )
       const taskId = acceptedTaskId(res)
       const terminalStatus = terminalResponseStatus(res)
       const stoppedByUser = freshSendToken?.stoppedByUser === true
@@ -1087,8 +1120,16 @@ export function useChatSend(options: UseChatSendOptions) {
         requestSessionKey,
       )
     } catch (err: unknown) {
+      const rpcError = err as RpcClientError | null | undefined
       const acceptedError = acceptedErrorInfo(err)
-      const accepted = (err as RpcClientError | null | undefined)?.accepted
+      const accepted = rpcError?.accepted
+      if (accepted === true) {
+        removeHiddenControl(
+          requestSessionKey,
+          stableClientRequestId,
+          options.hiddenControlStorage,
+        )
+      }
       const acceptedSessionKey = acceptedError?.sessionKey || requestSessionKey
       const stoppedByUser = freshSendToken?.stoppedByUser === true
       if (
@@ -1152,6 +1193,13 @@ export function useChatSend(options: UseChatSendOptions) {
           requestSessionKey,
         )
       }
+      if (accepted === false && rpcError?.retryable === false) {
+        removeHiddenControl(
+          requestSessionKey,
+          stableClientRequestId,
+          options.hiddenControlStorage,
+        )
+      }
       if (options.sessionKey.value !== requestSessionKey) {
         recordSessionNavigationDiag('hiddenSend.error.stale', {
           requestSession: requestSessionKey,
@@ -1194,6 +1242,24 @@ export function useChatSend(options: UseChatSendOptions) {
     }
   }
 
+  async function restoreHiddenControls(
+    targetSessionKey = options.sessionKey.value,
+  ): Promise<void> {
+    if (!targetSessionKey || options.sessionKey.value !== targetSessionKey) return
+    for (const item of listHiddenControls(targetSessionKey, options.hiddenControlStorage)) {
+      if (options.sessionKey.value !== targetSessionKey) return
+      const result = await dispatchHiddenSend(
+        item.providerText,
+        item.displayText,
+        item.clientRequestId,
+      )
+      // One queued item owns the next drain slot. Continuing would only fill a
+      // bounded in-memory queue during a long active turn; the remaining
+      // durable outbox entries will be retried on the next restore/reconnect.
+      if (result.status === 'queued') return
+    }
+  }
+
   /**
    * Build and dispatch the hidden meta-preflight confirmation. The
    * server-authored confirmed.message is preferred (it carries the base64url
@@ -1218,6 +1284,7 @@ export function useChatSend(options: UseChatSendOptions) {
     onSend,
     onStop,
     dispatchHiddenSend,
+    restoreHiddenControls,
     sendHiddenMetaPreflightConfirmation,
   }
 }

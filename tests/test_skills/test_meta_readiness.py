@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 from opensquilla.skills.capability_runtime import (
+    CAPABILITY_AUDIO_GENERATE,
+    CAPABILITY_IMAGE_GENERATE,
     CAPABILITY_IMAGE_REFERENCE,
     CAPABILITY_VIDEO_GENERATE,
     META_CAPABILITY_API_KEY_ENV,
@@ -12,6 +16,7 @@ from opensquilla.skills.capability_runtime import (
     META_CAPABILITY_PROVIDER_ENV,
 )
 from opensquilla.skills.eligibility import EligibilityContext
+from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.readiness import (
     META_OPENROUTER_API_KEY_ENV,
@@ -26,6 +31,14 @@ from opensquilla.skills.types import (
     SkillPlatformMeta,
     SkillRequires,
     SkillSpec,
+)
+
+_BUNDLED = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "opensquilla"
+    / "skills"
+    / "bundled"
 )
 
 
@@ -58,14 +71,66 @@ def _spec(
 def _trusted_short_drama_fixture(
     *,
     layer: SkillLayer = SkillLayer.BUNDLED,
-) -> tuple[SkillSpec, object, SkillSpec, SkillSpec]:
+) -> tuple[SkillSpec, object, SkillSpec, SkillSpec, dict[str, SkillSpec]]:
     image = _spec("nano-banana-pro", env_any=["OPENROUTER_API_KEY"])
     video = _spec(
         "seedance-2-prompt",
         env_any=["OPENROUTER_API_KEY", "ARK_API_KEY"],
     )
+    review = _spec("short-drama-review-normalizer")
     consent = "'DECISION: proceed' in outputs.review_normalize"
     steps: list[dict[str, object]] = [
+        {
+            "id": "review_gate",
+            "kind": "user_input",
+            "clarify": {
+                "mode": "form",
+                "fields": [
+                    {
+                        "name": "review",
+                        "type": "string",
+                        "required": True,
+                        "prompt": "Review",
+                    }
+                ],
+            },
+        },
+        {
+            "id": "review_intent",
+            "kind": "skill_exec",
+            "skill": review.name,
+            "depends_on": ["review_gate"],
+        },
+        {
+            "id": "script_revised",
+            "kind": "llm_chat",
+            "depends_on": ["review_intent"],
+            "when": "'DECISION: revise' in outputs.review_intent",
+        },
+        {
+            "id": "revision_confirm_gate",
+            "kind": "user_input",
+            "depends_on": ["review_intent", "script_revised"],
+            "when": "'DECISION: revise' in outputs.review_intent",
+            "clarify": {
+                "mode": "form",
+                "fields": [
+                    {
+                        "name": "review",
+                        "type": "string",
+                        "required": True,
+                        "prompt": "Approve revised script",
+                    }
+                ],
+            },
+        },
+        {
+            "id": "review_normalize",
+            "kind": "skill_exec",
+            "skill": review.name,
+            "depends_on": ["review_intent", "revision_confirm_gate"],
+            "with": {"payload": {"phase": "media_approval"}},
+        },
         {
             "id": "reference_image",
             "kind": "skill_exec",
@@ -111,7 +176,8 @@ def _trusted_short_drama_fixture(
     )
     plan = parse_meta_plan(meta)
     assert plan is not None
-    return meta, plan, image, video
+    skill_index = {spec.name: spec for spec in (meta, review, image, video)}
+    return meta, plan, image, video, skill_index
 
 
 def test_openrouter_config_key_satisfies_canonical_skill_env_without_exposing_key(
@@ -126,21 +192,23 @@ def test_openrouter_config_key_satisfies_canonical_skill_env_without_exposing_ke
             api_key_env="",
         )
     )
-    meta, plan, image, video = _trusted_short_drama_fixture()
+    meta, plan, image, video, skill_index = _trusted_short_drama_fixture()
 
     aliases = configured_meta_readiness_env_aliases(
         config,
         parent_spec=meta,
         plan=plan,
+        skill_resolver=skill_index,
     )
     readiness_ctx = meta_readiness_context(
         config=config,
         parent_spec=meta,
         plan=plan,
+        skill_resolver=skill_index,
     )
     readiness = assess_meta_skill_readiness(
         meta,
-        skill_index={spec.name: spec for spec in (meta, image, video)},
+        skill_index=skill_index,
         ctx=readiness_ctx,
         config=config,
         validated_plan=plan,
@@ -164,15 +232,16 @@ def test_openrouter_custom_api_key_env_satisfies_canonical_skill_env(monkeypatch
             api_key_env="OPENSQUILLA_TEST_CUSTOM_OPENROUTER_KEY",
         )
     )
-    meta, plan, image, video = _trusted_short_drama_fixture()
+    meta, plan, image, video, skill_index = _trusted_short_drama_fixture()
 
     readiness = assess_meta_skill_readiness(
         meta,
-        skill_index={spec.name: spec for spec in (meta, image, video)},
+        skill_index=skill_index,
         ctx=meta_readiness_context(
             config=config,
             parent_spec=meta,
             plan=plan,
+            skill_resolver=skill_index,
         ),
         config=config,
         validated_plan=plan,
@@ -192,12 +261,13 @@ def test_parent_runtime_env_scopes_active_key_to_paid_media_skills(monkeypatch) 
             api_key_env="",
         )
     )
-    meta, plan, _image, _video = _trusted_short_drama_fixture()
+    meta, plan, _image, _video, skill_index = _trusted_short_drama_fixture()
 
     runtime_env = configured_meta_skill_runtime_env(
         config,
         parent_spec=meta,
         plan=plan,
+        skill_resolver=skill_index,
     )
 
     assert set(runtime_env) == {"nano-banana-pro", "seedance-2-prompt"}
@@ -236,18 +306,20 @@ def test_secondary_openrouter_profile_satisfies_paid_media_readiness(
             )
         },
     )
-    meta, plan, _image, _video = _trusted_short_drama_fixture()
+    meta, plan, _image, _video, skill_index = _trusted_short_drama_fixture()
 
     assert configured_meta_readiness_env_aliases(
         config,
         parent_spec=meta,
         plan=plan,
+        skill_resolver=skill_index,
     ) == ("OPENROUTER_API_KEY",)
     runtime_env = configured_meta_skill_runtime_env(
         config,
         parent_spec=meta,
         plan=plan,
         session_key="agent:main:secondary-profile",
+        skill_resolver=skill_index,
     )
 
     assert runtime_env["nano-banana-pro"][META_CAPABILITY_API_KEY_ENV] == secret
@@ -257,6 +329,7 @@ def test_secondary_openrouter_profile_satisfies_paid_media_readiness(
             config,
             parent_spec=meta,
             plan=plan,
+            skill_resolver=skill_index,
         )
     )
 
@@ -269,7 +342,7 @@ def test_missing_media_provider_projects_generic_manual_setup_action(
         "opensquilla.skills.meta.readiness.is_skill_available_live",
         lambda _name: True,
     )
-    meta, plan, image, video = _trusted_short_drama_fixture()
+    meta, plan, image, video, skill_index = _trusted_short_drama_fixture()
     config = SimpleNamespace(
         llm=SimpleNamespace(
             provider="tokenrhythm",
@@ -283,7 +356,7 @@ def test_missing_media_provider_projects_generic_manual_setup_action(
 
     readiness = assess_meta_skill_readiness(
         meta,
-        skill_index={spec.name: spec for spec in (meta, image, video)},
+        skill_index=skill_index,
         config=config,
         validated_plan=plan,
     )
@@ -311,6 +384,121 @@ def test_missing_media_provider_projects_generic_manual_setup_action(
     assert "OPENROUTER_API_KEY" not in repr(payload)
 
 
+def test_awesome_webpage_missing_key_uses_generic_provider_setup_handoff(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    loader = SkillLoader(
+        bundled_dir=_BUNDLED,
+        snapshot_path=tmp_path / "awesome-readiness-snapshot.json",
+    )
+    skill_index = {skill.name: skill for skill in loader.load_all()}
+    meta = skill_index["AwesomeWebpageMetaSkill"]
+    plan = parse_meta_plan(meta)
+    assert plan is not None
+    config = SimpleNamespace(
+        llm=SimpleNamespace(
+            provider="tokenrhythm",
+            model="synthetic-primary-model",
+            api_key="synthetic-primary-key",
+            api_key_env="",
+            base_url="https://tokenrhythm.studio/v1",
+            proxy="",
+            provider_routing={},
+        ),
+        llm_profiles={},
+    )
+
+    readiness = assess_meta_skill_readiness(
+        meta,
+        skill_index=skill_index,
+        config=config,
+        validated_plan=plan,
+        verify_capabilities=False,
+    )
+
+    assert readiness.ready is False
+    assert readiness.missing_provider_capabilities == (
+        CAPABILITY_AUDIO_GENERATE,
+        CAPABILITY_IMAGE_GENERATE,
+        CAPABILITY_VIDEO_GENERATE,
+    )
+    assert readiness.missing_env == ()
+    assert readiness.missing_env_any == ()
+    assert len(readiness.manual_setup_actions) == 1
+    action = readiness.manual_setup_actions[0]
+    assert action.id == "provider:openrouter"
+    assert action.kind == "provider_connection"
+    assert action.provider_id == "openrouter"
+    assert action.label == "OpenRouter"
+    assert "synthetic-primary-key" not in repr(readiness.to_dict())
+
+
+def test_awesome_webpage_secondary_profile_satisfies_readiness_and_runtime_env(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    loader = SkillLoader(
+        bundled_dir=_BUNDLED,
+        snapshot_path=tmp_path / "awesome-profile-snapshot.json",
+    )
+    skill_index = {skill.name: skill for skill in loader.load_all()}
+    meta = skill_index["AwesomeWebpageMetaSkill"]
+    plan = parse_meta_plan(meta)
+    assert plan is not None
+    secret = "synthetic-awesome-profile-key"
+    config = SimpleNamespace(
+        llm=SimpleNamespace(
+            provider="tokenrhythm",
+            model="synthetic-primary-model",
+            api_key="synthetic-primary-key",
+            api_key_env="",
+            base_url="https://tokenrhythm.studio/v1",
+            proxy="",
+            provider_routing={},
+        ),
+        llm_profiles={
+            "openrouter": SimpleNamespace(
+                model="synthetic-profile-model",
+                api_key=secret,
+                api_key_env="",
+                api_key_env_pool=[],
+                base_url="https://openrouter.ai/api/v1",
+                proxy="",
+            )
+        },
+    )
+
+    readiness = assess_meta_skill_readiness(
+        meta,
+        skill_index=skill_index,
+        config=config,
+        validated_plan=plan,
+        verify_capabilities=False,
+    )
+    runtime_env = configured_meta_skill_runtime_env(
+        config,
+        parent_spec=meta,
+        plan=plan,
+        session_key="agent:main:awesome-profile",
+        skill_resolver=skill_index,
+    )
+
+    assert readiness.ready is True
+    assert set(runtime_env) == {
+        "audio-cog",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+    }
+    assert all(
+        values[META_CAPABILITY_API_KEY_ENV] == secret
+        for values in runtime_env.values()
+    )
+    assert secret not in repr(readiness.to_dict())
+
+
 def test_invalid_media_provider_proxy_projects_secret_free_manual_action(
     monkeypatch,
 ) -> None:
@@ -318,7 +506,7 @@ def test_invalid_media_provider_proxy_projects_secret_free_manual_action(
         "opensquilla.skills.meta.readiness.is_skill_available_live",
         lambda _name: True,
     )
-    meta, plan, image, video = _trusted_short_drama_fixture()
+    meta, plan, image, video, skill_index = _trusted_short_drama_fixture()
     secret = "synthetic-invalid-proxy-readiness-key"
     proxy_secret = "synthetic-proxy-password"
     config = SimpleNamespace(
@@ -336,7 +524,7 @@ def test_invalid_media_provider_proxy_projects_secret_free_manual_action(
 
     readiness = assess_meta_skill_readiness(
         meta,
-        skill_index={spec.name: spec for spec in (meta, image, video)},
+        skill_index=skill_index,
         config=config,
         validated_plan=plan,
     )
@@ -359,7 +547,7 @@ def test_workspace_parent_cannot_use_provider_alias_for_bundled_paid_children(
         "opensquilla.skills.meta.readiness.is_skill_available_live",
         lambda _name: True,
     )
-    meta, plan, image, video = _trusted_short_drama_fixture(
+    meta, plan, image, video, skill_index = _trusted_short_drama_fixture(
         layer=SkillLayer.WORKSPACE,
     )
     provider_resolution_calls = 0
@@ -388,7 +576,7 @@ def test_workspace_parent_cannot_use_provider_alias_for_bundled_paid_children(
 
     readiness = assess_meta_skill_readiness(
         meta,
-        skill_index={spec.name: spec for spec in (meta, image, video)},
+        skill_index=skill_index,
         config=config,
         validated_plan=plan,
     )
@@ -399,6 +587,42 @@ def test_workspace_parent_cannot_use_provider_alias_for_bundled_paid_children(
     assert ("OPENROUTER_API_KEY",) in readiness.missing_env_any
     assert ("OPENROUTER_API_KEY", "ARK_API_KEY") in readiness.missing_env_any
     assert provider_resolution_calls == 0
+
+
+def test_shadowed_review_normalizer_has_actionable_fail_closed_readiness() -> None:
+    meta, plan, _image, _video, skill_index = _trusted_short_drama_fixture()
+    skill_index["short-drama-review-normalizer"] = replace(
+        skill_index["short-drama-review-normalizer"],
+        layer=SkillLayer.WORKSPACE,
+        base_dir="/synthetic/workspace/short-drama-review-normalizer",
+    )
+    config = SimpleNamespace(
+        llm=SimpleNamespace(
+            provider="openrouter",
+            model="synthetic-model",
+            api_key="synthetic-config-key",
+            api_key_env="",
+            base_url="https://openrouter.ai/api/v1",
+            proxy="",
+            provider_routing={},
+        ),
+        llm_profiles={},
+    )
+
+    readiness = assess_meta_skill_readiness(
+        meta,
+        skill_index=skill_index,
+        config=config,
+        validated_plan=plan,
+    )
+
+    assert readiness.ready is False
+    assert readiness.missing_provider_capabilities == ()
+    assert readiness.manual_setup_actions == ()
+    assert readiness.reasons == (
+        "A trusted provider workflow component is overridden by a higher-priority "
+        "skill source. Remove or rename that override before running this MetaSkill.",
+    )
 
 
 def test_blank_environment_value_does_not_satisfy_readiness(monkeypatch) -> None:
@@ -434,21 +658,23 @@ def test_config_credential_alias_fails_closed_for_wrong_provider_or_empty_env(
             api_key_env="OPENSQUILLA_TEST_EMPTY_OPENROUTER_KEY",
         )
     )
-    meta, plan, image, video = _trusted_short_drama_fixture()
+    meta, plan, image, video, skill_index = _trusted_short_drama_fixture()
 
     for config in (wrong_provider, missing_custom_env):
         assert configured_meta_readiness_env_aliases(
             config,
             parent_spec=meta,
             plan=plan,
+            skill_resolver=skill_index,
         ) == ()
         readiness = assess_meta_skill_readiness(
             meta,
-            skill_index={spec.name: spec for spec in (meta, image, video)},
+            skill_index=skill_index,
             ctx=meta_readiness_context(
                 config=config,
                 parent_spec=meta,
                 plan=plan,
+                skill_resolver=skill_index,
             ),
             config=config,
             validated_plan=plan,

@@ -13,7 +13,7 @@ configuration remain compatible inputs.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -25,7 +25,9 @@ from opensquilla.provider.registry import UnknownProviderError, get_provider_spe
 from opensquilla.provider.selector import ProviderConfig
 from opensquilla.skills.types import SkillLayer
 
+CAPABILITY_IMAGE_GENERATE = "image.generate"
 CAPABILITY_IMAGE_REFERENCE = "image.generate.reference"
+CAPABILITY_AUDIO_GENERATE = "audio.generate"
 CAPABILITY_VIDEO_GENERATE = "video.generate"
 
 META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
@@ -48,12 +50,43 @@ META_CAPABILITY_INTERNAL_SESSION_KEY = "__opensquilla_meta_session_key"
 META_OPENROUTER_API_KEY_ENV = "OPENSQUILLA_META_OPENROUTER_API_KEY"
 
 _OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
-_TRUSTED_META_CAPABILITY_PARENT = "meta-short-drama"
-_TRUSTED_META_CAPABILITY_CONSUMERS = (
+_TRUSTED_SHORT_DRAMA_PARENT = "meta-short-drama"
+_TRUSTED_SHORT_DRAMA_CONSUMERS = (
     "nano-banana-pro",
     "seedance-2-prompt",
 )
+_TRUSTED_AWESOME_WEBPAGE_PARENT = "AwesomeWebpageMetaSkill"
+_TRUSTED_AWESOME_WEBPAGE_CONSUMERS = (
+    "audio-cog",
+    "nano-banana-pro-openrouter",
+    "openrouter-video-generator",
+)
+_TRUSTED_META_CAPABILITY_PARENTS = frozenset(
+    {_TRUSTED_SHORT_DRAMA_PARENT, _TRUSTED_AWESOME_WEBPAGE_PARENT}
+)
 _CONSENT_PROCEED_WHEN = "'DECISION: proceed' in outputs.review_normalize"
+_AWESOME_APPROVAL_VALUE = "APPROVE_MEDIA_SEND_AND_COST"
+_AWESOME_APPROVAL_WHEN = (
+    "inputs.get('collected', {}).get('media_provider_approval', {})"
+    ".get('approval', '') == 'APPROVE_MEDIA_SEND_AND_COST' and not "
+    "inputs.get('collected', {}).get('media_provider_approval', {})"
+    ".get('additional_notes', '')"
+)
+
+
+@dataclass(frozen=True)
+class CapabilityProviderCandidate:
+    """One ordered provider deployment option for a capability.
+
+    ``profile_preference`` is intentionally code-owned rather than UI-owned.
+    The current resolver supports the ordinary active connection first and
+    then the provider's secondary profile. Future candidates can be appended
+    without changing readiness/setup payloads or adding per-MetaSkill settings.
+    """
+
+    provider_id: str
+    model: str
+    profile_preference: str = "active_then_provider_profile"
 
 
 @dataclass(frozen=True)
@@ -62,9 +95,20 @@ class CapabilityRequirement:
 
     capability_id: str
     consumer: str
-    provider_id: str
-    model: str
+    provider_candidates: tuple[CapabilityProviderCandidate, ...]
     portable_env_aliases: tuple[str, ...] = ()
+
+    @property
+    def provider_id(self) -> str:
+        """Compatibility projection for the highest-priority candidate."""
+
+        return self.provider_candidates[0].provider_id
+
+    @property
+    def model(self) -> str:
+        """Compatibility projection for the highest-priority candidate."""
+
+        return self.provider_candidates[0].model
 
 
 @dataclass(frozen=True)
@@ -73,6 +117,7 @@ class CapabilityConnectionStatus:
 
     requirement: CapabilityRequirement
     ready: bool
+    selected_candidate: CapabilityProviderCandidate | None = None
     reason_code: str = ""
     connection_source: str = "none"
     credential_source: str = "none"
@@ -82,7 +127,8 @@ class CapabilityConnectionStatus:
 
     @property
     def provider_id(self) -> str:
-        return self.requirement.provider_id
+        candidate = self.selected_candidate
+        return candidate.provider_id if candidate is not None else self.requirement.provider_id
 
 
 @dataclass(frozen=True)
@@ -119,8 +165,12 @@ _CONSUMER_REQUIREMENTS: dict[str, tuple[CapabilityRequirement, ...]] = {
         CapabilityRequirement(
             capability_id=CAPABILITY_IMAGE_REFERENCE,
             consumer="nano-banana-pro",
-            provider_id="openrouter",
-            model="google/gemini-3.1-flash-image-preview",
+            provider_candidates=(
+                CapabilityProviderCandidate(
+                    provider_id="openrouter",
+                    model="google/gemini-3.1-flash-image-preview",
+                ),
+            ),
             portable_env_aliases=("OPENROUTER_API_KEY",),
         ),
     ),
@@ -128,9 +178,49 @@ _CONSUMER_REQUIREMENTS: dict[str, tuple[CapabilityRequirement, ...]] = {
         CapabilityRequirement(
             capability_id=CAPABILITY_VIDEO_GENERATE,
             consumer="seedance-2-prompt",
-            provider_id="openrouter",
-            model="bytedance/seedance-2.0",
+            provider_candidates=(
+                CapabilityProviderCandidate(
+                    provider_id="openrouter",
+                    model="bytedance/seedance-2.0",
+                ),
+            ),
             portable_env_aliases=("OPENROUTER_API_KEY",),
+        ),
+    ),
+    "nano-banana-pro-openrouter": (
+        CapabilityRequirement(
+            capability_id=CAPABILITY_IMAGE_GENERATE,
+            consumer="nano-banana-pro-openrouter",
+            provider_candidates=(
+                CapabilityProviderCandidate(
+                    provider_id="openrouter",
+                    model="google/gemini-3-pro-image-preview",
+                ),
+            ),
+        ),
+    ),
+    "audio-cog": (
+        CapabilityRequirement(
+            capability_id=CAPABILITY_AUDIO_GENERATE,
+            consumer="audio-cog",
+            provider_candidates=(
+                CapabilityProviderCandidate(
+                    provider_id="openrouter",
+                    model="openai/gpt-audio-mini",
+                ),
+            ),
+        ),
+    ),
+    "openrouter-video-generator": (
+        CapabilityRequirement(
+            capability_id=CAPABILITY_VIDEO_GENERATE,
+            consumer="openrouter-video-generator",
+            provider_candidates=(
+                CapabilityProviderCandidate(
+                    provider_id="openrouter",
+                    model="bytedance/seedance-2.0-fast",
+                ),
+            ),
         ),
     ),
 }
@@ -161,56 +251,60 @@ def _trusted_paid_step_contracts() -> dict[str, tuple[str, str]]:
 _TRUSTED_PAID_STEP_CONTRACTS = _trusted_paid_step_contracts()
 
 
-def trusted_capability_consumers_for_meta_plan(
-    parent_spec: Any,
-    plan: Any,
-) -> tuple[str, ...]:
-    """Authorize provider leases only for the exact code-owned workflow.
-
-    A bundled child is not an authority: workspace, project, personal, and
-    managed parents may legitimately compose bundled skills, but they must not
-    inherit a Gateway credential.  The parent layer/name and every paid step's
-    identity, execution kind, paid-side-effect marker, and post-review consent
-    condition are therefore checked together against a code-owned allowlist.
-    Any drift fails closed and yields no consumers.
-    """
-
+def _validate_short_drama_capability_contract(
+    steps_by_id: Mapping[str, Any],
+    raw_steps: tuple[Any, ...],
+) -> bool:
+    review_intent = steps_by_id.get("review_intent")
+    revision_gate = steps_by_id.get("revision_confirm_gate")
+    review_step = steps_by_id.get("review_normalize")
+    if review_intent is None or revision_gate is None or review_step is None:
+        return False
+    review_with = getattr(review_step, "with_args", None)
+    review_payload = (
+        review_with.get("payload") if isinstance(review_with, Mapping) else None
+    )
     if (
-        getattr(parent_spec, "name", None) != _TRUSTED_META_CAPABILITY_PARENT
-        or getattr(parent_spec, "kind", None) != "meta"
-        or getattr(parent_spec, "layer", None) != SkillLayer.BUNDLED
-        or bool(getattr(parent_spec, "disable_model_invocation", False))
-        or getattr(plan, "name", None) != _TRUSTED_META_CAPABILITY_PARENT
+        getattr(review_intent, "skill", None) != "short-drama-review-normalizer"
+        or getattr(review_intent, "kind", None) != "skill_exec"
+        or getattr(review_intent, "depends_on", None) != ("review_gate",)
+        or getattr(review_intent, "when", None) != ""
+        or getattr(review_intent, "route", None) != ()
+        or getattr(review_intent, "side_effect", None) != ""
+        or getattr(revision_gate, "kind", None) != "user_input"
+        or getattr(revision_gate, "depends_on", None)
+        != ("review_intent", "script_revised")
+        or getattr(revision_gate, "when", None)
+        != "'DECISION: revise' in outputs.review_intent"
+        or getattr(revision_gate, "route", None) != ()
+        or getattr(revision_gate, "side_effect", None) != ""
+        or getattr(revision_gate, "clarify_config", None) is None
+        or getattr(review_step, "skill", None)
+        != "short-drama-review-normalizer"
+        or getattr(review_step, "kind", None) != "skill_exec"
+        or getattr(review_step, "depends_on", None)
+        != ("review_intent", "revision_confirm_gate")
+        or getattr(review_step, "when", None) != ""
+        or getattr(review_step, "route", None) != ()
+        or getattr(review_step, "side_effect", None) != ""
+        or not isinstance(review_payload, Mapping)
+        or review_payload.get("phase") != "media_approval"
     ):
-        return ()
+        return False
 
-    raw_steps = getattr(plan, "steps", None)
-    if not isinstance(raw_steps, tuple):
-        return ()
-
-    capability_names = frozenset(_TRUSTED_META_CAPABILITY_CONSUMERS)
+    capability_names = frozenset(_TRUSTED_SHORT_DRAMA_CONSUMERS)
     matched: set[str] = set()
-    seen_ids: set[str] = set()
     for step in raw_steps:
         step_id = _text(getattr(step, "id", ""))
-        if not step_id or step_id in seen_ids:
-            return ()
-        seen_ids.add(step_id)
-
         routes = getattr(step, "route", ())
-        if not isinstance(routes, tuple):
-            return ()
         if any(_text(getattr(route, "to", "")) in capability_names for route in routes):
-            # A conditional route could otherwise smuggle a paid consumer into
-            # an unrelated, unreviewed step id.
-            return ()
-
+            return False
         skill = _text(getattr(step, "skill", ""))
         if skill not in capability_names:
             continue
         expected = _TRUSTED_PAID_STEP_CONTRACTS.get(step_id)
         if expected is None:
-            return ()
+            return False
         expected_skill, expected_when = expected
         if (
             skill != expected_skill
@@ -219,12 +313,224 @@ def trusted_capability_consumers_for_meta_plan(
             or getattr(step, "when", None) != expected_when
             or routes
         ):
-            return ()
+            return False
         matched.add(step_id)
+    return matched == set(_TRUSTED_PAID_STEP_CONTRACTS)
 
-    if matched != set(_TRUSTED_PAID_STEP_CONTRACTS):
+
+def _validate_awesome_webpage_capability_contract(
+    steps_by_id: Mapping[str, Any],
+    raw_steps: tuple[Any, ...],
+) -> bool:
+    gate = steps_by_id.get("media_provider_approval")
+    clarify = getattr(gate, "clarify_config", None)
+    fields = getattr(clarify, "fields", ())
+    if (
+        gate is None
+        or getattr(gate, "kind", None) != "user_input"
+        or getattr(gate, "depends_on", None) != ("page_outline", "media_strategy")
+        or getattr(gate, "when", None) != ""
+        or getattr(gate, "route", None) != ()
+        or getattr(gate, "side_effect", None) != ""
+        or getattr(clarify, "mode", None) != "form"
+        or getattr(clarify, "nl_extract", None) is not False
+        or not isinstance(fields, tuple)
+        or len(fields) != 2
+    ):
+        return False
+    approval = fields[0]
+    additional_notes = fields[1]
+    if (
+        getattr(approval, "name", None) != "approval"
+        or getattr(approval, "type", None) != "enum"
+        or getattr(approval, "required", None) is not True
+        or getattr(approval, "choices", None)
+        != (_AWESOME_APPROVAL_VALUE, "DECLINE_MEDIA_GENERATION")
+        or getattr(approval, "default", None) is not None
+        or getattr(additional_notes, "name", None) != "additional_notes"
+        or getattr(additional_notes, "type", None) != "string"
+        or getattr(additional_notes, "required", None) is not False
+        or getattr(additional_notes, "default", None) is not None
+    ):
+        return False
+
+    expected: dict[str, tuple[str, str, tuple[str, ...]]] = {
+        "image_aigc": (
+            "nano-banana-pro-openrouter",
+            (
+                f"{_AWESOME_APPROVAL_WHEN} and "
+                "inputs.get('collected', {}).get('ask_images', {})"
+                ".get('include_images', 'YES') == 'YES' and "
+                "(outputs.media_strategy == 'NEEDS_AIGC_IMAGE' or "
+                "'IMAGE_DOWNLOAD_INCOMPLETE:' in outputs.get('image_download', '') or "
+                "(outputs.media_strategy == 'IMAGE_SEARCH_READY' and "
+                "'IMAGE_READY:' not in outputs.get('image_download', '')))"
+            ),
+            (
+                "media_strategy",
+                "image_download",
+                "media_slots_normalize",
+                "media_provider_approval",
+            ),
+        ),
+        "audio_aigc": (
+            "audio-cog",
+            (
+                f"{_AWESOME_APPROVAL_WHEN} and "
+                "inputs.get('collected', {}).get('ask_audio', {})"
+                ".get('include_audio', 'YES') == 'YES'"
+            ),
+            ("audio_script", "media_provider_approval"),
+        ),
+        "video_aigc": (
+            "openrouter-video-generator",
+            (
+                f"{_AWESOME_APPROVAL_WHEN} and "
+                "inputs.get('collected', {}).get('ask_video', {})"
+                ".get('include_video', 'YES') == 'YES'"
+            ),
+            ("page_outline", "media_provider_approval"),
+        ),
+    }
+    matched: set[str] = set()
+    capability_names = frozenset(_TRUSTED_AWESOME_WEBPAGE_CONSUMERS)
+    for step in raw_steps:
+        step_id = _text(getattr(step, "id", ""))
+        routes = getattr(step, "route", ())
+        if any(_text(getattr(route, "to", "")) in capability_names for route in routes):
+            return False
+        skill = _text(getattr(step, "skill", ""))
+        if skill not in capability_names:
+            continue
+        contract = expected.get(step_id)
+        if contract is None:
+            return False
+        expected_skill, expected_when, expected_dependencies = contract
+        with_args = getattr(step, "with_args", None)
+        if (
+            skill != expected_skill
+            or getattr(step, "kind", None) != "skill_exec"
+            or getattr(step, "side_effect", None) != "external_paid_submit"
+            or getattr(step, "when", None) != expected_when
+            or getattr(step, "depends_on", None) != expected_dependencies
+            or routes
+            or not isinstance(with_args, Mapping)
+            or {"api_key", "api_key_env", "base_url"} & set(with_args)
+        ):
+            return False
+        matched.add(step_id)
+    return matched == set(expected)
+
+
+def trusted_capability_consumers_for_meta_plan(
+    parent_spec: Any,
+    plan: Any,
+    *,
+    skill_resolver: Any | None = None,
+) -> tuple[str, ...]:
+    """Authorize provider leases only for the exact code-owned workflow.
+
+    A bundled child is not an authority: workspace, project, personal, and
+    managed parents may legitimately compose bundled skills, but they must not
+    inherit a Gateway credential.  The parent layer/name and every paid step's
+    identity, execution kind, paid-side-effect marker, and post-review consent
+    condition are therefore checked together against a code-owned allowlist.
+    The complete execution plan must also equal the plan parsed from the
+    current bundled parent definition.  This prevents an old or tampered
+    replay snapshot from keeping the paid-step subset while replacing an
+    earlier review/normalization step that produces its consent signal. Every
+    executable child named by that plan must resolve from the bundled layer in
+    the same pinned catalog generation. Otherwise a workspace skill could
+    shadow the review normalizer, manufacture consent, and inherit a paid
+    provider connection indirectly. Any drift fails closed and yields no
+    consumers.
+    """
+
+    parent_name = _text(getattr(parent_spec, "name", ""))
+    if (
+        parent_name not in _TRUSTED_META_CAPABILITY_PARENTS
+        or getattr(parent_spec, "kind", None) != "meta"
+        or getattr(parent_spec, "layer", None) != SkillLayer.BUNDLED
+        or bool(getattr(parent_spec, "disable_model_invocation", False))
+        or getattr(plan, "name", None) != parent_name
+    ):
         return ()
-    return _TRUSTED_META_CAPABILITY_CONSUMERS
+
+    try:
+        from opensquilla.skills.meta.parser import MetaPlanError, parse_meta_plan
+
+        current_plan = parse_meta_plan(parent_spec)
+    except (MetaPlanError, TypeError, ValueError):
+        return ()
+    if current_plan is None or current_plan != plan:
+        return ()
+
+    raw_steps = getattr(plan, "steps", None)
+    if not isinstance(raw_steps, tuple):
+        return ()
+
+    def resolve_skill(name: str) -> Any | None:
+        if isinstance(skill_resolver, Mapping):
+            return skill_resolver.get(name)
+        getter = getattr(skill_resolver, "get_by_name", None)
+        if callable(getter):
+            return getter(name)
+        return None
+
+    # A capability decision without the exact catalog view used for execution
+    # cannot prove that a higher-precedence source did not shadow a trusted
+    # child. Fail closed instead of assuming names imply provenance.
+    resolved_parent = resolve_skill(parent_name)
+    if resolved_parent is None or resolved_parent != parent_spec:
+        return ()
+
+    executable_children: set[str] = set()
+    for step in raw_steps:
+        if getattr(step, "kind", None) not in {"agent", "skill_exec"}:
+            continue
+        skill = _text(getattr(step, "skill", ""))
+        if skill:
+            executable_children.add(skill)
+        routes = getattr(step, "route", ())
+        if not isinstance(routes, tuple):
+            return ()
+        executable_children.update(
+            target
+            for route in routes
+            if (target := _text(getattr(route, "to", "")))
+        )
+    for child_name in executable_children:
+        child = resolve_skill(child_name)
+        if (
+            child is None
+            or getattr(child, "name", None) != child_name
+            or getattr(child, "layer", None) != SkillLayer.BUNDLED
+        ):
+            return ()
+
+    seen_ids: set[str] = set()
+    for step in raw_steps:
+        step_id = _text(getattr(step, "id", ""))
+        if not step_id or step_id in seen_ids:
+            return ()
+        seen_ids.add(step_id)
+        routes = getattr(step, "route", ())
+        if not isinstance(routes, tuple):
+            return ()
+    steps_by_id = {_text(getattr(step, "id", "")): step for step in raw_steps}
+    if parent_name == _TRUSTED_SHORT_DRAMA_PARENT:
+        return (
+            _TRUSTED_SHORT_DRAMA_CONSUMERS
+            if _validate_short_drama_capability_contract(steps_by_id, raw_steps)
+            else ()
+        )
+    if parent_name == _TRUSTED_AWESOME_WEBPAGE_PARENT:
+        return (
+            _TRUSTED_AWESOME_WEBPAGE_CONSUMERS
+            if _validate_awesome_webpage_capability_contract(steps_by_id, raw_steps)
+            else ()
+        )
+    return ()
 
 
 def capability_requirements_for_consumers(
@@ -232,11 +538,11 @@ def capability_requirements_for_consumers(
 ) -> tuple[CapabilityRequirement, ...]:
     """Return stable, de-duplicated requirements for trusted consumers."""
 
-    requirements: dict[tuple[str, str, str], CapabilityRequirement] = {}
+    requirements: dict[tuple[tuple[str, ...], str, str], CapabilityRequirement] = {}
     for consumer in consumers:
         for requirement in _CONSUMER_REQUIREMENTS.get(str(consumer), ()):
             key = (
-                requirement.provider_id,
+                tuple(candidate.provider_id for candidate in requirement.provider_candidates),
                 requirement.capability_id,
                 requirement.consumer,
             )
@@ -419,7 +725,7 @@ def _active_provider_config(
 
 def _active_credential_endpoint_mismatch(
     active: _ActiveProviderResolution | None,
-    requirement: CapabilityRequirement,
+    provider_id: str,
 ) -> bool:
     """Reject a bare registry key paired with an explicit foreign origin."""
 
@@ -427,7 +733,7 @@ def _active_credential_endpoint_mismatch(
         return False
     provider_config = active.provider_config
     return bool(
-        _text(provider_config.provider).lower() == requirement.provider_id
+        _text(provider_config.provider).lower() == provider_id
         and not active.base_url_from_env
         and not base_url_allows_credential_reuse(
             active.credential_endpoint,
@@ -450,6 +756,7 @@ def _connection_source(credential_source: str) -> str:
 
 def _status_from_resolution(
     requirement: CapabilityRequirement,
+    candidate: CapabilityProviderCandidate,
     resolution: Any,
 ) -> CapabilityConnectionStatus:
     provider_config = getattr(resolution, "provider_config", None)
@@ -466,6 +773,7 @@ def _status_from_resolution(
     return CapabilityConnectionStatus(
         requirement=requirement,
         ready=ready,
+        selected_candidate=candidate,
         reason_code=reason,
         connection_source=_connection_source(
             _text(getattr(resolution, "credential_source", "none"))
@@ -490,6 +798,7 @@ def _profile_pool_acquirer(*, acquire: bool):
 def _legacy_openrouter_connection(
     config: Any,
     requirement: CapabilityRequirement,
+    candidate: CapabilityProviderCandidate,
 ) -> CapabilityConnectionLease | None:
     image_config = getattr(config, "image_generation", None)
     providers = getattr(image_config, "providers", None)
@@ -531,6 +840,7 @@ def _legacy_openrouter_connection(
     status = CapabilityConnectionStatus(
         requirement=requirement,
         ready=not reason,
+        selected_candidate=candidate,
         reason_code=reason,
         connection_source="legacy_image_generation",
         credential_source=credential_source,
@@ -541,9 +851,10 @@ def _legacy_openrouter_connection(
     return CapabilityConnectionLease(status=status, api_key=key, base_url=base_url)
 
 
-def _resolve_capability_connection(
+def _resolve_capability_candidate(
     config: Any | None,
     requirement: CapabilityRequirement,
+    candidate: CapabilityProviderCandidate,
     *,
     acquire: bool,
     session_key: str,
@@ -554,25 +865,29 @@ def _resolve_capability_connection(
         llm=SimpleNamespace(provider="", proxy=""),
         llm_profiles={},
     )
-    active = _active_provider_config(effective_config, model=requirement.model)
+    active = _active_provider_config(effective_config, model=candidate.model)
     resolution = resolve_provider_deployment(
         effective_config,
-        requirement.provider_id,
-        requirement.model,
+        candidate.provider_id,
+        candidate.model,
         inherited_provider_config=(active.provider_config if active is not None else None),
         session_key=session_key,
         credential_pool_acquirer=_profile_pool_acquirer(acquire=acquire),
     )
-    status = _status_from_resolution(requirement, resolution)
-    active_endpoint_mismatch = _active_credential_endpoint_mismatch(active, requirement)
+    status = _status_from_resolution(requirement, candidate, resolution)
+    active_endpoint_mismatch = _active_credential_endpoint_mismatch(
+        active,
+        candidate.provider_id,
+    )
     if (
         active is not None
         and active.credential_source != "inherited"
-        and _text(active.provider_config.provider).lower() == requirement.provider_id
+        and _text(active.provider_config.provider).lower() == candidate.provider_id
     ):
         status = CapabilityConnectionStatus(
             requirement=requirement,
             ready=status.ready,
+            selected_candidate=candidate,
             reason_code=status.reason_code,
             connection_source="active_llm",
             credential_source=active.credential_source,
@@ -584,6 +899,7 @@ def _resolve_capability_connection(
         status = CapabilityConnectionStatus(
             requirement=requirement,
             ready=False,
+            selected_candidate=candidate,
             reason_code="credential_endpoint_mismatch",
             connection_source="active_llm",
             credential_source="registry_env",
@@ -605,10 +921,14 @@ def _resolve_capability_connection(
         # Preserve active/profile precedence, but let an explicitly configured
         # legacy media connection outrank a bare canonical environment key.
         if (
-            requirement.provider_id == "openrouter"
+            candidate.provider_id == "openrouter"
             and status.credential_source == "registry_env"
         ):
-            legacy = _legacy_openrouter_connection(effective_config, requirement)
+            legacy = _legacy_openrouter_connection(
+                effective_config,
+                requirement,
+                candidate,
+            )
             if (
                 legacy is not None
                 and legacy.ready
@@ -630,11 +950,56 @@ def _resolve_capability_connection(
     # image-generation section but have not yet created an LLM profile.  The
     # key and endpoint are taken as one tuple; a canonical OpenRouter env key
     # never follows an unrelated custom legacy endpoint.
-    if requirement.provider_id == "openrouter":
-        legacy = _legacy_openrouter_connection(effective_config, requirement)
+    if candidate.provider_id == "openrouter":
+        legacy = _legacy_openrouter_connection(
+            effective_config,
+            requirement,
+            candidate,
+        )
         if legacy is not None and legacy.ready:
             return legacy
     return CapabilityConnectionLease(status=status)
+
+
+def _resolve_capability_connection(
+    config: Any | None,
+    requirement: CapabilityRequirement,
+    *,
+    acquire: bool,
+    session_key: str,
+) -> CapabilityConnectionLease:
+    """Resolve ordered candidates and return the first ready deployment."""
+
+    first_failure: CapabilityConnectionLease | None = None
+    for candidate in requirement.provider_candidates:
+        # This preference is an explicit part of the requirement contract. A
+        # future resolver can add other strategies without UI-specific logic;
+        # unknown strategies fail this candidate closed today.
+        if candidate.profile_preference != "active_then_provider_profile":
+            status = CapabilityConnectionStatus(
+                requirement=requirement,
+                ready=False,
+                selected_candidate=candidate,
+                reason_code="unsupported_profile_preference",
+            )
+            lease = CapabilityConnectionLease(status=status)
+        else:
+            lease = _resolve_capability_candidate(
+                config,
+                requirement,
+                candidate,
+                acquire=acquire,
+                session_key=session_key,
+            )
+        if lease.ready:
+            return lease
+        if first_failure is None:
+            first_failure = lease
+    if first_failure is not None:
+        return first_failure
+    raise ValueError(
+        f"capability requirement {requirement.capability_id!r} has no provider candidates"
+    )
 
 
 def resolve_capability_status(
@@ -674,10 +1039,15 @@ def capability_runtime_env_for_consumers(
     parent_spec: Any,
     plan: Any,
     session_key: str,
+    skill_resolver: Any | None = None,
 ) -> dict[str, dict[str, str]]:
     """Build child environments only for a validated trusted parent plan."""
 
-    authorized = trusted_capability_consumers_for_meta_plan(parent_spec, plan)
+    authorized = trusted_capability_consumers_for_meta_plan(
+        parent_spec,
+        plan,
+        skill_resolver=skill_resolver,
+    )
     requested = tuple(dict.fromkeys(_text(consumer) for consumer in consumers))
     if not authorized:
         return {}
@@ -685,27 +1055,24 @@ def capability_runtime_env_for_consumers(
     requirements = capability_requirements_for_consumers(
         consumer for consumer in requested if consumer in authorized
     )
-    leases: dict[str, CapabilityConnectionLease] = {}
     result: dict[str, dict[str, str]] = {}
     for requirement in requirements:
-        lease = leases.get(requirement.provider_id)
-        if lease is None:
-            lease = lease_capability_connection(
-                config,
-                requirement,
-                session_key=session_key,
-            )
-            leases[requirement.provider_id] = lease
+        lease = lease_capability_connection(
+            config,
+            requirement,
+            session_key=session_key,
+        )
         if not lease.ready:
             continue
+        provider_id = lease.status.provider_id
         values = {
-            META_CAPABILITY_PROVIDER_ENV: requirement.provider_id,
+            META_CAPABILITY_PROVIDER_ENV: provider_id,
             META_CAPABILITY_API_KEY_ENV: lease.api_key,
             META_CAPABILITY_BASE_URL_ENV: lease.base_url,
         }
         if lease.proxy:
             values[META_CAPABILITY_PROXY_ENV] = lease.proxy
-        if requirement.provider_id == "openrouter":
+        if provider_id == "openrouter":
             values[META_OPENROUTER_API_KEY_ENV] = lease.api_key
         if (
             lease.status.credential_source == "profile_pool"
@@ -717,7 +1084,7 @@ def capability_runtime_env_for_consumers(
                     META_CAPABILITY_INTERNAL_CREDENTIAL_LEASE_TOKEN: (
                         lease.credential_pool_lease_token
                     ),
-                    META_CAPABILITY_INTERNAL_PROVIDER: requirement.provider_id,
+                    META_CAPABILITY_INTERNAL_PROVIDER: provider_id,
                     META_CAPABILITY_INTERNAL_SESSION_KEY: (
                         session_key or "meta-capability-runtime"
                     ),
@@ -728,6 +1095,8 @@ def capability_runtime_env_for_consumers(
 
 
 __all__ = [
+    "CAPABILITY_AUDIO_GENERATE",
+    "CAPABILITY_IMAGE_GENERATE",
     "CAPABILITY_IMAGE_REFERENCE",
     "CAPABILITY_VIDEO_GENERATE",
     "META_CAPABILITY_API_KEY_ENV",
@@ -741,6 +1110,7 @@ __all__ = [
     "META_OPENROUTER_API_KEY_ENV",
     "CapabilityConnectionLease",
     "CapabilityConnectionStatus",
+    "CapabilityProviderCandidate",
     "CapabilityRequirement",
     "capability_requirements_for_consumers",
     "capability_provider_display_name",

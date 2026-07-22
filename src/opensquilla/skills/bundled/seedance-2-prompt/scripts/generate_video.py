@@ -1846,7 +1846,7 @@ def main() -> int:
 
     if policy_failure is not None:
         try:
-            _persist_policy_rejection_receipt(
+            public_receipt = _persist_policy_rejection_receipt(
                 out_path,
                 provider=provider,
                 model=model_id,
@@ -1855,6 +1855,10 @@ def main() -> int:
         except (OSError, RuntimeError) as exc:
             print(f"Error: could not persist policy-rejection receipt: {exc}", file=sys.stderr)
         else:
+            # Preserve the non-zero exit/failover behavior while giving the
+            # parent one sanitized, current-invocation receipt line to bind to
+            # the sidecar. Workspace sidecars alone are never trusted.
+            _print_receipt("VIDEO_GENERATION_RECEIPT", public_receipt)
             print(
                 "  sanitized provider-policy rejection recorded for delivery audit",
                 file=sys.stderr,

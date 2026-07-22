@@ -562,6 +562,240 @@ async def test_short_drama_pause_resume_keeps_draft_and_reread_in_same_run_folde
     assert resumed.step_outputs["script_reread"] == draft_text
 
 
+def _short_drama_consent_e2e_plan(loader: SkillLoader) -> MetaPlan:
+    """Trim the real manifest to its two review gates plus one paid probe."""
+
+    spec = loader.get_by_name("meta-short-drama")
+    assert spec is not None
+    full_plan = parse_meta_plan(spec)
+    assert full_plan is not None
+    full_steps = {step.id: step for step in full_plan.steps}
+    review_cfg = full_steps["review_gate"].clarify_config
+    assert review_cfg is not None
+    return replace(
+        full_plan,
+        steps=(
+            replace(
+                full_steps["review_gate"],
+                depends_on=(),
+                clarify_config=replace(
+                    review_cfg,
+                    intro="Review the draft.",
+                    intro_by_language={},
+                ),
+            ),
+            replace(full_steps["review_intent"], depends_on=("review_gate",)),
+            replace(full_steps["script_revised"], depends_on=("review_intent",)),
+            replace(
+                full_steps["revision_confirm_gate"],
+                depends_on=("review_intent", "script_revised"),
+            ),
+            replace(
+                full_steps["review_normalize"],
+                depends_on=("review_intent", "revision_confirm_gate"),
+            ),
+            replace(
+                full_steps["reference_image"],
+                depends_on=("review_normalize",),
+                with_args={},
+            ),
+        ),
+        final_text_mode="raw",
+        output_contract={},
+    )
+
+
+def _short_drama_consent_e2e_harness(
+    writer: MetaRunWriter,
+    tmp_path: Path,
+    *,
+    run_id: str,
+):
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        snapshot_path=tmp_path / f"{run_id}-skills-snapshot.json",
+    )
+    loader.invalidate_cache()
+    plan = _short_drama_consent_e2e_plan(loader)
+    inputs = _seed_running_run(writer, plan, run_id=run_id)
+    paid_calls: list[str] = []
+    orch = MetaOrchestrator(
+        agent_runner=None,  # type: ignore[arg-type]
+        skill_loader=loader,
+        dao=writer,
+        workspace_dir=str(tmp_path / "workspace"),
+        session_key="S1",
+    )
+
+    async def dispatch(step, effective_skill, match_inputs, outputs):
+        if step.kind == "user_input":
+            async for event in orch._dispatch_one_step(
+                step,
+                effective_skill,
+                match_inputs,
+                outputs,
+                run_id=run_id,
+                session_id="S1",
+            ):
+                yield event
+            return
+        if step.id in {"review_intent", "review_normalize"}:
+            async for event in orch._dispatch_step_stream(
+                step,
+                effective_skill,
+                match_inputs,
+                outputs,
+            ):
+                yield event
+            return
+        if step.id == "script_revised":
+            yield _StepDone(text="=== OVERVIEW ===\nN_SHOTS: 3\n=== SHOT_1 ===\n")
+            return
+        if step.id == "reference_image":
+            paid_calls.append(step.id)
+            yield _StepDone(text="provider-call-stubbed")
+
+    return plan, inputs, orch, paid_calls, dispatch
+
+
+@pytest.mark.asyncio
+async def test_short_drama_adjustment_pauses_again_before_any_paid_provider_step(
+    writer: MetaRunWriter,
+    tmp_path: Path,
+) -> None:
+    """Edit-only reply produces a revised preview; explicit approval unlocks paid work."""
+
+    plan, inputs, orch, paid_calls, dispatch = _short_drama_consent_e2e_harness(
+        writer,
+        tmp_path,
+        run_id="short-drama-consent",
+    )
+
+    initial = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="short-drama-consent",
+        session_id="S1",
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert initial.paused is True
+    assert initial.paused_payload is not None
+    assert initial.paused_payload.step_id == "review_gate"
+
+    after_adjustment = await orch.resume(
+        run_id="short-drama-consent",
+        session_id="S1",
+        filled_fields={"review": "改成 3 个分镜，结尾更温暖"},
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    assert after_adjustment.paused is True
+    assert after_adjustment.paused_payload is not None
+    assert after_adjustment.paused_payload.step_id == "revision_confirm_gate"
+    assert "N_SHOTS: 3" in after_adjustment.paused_payload.schema.intro
+    assert paid_calls == []
+    assert "DECISION: revise" in after_adjustment.step_outputs["review_intent"]
+
+    after_confirmation = await orch.resume(
+        run_id="short-drama-consent",
+        session_id="S1",
+        filled_fields={"review": "继续生成"},
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    assert after_confirmation.ok is True
+    assert after_confirmation.paused is False
+    assert paid_calls == ["reference_image"]
+    assert "DECISION: proceed" in after_confirmation.step_outputs["review_normalize"]
+    assert "explicit_approval_after_revision" in (
+        after_confirmation.step_outputs["review_normalize"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_short_drama_direct_explicit_approval_keeps_single_pause_path(
+    writer: MetaRunWriter,
+    tmp_path: Path,
+) -> None:
+    plan, inputs, orch, paid_calls, dispatch = _short_drama_consent_e2e_harness(
+        writer,
+        tmp_path,
+        run_id="short-drama-direct-approval",
+    )
+    initial = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="short-drama-direct-approval",
+        session_id="S1",
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert initial.paused is True
+    assert initial.paused_payload is not None
+    assert initial.paused_payload.step_id == "review_gate"
+
+    approved = await orch.resume(
+        run_id="short-drama-direct-approval",
+        session_id="S1",
+        filled_fields={"review": "继续生成"},
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    assert approved.ok is True
+    assert approved.paused is False
+    assert approved.step_outputs["revision_confirm_gate"] == ""
+    assert paid_calls == ["reference_image"]
+    assert "CONSENT_BASIS: explicit_approval" in approved.step_outputs[
+        "review_normalize"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_short_drama_cancel_after_revised_preview_keeps_paid_calls_at_zero(
+    writer: MetaRunWriter,
+    tmp_path: Path,
+) -> None:
+    plan, inputs, orch, paid_calls, dispatch = _short_drama_consent_e2e_harness(
+        writer,
+        tmp_path,
+        run_id="short-drama-cancel",
+    )
+
+    initial = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="short-drama-cancel",
+        session_id="S1",
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert initial.paused is True
+
+    after_adjustment = await orch.resume(
+        run_id="short-drama-cancel",
+        session_id="S1",
+        filled_fields={"review": "风格改成水墨"},
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert after_adjustment.paused is True
+    assert paid_calls == []
+
+    after_cancel = await orch.resume(
+        run_id="short-drama-cancel",
+        session_id="S1",
+        filled_fields={"review": "取消"},
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    assert after_cancel.ok is True
+    assert after_cancel.paused is False
+    assert paid_calls == []
+    assert "DECISION: cancel" in after_cancel.step_outputs["review_normalize"]
+
+
 @pytest.mark.asyncio
 async def test_non_persistent_orchestrator_seeds_safe_runtime_run_id() -> None:
     observed: dict[str, object] = {}

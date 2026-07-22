@@ -502,7 +502,9 @@ def _block(
     notes: str = "unchanged",
     shot_count: str = "unchanged",
 ) -> str:
-    has_overrides = "yes" if decision == "proceed" and notes != "unchanged" else "no"
+    has_overrides = (
+        "yes" if decision in {"proceed", "revise"} and notes != "unchanged" else "no"
+    )
     return "\n".join(
         (
             f"DECISION: {decision}",
@@ -516,10 +518,9 @@ def _block(
     )
 
 
-def normalize_review(payload: Mapping[str, Any]) -> str:
-    """Return a fail-closed, bounded decision block for one review reply."""
+def _normalize_initial_review(review: str) -> str:
+    """Classify the first draft review without treating edits as consent."""
 
-    review = _clean_review(payload.get("review", ""))
     if review.lower() in _EMPTY_SENTINELS:
         return _block(decision="hold", basis="unclear_or_off_topic")
     if _refuses_external_transfer(review):
@@ -532,12 +533,53 @@ def normalize_review(payload: Mapping[str, Any]) -> str:
         return _block(decision="proceed", basis="explicit_approval")
     if _is_meaningful_adjustment(review):
         return _block(
-            decision="proceed",
+            decision="revise",
             basis="meaningful_adjustment",
             notes=review[:1000],
             shot_count=_extract_shot_count(review),
         )
     return _block(decision="hold", basis="unclear_or_off_topic")
+
+
+def _normalize_revision_confirmation(confirmation: str, *, revision: str) -> str:
+    """Require a new, explicit approval after applying a requested edit."""
+
+    if confirmation.lower() in _EMPTY_SENTINELS:
+        return _block(decision="hold", basis="revision_confirmation_required")
+    if _refuses_external_transfer(confirmation):
+        return _block(decision="hold", basis="external_transfer_refused")
+    if _is_cancel(confirmation):
+        return _block(decision="cancel", basis="explicit_cancel")
+    if _is_generation_deferred(confirmation):
+        return _block(decision="hold", basis="generation_deferred")
+    if not _is_approval(confirmation):
+        return _block(decision="hold", basis="revision_confirmation_required")
+    return _block(
+        decision="proceed",
+        basis="explicit_approval_after_revision",
+        notes=revision[:1000],
+        shot_count=_extract_shot_count(revision),
+    )
+
+
+def normalize_review(payload: Mapping[str, Any]) -> str:
+    """Return a fail-closed, bounded decision block for the review workflow.
+
+    The default phase classifies the first draft review.  ``media_approval``
+    is the final provider-call gate: if that first reply requested a revision,
+    a separate explicit confirmation is required after the revised preview.
+    """
+
+    review = _clean_review(payload.get("review", ""))
+    initial = _normalize_initial_review(review)
+    if payload.get("phase") != "media_approval":
+        return initial
+
+    initial_fields = dict(line.split(": ", 1) for line in initial.splitlines())
+    if initial_fields.get("DECISION") != "revise":
+        return initial
+    confirmation = _clean_review(payload.get("confirmation", ""))
+    return _normalize_revision_confirmation(confirmation, revision=review)
 
 
 def main() -> int:

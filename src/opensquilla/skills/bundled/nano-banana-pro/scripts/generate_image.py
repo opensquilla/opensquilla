@@ -1145,6 +1145,10 @@ def main() -> int:
             print(str(out_path))
             _print_receipt("IMAGE_GENERATION_RECEIPT", receipt)
             return 0
+        # A policy refusal is still a conclusive paid-provider outcome. Emit
+        # the same sanitized receipt on this invocation's captured stdout so
+        # the parent can bind the sidecar to the current failed subprocess.
+        _print_receipt("IMAGE_GENERATION_RECEIPT", receipt)
         print(
             "Error: upstream image provider rejected generation "
             f"(policy_code={policy_code})",

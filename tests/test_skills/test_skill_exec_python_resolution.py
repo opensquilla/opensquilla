@@ -9,6 +9,7 @@ gateway process runs without ``.venv/bin`` prepended.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
 from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.replay_safety import (
+    paid_receipt_proof,
     paid_replay_is_safe,
     paid_replay_may_duplicate,
 )
@@ -145,7 +147,16 @@ async def test_skill_exec_does_not_rewrite_absolute_interpreter(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("skill_name", ["nano-banana-pro", "seedance-2-prompt"])
+@pytest.mark.parametrize(
+    "skill_name",
+    [
+        "audio-cog",
+        "nano-banana-pro",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+        "seedance-2-prompt",
+    ],
+)
 async def test_trusted_media_key_reaches_only_bundled_skill(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -180,7 +191,16 @@ async def test_trusted_media_key_reaches_only_bundled_skill(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("skill_name", ["nano-banana-pro", "seedance-2-prompt"])
+@pytest.mark.parametrize(
+    "skill_name",
+    [
+        "audio-cog",
+        "nano-banana-pro",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+        "seedance-2-prompt",
+    ],
+)
 async def test_workspace_same_name_override_never_receives_trusted_media_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -215,7 +235,16 @@ async def test_workspace_same_name_override_never_receives_trusted_media_key(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("skill_name", ["nano-banana-pro", "seedance-2-prompt"])
+@pytest.mark.parametrize(
+    "skill_name",
+    [
+        "audio-cog",
+        "nano-banana-pro",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+        "seedance-2-prompt",
+    ],
+)
 async def test_bundled_media_consumer_never_inherits_ambient_provider_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -279,6 +308,36 @@ async def test_workspace_skill_exec_never_inherits_ambient_secret(
 
 
 @pytest.mark.asyncio
+async def test_workspace_skill_exec_never_inherits_opaque_credential_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PROD", "opaque-workspace-leak-proof")
+    script = tmp_path / "read_opaque_ambient.py"
+    script.write_text(
+        "import os\nprint(os.environ.get('OPENROUTER_PROD', 'missing'))\n",
+        encoding="utf-8",
+    )
+    spec = _spec(
+        tmp_path,
+        f"python {script}",
+        name="workspace-opaque-probe",
+        layer=SkillLayer.WORKSPACE,
+    )
+
+    out = await run_skill_exec_step(
+        MetaStep(id="probe", kind="skill_exec", skill=spec.name),
+        effective_skill=spec.name,
+        inputs={},
+        outputs={},
+        skill_loader=_Loader(spec),
+        workspace_dir=str(tmp_path),
+    )
+
+    assert out == "missing"
+
+
+@pytest.mark.asyncio
 async def test_bundled_skill_exec_inherits_only_declared_ambient_secret(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -308,6 +367,69 @@ async def test_bundled_skill_exec_inherits_only_declared_ambient_secret(
     )
 
     assert out.splitlines() == ["declared-value", "missing"]
+
+
+@pytest.mark.asyncio
+async def test_bundled_skill_exec_inherits_and_redacts_declared_opaque_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opaque_value = "opaque-declared-provider-credential"
+    monkeypatch.setenv("OPENROUTER_PROD", opaque_value)
+    script = tmp_path / "fail_with_opaque_credential.py"
+    script.write_text(
+        "import os, sys\n"
+        "print(os.environ.get('OPENROUTER_PROD', 'missing'), file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, f"python {script}", name="declared-opaque-probe")
+    spec.metadata = SkillPlatformMeta(
+        requires=SkillRequires(env=["OPENROUTER_PROD"]),
+    )
+
+    with pytest.raises(RuntimeError) as caught:
+        await run_skill_exec_step(
+            MetaStep(id="probe", kind="skill_exec", skill=spec.name),
+            effective_skill=spec.name,
+            inputs={},
+            outputs={},
+            skill_loader=_Loader(spec),
+            workspace_dir=str(tmp_path),
+        )
+
+    assert opaque_value not in str(caught.value)
+    assert "[REDACTED]" in str(caught.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill_name", ["nano-banana-pro", "seedance-2-prompt"])
+async def test_paid_media_consumer_denies_declared_opaque_ambient_credential(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    skill_name: str,
+) -> None:
+    monkeypatch.setenv("OPENROUTER_PROD", "opaque-paid-ambient-must-not-cross")
+    script = tmp_path / "read_paid_opaque.py"
+    script.write_text(
+        "import os\nprint(os.environ.get('OPENROUTER_PROD', 'missing'))\n",
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, f"python {script}", name=skill_name)
+    spec.metadata = SkillPlatformMeta(
+        requires=SkillRequires(env_any=["OPENROUTER_PROD"]),
+    )
+
+    out = await run_skill_exec_step(
+        MetaStep(id="paid", kind="skill_exec", skill=skill_name),
+        effective_skill=skill_name,
+        inputs={},
+        outputs={},
+        skill_loader=_Loader(spec),
+        workspace_dir=str(tmp_path),
+    )
+
+    assert out == "missing"
 
 
 @pytest.mark.asyncio
@@ -350,6 +472,103 @@ async def test_trusted_media_key_replaces_all_ambient_secrets(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("returncode", [0, 1])
+async def test_paid_executor_attaches_only_current_stdout_matching_receipt_proof(
+    tmp_path: Path,
+    returncode: int,
+) -> None:
+    output = tmp_path / "clip.mp4"
+    script = tmp_path / "emit_current_receipt.py"
+    script.write_text(
+        "import argparse, json, pathlib\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--filename', required=True)\n"
+        "args = parser.parse_args()\n"
+        "receipt = {'status': 'policy_rejected', 'provider': 'openrouter', "
+        "'model': 'bytedance/seedance-2.0', 'fallback': False, "
+        "'reason': 'provider_policy_rejected', 'policy_code': 'SafetyFilter'}\n"
+        "path = pathlib.Path(args.filename + '.receipt.json')\n"
+        "path.write_text(json.dumps(receipt, sort_keys=True), encoding='utf-8')\n"
+        "print('VIDEO_GENERATION_RECEIPT: ' + json.dumps(receipt))\n"
+        f"raise SystemExit({returncode})\n",
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, f"python {script}", name="seedance-2-prompt")
+    spec.entrypoint["args"] = ["--filename", str(output)]
+    step = MetaStep(
+        id="paid",
+        kind="skill_exec",
+        skill=spec.name,
+        side_effect="external_paid_submit",
+    )
+
+    if returncode == 0:
+        result = await run_skill_exec_step(
+            step,
+            effective_skill=spec.name,
+            inputs={},
+            outputs={},
+            skill_loader=_Loader(spec),
+            workspace_dir=str(tmp_path),
+        )
+        proof = paid_receipt_proof(result)
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            await run_skill_exec_step(
+                step,
+                effective_skill=spec.name,
+                inputs={},
+                outputs={},
+                skill_loader=_Loader(spec),
+                workspace_dir=str(tmp_path),
+            )
+        proof = paid_receipt_proof(caught.value)
+
+    assert proof is not None and proof.startswith("sha256:")
+    assert len(proof) == len("sha256:") + 64
+
+
+@pytest.mark.asyncio
+async def test_paid_executor_does_not_attach_proof_from_stale_sidecar_alone(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "clip.mp4"
+    (tmp_path / "clip.mp4.receipt.json").write_text(
+        json.dumps(
+            {
+                "status": "generated",
+                "provider": "openrouter",
+                "model": "bytedance/seedance-2.0",
+                "job_id": "stale-job",
+                "fallback": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    script = tmp_path / "fail_without_current_receipt.py"
+    script.write_text("raise SystemExit(1)\n", encoding="utf-8")
+    spec = _spec(tmp_path, f"python {script}", name="seedance-2-prompt")
+    spec.entrypoint["args"] = ["--filename", str(output)]
+
+    with pytest.raises(RuntimeError) as caught:
+        await run_skill_exec_step(
+            MetaStep(
+                id="paid",
+                kind="skill_exec",
+                skill=spec.name,
+                side_effect="external_paid_submit",
+            ),
+            effective_skill=spec.name,
+            inputs={},
+            outputs={},
+            skill_loader=_Loader(spec),
+            workspace_dir=str(tmp_path),
+        )
+
+    assert paid_receipt_proof(caught.value) is None
+
+
+@pytest.mark.asyncio
 async def test_paid_replay_safety_ignores_spoofed_stderr(tmp_path: Path) -> None:
     script = tmp_path / "spoof_safety.py"
     script.write_text(
@@ -385,30 +604,41 @@ async def test_paid_replay_safety_ignores_spoofed_stderr(tmp_path: Path) -> None
     ("layer", "expected_safe"),
     [(SkillLayer.BUNDLED, True), (SkillLayer.WORKSPACE, False)],
 )
+@pytest.mark.parametrize(
+    "skill_name",
+    [
+        "audio-cog",
+        "nano-banana-pro",
+        "nano-banana-pro-openrouter",
+        "openrouter-video-generator",
+        "seedance-2-prompt",
+    ],
+)
 async def test_reserved_safe_exit_is_trusted_only_for_bundled_paid_skill(
     tmp_path: Path,
     layer: SkillLayer,
     expected_safe: bool,
+    skill_name: str,
 ) -> None:
     script = tmp_path / f"safe_exit_{layer.value}.py"
     script.write_text("raise SystemExit(78)\n", encoding="utf-8")
     spec = _spec(
         tmp_path,
         f"python {script}",
-        name="seedance-2-prompt",
+        name=skill_name,
         layer=layer,
     )
     step = MetaStep(
         id="paid",
         kind="skill_exec",
-        skill="seedance-2-prompt",
+        skill=skill_name,
         side_effect="external_paid_submit",
     )
 
     with pytest.raises(RuntimeError) as caught:
         await run_skill_exec_step(
             step,
-            effective_skill="seedance-2-prompt",
+            effective_skill=skill_name,
             inputs={},
             outputs={},
             skill_loader=_Loader(spec),
@@ -582,6 +812,7 @@ async def test_reserved_auth_failure_rotates_two_key_pool_only_on_next_run(
         parent_spec=parent_spec,
         plan=plan,
         session_key=session_key,
+        skill_resolver=loader,
     )["seedance-2-prompt"]
     first_key = first_env[META_CAPABILITY_API_KEY_ENV]
     first_token = first_env[META_CAPABILITY_INTERNAL_CREDENTIAL_LEASE_TOKEN]
@@ -612,6 +843,7 @@ async def test_reserved_auth_failure_rotates_two_key_pool_only_on_next_run(
         parent_spec=parent_spec,
         plan=plan,
         session_key=session_key,
+        skill_resolver=loader,
     )["seedance-2-prompt"]
     second_key = second_env[META_CAPABILITY_API_KEY_ENV]
     second_token = second_env[META_CAPABILITY_INTERNAL_CREDENTIAL_LEASE_TOKEN]
@@ -638,6 +870,7 @@ async def test_reserved_auth_failure_rotates_two_key_pool_only_on_next_run(
         parent_spec=parent_spec,
         plan=plan,
         session_key=session_key,
+        skill_resolver=loader,
     )["seedance-2-prompt"]
     assert after_stale_env[META_CAPABILITY_API_KEY_ENV] == second_key
     assert (

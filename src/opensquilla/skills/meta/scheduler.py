@@ -39,9 +39,12 @@ from opensquilla.skills.meta.replay_safety import (
     PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
     PAID_SUBMISSION_MAYBE_ACCEPTED,
     PAID_SUBMISSION_RECEIPT,
+    PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY,
     PAID_SUBMISSION_SAFE_NO_SUBMIT,
     encode_paid_submission_dispositions,
+    encode_paid_submission_receipt_proofs,
     is_external_paid_step,
+    paid_receipt_proof,
     paid_replay_is_safe,
     public_step_error,
 )
@@ -81,6 +84,12 @@ _CLARIFY_SKIP_HINT_BY_LANGUAGE = {
 # result. Surfaces can still request more via a follow-up if needed.
 _CLARIFY_SKIP_EXCERPT_CHARS = 600
 _RESCUE_OUTPUT_EXCERPT_CHARS = 600
+_PRIVATE_MACHINE_OUTPUT_KEYS = frozenset(
+    {
+        PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY,
+        PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY,
+    }
+)
 
 
 def _field_has_value(inputs: dict[str, Any], name: str) -> bool:
@@ -331,8 +340,13 @@ def _failure_rescue_payload(
             "label": "Continue without artifact",
             "description": "Keep successful text outputs and skip generated-file delivery.",
         })
+    public_outputs = {
+        step_id: text
+        for step_id, text in outputs.items()
+        if step_id not in _PRIVATE_MACHINE_OUTPUT_KEYS
+    }
     prior_outputs: list[dict[str, Any]] = []
-    for step_id, text in sorted(outputs.items()):
+    for step_id, text in sorted(public_outputs.items()):
         excerpt = str(text or "")
         truncated = len(excerpt) > _RESCUE_OUTPUT_EXCERPT_CHARS
         if truncated:
@@ -347,7 +361,7 @@ def _failure_rescue_payload(
         "failed_step_id": step.id,
         "failed_step_label": step.label or step.id,
         "failed_step_kind": step.kind,
-        "partial_output_step_ids": sorted(outputs.keys()),
+        "partial_output_step_ids": sorted(public_outputs),
         "prior_outputs": prior_outputs,
         "has_substitute": has_substitute,
         "hint": hint,
@@ -515,9 +529,12 @@ async def run_dag(
     observer bugs must never break the scheduler.
     """
     outputs: dict[str, str] = dict(seed_outputs) if seed_outputs else {}
-    # This slot belongs to the scheduler, never to caller-provided replay
-    # seeds. It is refreshed below from parent-observed executor outcomes.
-    outputs.pop(PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY, None)
+    # These slots belong to the scheduler, never to caller-provided replay
+    # seeds. They are refreshed below from parent-observed executor outcomes.
+    # In particular, receipt proofs are current-process-only and must never be
+    # reconstructed from persisted output or workspace sidecars.
+    for private_key in _PRIVATE_MACHINE_OUTPUT_KEYS:
+        outputs.pop(private_key, None)
     try:
         ordered = list(topological_order(match.plan.steps))
     except Exception as exc:  # noqa: BLE001
@@ -529,7 +546,7 @@ async def run_dag(
         yield MetaResult(ok=True, final_text="", step_outputs={})
         return
 
-    if any(step.id == PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY for step in ordered):
+    if any(step.id in _PRIVATE_MACHINE_OUTPUT_KEYS for step in ordered):
         yield MetaResult(
             ok=False,
             error="meta-skill plan uses a reserved runtime step id",
@@ -541,24 +558,33 @@ async def run_dag(
         for step in ordered
         if is_external_paid_step(step) and step.id in outputs
     }
+    paid_submission_receipt_proofs: dict[str, str] = {}
 
-    def _record_paid_submission_disposition(step_id: str, disposition: str) -> None:
-        paid_submission_dispositions[step_id] = disposition
+    def _refresh_paid_submission_runtime_outputs() -> None:
         outputs[PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY] = (
             encode_paid_submission_dispositions(paid_submission_dispositions)
         )
+        outputs[PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY] = (
+            encode_paid_submission_receipt_proofs(paid_submission_receipt_proofs)
+        )
 
-    # Keep the channel present even before the first paid step. Trusted
-    # templates therefore receive a stable JSON object, never a caller value.
-    outputs[PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY] = (
-        encode_paid_submission_dispositions(paid_submission_dispositions)
-    )
+    def _record_paid_submission_disposition(step_id: str, disposition: str) -> None:
+        paid_submission_dispositions[step_id] = disposition
+        _refresh_paid_submission_runtime_outputs()
+
+    def _record_paid_submission_receipt_proof(step_id: str, proof: str) -> None:
+        paid_submission_receipt_proofs[step_id] = proof
+        _refresh_paid_submission_runtime_outputs()
+
+    # Keep both channels present even before the first paid step. Trusted
+    # templates therefore receive stable JSON objects, never caller values.
+    _refresh_paid_submission_runtime_outputs()
 
     def _public_step_outputs() -> dict[str, str]:
         return {
             key: value
             for key, value in outputs.items()
-            if key != PAID_SUBMISSION_DISPOSITIONS_OUTPUT_KEY
+            if key not in _PRIVATE_MACHINE_OUTPUT_KEYS
         }
 
     # Announce the static composition so the WebUI can seed its step
@@ -881,10 +907,16 @@ async def run_dag(
 
             if on_step_begin is not None:
                 try:
+                    observer_outputs = dict(outputs)
+                    # Receipt proofs are valid only inside this scheduler
+                    # process. Observability hooks may persist their rendered
+                    # inputs, so give them an empty machine channel while the
+                    # actual executor below retains the live proof map.
+                    observer_outputs[PAID_SUBMISSION_RECEIPT_PROOFS_OUTPUT_KEY] = "{}"
                     rendered_inputs = render_with_args(
                         step.with_args,
                         inputs=dict(match.inputs),
-                        outputs=outputs,
+                        outputs=observer_outputs,
                     )
                     await on_step_begin(
                         step.id, effective_skill, rendered_inputs,
@@ -897,23 +929,37 @@ async def run_dag(
                     )
 
             final_text = ""
+            current_receipt_proof: str | None = None
             with usage_scope(f"{scope_prefix}:{step.id}"):
                 async for ev in dispatch_step_stream(
                     step, effective_skill, match.inputs, outputs,
                 ):
                     if isinstance(ev, _StepDone):
-                        final_text = ev.text
+                        current_receipt_proof = paid_receipt_proof(ev.text)
+                        # Strip the private str-subclass carrier immediately;
+                        # templates, persistence and public events receive an
+                        # ordinary string only.
+                        final_text = str(ev.text)
                     else:
                         await event_queue.put((step.id, ev))
 
             outputs[step.id] = final_text
             if is_external_paid_step(step):
-                # Exit zero proves only that the audited client completed and
-                # should have written a receipt. The delivery audit must still
-                # validate that receipt before upgrading this to confirmed.
+                # Exit zero alone does not prove that a matching receipt was
+                # produced by this invocation. Only the exact bundled
+                # executor can attach the stdout+sidecar digest carrier.
+                if current_receipt_proof is not None:
+                    _record_paid_submission_receipt_proof(
+                        step.id,
+                        current_receipt_proof,
+                    )
                 _record_paid_submission_disposition(
                     step.id,
-                    PAID_SUBMISSION_RECEIPT,
+                    (
+                        PAID_SUBMISSION_RECEIPT
+                        if current_receipt_proof is not None
+                        else PAID_SUBMISSION_MAYBE_ACCEPTED
+                    ),
                 )
             log.info(
                 "meta_orchestrator.step_finished",
@@ -977,6 +1023,12 @@ async def run_dag(
             raise
         except Exception as exc:  # noqa: BLE001
             has_substitute = bool(step.on_failure)
+            current_receipt_proof = paid_receipt_proof(exc)
+            if is_external_paid_step(step) and current_receipt_proof is not None:
+                _record_paid_submission_receipt_proof(
+                    step.id,
+                    current_receipt_proof,
+                )
             persisted_error = str(exc)
             if is_external_paid_step(step):
                 _record_paid_submission_disposition(

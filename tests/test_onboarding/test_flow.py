@@ -2624,3 +2624,52 @@ def test_declared_questionary_floor_supports_use_search_filter():
         "questionary 2.0.x lacks use_search_filter; the floor must be >=2.1"
     )
     assert requirement.specifier.contains("2.1.0")
+
+
+def test_installed_reinstall_command_pins_the_running_release_wheel(monkeypatch):
+    from opensquilla.onboarding import flow
+
+    monkeypatch.setattr("opensquilla.__version__", "0.6.0")
+
+    lines = flow._installed_reinstall_command_lines()
+
+    assert (
+        "https://github.com/opensquilla/opensquilla/releases/download/"
+        "v0.6.0/opensquilla-0.6.0-py3-none-any.whl" in lines
+    )
+    assert "opensquilla[recommended]" in lines
+    assert "0.5.0rc4" not in lines
+
+
+def test_installed_reinstall_command_supports_prerelease_versions(monkeypatch):
+    from opensquilla.onboarding import flow
+
+    monkeypatch.setattr("opensquilla.__version__", "1.2.3rc1")
+
+    lines = flow._installed_reinstall_command_lines()
+
+    assert "v1.2.3rc1/opensquilla-1.2.3rc1-py3-none-any.whl" in lines
+
+
+def test_installed_reinstall_command_never_guesses_a_wheel_for_dev_builds(monkeypatch):
+    from opensquilla.onboarding import flow
+
+    monkeypatch.setattr("opensquilla.__version__", "0.0.0+unknown")
+
+    lines = flow._installed_reinstall_command_lines()
+
+    assert "releases/download" not in lines
+    assert "releases/latest" in lines
+
+
+def test_channel_dependency_warning_has_no_hardcoded_release_tag():
+    """The wizard's upgrade hint must be derived from the running version, so
+    a stale pinned wheel can never instruct users to downgrade after a newer
+    release ships."""
+    import inspect
+
+    from opensquilla.onboarding import flow
+
+    source = inspect.getsource(flow._warn_channel_dependency_gaps)
+    assert "releases/download" not in source
+    assert "_installed_reinstall_command_lines" in source

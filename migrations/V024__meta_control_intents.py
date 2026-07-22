@@ -57,9 +57,22 @@ CREATE_SESSION_STATUS_INDEX = (
 )
 
 
+def _table_exists(conn, table: str) -> bool:
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    return cur.fetchone() is not None
+
+
 def apply_step(conn) -> None:
     cur = conn.cursor()
-    cur.execute(CREATE_TABLE)
+    if not _table_exists(conn, TABLE):
+        cur.execute(CREATE_TABLE)
+    # SessionStorage can create the compatible table before yoyo records this
+    # migration. Keep index creation outside the guard so that path still gains
+    # the uniqueness and recovery-query guarantees.
     cur.execute(CREATE_CORRELATION_INDEX)
     cur.execute(CREATE_SESSION_STATUS_INDEX)
 

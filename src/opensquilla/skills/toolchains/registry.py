@@ -20,7 +20,7 @@ class UnknownComponentError(ValueError):
 
 @dataclass(frozen=True)
 class AuxiliaryAssetDescriptor:
-    """One pinned non-executable resource installed with a component."""
+    """One pinned companion file installed with a component."""
 
     asset_id: str
     url: str
@@ -29,6 +29,9 @@ class AuxiliaryAssetDescriptor:
     destination: str
     license: str
     source: str
+    executable: bool = False
+    archive_type: str | None = None
+    archive_member: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ class ToolchainDescriptor:
     source: str
     closure_source: str | None
     notes: str
+    archive_member: str | None = None
+    archive_destination: str | None = None
 
     @property
     def total_download_size(self) -> int | None:
@@ -79,6 +84,9 @@ class _Artifact:
     install_backend: str = "archive"
     brew_formula: str | None = None
     source: str | None = None
+    auxiliary_assets: tuple[AuxiliaryAssetDescriptor, ...] = ()
+    archive_member: str | None = None
+    archive_destination: str | None = None
     supported: bool = True
     unsupported_reason: str | None = None
 
@@ -106,6 +114,35 @@ _BTBN_RELEASE_BASE = (
     "autobuild-2026-06-30-13-34"
 )
 _GYAN_RELEASE_BASE = "https://github.com/GyanD/codexffmpeg/releases/download/8.1.2"
+_MARTIN_RIEDL_FFMPEG_BASE = "https://ffmpeg.martin-riedl.de/download/macos"
+_MARTIN_RIEDL_BUILD_SOURCE = (
+    "https://git.martin-riedl.de/ffmpeg/build-script/commit/"
+    "bb1d6db29cee948f9685bcd69e6caf17d960662b"
+)
+_FFMPEG_812_SOURCE = "https://github.com/FFmpeg/FFmpeg/tree/n8.1.2"
+
+
+def _ffmpeg_license_assets() -> tuple[AuxiliaryAssetDescriptor, ...]:
+    return (
+        AuxiliaryAssetDescriptor(
+            asset_id="ffmpeg-license-summary",
+            url="https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.2/LICENSE.md",
+            sha256="2e1d16c72fd74e12063776371da757322f8b77589386532f4fd8634bde7de1af",
+            size=4_346,
+            destination="licenses/FFmpeg-LICENSE.md",
+            license="GPL-3.0-or-later",
+            source=_FFMPEG_812_SOURCE,
+        ),
+        AuxiliaryAssetDescriptor(
+            asset_id="ffmpeg-gplv3-license",
+            url="https://raw.githubusercontent.com/FFmpeg/FFmpeg/n8.1.2/COPYING.GPLv3",
+            sha256="8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+            size=35_147,
+            destination="licenses/COPYING.GPLv3",
+            license="GPL-3.0-or-later",
+            source=_FFMPEG_812_SOURCE,
+        ),
+    )
 
 _NOTO_CJK_ASSETS = (
     AuxiliaryAssetDescriptor(
@@ -217,22 +254,79 @@ _COMPONENTS: dict[str, _Component] = {
         source="https://github.com/BtbN/FFmpeg-Builds",
         closure_source=None,
         notes=(
-            "Pinned GPL static archives on Linux and Windows; macOS uses the "
-            "Homebrew ffmpeg-full bottle. A pinned OFL-1.1 Noto CJK font is included. "
-            "Linux requires glibc 2.28 and kernel 4.18."
+            "Pinned GPL builds on macOS, Linux, and Windows. The macOS FFmpeg and "
+            "FFprobe ZIPs are fixed 8.1.2 build-server artifacts; after their source "
+            "hashes are verified, OpenSquilla replaces the artifacts' invalid embedded "
+            "signatures with local ad-hoc signatures and manifests the resulting bytes. "
+            "Ad-hoc signing is not Apple notarization. A pinned OFL-1.1 Noto CJK font "
+            "is included. Linux requires glibc 2.28 and kernel 4.18."
         ),
         artifacts={
-            "darwin-universal": _Artifact(
-                url=None,
-                sha256=None,
-                size=None,
-                install_backend="brew",
-                brew_formula="ffmpeg-full",
-                archive_type=None,
+            "darwin-arm64": _Artifact(
+                url=(
+                    f"{_MARTIN_RIEDL_FFMPEG_BASE}/arm64/"
+                    "1783011502_8.1.2/ffmpeg.zip"
+                ),
+                sha256="ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c",
+                size=28_196_358,
+                archive_type="zip",
                 archive_root=None,
                 bin_relpaths=("bin",),
-                version="homebrew-stable",
-                source="https://formulae.brew.sh/formula/ffmpeg-full",
+                version="8.1.2",
+                source=_MARTIN_RIEDL_BUILD_SOURCE,
+                archive_member="ffmpeg",
+                archive_destination="bin/ffmpeg",
+                auxiliary_assets=(
+                    AuxiliaryAssetDescriptor(
+                        asset_id="ffprobe-archive",
+                        url=(
+                            f"{_MARTIN_RIEDL_FFMPEG_BASE}/arm64/"
+                            "1783011502_8.1.2/ffprobe.zip"
+                        ),
+                        sha256="c39787f4af7a3932502d2d48db6f6feaaa836b48a73ef78c32cc3285df61dfaf",
+                        size=28_118_222,
+                        destination="bin/ffprobe",
+                        license="GPL-3.0-or-later",
+                        source=_MARTIN_RIEDL_BUILD_SOURCE,
+                        executable=True,
+                        archive_type="zip",
+                        archive_member="ffprobe",
+                    ),
+                    *_ffmpeg_license_assets(),
+                ),
+            ),
+            "darwin-x64": _Artifact(
+                url=(
+                    f"{_MARTIN_RIEDL_FFMPEG_BASE}/amd64/"
+                    "1783018342_8.1.2/ffmpeg.zip"
+                ),
+                sha256="a52ef43883f44c219766d4b3bdde4e635b35465d0b704c01c3a0566b59775df9",
+                size=33_586_778,
+                archive_type="zip",
+                archive_root=None,
+                bin_relpaths=("bin",),
+                version="8.1.2",
+                source=_MARTIN_RIEDL_BUILD_SOURCE,
+                archive_member="ffmpeg",
+                archive_destination="bin/ffmpeg",
+                auxiliary_assets=(
+                    AuxiliaryAssetDescriptor(
+                        asset_id="ffprobe-archive",
+                        url=(
+                            f"{_MARTIN_RIEDL_FFMPEG_BASE}/amd64/"
+                            "1783018342_8.1.2/ffprobe.zip"
+                        ),
+                        sha256="5408ca588c8c72b0dde3afe676d0a7acf25ef97e55ae6eba5c7bede1cda42695",
+                        size=33_477_267,
+                        destination="bin/ffprobe",
+                        license="GPL-3.0-or-later",
+                        source=_MARTIN_RIEDL_BUILD_SOURCE,
+                        executable=True,
+                        archive_type="zip",
+                        archive_member="ffprobe",
+                    ),
+                    *_ffmpeg_license_assets(),
+                ),
             ),
             "linux-x64": _Artifact(
                 url=(
@@ -347,6 +441,7 @@ def describe_component(
     libc_name: str | None = None,
     libc_version: str | None = None,
     kernel_release: str | None = None,
+    macos_version: str | None = None,
 ) -> ToolchainDescriptor:
     """Describe one built-in component for a host, failing closed when unknown."""
     component = _COMPONENTS.get(component_id)
@@ -354,6 +449,8 @@ def describe_component(
         raise UnknownComponentError(f"Unknown managed toolchain component: {component_id}")
 
     key = platform_key(platform_name, arch, libc_name)
+    if component.component_id == "media-ffmpeg" and key == "darwin-universal":
+        key = f"darwin-{normalize_arch(arch)}"
     artifact = component.artifacts.get(key)
     if artifact is None:
         return ToolchainDescriptor(
@@ -384,6 +481,16 @@ def describe_component(
 
     supported = artifact.supported
     unsupported_reason = artifact.unsupported_reason
+    if component.component_id == "media-ffmpeg" and key.startswith("darwin-"):
+        selected_macos = macos_version
+        if selected_macos is None and normalize_platform() == "darwin":
+            selected_macos = platform_module.mac_ver()[0]
+        if normalize_platform() == "darwin" and not selected_macos:
+            supported = False
+            unsupported_reason = "The current macOS version could not be determined safely."
+        elif selected_macos and not _version_at_least(selected_macos, (12, 0)):
+            supported = False
+            unsupported_reason = "This FFmpeg build requires macOS 12 or newer."
     if component.component_id == "media-ffmpeg" and key.startswith("linux-"):
         libc_actual_name, libc_actual_version = platform_module.libc_ver()
         selected_libc = (libc_name if libc_name is not None else libc_actual_name).lower()
@@ -416,12 +523,14 @@ def describe_component(
         probe_commands=component.probe_commands,
         post_install=component.post_install,
         package_closure=component.package_closure,
-        auxiliary_assets=component.auxiliary_assets,
+        auxiliary_assets=(*component.auxiliary_assets, *artifact.auxiliary_assets),
         license=component.license,
         license_url=component.license_url,
         source=artifact.source or component.source,
         closure_source=component.closure_source,
         notes=component.notes,
+        archive_member=artifact.archive_member,
+        archive_destination=artifact.archive_destination,
     )
 
 

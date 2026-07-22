@@ -29,6 +29,12 @@ import {
   removeHiddenControl,
 } from '@/utils/chat/hiddenControlOutbox'
 import {
+  listPendingMetaDiscards,
+  type MetaDiscardStorage,
+  persistPendingMetaDiscard,
+  removePendingMetaDiscard,
+} from '@/utils/chat/metaDiscardOutbox'
+import {
   FINISHED_STREAM_TASK_ID,
   PENDING_STREAM_TASK_ID,
   STOPPED_STREAM_TASK_ID,
@@ -235,6 +241,7 @@ export interface UseChatSendOptions {
   ) => boolean
   popAllPendingIntoComposer: () => boolean
   hiddenControlStorage?: HiddenControlStorage | null
+  metaDiscardStorage?: MetaDiscardStorage | null
   executeSlashCommand: (text: string) => Promise<boolean>
   closeSlashMenu: () => void
   autoResizeTextarea: () => void
@@ -248,6 +255,10 @@ export function useChatSend(options: UseChatSendOptions) {
   let recoveredAttempt: SendAttempt | null = null
   const hiddenDispatchInFlight = new Map<string, Promise<HiddenControlDispatchResult>>()
   const renderedHiddenControls = new Set<string>()
+
+  function metaDiscardStorage(): MetaDiscardStorage | null | undefined {
+    return options.metaDiscardStorage
+  }
 
   function beginFreshStream(requestSessionKey: string): FreshSendToken {
     const token: FreshSendToken = { stoppedByUser: false }
@@ -909,8 +920,9 @@ export function useChatSend(options: UseChatSendOptions) {
     providerText: string,
     displayText: string,
     clientRequestId?: string,
+    targetSessionKey?: string,
   ): Promise<HiddenControlDispatchResult> {
-    const requestSessionKey = options.sessionKey.value
+    const requestSessionKey = String(targetSessionKey || options.sessionKey.value).trim()
     const stableClientRequestId = String(clientRequestId || '').trim() || createClientRequestId()
     if (!requestSessionKey || !providerText) {
       return Promise.resolve(hiddenDispatchResult(
@@ -938,6 +950,26 @@ export function useChatSend(options: UseChatSendOptions) {
       return Promise.resolve(hiddenDispatchResult(
         'rejected',
         persistResult === 'conflict' ? 'outbox_conflict' : 'outbox_persist_failed',
+        stableClientRequestId,
+        requestSessionKey,
+      ))
+    }
+    if (requestSessionKey !== options.sessionKey.value) {
+      // A delayed meta.run response belongs to its originating chat. Persist
+      // the exact staged control, but never mutate/send through whichever chat
+      // is currently rendered. Returning to the origin calls
+      // restoreHiddenControls and resumes with the same idempotency key.
+      if (persistResult !== 'persisted' && persistResult !== 'matched') {
+        return Promise.resolve(hiddenDispatchResult(
+          'rejected',
+          'outbox_persist_failed',
+          stableClientRequestId,
+          requestSessionKey,
+        ))
+      }
+      return Promise.resolve(hiddenDispatchResult(
+        'queued',
+        'queued',
         stableClientRequestId,
         requestSessionKey,
       ))
@@ -1016,6 +1048,10 @@ export function useChatSend(options: UseChatSendOptions) {
       message: providerText,
       sessionKey: requestSessionKey,
     }
+    const hiddenSessionIntent = requestSessionKey === options.sessionKey.value
+      ? options.pendingSessionIntent.value
+      : null
+    if (hiddenSessionIntent) params.intent = hiddenSessionIntent
     if (displayText && displayText !== providerText) params.displayText = displayText
     params._source = chatSourceMetadata(options)
 
@@ -1027,6 +1063,13 @@ export function useChatSend(options: UseChatSendOptions) {
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
+      if (
+        hiddenSessionIntent
+        && requestSessionKey === options.sessionKey.value
+        && options.pendingSessionIntent.value === hiddenSessionIntent
+      ) {
+        options.pendingSessionIntent.value = null
+      }
       // A resolved chat.send response proves durable ingress acceptance. Clear
       // the browser outbox before any local session handoff work, which can
       // fail independently without making an exact-id resend necessary.
@@ -1124,6 +1167,13 @@ export function useChatSend(options: UseChatSendOptions) {
       const acceptedError = acceptedErrorInfo(err)
       const accepted = rpcError?.accepted
       if (accepted === true) {
+        if (
+          hiddenSessionIntent
+          && requestSessionKey === options.sessionKey.value
+          && options.pendingSessionIntent.value === hiddenSessionIntent
+        ) {
+          options.pendingSessionIntent.value = null
+        }
         removeHiddenControl(
           requestSessionKey,
           stableClientRequestId,
@@ -1244,10 +1294,13 @@ export function useChatSend(options: UseChatSendOptions) {
 
   async function restoreHiddenControls(
     targetSessionKey = options.sessionKey.value,
+    skipClientRequestIds: readonly string[] = [],
   ): Promise<void> {
     if (!targetSessionKey || options.sessionKey.value !== targetSessionKey) return
+    const skipped = new Set(skipClientRequestIds)
     for (const item of listHiddenControls(targetSessionKey, options.hiddenControlStorage)) {
       if (options.sessionKey.value !== targetSessionKey) return
+      if (skipped.has(item.clientRequestId)) continue
       const result = await dispatchHiddenSend(
         item.providerText,
         item.displayText,
@@ -1258,6 +1311,59 @@ export function useChatSend(options: UseChatSendOptions) {
       // durable outbox entries will be retried on the next restore/reconnect.
       if (result.status === 'queued') return
     }
+  }
+
+  async function retryPendingMetaDiscard(
+    sessionKey: string,
+    clientRequestId: string,
+  ): Promise<boolean> {
+    try {
+      const result = await options.rpc.call<{ discarded?: boolean; accepted?: boolean }>('meta.drafts.discard', {
+        sessionKey,
+        clientRequestId,
+      })
+      if (result?.discarded !== true && result?.accepted !== true) return false
+      removePendingMetaDiscard(sessionKey, clientRequestId, metaDiscardStorage())
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  function discardHiddenControl(sessionKey: string, clientRequestId: string): boolean {
+    // Persist the user's cancellation before removing the sendable browser
+    // copy. If the RPC or its response is lost, reload retries only this
+    // discard and never treats the server draft as launchable work.
+    if (!persistPendingMetaDiscard({ sessionKey, clientRequestId }, metaDiscardStorage())) {
+      return false
+    }
+    forgetHiddenControl(sessionKey, clientRequestId)
+    void retryPendingMetaDiscard(sessionKey, clientRequestId)
+    return true
+  }
+
+  function forgetHiddenControl(sessionKey: string, clientRequestId: string): void {
+    removeHiddenControl(sessionKey, clientRequestId, options.hiddenControlStorage)
+  }
+
+  async function flushPendingMetaDiscards(
+    sessionKey?: string,
+    skipClientRequestIds: readonly string[] = [],
+  ): Promise<string[]> {
+    const remaining: string[] = []
+    const skipped = new Set(skipClientRequestIds)
+    for (const pending of listPendingMetaDiscards(sessionKey, metaDiscardStorage())) {
+      if (skipped.has(pending.clientRequestId)) {
+        remaining.push(pending.clientRequestId)
+        continue
+      }
+      const discarded = await retryPendingMetaDiscard(
+        pending.sessionKey,
+        pending.clientRequestId,
+      )
+      if (!discarded) remaining.push(pending.clientRequestId)
+    }
+    return remaining
   }
 
   /**
@@ -1284,6 +1390,9 @@ export function useChatSend(options: UseChatSendOptions) {
     onSend,
     onStop,
     dispatchHiddenSend,
+    discardHiddenControl,
+    forgetHiddenControl,
+    flushPendingMetaDiscards,
     restoreHiddenControls,
     sendHiddenMetaPreflightConfirmation,
   }

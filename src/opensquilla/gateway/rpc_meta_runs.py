@@ -26,7 +26,7 @@ from opensquilla.gateway.rpc import (
     RpcUnavailableError,
     get_dispatcher,
 )
-from opensquilla.gateway.scopes import ADMIN_SCOPE
+from opensquilla.gateway.scopes import ADMIN_SCOPE, WRITE_SCOPE
 from opensquilla.gateway.session_services import get_session_storage
 from opensquilla.persistence.meta_run_query import parse_since_ms
 from opensquilla.persistence.meta_run_writer import (
@@ -35,7 +35,12 @@ from opensquilla.persistence.meta_run_writer import (
     replay_inputs_are_modified,
     summarize_run_record,
 )
-from opensquilla.session.storage import MetaControlIntentConflictError
+from opensquilla.session.storage import (
+    MetaControlIntentConflictError,
+    MetaLaunchDraftCapacityError,
+    MetaLaunchDraftConflictError,
+    MetaLaunchDraftUnavailableError,
+)
 from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.meta.author_seed import draft_meta_skill_seed
 from opensquilla.skills.meta.enabled import is_meta_skill_enabled
@@ -994,6 +999,100 @@ async def _handle_meta_list(params: Any, ctx: RpcContext) -> dict[str, Any]:
     return {"skills": await asyncio.to_thread(project_skills)}
 
 
+def _require_meta_draft_owner(ctx: RpcContext) -> None:
+    if ctx.principal.is_owner or ADMIN_SCOPE in ctx.principal.scopes:
+        return
+    raise RpcHandlerError(
+        ERROR_UNAUTHORIZED,
+        "MetaSkill draft recovery requires the local owner or an administrator",
+    )
+
+
+@_d.method("meta.drafts.list", scope=WRITE_SCOPE)
+async def _handle_meta_drafts_list(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Return live, unaccepted launch drafts for crash/app-restart recovery."""
+
+    _require_meta_draft_owner(ctx)
+    p = params if isinstance(params, dict) else {}
+    session_key = str(p.get("sessionKey") or p.get("key") or "").strip()
+    agent_id = str(p.get("agentId") or p.get("agent_id") or "").strip()
+    if not session_key and not agent_id:
+        raise RpcHandlerError(ERROR_INVALID_REQUEST, "sessionKey or agentId is required")
+    storage = get_session_storage(getattr(ctx, "session_manager", None))
+    list_drafts = getattr(storage, "list_meta_launch_drafts", None)
+    if not callable(list_drafts):
+        return {"ok": True, "drafts": [], "durable": False}
+    drafts = await list_drafts(
+        session_key=session_key or None,
+        agent_id=agent_id or None,
+        # Agent-wide recovery exists only to find provisional draft chats that
+        # have no sessions row or URL yet. Filtering in SQL prevents existing
+        # chats from starving that bounded page and avoids disclosing their raw
+        # prompts through a broad query.
+        provisional_only=bool(agent_id and not session_key),
+    )
+    get_session = getattr(storage, "get_session", None)
+    projected: list[dict[str, Any]] = []
+    for draft in drafts:
+        session_exists = (
+            bool(await get_session(draft.session_key))
+            if callable(get_session)
+            else True
+        )
+        projected.append({
+            "sessionKey": draft.session_key,
+            "clientRequestId": draft.client_request_id,
+            "name": draft.meta_skill_name,
+            "launchText": draft.launch_text,
+            "createdAt": draft.created_at,
+            "expiresAt": draft.expires_at,
+            "sessionExists": session_exists,
+        })
+    return {
+        "ok": True,
+        "durable": True,
+        "drafts": projected,
+    }
+
+
+@_d.method("meta.drafts.discard", scope=WRITE_SCOPE)
+async def _handle_meta_drafts_discard(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Forget one launch only after an explicit user discard."""
+
+    _require_meta_draft_owner(ctx)
+    p = params if isinstance(params, dict) else {}
+    session_key = str(p.get("sessionKey") or p.get("key") or "").strip()
+    client_request_id = str(
+        p.get("clientRequestId") or p.get("client_request_id") or ""
+    ).strip()
+    if not session_key or not client_request_id:
+        raise RpcHandlerError(
+            ERROR_INVALID_REQUEST,
+            "sessionKey and clientRequestId are required",
+        )
+    storage = get_session_storage(getattr(ctx, "session_manager", None))
+    discard_draft = getattr(storage, "discard_meta_launch_draft", None)
+    if callable(discard_draft):
+        discarded = bool(
+            await discard_draft(
+                session_key=session_key,
+                client_request_id=client_request_id,
+            )
+        )
+        accepted = not discarded
+    else:
+        discarded = False
+        accepted = False
+    return {
+        "ok": True,
+        "discarded": discarded,
+        # Valid coordinates that cannot be discarded have crossed the
+        # acceptance boundary. Older clients remain fail-closed on the existing
+        # ``discarded`` flag; newer clients can explain why no draft is restored.
+        "accepted": accepted,
+    }
+
+
 @_d.method("meta.run", scope="operator.write")
 async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
     """Stamp a pending meta-skill launch for the ``/meta`` command surface.
@@ -1033,6 +1132,24 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
                 ERROR_INVALID_REQUEST,
                 "clientRequestId must not exceed 256 characters",
             )
+    raw_launch_text = p.get("launchText", p.get("launch_text"))
+    launch_text: str | None
+    if raw_launch_text is None:
+        launch_text = None
+    elif not isinstance(raw_launch_text, str) or not raw_launch_text:
+        raise RpcHandlerError(ERROR_INVALID_REQUEST, "launchText must be a non-empty string")
+    else:
+        launch_text = raw_launch_text
+        if len(launch_text) > 128_000:
+            raise RpcHandlerError(
+                ERROR_INVALID_REQUEST,
+                "launchText must not exceed 128000 characters",
+            )
+        if client_request_id is None:
+            raise RpcHandlerError(
+                ERROR_INVALID_REQUEST,
+                "launchText requires clientRequestId",
+            )
     if not name:
         raise RpcHandlerError(ERROR_INVALID_REQUEST, "name is required")
     if not session_key:
@@ -1056,6 +1173,47 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
     if invokable_spec is None:
         return {"ok": False, "error": f"{name!r} is not an available meta-skill"}
 
+    storage = get_session_storage(getattr(ctx, "session_manager", None))
+    stage_draft = getattr(storage, "stage_meta_launch_draft", None)
+    draft_disposition: str | None = None
+    if launch_text is not None and client_request_id is not None:
+        if not callable(stage_draft):
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill request recovery is unavailable; retry after Gateway recovery",
+                retryable=True,
+                accepted=False,
+            )
+        try:
+            _draft, draft_disposition = await stage_draft(
+                session_key=session_key,
+                client_request_id=client_request_id,
+                meta_skill_name=name,
+                launch_text=launch_text,
+            )
+        except (MetaLaunchDraftConflictError, ValueError) as exc:
+            raise RpcHandlerError(
+                "IDEMPOTENCY_CONFLICT",
+                "clientRequestId was already used for a different MetaSkill request",
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except MetaLaunchDraftCapacityError as exc:
+            raise RpcHandlerError(
+                "META_DRAFT_OUTBOX_FULL",
+                "Too many MetaSkill requests are awaiting completion; discard one or retry later",
+                retryable=True,
+                retry_after_ms=1000,
+                accepted=False,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - request durability must fail closed
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill request could not be saved durably; retry shortly",
+                retryable=True,
+                accepted=False,
+            ) from exc
+
     readiness = await asyncio.to_thread(
         assess_meta_skill_readiness,
         invokable_spec,
@@ -1070,13 +1228,57 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
             "sessionKey": session_key,
             "code": "META_SKILL_SETUP_REQUIRED",
             "setup_required": True,
+            "drafted": draft_disposition is not None,
             "readiness": readiness.to_dict(),
             "error": format_meta_setup_error(name, readiness),
         }
 
-    storage = get_session_storage(getattr(ctx, "session_manager", None))
     stage_control = getattr(storage, "stage_meta_control_intent", None)
-    if client_request_id is not None and callable(stage_control):
+    promote_draft = getattr(storage, "promote_meta_launch_draft", None)
+    if launch_text is not None and client_request_id is not None:
+        if not callable(promote_draft):
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill request promotion is unavailable; retry after Gateway recovery",
+                retryable=True,
+                accepted=False,
+            )
+        try:
+            _intent, launch_disposition = await promote_draft(
+                session_key=session_key,
+                client_request_id=client_request_id,
+                meta_skill_name=name,
+                launch_text=launch_text,
+            )
+        except MetaLaunchDraftUnavailableError as exc:
+            raise RpcHandlerError(
+                "META_DRAFT_UNAVAILABLE",
+                "The saved MetaSkill request was discarded or expired before launch",
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except MetaLaunchDraftConflictError as exc:
+            raise RpcHandlerError(
+                "IDEMPOTENCY_CONFLICT",
+                "clientRequestId was already used for a different MetaSkill request",
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except MetaControlIntentConflictError as exc:
+            raise RpcHandlerError(
+                "IDEMPOTENCY_CONFLICT",
+                "clientRequestId was already used for a different meta-skill launch",
+                retryable=False,
+                accepted=False,
+            ) from exc
+        except Exception as exc:  # noqa: BLE001 - authorization must be durable
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill launch could not be staged durably; retry shortly",
+                retryable=True,
+                accepted=False,
+            ) from exc
+    elif client_request_id is not None and callable(stage_control):
         try:
             _intent, launch_disposition = await stage_control(
                 session_key=session_key,
@@ -1128,4 +1330,6 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
     if client_request_id is not None:
         result["clientRequestId"] = client_request_id
         result["replayed"] = launch_disposition == "replayed"
+    if draft_disposition is not None:
+        result["drafted"] = True
     return result

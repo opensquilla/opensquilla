@@ -554,6 +554,13 @@ composition:
             prompt: "是否同意向所选 Provider 发送媒体提示词和相关内容，并接受可能产生的费用？"
             prompt_zh: "是否同意向所选 Provider 发送媒体提示词和相关内容，并接受可能产生的费用？"
             prompt_en: "Do you approve sending media prompts and related content to the selected Provider and accept that charges may apply?"
+          - name: additional_notes
+            type: string
+            required: false
+            prompt: "可选修改意见。填写任何内容都会阻止本次付费媒体调用；请先修改方案，再重新授权。"
+            prompt_zh: "可选修改意见。填写任何内容都会阻止本次付费媒体调用；请先修改方案，再重新授权。"
+            prompt_en: "Optional edit notes. Any text here blocks paid media calls for this approval; revise the plan before authorizing again."
+            max_chars: 2000
         cancel_keywords: ["取消", "算了", "cancel", "stop", "abort"]
         timeout_hours: 24
 

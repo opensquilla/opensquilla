@@ -2276,6 +2276,7 @@
       "toastDisableFailed": "禁用失败：{reason}"
     },
     "proposalDetail": {
+      "dialogLabel": "提议详情：{id}",
       "heading": "提议 {id}",
       "auditTitle": "自动启用审计",
       "status": "状态",
@@ -2301,6 +2302,7 @@
       "advisoryCount": "提示项：{count}"
     },
     "skillDetail": {
+      "dialogLabel": "技能详情：{name}",
       "triggers": "触发条件",
       "composition": "构成（{kind}，{count} 个子技能）",
       "missing": "缺失",
@@ -2309,6 +2311,7 @@
       "install": "安装",
       "installVia": "通过 {kind} 安装",
       "installing": "安装中...",
+      "toolchainSetupGuidance": "请从聊天中启动此 MetaSkill，在专用设置流程中查看来源、大小和许可证并确认安装。托管工具链只能通过该流程安装。",
       "homepage": "主页",
       "loadingContent": "正在加载 SKILL.md...",
       "emptyContent": "没有可用的 SKILL.md 内容。",
@@ -2356,6 +2359,7 @@
     },
     "skills": {
       "statusReady": "就绪",
+      "statusProviderAtLaunch": "服务商将在启动时检查",
       "statusNoDeps": "未声明依赖",
       "statusNeedsDeps": "需要依赖",
       "dotReady": "就绪",
@@ -2903,7 +2907,10 @@
       "setupRequired": "{skill} 尚不能运行。请先配置：{dependencies}",
       "unknownDependency": "所需运行环境",
       "couldNotRunSkill": "无法运行 meta-skill {skill}。",
-      "couldNotRunSkillError": "无法运行 meta-skill：{error}"
+      "couldNotRunSkillError": "无法运行 meta-skill：{error}",
+      "savedForRetry": "{skill} 请求已使用原始标识保存。返回此对话即可重试。",
+      "cancelNotSaved": "无法安全保存本次取消操作。请求仍在待处理队列中，尚未移除。",
+      "cancelAlreadyAccepted": "该 MetaSkill 请求在取消前已开始运行，因此无法取消，也不会恢复到输入框。请勿重复发送。"
     },
     "metaSetup": {
       "title": "配置 {skill}",

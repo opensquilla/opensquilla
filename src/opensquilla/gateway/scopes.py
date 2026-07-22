@@ -207,6 +207,11 @@ METHOD_SCOPES: dict[str, str] = {
     "config.patch.safe": WRITE_SCOPE,
     # OpenSquilla-only; manual ``/meta`` command launch stamp.
     "meta.run": WRITE_SCOPE,
+    # Raw prompts remain owner/admin-gated inside the handlers. WRITE_SCOPE is
+    # the dispatch envelope so a locally-proven owner using a least-privilege
+    # token can reach that second, transport-proven authorization check.
+    "meta.drafts.list": WRITE_SCOPE,
+    "meta.drafts.discard": WRITE_SCOPE,
     # ----- approvals -----
     # Policy getters/setters explicitly override the ``exec.approvals.`` prefix
     # so that approval workers (which hold operator.approvals) can read/set the

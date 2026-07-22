@@ -302,6 +302,60 @@ async def test_request_bound_meta_control_without_matching_stage_fails_closed(
 
 
 @pytest.mark.asyncio
+async def test_same_key_reset_invalidates_control_retained_by_another_client(
+    tmp_path: Path,
+) -> None:
+    request_id = "meta-control-staged-before-reset"
+    launch_text = "/meta meta-tiny -- must not cross the reset boundary"
+    async with _open_real_stack(tmp_path / "sessions.db") as stack:
+        original_session_id = stack.session_id
+        staged, _ = await stack.storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+            meta_skill_name="meta-tiny",
+        )
+
+        reset = await get_dispatcher().dispatch(
+            "rpc-reset-with-staged-control",
+            "sessions.reset",
+            {"key": SESSION_KEY},
+            stack.context,
+        )
+        assert reset.ok is True
+        assert reset.payload["session_id"] != original_session_id
+        assert reset.payload["epoch"] == 1
+        assert await stack.storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=staged.correlation_id,
+        ) is None
+
+        # Model a second tab whose browser outbox still holds the pre-reset
+        # marker. Server-side reset fencing must reject it independently of any
+        # client cleanup or synchronization.
+        stale_send = await get_dispatcher().dispatch(
+            "rpc-stale-control-after-reset",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": launch_text,
+                "clientRequestId": request_id,
+            },
+            stack.context,
+        )
+        assert stale_send.ok is False
+        assert stale_send.error is not None
+        assert stale_send.error.code == "META_CONTROL_NOT_STAGED"
+        assert stale_send.error.accepted is False
+        assert _table_counts(stack.db_path) == {
+            "transcript_entries": 0,
+            "agent_tasks": 0,
+            "turn_ingress_receipts": 0,
+        }
+
+
+@pytest.mark.asyncio
 async def test_durable_failed_step_replay_survives_commit_then_memory_loss(
     tmp_path: Path,
 ) -> None:

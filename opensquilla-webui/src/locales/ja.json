@@ -2276,6 +2276,7 @@
       "toastDisableFailed": "無効化に失敗しました: {reason}"
     },
     "proposalDetail": {
+      "dialogLabel": "提案の詳細: {id}",
       "heading": "提案 {id}",
       "auditTitle": "自動有効化の監査",
       "status": "状態",
@@ -2301,6 +2302,7 @@
       "advisoryCount": "注意事項: {count}"
     },
     "skillDetail": {
+      "dialogLabel": "スキルの詳細: {name}",
       "triggers": "トリガー",
       "composition": "構成（{kind}、{count} 個のサブスキル）",
       "missing": "未設定",
@@ -2309,6 +2311,7 @@
       "install": "インストール",
       "installVia": "{kind} 経由でインストール",
       "installing": "インストール中...",
+      "toolchainSetupGuidance": "チャットからこの MetaSkill を起動し、専用のセットアップフローで提供元、サイズ、ライセンスを確認して承認してください。管理対象ツールチェーンは、そのフローからのみインストールできます。",
       "homepage": "ホームページ",
       "loadingContent": "SKILL.md を読み込み中...",
       "emptyContent": "利用できる SKILL.md コンテンツはありません。",
@@ -2356,6 +2359,7 @@
     },
     "skills": {
       "statusReady": "準備完了",
+      "statusProviderAtLaunch": "プロバイダーは起動時に確認されます",
       "statusNoDeps": "依存関係の宣言なし",
       "statusNeedsDeps": "依存関係が必要",
       "dotReady": "準備完了",
@@ -2903,7 +2907,10 @@
       "setupRequired": "{skill} はまだ実行できません。先に設定してください：{dependencies}",
       "unknownDependency": "必要な実行環境",
       "couldNotRunSkill": "メタスキル {skill} を実行できませんでした。",
-      "couldNotRunSkillError": "メタスキルを実行できませんでした: {error}"
+      "couldNotRunSkillError": "メタスキルを実行できませんでした: {error}",
+      "savedForRetry": "{skill} のリクエストは元の識別子のまま保存されました。このチャットに戻ると再試行できます。",
+      "cancelNotSaved": "キャンセルを安全に保存できませんでした。リクエストは保留中のままで、削除されていません。",
+      "cancelAlreadyAccepted": "この MetaSkill リクエストはすでに開始されていたため、キャンセルできず入力欄にも戻していません。再送しないでください。"
     },
     "metaSetup": {
       "title": "{skill} をセットアップ",

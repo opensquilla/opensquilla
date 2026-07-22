@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import html
 import re
+from decimal import Decimal
 from typing import Any
 
 import jinja2
@@ -35,6 +36,15 @@ _PATH_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _PATH_TRAILING_PUNCT = "`\"'，。；;,)）]】"
+_SHORT_DRAMA_SHOT_HEADER_RE = re.compile(
+    r"(?m)^=== SHOT_(10|[1-9]) ===[ \t]*$",
+)
+_SHORT_DRAMA_DURATION_RE = re.compile(
+    r"(?m)^DURATION_S:[ \t]*(\d+(?:\.\d+)?)[ \t]*$",
+)
+_SHORT_DRAMA_DECLARED_SHOTS_RE = re.compile(
+    r"(?m)^N_SHOTS:[ \t]*(10|[1-9])[ \t]*$",
+)
 
 
 def _filter_xml_escape(value: object) -> str:
@@ -90,6 +100,115 @@ def _filter_int(value: object, default: int = 0) -> int:
         return default
 
 
+def _short_drama_cost_basis(value: object) -> tuple[int, Decimal, Decimal] | None:
+    """Return active shots and the provider-billed duration range.
+
+    A valid short-drama script has one exact ``=== SHOT_N ===`` block per
+    active shot and one ``DURATION_S`` line in each block. The paid media DAG
+    uses the same exact headers and clamps each video request to 3-15 seconds,
+    so the estimate mirrors the work that can actually be submitted. If a
+    malformed block omits its duration, use the provider-billed 4-15 second
+    interval instead of inventing a precise figure. OpenRouter's Seedance 2.0
+    routes bill the workflow's 3-second option as a 4-second generation before
+    the local runtime trims the delivered clip back to 3 seconds.
+    """
+
+    text = str(value or "")
+    headers = list(_SHORT_DRAMA_SHOT_HEADER_RE.finditer(text))
+    durations: dict[int, Decimal | None] = {}
+    for index, header in enumerate(headers):
+        shot_number = int(header.group(1))
+        if shot_number in durations:
+            continue
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        duration_match = _SHORT_DRAMA_DURATION_RE.search(text, header.end(), end)
+        duration = Decimal(duration_match.group(1)) if duration_match else None
+        durations[shot_number] = duration
+
+    if not durations:
+        declared_match = _SHORT_DRAMA_DECLARED_SHOTS_RE.search(text)
+        overview_end = headers[0].start() if headers else len(text)
+        overview_duration = _SHORT_DRAMA_DURATION_RE.search(text, 0, overview_end)
+        if declared_match is None or overview_duration is None:
+            return None
+        shot_count = int(declared_match.group(1))
+        duration = Decimal(overview_duration.group(1))
+        minimum = Decimal(3 * shot_count)
+        maximum = Decimal(15 * shot_count)
+        clamped = min(max(duration, minimum), maximum)
+        # The overview-only fallback does not expose how the total is split
+        # across shots. Each 3-second shot can therefore add one billed second.
+        billed_high = min(maximum, clamped + Decimal(shot_count))
+        billed_low = max(clamped, Decimal(4 * shot_count))
+        return shot_count, billed_low, max(billed_low, billed_high)
+
+    duration_low = Decimal("0")
+    duration_high = Decimal("0")
+    for duration in durations.values():
+        if duration is None:
+            duration_low += Decimal("4")
+            duration_high += Decimal("15")
+            continue
+        clamped = min(max(duration, Decimal("3")), Decimal("15"))
+        billed = Decimal("4") if clamped == Decimal("3") else clamped
+        duration_low += billed
+        duration_high += billed
+    return len(durations), duration_low, duration_high
+
+
+def _format_duration_range(low: Decimal, high: Decimal, *, language: str) -> str:
+    def _format(value: Decimal) -> str:
+        return format(value.normalize(), "f")
+
+    if low == high:
+        return f"{_format(low)} 秒" if language == "zh" else f"{_format(low)}s"
+    separator = "-"
+    if language == "zh":
+        return f"{_format(low)}{separator}{_format(high)} 秒"
+    return f"{_format(low)}-{_format(high)}s"
+
+
+def _filter_short_drama_media_cost(value: object, language: str = "en") -> str:
+    """Render a deterministic consent-time USD estimate for a drama script."""
+
+    localized = "zh" if str(language).strip().lower().startswith("zh") else "en"
+    basis = _short_drama_cost_basis(value)
+    if basis is None:
+        if localized == "zh":
+            return (
+                "本次脚本无法解析出镜头数和总时长，暂时无法给出可授权的美元估算区间；"
+                "请先修订脚本，不要批准媒体生成。"
+            )
+        return (
+            "The script does not expose a parseable shot count and total duration, "
+            "so no authorizable USD estimate can be shown yet. Revise the script "
+            "before approving media generation."
+        )
+
+    shot_count, duration_low, duration_high = basis
+    image_low = Decimal(shot_count) * Decimal("0.05") + Decimal("0.05")
+    image_high = Decimal(shot_count) * Decimal("0.05") + Decimal("0.10")
+    total_low = image_low + duration_low * Decimal("0.15")
+    total_high = image_high + duration_high * Decimal("0.15")
+    cost_range = f"USD ${total_low:.2f}-${total_high:.2f}"
+    duration = _format_duration_range(duration_low, duration_high, language=localized)
+
+    if localized == "zh":
+        return (
+            f"本次脚本媒体成本估算：{shot_count} 个镜头，计费剧情时长 {duration}；"
+            f"预计总计 {cost_range}。依据：镜头图约 $0.05/张、全角色参考图 "
+            "$0.05-$0.10、视频约 $0.15/秒；实际账单由所选提供商决定。"
+        )
+    shot_label = "shot" if shot_count == 1 else "shots"
+    return (
+        f"Estimated media cost for this script: {shot_count} {shot_label}, "
+        f"{duration} of billable story footage; estimated total {cost_range}. "
+        "Basis: about $0.05 per shot image, $0.05-$0.10 for the full-cast "
+        "reference image, and about $0.15 per video second. The selected "
+        "provider determines the actual bill."
+    )
+
+
 def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
     # ``ImmutableSandboxedEnvironment`` blocks Python attribute introspection
     # (``__class__`` / ``__mro__`` / ``__subclasses__``) and mutation
@@ -119,6 +238,7 @@ def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
         "extract_path": _filter_extract_path,
         "contains_cjk": _filter_contains_cjk,
         "int": _filter_int,
+        "short_drama_media_cost": _filter_short_drama_media_cost,
     }
     return env
 

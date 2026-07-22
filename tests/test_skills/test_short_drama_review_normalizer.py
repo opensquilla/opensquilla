@@ -300,6 +300,43 @@ def test_media_approval_keeps_single_gate_explicit_approval_path() -> None:
     assert fields["HAS_OVERRIDES"] == "no"
 
 
+def test_direct_script_file_edit_requires_a_new_snapshot_approval() -> None:
+    fields = _fields(
+        normalizer.normalize_review(
+            {
+                "phase": "media_approval",
+                "review": "继续生成",
+                "confirmation": "",
+                "approval_snapshot_changed": True,
+            }
+        )
+    )
+
+    assert fields["DECISION"] == "hold"
+    assert fields["CONSENT_BASIS"] == "revision_confirmation_required"
+    assert fields["HAS_OVERRIDES"] == "no"
+
+
+@pytest.mark.parametrize("confirmation", ["继续生成", "approve", "proceed"])
+def test_direct_script_file_edit_accepts_explicit_snapshot_approval(
+    confirmation: str,
+) -> None:
+    fields = _fields(
+        normalizer.normalize_review(
+            {
+                "phase": "media_approval",
+                "review": "继续生成",
+                "confirmation": confirmation,
+                "approval_snapshot_changed": "true",
+            }
+        )
+    )
+
+    assert fields["DECISION"] == "proceed"
+    assert fields["CONSENT_BASIS"] == "explicit_approval_after_script_snapshot_change"
+    assert fields["HAS_OVERRIDES"] == "no"
+
+
 @pytest.mark.parametrize("confirmation", ["继续生成", "approve", "proceed"])
 def test_revised_preview_requires_and_accepts_new_explicit_approval(
     confirmation: str,

@@ -18,12 +18,13 @@ from functools import wraps
 from typing import TYPE_CHECKING, Any, Concatenate, cast
 
 from opensquilla.compat import aiosqlite
-from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id
+from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
 from opensquilla.session.models import (
     AgentTaskRecord,
     AgentTaskStatus,
     MemoryDurableReceipt,
     MetaControlIntent,
+    MetaLaunchDraft,
     SessionContextState,
     SessionNode,
     SessionStatus,
@@ -99,6 +100,18 @@ class MetaControlIntentConflictError(ValueError):
     """Raised when a durable MetaSkill control identity is reused incompatibly."""
 
 
+class MetaLaunchDraftConflictError(ValueError):
+    """Raised when a durable MetaSkill draft identity is reused incompatibly."""
+
+
+class MetaLaunchDraftCapacityError(RuntimeError):
+    """Raised when the bounded durable MetaSkill draft outbox is full."""
+
+
+class MetaLaunchDraftUnavailableError(RuntimeError):
+    """Raised when a draft was discarded or expired before control promotion."""
+
+
 class TaskCollectionUnavailableError(RuntimeError):
     """Raised when a queued task stopped being collectable before acceptance."""
 
@@ -138,6 +151,11 @@ _BUSY_RETRY_MAX_SECONDS = 0.250
 _META_CONTROL_STAGED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 _META_CONTROL_STAGED_GC_BATCH = 128
 _META_CONTROL_RECOVERY_INVALID_REASON = "meta_control_recovery_invalid"
+_META_LAUNCH_DRAFT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+_META_LAUNCH_DRAFT_PER_SESSION_LIMIT = 20
+_META_LAUNCH_DRAFT_GLOBAL_LIMIT = 512
+_META_LAUNCH_DRAFT_GC_BATCH = 512
+_META_LAUNCH_DRAFT_GC_INTERVAL_SECONDS = 60.0
 
 
 def _is_sqlite_busy(exc: BaseException) -> bool:
@@ -172,7 +190,8 @@ def _serialized_read[**P, R](
 # Version 9 added durable turn-ingress receipts.
 # Version 10 added the durable provider usage ledger and content-free daily usage
 # telemetry aggregates. Version 11 added durable hidden MetaSkill control intents.
-SCHEMA_VERSION = 11
+# Version 12 added the bounded pre-acceptance MetaSkill launch outbox.
+SCHEMA_VERSION = 12
 
 # Session rows at or above this semantic version were created by fork logic
 # that records enough existing metadata for canonical coverage to be checked
@@ -506,6 +525,30 @@ ON meta_control_intents(session_key, control_kind, correlation_id)
 _CREATE_IDX_META_CONTROL_SESSION_STATUS = """
 CREATE INDEX IF NOT EXISTS idx_meta_control_intents_session_status
 ON meta_control_intents(session_key, status, created_at)
+"""
+
+_CREATE_META_LAUNCH_DRAFTS = """
+CREATE TABLE IF NOT EXISTS meta_launch_drafts (
+    draft_id TEXT PRIMARY KEY,
+    session_key TEXT NOT NULL,
+    client_request_id TEXT NOT NULL,
+    meta_skill_name TEXT NOT NULL,
+    launch_text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1
+)
+"""
+
+_CREATE_IDX_META_LAUNCH_DRAFT_REQUEST = """
+CREATE UNIQUE INDEX IF NOT EXISTS uq_meta_launch_drafts_request
+ON meta_launch_drafts(session_key, client_request_id)
+"""
+
+_CREATE_IDX_META_LAUNCH_DRAFT_SESSION_EXPIRY = """
+CREATE INDEX IF NOT EXISTS idx_meta_launch_drafts_session_expiry
+ON meta_launch_drafts(session_key, expires_at, created_at)
 """
 
 _CREATE_MEMORY_DURABLE_RECEIPTS = """
@@ -941,6 +984,7 @@ class SessionStorage:
         self._sleep = asyncio.sleep
         self._monotonic = time.monotonic
         self._random = random.random
+        self._meta_launch_draft_gc_task: asyncio.Task[None] | None = None
 
     async def connect(self) -> None:
         self._conn = await aiosqlite.connect(self._db_path, isolation_level=None)
@@ -965,6 +1009,10 @@ class SessionStorage:
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
         await self._initialize_schema()
+        self._meta_launch_draft_gc_task = asyncio.create_task(
+            self._run_meta_launch_draft_gc(),
+            name="session-storage-meta-launch-draft-gc",
+        )
 
     @classmethod
     async def open(cls, db_path: str) -> SessionStorage:
@@ -973,10 +1021,32 @@ class SessionStorage:
         return storage
 
     async def close(self) -> None:
+        gc_task, self._meta_launch_draft_gc_task = self._meta_launch_draft_gc_task, None
+        if gc_task is not None:
+            gc_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await gc_task
         async with self._operation_lock:
             if self._conn:
                 await self._conn.close()
                 self._conn = None
+
+    async def _run_meta_launch_draft_gc(self) -> None:
+        """Physically enforce raw-draft retention while the Gateway stays up."""
+
+        while True:
+            await asyncio.sleep(_META_LAUNCH_DRAFT_GC_INTERVAL_SECONDS)
+            try:
+                async with self._write_transaction("meta_launch_draft_periodic_gc") as conn:
+                    await self._purge_expired_meta_launch_drafts(
+                        conn,
+                        now_ms=_now_ms(),
+                        limit=_META_LAUNCH_DRAFT_GC_BATCH,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("Periodic MetaSkill draft retention cleanup failed", exc_info=True)
 
     def _raise_if_poisoned(self) -> None:
         if self._poisoned:
@@ -1178,6 +1248,9 @@ class SessionStorage:
         await self._conn.execute(_CREATE_META_CONTROL_INTENTS)
         await self._conn.execute(_CREATE_IDX_META_CONTROL_CORRELATION)
         await self._conn.execute(_CREATE_IDX_META_CONTROL_SESSION_STATUS)
+        await self._conn.execute(_CREATE_META_LAUNCH_DRAFTS)
+        await self._conn.execute(_CREATE_IDX_META_LAUNCH_DRAFT_REQUEST)
+        await self._conn.execute(_CREATE_IDX_META_LAUNCH_DRAFT_SESSION_EXPIRY)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
         await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
@@ -1217,6 +1290,14 @@ class SessionStorage:
             session_columns = {row[1] for row in await cur.fetchall()}
         if "updated_at" in session_columns:
             await self._conn.execute(_CREATE_IDX_SESSIONS_UPDATED)
+        # Launch drafts contain raw user prompts. Enforce their seven-day
+        # retention at every process start even when nobody stages or lists a
+        # new draft after the old rows expire.
+        await self._purge_expired_meta_launch_drafts(
+            self._conn,
+            now_ms=_now_ms(),
+            limit=_META_LAUNCH_DRAFT_GC_BATCH,
+        )
         await self._conn.commit()
         required_recovery_columns = {
             "status",
@@ -2644,6 +2725,18 @@ class SessionStorage:
         session_key = canonicalize_session_key(session_key)
         session: SessionNode | None = None
         async with self._write_transaction("delete_session") as conn:
+            # Drafts and controls may predate the first accepted turn and
+            # therefore be attached to a provisional key with no sessions row.
+            # Revoke both before the early return below so a browser outbox
+            # cannot consume an orphaned authorization and recreate the chat.
+            await conn.execute(
+                "DELETE FROM meta_launch_drafts WHERE session_key = ?",
+                (session_key,),
+            )
+            await conn.execute(
+                "DELETE FROM meta_control_intents WHERE session_key = ?",
+                (session_key,),
+            )
             async with conn.execute(
                 "SELECT * FROM sessions WHERE session_key = ?", (session_key,)
             ) as cur:
@@ -2748,6 +2841,37 @@ class SessionStorage:
                 row = await cur.fetchone()
             if row is None:
                 raise KeyError(f"Session not found: {session_key}")
+            return int(row[0])
+
+    async def advance_reset_epoch(self, session_key: str) -> int:
+        """Fence a same-key reset and invalidate its unaccepted MetaSkill controls.
+
+        The epoch transition and staged-control deletion share one transaction,
+        so another client retaining an old hidden control can never observe the
+        new epoch while its pre-reset authorization is still consumable.
+        Accepted intents are immutable history and remain untouched.
+        """
+
+        session_key = canonicalize_session_key(session_key)
+        async with self._write_transaction("advance_reset_epoch") as conn:
+            await conn.execute(
+                "UPDATE sessions SET epoch = epoch + 1 WHERE session_key = ?",
+                (session_key,),
+            )
+            async with conn.execute(
+                "SELECT epoch FROM sessions WHERE session_key = ?", (session_key,)
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                raise KeyError(f"Session not found: {session_key}")
+            await conn.execute(
+                "DELETE FROM meta_control_intents WHERE session_key = ? AND status = 'staged'",
+                (session_key,),
+            )
+            await conn.execute(
+                "DELETE FROM meta_launch_drafts WHERE session_key = ?",
+                (session_key,),
+            )
             return int(row[0])
 
     @_serialized_read
@@ -3223,6 +3347,10 @@ class SessionStorage:
                             SELECT 1 FROM meta_control_intents AS intent
                             WHERE intent.accepted_task_id = agent_tasks.task_id
                               AND intent.status = 'accepted'
+                        ) AND EXISTS (
+                            SELECT 1 FROM sessions AS owner
+                            WHERE owner.session_key = agent_tasks.session_key
+                              AND owner.status NOT IN (?, ?, ?, ?)
                         ) THEN 'meta_control_restart_before_start'
                         ELSE COALESCE(terminal_reason, ?)
                     END
@@ -3233,6 +3361,7 @@ class SessionStorage:
                     ts,
                     ts,
                     AgentTaskStatus.QUEUED,
+                    *terminal_session_statuses,
                     "process_restart",
                     AgentTaskStatus.QUEUED,
                     AgentTaskStatus.RUNNING,
@@ -3256,6 +3385,12 @@ class SessionStorage:
                     END
                 WHERE session_key IN ({placeholders})
                   AND status NOT IN (?, ?, ?, ?)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM agent_tasks AS recoverable
+                      WHERE recoverable.session_key = sessions.session_key
+                        AND recoverable.status = ?
+                        AND recoverable.terminal_reason = 'meta_control_restart_before_start'
+                  )
                 """,
                 (
                     SessionStatus.FAILED,
@@ -3265,6 +3400,7 @@ class SessionStorage:
                     ts,
                     *chunk,
                     *terminal_session_statuses,
+                    AgentTaskStatus.ABANDONED,
                 ),
             )
         return count
@@ -3285,6 +3421,12 @@ class SessionStorage:
         bounded_limit = max(1, min(int(limit), 256))
         recovered: list[RecoverableMetaControlTask] = []
         now_ms = _now_ms()
+        terminal_session_statuses = (
+            SessionStatus.DONE,
+            SessionStatus.FAILED,
+            SessionStatus.KILLED,
+            SessionStatus.TIMEOUT,
+        )
         async with self._write_transaction("claim_meta_control_recovery") as conn:
             async def quarantine_invalid(task_id: str) -> None:
                 await conn.execute(
@@ -3315,13 +3457,20 @@ class SessionStorage:
                     FROM agent_tasks AS task
                     JOIN meta_control_intents AS intent
                       ON intent.accepted_task_id = task.task_id
+                    JOIN sessions AS owner
+                      ON owner.session_key = task.session_key
                     WHERE task.status = ?
                       AND task.terminal_reason = 'meta_control_restart_before_start'
                       AND intent.status = 'accepted'
+                      AND owner.status NOT IN (?, ?, ?, ?)
                     ORDER BY task.created_at ASC, task.task_id ASC
                     LIMIT ?
                     """,
-                    (AgentTaskStatus.ABANDONED, remaining),
+                    (
+                        AgentTaskStatus.ABANDONED,
+                        *terminal_session_statuses,
+                        remaining,
+                    ),
                 ) as cur:
                     task_rows = await cur.fetchall()
                 if not task_rows:
@@ -3389,8 +3538,14 @@ class SessionStorage:
                     UPDATE sessions
                     SET status = ?, updated_at = ?, ended_at = NULL, runtime_ms = NULL
                     WHERE session_key = ?
+                      AND status NOT IN (?, ?, ?, ?)
                     """,
-                    (SessionStatus.RUNNING, now_ms, session_key),
+                    (
+                        SessionStatus.RUNNING,
+                        now_ms,
+                        session_key,
+                        *terminal_session_statuses,
+                    ),
                 )
         return recovered
 
@@ -3715,37 +3870,8 @@ class SessionStorage:
             raise ValueError("replay meta control requires nonce, run, and live mode")
 
         async with self._write_transaction("stage_meta_control_intent") as conn:
-            cutoff_ms = _now_ms() - _META_CONTROL_STAGED_RETENTION_MS
-            await conn.execute(
-                """
-                DELETE FROM meta_control_intents
-                WHERE intent_id IN (
-                    SELECT intent_id FROM meta_control_intents
-                    WHERE status = 'staged' AND created_at < ?
-                    ORDER BY created_at ASC, intent_id ASC
-                    LIMIT ?
-                )
-                """,
-                (cutoff_ms, _META_CONTROL_STAGED_GC_BATCH),
-            )
-            existing = await self._select_meta_control_intent(
+            return await self._stage_meta_control_intent_in_transaction(
                 conn,
-                session_key=session_key,
-                control_kind=control_kind,
-                correlation_id=correlation_id,
-            )
-            if existing is not None:
-                if (
-                    existing.meta_skill_name != meta_skill_name
-                    or existing.replay_run_id != replay_run_id
-                    or existing.replay_mode != replay_mode
-                ):
-                    raise MetaControlIntentConflictError(
-                        "meta control identity was already used for another launch"
-                    )
-                return existing, "replayed"
-
-            intent = MetaControlIntent(
                 session_key=session_key,
                 control_kind=control_kind,
                 correlation_id=correlation_id,
@@ -3753,14 +3879,66 @@ class SessionStorage:
                 replay_run_id=replay_run_id,
                 replay_mode=replay_mode,
             )
-            data = intent.model_dump()
-            columns = list(data)
-            await conn.execute(
-                f"INSERT INTO meta_control_intents ({', '.join(columns)}) "
-                f"VALUES ({', '.join('?' for _ in columns)})",
-                [_serialize(data[column]) for column in columns],
+
+    async def _stage_meta_control_intent_in_transaction(
+        self,
+        conn: Any,
+        *,
+        session_key: str,
+        control_kind: str,
+        correlation_id: str,
+        meta_skill_name: str,
+        replay_run_id: str | None,
+        replay_mode: str | None,
+    ) -> tuple[MetaControlIntent, str]:
+        """Insert or replay a validated control on an existing write transaction."""
+
+        cutoff_ms = _now_ms() - _META_CONTROL_STAGED_RETENTION_MS
+        await conn.execute(
+            """
+            DELETE FROM meta_control_intents
+            WHERE intent_id IN (
+                SELECT intent_id FROM meta_control_intents
+                WHERE status = 'staged' AND created_at < ?
+                ORDER BY created_at ASC, intent_id ASC
+                LIMIT ?
             )
-            return intent, "stamped"
+            """,
+            (cutoff_ms, _META_CONTROL_STAGED_GC_BATCH),
+        )
+        existing = await self._select_meta_control_intent(
+            conn,
+            session_key=session_key,
+            control_kind=control_kind,
+            correlation_id=correlation_id,
+        )
+        if existing is not None:
+            if (
+                existing.meta_skill_name != meta_skill_name
+                or existing.replay_run_id != replay_run_id
+                or existing.replay_mode != replay_mode
+            ):
+                raise MetaControlIntentConflictError(
+                    "meta control identity was already used for another launch"
+                )
+            return existing, "replayed"
+
+        intent = MetaControlIntent(
+            session_key=session_key,
+            control_kind=control_kind,
+            correlation_id=correlation_id,
+            meta_skill_name=meta_skill_name,
+            replay_run_id=replay_run_id,
+            replay_mode=replay_mode,
+        )
+        data = intent.model_dump()
+        columns = list(data)
+        await conn.execute(
+            f"INSERT INTO meta_control_intents ({', '.join(columns)}) "
+            f"VALUES ({', '.join('?' for _ in columns)})",
+            [_serialize(data[column]) for column in columns],
+        )
+        return intent, "stamped"
 
     @_serialized_read
     async def get_meta_control_intent(
@@ -3778,6 +3956,314 @@ class SessionStorage:
             control_kind=control_kind,
             correlation_id=correlation_id,
         )
+
+    @staticmethod
+    async def _select_meta_launch_draft(
+        conn: Any,
+        *,
+        session_key: str,
+        client_request_id: str,
+    ) -> MetaLaunchDraft | None:
+        async with conn.execute(
+            """
+            SELECT * FROM meta_launch_drafts
+            WHERE session_key = ? AND client_request_id = ?
+            """,
+            (session_key, client_request_id),
+        ) as cur:
+            row = await cur.fetchone()
+        return MetaLaunchDraft(**_deserialize_row(dict(row))) if row is not None else None
+
+    @staticmethod
+    async def _purge_expired_meta_launch_drafts(
+        conn: Any,
+        *,
+        now_ms: int,
+        limit: int,
+    ) -> int:
+        """Delete a bounded page of expired raw prompts and their staged controls."""
+
+        bounded_limit = max(1, min(int(limit), _META_LAUNCH_DRAFT_GLOBAL_LIMIT))
+        async with conn.execute(
+            """
+            SELECT draft_id, session_key, client_request_id
+            FROM meta_launch_drafts
+            WHERE expires_at <= ?
+            ORDER BY expires_at ASC, draft_id ASC
+            LIMIT ?
+            """,
+            (now_ms, bounded_limit),
+        ) as cur:
+            expired = await cur.fetchall()
+        if not expired:
+            return 0
+
+        # Revoke the one-shot authorization before deleting the only row that
+        # correlates it to the expiring raw request.
+        for row in expired:
+            await conn.execute(
+                """
+                DELETE FROM meta_control_intents
+                WHERE session_key = ? AND control_kind = 'manual'
+                  AND correlation_id = ? AND status = 'staged'
+                """,
+                (str(row["session_key"]), f"request:{row['client_request_id']}"),
+            )
+        placeholders = ", ".join("?" for _ in expired)
+        await conn.execute(
+            f"DELETE FROM meta_launch_drafts WHERE draft_id IN ({placeholders})",
+            [str(row["draft_id"]) for row in expired],
+        )
+        return len(expired)
+
+    async def stage_meta_launch_draft(
+        self,
+        *,
+        session_key: str,
+        client_request_id: str,
+        meta_skill_name: str,
+        launch_text: str,
+    ) -> tuple[MetaLaunchDraft, str]:
+        """Retain one exact manual request until its hidden turn is accepted.
+
+        The outbox is deliberately small and short-lived because ``launch_text``
+        is user content.  Stable request identities are immutable, making
+        retries safe after an RPC response loss or application restart.
+        """
+
+        session_key = canonicalize_session_key(session_key)
+        client_request_id = client_request_id.strip()
+        meta_skill_name = meta_skill_name.strip()
+        if not session_key or len(session_key) > 512:
+            raise ValueError("meta launch draft session is invalid")
+        if (
+            not client_request_id
+            or len(client_request_id) > 256
+            or any(character.isspace() for character in client_request_id)
+        ):
+            raise ValueError("meta launch draft request identity is invalid")
+        if (
+            not meta_skill_name
+            or len(meta_skill_name) > 256
+            or any(character.isspace() for character in meta_skill_name)
+        ):
+            raise ValueError("meta launch draft skill is invalid")
+        if not isinstance(launch_text, str) or not launch_text or len(launch_text) > 128_000:
+            raise ValueError("meta launch draft content is invalid")
+        prefix = f"/meta {meta_skill_name}"
+        suffix = launch_text[len(prefix) :] if launch_text.startswith(prefix) else ""
+        if launch_text != prefix:
+            if not suffix.startswith(" --") or (len(suffix) > 3 and not suffix[3].isspace()):
+                raise ValueError("meta launch draft does not match its skill")
+
+        now_ms = _now_ms()
+        async with self._write_transaction("stage_meta_launch_draft") as conn:
+            await self._purge_expired_meta_launch_drafts(
+                conn,
+                now_ms=now_ms,
+                limit=_META_LAUNCH_DRAFT_GC_BATCH,
+            )
+            existing = await self._select_meta_launch_draft(
+                conn,
+                session_key=session_key,
+                client_request_id=client_request_id,
+            )
+            if existing is not None:
+                if (
+                    existing.meta_skill_name != meta_skill_name
+                    or existing.launch_text != launch_text
+                ):
+                    raise MetaLaunchDraftConflictError(
+                        "meta launch draft identity was already used for another request"
+                    )
+                return existing, "replayed"
+
+            async with conn.execute(
+                "SELECT COUNT(*) FROM meta_launch_drafts WHERE session_key = ?",
+                (session_key,),
+            ) as cur:
+                per_session_row = await cur.fetchone()
+            per_session_count = int(per_session_row[0] if per_session_row else 0)
+            if per_session_count >= _META_LAUNCH_DRAFT_PER_SESSION_LIMIT:
+                raise MetaLaunchDraftCapacityError("MetaSkill draft outbox is full")
+            async with conn.execute("SELECT COUNT(*) FROM meta_launch_drafts") as cur:
+                global_row = await cur.fetchone()
+            if int(global_row[0] if global_row else 0) >= _META_LAUNCH_DRAFT_GLOBAL_LIMIT:
+                raise MetaLaunchDraftCapacityError("MetaSkill draft outbox is full")
+
+            draft = MetaLaunchDraft(
+                session_key=session_key,
+                client_request_id=client_request_id,
+                meta_skill_name=meta_skill_name,
+                launch_text=launch_text,
+                created_at=now_ms,
+                updated_at=now_ms,
+                expires_at=now_ms + _META_LAUNCH_DRAFT_RETENTION_MS,
+            )
+            data = draft.model_dump()
+            columns = list(data)
+            await conn.execute(
+                f"INSERT INTO meta_launch_drafts ({', '.join(columns)}) "
+                f"VALUES ({', '.join('?' for _ in columns)})",
+                [_serialize(data[column]) for column in columns],
+            )
+            return draft, "stamped"
+
+    async def promote_meta_launch_draft(
+        self,
+        *,
+        session_key: str,
+        client_request_id: str,
+        meta_skill_name: str,
+        launch_text: str,
+    ) -> tuple[MetaControlIntent, str]:
+        """Atomically verify a live draft and stage its manual authorization.
+
+        Readiness checks intentionally run outside SQLite. This compare-and-set
+        closes the later boundary: if another tab discarded or expiry removed
+        the raw request while readiness was running, no consumable control is
+        created and the caller receives a retry-safe failure.
+        """
+
+        session_key = canonicalize_session_key(session_key)
+        client_request_id = client_request_id.strip()
+        meta_skill_name = meta_skill_name.strip()
+        if not session_key or not client_request_id or not meta_skill_name or not launch_text:
+            raise ValueError("meta launch draft promotion coordinates are required")
+
+        now_ms = _now_ms()
+        async with self._write_transaction("promote_meta_launch_draft") as conn:
+            await self._purge_expired_meta_launch_drafts(
+                conn,
+                now_ms=now_ms,
+                limit=_META_LAUNCH_DRAFT_GC_BATCH,
+            )
+            draft = await self._select_meta_launch_draft(
+                conn,
+                session_key=session_key,
+                client_request_id=client_request_id,
+            )
+            if draft is None:
+                raise MetaLaunchDraftUnavailableError(
+                    "meta launch draft was discarded or expired"
+                )
+            if (
+                draft.meta_skill_name != meta_skill_name
+                or draft.launch_text != launch_text
+            ):
+                raise MetaLaunchDraftConflictError(
+                    "meta launch draft identity was already used for another request"
+                )
+            return await self._stage_meta_control_intent_in_transaction(
+                conn,
+                session_key=session_key,
+                control_kind="manual",
+                correlation_id=f"request:{client_request_id}",
+                meta_skill_name=meta_skill_name,
+                replay_run_id=None,
+                replay_mode=None,
+            )
+
+    async def list_meta_launch_drafts(
+        self,
+        *,
+        session_key: str | None = None,
+        agent_id: str | None = None,
+        provisional_only: bool = False,
+        limit: int = _META_LAUNCH_DRAFT_PER_SESSION_LIMIT,
+    ) -> list[MetaLaunchDraft]:
+        """List live drafts for one session or one agent without consuming them."""
+
+        canonical_session = canonicalize_session_key(session_key) if session_key else ""
+        normalized_agent = normalize_agent_id(agent_id) if agent_id else ""
+        if not canonical_session and not normalized_agent:
+            raise ValueError("meta launch draft session or agent is required")
+        bounded_limit = max(1, min(int(limit), _META_LAUNCH_DRAFT_PER_SESSION_LIMIT))
+        now_ms = _now_ms()
+        async with self._write_transaction("list_meta_launch_drafts") as conn:
+            await self._purge_expired_meta_launch_drafts(
+                conn,
+                now_ms=now_ms,
+                limit=_META_LAUNCH_DRAFT_GC_BATCH,
+            )
+            if canonical_session:
+                sql = (
+                    "SELECT * FROM meta_launch_drafts "
+                    "WHERE session_key = ? AND expires_at > ? "
+                    "ORDER BY created_at ASC, draft_id ASC LIMIT ?"
+                )
+                params: tuple[Any, ...] = (canonical_session, now_ms, bounded_limit)
+            else:
+                session_prefix = f"agent:{normalized_agent}:"
+                provisional_clause = (
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM sessions "
+                    "WHERE sessions.session_key = meta_launch_drafts.session_key"
+                    ") "
+                    if provisional_only
+                    else ""
+                )
+                sql = (
+                    "SELECT * FROM meta_launch_drafts "
+                    "WHERE substr(session_key, 1, length(?)) = ? AND expires_at > ? "
+                    f"{provisional_clause}"
+                    "ORDER BY created_at ASC, draft_id ASC LIMIT ?"
+                )
+                params = (session_prefix, session_prefix, now_ms, bounded_limit)
+            async with conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        drafts = [MetaLaunchDraft(**_deserialize_row(dict(row))) for row in rows]
+        if normalized_agent:
+            # Keep the parser authoritative if session-key formats expand; the
+            # SQL prefix is only the bounded query accelerator.
+            drafts = [
+                draft
+                for draft in drafts
+                if parse_agent_id(draft.session_key) == normalized_agent
+            ]
+        return drafts
+
+    async def discard_meta_launch_draft(
+        self,
+        *,
+        session_key: str,
+        client_request_id: str,
+    ) -> bool:
+        """Remove a draft after explicit user discard."""
+
+        session_key = canonicalize_session_key(session_key)
+        client_request_id = client_request_id.strip()
+        if not session_key or not client_request_id:
+            return False
+        async with self._write_transaction("discard_meta_launch_draft") as conn:
+            intent = await self._select_meta_control_intent(
+                conn,
+                session_key=session_key,
+                control_kind="manual",
+                correlation_id=f"request:{client_request_id}",
+            )
+            # Acceptance is the irreversible boundary: the task may already be
+            # invoking a paid provider even if the browser lost the send
+            # response. Never report that request as cancelled or let the UI
+            # restore it as a newly sendable composer draft.
+            if intent is not None and intent.status == "accepted":
+                return False
+            await conn.execute(
+                "DELETE FROM meta_launch_drafts WHERE session_key = ? AND client_request_id = ?",
+                (session_key, client_request_id),
+            )
+            await conn.execute(
+                """
+                DELETE FROM meta_control_intents
+                WHERE session_key = ? AND control_kind = 'manual'
+                  AND correlation_id = ? AND status = 'staged'
+                """,
+                (session_key, f"request:{client_request_id}"),
+            )
+            # Idempotent cancellation: a retry after a committed discard
+            # response loss must confirm the same terminal intent instead of
+            # resurrecting a launch in the browser.
+            return True
 
     async def accept_turn(
         self,
@@ -3861,6 +4347,15 @@ class SessionStorage:
                     raise TurnIngressConflictError(
                         "client_request_id was already used for a different turn"
                     )
+                # Repair an outbox left by an older build that committed the
+                # receipt before learning to consume drafts atomically.
+                await conn.execute(
+                    """
+                    DELETE FROM meta_launch_drafts
+                    WHERE session_key = ? AND client_request_id = ?
+                    """,
+                    (request_session_key, client_request_id),
+                )
                 return TurnAcceptanceResult(
                     receipt=receipt,
                     replayed=True,
@@ -4010,6 +4505,34 @@ class SessionStorage:
                         SET valid = 0, invalid_reason = 'session_reset'
                         WHERE session_key = ? AND valid = 1
                         """,
+                        (session_node.session_key,),
+                    )
+                    if meta_control_intent_id is None:
+                        await conn.execute(
+                            """
+                            DELETE FROM meta_control_intents
+                            WHERE session_key = ? AND status = 'staged'
+                            """,
+                            (session_node.session_key,),
+                        )
+                    else:
+                        # The currently accepted hidden control belongs to this
+                        # atomic reset turn. Preserve only that validated row;
+                        # every other staged authorization belongs to the old
+                        # session identity and must be invalidated.
+                        await conn.execute(
+                            """
+                            DELETE FROM meta_control_intents
+                            WHERE session_key = ? AND status = 'staged'
+                              AND intent_id <> ?
+                            """,
+                            (session_node.session_key, meta_control_intent_id),
+                        )
+                    # A reset discards every unaccepted request owned by the old
+                    # session identity. If this transaction is itself accepting
+                    # one of them, rollback restores it on any later failure.
+                    await conn.execute(
+                        "DELETE FROM meta_launch_drafts WHERE session_key = ?",
                         (session_node.session_key,),
                     )
 
@@ -4177,6 +4700,13 @@ class SessionStorage:
                 f"INSERT INTO turn_ingress_receipts ({', '.join(cols)}) "
                 f"VALUES ({placeholders})",
                 [_serialize(data[col]) for col in cols],
+            )
+            await conn.execute(
+                """
+                DELETE FROM meta_launch_drafts
+                WHERE session_key = ? AND client_request_id = ?
+                """,
+                (request_session_key, client_request_id),
             )
             if meta_control_intent_id is not None:
                 async with conn.execute(

@@ -6,6 +6,9 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from opensquilla.skills import capability_runtime
 from opensquilla.skills.capability_runtime import (
     CAPABILITY_AUDIO_GENERATE,
     CAPABILITY_IMAGE_GENERATE,
@@ -14,6 +17,7 @@ from opensquilla.skills.capability_runtime import (
     META_CAPABILITY_API_KEY_ENV,
     META_CAPABILITY_BASE_URL_ENV,
     META_CAPABILITY_PROVIDER_ENV,
+    CapabilityProviderCandidate,
 )
 from opensquilla.skills.eligibility import EligibilityContext
 from opensquilla.skills.loader import SkillLoader
@@ -102,16 +106,37 @@ def _trusted_short_drama_fixture(
             "depends_on": ["review_gate"],
         },
         {
+            "id": "script_draft",
+            "kind": "llm_chat",
+        },
+        {
+            "id": "script_reread",
+            "kind": "llm_chat",
+            "depends_on": ["review_gate", "script_draft"],
+        },
+        {
             "id": "script_revised",
             "kind": "llm_chat",
-            "depends_on": ["review_intent"],
-            "when": "'DECISION: revise' in outputs.review_intent",
+            "depends_on": ["review_intent", "script_reread"],
+            "when": (
+                "'DECISION: revise' in outputs.review_intent and "
+                "'HAS_OVERRIDES: yes' in outputs.review_intent"
+            ),
         },
         {
             "id": "revision_confirm_gate",
             "kind": "user_input",
-            "depends_on": ["review_intent", "script_revised"],
-            "when": "'DECISION: revise' in outputs.review_intent",
+            "depends_on": [
+                "review_intent",
+                "script_draft",
+                "script_reread",
+                "script_revised",
+            ],
+            "when": (
+                "'DECISION: revise' in outputs.review_intent or "
+                "('DECISION: proceed' in outputs.review_intent and "
+                "outputs.script_reread != outputs.script_draft)"
+            ),
             "clarify": {
                 "mode": "form",
                 "fields": [
@@ -129,7 +154,14 @@ def _trusted_short_drama_fixture(
             "kind": "skill_exec",
             "skill": review.name,
             "depends_on": ["review_intent", "revision_confirm_gate"],
-            "with": {"payload": {"phase": "media_approval"}},
+            "with": {
+                "payload": {
+                    "phase": "media_approval",
+                    "approval_snapshot_changed": (
+                        "{{ outputs.script_reread != outputs.script_draft }}"
+                    ),
+                }
+            },
         },
         {
             "id": "reference_image",
@@ -332,6 +364,42 @@ def test_secondary_openrouter_profile_satisfies_paid_media_readiness(
             skill_resolver=skill_index,
         )
     )
+
+
+def test_readiness_env_alias_allowlist_tracks_capability_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    meta, plan, _image, _video, skill_index = _trusted_short_drama_fixture()
+    current = capability_runtime._CONSUMER_REQUIREMENTS["nano-banana-pro"][0]
+    expanded = replace(
+        current,
+        provider_candidates=(
+            *current.provider_candidates,
+            CapabilityProviderCandidate(
+                provider_id="openai",
+                model="synthetic-image-model",
+            ),
+        ),
+        portable_env_aliases=(
+            *current.portable_env_aliases,
+            "OPENAI_API_KEY",
+        ),
+    )
+    monkeypatch.setitem(
+        capability_runtime._CONSUMER_REQUIREMENTS,
+        "nano-banana-pro",
+        (expanded,),
+    )
+
+    ctx = meta_readiness_context(
+        env_aliases=("OPENAI_API_KEY", "UNTRUSTED_LOOKALIKE_KEY"),
+        parent_spec=meta,
+        plan=plan,
+        skill_resolver=skill_index,
+    )
+
+    assert ctx.env_cache["OPENAI_API_KEY"] == "configured"
+    assert "UNTRUSTED_LOOKALIKE_KEY" not in ctx.env_cache
 
 
 def test_missing_media_provider_projects_generic_manual_setup_action(
@@ -936,6 +1004,62 @@ def test_readiness_projects_trusted_setup_action(monkeypatch) -> None:
     assert action.available is True
     assert action.bins == ("ffmpeg", "ffprobe")
     assert action.to_dict()["requires_admin"] is False
+
+
+def test_readiness_deduplicates_shared_managed_component_across_meta_and_child(
+    monkeypatch,
+) -> None:
+    install_parent = SkillInstallSpec(
+        kind="toolchain",
+        id="media-ffmpeg",
+        label="Install verified FFmpeg toolchain",
+        bins=["ffmpeg", "ffprobe"],
+        os=["darwin", "linux", "windows"],
+    )
+    install_child = SkillInstallSpec(
+        kind="toolchain",
+        id="media-ffmpeg",
+        label="Install verified FFmpeg toolchain",
+        bins=["ffprobe"],
+        os=["darwin", "linux", "windows"],
+    )
+    child = _spec(
+        "delivery-audit",
+        bins=["ffprobe"],
+        install=[install_child],
+    )
+    meta = _spec(
+        "meta-video",
+        kind="meta",
+        bins=["ffmpeg", "ffprobe"],
+        install=[install_parent],
+        composition={
+            "steps": [{"id": "audit", "kind": "skill_exec", "skill": child.name}],
+        },
+    )
+    monkeypatch.setattr(
+        "opensquilla.skills.toolchains.probe_component",
+        lambda component_id: SimpleNamespace(
+            component_id=component_id,
+            ready=False,
+            reason="Noto CJK font is missing",
+        ),
+    )
+    ctx = EligibilityContext(
+        os_name="darwin",
+        has_bin_cache={"ffmpeg": False, "ffprobe": False},
+    )
+
+    readiness = assess_meta_skill_readiness(
+        meta,
+        skill_index={meta.name: meta, child.name: child},
+        ctx=ctx,
+    )
+
+    assert [action.id for action in readiness.setup_actions] == [
+        "meta-video:media-ffmpeg"
+    ]
+    assert readiness.setup_actions[0].bins == ("ffmpeg", "ffprobe")
 
 
 def test_readiness_marks_wrong_platform_action_unavailable() -> None:

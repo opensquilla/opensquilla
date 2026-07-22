@@ -380,7 +380,17 @@ async def test_pipeline_projects_configured_openrouter_key_as_name_only_metadata
         ),
     )
     runner = TurnRunner(provider_selector=None, config=config)
-    runner._skill_loader = _make_loader_without_meta(tmp_path)
+    trusted_loader = SkillLoader(
+        bundled_dir=(
+            Path(__file__).resolve().parents[2]
+            / "src"
+            / "opensquilla"
+            / "skills"
+            / "bundled"
+        ),
+        snapshot_path=tmp_path / "trusted-snapshot.json",
+    )
+    runner._skill_loader = trusted_loader
 
     turn, _provider = await runner._run_pipeline(
         "hello",
@@ -392,16 +402,6 @@ async def test_pipeline_projects_configured_openrouter_key_as_name_only_metadata
         [],
     )
 
-    trusted_loader = SkillLoader(
-        bundled_dir=(
-            Path(__file__).resolve().parents[2]
-            / "src"
-            / "opensquilla"
-            / "skills"
-            / "bundled"
-        ),
-        snapshot_path=tmp_path / "trusted-snapshot.json",
-    )
     parent_spec = trusted_loader.get_by_name("meta-short-drama")
     assert parent_spec is not None
     plan = parse_meta_plan(parent_spec)

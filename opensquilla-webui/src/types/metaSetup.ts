@@ -5,7 +5,7 @@ export type MetaSetupPhase =
   | 'failed'
   | 'blocked'
 
-export type MetaSetupRetryMode = 'install' | 'status' | 'launch' | 'readiness'
+export type MetaSetupRetryMode = 'install' | 'status' | 'launch' | 'readiness' | 'discard'
 
 export interface MetaSetupAction {
   id: string

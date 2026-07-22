@@ -1,6 +1,8 @@
 import { ref, type Ref } from 'vue'
 import i18n from '@/i18n'
+import type { HiddenControlDispatchResult } from '@/types/chat'
 import type { MetaSetupReadiness } from '@/types/metaSetup'
+import type { MetaLaunchDraftPayload } from '@/types/rpc'
 import { createClientRequestId } from '@/utils/chat/messageIdentity'
 
 type RpcClient = {
@@ -79,7 +81,11 @@ export interface UseChatSlashCommandsOptions {
     providerText: string,
     displayText: string,
     clientRequestId?: string,
-  ) => unknown
+    targetSessionKey?: string,
+  ) => void | HiddenControlDispatchResult | Promise<void | HiddenControlDispatchResult>
+  // Recover a request removed from the composer when launch cannot proceed.
+  // The callback owns same-session queueing and cross-session persistence.
+  restoreDraft?: (launchText: string, sessionKey: string) => void
   // Open a persistent, explicitly-confirmed setup flow. Older embeddings can
   // omit this callback and keep the compact toast fallback.
   requestMetaSetup?: (
@@ -87,13 +93,16 @@ export interface UseChatSlashCommandsOptions {
     readiness: MetaSetupReadiness,
     originatingSessionKey: string,
     launchText: string,
-  ) => void | Promise<void>
+    clientRequestId?: string,
+  ) => void | 'visible' | 'deferred' | Promise<void | 'visible' | 'deferred'>
 }
 
 export interface MetaCommandInvocation {
   skillName: string
   launchText: string
 }
+
+export type DurableMetaDraft = MetaLaunchDraftPayload
 
 export function parseMetaCommandInvocation(args: string): MetaCommandInvocation | null {
   const trimmed = String(args || '').trim()
@@ -172,6 +181,152 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
   const slashCmds = ref<ChatSlashCommand[]>([])
   const filteredSlashCmds = ref<ChatSlashCommand[]>([])
   const slashCatalogLoaded = ref(false)
+
+  async function runMetaInvocation(input: {
+    skillName: string
+    launchText: string
+    originatingSessionKey: string
+    clientRequestId: string
+  }): Promise<'accepted' | 'queued' | 'setup' | 'failed'> {
+    const {
+      skillName,
+      launchText,
+      originatingSessionKey,
+      clientRequestId,
+    } = input
+    const retainStableRetry = async (error: string): Promise<void> => {
+      if (options.requestMetaSetup) {
+        try {
+          const disposition = await options.requestMetaSetup(
+            skillName,
+            {
+              ready: false,
+              status: 'needs_setup',
+              reasons: [error],
+              setup_actions: [],
+              manual_setup_actions: [],
+            },
+            originatingSessionKey,
+            launchText,
+            clientRequestId,
+          )
+          if (disposition === 'deferred') {
+            options.notify(i18n.global.t('chat.metaRuns.savedForRetry', { skill: skillName }))
+          }
+          return
+        } catch {
+          // The Gateway outbox still owns this identity. Fall through to an
+          // explicit notice, never to ordinary composer text with a new id.
+        }
+      }
+      options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', { error }))
+    }
+    try {
+      const result = await options.rpc.call<{
+        ok?: boolean
+        error?: string
+        drafted?: boolean
+        setup_required?: boolean
+        readiness?: MetaSetupReadiness
+      }>('meta.run', {
+        name: skillName,
+        sessionKey: originatingSessionKey,
+        clientRequestId,
+        launchText,
+      })
+      if (result?.ok) {
+        const dispatchResult = await options.dispatchHidden(
+          launchText,
+          launchText,
+          clientRequestId,
+          originatingSessionKey,
+        )
+        if (dispatchResult?.status === 'rejected') {
+          await retainStableRetry(dispatchResult.reason)
+          return 'failed'
+        }
+        if (dispatchResult?.status === 'unknown') {
+          // The server and browser outboxes retain the exact id and payload.
+          // Surface uncertainty without creating a second sendable draft.
+          options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', {
+            error: dispatchResult.reason,
+          }))
+          return 'queued'
+        }
+        return dispatchResult?.status === 'queued' ? 'queued' : 'accepted'
+      }
+      if (result?.setup_required) {
+        const readiness = result.readiness || {}
+        if (options.requestMetaSetup) {
+          const disposition = await options.requestMetaSetup(
+            skillName,
+            readiness,
+            originatingSessionKey,
+            launchText,
+            clientRequestId,
+          )
+          if (disposition === 'deferred') {
+            options.notify(i18n.global.t('chat.metaRuns.savedForRetry', { skill: skillName }))
+          }
+          return 'setup'
+        }
+        const dependencies = [
+          ...(readiness.missing_bins || []),
+          ...(readiness.missing_env || []),
+          ...(readiness.missing_env_any || []).map(group => group.join(' / ')),
+          ...(readiness.missing_skills || []),
+          ...(readiness.missing_capabilities || []),
+        ].join(', ') || i18n.global.t('chat.metaRuns.unknownDependency')
+        options.notify(i18n.global.t('chat.metaRuns.setupRequired', {
+          skill: skillName,
+          dependencies,
+        }))
+        return 'setup'
+      }
+      const error = result?.error
+        || i18n.global.t('chat.metaRuns.couldNotRunSkill', { skill: skillName })
+      if (result?.drafted) {
+        await retainStableRetry(error)
+        return 'failed'
+      }
+      // Disabled/unknown skills are rejected before the Gateway stages a raw
+      // request, so returning those to the composer cannot create two ids.
+      options.restoreDraft?.(launchText, originatingSessionKey)
+      options.notify(
+        error,
+      )
+      return 'failed'
+    } catch (err: unknown) {
+      // A transport error can happen after the Gateway commits the draft. Keep
+      // the same request id in a retry card; restoring plain text would race
+      // server recovery and create a second logical request.
+      await retainStableRetry(err instanceof Error ? err.message : String(err))
+      return 'failed'
+    }
+  }
+
+  async function restoreDurableMetaDrafts(drafts: DurableMetaDraft[]): Promise<string[]> {
+    const attemptedRequestIds: string[] = []
+    for (const draft of drafts) {
+      if (draft.sessionKey !== options.sessionKey.value) return attemptedRequestIds
+      if (
+        !draft.name
+        || !draft.launchText
+        || !/^\S{1,256}$/.test(draft.clientRequestId)
+      ) continue
+      attemptedRequestIds.push(draft.clientRequestId)
+      const outcome = await runMetaInvocation({
+        skillName: draft.name,
+        launchText: draft.launchText,
+        originatingSessionKey: draft.sessionKey,
+        clientRequestId: draft.clientRequestId,
+      })
+      // A setup card or queued hidden turn owns the next user-visible slot.
+      // Remaining server drafts stay durable and will be resumed later.
+      if (outcome !== 'accepted') return attemptedRequestIds
+    }
+    return attemptedRequestIds
+  }
 
   async function loadSlashCommands() {
     try {
@@ -304,56 +459,14 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         const { skillName, launchText } = invocation
         const originatingSessionKey = options.sessionKey.value
         const clientRequestId = createClientRequestId()
-        // Stamp the launch, then trigger a turn so the pipeline seeds the
-        // marker and the orchestrator runs the skill.
-        options.rpc.call<{
-          ok?: boolean
-          error?: string
-          setup_required?: boolean
-          readiness?: MetaSetupReadiness
-        }>('meta.run', {
-          name: skillName,
-          sessionKey: originatingSessionKey,
+        // Save the exact request server-side before readiness/setup and retain
+        // its stable identity through the eventual hidden turn.
+        void runMetaInvocation({
+          skillName,
+          launchText,
+          originatingSessionKey,
           clientRequestId,
         })
-          .then((result) => {
-            // meta.run may resolve after navigation. Never launch or open setup
-            // in whichever chat happens to be active by then.
-            if (options.sessionKey.value !== originatingSessionKey) return
-            if (result?.ok) {
-              options.dispatchHidden(launchText, launchText, clientRequestId)
-            } else if (result?.setup_required) {
-              const readiness = result.readiness || {}
-              if (options.requestMetaSetup) {
-                void options.requestMetaSetup(
-                  skillName,
-                  readiness,
-                  originatingSessionKey,
-                  launchText,
-                )
-                return
-              }
-              const dependencies = [
-                ...(readiness.missing_bins || []),
-                ...(readiness.missing_env || []),
-                ...(readiness.missing_env_any || []).map(group => group.join(' / ')),
-                ...(readiness.missing_skills || []),
-                ...(readiness.missing_capabilities || []),
-              ].join(', ') || i18n.global.t('chat.metaRuns.unknownDependency')
-              options.notify(i18n.global.t('chat.metaRuns.setupRequired', {
-                skill: skillName,
-                dependencies,
-              }))
-            } else {
-              options.notify(result?.error || i18n.global.t('chat.metaRuns.couldNotRunSkill', { skill: skillName }))
-            }
-          })
-          .catch((err: unknown) => {
-            if (options.sessionKey.value !== originatingSessionKey) return
-            options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', {
-              error: err instanceof Error ? err.message : String(err),
-            }))
-          })
         break
       }
     }
@@ -384,5 +497,6 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
     closeSlashMenu,
     selectSlashCmd,
     executeSlashCommand,
+    restoreDurableMetaDrafts,
   }
 }

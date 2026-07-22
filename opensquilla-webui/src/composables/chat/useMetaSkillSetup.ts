@@ -12,6 +12,11 @@ import type {
 } from '@/types/metaSetup'
 import type { HiddenControlDispatchResult } from '@/types/chat'
 import { createClientRequestId } from '@/utils/chat/messageIdentity'
+import {
+  listPendingMetaDiscards,
+  persistPendingMetaDiscard,
+  removePendingMetaDiscard,
+} from '@/utils/chat/metaDiscardOutbox'
 
 type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
@@ -24,6 +29,8 @@ export interface MetaSetupStorage {
   removeItem: (key: string) => void
 }
 
+export type MetaDraftDiscardOutcome = 'discarded' | 'accepted' | 'unconfirmed'
+
 export interface UseMetaSkillSetupOptions {
   rpc: RpcClient
   currentSessionKey: Ref<string>
@@ -34,9 +41,25 @@ export interface UseMetaSkillSetupOptions {
   ) => HiddenControlDispatchResult | Promise<HiddenControlDispatchResult>
   pollIntervalMs?: number
   storage?: MetaSetupStorage | null
+  // Cancellation identities outlive a browser tab/Desktop restart. They are
+  // minimal (session + request id only), so localStorage is appropriate.
+  discardStorage?: MetaSetupStorage | null
   // ChatView defers recovery until its session event subscription is live.
   // Other callers retain the historical eager recovery behavior by default.
   autoRestore?: boolean
+  // Return an unlaunched request to the composer when the user dismisses a
+  // stable setup card. Hiding a running install must not duplicate its launch.
+  restoreDraft?: (launchText: string, sessionKey: string) => void
+  // Explicit "Not now" transfers the request back to the composer, so the
+  // server setup outbox must stop recreating the dismissed card on reload.
+  discardDraft?: (
+    sessionKey: string,
+    clientRequestId: string,
+  ) => boolean | MetaDraftDiscardOutcome | Promise<boolean | MetaDraftDiscardOutcome>
+  // A response-loss race can make a launch irrevocably accepted before the
+  // user clicks "Not now". Surface that terminal state without restoring a
+  // second sendable copy of the same paid request.
+  onDraftAlreadyAccepted?: (sessionKey: string, clientRequestId: string) => void
 }
 
 const STORAGE_PREFIX = 'opensquilla.chat.metaSetupJob:'
@@ -93,6 +116,12 @@ function normalizeClientRequestId(candidate: unknown): string {
   return CLIENT_REQUEST_ID_PATTERN.test(clientRequestId) ? clientRequestId : ''
 }
 
+function normalizeDiscardOutcome(candidate: unknown): MetaDraftDiscardOutcome {
+  if (candidate === true || candidate === 'discarded') return 'discarded'
+  if (candidate === 'accepted') return 'accepted'
+  return 'unconfirmed'
+}
+
 function validProviderHandoff(
   candidate: unknown,
   readiness: MetaSetupReadiness,
@@ -141,14 +170,27 @@ function defaultStorage(): MetaSetupStorage | null {
   }
 }
 
+function defaultDiscardStorage(): MetaSetupStorage | null {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
+}
+
 export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
   const setupState = ref<MetaSetupState | null>(null)
   const pollIntervalMs = Math.max(750, Math.min(1000, options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS))
   const storage = options.storage === undefined ? defaultStorage() : options.storage
+  const discardStorage = options.discardStorage === undefined
+    ? defaultDiscardStorage()
+    : options.discardStorage
 
   let operationToken = 0
   let pollTimer: ReturnType<typeof setTimeout> | null = null
   let installInFlight = false
+  let cancelInFlight = false
   let disposed = false
 
   async function rpcCall<T>(method: string, params?: Record<string, unknown>): Promise<T> {
@@ -364,7 +406,27 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     // the stable checkpoint remains the source of truth for user recovery.
     clearPersistedJobMarker(sessionKey)
     const persisted = readPersistedSetupCheckpoint(sessionKey)
-    if (persisted) return persisted
+    if (persisted) {
+      const fallbackRequestId = setupResumeRequestId(fallback)
+      const persistedRequestId = setupResumeRequestId(persisted)
+      if (
+        fallback
+        && fallbackRequestId
+        && persisted.name === fallback.name
+        && normalizeMetaLaunchText(persisted.name, persisted.launchText)
+          === normalizeMetaLaunchText(fallback.name, fallback.launchText)
+        && (!persistedRequestId || persistedRequestId === fallbackRequestId)
+      ) {
+        const merged = {
+          ...persisted,
+          resumeRequestId: fallbackRequestId,
+          providerHandoff: fallback.providerHandoff || persisted.providerHandoff,
+        }
+        persistSetupCheckpoint(merged)
+        return merged
+      }
+      return persisted
+    }
 
     if (fallback && fallback.name && fallback.name !== 'MetaSkill') {
       const checkpoint = confirmState(
@@ -373,6 +435,8 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         sessionKey,
         fallback.launchText || readPersistedLaunch(sessionKey),
       )
+      checkpoint.resumeRequestId = fallback.resumeRequestId
+      checkpoint.providerHandoff = fallback.providerHandoff
       persistSetupCheckpoint(checkpoint)
       return checkpoint
     }
@@ -385,7 +449,7 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
   function failedState(
     current: MetaSetupState,
     error: string,
-    retryMode: 'install' | 'status' | 'launch' | 'readiness',
+    retryMode: 'install' | 'status' | 'launch' | 'readiness' | 'discard',
   ): MetaSetupState {
     return {
       ...current,
@@ -542,6 +606,7 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         name,
         sessionKey,
         clientRequestId: stableClientRequestId,
+        launchText: normalizeMetaLaunchText(name, current.launchText),
       })
       if (!isCurrent(token)) return
 
@@ -587,6 +652,8 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
           ...next,
           error: result.error || next.error || '',
           blockedReason: next.phase === 'blocked' ? 'requirements_remaining' : undefined,
+          providerHandoff: current.providerHandoff,
+          resumeRequestId: stableClientRequestId,
         }
         persistSetupCheckpoint(setupState.value!)
         return
@@ -665,6 +732,12 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         completedActions,
         error: job.error || next.error || '',
         blockedReason: next.phase === 'blocked' ? 'requirements_remaining' : undefined,
+        // The setup job may complete its automatic actions while a provider
+        // requirement remains. Keep the original launch identity across that
+        // transition so provider settings resumes the already-drafted request
+        // instead of allocating a second, independently chargeable launch.
+        providerHandoff: current.providerHandoff,
+        resumeRequestId: setupResumeRequestId(current) || undefined,
       }
       persistSetupCheckpoint(setupState.value!)
       return
@@ -791,8 +864,18 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     readiness: MetaSetupReadiness,
     originatingSessionKey: string,
     launchText = `/meta ${name}`,
-  ): Promise<void> {
-    if (options.currentSessionKey.value !== originatingSessionKey) return
+    clientRequestId = '',
+  ): Promise<void | 'visible' | 'deferred'> {
+    const next = confirmState(name, readiness, originatingSessionKey, launchText)
+    const stableClientRequestId = normalizeClientRequestId(clientRequestId)
+    if (stableClientRequestId) next.resumeRequestId = stableClientRequestId
+    if (options.currentSessionKey.value !== originatingSessionKey) {
+      // meta.run can finish after the user navigates away. Keep the exact
+      // setup intent under its originating session so returning to that chat
+      // restores the card instead of silently losing the cleared composer.
+      persistSetupCheckpoint(next)
+      return 'deferred' as const
+    }
 
     const visibleSetup = setupState.value
     if (
@@ -802,12 +885,14 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     ) {
       // A second /meta request must not cancel polling for the setup already
       // running in this chat. Keeping the existing card visible makes the
-      // active operation explicit to the user.
-      return
+      // active operation explicit to the user. The second request is already
+      // server-owned under its stable id; never turn it into ordinary composer
+      // text (which would allocate a second id). It remains recoverable from
+      // the server outbox after the active setup finishes or this chat reloads.
+      return 'deferred' as const
     }
 
     const token = beginOperation()
-    const next = confirmState(name, readiness, originatingSessionKey, launchText)
 
     const persistedJobId = readPersistedJob(originatingSessionKey)
     if (!persistedJobId) {
@@ -827,13 +912,45 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         setupState.value = recoverFromMissingJob(originatingSessionKey, next)
         return
       }
+      const checkpoint = readPersistedSetupCheckpoint(originatingSessionKey)
+      const persistedLaunch = readPersistedLaunch(originatingSessionKey)
+      const incumbentLaunch = checkpoint?.launchText || persistedLaunch
+      const incumbentRequestId = setupResumeRequestId(checkpoint)
+      const incumbentCoordinatesDiffer = (
+        result.job.name !== name
+        || Boolean(
+          incumbentLaunch
+          && normalizeMetaLaunchText(result.job.name, incumbentLaunch)
+            !== normalizeMetaLaunchText(name, next.launchText),
+        )
+      )
+      // An accepted job belongs to the checkpoint that created it. A newer
+      // durable request must remain a separate server-outbox entry rather than
+      // borrowing that job and losing its own idempotency identity.
+      if (
+        stableClientRequestId
+        && (
+          incumbentCoordinatesDiffer
+          || Boolean(incumbentRequestId && incumbentRequestId !== stableClientRequestId)
+        )
+      ) {
+        setupState.value = checkpoint || confirmState(
+          result.job.name,
+          result.job.readiness || {},
+          originatingSessionKey,
+          incumbentLaunch || `/meta ${result.job.name}`,
+        )
+        await applyJob(result.job, token)
+        return 'deferred' as const
+      }
       const restoredReadiness = result.job.readiness || (result.job.name === name ? readiness : {})
       setupState.value = {
+        ...(checkpoint || next),
         name: result.job.name,
         sessionKey: originatingSessionKey,
         launchText: normalizeMetaLaunchText(
           result.job.name,
-          readPersistedLaunch(originatingSessionKey),
+          persistedLaunch,
         ),
         phase: result.job.phase === 'verifying' ? 'verifying' : 'installing',
         readiness: restoredReadiness,
@@ -845,7 +962,10 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         downloadedBytes: result.job.downloaded_bytes || 0,
         downloadTotalBytes: result.job.download_total_bytes || 0,
         completedActions: result.job.completed_actions || [],
+        providerHandoff: checkpoint?.providerHandoff || next.providerHandoff,
+        resumeRequestId: checkpoint?.resumeRequestId || next.resumeRequestId,
       }
+      if (setupState.value) persistSetupCheckpoint(setupState.value)
       await applyJob(result.job, token)
     } catch (error) {
       if (!isCurrent(token)) return
@@ -881,7 +1001,7 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
       return ''
     }
 
-    const clientRequestId = createClientRequestId()
+    const clientRequestId = setupResumeRequestId(current) || createClientRequestId()
     const next: MetaSetupState = {
       ...current,
       resumeRequestId: clientRequestId,
@@ -921,6 +1041,24 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
       : { ...rest, resumeRequestId: currentResumeRequestId }
     setupState.value = next
     persistSetupCheckpoint(next)
+  }
+
+  function finishAlreadyAcceptedDraft(
+    current: MetaSetupState,
+    clientRequestId: string,
+  ): void {
+    removePendingMetaDiscard(current.sessionKey, clientRequestId, discardStorage)
+    beginOperation()
+    installInFlight = false
+    clearPersistedJobMarker(current.sessionKey)
+    clearPersistedLaunch(current.sessionKey)
+    clearPersistedManualSetup(current.sessionKey)
+    setupState.value = null
+    try {
+      options.onDraftAlreadyAccepted?.(current.sessionKey, clientRequestId)
+    } catch {
+      // Notification failures must not resurrect an accepted paid launch.
+    }
   }
 
   async function recheckReadiness(
@@ -972,6 +1110,12 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         current.sessionKey,
         current.launchText || `/meta ${current.name}`,
       )
+      const stableClientRequestId = normalizeClientRequestId(
+        clientRequestId || setupResumeRequestId(current),
+      )
+      if (setupState.value && stableClientRequestId) {
+        setupState.value.resumeRequestId = stableClientRequestId
+      }
       if (setupState.value) persistSetupCheckpoint(setupState.value)
     } catch (error) {
       if (!isCurrent(token) || !setupState.value) return
@@ -982,6 +1126,10 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
   async function retrySetup(): Promise<void> {
     const current = setupState.value
     if (!current || current.phase === 'installing' || current.phase === 'verifying') return
+    if (current.retryMode === 'discard') {
+      await retrySetupDiscard(current)
+      return
+    }
     if (current.retryMode === 'status' && current.jobId) {
       const token = beginOperation()
       setupState.value = { ...current, phase: 'verifying', error: '' }
@@ -1006,9 +1154,102 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     if (current.actionIds.length) await startInstall(current)
   }
 
-  function cancelSetup(): void {
+  async function retrySetupDiscard(current: MetaSetupState): Promise<void> {
+    const clientRequestId = setupResumeRequestId(current)
+    const launchText = current.name === 'MetaSkill'
+      ? ''
+      : normalizeMetaLaunchText(current.name, current.launchText)
+    if (!clientRequestId) return
+    cancelInFlight = true
+    try {
+      const outcome = normalizeDiscardOutcome(
+        await options.discardDraft?.(current.sessionKey, clientRequestId),
+      )
+      if (outcome === 'accepted') {
+        finishAlreadyAcceptedDraft(current, clientRequestId)
+        return
+      }
+      if (outcome !== 'discarded') {
+        setupState.value = failedState(
+          current,
+          'The saved cancellation is still pending. The request will not be launched.',
+          'discard',
+        )
+        persistSetupCheckpoint(setupState.value)
+        return
+      }
+      removePendingMetaDiscard(current.sessionKey, clientRequestId, discardStorage)
+      beginOperation()
+      installInFlight = false
+      clearPersistedJobMarker(current.sessionKey)
+      clearPersistedLaunch(current.sessionKey)
+      clearPersistedManualSetup(current.sessionKey)
+      setupState.value = null
+      if (launchText) options.restoreDraft?.(launchText, current.sessionKey)
+    } catch (error) {
+      setupState.value = failedState(
+        current,
+        `The saved cancellation could not be completed: ${errorMessage(error)}`,
+        'discard',
+      )
+      persistSetupCheckpoint(setupState.value)
+    } finally {
+      cancelInFlight = false
+    }
+  }
+
+  async function cancelSetup(): Promise<void> {
     const current = setupState.value
-    if (!current) return
+    if (!current || cancelInFlight) return
+    const draftToRestore = !isBusyPhase(current)
+      ? normalizeMetaLaunchText(current.name, current.launchText)
+      : ''
+    const clientRequestId = setupResumeRequestId(current)
+
+    if (draftToRestore && clientRequestId) {
+      if (!persistPendingMetaDiscard({
+        sessionKey: current.sessionKey,
+        clientRequestId,
+      }, discardStorage)) {
+        setupState.value = failedState(
+          current,
+          'The cancellation could not be saved safely. The request was not launched.',
+          'discard',
+        )
+        return
+      }
+      cancelInFlight = true
+      try {
+        const outcome = normalizeDiscardOutcome(
+          await options.discardDraft?.(current.sessionKey, clientRequestId),
+        )
+        if (outcome === 'accepted') {
+          finishAlreadyAcceptedDraft(current, clientRequestId)
+          return
+        }
+        if (outcome !== 'discarded') {
+          setupState.value = failedState(
+            current,
+            'The saved request could not be discarded. It remains pending with the same request identity.',
+            'discard',
+          )
+          persistSetupCheckpoint(setupState.value)
+          return
+        }
+      } catch (error) {
+        setupState.value = failedState(
+          current,
+          `The saved request could not be discarded: ${errorMessage(error)}`,
+          'discard',
+        )
+        persistSetupCheckpoint(setupState.value)
+        return
+      } finally {
+        cancelInFlight = false
+      }
+      removePendingMetaDiscard(current.sessionKey, clientRequestId, discardStorage)
+    }
+
     beginOperation()
     installInFlight = false
     if (current.phase !== 'installing' && current.phase !== 'verifying') {
@@ -1017,11 +1258,37 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     }
     clearPersistedManualSetup(current.sessionKey)
     setupState.value = null
+    if (draftToRestore) {
+      options.restoreDraft?.(draftToRestore, current.sessionKey)
+    }
   }
 
   async function restoreSetupJob(sessionKey = options.currentSessionKey.value): Promise<void> {
-    const jobId = readPersistedJob(sessionKey)
     if (!sessionKey || sessionKey !== options.currentSessionKey.value) return
+    const checkpoint = readPersistedSetupCheckpoint(sessionKey)
+    const checkpointRequestId = setupResumeRequestId(checkpoint)
+    const pendingDiscards = listPendingMetaDiscards(sessionKey, discardStorage)
+    const pendingDiscard = checkpointRequestId
+      ? pendingDiscards.find(item => item.clientRequestId === checkpointRequestId)
+      : undefined
+    if (pendingDiscard) {
+      const fallback = checkpoint || confirmState(
+        'MetaSkill',
+        {},
+        sessionKey,
+        '/meta MetaSkill',
+      )
+      setupState.value = {
+        ...fallback,
+        phase: 'failed',
+        retryMode: 'discard',
+        resumeRequestId: pendingDiscard.clientRequestId,
+        error: 'Finishing cancellation of the saved MetaSkill request.',
+      }
+      await retrySetupDiscard(setupState.value)
+      return
+    }
+    const jobId = readPersistedJob(sessionKey)
     if (!jobId) {
       const restored = readPersistedSetupCheckpoint(sessionKey)
       setupState.value = restored
@@ -1034,7 +1301,6 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
       }
       return
     }
-    const checkpoint = readPersistedSetupCheckpoint(sessionKey)
     const token = beginOperation()
     try {
       const result = await rpcCall<MetaSetupStatusResponse>('meta.setup.status', {

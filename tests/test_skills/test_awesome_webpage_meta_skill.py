@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import io
 import json
@@ -7,11 +8,17 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from argparse import Namespace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request
 
+import pytest
 import yaml
 
+from opensquilla.skills.bundled import _provider_http as provider_http
 from opensquilla.skills.eligibility import EligibilityContext, check_eligibility
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.parser import parse_meta_plan
@@ -21,6 +28,17 @@ REPO = Path(__file__).resolve().parents[2]
 BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
 SKILL_MD = BUNDLED / "AwesomeWebpageMetaSkill" / "SKILL.md"
 AWESOME_MODULE = "opensquilla.skills.bundled.AwesomeWebpageMetaSkill.scripts"
+
+
+def _probable_mp4_bytes() -> bytes:
+    def box(kind: bytes, payload: bytes) -> bytes:
+        return (len(payload) + 8).to_bytes(4, "big") + kind + payload
+
+    return (
+        box(b"ftyp", b"isom\x00\x00\x02\x00isomiso2")
+        + box(b"moov", b"")
+        + box(b"mdat", b"0" * 1024)
+    )
 
 
 def _frontmatter() -> dict:
@@ -701,6 +719,73 @@ def test_audio_cog_json_payload_builds_exact_transcript_messages() -> None:
     assert "雨水花园会截留雨水" in messages[1]["content"]
 
 
+def test_openrouter_audio_parses_bounded_sse_stream() -> None:
+    module = _load_openrouter_audio_module()
+    expected = b"\x01\x02\x03\x04"
+    payload = json.dumps(
+        {"choices": [{"delta": {"audio": {"data": base64.b64encode(expected).decode()}}}]}
+    )
+    response = io.BytesIO(
+        (f": keepalive\r\n\r\ndata: {payload}\r\n\r\ndata: [DONE]\r\n\r\n").encode()
+    )
+
+    assert module._iter_sse_audio_chunks(response) == expected
+
+
+def test_openrouter_audio_rejects_overlong_no_newline_stream_before_line_allocation(
+    monkeypatch,
+) -> None:
+    module = _load_openrouter_audio_module()
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_RESPONSE_BYTES", 256)
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_LINE_BYTES", 64)
+    monkeypatch.setattr(provider_http, "_RESPONSE_READ_CHUNK_BYTES", 16)
+
+    class GeneratedNoNewlineResponse:
+        headers: dict[str, str] = {}
+
+        def __init__(self) -> None:
+            self.remaining = 192
+            self.read_sizes: list[int] = []
+
+        def __iter__(self):
+            raise AssertionError("HTTPResponse line iteration must not be used")
+
+        def read(self, size: int) -> bytes:
+            self.read_sizes.append(size)
+            count = min(size, self.remaining)
+            self.remaining -= count
+            return b"x" * count
+
+    response = GeneratedNoNewlineResponse()
+    with pytest.raises(provider_http.ProviderHTTPError, match="SSE line exceeds size limit"):
+        module._iter_sse_audio_chunks(response)
+
+    assert response.read_sizes
+    assert max(response.read_sizes) <= 16
+    assert response.remaining > 0
+
+
+def test_openrouter_audio_bounds_complete_multiline_sse_event(monkeypatch) -> None:
+    module = _load_openrouter_audio_module()
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_RESPONSE_BYTES", 256)
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_LINE_BYTES", 64)
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_EVENT_BYTES", 32)
+    response = io.BytesIO(b"data: " + b"x" * 20 + b"\ndata: " + b"y" * 20 + b"\n\n")
+
+    with pytest.raises(provider_http.ProviderHTTPError, match="SSE event exceeds size limit"):
+        module._iter_sse_audio_chunks(response)
+
+
+def test_openrouter_audio_bounds_total_sse_stream_with_short_lines(monkeypatch) -> None:
+    module = _load_openrouter_audio_module()
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_RESPONSE_BYTES", 32)
+    monkeypatch.setattr(module, "MAX_AUDIO_SSE_LINE_BYTES", 16)
+    response = io.BytesIO(b": keepalive\n\n" * 4)
+
+    with pytest.raises(provider_http.ProviderHTTPError, match="response exceeds size limit"):
+        module._iter_sse_audio_chunks(response)
+
+
 def test_openrouter_video_resolves_relative_polling_url(
     tmp_path: Path,
     monkeypatch,
@@ -741,7 +826,7 @@ def test_openrouter_video_resolves_relative_polling_url(
     ) -> bytes:
         del key, base_url, timeout, proxy
         assert url == "https://storage.example/video.mp4"
-        return b"video-bytes"
+        return _probable_mp4_bytes()
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     monkeypatch.setattr(module, "_request_json", fake_request_json)
@@ -765,49 +850,508 @@ def test_openrouter_video_resolves_relative_polling_url(
     assert module.main() == 0
 
     assert ("GET", "https://openrouter.ai/api/v1/videos/job-abc123") in requests
-    assert (tmp_path / "sample.mp4").read_bytes() == b"video-bytes"
+    assert (tmp_path / "sample.mp4").read_bytes() == _probable_mp4_bytes()
 
 
-def test_openrouter_video_download_auth_stays_on_openrouter_origin(monkeypatch) -> None:
+def test_openrouter_video_rejects_downloaded_non_video_payload(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
     module = _load_openrouter_video_module()
-    opened_headers: list[dict[str, str]] = []
 
-    class FakeResponse:
-        def __enter__(self):
+    def fake_request_json(
+        _url: str,
+        *,
+        method: str = "GET",
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        if method == "POST":
+            return {"id": "job-invalid", "status": "queued", "polling_url": "/poll"}
+        return {"status": "completed", "unsigned_urls": ["https://media.example/x.mp4"]}
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(module, "_request_json", fake_request_json)
+    monkeypatch.setattr(module, "_download", lambda *_args, **_kwargs: b"not-an-mp4")
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("make a short video"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_video.py",
+            "--model",
+            "bytedance/seedance-2.0-fast",
+            "--output-dir",
+            str(tmp_path),
+            "--filename",
+            "invalid.mp4",
+        ],
+    )
+
+    assert module.main() == 0
+
+    output = capsys.readouterr().out
+    assert "VIDEO_GENERATION_FAILED" in output
+    assert '"phase":"validate"' in output
+    assert "VIDEO_READY" not in output
+    assert not (tmp_path / "invalid.mp4").exists()
+
+
+def test_openrouter_image_does_not_persist_provider_error_body(tmp_path: Path, monkeypatch) -> None:
+    module = _load_openrouter_image_module()
+    reflected = "private prompt and https://signed.example/x?token=secret-canary"
+
+    def fail_request(*_args: object, **_kwargs: object):
+        raise HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(reflected.encode()),
+        )
+
+    monkeypatch.setattr(module, "_open_url", fail_request)
+    result = module._generate_one(
+        slot_id="hero",
+        prompt="private prompt",
+        model="provider/model",
+        base_url="https://openrouter.ai/api/v1",
+        api_key="sk-or-secret",
+        output_dir=tmp_path,
+        local_path_prefix="project/assets/images",
+        resolution="1K",
+        proxy="",
+    )
+
+    serialized = json.dumps(result)
+    assert result["reason"] == "http_400"
+    assert reflected not in serialized
+    assert "private prompt" not in serialized
+    assert "secret-canary" not in serialized
+
+
+class _FakeProviderMediaResponse:
+    def __init__(
+        self,
+        *,
+        status_code: int = 200,
+        headers: dict[str, str] | None = None,
+        chunks: list[bytes] | None = None,
+        fail_if_read: bool = False,
+    ) -> None:
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._chunks = chunks or []
+        self._fail_if_read = fail_if_read
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def aiter_bytes(self, _chunk_size: int):
+        if self._fail_if_read:
+            raise AssertionError("oversized media must be rejected before reading")
+        for chunk in self._chunks:
+            yield chunk
+
+
+def _install_fake_provider_media_client(
+    monkeypatch,
+    responses: list[_FakeProviderMediaResponse],
+) -> tuple[
+    list[dict[str, object]],
+    list[tuple[str, str, dict[str, str]]],
+    list[tuple[str, list[str], dict[str, object]]],
+]:
+    client_kwargs: list[dict[str, object]] = []
+    requests: list[tuple[str, str, dict[str, str]]] = []
+    pin_calls: list[tuple[str, list[str], dict[str, object]]] = []
+    pending = list(responses)
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs: object) -> None:
+            client_kwargs.append(dict(kwargs))
+
+        async def __aenter__(self):
             return self
 
-        def __exit__(self, *args: object) -> None:
+        async def __aexit__(self, *_args: object) -> None:
             return None
 
-        def read(self) -> bytes:
-            return b"video-bytes"
+        def stream(
+            self,
+            method: str,
+            url: str,
+            *,
+            headers: dict[str, str],
+        ) -> _FakeProviderMediaResponse:
+            requests.append((method, url, dict(headers)))
+            return pending.pop(0)
 
-    def fake_urlopen(req, timeout: float = 120.0):
-        del timeout
-        opened_headers.append({key.lower(): value for key, value in req.header_items()})
-        return FakeResponse()
-
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
-
-    assert (
-        module._download(
-            "https://storage.example/video.mp4",
-            key="sk-or-secret",
-            base_url="https://openrouter.ai/api/v1",
-        )
-        == b"video-bytes"
+    monkeypatch.setattr(provider_http.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(
+        provider_http,
+        "validate_http_url_for_fetch",
+        lambda _url: ["93.184.216.34"],
     )
-    assert "authorization" not in opened_headers[-1]
+    monkeypatch.setattr(
+        provider_http,
+        "pinned_transport",
+        lambda url, addresses, **kwargs: (
+            pin_calls.append((url, list(addresses), dict(kwargs))) or object()
+        ),
+    )
+    return client_kwargs, requests, pin_calls
+
+
+def test_openrouter_video_download_drops_auth_before_cross_origin_redirect(
+    monkeypatch,
+) -> None:
+    module = _load_openrouter_video_module()
+    client_kwargs, requests, pin_calls = _install_fake_provider_media_client(
+        monkeypatch,
+        [
+            _FakeProviderMediaResponse(
+                status_code=302,
+                headers={"location": "https://storage.example/video.mp4"},
+            ),
+            _FakeProviderMediaResponse(chunks=[b"video-bytes"]),
+        ],
+    )
 
     assert (
         module._download(
             "https://openrouter.ai/api/v1/videos/job-abc123/content",
-            key="sk-or-secret",
+            key="sk-or-secret-canary",
             base_url="https://openrouter.ai/api/v1",
+            proxy="http://proxy.example:8080",
         )
         == b"video-bytes"
     )
-    assert opened_headers[-1]["authorization"] == "Bearer sk-or-secret"
+
+    assert requests == [
+        (
+            "GET",
+            "https://openrouter.ai/api/v1/videos/job-abc123/content",
+            {
+                "Accept-Encoding": "identity",
+                "Authorization": "Bearer sk-or-secret-canary",
+            },
+        ),
+        (
+            "GET",
+            "https://storage.example/video.mp4",
+            {"Accept-Encoding": "identity"},
+        ),
+    ]
+    assert all(kwargs["follow_redirects"] is False for kwargs in client_kwargs)
+    assert all(kwargs["trust_env"] is False for kwargs in client_kwargs)
+    assert [call[2] for call in pin_calls] == [
+        {"proxy": "http://proxy.example:8080"},
+        {"proxy": "http://proxy.example:8080"},
+    ]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/hosts",
+        "data:video/mp4;base64,cHJpdmF0ZQ==",
+        "http://93.184.216.34/video.mp4",
+        "https://127.0.0.1/video.mp4",
+        "https://169.254.169.254/latest/meta-data",
+        "https://10.0.0.1/video.mp4",
+    ],
+)
+def test_openrouter_video_rejects_non_https_or_nonpublic_media_urls(url: str) -> None:
+    module = _load_openrouter_video_module()
+
+    with pytest.raises(provider_http.ProviderHTTPError) as caught:
+        module._download(
+            url,
+            key="sk-or-must-not-leak",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    serialized = str(caught.value)
+    assert "sk-or-must-not-leak" not in serialized
+    assert "/etc/hosts" not in serialized
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "file:///etc/passwd",
+        "http://93.184.216.34/image.png",
+        "https://127.0.0.1/image.png",
+        "https://169.254.169.254/latest/meta-data",
+        "https://192.168.1.10/image.png",
+    ],
+)
+def test_openrouter_image_rejects_non_https_or_nonpublic_remote_urls(url: str) -> None:
+    module = _load_openrouter_image_module()
+
+    with pytest.raises(provider_http.ProviderHTTPError) as caught:
+        module._decode_image(
+            url,
+            "sk-or-must-not-leak",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert "sk-or-must-not-leak" not in str(caught.value)
+
+
+def test_openrouter_video_rejects_cross_origin_polling_url_before_bearer_get(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_openrouter_video_module()
+    requests: list[tuple[str, str]] = []
+
+    def fake_request_json(
+        url: str,
+        *,
+        key: str,
+        method: str = "GET",
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        assert key == "sk-or-private-canary"
+        requests.append((method, url))
+        if method != "POST":
+            raise AssertionError("unsafe polling URL must not receive a request")
+        return {
+            "id": "job-safe-id",
+            "status": "queued",
+            "polling_url": "https://attacker.example/poll?secret=signed",
+        }
+
+    monkeypatch.setattr(module, "_request_json", fake_request_json)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("make a video"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_video.py",
+            "--model",
+            "bytedance/seedance-2.0-fast",
+            "--api-key",
+            "sk-or-private-canary",
+            "--output-dir",
+            str(tmp_path),
+        ],
+    )
+
+    assert module.main() == 0
+
+    output = capsys.readouterr().out
+    assert requests == [("POST", "https://openrouter.ai/api/v1/videos")]
+    assert "unsafe_polling_url" in output
+    assert "attacker.example" not in output
+    assert "signed" not in output
+    assert "sk-or-private-canary" not in output
+
+
+def test_authenticated_provider_requests_never_follow_cross_origin_redirects() -> None:
+    received_authorization: list[str | None] = []
+
+    class TargetHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+            received_authorization.append(self.headers.get("Authorization"))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    target = ThreadingHTTPServer(("127.0.0.1", 0), TargetHandler)
+    target_thread = threading.Thread(target=target.serve_forever, daemon=True)
+    target_thread.start()
+    target_url = f"http://127.0.0.1:{target.server_port}/capture"
+
+    class RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+    redirect_thread = threading.Thread(target=redirect.serve_forever, daemon=True)
+    redirect_thread.start()
+    redirect_url = f"http://127.0.0.1:{redirect.server_port}/redirect"
+    try:
+        for module in (
+            _load_openrouter_image_module(),
+            _load_openrouter_audio_module(),
+            _load_openrouter_video_module(),
+        ):
+            request = Request(
+                redirect_url,
+                headers={"Authorization": "Bearer sk-or-redirect-canary"},
+            )
+            with pytest.raises(HTTPError) as caught:
+                module._open_url(request, timeout=2, proxy="")
+            assert caught.value.code == 302
+    finally:
+        redirect.shutdown()
+        target.shutdown()
+        redirect.server_close()
+        target.server_close()
+        redirect_thread.join(timeout=2)
+        target_thread.join(timeout=2)
+
+    assert received_authorization == []
+
+
+def test_openrouter_video_download_rejects_declared_oversize_before_read(
+    monkeypatch,
+) -> None:
+    module = _load_openrouter_video_module()
+    monkeypatch.setattr(module, "MAX_VIDEO_DOWNLOAD_BYTES", 8)
+    _install_fake_provider_media_client(
+        monkeypatch,
+        [
+            _FakeProviderMediaResponse(
+                headers={"Content-Length": "9"},
+                fail_if_read=True,
+            )
+        ],
+    )
+
+    with pytest.raises(
+        provider_http.ProviderHTTPError,
+        match="exceeds download size limit",
+    ) as caught:
+        module._download(
+            "https://media.example/video.mp4",
+            key="sk-or-size-canary",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert "sk-or-size-canary" not in str(caught.value)
+
+
+def test_openrouter_image_download_enforces_cumulative_size_limit(
+    monkeypatch,
+) -> None:
+    module = _load_openrouter_image_module()
+    monkeypatch.setattr(module, "MAX_IMAGE_DOWNLOAD_BYTES", 8)
+    _install_fake_provider_media_client(
+        monkeypatch,
+        [_FakeProviderMediaResponse(chunks=[b"1234", b"5678", b"9"])],
+    )
+
+    with pytest.raises(
+        provider_http.ProviderHTTPError,
+        match="exceeds download size limit",
+    ) as caught:
+        module._decode_image(
+            "https://media.example/image.png",
+            "sk-or-size-canary",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert "sk-or-size-canary" not in str(caught.value)
+
+
+def test_openrouter_media_redirect_revalidates_private_target(monkeypatch) -> None:
+    module = _load_openrouter_video_module()
+    original_validate = provider_http.validate_http_url_for_fetch
+    validated: list[str] = []
+
+    def validate(url: str) -> list[str]:
+        validated.append(url)
+        if url == "https://media.example/start.mp4":
+            return ["93.184.216.34"]
+        return original_validate(url)
+
+    monkeypatch.setattr(provider_http, "validate_http_url_for_fetch", validate)
+    monkeypatch.setattr(
+        provider_http,
+        "pinned_transport",
+        lambda *_args, **_kwargs: object(),
+    )
+    pending = [
+        _FakeProviderMediaResponse(
+            status_code=302,
+            headers={"location": "https://127.0.0.1/private.mp4"},
+        )
+    ]
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        def stream(self, *_args: object, **_kwargs: object):
+            return pending.pop(0)
+
+    monkeypatch.setattr(provider_http.httpx, "AsyncClient", FakeAsyncClient)
+
+    with pytest.raises(
+        provider_http.ProviderHTTPError,
+        match="not public HTTPS",
+    ):
+        module._download(
+            "https://media.example/start.mp4",
+            key="sk-or-redirect-canary",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert validated == [
+        "https://media.example/start.mp4",
+        "https://127.0.0.1/private.mp4",
+    ]
+
+
+def test_openrouter_media_transport_failure_discards_secret_exception_chain(
+    monkeypatch,
+) -> None:
+    module = _load_openrouter_video_module()
+    monkeypatch.setattr(
+        provider_http,
+        "validate_http_url_for_fetch",
+        lambda _url: ["93.184.216.34"],
+    )
+    monkeypatch.setattr(
+        provider_http,
+        "pinned_transport",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    class FailingAsyncClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self):
+            raise RuntimeError("transport retained sk-or-secret-exception-canary")
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    monkeypatch.setattr(provider_http.httpx, "AsyncClient", FailingAsyncClient)
+
+    with pytest.raises(provider_http.ProviderHTTPError) as caught:
+        module._download(
+            "https://media.example/video.mp4",
+            key="sk-or-secret-exception-canary",
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+    assert str(caught.value) == "provider media download failed"
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_openrouter_image_uses_explicit_api_key_without_env(
@@ -865,12 +1409,12 @@ def test_openrouter_audio_timeout_reports_generation_failed(
 ) -> None:
     module = _load_openrouter_audio_module()
 
-    def fake_urlopen(*args: object, **kwargs: object) -> object:
+    def fake_open_url(*args: object, **kwargs: object) -> object:
         del args, kwargs
         raise TimeoutError("timed out")
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module, "_open_url", fake_open_url)
     monkeypatch.setattr(sys, "stdin", io.StringIO("short narration"))
     monkeypatch.setattr(
         sys,
@@ -902,12 +1446,12 @@ def test_openrouter_video_submit_timeout_reports_generation_failed(
 ) -> None:
     module = _load_openrouter_video_module()
 
-    def fake_urlopen(*args: object, **kwargs: object) -> object:
+    def fake_open_url(*args: object, **kwargs: object) -> object:
         del args, kwargs
         raise TimeoutError("timed out")
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    monkeypatch.setattr(module, "urlopen", fake_urlopen)
+    monkeypatch.setattr(module, "_open_url", fake_open_url)
     monkeypatch.setattr(sys, "stdin", io.StringIO("short video prompt"))
     monkeypatch.setattr(
         sys,
@@ -1279,6 +1823,10 @@ def test_awesome_webpage_paid_media_requires_explicit_provider_approval() -> Non
     assert gate["depends_on"] == ["page_outline", "media_strategy"]
     assert gate["clarify"]["mode"] == "form"
     assert gate["clarify"]["nl_extract"] is False
+    assert [field["name"] for field in gate["clarify"]["fields"]] == [
+        "approval",
+        "additional_notes",
+    ]
     field = gate["clarify"]["fields"][0]
     assert field["name"] == "approval"
     assert field["type"] == "enum"
@@ -1288,6 +1836,10 @@ def test_awesome_webpage_paid_media_requires_explicit_provider_approval() -> Non
         "DECLINE_MEDIA_GENERATION",
     ]
     assert "default" not in field
+    notes_field = gate["clarify"]["fields"][1]
+    assert notes_field["type"] == "string"
+    assert notes_field["required"] is False
+    assert "default" not in notes_field
     assert "发送" in gate["clarify"]["intro_zh"]
     assert "费用" in gate["clarify"]["intro_zh"]
     assert "sent" in gate["clarify"]["intro_en"]

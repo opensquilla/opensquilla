@@ -11,6 +11,10 @@ import {
   listHiddenControls,
   type HiddenControlStorage,
 } from '@/utils/chat/hiddenControlOutbox'
+import {
+  listPendingMetaDiscards,
+  persistPendingMetaDiscard,
+} from '@/utils/chat/metaDiscardOutbox'
 
 const pushToast = vi.hoisted(() => vi.fn())
 
@@ -109,6 +113,23 @@ describe('useChatSend attachment payloads', () => {
     })
   })
 
+  it('materializes a provisional draft when its recovered hidden turn is accepted', async () => {
+    const pendingSessionIntent = ref<string | null>('new_chat')
+    const { api, rpc } = makeOptions({ pendingSessionIntent })
+
+    await api.dispatchHiddenSend(
+      '/meta meta-paper-write -- recovered after reopen',
+      '/meta meta-paper-write -- recovered after reopen',
+      'recovered-provisional-request',
+    )
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      clientRequestId: 'recovered-provisional-request',
+      intent: 'new_chat',
+    }))
+    expect(pendingSessionIntent.value).toBeNull()
+  })
+
   it('preserves a resumed hidden control ingress id when it must queue', async () => {
     const enqueueHiddenControl = vi.fn(() => true)
     const { api, stream } = makeOptions({ enqueueHiddenControl })
@@ -128,6 +149,29 @@ describe('useChatSend attachment payloads', () => {
     })
     expect(result.status).toBe('queued')
     expect(result.reason).toBe('queued')
+  })
+
+  it('persists a delayed hidden control for its originating session without sending in another', async () => {
+    const { api, options, rpc } = makeOptions()
+    options.sessionKey.value = 'agent:main:webchat:another'
+
+    const result = await api.dispatchHiddenSend(
+      '/meta meta-paper-write -- original request',
+      '/meta meta-paper-write -- original request',
+      'delayed-origin-request',
+      'agent:main:webchat:test',
+    )
+
+    expect(result).toMatchObject({
+      status: 'queued',
+      reason: 'queued',
+      sessionKey: 'agent:main:webchat:test',
+    })
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      options.hiddenControlStorage,
+    )).toHaveLength(1)
   })
 
   it('rejects a hidden control without sending when the pending queue is full', async () => {
@@ -243,6 +287,129 @@ describe('useChatSend attachment payloads', () => {
     expect(listHiddenControls(
       'agent:main:webchat:test',
       first.options.hiddenControlStorage,
+    )).toEqual([])
+  })
+
+  it('does not duplicate a browser fallback already attempted from the server outbox', async () => {
+    const first = makeOptions({ enqueueHiddenControl: vi.fn(() => true) })
+    first.stream.isStreaming.value = true
+    await first.api.dispatchHiddenSend(
+      '/meta meta-paper-write -- one durable request',
+      '/meta meta-paper-write -- one durable request',
+      'shared-server-browser-request',
+    )
+
+    const remounted = makeOptions({
+      hiddenControlStorage: first.options.hiddenControlStorage,
+    })
+    await remounted.api.restoreHiddenControls(
+      'agent:main:webchat:test',
+      ['shared-server-browser-request'],
+    )
+
+    expect(remounted.rpc.call).not.toHaveBeenCalled()
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toHaveLength(1)
+  })
+
+  it('does not restore an explicitly discarded hidden control after remount', async () => {
+    const discardStorage = memoryStorage()
+    const first = makeOptions({
+      enqueueHiddenControl: vi.fn(() => true),
+      metaDiscardStorage: discardStorage,
+    })
+    first.stream.isStreaming.value = true
+    await first.api.dispatchHiddenSend(
+      '/meta meta-short-drama -- cancel this request',
+      '/meta meta-short-drama -- cancel this request',
+      'discarded-meta-request',
+    )
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toHaveLength(1)
+
+    first.api.discardHiddenControl('agent:main:webchat:test', 'discarded-meta-request')
+    expect(first.rpc.call).toHaveBeenCalledWith('meta.drafts.discard', {
+      sessionKey: 'agent:main:webchat:test',
+      clientRequestId: 'discarded-meta-request',
+    })
+
+    const remounted = makeOptions({
+      hiddenControlStorage: first.options.hiddenControlStorage,
+    })
+    await remounted.api.restoreHiddenControls('agent:main:webchat:test')
+    expect(remounted.rpc.call).not.toHaveBeenCalled()
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      first.options.hiddenControlStorage,
+    )).toEqual([])
+  })
+
+  it('retries a lost queue discard response without launching on remount', async () => {
+    const persistentDiscardStorage = memoryStorage()
+    const first = makeOptions({
+      hiddenControlStorage: memoryStorage(),
+      metaDiscardStorage: persistentDiscardStorage,
+      enqueueHiddenControl: vi.fn(() => true),
+    })
+    first.stream.isStreaming.value = true
+    await first.api.dispatchHiddenSend(
+      '/meta meta-short-drama -- never launch after cancel',
+      '/meta meta-short-drama -- never launch after cancel',
+      'lost-discard-response',
+    )
+    first.rpc.call.mockRejectedValueOnce(new Error('response lost'))
+    first.api.discardHiddenControl('agent:main:webchat:test', 'lost-discard-response')
+    await Promise.resolve()
+
+    const remounted = makeOptions({
+      // sessionStorage was lost with the closed Desktop window; only the
+      // minimal localStorage cancellation identity survives.
+      hiddenControlStorage: memoryStorage(),
+      metaDiscardStorage: persistentDiscardStorage,
+    })
+    remounted.rpc.call.mockResolvedValue({ discarded: true })
+    await expect(remounted.api.flushPendingMetaDiscards(
+      'agent:main:webchat:test',
+    )).resolves.toEqual([])
+    await remounted.api.restoreHiddenControls('agent:main:webchat:test')
+
+    expect(remounted.rpc.call).toHaveBeenCalledTimes(1)
+    expect(remounted.rpc.call).toHaveBeenCalledWith('meta.drafts.discard', {
+      sessionKey: 'agent:main:webchat:test',
+      clientRequestId: 'lost-discard-response',
+    })
+    expect(remounted.rpc.call).not.toHaveBeenCalledWith(
+      'chat.send',
+      expect.anything(),
+    )
+  })
+
+  it('treats an already accepted discard as terminal without replaying it', async () => {
+    const persistentDiscardStorage = memoryStorage()
+    persistPendingMetaDiscard({
+      sessionKey: 'agent:main:webchat:test',
+      clientRequestId: 'already-accepted-discard',
+    }, persistentDiscardStorage)
+    const remounted = makeOptions({
+      hiddenControlStorage: memoryStorage(),
+      metaDiscardStorage: persistentDiscardStorage,
+    })
+    remounted.rpc.call.mockResolvedValue({ discarded: false, accepted: true })
+
+    await expect(remounted.api.flushPendingMetaDiscards(
+      'agent:main:webchat:test',
+    )).resolves.toEqual([])
+    await remounted.api.restoreHiddenControls('agent:main:webchat:test')
+
+    expect(remounted.rpc.call).toHaveBeenCalledTimes(1)
+    expect(remounted.rpc.call).not.toHaveBeenCalledWith('chat.send', expect.anything())
+    expect(listPendingMetaDiscards(
+      'agent:main:webchat:test',
+      persistentDiscardStorage,
     )).toEqual([])
   })
 

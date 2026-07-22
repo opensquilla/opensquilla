@@ -169,15 +169,50 @@ def test_registry_pins_monthly_tinytex_full_archives_on_all_supported_hosts() ->
 def test_media_catalog_selects_safe_backends_and_enforces_linux_floor() -> None:
     darwin = registry.describe_component("media-ffmpeg", platform_name="darwin", arch="arm64")
     assert darwin.supported is True
-    assert darwin.install_backend == "brew"
-    assert darwin.version == "homebrew-stable"
-    assert darwin.brew_formula == "ffmpeg-full"
-    assert darwin.source == "https://formulae.brew.sh/formula/ffmpeg-full"
-    assert darwin.size is None
+    assert darwin.platform_key == "darwin-arm64"
+    assert darwin.install_backend == "archive"
+    assert darwin.version == "8.1.2"
+    assert darwin.brew_formula is None
+    assert darwin.archive_type == "zip"
+    assert darwin.archive_member == "ffmpeg"
+    assert darwin.archive_destination == "bin/ffmpeg"
+    assert darwin.size == 28_196_358
+    assert darwin.sha256 == (
+        "ef1aa60006c7b77ce170c1608c08d8e4ba1c30c5746f2ac986ded932d0ac2c3c"
+    )
+    assert darwin.source.endswith("bb1d6db29cee948f9685bcd69e6caf17d960662b")
     assert {asset.asset_id for asset in darwin.auxiliary_assets} == {
         "noto-cjk-font",
         "noto-cjk-license",
+        "ffprobe-archive",
+        "ffmpeg-license-summary",
+        "ffmpeg-gplv3-license",
     }
+    ffprobe = next(
+        asset for asset in darwin.auxiliary_assets if asset.asset_id == "ffprobe-archive"
+    )
+    assert ffprobe.executable is True
+    assert ffprobe.archive_type == "zip"
+    assert ffprobe.archive_member == "ffprobe"
+    assert ffprobe.destination == "bin/ffprobe"
+    assert darwin.total_download_size == 75_843_158
+    assert "not Apple notarization" in darwin.notes
+
+    darwin_x64 = registry.describe_component(
+        "media-ffmpeg", platform_name="darwin", arch="x86_64"
+    )
+    assert darwin_x64.platform_key == "darwin-x64"
+    assert darwin_x64.size == 33_586_778
+    assert darwin_x64.total_download_size == 86_592_623
+
+    old_macos = registry.describe_component(
+        "media-ffmpeg",
+        platform_name="darwin",
+        arch="x86_64",
+        macos_version="11.7.10",
+    )
+    assert old_macos.supported is False
+    assert "macOS 12" in (old_macos.unsupported_reason or "")
 
     linux = registry.describe_component(
         "media-ffmpeg",
@@ -361,6 +396,44 @@ def test_tar_extraction_preserves_only_safe_files_and_execute_bits(tmp_path: Pat
     assert (output / "Bundle/bin/tool").read_bytes() == b"binary"
     assert os.access(output / "Bundle/bin/tool", os.X_OK)
     assert (output / "Bundle/share/data").read_bytes() == b"data"
+
+
+def test_single_file_archive_relocation_uses_only_cataloged_paths(tmp_path: Path) -> None:
+    archive = tmp_path / "ffmpeg.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        info = zipfile.ZipInfo("ffmpeg")
+        info.external_attr = (stat.S_IFREG | 0o755) << 16
+        bundle.writestr(info, b"synthetic executable")
+    output = tmp_path / "out"
+
+    manager._extract_archive(archive, output, "zip", archive.stat().st_size)
+    manager._relocate_cataloged_archive_member(
+        output,
+        member_name="ffmpeg",
+        destination_name="bin/ffmpeg",
+    )
+
+    executable = output / "bin/ffmpeg"
+    assert executable.read_bytes() == b"synthetic executable"
+    assert os.access(executable, os.X_OK)
+    assert sorted(path.relative_to(output).as_posix() for path in output.rglob("*")) == [
+        "bin",
+        "bin/ffmpeg",
+    ]
+
+
+def test_single_file_archive_relocation_rejects_extra_members(tmp_path: Path) -> None:
+    output = tmp_path / "out"
+    output.mkdir()
+    (output / "ffmpeg").write_bytes(b"executable")
+    (output / "unexpected").write_bytes(b"extra")
+
+    with pytest.raises(manager.UnsafeArchiveError, match="exactly its cataloged member"):
+        manager._relocate_cataloged_archive_member(
+            output,
+            member_name="ffmpeg",
+            destination_name="bin/ffmpeg",
+        )
 
 
 def test_extraction_size_limit_stops_decompression_bomb(tmp_path: Path, monkeypatch: Any) -> None:
@@ -1110,6 +1183,103 @@ def test_auxiliary_assets_are_pinned_receipted_and_runtime_resolvable(
     assert license_path.read_bytes() == license_data
 
 
+def test_auxiliary_archive_is_source_verified_manifested_and_reused(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    from opensquilla.skills.toolchains.registry import AuxiliaryAssetDescriptor
+
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    primary = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        primary,
+        {f"Bundle/bin/{executable_name}": b"tool"},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    auxiliary_buffer = io.BytesIO()
+    with zipfile.ZipFile(auxiliary_buffer, "w") as bundle:
+        info = zipfile.ZipInfo("ffprobe")
+        info.external_attr = (stat.S_IFREG | 0o755) << 16
+        bundle.writestr(info, b"extracted executable")
+    auxiliary_archive = auxiliary_buffer.getvalue()
+    asset = AuxiliaryAssetDescriptor(
+        asset_id="test-ffprobe-archive",
+        url="https://example.invalid/ffprobe.zip",
+        sha256=hashlib.sha256(auxiliary_archive).hexdigest(),
+        size=len(auxiliary_archive),
+        destination="bin/ffprobe",
+        license="GPL-3.0-or-later",
+        source="https://example.invalid/source",
+        executable=True,
+        archive_type="zip",
+        archive_member="ffprobe",
+    )
+    descriptor = replace(
+        _descriptor(size=primary.stat().st_size),
+        auxiliary_assets=(asset,),
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    primary_downloads = 0
+    auxiliary_downloads = 0
+
+    def fake_primary_download(
+        _descriptor: ToolchainDescriptor,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        nonlocal primary_downloads
+        primary_downloads += 1
+        shutil.copyfile(primary, destination)
+
+    def fake_pinned_download(
+        _url: str,
+        sha256: str,
+        size: int,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        nonlocal auxiliary_downloads
+        auxiliary_downloads += 1
+        assert size == len(auxiliary_archive)
+        assert sha256 == hashlib.sha256(auxiliary_archive).hexdigest()
+        destination.write_bytes(auxiliary_archive)
+
+    monkeypatch.setattr(manager, "_download", fake_primary_download)
+    monkeypatch.setattr(manager, "_download_pinned", fake_pinned_download)
+    state_root = tmp_path / "state"
+    first = manager.install_component("paper-tex", root=state_root)
+    assert first.package_relpath is not None
+    installed = state_root / first.package_relpath / "bin/ffprobe"
+    assert installed.read_bytes() == b"extracted executable"
+    assert os.name == "nt" or os.access(installed, os.X_OK)
+    marker = json.loads(
+        (state_root / first.package_relpath / ".opensquilla-toolchain.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert marker["auxiliary_assets"][asset.asset_id] == asset.sha256
+    assert marker["payload_manifest"][asset.destination]["sha256"] == hashlib.sha256(
+        b"extracted executable"
+    ).hexdigest()
+
+    second = manager.install_component("paper-tex", root=state_root)
+    assert second == first
+    assert primary_downloads == 1
+    assert auxiliary_downloads == 1
+    assert (
+        resolve_managed_resource(asset.asset_id, component_id="paper-tex", root=state_root)
+        == installed
+    )
+
+    installed.write_bytes(b"tampered")
+    manager.install_component("paper-tex", root=state_root)
+    assert primary_downloads == 2
+    assert auxiliary_downloads == 2
+    assert installed.read_bytes() == b"extracted executable"
+
+
 def test_managed_env_exposes_pinned_paper_font_to_xetex(
     tmp_path: Path,
     monkeypatch: Any,
@@ -1261,7 +1431,11 @@ def test_media_capability_probe_requires_cjk_font_filters_codecs_and_encode(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
-    descriptor = replace(_descriptor(), post_install="ffmpeg-media-capability")
+    descriptor = replace(
+        _descriptor(version="8.1.2"),
+        component_id="media-ffmpeg",
+        post_install="ffmpeg-media-capability",
+    )
     bin_dir = tmp_path / "Bundle/bin"
     _make_executable(bin_dir / "ffmpeg")
     _make_executable(bin_dir / "ffprobe")
@@ -1277,12 +1451,27 @@ def test_media_capability_probe_requires_cjk_font_filters_codecs_and_encode(
         **_kwargs: object,
     ) -> subprocess.CompletedProcess[bytes]:
         commands.append((command, cwd))
+        if command[-1] == "-version":
+            name = Path(command[0]).name
+            configuration = "\nconfiguration: --enable-gpl" if name == "ffmpeg" else ""
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                f"{name} version 8.1.2{configuration}\n".encode(),
+                b"",
+            )
         if "-filters" in command:
             return subprocess.CompletedProcess(command, 0, b"subtitles zoompan xfade", b"")
         if "-encoders" in command:
             return subprocess.CompletedProcess(command, 0, b"libx264 aac", b"")
         if Path(command[0]).name == "ffprobe":
-            return subprocess.CompletedProcess(command, 0, b"1.000000\n", b"")
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                b'{"streams":[{"codec_type":"video"},{"codec_type":"audio"}],'
+                b'"format":{"duration":"1.25"}}',
+                b"",
+            )
         if "-c:v" in command:
             subtitle_text.append((cwd / "smoke.srt").read_text(encoding="utf-8"))
             Path(command[-1]).write_bytes(b"media")
@@ -1291,11 +1480,101 @@ def test_media_capability_probe_requires_cjk_font_filters_codecs_and_encode(
     monkeypatch.setattr(manager, "_run_checked", fake_run)
     manager._ffmpeg_media_capability(descriptor, tmp_path, (bin_dir,))
     encode = next(command for command, _cwd in commands if "-c:v" in command)
-    filter_value = encode[encode.index("-vf") + 1]
-    assert encode.count("color=c=black:s=320x180:d=1") == 1
+    filter_value = encode[encode.index("-filter_complex") + 1]
+    assert encode.count("color=c=black:s=320x180:d=1:r=30") == 1
+    assert "zoompan=" in filter_value
+    assert "xfade=" in filter_value
     assert "fontsdir=fonts" in filter_value
     assert "Noto Sans CJK SC" in filter_value
     assert "中文烟测" in subtitle_text[0]
+
+
+@pytest.mark.parametrize(
+    ("version_output", "message"),
+    [
+        ("ffmpeg version 8.0\nconfiguration: --enable-gpl\n", "catalog version 8.1.2"),
+        (
+            "ffmpeg version 8.1.2\nconfiguration: --enable-gpl --enable-nonfree\n",
+            "not legally redistributable",
+        ),
+        ("ffmpeg version 8.1.2\nconfiguration: --enable-version3\n", "cataloged GPL"),
+    ],
+)
+def test_media_capability_rejects_wrong_or_nonredistributable_builds(
+    tmp_path: Path,
+    monkeypatch: Any,
+    version_output: str,
+    message: str,
+) -> None:
+    descriptor = replace(
+        _descriptor(version="8.1.2"),
+        component_id="media-ffmpeg",
+        post_install="ffmpeg-media-capability",
+    )
+    bin_dir = tmp_path / "bin"
+    _make_executable(bin_dir / "ffmpeg")
+    _make_executable(bin_dir / "ffprobe")
+    (tmp_path / "fonts").mkdir()
+    (tmp_path / "fonts/NotoSansCJK-Regular.ttc").write_bytes(b"font")
+
+    def fake_run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        name = Path(command[0]).name
+        output = version_output if name == "ffmpeg" else "ffprobe version 8.1.2\n"
+        return subprocess.CompletedProcess(command, 0, output.encode(), b"")
+
+    monkeypatch.setattr(manager, "_run_checked", fake_run)
+    with pytest.raises(ToolchainProbeError, match=message):
+        manager._ffmpeg_media_capability(descriptor, tmp_path, (bin_dir,))
+
+
+def test_macos_media_payload_replaces_and_verifies_signatures_in_order(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    payload = tmp_path / "payload"
+    bin_dir = payload / "bin"
+    _make_executable(bin_dir / "ffmpeg")
+    _make_executable(bin_dir / "ffprobe")
+    codesign = tmp_path / "codesign"
+    _make_executable(codesign)
+    descriptor = replace(
+        _descriptor(version="8.1.2"),
+        component_id="media-ffmpeg",
+        platform_key="darwin-arm64",
+        bin_relpaths=("bin",),
+    )
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(manager, "_CODESIGN_PATH", codesign)
+    monkeypatch.setattr(manager, "_run_checked", fake_run)
+    manager._prepare_macos_media_payload(descriptor, payload, (bin_dir,))
+
+    assert [command[1] for command in commands] == [
+        "--remove-signature",
+        "--force",
+        "--verify",
+        "--remove-signature",
+        "--force",
+        "--verify",
+    ]
+    assert [Path(command[-1]).name for command in commands] == [
+        "ffmpeg",
+        "ffmpeg",
+        "ffmpeg",
+        "ffprobe",
+        "ffprobe",
+        "ffprobe",
+    ]
 
 
 def test_component_install_lock_times_out_cross_process_and_releases(tmp_path: Path) -> None:
@@ -1399,6 +1678,46 @@ def test_corrupt_package_activation_failure_restores_previous_bytes(
     with pytest.raises(RuntimeError, match="receipt failed"):
         manager.install_component("paper-tex", root=state_root)
     assert marker.read_text(encoding="utf-8") == "corrupt-before-retry"
+    assert not list(package.parent.glob(f".{package.name}.quarantine-*"))
+
+
+def test_corrupt_package_marker_failure_restores_previous_bytes(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        archive,
+        {f"Bundle/bin/{executable_name}": b"fresh"},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    descriptor = _descriptor(version="restore-marker", size=archive.stat().st_size)
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    monkeypatch.setattr(
+        manager,
+        "_download",
+        lambda _descriptor, destination, _progress, **_kwargs: shutil.copyfile(
+            archive, destination
+        ),
+    )
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("paper-tex", root=state_root)
+    assert receipt.package_relpath is not None
+    package = state_root / receipt.package_relpath
+    marker = package / ".opensquilla-toolchain.json"
+    marker.write_text("corrupt-before-marker", encoding="utf-8")
+    real_atomic_json = manager._atomic_json
+
+    def fail_new_marker(path: Path, payload: dict[str, Any]) -> None:
+        if path.name == ".opensquilla-toolchain.json":
+            raise OSError("marker write failed")
+        real_atomic_json(path, payload)
+
+    monkeypatch.setattr(manager, "_atomic_json", fail_new_marker)
+    with pytest.raises(OSError, match="marker write failed"):
+        manager.install_component("paper-tex", root=state_root)
+    assert marker.read_text(encoding="utf-8") == "corrupt-before-marker"
     assert not list(package.parent.glob(f".{package.name}.quarantine-*"))
 
 

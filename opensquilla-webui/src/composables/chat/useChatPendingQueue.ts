@@ -37,7 +37,9 @@ export interface UseChatPendingQueueOptions {
     displayText: string,
     clientRequestId?: string,
   ) => void | HiddenControlDispatchResult | Promise<void | HiddenControlDispatchResult>
-  onHiddenControlDispatchResult?: (result: HiddenControlDispatchResult) => void
+  // Returning false for an explicit discard keeps the chip queued. This lets
+  // the caller fail closed when it cannot persist the cancellation tombstone.
+  onHiddenControlDispatchResult?: (result: HiddenControlDispatchResult) => void | boolean
 }
 
 export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
@@ -93,6 +95,27 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
     return true
   }
 
+  function enqueueRecoveredInput(text: string, owner?: PendingQueueOwner) {
+    const recovered = String(text || '').trim()
+    if (!recovered) return true
+    if (pendingQueue.value.some(item => !item.hiddenControl && item.text === recovered)) {
+      return true
+    }
+    if (pendingQueue.value.length >= MAX_PENDING) {
+      console.warn(`Pending queue full (${MAX_PENDING})`)
+      return false
+    }
+    const ownerRequestId = resolveOwnerRequestId(owner)
+    pendingQueue.value.push({
+      text: recovered,
+      attachments: [],
+      intent: null,
+      ...(currentSessionKey() ? { ownerSessionKey: currentSessionKey() } : {}),
+      ...(ownerRequestId ? { ownerRequestId } : {}),
+    })
+    return true
+  }
+
   function enqueueHiddenControl(
     item: {
       text: string
@@ -136,37 +159,42 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
   }
 
   function removePendingChip(index: number) {
-    const [removed] = pendingQueue.value.splice(index, 1)
-    notifyDiscardedHiddenControl(removed)
+    const item = pendingQueue.value[index]
+    if (!notifyDiscardedHiddenControl(item)) return
+    pendingQueue.value.splice(index, 1)
   }
 
   function clearPendingQueue() {
     clearPendingDrainAfterTerminalTimer()
-    for (const item of pendingQueue.value) notifyDiscardedHiddenControl(item)
-    pendingQueue.value = []
+    pendingQueue.value = pendingQueue.value.filter(item => !notifyDiscardedHiddenControl(item))
   }
 
-  function notifyDiscardedHiddenControl(item?: ChatPendingItem): void {
-    if (!item?.hiddenControl || !item.clientRequestId) return
-    options.onHiddenControlDispatchResult?.({
+  function notifyDiscardedHiddenControl(item?: ChatPendingItem): boolean {
+    if (!item?.hiddenControl || !item.clientRequestId) return true
+    const result = options.onHiddenControlDispatchResult?.({
       status: 'rejected',
       reason: 'discarded',
       clientRequestId: item.clientRequestId,
       sessionKey: item.hiddenControlSessionKey || '',
     })
+    return result !== false
   }
 
   function switchPendingQueue(targetSessionKey: string) {
     clearPendingDrainAfterTerminalTimer()
-    for (const item of pendingQueue.value) notifyDiscardedHiddenControl(item)
+    const sourceSessionKey = currentSessionKey()
+    const sourceHidden = pendingQueue.value.filter(item => item.hiddenControl)
+    if (sourceSessionKey && sourceHidden.length > 0) {
+      const existing = parkedQueues.get(sourceSessionKey) || []
+      parkedQueues.set(sourceSessionKey, [...existing, ...sourceHidden])
+    }
     const parked = parkedQueues.get(targetSessionKey) || []
-    for (const item of parked) notifyDiscardedHiddenControl(item)
-    const restored = parked.filter(item => !item.hiddenControl)
     parkedQueues.delete(targetSessionKey)
     // Explicit navigation keeps its historical behavior of discarding the
-    // active session's queue. Only items parked during an automatic response
-    // handoff can be restored when their parent is selected again.
-    pendingQueue.value = restored
+    // active session's ordinary queue. Machine controls remain bound to their
+    // source session and are parked without emitting an explicit-discard event;
+    // returning to that session resumes the same durable request identity.
+    pendingQueue.value = parked
   }
 
   function adoptPendingQueue(targetSessionKey: string, ownerRequestId: string) {
@@ -174,7 +202,17 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
     const sourceSessionKey = currentSessionKey()
     const carried: ChatPendingItem[] = []
     const stayingVisible: ChatPendingItem[] = []
+    const stayingHidden: ChatPendingItem[] = []
     for (const item of pendingQueue.value) {
+      if (item.hiddenControl) {
+        // Hidden MetaSkill controls are authorized against the exact session
+        // where meta.run staged them. A response handoff may adopt ordinary
+        // follow-up drafts, but must not re-parent that machine control into a
+        // child session. Its durable outbox copy remains scoped to the source
+        // and can be restored only if that source session becomes active again.
+        stayingHidden.push(item)
+        continue
+      }
       if (
         ownerRequestId
         && item.ownerSessionKey === sourceSessionKey
@@ -185,26 +223,23 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
           ownerSessionKey: targetSessionKey,
           ownerRequestId: undefined,
         })
-      } else if (!item.hiddenControl) {
-        // A hidden control is scoped to the run that created it. Carry the
-        // matching run's controls, but never resurrect an older confirmation
-        // after a later manual navigation back to the parent session.
-        stayingVisible.push(item)
       } else {
-        notifyDiscardedHiddenControl(item)
+        // Keep unrelated visible drafts parked under their source session;
+        // only drafts owned by the response being handed off move to the
+        // accepted child session.
+        stayingVisible.push(item)
       }
     }
-    if (stayingVisible.length > 0) {
+    if (stayingVisible.length > 0 || stayingHidden.length > 0) {
       parkedQueues.set(sourceSessionKey, [
-        ...(parkedQueues.get(sourceSessionKey) || []).filter(item => !item.hiddenControl),
+        ...(parkedQueues.get(sourceSessionKey) || []),
         ...stayingVisible,
+        ...stayingHidden,
       ])
     }
     const parkedTargetItems = parkedQueues.get(targetSessionKey) || []
-    for (const item of parkedTargetItems) notifyDiscardedHiddenControl(item)
-    const targetItems = parkedTargetItems.filter(item => !item.hiddenControl)
     parkedQueues.delete(targetSessionKey)
-    pendingQueue.value = [...targetItems, ...carried]
+    pendingQueue.value = [...parkedTargetItems, ...carried]
   }
 
   function popPendingTail() {
@@ -330,6 +365,7 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
     busySendMode,
     maxPending: MAX_PENDING,
     enqueuePendingInput,
+    enqueueRecoveredInput,
     enqueueHiddenControl,
     removePendingChip,
     clearPendingQueue,

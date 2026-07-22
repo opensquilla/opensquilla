@@ -55,10 +55,16 @@ recoverable through Retry and never silently degrades the requested output.
   165–172 MB on Linux, and 265 MB on Windows; installed size is larger. The
   install is self-contained and does not update `tlmgr`.
 - `meta-short-drama` probes `ffmpeg`, `ffprobe`, required filters/codecs, and a
-  CJK font. Linux glibc arm64/x64 and Windows x64 use pinned archives; macOS uses
-  the current Homebrew `ffmpeg-full` formula plus a pinned Noto CJK font. That
-  formula and its dependencies are external Homebrew state and are not removed
-  by OpenSquilla.
+  CJK font. Linux glibc arm64/x64 and Windows x64 use pinned archives. macOS
+  12 or later uses pinned FFmpeg 8.1.2 and FFprobe 8.1.2 ZIPs selected for Apple
+  Silicon or Intel, totaling about 76 MB or 87 MB respectively with their
+  supporting assets. The build source is pinned to commit
+  `bb1d6db29cee948f9685bcd69e6caf17d960662b`. OpenSquilla verifies every
+  original archive by fixed byte size and SHA-256 before extraction, then
+  removes the binaries' invalid embedded signatures, applies local ad-hoc
+  signatures, and requires strict `codesign` verification. This does not provide
+  a Developer ID signature or Apple notarization. The Noto CJK font and its
+  license are also checksum-verified before installation.
 - Real image/audio/video generation for `meta-short-drama` and
   `AwesomeWebpageMetaSkill` currently resolves the OpenRouter capability from
   the existing provider configuration: an active OpenRouter deployment, a saved
@@ -82,10 +88,9 @@ recoverable through Retry and never silently degrades the requested output.
   OpenRouter is the only currently implemented candidate.
 
 Pinned downloads disclose source, license, version, and verified bytes before
-installation. Homebrew's floating formula discloses only OpenSquilla's pinned
-auxiliary bytes as a minimum. A normal uninstall keeps managed toolchains;
+installation. A normal uninstall keeps managed toolchains;
 `opensquilla uninstall --purge-state` removes OpenSquilla-managed toolchain
-state, but does not uninstall Homebrew packages.
+state.
 
 ## Run MetaSkills
 

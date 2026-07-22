@@ -593,7 +593,10 @@ import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
 import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
-import { useChatSlashCommands } from '@/composables/chat/useChatSlashCommands'
+import {
+  useChatSlashCommands,
+  type DurableMetaDraft,
+} from '@/composables/chat/useChatSlashCommands'
 import { useChatStream } from '@/composables/chat/useChatStream'
 import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
 import { useChatUsageWidget } from '@/composables/chat/useChatUsageWidget'
@@ -614,6 +617,8 @@ import type {
 } from '@/types/chat'
 import type {
   ArtifactPayload,
+  MetaDraftDiscardResponse,
+  MetaDraftsListResponse,
   SessionEventPayload,
 } from '@/types/rpc'
 import type { ModelRoutingMode } from '@/types/modelRouting'
@@ -621,6 +626,11 @@ import type { SandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { fetchDisplayAttachmentBlob } from '@/utils/chat/attachmentAccess'
+import {
+  persistDeferredMetaDraft,
+  takeDeferredMetaDrafts,
+} from '@/utils/chat/metaDraftOutbox'
+import { listPendingMetaDiscards } from '@/utils/chat/metaDiscardOutbox'
 import { createHistoryNavigationScrollLock } from '@/utils/chat/historyNavigationScrollLock'
 import {
   PENDING_STREAM_TASK_ID,
@@ -860,12 +870,18 @@ let dispatchHiddenForMeta: (
   providerText: string,
   displayText: string,
   clientRequestId?: string,
-) => Promise<HiddenControlDispatchResult> = (_providerText, _displayText, clientRequestId = '') => (
+  targetSessionKey?: string,
+) => Promise<HiddenControlDispatchResult> = (
+  _providerText,
+  _displayText,
+  clientRequestId = '',
+  targetSessionKey = '',
+) => (
   Promise.resolve({
     status: 'rejected',
     reason: 'invalid_request',
     clientRequestId,
-    sessionKey: sessionKey.value,
+    sessionKey: targetSessionKey || sessionKey.value,
   })
 )
 let isCompactInFlightForCurrentSession: () => boolean = () => false
@@ -876,6 +892,8 @@ let dispatchHiddenControl: (
   clientRequestId?: string,
 ) => Promise<HiddenControlDispatchResult> = dispatchHiddenForMeta
 let handleHiddenControlDispatchResult: (result: HiddenControlDispatchResult) => void = () => {}
+let discardHiddenControlOutbox: (sessionKey: string, clientRequestId: string) => boolean = () => false
+let forgetHiddenControlOutbox: (sessionKey: string, clientRequestId: string) => void = () => {}
 const chatPendingQueue = useChatPendingQueue({
   sessionKey,
   ownerContext: pendingQueueOwnerContext,
@@ -894,7 +912,20 @@ const chatPendingQueue = useChatPendingQueue({
   dispatchHiddenControl: (providerText, displayText, clientRequestId) => (
     dispatchHiddenControl(providerText, displayText, clientRequestId)
   ),
-  onHiddenControlDispatchResult: result => handleHiddenControlDispatchResult(result),
+  onHiddenControlDispatchResult: (result) => {
+    if (result.reason === 'discarded') {
+      const discardPersisted = discardHiddenControlOutbox(
+        result.sessionKey,
+        result.clientRequestId,
+      )
+      if (!discardPersisted) {
+        pushToast(t('chat.metaRuns.cancelNotSaved'), { tone: 'danger' })
+        return false
+      }
+    }
+    handleHiddenControlDispatchResult(result)
+    return true
+  },
 })
 const {
   pendingQueue,
@@ -902,6 +933,7 @@ const {
   busySendMode,
   maxPending,
   enqueuePendingInput,
+  enqueueRecoveredInput,
   enqueueHiddenControl,
   removePendingChip,
   clearPendingQueue,
@@ -913,6 +945,45 @@ const {
   flushDeferredPendingDrain,
   cleanup: cleanupPendingQueue,
 } = chatPendingQueue
+
+function restoreMetaLaunchDraft(launchText: string, targetSessionKey: string): void {
+  const restored = String(launchText || '').trim()
+  const target = String(targetSessionKey || '').trim()
+  if (!restored || !target) return
+  if (target !== sessionKey.value) {
+    if (!persistDeferredMetaDraft({ sessionKey: target, launchText: restored })) {
+      pushToast(t('chat.metaRuns.couldNotRunSkill', { skill: restored.split(/\s+/, 3)[1] || 'MetaSkill' }), {
+        tone: 'danger',
+      })
+    }
+    return
+  }
+
+  const currentDraft = inputText.value.trim()
+  if (!currentDraft) {
+    inputText.value = restored
+    autoResizeTextarea()
+    nextTick(() => composerRef.value?.focusTextarea())
+    return
+  }
+  if (currentDraft === restored) return
+  if (!enqueueRecoveredInput(restored)) {
+    // Preserve the newer composer verbatim. A durable deferred copy is safer
+    // than concatenating two independently sendable requests into one turn.
+    persistDeferredMetaDraft({ sessionKey: target, launchText: restored })
+  }
+}
+
+function restoreDeferredMetaDrafts(
+  targetSessionKey: string,
+  skipLaunchTexts: ReadonlySet<string> = new Set(),
+): void {
+  if (sessionKey.value !== targetSessionKey) return
+  for (const launchText of takeDeferredMetaDrafts(targetSessionKey)) {
+    if (skipLaunchTexts.has(launchText)) continue
+    restoreMetaLaunchDraft(launchText, targetSessionKey)
+  }
+}
 
 const chatCompaction = useChatCompaction({
   sessionKey,
@@ -1260,6 +1331,27 @@ const metaSkillSetup = useMetaSkillSetup({
     dispatchHiddenForMeta(providerText, displayText, clientRequestId)
   ),
   autoRestore: false,
+  restoreDraft: restoreMetaLaunchDraft,
+  discardDraft: async (draftSessionKey: string, clientRequestId: string) => {
+    const result = await rpc.call<MetaDraftDiscardResponse>('meta.drafts.discard', {
+      sessionKey: draftSessionKey,
+      clientRequestId,
+    })
+    if (result?.accepted === true) {
+      forgetHiddenControlOutbox(draftSessionKey, clientRequestId)
+      return 'accepted'
+    }
+    if (result?.discarded !== true) return 'unconfirmed'
+    // Only after the server confirms atomic discard may the setup flow restore
+    // plain composer text. Remove the matching browser hidden-control copy too,
+    // otherwise a later session restore could replay the old stable id beside
+    // the newly restored composer request.
+    forgetHiddenControlOutbox(draftSessionKey, clientRequestId)
+    return 'discarded'
+  },
+  onDraftAlreadyAccepted: () => {
+    pushToast(t('chat.metaRuns.cancelAlreadyAccepted'), { tone: 'info', duration: 7000 })
+  },
 })
 const {
   setupState,
@@ -1289,7 +1381,14 @@ const chatSlashCommands = useChatSlashCommands({
     providerText: string,
     displayText: string,
     clientRequestId?: string,
-  ) => dispatchHiddenForMeta(providerText, displayText, clientRequestId),
+    targetSessionKey?: string,
+  ) => dispatchHiddenForMeta(
+    providerText,
+    displayText,
+    clientRequestId,
+    targetSessionKey,
+  ),
+  restoreDraft: restoreMetaLaunchDraft,
   requestMetaSetup,
 })
 const {
@@ -1301,6 +1400,7 @@ const {
   closeSlashMenu,
   selectSlashCmd,
   executeSlashCommand,
+  restoreDurableMetaDrafts: restoreServerMetaDrafts,
 } = chatSlashCommands
 
 const chatComposerShortcuts = useChatComposerShortcuts({
@@ -1367,16 +1467,79 @@ const {
   onSend,
   onStop,
   dispatchHiddenSend,
+  discardHiddenControl,
+  forgetHiddenControl,
+  flushPendingMetaDiscards,
   restoreHiddenControls,
   sendHiddenMetaPreflightConfirmation,
 } = chatSend
 sendCurrentInput = onSend
 dispatchHiddenForMeta = dispatchHiddenSend
 dispatchHiddenControl = dispatchHiddenSend
+discardHiddenControlOutbox = discardHiddenControl
+forgetHiddenControlOutbox = forgetHiddenControl
 
-async function restoreDurableMetaControls(targetSessionKey: string): Promise<void> {
+async function listServerMetaDrafts(
+  query: { sessionKey?: string, agentId?: string },
+): Promise<DurableMetaDraft[]> {
+  try {
+    await rpc.waitForConnection(15_000)
+    const result = await rpc.call<MetaDraftsListResponse>('meta.drafts.list', query)
+    return Array.isArray(result?.drafts) ? result.drafts : []
+  } catch {
+    // Older gateways and a temporarily unavailable connection retain the
+    // browser outboxes as a compatibility fallback.
+    return []
+  }
+}
+
+async function restoreDurableMetaControls(
+  targetSessionKey: string,
+  prefetchedServerDrafts?: DurableMetaDraft[],
+): Promise<void> {
+  // Setup owns a matching cancellation tombstone so it can clear its recovery
+  // checkpoint without ever re-entering launch. Queue-only tombstones are then
+  // retried here before any server draft is considered.
+  const pendingDiscardIds = new Set(
+    listPendingMetaDiscards(targetSessionKey).map(item => item.clientRequestId),
+  )
   await restoreMetaSetupJob(targetSessionKey)
-  await restoreHiddenControls(targetSessionKey)
+  const setupDiscardRequestId = setupState.value?.retryMode === 'discard'
+    ? setupState.value.resumeRequestId || ''
+    : ''
+  for (const requestId of await flushPendingMetaDiscards(
+    targetSessionKey,
+    setupDiscardRequestId ? [setupDiscardRequestId] : [],
+  )) {
+    pendingDiscardIds.add(requestId)
+  }
+  const serverDrafts = (prefetchedServerDrafts
+    ?? await listServerMetaDrafts({ sessionKey: targetSessionKey }))
+    .filter(draft => !pendingDiscardIds.has(draft.clientRequestId))
+  restoreDeferredMetaDrafts(
+    targetSessionKey,
+    new Set(serverDrafts.map(draft => draft.launchText)),
+  )
+  const activeSetupRequestId = setupState.value?.sessionKey === targetSessionKey
+    ? setupState.value.resumeRequestId || setupState.value.providerHandoff?.clientRequestId || ''
+    : ''
+  const matchingServerDrafts = serverDrafts.filter(
+    draft => draft.sessionKey === targetSessionKey,
+  )
+  const setupHandledRequestIds = activeSetupRequestId
+    ? matchingServerDrafts
+        .filter(draft => draft.clientRequestId === activeSetupRequestId)
+        .map(draft => draft.clientRequestId)
+    : []
+  const attemptedServerRequestIds = await restoreServerMetaDrafts(
+    matchingServerDrafts.filter(
+      draft => draft.clientRequestId !== activeSetupRequestId,
+    ),
+  )
+  await restoreHiddenControls(
+    targetSessionKey,
+    [...setupHandledRequestIds, ...attemptedServerRequestIds],
+  )
 }
 
 // Deny notes ride the normal send path: queued while the turn is streaming,
@@ -2275,6 +2438,23 @@ onMounted(async () => {
     persistSession(sessionKey.value, { updateRoute: false, source: 'chatView.initialSession' })
   }
 
+  // A setup-gated /meta request can belong to a provisional draft key that
+  // never reached the sessions table or URL. Recover that key before the
+  // subscription is established, so an application close/reopen resumes the
+  // exact request identity instead of creating a second chat.
+  let prefetchedMetaDrafts: DurableMetaDraft[] | undefined
+  if (initialSession.draft) {
+    const agentDrafts = await listServerMetaDrafts({ agentId: draftAgentId() })
+    const provisional = agentDrafts.find(draft => draft.sessionExists === false)
+    if (provisional) {
+      sessionKey.value = provisional.sessionKey
+      switchPendingQueue(provisional.sessionKey)
+      prefetchedMetaDrafts = agentDrafts.filter(
+        draft => draft.sessionKey === provisional.sessionKey,
+      )
+    }
+  }
+
   // Load elevated mode
   loadElevatedMode()
 
@@ -2306,7 +2486,9 @@ onMounted(async () => {
   // A provider handoff may immediately resume the original hidden send. Wait
   // until replay/subscription is established so no early stream frame is lost.
   const sessionSubscribed = await sessionSubscription
-  if (sessionSubscribed) await restoreDurableMetaControls(initialSession.sessionKey)
+  if (sessionSubscribed) {
+    await restoreDurableMetaControls(sessionKey.value, prefetchedMetaDrafts)
+  }
 
   // Focus textarea on desktop
   if (isDesktopViewport.value) {

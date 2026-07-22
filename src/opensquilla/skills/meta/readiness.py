@@ -17,10 +17,13 @@ from opensquilla.skills.capability_runtime import (
     META_OPENROUTER_API_KEY_ENV as META_OPENROUTER_API_KEY_ENV,
 )
 from opensquilla.skills.capability_runtime import (
+    capability_ambient_credential_env_names,
     capability_manifest_env_aliases_for_consumers,
     capability_provider_display_name,
+    capability_registered_consumers,
     capability_requirements_for_consumers,
     capability_runtime_env_for_consumers,
+    capability_supported_readiness_env_aliases,
     resolve_capability_status,
     trusted_capability_consumers_for_meta_plan,
 )
@@ -33,20 +36,6 @@ from opensquilla.skills.types import SkillLayer, SkillSpec
 
 META_READINESS_ENV_ALIASES_METADATA_KEY = "meta_readiness_env_aliases"
 META_SKILL_RUNTIME_ENV_PROVIDER_METADATA_KEY = "meta_skill_runtime_env_provider"
-_OPENROUTER_API_KEY_ENV = "OPENROUTER_API_KEY"
-_SUPPORTED_ENV_ALIASES = frozenset({_OPENROUTER_API_KEY_ENV})
-_PROVIDER_CAPABILITY_SKILLS = frozenset(
-    {
-        "audio-cog",
-        "nano-banana-pro",
-        "nano-banana-pro-openrouter",
-        "openrouter-video-generator",
-        "seedance-2-prompt",
-    }
-)
-_PROVIDER_CAPABILITY_ENV_NAMES = frozenset(
-    {"ARK_API_KEY", "OPENROUTER_API_KEY"}
-)
 _CONFIGURED_ENV_SENTINEL = "configured"
 _TRUSTED_PROVIDER_WORKFLOW_OVERRIDDEN_REASON = (
     "A trusted provider workflow component is overridden by a higher-priority "
@@ -162,13 +151,14 @@ def meta_readiness_context(
     if isinstance(env_aliases, Iterable) and not isinstance(
         env_aliases, (str, bytes, Mapping)
     ):
+        supported_aliases = frozenset(capability_supported_readiness_env_aliases())
         aliases.update(
             name
             for name in env_aliases
                 if (
                     trusted_consumers
                     and isinstance(name, str)
-                    and name in _SUPPORTED_ENV_ALIASES
+                    and name in supported_aliases
                 )
             )
     ctx = EligibilityContext.auto()
@@ -177,7 +167,9 @@ def meta_readiness_context(
     # Provider-capability children never inherit ambient credentials during a
     # MetaSkill run.  Force their portable direct-CLI names absent, then mark
     # only aliases proven by the trusted parent+plan provider connection.
-    ctx.env_cache.update({name: None for name in _PROVIDER_CAPABILITY_ENV_NAMES})
+    ctx.env_cache.update(
+        {name: None for name in capability_ambient_credential_env_names()}
+    )
     ctx.env_cache.update({name: _CONFIGURED_ENV_SENTINEL for name in aliases})
     return ctx
 
@@ -341,6 +333,9 @@ def assess_meta_skill_readiness(
 
     base_ctx = ctx or EligibilityContext.auto()
     trusted_aliases: set[str] = set()
+    supported_aliases = capability_supported_readiness_env_aliases()
+    provider_capability_skills = frozenset(capability_registered_consumers())
+    provider_capability_env_names = capability_ambient_credential_env_names()
     if trusted_consumers:
         if config is not None:
             trusted_aliases.update(
@@ -353,14 +348,14 @@ def assess_meta_skill_readiness(
             )
         trusted_aliases.update(
             name
-            for name in _SUPPORTED_ENV_ALIASES
+            for name in supported_aliases
             if base_ctx.env_cache.get(name) == _CONFIGURED_ENV_SENTINEL
         )
     eligibility_ctx = replace(
         base_ctx,
         env_cache={
             **base_ctx.env_cache,
-            **{name: None for name in _PROVIDER_CAPABILITY_ENV_NAMES},
+            **{name: None for name in provider_capability_env_names},
             **{
                 name: _CONFIGURED_ENV_SENTINEL
                 for name in trusted_aliases
@@ -402,7 +397,7 @@ def assess_meta_skill_readiness(
                 (config is not None and current.name in trusted_consumers)
                 or (
                     provider_workflow_trust_failed
-                    and current.name in _PROVIDER_CAPABILITY_SKILLS
+                    and current.name in provider_capability_skills
                 )
             )
             else ()
@@ -627,7 +622,7 @@ def _collect_setup_actions(
         if not covered and not capability_missing:
             continue
 
-        collector.setup_actions[action_id] = MetaSetupAction(
+        next_action = MetaSetupAction(
             id=action_id,
             skill=spec.name,
             install_id=install.id,
@@ -642,6 +637,31 @@ def _collect_setup_actions(
             source=source,
             license=license_name,
         )
+        if install.kind == "toolchain":
+            # A parent MetaSkill and one or more internal children may declare
+            # the same globally registered managed component. Presenting each
+            # manifest declaration as a separate action would ask the user to
+            # install the same artifact twice and the setup job would execute
+            # it twice. Keep the first (parent-first traversal) trusted action
+            # identity and merge only the binary coverage for that component.
+            duplicate_id = next(
+                (
+                    existing_id
+                    for existing_id, existing in collector.setup_actions.items()
+                    if existing.kind == "toolchain"
+                    and existing.install_id == install.id
+                ),
+                "",
+            )
+            if duplicate_id:
+                existing = collector.setup_actions[duplicate_id]
+                collector.setup_actions[duplicate_id] = replace(
+                    existing,
+                    bins=tuple(sorted(set(existing.bins) | set(next_action.bins))),
+                )
+                continue
+
+        collector.setup_actions[action_id] = next_action
 
 
 def format_meta_setup_error(name: str, readiness: MetaSkillReadiness) -> str:

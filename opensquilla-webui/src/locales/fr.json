@@ -2276,6 +2276,7 @@
       "toastDisableFailed": "Échec de la désactivation : {reason}"
     },
     "proposalDetail": {
+      "dialogLabel": "Détails de la proposition : {id}",
       "heading": "Proposition {id}",
       "auditTitle": "Audit d'activation automatique",
       "status": "État",
@@ -2301,6 +2302,7 @@
       "advisoryCount": "Avis : {count}"
     },
     "skillDetail": {
+      "dialogLabel": "Détails de la compétence : {name}",
       "triggers": "Déclencheurs",
       "composition": "Composition ({kind}, {count} sous-compétences)",
       "missing": "Manquant",
@@ -2309,6 +2311,7 @@
       "install": "Installer",
       "installVia": "Installer via {kind}",
       "installing": "Installation...",
+      "toolchainSetupGuidance": "Lancez cette MetaSkill depuis la conversation afin d’examiner la source, la taille et la licence, puis d’approuver sa configuration. Les chaînes d’outils gérées ne peuvent être installées que par ce parcours.",
       "homepage": "Page d'accueil",
       "loadingContent": "Chargement de SKILL.md...",
       "emptyContent": "Aucun contenu SKILL.md disponible.",
@@ -2356,6 +2359,7 @@
     },
     "skills": {
       "statusReady": "prêt",
+      "statusProviderAtLaunch": "Le fournisseur sera vérifié au lancement",
       "statusNoDeps": "aucune dépendance déclarée",
       "statusNeedsDeps": "dépendances requises",
       "dotReady": "Prêt",
@@ -2903,7 +2907,10 @@
       "setupRequired": "{skill} ne peut pas encore s’exécuter. Configurez d’abord : {dependencies}",
       "unknownDependency": "l’environnement d’exécution requis",
       "couldNotRunSkill": "Impossible d'exécuter la méta-compétence {skill}.",
-      "couldNotRunSkillError": "Impossible d'exécuter la méta-compétence : {error}"
+      "couldNotRunSkillError": "Impossible d'exécuter la méta-compétence : {error}",
+      "savedForRetry": "La demande {skill} est enregistrée avec son identifiant d’origine. Revenez à cette discussion pour la réessayer.",
+      "cancelNotSaved": "Impossible d’enregistrer cette annulation en toute sécurité. La demande reste en attente et n’a pas été supprimée.",
+      "cancelAlreadyAccepted": "Cette demande MetaSkill avait déjà démarré : elle n’a pas pu être annulée et n’a pas été remise dans la zone de saisie. Ne la renvoyez pas."
     },
     "metaSetup": {
       "title": "Configurer {skill}",

@@ -2276,6 +2276,7 @@
       "toastDisableFailed": "Deaktivieren fehlgeschlagen: {reason}"
     },
     "proposalDetail": {
+      "dialogLabel": "Vorschlagsdetails: {id}",
       "heading": "Vorschlag {id}",
       "auditTitle": "Audit der automatischen Aktivierung",
       "status": "Status",
@@ -2301,6 +2302,7 @@
       "advisoryCount": "Hinweise: {count}"
     },
     "skillDetail": {
+      "dialogLabel": "Skill-Details: {name}",
       "triggers": "Auslöser",
       "composition": "Zusammensetzung ({kind}, {count} Unterfähigkeiten)",
       "missing": "Fehlend",
@@ -2309,6 +2311,7 @@
       "install": "Installieren",
       "installVia": "Über {kind} installieren",
       "installing": "Wird installiert...",
+      "toolchainSetupGuidance": "Starten Sie diese MetaSkill im Chat, um Quelle, Größe und Lizenz zu prüfen und die Einrichtung zu bestätigen. Verwaltete Toolchains können nur über diesen Einrichtungsablauf installiert werden.",
       "homepage": "Startseite",
       "loadingContent": "SKILL.md wird geladen...",
       "emptyContent": "Kein SKILL.md-Inhalt verfügbar.",
@@ -2356,6 +2359,7 @@
     },
     "skills": {
       "statusReady": "bereit",
+      "statusProviderAtLaunch": "Der Anbieter wird beim Start überprüft",
       "statusNoDeps": "keine Abhängigkeiten deklariert",
       "statusNeedsDeps": "benötigt Abhängigkeiten",
       "dotReady": "Bereit",
@@ -2903,7 +2907,10 @@
       "setupRequired": "{skill} kann noch nicht ausgeführt werden. Zuerst einrichten: {dependencies}",
       "unknownDependency": "die erforderliche Laufzeitumgebung",
       "couldNotRunSkill": "Meta-Fähigkeit {skill} konnte nicht ausgeführt werden.",
-      "couldNotRunSkillError": "Meta-Fähigkeit konnte nicht ausgeführt werden: {error}"
+      "couldNotRunSkillError": "Meta-Fähigkeit konnte nicht ausgeführt werden: {error}",
+      "savedForRetry": "Die Anfrage für {skill} wurde mit ihrer ursprünglichen Kennung gespeichert. Kehren Sie zu diesem Chat zurück, um sie erneut zu versuchen.",
+      "cancelNotSaved": "Die Stornierung konnte nicht sicher gespeichert werden. Die Anfrage bleibt ausstehend und wurde nicht entfernt.",
+      "cancelAlreadyAccepted": "Diese MetaSkill-Anfrage wurde bereits gestartet. Sie konnte nicht abgebrochen werden und wurde nicht in das Eingabefeld zurückgelegt. Senden Sie sie nicht erneut."
     },
     "metaSetup": {
       "title": "{skill} einrichten",

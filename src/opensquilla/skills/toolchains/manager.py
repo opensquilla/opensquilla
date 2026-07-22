@@ -35,6 +35,7 @@ _MAX_EXTRACTED_BYTES = 4 * 1024 * 1024 * 1024
 _MAX_EXPANSION_RATIO = 100
 _COPY_CHUNK_SIZE = 1024 * 1024
 _PROBE_TIMEOUT_SECONDS = 30.0
+_CODESIGN_PATH = Path("/usr/bin/codesign")
 _POST_INSTALL_TIMEOUT_SECONDS = 600.0
 _INSTALL_LOCK_TIMEOUT_SECONDS = 900.0
 _SAFE_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -595,6 +596,38 @@ def _extract_archive(
     raise UnsupportedToolchainError(f"Unsupported managed archive type: {archive_type}")
 
 
+def _relocate_cataloged_archive_member(
+    payload: Path,
+    *,
+    member_name: str | None,
+    destination_name: str | None,
+) -> None:
+    """Move a code-owned single-file archive member to its runtime location."""
+
+    if member_name is None and destination_name is None:
+        return
+    if not member_name or not destination_name:
+        raise UnsupportedToolchainError("Managed archive relocation is incomplete")
+    member = _safe_archive_name(member_name)
+    destination_relative = _safe_archive_name(destination_name)
+    source = payload.joinpath(*member.parts)
+    destination = payload.joinpath(*destination_relative.parts)
+    files = [
+        candidate
+        for candidate in payload.rglob("*")
+        if candidate.is_file() and not candidate.is_symlink()
+    ]
+    if source.is_symlink() or not source.is_file() or files != [source]:
+        raise UnsafeArchiveError(
+            "Managed single-file archive did not contain exactly its cataloged member"
+        )
+    if destination == source or destination.exists():
+        raise UnsafeArchiveError("Managed archive relocation destination is invalid")
+    destination.parent.mkdir(mode=0o755, parents=True, exist_ok=False)
+    os.replace(source, destination)
+    destination.chmod(0o755)
+
+
 def _install_auxiliary_assets(
     descriptor: ToolchainDescriptor,
     payload: Path,
@@ -609,16 +642,52 @@ def _install_auxiliary_assets(
         relative = _safe_archive_name(asset.destination)
         destination = payload.joinpath(*relative.parts)
         destination.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-        _download_pinned(
-            asset.url,
-            asset.sha256,
-            asset.size,
-            destination,
-            progress_cb,
-            progress_offset=offset,
-            progress_total=progress_total,
-        )
-        destination.chmod(0o644)
+        if asset.archive_type is None:
+            _download_pinned(
+                asset.url,
+                asset.sha256,
+                asset.size,
+                destination,
+                progress_cb,
+                progress_offset=offset,
+                progress_total=progress_total,
+            )
+        else:
+            if asset.archive_type not in {"tar.xz", "zip"} or not asset.archive_member:
+                raise UnsupportedToolchainError(
+                    "Managed auxiliary archive has no safe cataloged member"
+                )
+            member = _safe_archive_name(asset.archive_member)
+            with tempfile.TemporaryDirectory(
+                prefix=f"{asset.asset_id}-", dir=payload.parent
+            ) as temp_name:
+                temp_root = Path(temp_name)
+                archive = temp_root / "artifact"
+                _download_pinned(
+                    asset.url,
+                    asset.sha256,
+                    asset.size,
+                    archive,
+                    progress_cb,
+                    progress_offset=offset,
+                    progress_total=progress_total,
+                )
+                extracted = temp_root / "extracted"
+                _extract_archive(archive, extracted, asset.archive_type, asset.size)
+                source = extracted.joinpath(*member.parts)
+                extracted_files = [
+                    candidate
+                    for candidate in extracted.rglob("*")
+                    if candidate.is_file() and not candidate.is_symlink()
+                ]
+                if source.is_symlink() or not source.is_file() or extracted_files != [source]:
+                    raise UnsafeArchiveError(
+                        "Managed auxiliary archive did not contain exactly its cataloged file"
+                    )
+                if destination.exists():
+                    raise UnsafeArchiveError("Managed auxiliary destination already exists")
+                shutil.copyfile(source, destination)
+        destination.chmod(0o755 if asset.executable else 0o644)
         resources[asset.asset_id] = relative.as_posix()
         offset += asset.size
     return resources
@@ -882,6 +951,61 @@ def _paper_capability(
             raise ToolchainProbeError("Paper toolchain smoke test did not produce a PDF")
 
 
+def _prepare_macos_media_payload(
+    descriptor: ToolchainDescriptor,
+    payload: Path,
+    bin_dirs: tuple[Path, ...],
+) -> None:
+    """Replace invalid upstream signatures with deterministic local ad-hoc ones.
+
+    The remote ZIP hashes remain the trust anchor. This code-owned transform
+    runs before the complete payload manifest is written. Ad-hoc signing gives
+    Apple Silicon a valid CodeDirectory; it is not Apple notarization.
+    """
+
+    if not (
+        descriptor.component_id == "media-ffmpeg"
+        and descriptor.install_backend == "archive"
+        and descriptor.platform_key.startswith("darwin-")
+    ):
+        return
+    codesign = _CODESIGN_PATH
+    if not codesign.is_file():
+        raise UnsupportedToolchainError("macOS codesign is required for managed FFmpeg")
+    payload_root = payload.resolve(strict=True)
+    env = dict(os.environ)
+    for name in ("ffmpeg", "ffprobe"):
+        executable = _find_in_bins(name, bin_dirs)
+        if executable is None or executable.is_symlink() or not executable.is_file():
+            raise ToolchainProbeError(f"Managed media toolchain is missing: {name}")
+        try:
+            executable.resolve(strict=True).relative_to(payload_root)
+        except (OSError, ValueError) as exc:
+            raise ToolchainProbeError("Managed media executable escaped its payload") from exc
+        executable.chmod(0o755)
+        _run_checked(
+            [str(codesign), "--remove-signature", str(executable)],
+            cwd=payload,
+            env=env,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            label=f"Remove invalid embedded signature from {name}",
+        )
+        _run_checked(
+            [str(codesign), "--force", "--sign", "-", "--timestamp=none", str(executable)],
+            cwd=payload,
+            env=env,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            label=f"Ad-hoc sign managed {name}",
+        )
+        _run_checked(
+            [str(codesign), "--verify", "--strict", "--verbose=2", str(executable)],
+            cwd=payload,
+            env=env,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            label=f"Verify managed {name} CodeDirectory",
+        )
+
+
 def _ffmpeg_media_capability(
     descriptor: ToolchainDescriptor,
     payload: Path,
@@ -890,7 +1014,6 @@ def _ffmpeg_media_capability(
     env_override: Mapping[str, str] | None = None,
 ) -> None:
     """Verify the filters and codecs used by the short-drama workflow."""
-    del descriptor
     executables: dict[str, Path] = {}
     for name in ("ffmpeg", "ffprobe"):
         executable = _find_in_bins(name, bin_dirs)
@@ -907,6 +1030,38 @@ def _ffmpeg_media_capability(
         )
     else:
         env = dict(env_override)
+
+    expected_match = re.match(r"(\d+(?:\.\d+){1,2})", descriptor.version)
+    if expected_match is None:
+        raise ToolchainProbeError("Managed FFmpeg catalog version is invalid")
+    expected_version = expected_match.group(1)
+    for name, executable in executables.items():
+        version_result = _run_checked(
+            [str(executable), "-version"],
+            cwd=payload,
+            env=env,
+            timeout=_PROBE_TIMEOUT_SECONDS,
+            label=f"{name} version and license inventory",
+        )
+        version_output = (version_result.stdout + version_result.stderr).decode(
+            "utf-8", errors="replace"
+        )
+        if not re.search(
+            rf"^{re.escape(name)} version (?:n)?{re.escape(expected_version)}(?:[-+\s]|$)",
+            version_output,
+            flags=re.IGNORECASE | re.MULTILINE,
+        ):
+            raise ToolchainProbeError(
+                f"Managed {name} does not match catalog version {expected_version}"
+            )
+        lowered_version = version_output.casefold()
+        if (
+            "--enable-nonfree" in lowered_version
+            or "not legally redistributable" in lowered_version
+        ):
+            raise ToolchainProbeError(f"Managed {name} is not legally redistributable")
+        if name == "ffmpeg" and "--enable-gpl" not in lowered_version:
+            raise ToolchainProbeError("Managed FFmpeg does not report its cataloged GPL build")
 
     filters_result = _run_checked(
         [str(executables["ffmpeg"]), "-hide_banner", "-filters"],
@@ -966,16 +1121,28 @@ def _ffmpeg_media_capability(
                 "-f",
                 "lavfi",
                 "-i",
-                "color=c=black:s=320x180:d=1",
+                "color=c=black:s=320x180:d=1:r=30",
                 "-f",
                 "lavfi",
                 "-i",
-                "sine=frequency=1000:duration=1",
-                "-vf",
+                "color=c=blue:s=320x180:d=1:r=30",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:duration=1.5",
+                "-filter_complex",
                 (
+                    "[0:v]zoompan=z='min(zoom+0.0015,1.05)':d=1:"
+                    "s=320x180:fps=30,format=yuv420p,setsar=1[v0];"
+                    "[1:v]format=yuv420p,setsar=1[v1];"
+                    "[v0][v1]xfade=transition=fade:duration=0.25:offset=0.5,"
                     "subtitles=smoke.srt:fontsdir=fonts:"
-                    "force_style='FontName=Noto Sans CJK SC'"
+                    "force_style='FontName=Noto Sans CJK SC'[video]"
                 ),
+                "-map",
+                "[video]",
+                "-map",
+                "2:a:0",
                 "-c:v",
                 "libx264",
                 "-pix_fmt",
@@ -984,7 +1151,7 @@ def _ffmpeg_media_capability(
                 "aac",
                 "-shortest",
                 "-t",
-                "1",
+                "1.25",
                 "-y",
                 str(output),
             ],
@@ -1001,9 +1168,9 @@ def _ffmpeg_media_capability(
                 "-v",
                 "error",
                 "-show_entries",
-                "format=duration",
+                "stream=codec_type:format=duration",
                 "-of",
-                "default=noprint_wrappers=1:nokey=1",
+                "json",
                 str(output),
             ],
             cwd=probe_root,
@@ -1012,9 +1179,17 @@ def _ffmpeg_media_capability(
             label="FFprobe smoke test",
         )
         try:
-            duration = float(probe_result.stdout.decode("ascii", errors="strict").strip())
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise ToolchainProbeError("FFprobe returned an invalid smoke-test duration") from exc
+            probe_data = json.loads(probe_result.stdout.decode("utf-8", errors="strict"))
+            duration = float(probe_data["format"]["duration"])
+            stream_types = {
+                str(stream["codec_type"])
+                for stream in probe_data["streams"]
+                if isinstance(stream, dict) and "codec_type" in stream
+            }
+        except (KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ToolchainProbeError("FFprobe returned invalid smoke-test metadata") from exc
+        if stream_types != {"audio", "video"}:
+            raise ToolchainProbeError("FFmpeg smoke test did not contain audio and video streams")
         if not 0.5 <= duration <= 2.0:
             raise ToolchainProbeError("FFmpeg smoke-test duration was outside the expected range")
 
@@ -1150,12 +1325,19 @@ def _write_activation(root: Path, receipt: dict[str, Any]) -> None:
 
 def _valid_existing_package(package: Path, descriptor: ToolchainDescriptor) -> bool:
     marker = _read_json(package / ".opensquilla-toolchain.json")
+    expected_assets = {
+        asset.asset_id: asset.sha256 for asset in descriptor.auxiliary_assets
+    }
     valid_marker = bool(
         marker
         and marker.get("component_id") == descriptor.component_id
         and marker.get("version") == descriptor.version
         and marker.get("platform_key") == descriptor.platform_key
         and marker.get("sha256") == descriptor.sha256
+        and marker.get("source") == descriptor.source
+        and marker.get("install_backend") == descriptor.install_backend
+        and marker.get("package_closure") == list(descriptor.package_closure)
+        and marker.get("auxiliary_assets") == expected_assets
     )
     if not valid_marker:
         return False
@@ -1166,15 +1348,20 @@ def _valid_existing_package(package: Path, descriptor: ToolchainDescriptor) -> b
         path = package.joinpath(*relative.parts)
         if not path.is_file():
             return False
-        digest = hashlib.sha256()
-        try:
-            with path.open("rb") as source:
-                while chunk := source.read(_COPY_CHUNK_SIZE):
-                    digest.update(chunk)
-        except OSError:
-            return False
-        if not hmac.compare_digest(digest.hexdigest(), asset.sha256):
-            return False
+        # Direct assets are installed byte-for-byte, so their catalog digest can
+        # be checked again. Archived companions are verified before extraction
+        # and may then be transformed (macOS binaries are ad-hoc signed); their
+        # installed bytes are instead bound by the complete payload manifest.
+        if asset.archive_type is None:
+            digest = hashlib.sha256()
+            try:
+                with path.open("rb") as source:
+                    while chunk := source.read(_COPY_CHUNK_SIZE):
+                        digest.update(chunk)
+            except OSError:
+                return False
+            if not hmac.compare_digest(digest.hexdigest(), asset.sha256):
+                return False
     return True
 
 
@@ -1579,7 +1766,17 @@ def _install_component_unlocked(
             progress_total=total_download,
         )
         payload = staging / "payload"
-        _extract_archive(archive, payload, descriptor.archive_type, descriptor.size or 0)
+        _extract_archive(
+            archive,
+            payload,
+            descriptor.archive_type,
+            descriptor.size or 0,
+        )
+        _relocate_cataloged_archive_member(
+            payload,
+            member_name=descriptor.archive_member,
+            destination_name=descriptor.archive_destination,
+        )
         resources = _install_auxiliary_assets(
             descriptor,
             payload,
@@ -1594,6 +1791,7 @@ def _install_component_unlocked(
                     f"Archive is missing its cataloged root: {descriptor.archive_root}"
                 )
         bin_dirs = _find_payload_bins(payload, descriptor)
+        _prepare_macos_media_payload(descriptor, payload, bin_dirs)
         _run_post_install(descriptor, payload, bin_dirs)
         _run_probes(descriptor, payload, bin_dirs, probe_cb)
 
@@ -1607,18 +1805,18 @@ def _install_component_unlocked(
             except (OSError, ToolchainError, subprocess.SubprocessError):
                 existing_valid = False
         quarantine = None
-        if package.exists() and not existing_valid:
-            quarantine = _quarantine_package(package)
-        if not package.exists():
-            _atomic_json(
-                payload / ".opensquilla-toolchain.json",
-                _package_marker(descriptor, payload),
-            )
-            os.replace(payload, package)
-
-        active_path = state_root / "active" / f"{descriptor.component_id}.json"
-        previous = None if quarantine is not None else _read_json(active_path)
         try:
+            if package.exists() and not existing_valid:
+                quarantine = _quarantine_package(package)
+            if not package.exists():
+                _atomic_json(
+                    payload / ".opensquilla-toolchain.json",
+                    _package_marker(descriptor, payload),
+                )
+                os.replace(payload, package)
+
+            active_path = state_root / "active" / f"{descriptor.component_id}.json"
+            previous = None if quarantine is not None else _read_json(active_path)
             receipt = _receipt_payload(descriptor, state_root, package, previous, resources)
             _write_activation(state_root, receipt)
             _discard_quarantined_package(quarantine)
@@ -1732,20 +1930,20 @@ def _install_brew_component(
             except (OSError, ToolchainError, subprocess.SubprocessError):
                 existing_valid = False
         quarantine = None
-        if package.exists() and not existing_valid:
-            quarantine = _quarantine_package(package)
-        if not package.exists():
-            _atomic_json(
-                payload / ".opensquilla-toolchain.json",
-                _package_marker(descriptor, payload),
-            )
-            os.replace(payload, package)
-        previous = (
-            None
-            if quarantine is not None
-            else _read_json(root / "active" / f"{descriptor.component_id}.json")
-        )
         try:
+            if package.exists() and not existing_valid:
+                quarantine = _quarantine_package(package)
+            if not package.exists():
+                _atomic_json(
+                    payload / ".opensquilla-toolchain.json",
+                    _package_marker(descriptor, payload),
+                )
+                os.replace(payload, package)
+            previous = (
+                None
+                if quarantine is not None
+                else _read_json(root / "active" / f"{descriptor.component_id}.json")
+            )
             receipt = _external_receipt_payload(
                 descriptor,
                 root,

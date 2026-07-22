@@ -9,6 +9,7 @@ import {
   metaSetupManualStorageKey,
   metaSetupStorageKey,
   useMetaSkillSetup,
+  type MetaDraftDiscardOutcome,
   type MetaSetupStorage,
 } from './useMetaSkillSetup'
 
@@ -58,6 +59,7 @@ function harness(
   call: (method: string, params?: Record<string, unknown>) => Promise<unknown>,
   options: {
     storage?: MetaSetupStorage | null
+    discardStorage?: MetaSetupStorage | null
     session?: string
     waitForConnection?: (timeoutMs?: number) => Promise<void>
     autoRestore?: boolean
@@ -66,9 +68,19 @@ function harness(
       displayText: string,
       clientRequestId?: string,
     ) => HiddenControlDispatchResult | Promise<HiddenControlDispatchResult>
+    restoreDraft?: (launchText: string, sessionKey: string) => void
+    discardDraft?: (
+      sessionKey: string,
+      clientRequestId: string,
+    ) => boolean | MetaDraftDiscardOutcome | Promise<boolean | MetaDraftDiscardOutcome>
+    onDraftAlreadyAccepted?: (sessionKey: string, clientRequestId: string) => void
   } = {},
 ) {
   const currentSessionKey = ref(options.session || SESSION)
+  const setupStorage = options.storage === undefined ? memoryStorage() : options.storage
+  const discardStorage = options.discardStorage === undefined
+    ? setupStorage
+    : options.discardStorage
   const dispatchHidden = vi.fn(options.dispatchHidden || (async (
     _providerText: string,
     _displayText: string,
@@ -89,8 +101,12 @@ function harness(
     currentSessionKey,
     dispatchHidden,
     pollIntervalMs: 750,
-    storage: options.storage === undefined ? memoryStorage() : options.storage,
+    storage: setupStorage,
+    discardStorage,
     autoRestore: options.autoRestore,
+    restoreDraft: options.restoreDraft,
+    discardDraft: options.discardDraft,
+    onDraftAlreadyAccepted: options.onDraftAlreadyAccepted,
   })
   return { api, currentSessionKey, dispatchHidden }
 }
@@ -159,6 +175,7 @@ describe('useMetaSkillSetup', () => {
       name: 'meta-paper-write',
       sessionKey: SESSION,
       clientRequestId: expect.any(String),
+      launchText,
     })
     expect(dispatchHidden).toHaveBeenCalledOnce()
     expect(dispatchHidden).toHaveBeenCalledWith(
@@ -180,20 +197,294 @@ describe('useMetaSkillSetup', () => {
       if (method === 'meta.setup.status') return { job: job() }
       throw new Error(`Unexpected RPC: ${method}`)
     })
-    const { api, dispatchHidden } = harness(call, { storage })
+    const restoreDraft = vi.fn()
+    const { api, dispatchHidden } = harness(call, { storage, restoreDraft })
 
     await api.requestSetup('meta-paper-write', readiness(), SESSION)
     await api.confirmSetup()
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain('meta-paper-write')
-    api.cancelSetup()
+    await api.cancelSetup()
     await vi.advanceTimersByTimeAsync(2000)
 
     expect(api.setupState.value).toBeNull()
     expect(call.mock.calls.filter(([method]) => method === 'meta.setup.status')).toHaveLength(0)
     expect(dispatchHidden).not.toHaveBeenCalled()
+    expect(restoreDraft).not.toHaveBeenCalled()
     expect(storage.getItem(metaSetupStorageKey(SESSION))).toBe('job-1')
     expect(storage.getItem(metaSetupLaunchStorageKey(SESSION))).toBe('/meta meta-paper-write')
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toBeNull()
+    api.dispose()
+  })
+
+  it('returns the exact unlaunched request to the composer when setup is dismissed', async () => {
+    const launchText = '/meta meta-short-drama -- Keep this exact five-shot request'
+    const restoreDraft = vi.fn()
+    const discardDraft = vi.fn(async () => true)
+    const { api } = harness(vi.fn(), { restoreDraft, discardDraft })
+
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness(),
+      SESSION,
+      launchText,
+      'dismissed-server-draft',
+    )
+    await api.cancelSetup()
+
+    expect(restoreDraft).toHaveBeenCalledOnce()
+    expect(restoreDraft).toHaveBeenCalledWith(launchText, SESSION)
+    expect(discardDraft).toHaveBeenCalledWith(SESSION, 'dismissed-server-draft')
+    expect(api.setupState.value).toBeNull()
+    api.dispose()
+  })
+
+  it('preserves a second setup request while the first installation stays active', async () => {
+    const storage = memoryStorage()
+    const restoreDraft = vi.fn()
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.install') return { job: job() }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api } = harness(call, { storage, restoreDraft })
+
+    await api.requestSetup(
+      'meta-paper-write',
+      readiness(),
+      SESSION,
+      '/meta meta-paper-write -- First request',
+    )
+    await api.confirmSetup()
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness({ missing_bins: ['ffmpeg'] }),
+      SESSION,
+      '/meta meta-short-drama -- Second request',
+    )
+
+    expect(api.setupState.value?.name).toBe('meta-paper-write')
+    expect(api.setupState.value?.phase).toBe('installing')
+    expect(restoreDraft).not.toHaveBeenCalled()
+    api.dispose()
+  })
+
+  it('keeps the stable retry card when server discard cannot be confirmed', async () => {
+    const launchText = '/meta meta-short-drama -- Do not duplicate this request'
+    const restoreDraft = vi.fn()
+    const discardDraft = vi.fn(async () => false)
+    const { api } = harness(vi.fn(), { restoreDraft, discardDraft })
+
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness(),
+      SESSION,
+      launchText,
+      'not-discarded-server-draft',
+    )
+    await api.cancelSetup()
+
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(api.setupState.value).toMatchObject({
+      phase: 'failed',
+      retryMode: 'discard',
+      resumeRequestId: 'not-discarded-server-draft',
+      launchText,
+    })
+    api.dispose()
+  })
+
+  it('does not restore a request that crossed the accepted launch boundary', async () => {
+    const storage = memoryStorage()
+    const launchText = '/meta meta-short-drama -- This accepted run must not duplicate'
+    const restoreDraft = vi.fn()
+    const discardDraft = vi.fn(async () => 'accepted' as const)
+    const onDraftAlreadyAccepted = vi.fn()
+    const { api } = harness(vi.fn(), {
+      storage,
+      restoreDraft,
+      discardDraft,
+      onDraftAlreadyAccepted,
+    })
+
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness(),
+      SESSION,
+      launchText,
+      'accepted-before-cancel',
+    )
+    await api.cancelSetup()
+
+    expect(discardDraft).toHaveBeenCalledWith(SESSION, 'accepted-before-cancel')
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(onDraftAlreadyAccepted).toHaveBeenCalledWith(
+      SESSION,
+      'accepted-before-cancel',
+    )
+    expect(api.setupState.value).toBeNull()
+    expect(storage.getItem(metaSetupStorageKey(SESSION))).toBeNull()
+    expect(storage.getItem(metaSetupLaunchStorageKey(SESSION))).toBeNull()
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toBeNull()
+    api.dispose()
+  })
+
+  it('retries a lost cancel response after reload without launching', async () => {
+    const storage = memoryStorage()
+    const launchText = '/meta meta-short-drama -- Cancel this paid request'
+    const first = harness(vi.fn(), {
+      storage,
+      discardDraft: vi.fn(async () => { throw new Error('response lost') }),
+    })
+    await first.api.requestSetup(
+      'meta-short-drama',
+      readiness(),
+      SESSION,
+      launchText,
+      'cancel-response-lost',
+    )
+    await first.api.cancelSetup()
+    expect(first.api.setupState.value?.retryMode).toBe('discard')
+    first.api.dispose()
+
+    const restoreDraft = vi.fn()
+    const discardDraft = vi.fn(async () => true)
+    const call = vi.fn(async () => ({ ok: true }))
+    const second = harness(call, { storage, restoreDraft, discardDraft })
+    await flushPromises()
+
+    expect(discardDraft).toHaveBeenCalledWith(SESSION, 'cancel-response-lost')
+    expect(call).not.toHaveBeenCalled()
+    expect(second.dispatchHidden).not.toHaveBeenCalled()
+    expect(restoreDraft).toHaveBeenCalledWith(launchText, SESSION)
+    expect(second.api.setupState.value).toBeNull()
+    second.api.dispose()
+  })
+
+  it('preserves a new stable id through missing persisted-job recovery', async () => {
+    const storage = memoryStorage({
+      [metaSetupStorageKey(SESSION)]: 'missing-job',
+    })
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.status') return { ok: false, error: 'setup job not found' }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api } = harness(call, { storage, autoRestore: false })
+
+    await api.requestSetup(
+      'meta-paper-write',
+      readiness(),
+      SESSION,
+      '/meta meta-paper-write -- preserve this identity',
+      'stable-after-missing-job',
+    )
+
+    expect(api.setupState.value?.resumeRequestId).toBe('stable-after-missing-job')
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION)))
+      .toContain('stable-after-missing-job')
+    api.dispose()
+  })
+
+  it('keeps a new durable request deferred behind a different persisted job', async () => {
+    const oldLaunch = '/meta meta-paper-write -- incumbent paper'
+    const storage = memoryStorage({
+      [metaSetupStorageKey(SESSION)]: 'incumbent-job',
+      [metaSetupLaunchStorageKey(SESSION)]: oldLaunch,
+    })
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.status') {
+        return { job: job({ job_id: 'incumbent-job' }) }
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api, dispatchHidden } = harness(call, { storage, autoRestore: false })
+
+    const disposition = await api.requestSetup(
+      'meta-short-drama',
+      readiness({ missing_bins: ['ffmpeg'] }),
+      SESSION,
+      '/meta meta-short-drama -- independent request',
+      'independent-request-id',
+    )
+
+    expect(disposition).toBe('deferred')
+    expect(api.setupState.value?.name).toBe('meta-paper-write')
+    expect(api.setupState.value?.launchText).toBe(oldLaunch)
+    expect(api.setupState.value?.resumeRequestId).toBeUndefined()
+    expect(dispatchHidden).not.toHaveBeenCalled()
+    api.dispose()
+  })
+
+  it('preserves a stable id while restoring the matching persisted job', async () => {
+    const launchText = '/meta meta-paper-write -- matching persisted setup'
+    const storage = memoryStorage({
+      [metaSetupStorageKey(SESSION)]: 'matching-job',
+      [metaSetupLaunchStorageKey(SESSION)]: launchText,
+    })
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.status') return { job: job({ job_id: 'matching-job' }) }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api } = harness(call, { storage, autoRestore: false })
+
+    await api.requestSetup(
+      'meta-paper-write',
+      readiness(),
+      SESSION,
+      launchText,
+      'matching-stable-id',
+    )
+
+    expect(api.setupState.value?.resumeRequestId).toBe('matching-stable-id')
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION)))
+      .toContain('matching-stable-id')
+    api.dispose()
+  })
+
+  it('retains the resume identity when readiness is still not ready', async () => {
+    const storage = memoryStorage()
+    const clientRequestId = 'still-not-ready-request'
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.plan') {
+        return {
+          ok: true,
+          readiness: readiness({
+            missing_bins: [],
+            missing_env: ['OPENROUTER_API_KEY'],
+            setup_actions: [],
+          }),
+        }
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api } = harness(call, { storage })
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness({
+        missing_bins: [],
+        missing_env: ['OPENROUTER_API_KEY'],
+        setup_actions: [],
+      }),
+      SESSION,
+      '/meta meta-short-drama -- Preserve my id',
+      clientRequestId,
+    )
+
+    await api.retrySetup()
+
+    expect(api.setupState.value?.resumeRequestId).toBe(clientRequestId)
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(clientRequestId)
+    api.dispose()
+  })
+
+  it('persists delayed setup readiness under the originating session', async () => {
+    const storage = memoryStorage()
+    const { api, currentSessionKey } = harness(vi.fn(), { storage })
+    const launchText = '/meta meta-paper-write -- Return to this request'
+    currentSessionKey.value = 'agent:main:another-chat'
+
+    await api.requestSetup('meta-paper-write', readiness(), SESSION, launchText)
+
+    expect(api.setupState.value).toBeNull()
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(launchText)
     api.dispose()
   })
 
@@ -302,7 +593,8 @@ describe('useMetaSkillSetup', () => {
       if (method === 'meta.run') return { ok: false, error: 'Provider is temporarily unavailable' }
       throw new Error(`Unexpected RPC: ${method}`)
     })
-    const { api, dispatchHidden } = harness(call, { storage })
+    const discardDraft = vi.fn(async () => true)
+    const { api, dispatchHidden } = harness(call, { storage, discardDraft })
 
     await api.requestSetup('meta-paper-write', readiness(), SESSION, launchText)
     await api.confirmSetup()
@@ -314,7 +606,8 @@ describe('useMetaSkillSetup', () => {
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(launchText)
     expect(dispatchHidden).not.toHaveBeenCalled()
 
-    api.cancelSetup()
+    await api.cancelSetup()
+    expect(discardDraft).toHaveBeenCalledWith(SESSION, expect.any(String))
     expect(storage.getItem(metaSetupStorageKey(SESSION))).toBeNull()
     expect(storage.getItem(metaSetupLaunchStorageKey(SESSION))).toBeNull()
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toBeNull()
@@ -592,6 +885,7 @@ describe('useMetaSkillSetup', () => {
       name: 'meta-short-drama',
       sessionKey: SESSION,
       clientRequestId,
+      launchText,
     })
     expect(second.dispatchHidden).toHaveBeenCalledOnce()
     expect(second.dispatchHidden).toHaveBeenCalledWith(
@@ -609,6 +903,136 @@ describe('useMetaSkillSetup', () => {
     expect(thirdCall).not.toHaveBeenCalled()
     expect(third.dispatchHidden).not.toHaveBeenCalled()
     third.api.dispose()
+  })
+
+  it('keeps the drafted request identity when install completion remains provider-blocked', async () => {
+    const launchText = '/meta meta-short-drama -- Keep one paid launch identity'
+    const clientRequestId = 'stable-provider-after-install'
+    const providerAction = {
+      id: 'provider:openrouter',
+      kind: 'provider_connection',
+      provider_id: 'openrouter',
+      available: true,
+    }
+    const storage = memoryStorage()
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.install') {
+        return {
+          job: job({
+            name: 'meta-short-drama',
+            action_ids: ['meta-short-drama:media-ffmpeg'],
+          }),
+        }
+      }
+      if (method === 'meta.setup.status') {
+        return {
+          job: job({
+            name: 'meta-short-drama',
+            status: 'blocked',
+            phase: 'blocked',
+            action_ids: ['meta-short-drama:media-ffmpeg'],
+            completed_actions: ['meta-short-drama:media-ffmpeg'],
+            readiness: readiness({
+              missing_bins: [],
+              missing_env: ['OPENROUTER_API_KEY'],
+              setup_actions: [],
+              manual_setup_actions: [providerAction],
+            }),
+          }),
+        }
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api } = harness(call, { storage })
+
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness({
+        setup_actions: [{
+          id: 'meta-short-drama:media-ffmpeg',
+          install_id: 'media-ffmpeg',
+          available: true,
+        }],
+        manual_setup_actions: [providerAction],
+      }),
+      SESSION,
+      launchText,
+      clientRequestId,
+    )
+    await api.confirmSetup()
+    await vi.advanceTimersByTimeAsync(750)
+    await flushPromises()
+
+    expect(api.setupState.value?.phase).toBe('confirm')
+    expect(api.setupState.value?.resumeRequestId).toBe(clientRequestId)
+    expect(api.beginProviderHandoff('openrouter')).toBe(clientRequestId)
+    expect(api.setupState.value?.providerHandoff?.clientRequestId).toBe(clientRequestId)
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(clientRequestId)
+    api.dispose()
+  })
+
+  it('keeps the drafted request identity when launch readiness changes after recheck', async () => {
+    const launchText = '/meta meta-short-drama -- Survive a provider readiness race'
+    const clientRequestId = 'stable-provider-readiness-race'
+    const providerAction = {
+      id: 'provider:openrouter',
+      kind: 'provider_connection',
+      provider_id: 'openrouter',
+      available: true,
+    }
+    const storage = memoryStorage()
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.plan') {
+        return {
+          ok: true,
+          readiness: readiness({
+            ready: true,
+            status: 'ready',
+            missing_bins: [],
+            missing_env: [],
+            setup_actions: [],
+            manual_setup_actions: [],
+          }),
+        }
+      }
+      if (method === 'meta.run') {
+        return {
+          ok: false,
+          setup_required: true,
+          error: 'Provider configuration changed; review the requirement again.',
+          readiness: readiness({
+            missing_bins: [],
+            missing_env: ['OPENROUTER_API_KEY'],
+            setup_actions: [],
+            manual_setup_actions: [providerAction],
+          }),
+        }
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const { api, dispatchHidden } = harness(call, { storage })
+
+    await api.requestSetup(
+      'meta-short-drama',
+      readiness({
+        missing_bins: [],
+        missing_env: ['OPENROUTER_API_KEY'],
+        setup_actions: [],
+        manual_setup_actions: [providerAction],
+      }),
+      SESSION,
+      launchText,
+      clientRequestId,
+    )
+    await api.retrySetup()
+
+    expect(api.setupState.value?.phase).toBe('confirm')
+    expect(api.setupState.value?.resumeRequestId).toBe(clientRequestId)
+    expect(api.beginProviderHandoff('openrouter')).toBe(clientRequestId)
+    expect(api.setupState.value?.providerHandoff?.clientRequestId).toBe(clientRequestId)
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(clientRequestId)
+    expect(dispatchHidden).not.toHaveBeenCalled()
+    api.dispose()
   })
 
   it('keeps a queued provider resume durable across a full composable remount', async () => {

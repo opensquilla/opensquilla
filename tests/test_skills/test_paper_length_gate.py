@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -22,10 +23,12 @@ SCRIPT = (
 
 def _manuscript(*, repeats: int = 100, citations: bool = True) -> str:
     cite = r" \cite{ref1,ref2}" if citations else ""
-    paragraph = (
-        "This synthetic section explains assumptions, method boundaries, evaluation design, "
+    paragraphs = "\n".join(
+        "This synthetic section explains assumption dimension "
+        f"{index}, method boundary {index}, evaluation design choice {index}, "
         "and reproducible limitations without claiming completed empirical results. "
-        f"{cite}\n"
+        f"{cite}"
+        for index in range(1, repeats + 1)
     )
     return "\n".join(
         [
@@ -33,17 +36,17 @@ def _manuscript(*, repeats: int = 100, citations: bool = True) -> str:
             r"\begin{document}",
             r"\begin{abstract}A synthetic readiness fixture.\end{abstract}",
             r"\section{Introduction}",
-            paragraph * repeats,
+            paragraphs,
             r"\section{Related Work}",
-            paragraph,
+            paragraphs.splitlines()[0],
             r"\section{Method}",
-            paragraph,
+            paragraphs.splitlines()[1],
             r"\section{Experiments}",
-            paragraph,
+            paragraphs.splitlines()[2],
             r"\section{Discussion}",
-            paragraph,
+            paragraphs.splitlines()[3],
             r"\section{Conclusion}",
-            paragraph,
+            paragraphs.splitlines()[4],
             r"\bibliography{references}",
             r"\end{document}",
         ]
@@ -74,12 +77,12 @@ def _run(payload: dict[str, str], workspace: Path) -> subprocess.CompletedProces
 def test_length_gate_reads_artifact_only_manifest_without_blocking(tmp_path: Path) -> None:
     paper = tmp_path / "paper" / "paper.tex"
     paper.parent.mkdir()
-    paper.write_text(_manuscript(), encoding="utf-8")
+    paper.write_text(_manuscript(repeats=250), encoding="utf-8")
 
     result = _run(_payload(str(paper), pages="8"), tmp_path)
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "LENGTH_GATE: warn" in result.stdout
+    assert "LENGTH_GATE: pass" in result.stdout
     assert "TARGET_PAGES: 8" in result.stdout
     assert "PAGE_COUNT_AUTHORITY: compile_pdf/pypdf" in result.stdout
     assert "REQUIRED_SECTIONS: 7/7" in result.stdout
@@ -131,7 +134,7 @@ def test_length_gate_blocks_missing_sections_small_body_and_citations(tmp_path: 
     assert "required section missing: abstract" in result.stdout
     assert "required section missing: conclusion" in result.stdout
     assert "manuscript contains no LaTeX citation keys" in result.stdout
-    assert "manuscript body is below readiness floor" in result.stdout
+    assert "manuscript body is below target-correlated readiness floor" in result.stdout
 
 
 def test_length_gate_rejects_missing_or_out_of_range_page_target(tmp_path: Path) -> None:
@@ -164,7 +167,7 @@ def test_length_gate_rejects_modes_outside_the_public_contract(tmp_path: Path) -
 
 
 def test_length_gate_keeps_inline_compact_package_compatible(tmp_path: Path) -> None:
-    manuscript = _manuscript(repeats=30)
+    manuscript = _manuscript(repeats=100)
     payload = {
         "paper_contract": "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4",
         "manuscript_package": f"MANUSCRIPT_TEX:\n{manuscript}\nREFERENCES_BIB:\n",
@@ -176,3 +179,76 @@ def test_length_gate_keeps_inline_compact_package_compatible(tmp_path: Path) -> 
     assert "LENGTH_GATE: warn" in result.stdout
     assert "inline manuscript compatibility path used" in result.stdout
     assert "MANUSCRIPT_SOURCE: inline:MANUSCRIPT_TEX" in result.stdout
+
+
+def test_length_gate_floor_scales_with_target_and_report_only_exposes_deficit(
+    tmp_path: Path,
+) -> None:
+    paper = tmp_path / "paper.tex"
+    # About 2,000 English content units: ready for the default four-page
+    # contract, but deterministically too small for five pages.
+    paper.write_text(_manuscript(repeats=80), encoding="utf-8")
+
+    four_pages = _run(_payload(str(paper), pages="4", mode="COMPACT_SKELETON"), tmp_path)
+    five_page_payload = _payload(str(paper), pages="5", mode="COMPACT_SKELETON")
+    five_pages = _run(five_page_payload, tmp_path)
+    report_only = _run({**five_page_payload, "report_only": True}, tmp_path)
+
+    assert four_pages.returncode == 0, four_pages.stdout + four_pages.stderr
+    assert "MINIMUM_CONTENT_UNITS: 2000" in four_pages.stdout
+    assert five_pages.returncode != 0
+    assert "MINIMUM_CONTENT_UNITS: 2500" in five_pages.stdout
+    assert "below target-correlated readiness floor" in five_pages.stdout
+    assert report_only.returncode == 0
+    assert "LENGTH_GATE: block" in report_only.stdout
+    assert report_only.stderr == ""
+
+
+def test_length_gate_rejects_repeated_prose_as_page_padding(tmp_path: Path) -> None:
+    paper = tmp_path / "paper.tex"
+    manuscript = _manuscript(repeats=100)
+    unique_line = next(
+        line for line in manuscript.splitlines() if "assumption dimension" in line
+    )
+    padded = re.sub(
+        r"This synthetic section explains assumption dimension[\s\S]*?"
+        r"(?=\\section\{Related Work\})",
+        lambda _match: (unique_line + "\n") * 130,
+        manuscript,
+    )
+    paper.write_text(padded, encoding="utf-8")
+
+    result = _run(_payload(str(paper), pages="4", mode="COMPACT_SKELETON"), tmp_path)
+
+    assert result.returncode != 0
+    assert "excessive repeated prose" in result.stdout
+
+
+def test_length_gate_rejects_conditionally_hidden_content_and_structure(
+    tmp_path: Path,
+) -> None:
+    paper = tmp_path / "paper.tex"
+    hidden_units = " ".join(f"hiddenunit{index}" for index in range(2100))
+    paper.write_text(
+        "\n".join(
+            (
+                r"\documentclass{article}",
+                r"\begin{document}",
+                r"\iffalse",
+                r"\begin{abstract}Hidden abstract.\end{abstract}",
+                r"\section{Introduction}\section{Related Work}\section{Method}",
+                r"\section{Experiments}\section{Discussion}\section{Conclusion}",
+                hidden_units + r" \cite{ref1}",
+                r"\fi",
+                "No empirical results were provided. Planned evaluation.",
+                r"\end{document}",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    result = _run(_payload(str(paper), pages="4", mode="COMPACT_SKELETON"), tmp_path)
+
+    assert result.returncode != 0
+    assert "TeX conditionals that can hide counted prose" in result.stdout
+    assert r"\iffalse" in result.stdout

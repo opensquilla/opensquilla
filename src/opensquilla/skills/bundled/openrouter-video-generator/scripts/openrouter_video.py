@@ -11,8 +11,17 @@ import sys
 import time
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
-from urllib.request import ProxyHandler, Request, build_opener, urlopen
+from urllib.parse import urljoin
+from urllib.request import Request
+
+from opensquilla.skills.bundled._provider_http import (
+    ProviderHTTPError,
+    download_public_https_bytes,
+    open_authenticated_request,
+    read_limited_response,
+    resolve_authenticated_url,
+    same_http_origin,
+)
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "expired"}
 SAFE_NO_SUBMIT_EXIT_CODE = 78
@@ -21,6 +30,9 @@ META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
 META_CAPABILITY_API_KEY_ENV = "OPENSQUILLA_META_CAPABILITY_API_KEY"
 META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
 META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
+MAX_PROVIDER_JSON_RESPONSE_BYTES = 1024 * 1024
+MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024
+MIN_VIDEO_DOWNLOAD_BYTES = 1024
 
 
 def _safe_filename(value: str, default: str) -> str:
@@ -55,6 +67,42 @@ def _failure_reason(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
+def _is_probable_mp4(payload: bytes) -> bool:
+    """Reject obvious non-video/error payloads before publishing an MP4 path.
+
+    This intentionally performs a dependency-free container sanity check. It
+    does not replace a decoder, but it prevents JSON/HTML/error text or random
+    bytes from being persisted and advertised as browser-playable video.
+    """
+
+    if len(payload) < MIN_VIDEO_DOWNLOAD_BYTES:
+        return False
+    offset = 0
+    box_types: set[bytes] = set()
+    first = True
+    while offset < len(payload):
+        if offset + 8 > len(payload):
+            return False
+        box_size = int.from_bytes(payload[offset : offset + 4], "big")
+        box_type = payload[offset + 4 : offset + 8]
+        header_size = 8
+        if box_size == 1:
+            if offset + 16 > len(payload):
+                return False
+            box_size = int.from_bytes(payload[offset + 8 : offset + 16], "big")
+            header_size = 16
+        elif box_size == 0:
+            box_size = len(payload) - offset
+        if box_size < header_size or offset + box_size > len(payload):
+            return False
+        if first and box_type != b"ftyp":
+            return False
+        first = False
+        box_types.add(box_type)
+        offset += box_size
+    return b"mdat" in box_types and bool({b"moov", b"moof"} & box_types)
+
+
 def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
     """Resolve a MetaSkill lease or the direct-CLI compatibility inputs."""
 
@@ -79,11 +127,10 @@ def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
 
 
 def _open_url(request: Request, *, timeout: float, proxy: str):
-    if not proxy:
-        return urlopen(request, timeout=timeout)
-    return build_opener(ProxyHandler({"http": proxy, "https": proxy})).open(
+    return open_authenticated_request(
         request,
         timeout=timeout,
+        proxy=proxy,
     )
 
 
@@ -106,7 +153,12 @@ def _request_json(
         headers["Content-Type"] = "application/json"
     req = Request(url, data=data, headers=headers, method=method)
     with _open_url(req, timeout=timeout, proxy=proxy) as resp:
-        parsed = json.loads(resp.read().decode("utf-8", "replace"))
+        raw = read_limited_response(
+            resp,
+            max_bytes=MAX_PROVIDER_JSON_RESPONSE_BYTES,
+            error_message="provider JSON response exceeds size limit",
+        )
+        parsed = json.loads(raw.decode("utf-8", "replace"))
     if not isinstance(parsed, dict):
         raise ValueError("response_not_object")
     return parsed
@@ -117,9 +169,7 @@ def _resolve_url(url: str, *, base_url: str) -> str:
 
 
 def _same_origin(url: str, *, base_url: str) -> bool:
-    parsed = urlparse(url)
-    base = urlparse(base_url)
-    return parsed.scheme == base.scheme and parsed.netloc == base.netloc
+    return same_http_origin(url, base_url)
 
 
 def _download(
@@ -131,12 +181,14 @@ def _download(
     proxy: str = "",
 ) -> bytes:
     resolved_url = _resolve_url(url, base_url=base_url)
-    headers = {}
-    if _same_origin(resolved_url, base_url=base_url):
-        headers["Authorization"] = f"Bearer {key}"
-    req = Request(resolved_url, headers=headers, method="GET")
-    with _open_url(req, timeout=timeout, proxy=proxy) as resp:
-        return bytes(resp.read())
+    return download_public_https_bytes(
+        resolved_url,
+        timeout=timeout,
+        max_bytes=MAX_VIDEO_DOWNLOAD_BYTES,
+        proxy=proxy,
+        authorization=f"Bearer {key}" if key else "",
+        authorization_base_url=base_url,
+    )
 
 
 def main() -> int:
@@ -205,10 +257,20 @@ def main() -> int:
         return 0
 
     job_id = str(submit.get("id") or "")
-    poll_url = _resolve_url(
-        str(submit.get("polling_url") or f"videos/{job_id}"),
-        base_url=base_url,
-    )
+    try:
+        poll_url = resolve_authenticated_url(
+            str(submit.get("polling_url") or f"videos/{job_id}"),
+            base_url=base_url,
+        )
+    except ProviderHTTPError:
+        _failure(
+            "VIDEO_GENERATION_FAILED",
+            filename,
+            phase="poll",
+            reason="unsafe_polling_url",
+            job_id=job_id,
+        )
+        return 0
     last = submit
     status = str(last.get("status") or "pending")
     deadline = time.time() + max(1.0, args.max_wait)
@@ -262,12 +324,22 @@ def main() -> int:
             job_id=job_id,
         )
         return 0
-    except (URLError, TimeoutError) as exc:
+    except (URLError, TimeoutError, ProviderHTTPError) as exc:
         _failure(
             "VIDEO_GENERATION_FAILED",
             filename,
             phase="download",
             reason=_failure_reason(exc),
+            job_id=job_id,
+        )
+        return 0
+
+    if not _is_probable_mp4(body):
+        _failure(
+            "VIDEO_GENERATION_FAILED",
+            filename,
+            phase="validate",
+            reason="invalid_video_payload",
             job_id=job_id,
         )
         return 0

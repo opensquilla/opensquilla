@@ -11,8 +11,12 @@ import yaml
 
 from opensquilla.engine.steps.meta_resolution import meta_resolution
 from opensquilla.skills.loader import SkillLoader
+from opensquilla.skills.meta.executors.user_input import (
+    _localize_clarify_config,
+    _render_clarify_config,
+)
 from opensquilla.skills.meta.parser import parse_meta_plan
-from opensquilla.skills.meta.templating import evaluate_when
+from opensquilla.skills.meta.templating import evaluate_when, render_with_args
 
 BUNDLED = (
     Path(__file__).resolve().parents[2]
@@ -101,6 +105,22 @@ def _assert_user_input_step(
     assert step.clarify_config is not None
     assert step.clarify_config.nl_extract is True
     assert required_fields <= {field.name for field in step.clarify_config.fields}
+
+
+def _short_drama_script(*durations: int) -> str:
+    lines = [
+        "=== OVERVIEW ===",
+        f"DURATION_S: {sum(durations)}",
+        f"N_SHOTS: {len(durations)}",
+    ]
+    for number, duration in enumerate(durations, start=1):
+        lines.extend(
+            [
+                f"=== SHOT_{number} ===",
+                f"DURATION_S: {duration}",
+            ],
+        )
+    return "\n".join(lines)
 
 
 def test_high_value_meta_skill_descriptions_signal_orchestration_priority(
@@ -271,8 +291,10 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     assert "Limitations" in final_prompt
     assert "Threats to Validity" in final_prompt
     assert "references are safer than fabricated BibTeX" in final_prompt
-    assert "put the plan and expansion plan before the LaTeX skeleton" in final_prompt
-    assert "keep MANUSCRIPT_TEX under 2,500 words" in final_prompt
+    assert "compiled artifact MUST still meet TARGET_PAGES" in final_prompt
+    assert "at least 2,200 English words" in final_prompt
+    assert "Do not use blank pages" in final_prompt
+    assert "Do not use blank pages, repeated paragraphs" in final_prompt
     assert "\\documentclass" in final_prompt
     assert "\\begin{document}" in final_prompt
     assert "figure_placeholders" in final_prompt
@@ -537,10 +559,19 @@ def test_short_drama_delivery_waits_for_final_media_and_audits_fallbacks(
 
     revision_confirm = steps["revision_confirm_gate"]
     assert revision_confirm["kind"] == "user_input"
-    assert revision_confirm["depends_on"] == ["review_intent", "script_revised"]
-    assert revision_confirm["when"] == "'DECISION: revise' in outputs.review_intent"
+    assert revision_confirm["depends_on"] == [
+        "review_intent",
+        "script_draft",
+        "script_reread",
+        "script_revised",
+    ]
+    assert revision_confirm["when"] == (
+        "'DECISION: revise' in outputs.review_intent or "
+        "('DECISION: proceed' in outputs.review_intent and "
+        "outputs.script_reread != outputs.script_draft)"
+    )
     assert revision_confirm["clarify"]["nl_extract"] is False
-    assert "revised script" in str(revision_confirm["clarify"]["intro_en"]).lower()
+    assert "script snapshot" in str(revision_confirm["clarify"]["intro_en"]).lower()
     assert "new explicit" in str(revision_confirm["clarify"]["intro_en"]).lower()
 
     review_normalize = steps["review_normalize"]
@@ -554,6 +585,20 @@ def test_short_drama_delivery_waits_for_final_media_and_audits_fallbacks(
     assert review_normalize["with"]["payload"]["confirmation"].startswith(
         "{{ inputs.get('collected', {}).get('revision_confirm_gate', {})"
     )
+    assert review_normalize["with"]["payload"]["approval_snapshot_changed"] == (
+        "{{ outputs.script_reread != outputs.script_draft }}"
+    )
+    assert steps["script_save"]["depends_on"] == [
+        "review_normalize",
+        "script_reread",
+        "script_revised",
+    ]
+    assert steps["script_save"]["tool_args"]["content"] == (
+        "{{ outputs.get('script_revised', '') or outputs.script_reread }}"
+    )
+    assert steps["final_script"]["kind"] == "skill_exec"
+    assert steps["final_script"]["skill"] == "text-file-read"
+    assert steps["final_script"]["depends_on"] == ["script_save", "review_normalize"]
 
     review_spec = loader.get_by_name("short-drama-review-normalizer")
     assert review_spec is not None and review_spec.entrypoint is not None
@@ -755,6 +800,189 @@ def test_short_drama_delivery_waits_for_final_media_and_audits_fallbacks(
     ai_video_raw = Path(ai_video_script.file_path).read_text(encoding="utf-8")
     assert "provider-policy refusal stops" in ai_video_raw
     assert "video step retries twice" not in ai_video_raw
+
+
+@pytest.mark.parametrize(
+    ("language", "initial_markers", "revised_markers"),
+    [
+        (
+            "zh-Hans",
+            ("2 个镜头", "计费剧情时长 10 秒", "USD $1.65-$1.70"),
+            ("4 个镜头", "计费剧情时长 20 秒", "USD $3.25-$3.30"),
+        ),
+        (
+            "en",
+            ("2 shots", "10s of billable story footage", "USD $1.65-$1.70"),
+            ("4 shots", "20s of billable story footage", "USD $3.25-$3.30"),
+        ),
+    ],
+)
+def test_short_drama_localized_consent_copy_reprices_the_revised_script(
+    tmp_path: Path,
+    language: str,
+    initial_markers: tuple[str, ...],
+    revised_markers: tuple[str, ...],
+) -> None:
+    """The copy users actually see must price the script they authorize."""
+
+    steps, _plan = _steps_by_id(_loader(tmp_path), "meta-short-drama")
+    review_cfg = steps["review_gate"].clarify_config
+    revision_cfg = steps["revision_confirm_gate"].clarify_config
+    assert review_cfg is not None
+    assert revision_cfg is not None
+    inputs = {
+        "user_message": "生成短剧" if language.startswith("zh") else "Generate a short drama",
+        "user_language": language,
+        "collected": {},
+    }
+
+    localized_review = _localize_clarify_config(review_cfg, inputs)
+    rendered_review = _render_clarify_config(
+        localized_review,
+        inputs=inputs,
+        outputs={
+            "intake_extract": "N_SHOTS: 2",
+            "script_draft": _short_drama_script(4, 6),
+        },
+    )
+    for marker in initial_markers:
+        assert marker in rendered_review.intro
+
+    localized_revision = _localize_clarify_config(revision_cfg, inputs)
+    rendered_revision = _render_clarify_config(
+        localized_revision,
+        inputs=inputs,
+        outputs={
+            "script_revised": _short_drama_script(5, 5, 5, 5),
+            "script_reread": _short_drama_script(4, 6),
+        },
+    )
+    for marker in revised_markers:
+        assert marker in rendered_revision.intro
+    assert initial_markers[-1] not in rendered_revision.intro
+    if language.startswith("zh"):
+        assert "取代上一版估算" in rendered_revision.intro
+        assert "新授权" in rendered_revision.intro
+    else:
+        assert "replaces the previous estimate" in rendered_revision.intro
+        assert "new authorization" in rendered_revision.intro
+
+
+@pytest.mark.parametrize(
+    ("language", "markers"),
+    [
+        ("zh-Hans", ("1 个镜头", "计费剧情时长 4 秒", "USD $0.70-$0.75")),
+        ("en", ("1 shot", "4s of billable story footage", "USD $0.70-$0.75")),
+    ],
+)
+def test_short_drama_consent_prices_three_second_story_as_four_billed_seconds(
+    tmp_path: Path,
+    language: str,
+    markers: tuple[str, ...],
+) -> None:
+    steps, _plan = _steps_by_id(_loader(tmp_path), "meta-short-drama")
+    review_cfg = steps["review_gate"].clarify_config
+    assert review_cfg is not None
+    inputs = {
+        "user_message": "生成短剧",
+        "user_language": language,
+        "collected": {},
+    }
+    rendered = _render_clarify_config(
+        _localize_clarify_config(review_cfg, inputs),
+        inputs=inputs,
+        outputs={"intake_extract": "N_SHOTS: 1", "script_draft": _short_drama_script(3)},
+    )
+    for marker in markers:
+        assert marker in rendered.intro
+
+
+def test_short_drama_consent_displays_the_exact_full_ten_shot_execution_snapshot(
+    tmp_path: Path,
+) -> None:
+    """Neither direct nor post-revision consent may hide executable script bytes."""
+
+    identity = (
+        "Mara, fictional courier, cobalt coat, silver braid, amber glasses"
+    )
+    render_style = (
+        "clearly fictional hand-painted 2D animation, warm paper texture"
+    )
+    lines = [
+        "=== OVERVIEW ===",
+        "TITLE: The Ten Doors",
+        "DURATION_S: 100",
+        "ASPECT_RATIO: 9:16",
+        "STYLE: Original mystery adventure",
+        "AUDIENCE: General audiences",
+        "N_SHOTS: 10",
+        f"IDENTITY_ANCHOR: {identity}",
+        f"RENDER_STYLE: {render_style}",
+    ]
+    for number in range(1, 11):
+        scene = (
+            f"in clockwork hall {number}, Mara opens a brass door as paper maps circle "
+            "the room"
+        )
+        lines.extend(
+            [
+                "",
+                f"=== SHOT_{number} ===",
+                "DURATION_S: 10",
+                "CAMERA: medium tracking shot with a slow push-in",
+                f"IMAGE_PROMPT: {identity}, {scene}, {render_style}, --ar 9:16",
+                (
+                    f"VIDEO_PROMPT: {identity}, {scene}, one deliberate door-opening "
+                    "gesture with a slow push, quiet clockwork ambience, "
+                    f"{render_style}, aspect_ratio: 9:16, no watermark, no logo, "
+                    "no subtitles"
+                ),
+                f"VOICEOVER: Door {number} reveals one more piece of the route home.",
+                f"ON_SCREEN_TEXT: Door {number}",
+            ],
+        )
+    script = "\n".join(lines)
+    assert 5_000 < len(script) < 8_000
+
+    steps, _plan = _steps_by_id(_loader(tmp_path), "meta-short-drama")
+    inputs = {
+        "user_message": "Generate an original ten-shot short drama",
+        "user_language": "en",
+        "workspace_dir": str(tmp_path / "workspace"),
+        "meta_run_id": "run-long-consent",
+        "collected": {},
+    }
+    outputs = {
+        "intake_extract": "N_SHOTS: 10",
+        "script_draft": script,
+        "script_reread": script,
+        "script_revised": script,
+        "review_intent": "DECISION: revise\nHAS_OVERRIDES: yes",
+        "review_normalize": "DECISION: proceed",
+    }
+
+    preview_markers = {
+        "review_gate": "=== Script draft ===\n",
+        "revision_confirm_gate": "=== Script snapshot awaiting execution ===\n",
+    }
+    for step_id, marker in preview_markers.items():
+        clarify = steps[step_id].clarify_config
+        assert clarify is not None
+        rendered = _render_clarify_config(
+            _localize_clarify_config(clarify, inputs),
+            inputs=inputs,
+            outputs=outputs,
+        )
+        _copy, separator, visible_snapshot = rendered.intro.partition(marker)
+        assert separator
+        assert visible_snapshot == script
+
+    saved = render_with_args(
+        steps["script_save"].tool_args,
+        inputs=inputs,
+        outputs=outputs,
+    )
+    assert saved["content"] == script
 
 
 def test_short_drama_generator_keeps_delivery_gate_contract_in_sync(tmp_path: Path) -> None:

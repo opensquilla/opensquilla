@@ -1,9 +1,10 @@
-"""Offline orchestrator contract test for meta-paper-write.
+"""Offline orchestrator wiring tests for meta-paper-write.
 
 Runs the default FULL_MANUSCRIPT DAG against a tmp workspace with external,
-search, compile, and publish steps shimmed to deterministic fixtures. The PDF
-fixture is a real multi-page file so delivery assertions cannot pass on a
-fabricated path or page-count string.
+search, compile, and publish steps shimmed to deterministic fixtures. This
+module verifies orchestration and delivery parsing only. The real default
+four-page XeLaTeX artifact contract lives in test_meta_paper_skills.py and does
+not use this compile shim.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ BUNDLED = REPO / "src" / "opensquilla" / "skills" / "bundled"
 
 
 @pytest.mark.asyncio
-async def test_meta_paper_write_orchestrator_contract_creates_real_pdf_fixture(
+async def test_meta_paper_write_orchestrator_contract_wires_compile_fixture(
     tmp_path: Path,
 ) -> None:
     snapshot = tmp_path / "snap.json"
@@ -93,7 +94,9 @@ async def test_meta_paper_write_orchestrator_contract_creates_real_pdf_fixture(
     # does not re-enter LLM context.
     assert steps["citation_map"].kind == "skill_exec"
     assert steps["citation_map"].skill == "paper-artifact-runtime"
-    assert set(steps["citation_map"].depends_on) == {"latex_sanitizer", "refbib"}
+    assert set(steps["citation_map"].depends_on) == {
+        "length_repair_sanitizer", "refbib",
+    }
     assert steps["search_papers"].kind == "skill_exec"
     assert steps["refbib"].kind == "skill_exec"
     assert "source_pack" in steps
@@ -131,7 +134,7 @@ async def test_meta_paper_write_orchestrator_contract_creates_real_pdf_fixture(
     assert steps["paper_length_gate"].kind == "skill_exec"
     assert steps["paper_length_gate"].skill == "paper-length-gate"
     assert set(steps["paper_length_gate"].depends_on) == {
-        "paper_contract", "latex_sanitizer",
+        "paper_contract", "length_repair_sanitizer",
     }
     assert steps["citation_integrity_gate"].kind == "skill_exec"
     assert steps["citation_integrity_gate"].skill == "paper-citation-integrity-gate"
@@ -141,7 +144,7 @@ async def test_meta_paper_write_orchestrator_contract_creates_real_pdf_fixture(
     assert steps["publication_quality_gate"].kind == "skill_exec"
     assert steps["publication_quality_gate"].skill == "paper-quality-gate"
     assert set(steps["publication_quality_gate"].depends_on) >= {
-        "paper_contract", "latex_sanitizer", "paper_length_gate",
+        "paper_contract", "length_repair_sanitizer", "paper_length_gate",
         "citation_integrity_gate",
     }
     assert steps["latex_sanitizer"].kind == "skill_exec"
@@ -160,6 +163,11 @@ async def test_meta_paper_write_orchestrator_contract_creates_real_pdf_fixture(
     )
     assert steps["compile_pdf"].kind == "skill_exec"
     assert steps["compile_pdf"].skill == "paper-artifact-runtime"
+    assert steps["paper_length_preflight"].kind == "skill_exec"
+    assert steps["precompile_length_expansion"].kind == "llm_chat"
+    assert steps["compile_probe"].kind == "skill_exec"
+    assert steps["page_shortfall_expansion"].kind == "llm_chat"
+    assert steps["final_page_length_gate"].kind == "skill_exec"
 
     # Shim: replace multi-search-engine's entrypoint with a stub that
     # echoes a canned JSON. This keeps the test fully offline.
@@ -639,6 +647,46 @@ async def test_meta_paper_write_orchestrator_contract_creates_real_pdf_fixture(
                 "latex_sanitizer_fixture",
                 "E2E deterministic LaTeX sanitizer fixture",
                 "Return the deterministic sanitized manuscript manifest.",
+            ),
+            "materialize_manuscript": (
+                "latex_sanitizer_fixture",
+                "E2E deterministic LaTeX sanitizer fixture",
+                "Return the deterministic materialized manuscript manifest.",
+            ),
+            "paper_length_preflight": (
+                "paper_length_gate_fixture",
+                "E2E manuscript length requirements fixture",
+                "Return a deterministic passing length preflight.",
+            ),
+            "length_repair_sanitizer": (
+                "latex_sanitizer_fixture",
+                "E2E deterministic LaTeX sanitizer fixture",
+                "Return the deterministic sanitized manuscript manifest.",
+            ),
+            "paper_length_gate": (
+                "paper_length_gate_fixture",
+                "E2E manuscript length requirements fixture",
+                "Return a deterministic passing length gate.",
+            ),
+            "compile_probe": (
+                "compile_pdf_fixture",
+                "E2E compile PDF fixture",
+                "Return deterministic PDF compile metadata.",
+            ),
+            "final_latex_sanitizer": (
+                "latex_sanitizer_fixture",
+                "E2E deterministic LaTeX sanitizer fixture",
+                "Return the deterministic final sanitized manuscript manifest.",
+            ),
+            "final_page_length_gate": (
+                "paper_length_gate_fixture",
+                "E2E manuscript length requirements fixture",
+                "Return a deterministic passing final length gate.",
+            ),
+            "final_publication_quality_gate": (
+                "publication_quality_gate_fixture",
+                "E2E publication quality gate fixture",
+                "Return a deterministic passing final publication gate.",
             ),
             "compile_pdf": (
                 "compile_pdf_fixture",

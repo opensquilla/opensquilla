@@ -576,8 +576,13 @@ def _short_drama_consent_e2e_plan(loader: SkillLoader) -> MetaPlan:
         full_plan,
         steps=(
             replace(
-                full_steps["review_gate"],
+                full_steps["script_draft"],
                 depends_on=(),
+                with_args={},
+            ),
+            replace(
+                full_steps["review_gate"],
+                depends_on=("script_draft",),
                 clarify_config=replace(
                     review_cfg,
                     intro="Review the draft.",
@@ -585,11 +590,17 @@ def _short_drama_consent_e2e_plan(loader: SkillLoader) -> MetaPlan:
                 ),
             ),
             replace(full_steps["review_intent"], depends_on=("review_gate",)),
-            replace(full_steps["script_revised"], depends_on=("review_intent",)),
             replace(
-                full_steps["revision_confirm_gate"],
-                depends_on=("review_intent", "script_revised"),
+                full_steps["script_reread"],
+                depends_on=("review_gate",),
+                with_args={},
             ),
+            replace(
+                full_steps["script_revised"],
+                depends_on=("review_intent", "script_reread"),
+                with_args={},
+            ),
+            full_steps["revision_confirm_gate"],
             replace(
                 full_steps["review_normalize"],
                 depends_on=("review_intent", "revision_confirm_gate"),
@@ -627,6 +638,14 @@ def _short_drama_consent_e2e_harness(
         session_key="S1",
     )
 
+    draft_script = (
+        "=== OVERVIEW ===\n"
+        "DURATION_S: 8\n"
+        "N_SHOTS: 2\n"
+        "=== SHOT_1 ===\nDURATION_S: 4\n"
+        "=== SHOT_2 ===\nDURATION_S: 4\n"
+    )
+
     async def dispatch(step, effective_skill, match_inputs, outputs):
         if step.kind == "user_input":
             async for event in orch._dispatch_one_step(
@@ -639,6 +658,9 @@ def _short_drama_consent_e2e_harness(
             ):
                 yield event
             return
+        if step.id in {"script_draft", "script_reread"}:
+            yield _StepDone(text=draft_script)
+            return
         if step.id in {"review_intent", "review_normalize"}:
             async for event in orch._dispatch_step_stream(
                 step,
@@ -649,7 +671,16 @@ def _short_drama_consent_e2e_harness(
                 yield event
             return
         if step.id == "script_revised":
-            yield _StepDone(text="=== OVERVIEW ===\nN_SHOTS: 3\n=== SHOT_1 ===\n")
+            yield _StepDone(
+                text=(
+                    "=== OVERVIEW ===\n"
+                    "DURATION_S: 12\n"
+                    "N_SHOTS: 3\n"
+                    "=== SHOT_1 ===\nDURATION_S: 4\n"
+                    "=== SHOT_2 ===\nDURATION_S: 4\n"
+                    "=== SHOT_3 ===\nDURATION_S: 4\n"
+                ),
+            )
             return
         if step.id == "reference_image":
             paid_calls.append(step.id)
@@ -694,6 +725,9 @@ async def test_short_drama_adjustment_pauses_again_before_any_paid_provider_step
     assert after_adjustment.paused_payload is not None
     assert after_adjustment.paused_payload.step_id == "revision_confirm_gate"
     assert "N_SHOTS: 3" in after_adjustment.paused_payload.schema.intro
+    assert "3 个镜头" in after_adjustment.paused_payload.schema.intro
+    assert "计费剧情时长 12 秒" in after_adjustment.paused_payload.schema.intro
+    assert "USD $2.00-$2.05" in after_adjustment.paused_payload.schema.intro
     assert paid_calls == []
     assert "DECISION: revise" in after_adjustment.step_outputs["review_intent"]
 

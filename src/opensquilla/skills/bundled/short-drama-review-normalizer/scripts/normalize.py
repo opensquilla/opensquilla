@@ -541,7 +541,12 @@ def _normalize_initial_review(review: str) -> str:
     return _block(decision="hold", basis="unclear_or_off_topic")
 
 
-def _normalize_revision_confirmation(confirmation: str, *, revision: str) -> str:
+def _normalize_revision_confirmation(
+    confirmation: str,
+    *,
+    revision: str,
+    basis: str = "explicit_approval_after_revision",
+) -> str:
     """Require a new, explicit approval after applying a requested edit."""
 
     if confirmation.lower() in _EMPTY_SENTINELS:
@@ -556,10 +561,18 @@ def _normalize_revision_confirmation(confirmation: str, *, revision: str) -> str
         return _block(decision="hold", basis="revision_confirmation_required")
     return _block(
         decision="proceed",
-        basis="explicit_approval_after_revision",
+        basis=basis,
         notes=revision[:1000],
         shot_count=_extract_shot_count(revision),
     )
+
+
+def _flag(value: Any) -> bool:
+    """Interpret one parent-authored JSON/Jinja boolean without truthy strings."""
+
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
 
 
 def normalize_review(payload: Mapping[str, Any]) -> str:
@@ -576,10 +589,23 @@ def normalize_review(payload: Mapping[str, Any]) -> str:
         return initial
 
     initial_fields = dict(line.split(": ", 1) for line in initial.splitlines())
-    if initial_fields.get("DECISION") != "revise":
+    initial_decision = initial_fields.get("DECISION")
+    snapshot_changed = _flag(payload.get("approval_snapshot_changed"))
+    if initial_decision != "revise" and not (
+        initial_decision == "proceed" and snapshot_changed
+    ):
         return initial
     confirmation = _clean_review(payload.get("confirmation", ""))
-    return _normalize_revision_confirmation(confirmation, revision=review)
+    snapshot_approval = initial_decision == "proceed" and snapshot_changed
+    return _normalize_revision_confirmation(
+        confirmation,
+        revision="unchanged" if snapshot_approval else review,
+        basis=(
+            "explicit_approval_after_script_snapshot_change"
+            if snapshot_approval
+            else "explicit_approval_after_revision"
+        ),
+    )
 
 
 def main() -> int:

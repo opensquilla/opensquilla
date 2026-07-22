@@ -153,23 +153,26 @@ The active install is kept below the OpenSquilla state directory at
 `state/toolchains/v1`; it does not modify the user's shell profile or global
 `PATH`. A normal `opensquilla uninstall` preserves it with other user state.
 `opensquilla uninstall --purge-state` removes OpenSquilla-managed archives,
-receipts, and activations. The macOS Homebrew formula described below is
-external state and is not removed by OpenSquilla.
+receipts, and activations.
 
 | Capability | macOS | Linux | Windows |
 | --- | --- | --- | --- |
 | Paper (`xelatex`, `bibtex`, CJK/refs smoke test) | Pinned TinyTeX 2026.05 universal archive plus pinned Noto CJK | Pinned TinyTeX 2026.05 plus pinned Noto CJK for glibc arm64/x64 and musl x64 | Pinned ordinary TinyTeX 2026.05 ZIP plus pinned Noto CJK; self-extracting installers are never executed |
-| Short-drama rendering (`ffmpeg`, `ffprobe`, filters/codecs, CJK font) | Homebrew `ffmpeg-full` plus a pinned Noto CJK font; Homebrew must already be installed | Pinned GPL archive on glibc 2.28+ arm64/x64, kernel 4.18+ | Pinned x64 archive |
+| Short-drama rendering (`ffmpeg`, `ffprobe`, filters/codecs, CJK font) | Pinned FFmpeg/FFprobe 8.1.2 ZIPs for Apple Silicon or Intel plus pinned Noto CJK; macOS 12+ | Pinned GPL archive on glibc 2.28+ arm64/x64, kernel 4.18+ | Pinned x64 archive |
 
-macOS FFmpeg is the one intentionally non-reproducible primary dependency: the
-setup card invokes Homebrew's current stable `ffmpeg-full` formula and may also
-install or update formula dependencies. The card marks the displayed download
-size as a minimum because only the Noto asset has a fixed byte size. Other
-managed archives and the Noto font are versioned and checksum-verified. Paper
-setup is self-contained after those two downloads; it never updates `tlmgr` or
-resolves a moving TeX Live package repository during installation. Fixed paper
-downloads total about 226 MB on macOS, 165–172 MB on Linux, and 265 MB on
-Windows; extracted installations are larger.
+All managed executable archives, license files, and fonts are versioned and
+checksum-verified. The macOS short-drama download totals about 76 MB on Apple
+Silicon or 87 MB on Intel. Its FFmpeg and FFprobe 8.1.2 ZIPs come from a build
+whose source is pinned to commit
+`bb1d6db29cee948f9685bcd69e6caf17d960662b`. OpenSquilla verifies each original
+archive's fixed size and SHA-256 first. It then removes the binaries' invalid
+embedded signatures, applies local ad-hoc signatures, and requires strict
+`codesign` verification before activation. The result is neither Developer ID
+signed nor Apple-notarized. Paper setup is self-contained after
+its two downloads; it never updates `tlmgr` or resolves a moving TeX Live
+package repository during installation. Fixed paper downloads total about 226
+MB on macOS, 165–172 MB on Linux, and 265 MB on Windows; extracted
+installations are larger.
 
 `meta-short-drama` and `AwesomeWebpageMetaSkill` also need an OpenRouter
 connection for their real media provider calls. Readiness reuses an active

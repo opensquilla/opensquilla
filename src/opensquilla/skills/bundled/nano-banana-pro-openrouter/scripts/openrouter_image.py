@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import concurrent.futures
 import json
 import os
@@ -16,12 +17,21 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from opensquilla.skills.bundled._provider_http import (
+    download_public_https_bytes,
+    open_authenticated_request,
+    read_limited_response,
+    same_http_origin,
+)
+
 SAFE_NO_SUBMIT_EXIT_CODE = 78
 META_CAPABILITY_LEASE_REQUIRED_ENV = "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED"
 META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
 META_CAPABILITY_API_KEY_ENV = "OPENSQUILLA_META_CAPABILITY_API_KEY"
 META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
 META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
+MAX_PROVIDER_JSON_RESPONSE_BYTES = 48 * 1024 * 1024
+MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024
 
 
 def _emit(label: str, payload: dict[str, Any]) -> None:
@@ -366,9 +376,7 @@ def _resolve_url(url: str, *, base_url: str) -> str:
 
 
 def _same_origin(url: str, *, base_url: str) -> bool:
-    parsed = urllib.parse.urlparse(url)
-    base = urllib.parse.urlparse(base_url)
-    return parsed.scheme == base.scheme and parsed.netloc == base.netloc
+    return same_http_origin(url, base_url)
 
 
 def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
@@ -395,12 +403,11 @@ def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
 
 
 def _open_url(request: urllib.request.Request, *, timeout: float, proxy: str):
-    if not proxy:
-        return urllib.request.urlopen(request, timeout=timeout)
-    opener = urllib.request.build_opener(
-        urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+    return open_authenticated_request(
+        request,
+        timeout=timeout,
+        proxy=proxy,
     )
-    return opener.open(request, timeout=timeout)
 
 
 def _extract_image_url(data: dict[str, Any]) -> str | None:
@@ -435,19 +442,28 @@ def _decode_image(
         if not sep or ";base64" not in prefix:
             raise RuntimeError("unsupported_data_url")
         mime = prefix.removeprefix("data:").split(";", 1)[0] or "image/png"
-        return mime, base64.b64decode(encoded)
+        if len(encoded) > (MAX_IMAGE_DOWNLOAD_BYTES * 4 // 3) + 4:
+            raise RuntimeError("image_payload_too_large")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error):
+            raise RuntimeError("invalid_data_url") from None
+        if len(decoded) > MAX_IMAGE_DOWNLOAD_BYTES:
+            raise RuntimeError("image_payload_too_large")
+        return mime, decoded
     resolved_url = _resolve_url(url, base_url=base_url)
-    if resolved_url.startswith(("http://", "https://")):
-        headers = (
-            {"Authorization": "Bearer " + api_key}
-            if _same_origin(resolved_url, base_url=base_url)
-            else {}
-        )
-        req = urllib.request.Request(resolved_url, headers=headers)
-        with _open_url(req, timeout=45, proxy=proxy) as resp:
-            mime = resp.headers.get_content_type() or "image/png"
-            return mime, resp.read()
-    raise RuntimeError("unsupported_image_url")
+    body = download_public_https_bytes(
+        resolved_url,
+        timeout=45,
+        max_bytes=MAX_IMAGE_DOWNLOAD_BYTES,
+        proxy=proxy,
+        authorization="Bearer " + api_key if api_key else "",
+        authorization_base_url=base_url,
+    )
+    # Remote response headers are deliberately not trusted to choose a parser
+    # or extension.  Existing payload validation below verifies image bytes;
+    # PNG remains the compatibility default for URL-based responses.
+    return "image/png", body
 
 
 def _extension_for_mime(mime: str) -> str:
@@ -458,6 +474,20 @@ def _extension_for_mime(mime: str) -> str:
     if mime == "image/gif":
         return ".gif"
     return ".png"
+
+
+def _detected_image_mime(payload: bytes) -> str | None:
+    """Recognize the bounded raster formats this adapter can safely publish."""
+
+    if payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if payload.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if payload.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if payload.startswith(b"RIFF") and payload[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
 
 def _scrub_error(exc: object, api_key: str) -> str:
@@ -519,7 +549,12 @@ def _generate_one(
     )
     try:
         with _open_url(req, timeout=90, proxy=proxy) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+            raw = read_limited_response(
+                resp,
+                max_bytes=MAX_PROVIDER_JSON_RESPONSE_BYTES,
+                error_message="provider JSON response exceeds size limit",
+            )
+            data = json.loads(raw.decode("utf-8"))
         image_url = _extract_image_url(data)
         if not image_url:
             raise RuntimeError("provider_returned_no_image")
@@ -529,8 +564,10 @@ def _generate_one(
             base_url=base_url,
             proxy=proxy,
         )
-        if not mime.startswith("image/") or len(image_bytes) < 1024:
+        detected_mime = _detected_image_mime(image_bytes)
+        if detected_mime is None or len(image_bytes) < 1024:
             raise RuntimeError("invalid_image_payload")
+        mime = detected_mime
         ext = _extension_for_mime(mime)
         filename = _clean_slot(slot_id) + ext
         out_path = (output_dir / filename).resolve()
@@ -545,15 +582,13 @@ def _generate_one(
             "prompt_preview": prompt[:80],
         }
     except urllib.error.HTTPError as exc:
-        detail = ""
-        try:
-            detail = exc.read(400).decode("utf-8", errors="replace")
-        except Exception:
-            detail = ""
+        # Provider error bodies are untrusted and can reflect prompts, signed
+        # URLs, request metadata, or other user content. Persist only the
+        # status code in the MetaSkill result/transcript.
         return {
             "ok": False,
             "slot_id": _clean_slot(slot_id),
-            "reason": f"http_{exc.code}: {_scrub_error(detail or exc, api_key)}",
+            "reason": f"http_{exc.code}",
         }
     except Exception as exc:
         return {"ok": False, "slot_id": _clean_slot(slot_id), "reason": _scrub_error(exc, api_key)}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.executors.skill_exec import run_skill_exec_step
@@ -66,6 +68,11 @@ def _run_paper_operation(operation: str, **overrides: Any) -> str:
         payload.update(bib_text="", writing_plan="", topic="Untitled Manuscript")
     elif operation == "citation_map":
         payload.update(manifest="", refbib="")
+    elif operation in {"materialize_manuscript", "apply_length_expansion"}:
+        payload.update(
+            manuscript_package=os.environ.get("MANUSCRIPT_PKG", ""),
+            paper_contract=os.environ.get("PAPER_CONTRACT", ""),
+        )
     elif operation == "compile_pdf":
         payload.update(
             manuscript_package=os.environ.get("MANUSCRIPT_PKG", ""),
@@ -158,6 +165,9 @@ async def test_meta_paper_artifact_operations_spawn_platform_neutral_python_argv
         "writing_plan": "TITLE: Fixture",
         "paper_contract": "TARGET_PAGES: 1",
         "latex_sanitizer": "MANUSCRIPT_TEX: fixture",
+        "length_repair_sanitizer": "MANUSCRIPT_TEX: fixture",
+        "final_latex_sanitizer": "MANUSCRIPT_TEX: fixture",
+        "compile_probe": "PDF_PAGE_STATUS: met",
     }
 
     result = await run_skill_exec_step(
@@ -232,6 +242,78 @@ def test_paper_artifact_runtime_persists_assembles_and_maps_citations(
     assert "| ref1 | 1 | Reference One |" in mapped
     assert "| ref2 | 1 | Reference Two |" in mapped
     assert "SUMMARY: total_cite_keys=2, strong=2, ok=0, weak=0, invalid=0, unused=0" in mapped
+
+
+def test_paper_artifact_runtime_applies_bounded_length_expansion_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MANUSCRIPT_PKG", _compile_fixture_package())
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    manifest = _run_paper_operation("materialize_manuscript")
+    substantive = " ".join(
+        f"Dimension {index} specifies a distinct reproducible evaluation boundary."
+        for index in range(1, 46)
+    )
+    expansion = (
+        "% BEGIN_LENGTH_EXPANSION\n"
+        "\\subsection{Target-Length Elaboration}\n"
+        f"{substantive}\n"
+        "% END_LENGTH_EXPANSION"
+    )
+
+    applied = _run_paper_operation(
+        "apply_length_expansion",
+        manuscript_package=manifest,
+        repair_id="precompile",
+        expansion=expansion,
+    )
+    repeated = _run_paper_operation(
+        "apply_length_expansion",
+        manuscript_package=applied,
+        repair_id="precompile",
+        expansion=expansion,
+    )
+
+    tex = (_paper_run_dir(tmp_path) / "paper.tex").read_text(encoding="utf-8")
+    assert "LENGTH_EXPANSION_APPLIED: yes" in applied
+    assert "LENGTH_EXPANSION_APPLIED: already-present" in repeated
+    assert tex.count("BEGIN OPENSQUILLA LENGTH EXPANSION precompile") == 1
+    assert tex.index("Target-Length Elaboration") < tex.index(r"\end{document}")
+
+
+def test_paper_artifact_runtime_rejects_length_expansion_that_changes_citations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MANUSCRIPT_PKG", _compile_fixture_package())
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    manifest = _run_paper_operation("materialize_manuscript")
+    unsafe = (
+        "% BEGIN_LENGTH_EXPANSION\n"
+        + ("Safe prose. " * 220)
+        + r"\cite{invented}"
+        + "\n% END_LENGTH_EXPANSION"
+    )
+
+    with pytest.raises(
+        PAPER_ARTIFACT_RUNTIME.PaperArtifactError,
+        match="forbidden command.*cite",
+    ):
+        _run_paper_operation(
+            "apply_length_expansion",
+            manuscript_package=manifest,
+            repair_id="precompile",
+            expansion=unsafe,
+        )
 
 
 def test_paper_artifact_runtime_adds_dependency_free_cjk_line_breaking(
@@ -349,9 +431,34 @@ def _fake_tex_run(
     calls: list[list[str]],
     *,
     page_count: int,
+    page_word_counts: tuple[int, ...] | None = None,
     fail_at: int | None = None,
     final_xelatex_output: str = "",
 ):
+    if page_word_counts is not None:
+        assert len(page_word_counts) == page_count
+
+    def add_text_page(writer: PdfWriter, *, page_number: int, word_count: int) -> None:
+        page = writer.add_blank_page(width=612, height=792)
+        if word_count <= 0:
+            return
+        font = DictionaryObject(
+            {
+                NameObject("/Type"): NameObject("/Font"),
+                NameObject("/Subtype"): NameObject("/Type1"),
+                NameObject("/BaseFont"): NameObject("/Helvetica"),
+            }
+        )
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font})}
+        )
+        stream = DecodedStreamObject()
+        words = " ".join(
+            f"page{page_number}content{index}" for index in range(1, word_count + 1)
+        )
+        stream.set_data(f"BT /F1 10 Tf 72 720 Td ({words}) Tj ET".encode("ascii"))
+        page[NameObject("/Contents")] = stream
+
     def run(
         command: list[str],
         *,
@@ -377,8 +484,13 @@ def _fake_tex_run(
         if Path(command[0]).name == "xelatex":
             paper_dir = Path(cwd)
             writer = PdfWriter()
-            for _ in range(page_count):
-                writer.add_blank_page(width=612, height=792)
+            counts = page_word_counts or (100,) * page_count
+            for page_number, word_count in enumerate(counts, start=1):
+                add_text_page(
+                    writer,
+                    page_number=page_number,
+                    word_count=word_count,
+                )
             with (paper_dir / "paper.pdf").open("wb") as handle:
                 writer.write(handle)
         stdout = "fixture compiler ok"
@@ -491,16 +603,16 @@ def test_meta_paper_write_declares_quality_pipeline_stages() -> None:
     # Quality bar / mode behavior.
     assert "CITATION_TARGET" in meta
     assert "LENGTH_STRATEGY" in meta
-    assert "do not enforce a fixed count" in meta
+    assert "never trust an LLM verdict or a fixed citation" in meta
     assert "default path is COMPACT_SKELETON" in meta
     assert "Explicit full/PDF/long-form requests use" in meta
     assert "compiled PDF" in meta
-    assert "refuses to create degraded PDF" in meta
+    assert "refuses to synthesize a degraded" in meta
     assert "paper-quality-gate" in meta
     assert "paper-length-gate" in meta
     assert "paper-citation-integrity-gate" in meta
     assert "publication_quality_gate" in meta
-    assert "depends_on: [latex_sanitizer, publication_quality_gate" in meta
+    assert "depends_on: [final_latex_sanitizer, final_publication_quality_gate" in meta
 
 
 def test_meta_paper_write_plans_user_requested_page_target_up_front() -> None:
@@ -518,6 +630,40 @@ def test_meta_paper_write_plans_user_requested_page_target_up_front() -> None:
     assert "PDF_PAGE_TARGET_NOT_MET" in runtime
     assert "PDF_TARGET_PAGES:" in runtime
     assert "LENGTH_GATE: fail" not in meta
+
+
+def test_meta_paper_write_has_bounded_target_aware_compile_repair_contract() -> None:
+    steps = _meta_paper_steps()
+    ordered_ids = list(steps)
+
+    assert '"report_only": true' in str(steps["paper_length_preflight"]["with"])
+    assert steps["precompile_length_expansion"]["when"] == (
+        "'below target-correlated readiness floor' in outputs.paper_length_preflight"
+    )
+    assert steps["apply_precompile_length_expansion"]["when"] == (
+        steps["precompile_length_expansion"]["when"]
+    )
+    assert '"repair_id": "precompile"' in str(
+        steps["apply_precompile_length_expansion"]["with"]
+    )
+    assert "report_only" not in str(steps["paper_length_gate"]["with"])
+    assert ordered_ids.index("paper_length_gate") < ordered_ids.index("compile_probe")
+    assert '"enforce_page_target": false' in str(steps["compile_probe"]["with"])
+    assert steps["page_shortfall_expansion"]["when"] == (
+        "'PDF_PAGE_TARGET_NOT_MET:' in outputs.compile_probe"
+    )
+    assert '"repair_id": "page-shortfall"' in str(
+        steps["apply_page_shortfall_expansion"]["with"]
+    )
+    assert '"enforce_page_target": true' in str(steps["compile_pdf"]["with"])
+    assert '"reuse_existing": true' in str(steps["compile_pdf"]["with"])
+    assert ordered_ids.index("final_page_length_gate") < ordered_ids.index("compile_pdf")
+    assert ordered_ids.index("compile_pdf") < ordered_ids.index("publish_pdf")
+    runtime = (
+        BUNDLED / "paper-artifact-runtime" / "scripts" / "run.py"
+    ).read_text(encoding="utf-8")
+    assert '_LENGTH_REPAIR_IDS = frozenset({"precompile", "page-shortfall"})' in runtime
+    assert "PDF_COMPILE_ACTION" in runtime
 
 
 def test_meta_paper_write_pushes_length_into_plan_and_section_prompts() -> None:
@@ -565,8 +711,11 @@ def test_meta_paper_write_sanitizes_artifact_before_strict_publication_gate() ->
     assert sanitizer < length_gate < quality_gate
     assert "skill: paper-latex-sanitizer" in meta[sanitizer:length_gate]
     assert '"manuscript_package": {{ outputs.latex_sanitizer | tojson }}' in meta
-    assert '"manuscript_package": {{ outputs.latex_sanitizer | tojson }}' in meta[
+    assert '"manuscript_package": {{ outputs.length_repair_sanitizer | tojson }}' in meta[
         quality_gate:
+    ]
+    assert '"manuscript_package": {{ outputs.final_latex_sanitizer | tojson }}' in meta[
+        meta.index("    - id: final_publication_quality_gate"):
     ]
 
 
@@ -928,6 +1077,328 @@ def test_meta_compile_pdf_reads_real_pdf_and_enforces_requested_pages(
     assert "PDF_TARGET_PAGES: 3" in output
 
 
+def test_meta_default_compact_contract_compiles_real_content_to_four_pages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the default target with real XeLaTeX, never a synthetic PDF writer."""
+
+    runtime_env = managed_skill_env(os.environ)
+    xelatex = shutil.which("xelatex", path=runtime_env.get("PATH"))
+    bibtex = shutil.which("bibtex", path=runtime_env.get("PATH"))
+    require_managed = os.environ.get("OPENSQUILLA_REQUIRE_MANAGED_TOOLCHAIN_E2E") == "1"
+    if xelatex is None or bibtex is None:
+        if require_managed:
+            pytest.fail("managed XeLaTeX and BibTeX are required for artifact CI")
+        pytest.skip("real xelatex and bibtex are required for the artifact test")
+    if require_managed:
+        configured_root = os.environ.get("OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT", "")
+        assert configured_root, "artifact CI must declare its managed toolchain root"
+        validation_root = Path(configured_root).resolve(strict=True)
+        for binary in (xelatex, bibtex):
+            assert Path(binary).resolve(strict=True).is_relative_to(validation_root)
+        paper_receipt = validation_root / "active/paper-tex.json"
+        receipt = json.loads(paper_receipt.read_text(encoding="utf-8"))
+        assert receipt["component_id"] == "paper-tex"
+        font_roots = [
+            Path(value).resolve(strict=True)
+            for value in runtime_env.get("OSFONTDIR", "").split(os.pathsep)
+            if value
+        ]
+        assert font_roots
+        assert font_roots[0].is_relative_to(validation_root)
+    for key, value in runtime_env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.chdir(tmp_path)
+    sections = (
+        "Introduction",
+        "Related Work",
+        "Method",
+        "Experiments",
+        "Discussion",
+        "Conclusion",
+    )
+    dimensions = (
+        "scope definition",
+        "assumption tracking",
+        "measurement validity",
+        "baseline selection",
+        "failure analysis",
+        "reproducibility",
+        "boundary conditions",
+        "deployment tradeoffs",
+    )
+    paragraphs: list[str] = []
+    for section_index, section in enumerate(sections, start=1):
+        paragraphs.append(rf"\section{{{section}}}")
+        for dimension_index, dimension in enumerate(dimensions, start=1):
+            paragraphs.append(
+                "This paragraph develops "
+                f"{dimension} for stage {section_index}.{dimension_index}. "
+                f"Decision record {section_index}.{dimension_index} separates the operational "
+                f"choice for {dimension} from the empirical claim it is meant to support. "
+                f"Evidence packet {section_index}.{dimension_index} defines the measurements, "
+                "controls, and acceptance thresholds needed to evaluate that claim. "
+                f"Reviewer protocol {section_index}.{dimension_index} records the independent "
+                "reproduction steps and the boundary conditions that invalidate a result. "
+                "Each dimension therefore defines a distinct reproducible evaluation boundary. "
+                f"Uncertainty case {section_index}.{dimension_index} compares alternatives under "
+                "the same constraints and reports limitations before "
+                r"drawing conclusions \cite{fixture}."
+            )
+    manuscript = "\n".join(
+        (
+            r"\documentclass{article}",
+            r"\title{A Reproducible Contract for Target-Aware Paper Delivery}",
+            r"\author{Artifact Verification Fixture}",
+            r"\date{}",
+            r"\begin{document}",
+            r"\maketitle",
+            r"\begin{abstract}",
+            "This content-bearing fixture validates the ordinary compact-paper target "
+            "through the production compiler and a real PDF page count.",
+            r"\end{abstract}",
+            *paragraphs,
+            r"\bibliographystyle{plain}",
+            r"\bibliography{references}",
+            r"\end{document}",
+        )
+    )
+    bibliography = (
+        "@article{fixture,\n"
+        "  title={Reproducible Evaluation Contracts},\n"
+        "  author={Example, Ada},\n"
+        "  journal={Journal of Artifact Verification},\n"
+        "  year={2026}\n"
+        "}\n"
+    )
+    package = f"MANUSCRIPT_TEX:\n{manuscript}\nREFERENCES_BIB:\n{bibliography}"
+    gate_script = BUNDLED / "paper-length-gate" / "scripts" / "audit.py"
+    gate = subprocess.run(
+        [sys.executable, str(gate_script)],
+        input=json.dumps(
+            {
+                "paper_contract": (
+                    "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n"
+                ),
+                "manuscript_package": package,
+            }
+        ),
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert gate.returncode == 0, gate.stdout + gate.stderr
+    assert "MINIMUM_CONTENT_UNITS: 2000" in gate.stdout
+    monkeypatch.setenv("MANUSCRIPT_PKG", package)
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+
+    output = _run_paper_operation("compile_pdf")
+    pdf = _paper_run_dir(tmp_path) / "paper.pdf"
+
+    assert pdf.read_bytes().startswith(b"%PDF")
+    pages = PdfReader(pdf).pages
+    assert len(pages) >= 4
+    assert all((page.extract_text() or "").strip() for page in pages)
+    assert "reproducible evaluation boundary" in " ".join(
+        (page.extract_text() or "").casefold() for page in pages
+    )
+    assert "PDF_TARGET_PAGES: 4" in output
+    substantive_match = re.search(r"PDF_SUBSTANTIVE_PAGES: (\d+)", output)
+    assert substantive_match is not None
+    assert int(substantive_match.group(1)) >= 4
+    assert "PDF_NEAR_EMPTY_PAGES: none" in output
+    assert "PDF_PAGE_STATUS: met" in output
+
+
+def test_meta_compile_probe_reports_shortfall_without_publishing_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MANUSCRIPT_PKG", _compile_fixture_package())
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_tex_run(calls, page_count=2))
+
+    output = _run_paper_operation(
+        "compile_pdf",
+        enforce_page_target=False,
+        reuse_existing=False,
+    )
+
+    assert "PDF_PAGES: 2" in output
+    assert "PDF_PAGE_STATUS: shortfall" in output
+    assert "PDF_PAGE_TARGET_NOT_MET: requested at least 4 substantive pages" in output
+    assert len(calls) == 4
+
+
+def test_meta_compile_rejects_hidden_prose_with_near_empty_page_padding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MANUSCRIPT_PKG", _compile_fixture_package())
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        _fake_tex_run(
+            calls,
+            page_count=4,
+            # Match the original bypass shape: one real page followed by
+            # page-number-only padding, rather than completely blank pages.
+            page_word_counts=(100, 1, 1, 1),
+        ),
+    )
+
+    probe = _run_paper_operation(
+        "compile_pdf",
+        enforce_page_target=False,
+        reuse_existing=False,
+    )
+
+    assert "PDF_PAGES: 4" in probe
+    assert "PDF_SUBSTANTIVE_PAGES: 1" in probe
+    assert "PDF_NEAR_EMPTY_PAGES: 2,3,4" in probe
+    assert "PDF_PAGE_STATUS: shortfall" in probe
+    assert "PDF_PAGE_TARGET_NOT_MET:" in probe
+    with pytest.raises(
+        PAPER_ARTIFACT_RUNTIME.PaperArtifactError,
+        match="requested at least 4 substantive pages.*near-empty.*2,3,4",
+    ):
+        _run_paper_operation(
+            "compile_pdf",
+            enforce_page_target=True,
+            reuse_existing=True,
+        )
+
+
+def test_pdf_content_report_allows_sparse_cover_and_reference_tail() -> None:
+    class Page:
+        def __init__(self, text: str) -> None:
+            self.text = text
+
+        def extract_text(self) -> str:
+            return self.text
+
+    body_pages = [
+        " ".join(f"body{page_number}word{index}" for index in range(100))
+        for page_number in range(1, 5)
+    ]
+    reader = type(
+        "Reader",
+        (),
+        {
+            "pages": [
+                Page("A concise title\nAuthor"),
+                *(Page(text) for text in body_pages),
+                Page("References\n[1] Example"),
+            ]
+        },
+    )()
+
+    report = PAPER_ARTIFACT_RUNTIME._pdf_page_content_report(reader, 4)
+
+    assert report["target_met"] is True
+    assert report["substantive_pages"] == [2, 3, 4, 5]
+    assert report["near_empty_pages"] == []
+    assert report["reference_pages"] == [6]
+
+
+def test_meta_compile_reuses_matching_successful_probe_without_second_compile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MANUSCRIPT_PKG", _compile_fixture_package())
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_tex_run(calls, page_count=4))
+
+    probe = _run_paper_operation(
+        "compile_pdf",
+        enforce_page_target=False,
+        reuse_existing=False,
+    )
+    final = _run_paper_operation(
+        "compile_pdf",
+        enforce_page_target=True,
+        reuse_existing=True,
+    )
+
+    assert "PDF_COMPILE_ACTION: compiled" in probe
+    assert "PDF_PAGE_STATUS: met" in probe
+    assert "PDF_COMPILE_ACTION: reused" in final
+    assert "PDF_PAGE_STATUS: met" in final
+    assert len(calls) == 4
+
+
+def test_meta_page_shortfall_expansion_triggers_one_real_recompile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MANUSCRIPT_PKG", _compile_fixture_package())
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    probe_calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_tex_run(probe_calls, page_count=2))
+    probe = _run_paper_operation(
+        "compile_pdf",
+        enforce_page_target=False,
+        reuse_existing=False,
+    )
+    assert "PDF_PAGE_TARGET_NOT_MET:" in probe
+
+    manifest = "\n".join(
+        (
+            f"MANUSCRIPT_PATH: {(_paper_run_dir(tmp_path) / 'paper.tex').resolve()}",
+            f"REFERENCES_PATH: {(_paper_run_dir(tmp_path) / 'references.bib').resolve()}",
+        )
+    )
+    expansion = "% BEGIN_LENGTH_EXPANSION\n" + " ".join(
+        f"Repair dimension {index} adds distinct protocol and limitation detail."
+        for index in range(1, 46)
+    ) + "\n% END_LENGTH_EXPANSION"
+    repaired = _run_paper_operation(
+        "apply_length_expansion",
+        manuscript_package=manifest,
+        repair_id="page-shortfall",
+        expansion=expansion,
+    )
+
+    final_calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_tex_run(final_calls, page_count=4))
+    final = _run_paper_operation(
+        "compile_pdf",
+        manuscript_package=repaired,
+        enforce_page_target=True,
+        reuse_existing=True,
+    )
+
+    assert "PDF_COMPILE_ACTION: compiled" in final
+    assert "PDF_PAGES: 4" in final
+    assert len(probe_calls) == 4
+    assert len(final_calls) == 4
+
+
 def test_two_paper_sessions_do_not_overwrite_cleanup_or_publish_each_other(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1210,7 +1681,7 @@ def test_meta_compile_pdf_rejects_real_pdf_below_requested_pages(
     assert len(PdfReader(_paper_run_dir(tmp_path) / "paper.pdf").pages) == 2
     error = str(exc_info.value)
     assert "PDF_PAGE_TARGET_NOT_MET" in error
-    assert "requested at least 3 pages; compiled PDF has 2" in error
+    assert "requested at least 3 substantive pages; compiled PDF has 2 total" in error
     assert "PDF_PATH:" not in error
 
 

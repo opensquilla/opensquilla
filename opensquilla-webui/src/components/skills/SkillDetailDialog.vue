@@ -2,6 +2,7 @@
   <dialog
     ref="dialogRef"
     class="sk-dialog"
+    :aria-label="dialogLabel"
     @click="onBackdropClick"
     @cancel.prevent="requestClose"
     @close="onNativeClose"
@@ -142,9 +143,18 @@
 
         <div v-if="installActions.length" class="sk-detail__section">
           <div class="sk-detail__section-title">{{ t('cronSkills.skillDetail.install') }}</div>
-          <div v-for="i in installActions" :key="i.id" class="sk-detail__install-row">
+          <div
+            v-for="i in installActions"
+            :key="i.id"
+            class="sk-detail__install-row"
+            :class="{ 'sk-detail__install-row--toolchain': isToolchainInstall(i.kind) }"
+          >
             <span>{{ i.label || t('cronSkills.skillDetail.installVia', { kind: i.kind }) }}{{ i.bins?.length ? ` (${i.bins.join(', ')})` : '' }}</span>
+            <span v-if="isToolchainInstall(i.kind)" class="sk-dim sk-detail__toolchain-guidance">
+              {{ t('cronSkills.skillDetail.toolchainSetupGuidance') }}
+            </span>
             <button
+              v-else
               class="btn btn--primary btn--sm"
               :disabled="installingDepsId === i.id"
               @click="emit('installDeps', skill.name, i.id)"
@@ -213,6 +223,19 @@ const emit = defineEmits<{
 }>()
 
 const dialogRef = ref<HTMLDialogElement | null>(null)
+const dialogLabel = computed(() => {
+  if (props.skill) {
+    return t('cronSkills.skillDetail.dialogLabel', { name: props.skill.name })
+  }
+  if (props.proposal) {
+    return t('cronSkills.proposalDetail.dialogLabel', { id: props.proposal.proposal_id })
+  }
+  return undefined
+})
+
+function isToolchainInstall(kind: string | undefined) {
+  return kind?.trim().toLowerCase() === 'toolchain'
+}
 
 const dependencySummary = computed(() => props.skill
   ? skillDependencySummary(props.skill)

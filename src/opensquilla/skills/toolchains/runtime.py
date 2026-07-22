@@ -363,6 +363,7 @@ def _validated_resources(
     elif set(expected_resources) != set(marker_assets):
         return None
 
+    assets_by_id = {asset.asset_id: asset for asset in current.auxiliary_assets}
     for asset_id, relative_resource in resources.items():
         expected_digest = marker_assets.get(asset_id)
         manifest_entry = manifest.get(relative_resource)
@@ -371,8 +372,16 @@ def _validated_resources(
             or _SHA256_RE.fullmatch(expected_digest) is None
             or not isinstance(manifest_entry, dict)
             or manifest_entry.get("type") != "file"
-            or manifest_entry.get("sha256") != expected_digest
+            or _SHA256_RE.fullmatch(str(manifest_entry.get("sha256", ""))) is None
         ):
+            return None
+        asset = assets_by_id.get(asset_id)
+        if asset is None:
+            return None
+        # Direct resources remain byte-identical to their download. Archived
+        # resources are source-verified before extraction and may then be
+        # transformed before the complete payload manifest is written.
+        if asset.archive_type is None and manifest_entry.get("sha256") != expected_digest:
             return None
         try:
             resource = _contained_path(package, relative_resource)

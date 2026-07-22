@@ -11,6 +11,7 @@ from opensquilla.session.models import (
     AgentTaskRecord,
     AgentTaskStatus,
     SessionNode,
+    SessionStatus,
     TranscriptEntry,
 )
 from opensquilla.session.storage import SessionStorage, StorageBusyError
@@ -158,6 +159,189 @@ async def test_meta_control_staging_prunes_only_abandoned_rows_after_30_days(
 
 
 @pytest.mark.asyncio
+async def test_reset_epoch_invalidates_only_staged_meta_controls(tmp_path) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        await storage.upsert_session(_session())
+        staged, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:staged-before-reset",
+            meta_skill_name="meta-paper-write",
+        )
+        accepted, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:accepted-before-reset",
+            meta_skill_name="meta-paper-write",
+        )
+        await storage.conn.execute(
+            "UPDATE meta_control_intents SET status = 'accepted' WHERE intent_id = ?",
+            (accepted.intent_id,),
+        )
+        await storage.conn.commit()
+
+        assert await storage.advance_reset_epoch(SESSION_KEY) == 1
+
+        assert await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=staged.correlation_id,
+        ) is None
+        preserved = await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=accepted.correlation_id,
+        )
+        assert preserved is not None
+        assert preserved.intent_id == accepted.intent_id
+        assert preserved.status == "accepted"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_atomic_turn_reset_invalidates_staged_meta_controls(tmp_path) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        await storage.upsert_session(_session())
+        staged, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:before-atomic-reset",
+            meta_skill_name="meta-paper-write",
+        )
+        reset_node = _session(updated_at=300)
+        reset_node.session_id = "session-after-atomic-reset"
+        reset_node.epoch = 1
+
+        await storage.accept_turn(
+            TranscriptEntry(
+                session_id=reset_node.session_id,
+                session_key=SESSION_KEY,
+                message_id="message-after-atomic-reset",
+                role="user",
+                content="start over with this message",
+                created_at=300,
+            ),
+            expected_epoch=1,
+            updated_at=300,
+            task_record=AgentTaskRecord(
+                task_id="task-after-atomic-reset",
+                session_key=SESSION_KEY,
+                agent_id="main",
+                source_kind="webui",
+                queue_mode="followup",
+                run_kind="web_turn",
+                status=AgentTaskStatus.QUEUED,
+                created_at=300,
+                updated_at=300,
+            ),
+            source_scope="webui",
+            request_session_key=SESSION_KEY,
+            client_request_id="atomic-reset-turn",
+            request_fingerprint="sha256:atomic-reset-turn",
+            session_node=reset_node,
+            reset_from_session_id=SESSION_ID,
+        )
+
+        assert await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=staged.correlation_id,
+        ) is None
+        rotated = await storage.get_session(SESSION_KEY)
+        assert rotated is not None
+        assert rotated.session_id == reset_node.session_id
+        assert rotated.epoch == 1
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_atomic_turn_reset_preserves_only_control_accepted_by_new_turn(
+    tmp_path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        await storage.upsert_session(_session())
+        stale, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:stale-before-reset",
+            meta_skill_name="meta-paper-write",
+        )
+        current, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:current-reset-turn",
+            meta_skill_name="meta-paper-write",
+        )
+        control = {
+            "version": 1,
+            "intent_id": current.intent_id,
+            "kind": "manual",
+            "name": "meta-paper-write",
+            "correlation_id": current.correlation_id,
+        }
+        reset_node = _session(updated_at=300)
+        reset_node.session_id = "session-after-meta-control-reset"
+        reset_node.epoch = 1
+        entry = TranscriptEntry(
+            session_id=reset_node.session_id,
+            session_key=SESSION_KEY,
+            message_id="message-current-reset-turn",
+            role="user",
+            content="/meta meta-paper-write -- start in the reset session",
+            created_at=300,
+            turn_context={"meta_control": control},
+        )
+        task = AgentTaskRecord(
+            task_id="task-current-reset-turn",
+            session_key=SESSION_KEY,
+            agent_id="main",
+            source_kind="webui",
+            queue_mode="followup",
+            run_kind="web_turn",
+            status=AgentTaskStatus.QUEUED,
+            created_at=300,
+            updated_at=300,
+            details={"metadata": {"meta_control": control}},
+        )
+
+        accepted = await storage.accept_turn(
+            entry,
+            expected_epoch=1,
+            updated_at=300,
+            task_record=task,
+            source_scope="webui",
+            request_session_key=SESSION_KEY,
+            client_request_id="current-reset-turn",
+            request_fingerprint="sha256:current-reset-turn",
+            session_node=reset_node,
+            reset_from_session_id=SESSION_ID,
+            meta_control_intent_id=current.intent_id,
+        )
+
+        assert accepted.replayed is False
+        assert await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=stale.correlation_id,
+        ) is None
+        preserved = await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=current.correlation_id,
+        )
+        assert preserved is not None
+        assert preserved.status == "accepted"
+        assert preserved.accepted_task_id == task.task_id
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_meta_control_recovery_quarantines_invalid_head_before_claiming_valid(
     tmp_path,
 ) -> None:
@@ -238,6 +422,104 @@ async def test_meta_control_recovery_quarantines_invalid_head_before_claiming_va
         assert quarantined.terminal_reason == "meta_control_recovery_invalid"
         assert quarantined.error_class == "MetaControlRecoveryInvalid"
         assert await storage.claim_recoverable_meta_control_tasks(limit=1) == []
+    finally:
+        await storage.close()
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [
+        SessionStatus.DONE,
+        SessionStatus.FAILED,
+        SessionStatus.KILLED,
+        SessionStatus.TIMEOUT,
+    ],
+)
+@pytest.mark.asyncio
+async def test_meta_control_recovery_never_reopens_terminal_session(
+    tmp_path,
+    terminal_status: SessionStatus,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        await storage.upsert_session(_session())
+        request_id = f"terminal-{terminal_status.value}"
+        intent, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+            meta_skill_name="meta-paper-write",
+        )
+        control = {
+            "version": 1,
+            "intent_id": intent.intent_id,
+            "kind": "manual",
+            "name": "meta-paper-write",
+            "correlation_id": f"request:{request_id}",
+        }
+        message_id = f"message-{terminal_status.value}"
+        task_id = f"task-{terminal_status.value}"
+        await storage.accept_turn(
+            TranscriptEntry(
+                session_id=SESSION_ID,
+                session_key=SESSION_KEY,
+                message_id=message_id,
+                role="user",
+                content="/meta meta-paper-write -- terminal recovery",
+                created_at=200,
+                turn_context={"meta_control": control},
+            ),
+            expected_epoch=0,
+            updated_at=200,
+            task_record=AgentTaskRecord(
+                task_id=task_id,
+                session_key=SESSION_KEY,
+                agent_id="main",
+                source_kind="webui",
+                queue_mode="followup",
+                run_kind="web_turn",
+                status=AgentTaskStatus.QUEUED,
+                created_at=200,
+                updated_at=200,
+                details={
+                    "metadata": {"meta_control": control},
+                    "persisted_user_message_id": message_id,
+                },
+            ),
+            source_scope="webui",
+            request_session_key=SESSION_KEY,
+            client_request_id=request_id,
+            request_fingerprint=f"sha256:{request_id}",
+            meta_control_intent_id=intent.intent_id,
+        )
+        terminal = await storage.get_session(SESSION_KEY)
+        assert terminal is not None
+        terminal.status = terminal_status
+        terminal.ended_at = 250
+        terminal.runtime_ms = 150
+        await storage.upsert_session(terminal)
+
+        assert await storage.mark_abandoned_agent_tasks(now_ms=300) == 1
+        abandoned = await storage.get_agent_task(task_id)
+        assert abandoned is not None
+        assert abandoned.status == AgentTaskStatus.ABANDONED
+        assert abandoned.terminal_reason == "process_restart"
+
+        # Databases opened once by the buggy build may already carry the
+        # recovery marker. The claim path must reject those rows independently
+        # rather than trusting only the current restart-marking pass.
+        await storage.conn.execute(
+            "UPDATE agent_tasks SET terminal_reason = ? WHERE task_id = ?",
+            ("meta_control_restart_before_start", task_id),
+        )
+        await storage.conn.commit()
+
+        assert await storage.claim_recoverable_meta_control_tasks() == []
+        preserved = await storage.get_session(SESSION_KEY)
+        assert preserved is not None
+        assert preserved.status == terminal_status
+        assert preserved.ended_at == 250
+        assert preserved.runtime_ms == 150
     finally:
         await storage.close()
 

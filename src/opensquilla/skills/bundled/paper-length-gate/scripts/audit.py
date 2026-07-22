@@ -25,6 +25,22 @@ _CITE_RE = re.compile(
     r"\\cite[A-Za-z*]*\s*(?:\[[^\]]*\]\s*){0,2}\{([^{}]+)\}",
     re.IGNORECASE,
 )
+_INVISIBLE_CONDITIONAL_RE = re.compile(
+    r"\\(?:if[A-Za-z@]*|else|fi)\b",
+    re.IGNORECASE,
+)
+_INVISIBLE_CONTENT_COMMAND_RE = re.compile(
+    r"\\(?:phantom|hphantom|vphantom|smash|rlap|llap)\b",
+    re.IGNORECASE,
+)
+
+# These are delivery-oriented floors, not page-count estimates.  Title matter,
+# floats, and the bibliography can move the compiled count, so compile_pdf
+# remains authoritative.  The floor still has to scale with the target: the old
+# fixed 600-unit compact floor accepted one-page drafts for the default
+# four-page contract.
+_ENGLISH_UNITS_PER_TARGET_PAGE = 500
+_CJK_UNITS_PER_TARGET_PAGE = 900
 
 _REQUIRED_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("introduction", ("introduction", "引言", "绪论")),
@@ -159,7 +175,24 @@ def _read_manuscript(
 
 
 def _without_comments(text: str) -> str:
-    return re.sub(r"(?<!\\)%[^\n]*", "", text)
+    """Remove TeX comments using backslash parity rather than one-char lookbehind."""
+
+    visible_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        comment_at: int | None = None
+        for index, character in enumerate(line):
+            if character != "%":
+                continue
+            slash_count = 0
+            cursor = index - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                slash_count += 1
+                cursor -= 1
+            if slash_count % 2 == 0:
+                comment_at = index
+                break
+        visible_lines.append(line if comment_at is None else line[:comment_at] + "\n")
+    return "".join(visible_lines)
 
 
 def _content_units(text: str) -> tuple[int, int, int]:
@@ -175,6 +208,29 @@ def _content_units(text: str) -> tuple[int, int, int]:
     cjk_characters = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", body))
     word_tokens = len(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9'’-]*\b", body))
     return cjk_characters + word_tokens, word_tokens, cjk_characters
+
+
+def _repeated_prose_ratio(text: str) -> tuple[int, int, float]:
+    clean = _without_comments(text)
+    body_match = re.search(
+        r"\\begin\s*\{document\}([\s\S]*?)\\end\s*\{document\}",
+        clean,
+        re.IGNORECASE,
+    )
+    body = body_match.group(1) if body_match else clean
+    segments: list[str] = []
+    for raw in re.split(r"\n+|(?<=[.!?。！？])\s+", body):
+        plain = re.sub(r"\\[A-Za-z@]+\*?", " ", raw)
+        plain = re.sub(r"[{}\[\]$&]", " ", plain)
+        normalized = re.sub(r"\s+", " ", plain).strip().casefold()
+        units = len(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9'’-]*\b", normalized))
+        units += len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]", normalized))
+        if units >= 8:
+            segments.append(normalized)
+    if not segments:
+        return 0, 0, 0.0
+    unique = len(set(segments))
+    return len(segments), unique, (len(segments) - unique) / len(segments)
 
 
 def _has_section(headings: list[str], aliases: tuple[str, ...]) -> bool:
@@ -202,9 +258,23 @@ def audit(payload: dict[str, Any]) -> dict[str, Any]:
     cite_keys: set[str] = set()
     citation_commands = 0
     required_found = 0
+    prose_segments = unique_prose_segments = 0
+    repeated_prose_ratio = 0.0
     required_total = len(_REQUIRED_SECTIONS) + 1  # named sections plus abstract
     if manuscript:
         clean = _without_comments(manuscript)
+        invisible_conditionals = sorted(set(_INVISIBLE_CONDITIONAL_RE.findall(clean)))
+        if invisible_conditionals:
+            blockers.append(
+                "manuscript contains TeX conditionals that can hide counted prose: "
+                + ", ".join(invisible_conditionals[:8])
+            )
+        invisible_commands = sorted(set(_INVISIBLE_CONTENT_COMMAND_RE.findall(clean)))
+        if invisible_commands:
+            blockers.append(
+                "manuscript contains commands that can make counted prose invisible: "
+                + ", ".join(invisible_commands[:8])
+            )
         if not re.search(r"\\documentclass(?:\[[^\]]*\])?\s*\{[^{}]+\}", clean):
             blockers.append("manuscript is missing \\documentclass")
         if not re.search(r"\\begin\s*\{document\}", clean):
@@ -234,16 +304,28 @@ def audit(payload: dict[str, Any]) -> dict[str, Any]:
             blockers.append("manuscript contains no LaTeX citation keys")
 
         content_units, word_tokens, cjk_characters = _content_units(clean)
-        if mode == "FULL_MANUSCRIPT":
-            minimum_units = max(1200, target_value * 240)
-            recommended_units = max(2400, target_value * 520)
-        else:
-            minimum_units = 600
-            recommended_units = max(1000, target_value * 160)
+        prose_segments, unique_prose_segments, repeated_prose_ratio = (
+            _repeated_prose_ratio(clean)
+        )
+        if prose_segments >= 8 and repeated_prose_ratio >= 0.35:
+            blockers.append(
+                "manuscript contains excessive repeated prose: "
+                f"{repeated_prose_ratio:.0%} duplicate substantive segments"
+            )
+        cjk_dominant = cjk_characters > word_tokens
+        units_per_page = (
+            _CJK_UNITS_PER_TARGET_PAGE
+            if cjk_dominant
+            else _ENGLISH_UNITS_PER_TARGET_PAGE
+        )
+        base_floor = 1200 if mode == "FULL_MANUSCRIPT" else 700
+        minimum_units = max(base_floor, target_value * units_per_page)
+        recommended_units = max(minimum_units, target_value * (units_per_page + 100))
         if content_units < minimum_units:
             blockers.append(
-                f"manuscript body is below readiness floor: "
-                f"{content_units}/{minimum_units} content units"
+                "manuscript body is below target-correlated readiness floor: "
+                f"{content_units}/{minimum_units} content units for "
+                f"{target_value} target pages"
             )
         elif content_units < recommended_units:
             warnings.append(
@@ -260,8 +342,12 @@ def audit(payload: dict[str, Any]) -> dict[str, Any]:
         "source": source,
         "bytes": byte_count,
         "content_units": content_units,
+        "minimum_content_units": minimum_units if manuscript else 0,
         "word_tokens": word_tokens,
         "cjk_characters": cjk_characters,
+        "prose_segments": prose_segments,
+        "unique_prose_segments": unique_prose_segments,
+        "repeated_prose_ratio": repeated_prose_ratio,
         "section_count": len(headings),
         "required_found": required_found,
         "required_total": required_total,
@@ -281,8 +367,12 @@ def _render(result: dict[str, Any]) -> str:
         f"MANUSCRIPT_SOURCE: {result['source']}",
         f"MANUSCRIPT_BYTES: {result['bytes']}",
         f"ESTIMATED_CONTENT_UNITS: {result['content_units']}",
+        f"MINIMUM_CONTENT_UNITS: {result['minimum_content_units']}",
         f"ESTIMATED_WORDS: {result['word_tokens']}",
         f"CJK_CHARACTERS: {result['cjk_characters']}",
+        f"PROSE_SEGMENTS: {result['prose_segments']}",
+        f"UNIQUE_PROSE_SEGMENTS: {result['unique_prose_segments']}",
+        f"REPEATED_PROSE_RATIO: {result['repeated_prose_ratio']:.3f}",
         f"SECTION_COUNT: {result['section_count']}",
         f"REQUIRED_SECTIONS: {result['required_found']}/{result['required_total']}",
         f"CITATION_COMMANDS: {result['citation_commands']}",
@@ -308,8 +398,12 @@ def main() -> int:
                 "source": "missing",
                 "bytes": 0,
                 "content_units": 0,
+                "minimum_content_units": 0,
                 "word_tokens": 0,
                 "cjk_characters": 0,
+                "prose_segments": 0,
+                "unique_prose_segments": 0,
+                "repeated_prose_ratio": 0.0,
                 "section_count": 0,
                 "required_found": 0,
                 "required_total": len(_REQUIRED_SECTIONS) + 1,
@@ -334,6 +428,8 @@ def main() -> int:
     rendered = _render(result)
     print(rendered)
     if result["verdict"] == "block":
+        if payload.get("report_only") is True:
+            return 0
         print(rendered, file=sys.stderr)
         return 2
     return 0

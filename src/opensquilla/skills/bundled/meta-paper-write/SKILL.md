@@ -1429,17 +1429,21 @@ composition:
           TOPIC: {{ outputs.paper_contract | truncate(1200) }}, MODE: {{ outputs.paper_contract | truncate(400) }}, PAGES: {{ outputs.paper_contract | truncate(400) }}
 
           Mode behavior:
-          - COMPACT_SKELETON: produce a compact LaTeX-ready manuscript
-            skeleton with section goals, planned citations, and expansion
-            notes; do not pretend it is a finished paper of the requested
-            length. For this
-            mode, the final package MUST include an explicit manuscript plan,
-            a target-length expansion plan, limitations/threats-to-validity,
+          - COMPACT_SKELETON is the lower-latency authoring path, but its
+            compiled artifact MUST still meet TARGET_PAGES. Produce a coherent
+            compact manuscript, not a one-page outline followed by a promise
+            to expand later. Size substantive MANUSCRIPT_TEX prose to at least
+            TARGET_PAGES x 550 English words, or TARGET_PAGES x 950 CJK
+            characters, before returning. For the default four-page contract,
+            this normally means at least 2,200 English words (or about 3,800
+            CJK characters), distributed across every required section.
+            The final package MUST also include a concise manuscript plan,
+            target-length expansion plan, limitations/threats-to-validity,
             and reference placeholders sized to the requested/derived citation
-            strategy when verified BibTeX entries are unavailable. Keep the compact package short enough that all
-            required sections are visible before any evaluator truncation:
-            put the plan and expansion plan before the LaTeX skeleton, and
-            keep MANUSCRIPT_TEX under 2,500 words.
+            strategy when verified BibTeX entries are unavailable. Put the
+            complete MANUSCRIPT_TEX first so all required sections survive any
+            downstream truncation. Do not use blank pages, repeated paragraphs,
+            oversized headings, spacing tricks, or filler to reach the target.
 
           CITATION CONTRACT (load-bearing):
           - DO NOT invent cite keys. Use ONLY keys that appear verbatim in
@@ -1599,12 +1603,134 @@ composition:
             "user_request": {{ (inputs.user_message | truncate(4000)) | tojson }},
             "manuscript_package": {{ (outputs.get('consistency_pass') or outputs.get('assemble_manuscript_tex') or outputs.get('final_manuscript_package', '')) | tojson }}
           }
+    - id: materialize_manuscript
+      label: "固化稿件"
+      label_en: "Materialize manuscript"
+      kind: skill_exec
+      skill: paper-artifact-runtime
+      depends_on: [paper_contract, latex_sanitizer]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        payload: |
+          {
+            "operation": "materialize_manuscript",
+            "meta_run_id": {{ inputs.meta_run_id | tojson }},
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "manuscript_package": {{ outputs.latex_sanitizer | tojson }}
+          }
+    - id: paper_length_preflight
+      label: "篇幅预检"
+      label_en: "Length preflight"
+      kind: skill_exec
+      skill: paper-length-gate
+      depends_on: [paper_contract, materialize_manuscript]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        # Report-only makes the target-correlated deficit available to the
+        # bounded authoring repair below. The later paper_length_gate remains
+        # fail-closed and must pass before any compiler is invoked.
+        payload: |
+          {
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "manuscript_package": {{ outputs.materialize_manuscript | tojson }},
+            "report_only": true
+          }
+    - id: precompile_length_expansion
+      label: "篇幅扩写"
+      label_en: "Pre-compile expansion"
+      kind: llm_chat
+      depends_on: [paper_contract, paper_preferences, outline, materialize_manuscript, paper_length_preflight]
+      when: "'below target-correlated readiness floor' in outputs.paper_length_preflight"
+      with:
+        system: "You author one substantive, evidence-safe LaTeX expansion fragment for an undersized academic manuscript."
+        task: |
+          The deterministic preflight found that this manuscript is too small
+          for its requested compiled-page contract. Produce one body-only
+          expansion that closes the reported content-unit deficit with a 15%
+          safety margin. This is the first of at most two bounded repair
+          attempts; make it substantive enough to pass now.
+
+          Paper contract:
+          {{ outputs.paper_contract | truncate(1200) }}
+
+          Preferences:
+          {{ outputs.paper_preferences | truncate(2000) }}
+
+          Outline:
+          {{ outputs.outline | truncate(3500) }}
+
+          Deterministic deficit report (authoritative):
+          {{ outputs.paper_length_preflight | truncate(2000) }}
+
+          Existing sanitized source excerpt (compact packages are inline;
+          full manuscripts may provide only an artifact manifest):
+          {{ outputs.latex_sanitizer | truncate(12000) }}
+
+          Run-owned artifact manifest:
+          {{ outputs.materialize_manuscript | truncate(2000) }}
+
+          Rules:
+          - Write only new subsection-level prose that deepens method
+            rationale, evaluation design, limitations, boundary conditions,
+            and reproducibility. Do not repeat paragraphs or pad formatting.
+          - Do not emit \documentclass, \begin{document}, \end{document},
+            \section, \bibliography, \input, \include, \includegraphics,
+            \usepackage, or any \cite command. Existing citations and document
+            boundaries are locked.
+          - Preserve EVIDENCE_STATUS. If evidence is not_supplied, use
+            planned/future tense, keep outcomes TBD, and invent no results,
+            measurements, sources, or citations.
+          - Match the manuscript language. Use ASCII/LaTeX-safe punctuation
+            and named math macros rather than literal Unicode Greek.
+          - Emit at least the missing MINIMUM_CONTENT_UNITS minus
+            ESTIMATED_CONTENT_UNITS, plus 15%. Cap the fragment at 3,000
+            English words or 5,000 CJK characters; if the requested target
+            cannot be repaired within that bound, still use the full budget
+            and let the strict gate fail honestly.
+
+          Return exactly:
+          % BEGIN_LENGTH_EXPANSION
+          \subsection{Target-Length Elaboration}
+          <substantive LaTeX body only>
+          % END_LENGTH_EXPANSION
+    - id: apply_precompile_length_expansion
+      label: "应用篇幅扩写"
+      label_en: "Apply pre-compile expansion"
+      kind: skill_exec
+      skill: paper-artifact-runtime
+      depends_on: [paper_contract, materialize_manuscript, paper_length_preflight, precompile_length_expansion]
+      when: "'below target-correlated readiness floor' in outputs.paper_length_preflight"
+      with:
+        payload: |
+          {
+            "operation": "apply_length_expansion",
+            "meta_run_id": {{ inputs.meta_run_id | tojson }},
+            "repair_id": "precompile",
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "manuscript_package": {{ outputs.materialize_manuscript | tojson }},
+            "expansion": {{ outputs.precompile_length_expansion | tojson }}
+          }
+    - id: length_repair_sanitizer
+      label: "扩写清理"
+      label_en: "Expansion cleanup"
+      kind: skill_exec
+      skill: paper-latex-sanitizer
+      depends_on: [paper_contract, materialize_manuscript, apply_precompile_length_expansion]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        payload: |
+          {
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "meta_run_id": {{ inputs.meta_run_id | tojson }},
+            "user_request": {{ (inputs.user_message | truncate(4000)) | tojson }},
+            "manuscript_package": {{ (outputs.get('apply_precompile_length_expansion') or outputs.materialize_manuscript) | tojson }}
+          }
     - id: citation_map
       label: "引用映射"
       label_en: "Citation mapping"
       kind: skill_exec
       skill: paper-artifact-runtime
-      depends_on: [latex_sanitizer, refbib]
+      depends_on: [length_repair_sanitizer, refbib]
       with:
         # Deterministically parse citations from artifact files instead of
         # sending the full manuscript back through an LLM.
@@ -1612,7 +1738,7 @@ composition:
           {
             "operation": "citation_map",
             "meta_run_id": {{ inputs.meta_run_id | tojson }},
-            "manifest": {{ outputs.latex_sanitizer | tojson }},
+            "manifest": {{ outputs.length_repair_sanitizer | tojson }},
             "refbib": {{ outputs.refbib | tojson }}
           }
     - id: paper_length_gate
@@ -1620,13 +1746,13 @@ composition:
       label_en: "Length gate"
       kind: skill_exec
       skill: paper-length-gate
-      depends_on: [paper_contract, latex_sanitizer]
+      depends_on: [paper_contract, length_repair_sanitizer]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
       with:
         payload: |
           {
             "paper_contract": {{ outputs.paper_contract | tojson }},
-            "manuscript_package": {{ outputs.latex_sanitizer | tojson }}
+            "manuscript_package": {{ outputs.length_repair_sanitizer | tojson }}
           }
     - id: citation_integrity_gate
       label: "引用门禁"
@@ -1647,7 +1773,7 @@ composition:
       label_en: "Publication quality gate"
       kind: skill_exec
       skill: paper-quality-gate
-      depends_on: [paper_contract, latex_sanitizer, paper_length_gate, citation_integrity_gate]
+      depends_on: [paper_contract, length_repair_sanitizer, paper_length_gate, citation_integrity_gate]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
       with:
         payload: |
@@ -1655,26 +1781,153 @@ composition:
             "paper_contract": {{ outputs.paper_contract | tojson }},
             "length_gate": {{ outputs.paper_length_gate | tojson }},
             "citation_gate": {{ outputs.citation_integrity_gate | tojson }},
-            "manuscript_package": {{ outputs.latex_sanitizer | tojson }}
+            "manuscript_package": {{ outputs.length_repair_sanitizer | tojson }}
+          }
+    - id: compile_probe
+      label: "编译页数探测"
+      label_en: "Compile page probe"
+      kind: skill_exec
+      skill: paper-artifact-runtime
+      depends_on: [length_repair_sanitizer, publication_quality_gate]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        # This is a real compile. A short PDF is retained only as an internal
+        # probe and can never reach publish_pdf. It gives the one bounded
+        # page-shortfall repair an authoritative pypdf count.
+        payload: |
+          {
+            "operation": "compile_pdf",
+            "meta_run_id": {{ inputs.meta_run_id | tojson }},
+            "manuscript_package": {{ outputs.length_repair_sanitizer | tojson }},
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "enforce_page_target": false,
+            "reuse_existing": false
+          }
+    - id: page_shortfall_expansion
+      label: "页数修复扩写"
+      label_en: "Page shortfall expansion"
+      kind: llm_chat
+      depends_on: [paper_contract, paper_preferences, outline, length_repair_sanitizer, compile_probe]
+      when: "'PDF_PAGE_TARGET_NOT_MET:' in outputs.compile_probe"
+      with:
+        system: "You repair one measured PDF page shortfall with substantive, evidence-safe LaTeX prose."
+        task: |
+          The real XeLaTeX+pypdf probe is shorter than TARGET_PAGES. This is
+          the final automatic repair attempt. Add enough substantive body
+          content for the measured missing pages plus one-quarter-page safety
+          margin: about 650 English words or 1,050 CJK characters per missing
+          page. Do not fake page count with spacing, blank pages, repeated
+          prose, oversized headings, or forced page breaks.
+
+          Paper contract:
+          {{ outputs.paper_contract | truncate(1200) }}
+          Compile probe (authoritative actual/target pages):
+          {{ outputs.compile_probe | truncate(1200) }}
+          Preferences:
+          {{ outputs.paper_preferences | truncate(1800) }}
+          Outline:
+          {{ outputs.outline | truncate(3000) }}
+          Existing compact package or full-manuscript writing plan (context
+          only; never reproduce it verbatim):
+          {{ (outputs.get('final_manuscript_package') or outputs.get('writing_plan', '')) | truncate(12000) }}
+
+          Rules:
+          - Write only new subsection-level method rationale, evaluation
+            protocol, robustness analysis plan, limitations, and
+            reproducibility detail. Do not repeat existing paragraphs.
+          - Do not emit \documentclass, \begin{document}, \end{document},
+            \section, \bibliography, \input, \include, \includegraphics,
+            \usepackage, \cite, or forced page/spacing commands.
+          - Preserve EVIDENCE_STATUS; when evidence is not_supplied, never
+            invent measurements, findings, sources, or completed experiments.
+          - Match the manuscript language. Cap this final fragment at 2,600
+            English words or 4,500 CJK characters. The final strict compile
+            must fail honestly if this bounded substantive repair is not enough.
+
+          Return exactly:
+          % BEGIN_LENGTH_EXPANSION
+          \subsection{Measured Page-Target Elaboration}
+          <substantive LaTeX body only>
+          % END_LENGTH_EXPANSION
+    - id: apply_page_shortfall_expansion
+      label: "应用页数修复"
+      label_en: "Apply page repair"
+      kind: skill_exec
+      skill: paper-artifact-runtime
+      depends_on: [paper_contract, length_repair_sanitizer, compile_probe, page_shortfall_expansion]
+      when: "'PDF_PAGE_TARGET_NOT_MET:' in outputs.compile_probe"
+      with:
+        payload: |
+          {
+            "operation": "apply_length_expansion",
+            "meta_run_id": {{ inputs.meta_run_id | tojson }},
+            "repair_id": "page-shortfall",
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "manuscript_package": {{ outputs.length_repair_sanitizer | tojson }},
+            "expansion": {{ outputs.page_shortfall_expansion | tojson }}
+          }
+    - id: final_latex_sanitizer
+      label: "终稿 LaTeX 清理"
+      label_en: "Final LaTeX cleanup"
+      kind: skill_exec
+      skill: paper-latex-sanitizer
+      depends_on: [paper_contract, length_repair_sanitizer, apply_page_shortfall_expansion]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        payload: |
+          {
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "meta_run_id": {{ inputs.meta_run_id | tojson }},
+            "user_request": {{ (inputs.user_message | truncate(4000)) | tojson }},
+            "manuscript_package": {{ (outputs.get('apply_page_shortfall_expansion') or outputs.length_repair_sanitizer) | tojson }}
+          }
+    - id: final_page_length_gate
+      label: "终稿篇幅门禁"
+      label_en: "Final length gate"
+      kind: skill_exec
+      skill: paper-length-gate
+      depends_on: [paper_contract, final_latex_sanitizer]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        payload: |
+          {
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "manuscript_package": {{ outputs.final_latex_sanitizer | tojson }}
+          }
+    - id: final_publication_quality_gate
+      label: "终稿质量门禁"
+      label_en: "Final quality gate"
+      kind: skill_exec
+      skill: paper-quality-gate
+      depends_on: [paper_contract, final_latex_sanitizer, final_page_length_gate, citation_integrity_gate]
+      when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
+      with:
+        payload: |
+          {
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "length_gate": {{ outputs.final_page_length_gate | tojson }},
+            "citation_gate": {{ outputs.citation_integrity_gate | tojson }},
+            "manuscript_package": {{ outputs.final_latex_sanitizer | tojson }}
           }
     - id: compile_pdf
       label: "编译 PDF"
       label_en: "Compile PDF"
       kind: skill_exec
       skill: paper-artifact-runtime
-      depends_on: [latex_sanitizer, publication_quality_gate, consistency_pass, assemble_manuscript_tex, final_manuscript_package]
+      depends_on: [final_latex_sanitizer, final_publication_quality_gate, compile_probe]
       when: "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or 'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
       with:
-        # Runs the actual xelatex × bibtex × xelatex × 2 cycle so the
-        # user gets a real PDF, not just LaTeX source. Extracts
-        # MANUSCRIPT_TEX / REFERENCES_BIB from the consistency/assembly/final
-        # package contract, transferred as JSON stdin without shell parsing.
+        # Reuses the probe only when its exact TeX/Bib inputs already met the
+        # target. A repaired manuscript differs and therefore receives exactly
+        # one second real xelatex/bibtex compile before fail-closed page checks.
         payload: |
           {
             "operation": "compile_pdf",
             "meta_run_id": {{ inputs.meta_run_id | tojson }},
-            "manuscript_package": {{ outputs.latex_sanitizer | tojson }},
-            "paper_contract": {{ outputs.paper_contract | tojson }}
+            "manuscript_package": {{ outputs.final_latex_sanitizer | tojson }},
+            "paper_contract": {{ outputs.paper_contract | tojson }},
+            "enforce_page_target": true,
+            "reuse_existing": true
           }
     - id: publish_pdf
       label: "发布 PDF"
@@ -1750,29 +2003,33 @@ DAG (in order):
 13. **`writing_plan` + section authors** — the explicit FULL_MANUSCRIPT path
     converts the user's page target into section-level `target_words` and
     citation budgets before prose is written; section authors obey that plan.
-14. **`final_manuscript_package`** — the compact mode produces
-    MANUSCRIPT_TEX with the figure/table/analysis blocks inlined verbatim,
-    plus REFERENCES_BIB containing only the entries actually cited.
-15. **`paper_length_gate`** — reads the artifact-only
-    `MANUSCRIPT_PATH` inside the active workspace and deterministically checks
-    LaTeX structure, required sections, a conservative body-size floor, and
-    citation presence. It does not guess compiled page count.
+14. **`final_manuscript_package`** — the lower-latency compact path still
+    writes a complete, target-sized MANUSCRIPT_TEX with the
+    figure/table/analysis blocks inlined verbatim, plus REFERENCES_BIB
+    containing only the entries actually cited.
+15. **Sanitize, materialize, and preflight** — persist the manuscript under
+    the runtime-owned run directory, then compare language-aware content units
+    with TARGET_PAGES. An undersized draft receives one bounded substantive
+    expansion; a strict second gate must pass before compilation.
 16. **`citation_map`** — strict markdown audit table:
     ``Cite Key | Cited Times | Title | URL/DOI/arXiv | Source Quality``
     with INVALID / UNUSED / WEAK detection. Inlined into the final
     deliverable AND queryable per-run via
     ``opensquilla skills meta runs show``.
-17. **`citation_integrity_gate`** — deterministically reads the numeric
+17. **Citation and publication gates** — deterministically read the numeric
     `citation_map SUMMARY`; blocks when cited keys are below `CITATION_TARGET`,
-    INVALID > 0, or a cited source is WEAK. It never trusts an LLM verdict;
-    derive the target from the paper contract and do not enforce a fixed count.
-18. **`latex_sanitizer`** — strips process text without rewriting the
-    paper.
-19. **`compile_pdf` / `publish_pdf` / `deliver_paper`** — compile and
-    publish the final PDF for FULL_MANUSCRIPT and COMPACT_SKELETON. The
-    compiler refuses to create degraded PDFs when
-    MANUSCRIPT_TEX is missing and uses the compiled PDF's real `pypdf` page
-    count as the authoritative target check.
+    INVALID > 0, a cited source is WEAK, or the sanitized artifact violates
+    publication rules. They never trust an LLM verdict or a fixed citation
+    count.
+18. **Compile probe and bounded page repair** — run the real
+    XeLaTeX/BibTeX cycle and count pages with `pypdf`. A measured shortfall gets
+    one final substantive expansion and one recompile. The runtime permits only
+    the fixed `precompile` and `page-shortfall` repair ids and rejects citation,
+    document-boundary, external-input, forced-page, and spacing commands.
+19. **Final gates / `compile_pdf` / publish / delivery** — re-run sanitizer,
+    length, and publication checks. An unchanged successful probe is reused by
+    input fingerprint; a changed manuscript is recompiled once and must meet
+    TARGET_PAGES before `publish_artifact` can run.
 
 Removed from the previous version:
 

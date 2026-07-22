@@ -38,7 +38,13 @@
     >{{ t('chat.clarify.inputNeededFromAgent') }}</div>
     <header class="clarify-card__head">
       <span class="clarify-card__eyebrow">{{ t('chat.clarify.inputNeeded') }}</span>
-      <p v-if="request.intro" class="clarify-card__intro">{{ request.intro }}</p>
+      <p
+        v-if="request.intro"
+        class="clarify-card__intro"
+        :class="{ 'clarify-card__intro--long': hasLongIntro }"
+        :tabindex="hasLongIntro ? 0 : undefined"
+        data-testid="clarify-intro"
+      >{{ request.intro }}</p>
     </header>
 
     <div class="clarify-card__body">
@@ -129,7 +135,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import type { ChatClarifyRequest } from '@/composables/chat/useChatApprovals'
@@ -149,6 +155,7 @@ const emit = defineEmits<{
 }>()
 
 const values = reactive<Record<string, string>>({})
+const hasLongIntro = computed(() => props.request.intro.length > 2_000)
 
 watch(() => props.request, request => {
   for (const key of Object.keys(values)) delete values[key]
@@ -223,6 +230,25 @@ function onSubmit() {
   font-size: var(--fs-sm);
   line-height: 1.5;
   margin: 0;
+}
+
+.clarify-card__intro--long {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  max-block-size: clamp(14rem, 42vh, 28rem);
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--sp-3);
+  scrollbar-gutter: stable;
+  white-space: pre-wrap;
+}
+
+.clarify-card__intro--long:focus-visible {
+  border-color: var(--border-focus);
+  box-shadow: var(--focus-ring);
+  outline: none;
 }
 
 .clarify-card__body {
@@ -438,6 +464,11 @@ function onSubmit() {
 }
 
 @media (max-width: 768px) {
+  .clarify-card__intro--long {
+    max-block-size: min(45vh, 24rem);
+    padding: var(--sp-2);
+  }
+
   .clarify-card__actions {
     flex-direction: column;
     align-items: stretch;

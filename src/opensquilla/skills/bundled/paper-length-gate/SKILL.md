@@ -23,7 +23,9 @@ paper contract and the compact manuscript manifest. For full manuscripts the
 manifest must point to a non-empty `.tex` file inside the active workspace.
 Compact and repair packages retain an inline-LaTeX compatibility path.
 
-This gate checks document structure, a deliberately conservative minimum body
-scale, and citation presence. It does **not** claim that the requested number
-of pages was produced. `compile_pdf` remains authoritative and counts pages
-from the compiled PDF with `pypdf`.
+This gate checks document structure, citation presence, and a language-aware
+minimum body scale that grows with `TARGET_PAGES`. Its report-only preflight is
+used solely to drive one bounded authoring repair; a second fail-closed run must
+pass before compilation. It does **not** claim that the requested number of
+pages was produced. `compile_pdf` remains authoritative and counts pages from
+the compiled PDF with `pypdf`.

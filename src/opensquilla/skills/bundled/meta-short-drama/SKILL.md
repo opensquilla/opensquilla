@@ -305,13 +305,9 @@ composition:
           修改意见只会触发免费重拟稿，不代表同意调用媒体提供商。修改后
           会展示修订稿，并要求你再次明确说“继续生成”才会产生外部调用。
 
-          预估成本(选继续才会发生):
-            - N 张镜头图 + 1 张全角色参考图 (nano-banana-pro)  ≈ N × $0.05 + $0.05-$0.10
-            - N 段视频 (seedance-2.0)   ≈ $0.15/s × 总时长
-              (脚本里每镜 DURATION_S 决定时长)
-            - 封面 + 结尾卡 (本地 Pillow + ffmpeg,免费)
-            - ffmpeg 拼接 + 烧字幕
-            合计随 N_SHOTS 与总时长缩放。
+          本次待授权脚本的美元成本区间(选继续才会发生):
+          {{ outputs.script_draft | short_drama_media_cost('zh') }}
+          这个授权只适用于下方当前脚本的镜头数和计费剧情时长。
 
           数据边界：继续即表示你同意将脚本提示词和生成的参考图发送给
           已配置的外部图像/视频提供商。请勿上传或要求复刻未经授权的
@@ -324,7 +320,7 @@ composition:
           {{ outputs.intake_extract | truncate(1200) }}
 
           === 脚本草稿 ===
-          {{ outputs.script_draft | truncate(3500) }}
+          {{ outputs.script_draft }}
         intro_zh: |
           脚本就绪。下面是脚本预览，以及我对风格、角色和分镜数做的假设。
 
@@ -332,7 +328,9 @@ composition:
 
           你怎么回都行：满意就说“继续”；想换风格、角色、分镜数或某个镜头，直接说你的修改；不想做了就说“取消”。修改意见只会触发免费重拟稿，不代表同意调用媒体提供商；修改后会展示修订稿，并要求你再次明确说“继续生成”。
 
-          预估成本只会在你选择继续后发生，主要随镜头数和总时长变化。
+          本次待授权脚本的美元成本区间：
+          {{ outputs.script_draft | short_drama_media_cost('zh') }}
+          这个授权只适用于下方当前脚本的镜头数和计费剧情时长；只会在你选择继续后发生。
 
           数据边界：继续即表示你同意将脚本提示词和生成的参考图发送给已配置的外部图像/视频提供商。请勿上传或要求复刻未经授权的真人照片或其他个人敏感资料；写实人物输入可能被上游策略拒绝。
 
@@ -342,7 +340,7 @@ composition:
           {{ outputs.intake_extract | truncate(1200) }}
 
           === 脚本草稿 ===
-          {{ outputs.script_draft | truncate(3500) }}
+          {{ outputs.script_draft }}
         intro_en: |
           The script is ready. Below is the script preview plus the assumptions I made about style, character identity, and shot count.
 
@@ -350,7 +348,9 @@ composition:
 
           Reply naturally: say "continue" if it looks good, describe any style, character, shot-count, or shot-level changes, or say "cancel" to stop. An edit request only triggers a free re-draft and does not authorize any media provider call. After an edit, the revised preview requires a new explicit "continue generation" approval.
 
-          Estimated media cost only happens if you continue, and mainly scales with shot count and total duration.
+          USD cost range for the script awaiting authorization:
+          {{ outputs.script_draft | short_drama_media_cost('en') }}
+          This authorization applies only to the shot count and billable story duration in the current script below, and cost only occurs if you continue.
 
           Data boundary: continuing sends script prompts and generated reference images to the configured external image/video providers. Do not upload or request replication of unauthorized real-person photos or other personal sensitive data; photoreal human inputs may be rejected by upstream policy.
 
@@ -360,7 +360,7 @@ composition:
           {{ outputs.intake_extract | truncate(1200) }}
 
           === Script draft ===
-          {{ outputs.script_draft | truncate(3500) }}
+          {{ outputs.script_draft }}
         # A single string field already preserves a multi-line free-form reply.
         # Keep model extraction off so no prefill can be mistaken for consent.
         nl_extract: false
@@ -456,34 +456,48 @@ composition:
           {{ inputs.user_message | xml_escape | truncate(800) }}
 
     # =========================================================================
-    # 5b. Any revision gets a second visible user-input gate. Merely asking
-    #     for an edit cannot flow into this gate as provider authorization.
+    # 5b. Any revision or direct file edit gets a second visible user-input
+    #     gate. The preview and price are rendered from the exact immutable
+    #     script snapshot that will later be saved and submitted.
     # =========================================================================
     - id: revision_confirm_gate
       label: "修订确认"
       label_en: "Revision confirmation"
       kind: user_input
-      depends_on: [review_intent, script_revised]
-      when: "'DECISION: revise' in outputs.review_intent"
+      depends_on: [review_intent, script_draft, script_reread, script_revised]
+      when: "'DECISION: revise' in outputs.review_intent or ('DECISION: proceed' in outputs.review_intent and outputs.script_reread != outputs.script_draft)"
       clarify:
         mode: form
         intro: |
-          修订稿已就绪。请先审阅下面的完整预览。只有明确回复“继续生成”
+          待执行脚本快照已就绪。请先审阅下面的完整预览。只有明确回复“继续生成”
           / "approve" / "proceed" 才会把提示词和参考图发送给已配置的
           外部媒体提供商并产生费用。修改意见本身从不代表授权。
 
-          === 修订稿预览 ===
-          {{ outputs.script_revised | truncate(5000) }}
+          当前快照的美元成本区间(取代上一版估算):
+          {{ (outputs.get('script_revised', '') or outputs.script_reread) | short_drama_media_cost('zh') }}
+          你的新授权只适用于下方快照的镜头数和实际提供商计费剧情时长。
+          确认后的文件修改不会改变本次执行快照。
+
+          === 待执行脚本快照 ===
+          {{ outputs.get('script_revised', '') or outputs.script_reread }}
         intro_zh: |
-          修订稿已就绪。请审阅下面的预览。只有明确回复“继续生成”才会把提示词和参考图发送给已配置的外部媒体提供商并产生费用；修改意见本身从不代表授权。
+          待执行脚本快照已就绪。请审阅下面的预览。只有明确回复“继续生成”才会把提示词和参考图发送给已配置的外部媒体提供商并产生费用；修改意见本身从不代表授权。
 
-          === 修订稿预览 ===
-          {{ outputs.script_revised | truncate(5000) }}
+          当前快照的美元成本区间(取代上一版估算):
+          {{ (outputs.get('script_revised', '') or outputs.script_reread) | short_drama_media_cost('zh') }}
+          你的新授权只适用于下方快照的镜头数和实际提供商计费剧情时长。确认后的文件修改不会改变本次执行快照。
+
+          === 待执行脚本快照 ===
+          {{ outputs.get('script_revised', '') or outputs.script_reread }}
         intro_en: |
-          The revised script is ready. Review the preview below. Only a new explicit "continue generation", "approve", or "proceed" reply authorizes sending prompts and reference images to the configured external media providers and incurring cost. An edit request never counts as approval.
+          The exact script snapshot awaiting execution is ready. Review it below. Only a new explicit "continue generation", "approve", or "proceed" reply authorizes sending prompts and reference images to the configured external media providers and incurring cost. An edit request never counts as approval.
 
-          === Revised script preview ===
-          {{ outputs.script_revised | truncate(5000) }}
+          Updated USD cost range for this snapshot (replaces the previous estimate):
+          {{ (outputs.get('script_revised', '') or outputs.script_reread) | short_drama_media_cost('en') }}
+          Your new authorization applies only to the shot count and actual provider-billed story duration in the snapshot below. File edits after confirmation do not change this execution snapshot.
+
+          === Script snapshot awaiting execution ===
+          {{ outputs.get('script_revised', '') or outputs.script_reread }}
         nl_extract: false
         fields:
           - name: review
@@ -515,33 +529,12 @@ composition:
           phase: "media_approval"
           review: "{{ inputs.get('collected', {}).get('review_gate', {}).get('review', '') | truncate(4000) }}"
           confirmation: "{{ inputs.get('collected', {}).get('revision_confirm_gate', {}).get('review', '') | truncate(4000) }}"
+          approval_snapshot_changed: "{{ outputs.script_reread != outputs.script_draft }}"
 
     # =========================================================================
-    # 6. Pick the final script everyone downstream reads.
-    # =========================================================================
-    - id: final_script
-      label: "最终剧本"
-      label_en: "Final script"
-      kind: llm_chat
-      depends_on: [review_normalize, script_reread, script_revised]
-      with:
-        system: "Echo one of two inputs verbatim. No commentary. No new content."
-        task: |
-          If a revised script block is present below, echo it verbatim.
-          Otherwise echo the re-read script verbatim (this preserves any
-          hand-edits the user made to script.txt during review).
-
-          REVISED (may be empty):
-          {{ outputs.get('script_revised', '') | truncate(8000) }}
-
-          RE-READ FROM DISK:
-          {{ outputs.script_reread | truncate(8000) }}
-
-    # =========================================================================
-    # 7. Save the final script to disk (overwrites the draft so the file
-    #    on disk always reflects the post-review canonical script —
-    #    important when the LLM produced a revision the user didn't write
-    #    by hand).
+    # 6. Persist the exact consented snapshot, then read it back
+    #    deterministically. A model never gets an opportunity to alter the
+    #    shot count, duration, prompts, or price basis after approval.
     # =========================================================================
     - id: script_save
       label: "保存剧本"
@@ -549,10 +542,19 @@ composition:
       kind: tool_call
       tool: write_file
       tool_allowlist: [write_file]
-      depends_on: [final_script]
+      depends_on: [review_normalize, script_reread, script_revised]
       tool_args:
         path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/script.txt"
-        content: "{{ outputs.final_script }}"
+        content: "{{ outputs.get('script_revised', '') or outputs.script_reread }}"
+
+    - id: final_script
+      label: "最终剧本"
+      label_en: "Final script"
+      kind: skill_exec
+      skill: text-file-read
+      depends_on: [script_save, review_normalize]
+      with:
+        input: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/script.txt"
 
     # =========================================================================
     # 8. Title / subtitle / ending text extracts (cheap llm_chat).

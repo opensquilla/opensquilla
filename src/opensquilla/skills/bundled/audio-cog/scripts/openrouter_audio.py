@@ -5,15 +5,22 @@ from __future__ import annotations
 
 import argparse
 import base64
+import binascii
 import json
 import os
 import re
 import sys
 import wave
-from collections.abc import Iterable
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.request import ProxyHandler, Request, build_opener, urlopen
+from urllib.request import Request
+
+from opensquilla.skills.bundled._provider_http import (
+    ProviderHTTPError,
+    iter_limited_response_chunks,
+    open_authenticated_request,
+)
 
 SAFE_NO_SUBMIT_EXIT_CODE = 78
 META_CAPABILITY_LEASE_REQUIRED_ENV = "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED"
@@ -23,6 +30,10 @@ META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
 META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
 
 SAMPLE_RATE = 24_000
+MAX_AUDIO_SSE_RESPONSE_BYTES = 96 * 1024 * 1024
+MAX_AUDIO_SSE_LINE_BYTES = 16 * 1024 * 1024
+MAX_AUDIO_SSE_EVENT_BYTES = 16 * 1024 * 1024
+MAX_AUDIO_PCM_BYTES = 64 * 1024 * 1024
 
 
 def _safe_filename(value: str, default: str) -> str:
@@ -137,11 +148,10 @@ def _runtime_connection(args: argparse.Namespace) -> tuple[str, str, str, bool]:
 
 
 def _open_url(request: Request, *, timeout: float, proxy: str):
-    if not proxy:
-        return urlopen(request, timeout=timeout)
-    return build_opener(ProxyHandler({"http": proxy, "https": proxy})).open(
+    return open_authenticated_request(
         request,
         timeout=timeout,
+        proxy=proxy,
     )
 
 
@@ -151,13 +161,71 @@ def _failure_reason(exc: BaseException) -> str:
     return exc.__class__.__name__
 
 
-def _iter_sse_audio_chunks(response: Iterable[bytes]) -> bytes:
-    pcm = bytearray()
-    for raw in response:
-        line = raw.decode("utf-8", "replace").strip()
-        if not line.startswith("data:"):
+def _iter_bounded_sse_lines(response: object) -> Iterator[bytes]:
+    """Split a provider stream into lines without ever asking for a huge line."""
+
+    pending = bytearray()
+    chunks = iter_limited_response_chunks(
+        response,
+        max_bytes=MAX_AUDIO_SSE_RESPONSE_BYTES,
+        error_message="provider audio response exceeds size limit",
+    )
+    for chunk in chunks:
+        cursor = 0
+        while cursor < len(chunk):
+            newline = chunk.find(b"\n", cursor)
+            end = len(chunk) if newline < 0 else newline
+            segment = chunk[cursor:end]
+            if len(pending) + len(segment) > MAX_AUDIO_SSE_LINE_BYTES:
+                raise ProviderHTTPError("provider audio SSE line exceeds size limit")
+            pending.extend(segment)
+            if newline < 0:
+                break
+            line = bytes(pending)
+            pending.clear()
+            yield line[:-1] if line.endswith(b"\r") else line
+            cursor = newline + 1
+    if pending:
+        yield bytes(pending)
+
+
+def _iter_sse_data_events(response: object) -> Iterator[bytes]:
+    """Yield SSE data payloads while bounding every line and complete event."""
+
+    event = bytearray()
+    has_data = False
+    for line in _iter_bounded_sse_lines(response):
+        if not line:
+            if has_data:
+                yield bytes(event)
+            event.clear()
+            has_data = False
             continue
-        payload = line[5:].strip()
+        if line.startswith(b":"):
+            continue
+        if line == b"data":
+            data = b""
+        elif line.startswith(b"data:"):
+            data = line[5:]
+            if data.startswith(b" "):
+                data = data[1:]
+        else:
+            continue
+        added = len(data) + (1 if has_data else 0)
+        if len(event) + added > MAX_AUDIO_SSE_EVENT_BYTES:
+            raise ProviderHTTPError("provider audio SSE event exceeds size limit")
+        if has_data:
+            event.extend(b"\n")
+        event.extend(data)
+        has_data = True
+    if has_data:
+        yield bytes(event)
+
+
+def _iter_sse_audio_chunks(response: object) -> bytes:
+    pcm = bytearray()
+    for raw_event in _iter_sse_data_events(response):
+        payload = raw_event.decode("utf-8", "replace").strip()
         if not payload or payload == "[DONE]":
             continue
         try:
@@ -170,7 +238,13 @@ def _iter_sse_audio_chunks(response: Iterable[bytes]) -> bytes:
             audio = delta.get("audio") or message.get("audio") or {}
             data_b64 = audio.get("data")
             if isinstance(data_b64, str) and data_b64:
-                pcm.extend(base64.b64decode(data_b64))
+                try:
+                    chunk = base64.b64decode(data_b64, validate=True)
+                except (ValueError, binascii.Error):
+                    raise ProviderHTTPError("provider returned invalid audio data") from None
+                if len(pcm) + len(chunk) > MAX_AUDIO_PCM_BYTES:
+                    raise ProviderHTTPError("provider audio exceeds size limit")
+                pcm.extend(chunk)
     return bytes(pcm)
 
 
@@ -235,7 +309,7 @@ def main() -> int:
     except HTTPError as exc:
         _failure("AUDIO_GENERATION_FAILED", filename, status=exc.code)
         return 0
-    except (URLError, TimeoutError) as exc:
+    except (URLError, TimeoutError, ProviderHTTPError) as exc:
         _failure("AUDIO_GENERATION_FAILED", filename, reason=_failure_reason(exc))
         return 0
 

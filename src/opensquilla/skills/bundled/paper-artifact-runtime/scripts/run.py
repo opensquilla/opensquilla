@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -31,6 +32,14 @@ _XETEX_CJK_LINEBREAK_COMMAND_RE = re.compile(
     r"^[ \t]*\\XeTeXlinebreak(?:locale|skip)\b[^\r\n]*(?:\r?\n|\Z)",
     re.MULTILINE,
 )
+_LENGTH_REPAIR_IDS = frozenset({"precompile", "page-shortfall"})
+_MAX_LENGTH_EXPANSION_BYTES = 96 * 1024
+_MIN_VISIBLE_PAGE_UNITS = 20
+_MIN_SUBSTANTIVE_PAGE_UNITS = 80
+_REFERENCE_HEADING_RE = re.compile(
+    r"^(?:references|bibliography|参考文献|参考资料)\s*$",
+    re.IGNORECASE,
+)
 
 
 class PaperArtifactError(RuntimeError):
@@ -44,6 +53,21 @@ def _text(payload: Mapping[str, Any], key: str, default: str = "") -> str:
     if not isinstance(value, str):
         raise PaperArtifactError(f"PAPER_ARTIFACT_RUNTIME_FAILED: {key} must be text")
     return value
+
+
+def _boolean(payload: Mapping[str, Any], key: str, default: bool) -> bool:
+    value = payload.get(key, default)
+    if not isinstance(value, bool):
+        raise PaperArtifactError(f"PAPER_ARTIFACT_RUNTIME_FAILED: {key} must be boolean")
+    return value
+
+
+def _compile_input_fingerprint(tex: str, bibliography: str) -> str:
+    digest = hashlib.sha256()
+    digest.update(tex.encode("utf-8"))
+    digest.update(b"\0REFERENCES\0")
+    digest.update(bibliography.encode("utf-8"))
+    return digest.hexdigest()
 
 
 def _validated_run_id(payload: Mapping[str, Any], prefix: str) -> str:
@@ -528,6 +552,142 @@ def _extract_compile_inputs(
     return tex_body, bibliography, target_pages
 
 
+def _length_expansion_fragment(raw: str) -> str:
+    """Extract one bounded, body-only LaTeX expansion fragment.
+
+    The LLM proposes prose, while this runtime owns all file mutation.  Keeping
+    the fragment body-only preserves the existing preamble, bibliography, cite
+    map, and document boundaries across both preflight and page-shortfall
+    repairs.
+    """
+
+    match = re.search(
+        r"%\s*BEGIN_LENGTH_EXPANSION\s*\n([\s\S]*?)"
+        r"\n%\s*END_LENGTH_EXPANSION",
+        raw,
+        re.IGNORECASE,
+    )
+    if match is None:
+        raise PaperArtifactError(
+            "LENGTH_EXPANSION_FAILED: expansion markers are missing or incomplete"
+        )
+    fragment = match.group(1).strip()
+    if not fragment:
+        raise PaperArtifactError("LENGTH_EXPANSION_FAILED: expansion fragment is empty")
+    if len(fragment.encode("utf-8")) > _MAX_LENGTH_EXPANSION_BYTES:
+        raise PaperArtifactError(
+            "LENGTH_EXPANSION_FAILED: expansion exceeds the 96-KiB safety limit"
+        )
+    forbidden = re.search(
+        r"\\(?:documentclass|usepackage|begin\s*\{document\}|"
+        r"end\s*\{document\}|bibliography|addbibresource|input|include|"
+        r"write18|openout|read|includegraphics|cite[A-Za-z*]*|newpage|"
+        r"clearpage|pagebreak|vspace|hspace|addvspace|linespread|fontsize|"
+        r"enlargethispage)\b",
+        fragment,
+        re.IGNORECASE,
+    )
+    if forbidden:
+        raise PaperArtifactError(
+            "LENGTH_EXPANSION_FAILED: body fragment contains forbidden command "
+            f"{forbidden.group(0)}"
+        )
+    if re.search(r"\\section\*?\s*\{", fragment, re.IGNORECASE):
+        raise PaperArtifactError(
+            "LENGTH_EXPANSION_FAILED: use subsection-level prose; top-level sections are locked"
+        )
+    content = re.sub(r"\\[A-Za-z@]+\*?", " ", fragment)
+    content = re.sub(r"[{}\[\]$&]", " ", content)
+    english_tokens = re.findall(r"\b[A-Za-z0-9][A-Za-z0-9'’-]*\b", content)
+    units = len(english_tokens) + len(_CJK_RE.findall(content))
+    if units < 180:
+        raise PaperArtifactError(
+            "LENGTH_EXPANSION_FAILED: expansion must contain at least 180 substantive units"
+        )
+    if len(english_tokens) >= 180:
+        lexical_diversity = len({token.casefold() for token in english_tokens}) / len(
+            english_tokens
+        )
+        if lexical_diversity < 0.08:
+            raise PaperArtifactError(
+                "LENGTH_EXPANSION_FAILED: expansion contains excessive repeated filler"
+            )
+    return fragment
+
+
+def materialize_manuscript(payload: Mapping[str, Any]) -> str:
+    """Persist an inline compact package into the run-owned artifact paths."""
+
+    paper = _paper_run_dir(payload, prefix="MATERIALIZE_FAILED", create=True)
+    tex_body, bibliography, _target_pages = _extract_compile_inputs(payload, paper)
+    tex_body = _prepare_tex(tex_body)
+    tex_path = paper / "paper.tex"
+    bib_path = paper / "references.bib"
+    if tex_path.is_symlink() or bib_path.is_symlink():
+        raise PaperArtifactError("MATERIALIZE_FAILED: paper files must not be symlinks")
+    tex_path.write_text(tex_body, encoding="utf-8")
+    bib_path.write_text(bibliography, encoding="utf-8")
+    return "\n".join(
+        (
+            f"MANUSCRIPT_PATH: {tex_path.resolve()}",
+            f"REFERENCES_PATH: {bib_path.resolve()}",
+            f"MANUSCRIPT_CHARS: {len(tex_body)}",
+            f"REFERENCES_CHARS: {len(bibliography)}",
+            "MATERIALIZED: yes",
+        )
+    )
+
+
+def apply_length_expansion(payload: Mapping[str, Any]) -> str:
+    """Materialize and append one idempotent, bounded manuscript expansion."""
+
+    paper = _paper_run_dir(payload, prefix="LENGTH_EXPANSION_FAILED", create=True)
+    repair_id = _text(payload, "repair_id").strip()
+    if repair_id not in _LENGTH_REPAIR_IDS:
+        raise PaperArtifactError("LENGTH_EXPANSION_FAILED: invalid repair_id")
+    tex_body, bibliography, _target_pages = _extract_compile_inputs(payload, paper)
+    tex_body = _prepare_tex(tex_body)
+    fragment = _length_expansion_fragment(_text(payload, "expansion"))
+    start_marker = f"% BEGIN OPENSQUILLA LENGTH EXPANSION {repair_id}"
+    end_marker = f"% END OPENSQUILLA LENGTH EXPANSION {repair_id}"
+    inserted = start_marker not in tex_body
+    if inserted:
+        block = f"{start_marker}\n{fragment}\n{end_marker}\n"
+        insertion_match = re.search(
+            r"(?=\\section\*?\s*\{(?:Conclusion|Conclusions|结论|总结)\})",
+            tex_body,
+            re.IGNORECASE,
+        )
+        if insertion_match is None:
+            insertion_match = re.search(
+                r"(?=\\bibliographystyle|\\bibliography|\\end\s*\{document\})",
+                tex_body,
+                re.IGNORECASE,
+            )
+        if insertion_match is None:
+            raise PaperArtifactError(
+                "LENGTH_EXPANSION_FAILED: manuscript has no safe body insertion point"
+            )
+        index = insertion_match.start()
+        tex_body = tex_body[:index] + block + tex_body[index:]
+
+    tex_path = paper / "paper.tex"
+    bib_path = paper / "references.bib"
+    if tex_path.is_symlink() or bib_path.is_symlink():
+        raise PaperArtifactError("LENGTH_EXPANSION_FAILED: paper files must not be symlinks")
+    tex_path.write_text(tex_body, encoding="utf-8")
+    bib_path.write_text(bibliography, encoding="utf-8")
+    return "\n".join(
+        (
+            f"MANUSCRIPT_PATH: {tex_path.resolve()}",
+            f"REFERENCES_PATH: {bib_path.resolve()}",
+            f"LENGTH_EXPANSION_ID: {repair_id}",
+            f"LENGTH_EXPANSION_APPLIED: {'yes' if inserted else 'already-present'}",
+            f"MANUSCRIPT_CHARS: {len(tex_body)}",
+        )
+    )
+
+
 def _prepare_tex(tex_body: str) -> str:
     if r"\documentclass" not in tex_body:
         tex_body = (
@@ -736,6 +896,69 @@ def _validate_final_latex_quality(paper: Path, final_xelatex_output: str) -> Non
     raise PaperArtifactError("\n".join(messages))
 
 
+def _pdf_page_content_report(reader: Any, target_pages: int) -> dict[str, Any]:
+    """Measure extractable, visible content without counting cover/reference padding."""
+
+    page_texts: list[str] = []
+    page_units: list[int] = []
+    reference_heading_pages: list[bool] = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        try:
+            text = page.extract_text() or ""
+        except Exception as exc:
+            raise PaperArtifactError(
+                "COMPILE_FAILED: could not extract generated PDF page "
+                f"{page_number} text: {exc}"
+            ) from exc
+        reference_heading_pages.append(
+            any(
+                _REFERENCE_HEADING_RE.fullmatch(re.sub(r"\s+", " ", line).strip())
+                for line in text.splitlines()
+                if line.strip()
+            )
+        )
+        normalized = re.sub(r"\s+", " ", text).strip()
+        page_texts.append(normalized)
+        english_tokens = len(re.findall(r"\b[A-Za-z0-9][A-Za-z0-9'’-]*\b", normalized))
+        cjk_characters = len(_CJK_RE.findall(normalized))
+        page_units.append(english_tokens + cjk_characters)
+
+    reference_start: int | None = None
+    earliest_reference_page = max(1, len(page_texts) // 2)
+    for index, has_reference_heading in enumerate(reference_heading_pages):
+        if index < earliest_reference_page:
+            continue
+        if has_reference_heading:
+            reference_start = index
+            break
+
+    exempt_near_empty = {0} if page_texts else set()
+    reference_pages: set[int] = set()
+    if reference_start is not None:
+        reference_pages.update(range(reference_start, len(page_texts)))
+        exempt_near_empty.update(reference_pages)
+
+    near_empty_pages = [
+        index + 1
+        for index, units in enumerate(page_units)
+        if units < _MIN_VISIBLE_PAGE_UNITS and index not in exempt_near_empty
+    ]
+    substantive_pages = [
+        index + 1
+        for index, units in enumerate(page_units)
+        if units >= _MIN_SUBSTANTIVE_PAGE_UNITS and index not in reference_pages
+    ]
+    return {
+        "page_units": page_units,
+        "near_empty_pages": near_empty_pages,
+        "substantive_pages": substantive_pages,
+        "reference_pages": sorted(index + 1 for index in reference_pages),
+        "target_met": (
+            len(substantive_pages) >= target_pages and not near_empty_pages
+        ),
+    }
+
+
 def compile_pdf(payload: Mapping[str, Any]) -> str:
     """Compile and validate a real PDF using the managed TeX toolchain."""
 
@@ -748,21 +971,43 @@ def compile_pdf(payload: Mapping[str, Any]) -> str:
         raise PaperArtifactError("COMPILE_FAILED: paper input/output files must not be symlinks")
     tex_body, bibliography, target_pages = _extract_compile_inputs(payload, paper)
     tex_body = _prepare_tex(tex_body)
+    enforce_page_target = _boolean(payload, "enforce_page_target", True)
+    reuse_existing = _boolean(payload, "reuse_existing", False)
     stale_paths = tuple(
         paper / f"paper{suffix}"
         for suffix in (".pdf", ".aux", ".bbl", ".blg", ".log", ".out", ".toc")
     )
     if any(path.is_symlink() for path in stale_paths):
         raise PaperArtifactError("COMPILE_FAILED: paper output files must not be symlinks")
-    expected_tex.write_text(tex_body, encoding="utf-8")
-    expected_bib.write_text(bibliography, encoding="utf-8")
-
-    for path in stale_paths:
-        path.unlink(missing_ok=True)
-    logs, final_xelatex_output = _compile_commands(paper)
-    _validate_final_latex_quality(paper, final_xelatex_output)
-
     pdf_path = paper / "paper.pdf"
+    fingerprint_path = paper / "paper.compile-input.sha256"
+    if fingerprint_path.is_symlink():
+        raise PaperArtifactError("COMPILE_FAILED: compile fingerprint must not be a symlink")
+    input_fingerprint = _compile_input_fingerprint(tex_body, bibliography)
+    inputs_unchanged = bool(
+        reuse_existing
+        and expected_tex.is_file()
+        and expected_bib.is_file()
+        and pdf_path.is_file()
+        and fingerprint_path.is_file()
+        and expected_tex.read_text(encoding="utf-8") == tex_body
+        and expected_bib.read_text(encoding="utf-8") == bibliography
+        and fingerprint_path.read_text(encoding="ascii").strip() == input_fingerprint
+    )
+    logs: list[str] = []
+    compile_action = "reused" if inputs_unchanged else "compiled"
+    if inputs_unchanged:
+        _validate_final_latex_quality(paper, "")
+    else:
+        expected_tex.write_text(tex_body, encoding="utf-8")
+        expected_bib.write_text(bibliography, encoding="utf-8")
+        fingerprint_path.unlink(missing_ok=True)
+        for path in stale_paths:
+            path.unlink(missing_ok=True)
+        logs, final_xelatex_output = _compile_commands(paper)
+        _validate_final_latex_quality(paper, final_xelatex_output)
+        fingerprint_path.write_text(input_fingerprint + "\n", encoding="ascii")
+
     if pdf_path.is_symlink():
         raise PaperArtifactError("COMPILE_FAILED: paper output files must not be symlinks")
     pdf = pdf_path.resolve()
@@ -778,31 +1023,62 @@ def compile_pdf(payload: Mapping[str, Any]) -> str:
             f"=== paper.log tail ===\n{log_tail}"
         )
     try:
-        pages = len(PdfReader(str(pdf)).pages)
+        reader = PdfReader(str(pdf))
+        pages = len(reader.pages)
     except Exception as exc:
         raise PaperArtifactError(
             f"COMPILE_FAILED: could not read generated PDF page count: {exc}"
         ) from exc
-    if pages < target_pages:
+    content_report = _pdf_page_content_report(reader, target_pages)
+    total_page_target_met = pages >= target_pages
+    page_target_met = total_page_target_met and bool(content_report["target_met"])
+    if not page_target_met and enforce_page_target:
+        near_empty = ",".join(str(item) for item in content_report["near_empty_pages"])
         raise PaperArtifactError(
             "COMPILE_FAILED: PDF_PAGE_TARGET_NOT_MET: "
-            f"requested at least {target_pages} pages; compiled PDF has {pages}"
+            f"requested at least {target_pages} substantive pages; compiled PDF has "
+            f"{pages} total and {len(content_report['substantive_pages'])} substantive; "
+            f"near-empty non-front/reference pages={near_empty or 'none'}"
         )
-    return "\n".join(
-        (
-            f"PDF_PATH: {pdf}",
-            f"PDF_PAGES: {pages}",
-            f"PDF_TARGET_PAGES: {target_pages}",
-            f"PDF_BYTES: {pdf.stat().st_size}",
-            f"TEX_BYTES: {expected_tex.stat().st_size}",
-            f"BIB_BYTES: {expected_bib.stat().st_size}",
+    lines = [
+        f"PDF_PATH: {pdf}",
+        f"PDF_PAGES: {pages}",
+        f"PDF_SUBSTANTIVE_PAGES: {len(content_report['substantive_pages'])}",
+        "PDF_PAGE_CONTENT_UNITS: "
+        + ",".join(str(item) for item in content_report["page_units"]),
+        "PDF_NEAR_EMPTY_PAGES: "
+        + (
+            ",".join(str(item) for item in content_report["near_empty_pages"])
+            or "none"
+        ),
+        "PDF_REFERENCE_PAGES: "
+        + (
+            ",".join(str(item) for item in content_report["reference_pages"])
+            or "none"
+        ),
+        f"PDF_TARGET_PAGES: {target_pages}",
+        f"PDF_PAGE_STATUS: {'met' if page_target_met else 'shortfall'}",
+        f"PDF_COMPILE_ACTION: {compile_action}",
+        f"PDF_BYTES: {pdf.stat().st_size}",
+        f"TEX_BYTES: {expected_tex.stat().st_size}",
+        f"BIB_BYTES: {expected_bib.stat().st_size}",
+    ]
+    if not page_target_met:
+        near_empty = ",".join(str(item) for item in content_report["near_empty_pages"])
+        lines.append(
+            "PDF_PAGE_TARGET_NOT_MET: "
+            f"requested at least {target_pages} substantive pages; compiled PDF has "
+            f"{pages} total and {len(content_report['substantive_pages'])} substantive; "
+            f"near-empty non-front/reference pages={near_empty or 'none'}"
         )
-    )
+    return "\n".join(lines)
 
 
 _OPERATIONS: dict[str, Callable[[Mapping[str, Any]], str]] = {
     "persist_sections": persist_sections,
     "assemble_manuscript_tex": assemble_manuscript_tex,
+    "materialize_manuscript": materialize_manuscript,
+    "apply_length_expansion": apply_length_expansion,
     "citation_map": citation_map,
     "compile_pdf": compile_pdf,
 }

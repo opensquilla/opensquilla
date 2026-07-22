@@ -46,6 +46,13 @@ def _parser() -> argparse.ArgumentParser:
             f"${_VALIDATION_ROOT_ENV} or the system temporary directory."
         ),
     )
+    parser.add_argument(
+        "--expect-platform-key",
+        help=(
+            "Fail unless native host detection resolves this catalog platform key. "
+            "This assertion never overrides platform detection."
+        ),
+    )
     return parser
 
 
@@ -86,10 +93,32 @@ def _progress(component_id: str):
     return report
 
 
-def validate(components: Sequence[str], *, root: Path) -> int:
+def validate(
+    components: Sequence[str],
+    *,
+    root: Path,
+    expected_platform_key: str | None = None,
+) -> int:
     root.mkdir(parents=True, exist_ok=True)
     for component_id in components:
         descriptor = describe_component(component_id)
+        if (
+            expected_platform_key is not None
+            and descriptor.platform_key != expected_platform_key
+        ):
+            print(
+                json.dumps(
+                    {
+                        "event": "platform_mismatch",
+                        "component_id": component_id,
+                        "actual_platform_key": descriptor.platform_key,
+                        "expected_platform_key": expected_platform_key,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return 1
         print(
             json.dumps(
                 {
@@ -140,7 +169,11 @@ def main() -> int:
     components = tuple(args.components or component_ids())
     root = _validation_root(args.root)
     print(json.dumps({"event": "validation_root", "path": str(root)}, sort_keys=True))
-    return validate(components, root=root)
+    return validate(
+        components,
+        root=root,
+        expected_platform_key=args.expect_platform_key,
+    )
 
 
 if __name__ == "__main__":

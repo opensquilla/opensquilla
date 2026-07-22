@@ -97,6 +97,7 @@ class CapabilityRequirement:
     consumer: str
     provider_candidates: tuple[CapabilityProviderCandidate, ...]
     portable_env_aliases: tuple[str, ...] = ()
+    ambient_env_aliases: tuple[str, ...] = ()
 
     @property
     def provider_id(self) -> str:
@@ -172,6 +173,7 @@ _CONSUMER_REQUIREMENTS: dict[str, tuple[CapabilityRequirement, ...]] = {
                 ),
             ),
             portable_env_aliases=("OPENROUTER_API_KEY",),
+            ambient_env_aliases=("OPENROUTER_API_KEY",),
         ),
     ),
     "seedance-2-prompt": (
@@ -185,6 +187,7 @@ _CONSUMER_REQUIREMENTS: dict[str, tuple[CapabilityRequirement, ...]] = {
                 ),
             ),
             portable_env_aliases=("OPENROUTER_API_KEY",),
+            ambient_env_aliases=("OPENROUTER_API_KEY", "ARK_API_KEY"),
         ),
     ),
     "nano-banana-pro-openrouter": (
@@ -273,9 +276,13 @@ def _validate_short_drama_capability_contract(
         or getattr(review_intent, "side_effect", None) != ""
         or getattr(revision_gate, "kind", None) != "user_input"
         or getattr(revision_gate, "depends_on", None)
-        != ("review_intent", "script_revised")
+        != ("review_intent", "script_draft", "script_reread", "script_revised")
         or getattr(revision_gate, "when", None)
-        != "'DECISION: revise' in outputs.review_intent"
+        != (
+            "'DECISION: revise' in outputs.review_intent or "
+            "('DECISION: proceed' in outputs.review_intent and "
+            "outputs.script_reread != outputs.script_draft)"
+        )
         or getattr(revision_gate, "route", None) != ()
         or getattr(revision_gate, "side_effect", None) != ""
         or getattr(revision_gate, "clarify_config", None) is None
@@ -289,6 +296,8 @@ def _validate_short_drama_capability_contract(
         or getattr(review_step, "side_effect", None) != ""
         or not isinstance(review_payload, Mapping)
         or review_payload.get("phase") != "media_approval"
+        or review_payload.get("approval_snapshot_changed")
+        != "{{ outputs.script_reread != outputs.script_draft }}"
     ):
         return False
 
@@ -565,6 +574,62 @@ def capability_manifest_env_aliases_for_consumers(
             }
         )
     )
+
+
+def capability_registered_consumers() -> tuple[str, ...]:
+    """Return consumers covered by the code-owned capability registry."""
+
+    return tuple(sorted(_CONSUMER_REQUIREMENTS))
+
+
+def capability_supported_readiness_env_aliases() -> tuple[str, ...]:
+    """Return trusted env aliases accepted at the readiness boundary.
+
+    This is derived from capability metadata so adding an ordered provider
+    candidate does not require a second allowlist in the MetaSkill preflight.
+    """
+
+    return tuple(
+        sorted(
+            {
+                alias
+                for requirements in _CONSUMER_REQUIREMENTS.values()
+                for requirement in requirements
+                for alias in requirement.portable_env_aliases
+                if alias
+            }
+        )
+    )
+
+
+def capability_ambient_credential_env_names() -> tuple[str, ...]:
+    """Return credential env names that capability readiness must ignore.
+
+    Both direct-client aliases and provider-registry canonical names are
+    included.  The gateway then marks back only aliases proven by a trusted
+    parent plan and resolved provider connection.
+    """
+
+    names = {
+        alias
+        for requirements in _CONSUMER_REQUIREMENTS.values()
+        for requirement in requirements
+        for alias in (
+            *requirement.portable_env_aliases,
+            *requirement.ambient_env_aliases,
+        )
+        if alias
+    }
+    for requirements in _CONSUMER_REQUIREMENTS.values():
+        for requirement in requirements:
+            for candidate in requirement.provider_candidates:
+                try:
+                    env_key = _text(get_provider_spec(candidate.provider_id).env_key)
+                except UnknownProviderError:
+                    continue
+                if env_key and env_key != "OAuth":
+                    names.add(env_key)
+    return tuple(sorted(names))
 
 
 def capability_provider_display_name(provider_id: str) -> str:
@@ -1113,9 +1178,12 @@ __all__ = [
     "CapabilityProviderCandidate",
     "CapabilityRequirement",
     "capability_requirements_for_consumers",
+    "capability_ambient_credential_env_names",
     "capability_provider_display_name",
+    "capability_registered_consumers",
     "capability_manifest_env_aliases_for_consumers",
     "capability_runtime_env_for_consumers",
+    "capability_supported_readiness_env_aliases",
     "lease_capability_connection",
     "resolve_capability_status",
     "trusted_capability_consumers_for_meta_plan",

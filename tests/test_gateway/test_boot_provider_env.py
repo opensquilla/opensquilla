@@ -12,6 +12,7 @@ from opensquilla.gateway.rpc_config import (
     _handle_config_patch_safe,
     _sync_provider_selector,
 )
+from opensquilla.onboarding.config_store import load_config
 
 
 class _CapturingSelector:
@@ -80,6 +81,112 @@ def test_existing_custom_provider_keeps_implicit_env_compatibility(monkeypatch) 
 
     assert runtime.api_key == "custom-env-key"
     assert runtime.api_key_from_env is True
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url"),
+    [
+        ("custom", "custom-model", "https://custom.example.test/v1"),
+        ("openrouter", "openai/gpt-test", "https://openrouter.ai/api/v1"),
+    ],
+)
+def test_configured_missing_env_does_not_fall_back_to_generic_key(
+    monkeypatch,
+    provider: str,
+    model: str,
+    base_url: str,
+) -> None:
+    monkeypatch.delenv("NEW_ENDPOINT_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-old-origin-key")
+    cfg = GatewayConfig(
+        llm={
+            "provider": provider,
+            "model": model,
+            "api_key": "",
+            "api_key_env": "NEW_ENDPOINT_KEY",
+            "base_url": base_url,
+        }
+    )
+
+    runtime = resolve_llm_runtime_config(cfg)
+
+    assert runtime.api_key == ""
+    assert runtime.api_key_from_env is False
+    assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
+
+
+def test_generic_key_remains_fallback_without_configured_env(monkeypatch) -> None:
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY_ENV", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "custom-model",
+            "api_key": "",
+            "api_key_env": "",
+            "base_url": "https://custom.example.test/v1",
+        }
+    )
+
+    runtime = resolve_llm_runtime_config(cfg)
+
+    assert runtime.api_key == "synthetic-generic-key"
+    assert runtime.api_key_from_env is True
+    assert runtime.api_key_env_name == "OPENSQUILLA_LLM_API_KEY"
+
+
+def test_configured_env_does_not_reuse_runtime_cache_after_variable_removed(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("NEW_ENDPOINT_KEY", "synthetic-new-origin-key")
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-old-origin-key")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "custom-model",
+            "api_key": "",
+            "api_key_env": "NEW_ENDPOINT_KEY",
+            "base_url": "https://custom.example.test/v1",
+        }
+    )
+
+    first = resolve_llm_runtime_config(cfg)
+    monkeypatch.delenv("NEW_ENDPOINT_KEY")
+    second = resolve_llm_runtime_config(cfg)
+
+    assert first.api_key == "synthetic-new-origin-key"
+    assert second.api_key == ""
+    assert second.api_key_env_name == "NEW_ENDPOINT_KEY"
+
+
+def test_loaded_config_missing_env_rejects_absorbed_generic_key(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("NEW_ENDPOINT_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-old-origin-key")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[llm]
+provider = "custom"
+model = "custom-model"
+api_key_env = "NEW_ENDPOINT_KEY"
+base_url = "https://custom.example.test/v1"
+""".strip()
+        + "\n"
+    )
+
+    cfg = load_config(config_path)
+    absorbed_key = cfg.llm.api_key
+    runtime = resolve_llm_runtime_config(cfg)
+
+    assert absorbed_key == "synthetic-old-origin-key"
+    assert "llm.api_key" in cfg._runtime_secret_paths
+    assert cfg.llm.api_key == ""
+    assert runtime.api_key == ""
+    assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
 
 
 def test_openrouter_runtime_uses_default_provider_routing() -> None:

@@ -988,6 +988,36 @@ def test_upsert_llm_provider_changed_origin_accepts_new_env_reference(monkeypatc
     assert runtime.api_key_env_name == "CUSTOM_ORIGIN_B_KEY"
 
 
+def test_upsert_llm_provider_changed_origin_unset_new_env_blocks_generic_fallback(
+    monkeypatch,
+):
+    monkeypatch.delenv("CUSTOM_ORIGIN_B_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "sk-generic-origin-a")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key": "",
+            "api_key_env": "CUSTOM_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    changed = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        api_key_env="CUSTOM_ORIGIN_B_KEY",
+        base_url="https://b.example.test/v1",
+    )
+    runtime = resolve_llm_runtime_config(changed.config)
+
+    assert changed.config.llm.api_key_env == "CUSTOM_ORIGIN_B_KEY"
+    assert runtime.api_key == ""
+    assert runtime.api_key_from_env is False
+    assert runtime.api_key_env_name == "CUSTOM_ORIGIN_B_KEY"
+
+
 def test_upsert_llm_provider_clears_optional_key_by_default():
     cfg = GatewayConfig(
         llm={

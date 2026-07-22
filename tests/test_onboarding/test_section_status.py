@@ -261,6 +261,7 @@ def test_llm_credential_status_reports_env_key(cfg, monkeypatch):
 
 def test_llm_credential_status_reports_missing_env(cfg, monkeypatch):
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
     cfg.llm = LlmProviderConfig(
         provider="deepseek",
         model="deepseek-v4-flash",
@@ -396,6 +397,7 @@ def test_optional_llm_credential_status_without_key_is_not_required(cfg, monkeyp
 
 def test_optional_llm_credential_status_reports_configured_missing_env(cfg, monkeypatch):
     monkeypatch.delenv("PRIVATE_CUSTOM_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
     cfg.llm = LlmProviderConfig(
         provider="custom",
         model="test-model",

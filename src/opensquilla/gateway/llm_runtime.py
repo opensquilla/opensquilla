@@ -66,10 +66,12 @@ def resolve_llm_credential(
     ``LlmProviderConfig`` reads the two ``OPENSQUILLA_LLM_*`` settings
     variables when it is constructed.  Hot config mutations do not reconstruct
     that model, so consult those external inputs explicitly as well.  Stored
-    config still wins, followed by the configured/settings/registry env-name
-    chain and finally the generic settings key.  Runtime callers may retain an
-    already-materialized environment secret; observability and reveal surfaces
-    disable that cache so they describe only currently inspectable sources.
+    config still wins. An explicitly configured env-name is authoritative: if
+    it is missing, resolution fails closed instead of substituting another
+    source. Otherwise settings/registry env names precede the generic settings
+    key. Runtime callers may retain an already-materialized environment secret;
+    observability and reveal surfaces disable that cache so they describe only
+    currently inspectable sources.
     """
 
     llm = getattr(config, "llm", None)
@@ -100,6 +102,9 @@ def resolve_llm_credential(
             env_name=env_name,
         )
 
+    if configured_env_name:
+        return ResolvedLlmCredential(env_name=configured_env_name)
+
     settings_api_key = environment_value("OPENSQUILLA_LLM_API_KEY")
     if settings_api_key:
         return ResolvedLlmCredential(
@@ -108,9 +113,10 @@ def resolve_llm_credential(
             env_name="OPENSQUILLA_LLM_API_KEY",
         )
 
-    # A value materialized from the environment earlier in this process may
-    # remain usable after the source variable is removed.  Keep its runtime
-    # provenance instead of misclassifying that cached secret as explicit.
+    # With no authoritative configured reference, a value materialized from
+    # the environment earlier in this process may remain usable after its
+    # source variable is removed. Keep its runtime provenance instead of
+    # misclassifying that cached secret as explicit.
     if (
         include_runtime_cache
         and stored_api_key

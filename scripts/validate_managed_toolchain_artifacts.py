@@ -180,15 +180,16 @@ def _check_runtime_hot_path(component_id: str, *, root: Path) -> bool:
         return real_payload_matches(package_path, selected_descriptor)
 
     warm_iterations = 3
-    # Per call: marker + package root + bin roots + probe executables + resources,
-    # plus one resource lookup for the component's managed font when present.
-    stat_budget_per_call = (
+    # Per call, the cache rechecks only package-local fixed sentinels. managed_env
+    # then resolves and verifies the selected font path, which performs at most
+    # two containment stats plus the final file stat on CPython 3.12.
+    sentinel_budget_per_call = (
         2
         + len(descriptor.bin_relpaths)
         + len(descriptor.probe_commands)
         + len(resources)
-        + (1 if "noto-cjk-font" in resources else 0)
     )
+    resource_stat_budget_per_call = 3 if "noto-cjk-font" in resources else 0
     runtime.invalidate_payload_validation_cache(component_id, root=root)
     setattr(Path, "lstat", tracked_lstat)
     setattr(Path, "stat", tracked_stat)
@@ -218,8 +219,10 @@ def _check_runtime_hot_path(component_id: str, *, root: Path) -> bool:
         setattr(Path, "stat", real_stat)
         setattr(Path, "lstat", real_lstat)
 
-    stat_budget = stat_budget_per_call * warm_iterations
-    lstat_budget = stat_budget_per_call * warm_iterations
+    stat_budget = (
+        sentinel_budget_per_call + resource_stat_budget_per_call
+    ) * warm_iterations
+    lstat_budget = sentinel_budget_per_call * warm_iterations
     if not reason and counts["cold_lstat"] == 0:
         reason = "cold validation did not inspect the package payload"
     if not reason and counts["cold_payload_validations"] != 1:

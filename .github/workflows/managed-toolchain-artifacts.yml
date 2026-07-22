@@ -43,13 +43,17 @@ jobs:
             platform_key: windows-x64
             paper_platform_key: windows-x64
     env:
-      OPENSQUILLA_GATEWAY_STATE_DIR: ${{ runner.temp }}/opensquilla-managed-toolchain-state
-      OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT: ${{ runner.temp }}/opensquilla-managed-toolchain-state/toolchains/v1
       OPENSQUILLA_REQUIRE_MANAGED_TOOLCHAIN_E2E: "1"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Configure isolated managed-toolchain state
+        shell: bash
+        run: |
+          printf 'OPENSQUILLA_GATEWAY_STATE_DIR=%s/opensquilla-managed-toolchain-state\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT=%s/opensquilla-managed-toolchain-state/toolchains/v1\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -67,6 +71,7 @@ jobs:
           uv run --frozen python scripts/validate_managed_toolchain_artifacts.py
           --component paper-tex
           --expect-platform-key ${{ matrix.paper_platform_key }}
+          ${{ matrix.platform_key == 'linux-x64' && '--check-runtime-hot-path' || '' }}
 
       - name: Validate real pinned media archives and capability smoke
         run: >-
@@ -91,7 +96,7 @@ jobs:
 
     steps:
       - name: Prepare Alpine action runtime
-        run: apk add --no-cache git nodejs
+        run: apk add --no-cache fontconfig git nodejs
 
       - name: Check out repository
         uses: actions/checkout@v4

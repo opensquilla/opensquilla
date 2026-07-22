@@ -349,11 +349,20 @@ def test_managed_toolchain_artifacts_cover_native_macos_architectures_and_musl()
         },
     }
 
-    state_root = validate["env"]["OPENSQUILLA_GATEWAY_STATE_DIR"]
-    validation_root = validate["env"]["OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT"]
-    assert state_root == "${{ runner.temp }}/opensquilla-managed-toolchain-state"
-    assert validation_root == f"{state_root}/toolchains/v1"
+    assert "OPENSQUILLA_GATEWAY_STATE_DIR" not in validate["env"]
+    assert "OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT" not in validate["env"]
     assert validate["env"]["OPENSQUILLA_REQUIRE_MANAGED_TOOLCHAIN_E2E"] == "1"
+
+    configure_state = next(
+        step
+        for step in validate["steps"]
+        if step.get("name") == "Configure isolated managed-toolchain state"
+    )
+    assert configure_state["shell"] == "bash"
+    assert "$RUNNER_TEMP" in configure_state["run"]
+    assert "OPENSQUILLA_GATEWAY_STATE_DIR=" in configure_state["run"]
+    assert "OPENSQUILLA_TOOLCHAIN_VALIDATION_ROOT=" in configure_state["run"]
+    assert "$GITHUB_ENV" in configure_state["run"]
 
     paper_smoke = next(
         step
@@ -362,6 +371,10 @@ def test_managed_toolchain_artifacts_cover_native_macos_architectures_and_musl()
     )["run"]
     assert "--component paper-tex" in paper_smoke
     assert "--expect-platform-key ${{ matrix.paper_platform_key }}" in paper_smoke
+    assert (
+        "${{ matrix.platform_key == 'linux-x64' && '--check-runtime-hot-path' || '' }}"
+        in paper_smoke
+    )
     media_smoke = next(
         step
         for step in validate["steps"]
@@ -369,6 +382,7 @@ def test_managed_toolchain_artifacts_cover_native_macos_architectures_and_musl()
     )["run"]
     assert "--component media-ffmpeg" in media_smoke
     assert "--expect-platform-key ${{ matrix.platform_key }}" in media_smoke
+    assert "--check-runtime-hot-path" not in media_smoke
     paper_compile = next(
         step
         for step in validate["steps"]
@@ -382,7 +396,7 @@ def test_managed_toolchain_artifacts_cover_native_macos_architectures_and_musl()
     assert musl["env"]["PYTHONPATH"] == "${{ github.workspace }}/src"
     assert musl["steps"][0] == {
         "name": "Prepare Alpine action runtime",
-        "run": "apk add --no-cache git nodejs",
+        "run": "apk add --no-cache fontconfig git nodejs",
     }
     smoke = next(
         step

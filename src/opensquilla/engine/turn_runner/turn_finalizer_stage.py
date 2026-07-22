@@ -597,7 +597,15 @@ class TurnFinalizerStage:
             heartbeat_ack_max_chars=inp.heartbeat_ack_max_chars,
         )
         turn_segments = inp.turn_segments
-        if (
+        if inp.run_kind == "heartbeat" and original_final_text != final_text:
+            turn_segments = [
+                segment
+                for segment in turn_segments
+                if not (isinstance(segment, dict) and segment.get("type") == "text")
+            ]
+            if final_text:
+                turn_segments.append({"type": "text", "text": final_text})
+        elif (
             original_final_text
             and not final_text
             and turn_segments

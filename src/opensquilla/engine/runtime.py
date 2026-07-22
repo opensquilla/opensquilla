@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Hashable, Mapping, Sequence
@@ -789,6 +790,15 @@ _TOOL_RESULT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
 )
 _SENTINELS: Final[frozenset[str]] = frozenset({"NO_REPLY", "HEARTBEAT_OK"})
 _HEARTBEAT_ACK_TOKEN: Final[str] = "HEARTBEAT_OK"
+_HEARTBEAT_THINK_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<think>.*?</think>",
+    re.DOTALL,
+)
+_HEARTBEAT_UNCLOSED_THINK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<think>.*\Z",
+    re.DOTALL,
+)
+_HEARTBEAT_FINAL_TAG_RE: Final[re.Pattern[str]] = re.compile(r"</?final>")
 _THINKING_ALIASES: Final[dict[str, str]] = {
     "x-high": "xhigh",
     "x_high": "xhigh",
@@ -1386,6 +1396,17 @@ def _normalize_heartbeat_text(
         return ""
     if run_kind != "heartbeat":
         return text
+
+    normalized = _HEARTBEAT_THINK_BLOCK_RE.sub("", text)
+    normalized = _HEARTBEAT_UNCLOSED_THINK_RE.sub("", normalized)
+    normalized = _HEARTBEAT_FINAL_TAG_RE.sub("", normalized)
+    if normalized != text:
+        text = normalized.strip()
+        stripped = text.strip()
+
+    if stripped in _SENTINELS:
+        log.debug("turn_runner.sentinel_suppressed", sentinel=stripped)
+        return ""
 
     def _suppressed(payload: str) -> bool:
         return len(payload.strip()) <= heartbeat_ack_max_chars

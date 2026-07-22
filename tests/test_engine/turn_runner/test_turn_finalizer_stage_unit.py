@@ -547,6 +547,68 @@ async def test_heartbeat_empty_clears_text_and_segments() -> None:
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_long_think_block_before_ack_is_not_delivered() -> None:
+    """OSQ-505: private reasoning must not bypass heartbeat ACK suppression."""
+
+    stage, recs = _make_stage()
+    private_reasoning = "internal reasoning must stay private. " * 20
+    model_output = f"<think>{private_reasoning}</think>\nHEARTBEAT_OK"
+    segments: list[dict[str, Any]] = [{"type": "text", "text": model_output}]
+    inp = _make_input(
+        final_text_parts=[model_output],
+        turn_segments=segments,
+        run_kind="heartbeat",
+    )
+
+    outcome = await stage.run(inp)
+
+    assert outcome.output.final_text == ""
+    assert outcome.output.turn_segments == []
+    assert recs["transcript_append"].calls == []
+    assert recs["turn_memory_capture"].calls == []
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_think_block_is_removed_from_real_alert() -> None:
+    stage, recs = _make_stage()
+    model_output = "<think>check disk usage</think>\nDisk usage reached 95%."
+    inp = _make_input(
+        final_text_parts=[model_output],
+        turn_segments=[{"type": "text", "text": model_output}],
+        run_kind="heartbeat",
+    )
+
+    outcome = await stage.run(inp)
+
+    assert outcome.output.final_text == "Disk usage reached 95%."
+    assert outcome.output.turn_segments == [
+        {"type": "text", "text": "Disk usage reached 95%."}
+    ]
+    assert recs["transcript_append"].calls[0]["content"] == "Disk usage reached 95%."
+    assert recs["transcript_append"].calls[0]["tool_calls"] == [
+        {"type": "text", "text": "Disk usage reached 95%."}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_non_heartbeat_think_block_is_unchanged() -> None:
+    stage, recs = _make_stage()
+    model_output = "<think>visible protocol text</think>\nRegular reply."
+    segments = [{"type": "text", "text": model_output}]
+    inp = _make_input(
+        final_text_parts=[model_output],
+        turn_segments=segments,
+        run_kind="default",
+    )
+
+    outcome = await stage.run(inp)
+
+    assert outcome.output.final_text == model_output
+    assert outcome.output.turn_segments == segments
+    assert recs["transcript_append"].calls[0]["content"] == model_output
+
+
+@pytest.mark.asyncio
 async def test_reasoning_content_included_for_deepseek_model() -> None:
     stage, recs = _make_stage()
     done = DoneEvent(

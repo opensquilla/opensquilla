@@ -1134,6 +1134,7 @@ const chatMessageActions = useChatMessageActions({
   focusComposer: () => composerRef.value?.focusTextarea(),
   pendingForkBeforeMessageId,
   aiGeneratedLabel: () => aiGeneratedLabel.value,
+  notifyMessagePending: () => pushToast(t('chat.toast.messageStillSaving'), { tone: 'info' }),
 })
 const {
   copyMessage,

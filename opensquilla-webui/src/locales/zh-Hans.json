@@ -2952,6 +2952,7 @@
       "waitCompactionBeforeCommand": "请等待上下文压缩完成后再运行 {command}。",
       "waitResponseBeforeCommand": "请等待当前回复结束后再运行 {command}。",
       "queueFull": "队列已满 — 请等待当前回复结束。",
+      "messageStillSaving": "这条消息尚未保存完成 — 请稍后再试。",
       "artifactOpenFailed": "产物打开失败。请改为下载。"
     },
     "stream": {

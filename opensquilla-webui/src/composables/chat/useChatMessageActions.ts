@@ -17,6 +17,13 @@ export interface UseChatMessageActionsOptions {
   focusComposer: () => void
   pendingForkBeforeMessageId: Ref<string | null>
   aiGeneratedLabel?: () => string
+  /**
+   * User-visible feedback when regenerate/edit cannot run because the anchor
+   * user message has no durable server id yet (chat.send ack lost, or an
+   * older gateway omitted the id). Without it the buttons look dead: the
+   * only trace of the refusal would be a console warning.
+   */
+  notifyMessagePending?: () => void
 }
 
 export function useChatMessageActions(options: UseChatMessageActionsOptions) {
@@ -85,6 +92,7 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
     const forkBeforeMessageId = userMessage?.messageId || ''
     if (!forkBeforeMessageId) {
       console.warn('Wait for the message to finish saving before regenerating')
+      options.notifyMessagePending?.()
       return
     }
     const userText = userMessage?.text || ''
@@ -107,6 +115,7 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
     const forkBeforeMessageId = sourceMessage?.messageId || ''
     if (!forkBeforeMessageId) {
       console.warn('Wait for the message to finish saving before editing')
+      options.notifyMessagePending?.()
       return
     }
     const text = sourceMessage.text || ''

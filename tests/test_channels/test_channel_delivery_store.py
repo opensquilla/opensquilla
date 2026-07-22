@@ -20,6 +20,7 @@ from opensquilla.channels.delivery_store import (
     ChannelDeliveryStore,
     deliver_with_outbox,
     durable_enqueue,
+    inbound_event_key,
     install_outbox,
 )
 from opensquilla.channels.manager import ChannelManager
@@ -132,6 +133,70 @@ def test_journal_write_failure_degrades_to_memory_only_acceptance(tmp_path) -> N
     assert follow_claim is not None
     assert follow_claim.event_key
     assert store.diagnostics("slack-main")["ingress"]["processing"]["count"] == 1
+    store.close()
+
+
+def _durable_ingress_count(store: ChannelDeliveryStore) -> int:
+    with sqlite3.connect(store.path) as connection:
+        row = connection.execute("SELECT COUNT(*) FROM channel_ingress").fetchone()
+    return int(row[0])
+
+
+def test_recovery_after_degraded_accept_does_not_double_dispatch(tmp_path) -> None:
+    """A redelivery after storage recovers must not add a durable row alongside
+    the memory-only marker, which would let the same event be claimed twice."""
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    message = _message()
+    event_key = inbound_event_key("slack-main", message)
+    assert event_key is not None
+    queue: list[IncomingMessage] = []
+
+    class Queue:
+        def put_nowait(self, item: IncomingMessage) -> None:
+            queue.append(item)
+
+    channel = SimpleNamespace(_delivery_store=store, _delivery_channel_name="slack-main")
+
+    # Delivery A during a storage fault: degrades to memory-only acceptance but
+    # is still enqueued for dispatch, with no durable journal row.
+    with _blocked_journal(store):
+        assert durable_enqueue(channel, message, Queue()) is True
+    assert event_key in store._unjournaled_events
+    assert _durable_ingress_count(store) == 0
+    assert len(queue) == 1
+
+    # Delivery B after storage recovers: a redelivery of the SAME event must be
+    # treated as a duplicate — no durable row is committed and nothing is
+    # re-enqueued — so it cannot produce a second, independently claimable row.
+    assert durable_enqueue(channel, message, Queue()) is False
+    assert store.accept_inbound("slack-main", message) is False
+    assert _durable_ingress_count(store) == 0
+    assert len(queue) == 1
+
+    # End to end, exactly one claim is dispatchable: the pending pass-through
+    # from delivery A. The marker is reconciled (discarded) as it is claimed.
+    claim = store.claim_inbound("slack-main", queue[0])
+    assert claim is not None
+    assert claim.event_key == ""
+    assert event_key not in store._unjournaled_events
+    # No second dispatchable claim exists: the marker is gone and no durable
+    # 'accepted' row was ever written.
+    assert store.claim_inbound("slack-main", message) is None
+    store.close()
+
+
+def test_normal_duplicate_without_fault_is_still_rejected(tmp_path) -> None:
+    """Control: with healthy storage, a redelivered event is a durable duplicate
+    and is rejected without going through the memory-only marker path."""
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    message = _message()
+
+    assert store.accept_inbound("slack-main", message) is True
+    assert _durable_ingress_count(store) == 1
+    # A second, fault-free delivery hits the durable IntegrityError branch.
+    assert store.accept_inbound("slack-main", message) is False
+    assert _durable_ingress_count(store) == 1
+    assert store._unjournaled_events == set()
     store.close()
 
 

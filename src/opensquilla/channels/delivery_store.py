@@ -518,6 +518,18 @@ class ChannelDeliveryStore:
         now = time.time()
         lane_key = f"{message.channel_id}:{message.sender_id}"
         with self._lock:
+            if event_key in self._unjournaled_events:
+                # A prior delivery of this event was already accepted
+                # memory-only after a journal fault, and its pass-through claim
+                # is still pending. If storage has since recovered, taking the
+                # durable INSERT path now would commit an ``accepted`` row while
+                # the marker still exists, so both the marker and the row would
+                # hand out a claim and the message would dispatch twice. Treat
+                # the redelivery as a duplicate (mirroring the durable-duplicate
+                # return below) so it is not re-enqueued; the marker is
+                # reconciled — discarded — when :meth:`claim_inbound` issues the
+                # single pass-through claim it is owed.
+                return False
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 try:

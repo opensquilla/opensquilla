@@ -9,13 +9,17 @@ import type {
 import type {
   ArtifactPayload,
   CompactionPayload,
+  CronResultPayload,
   EnsembleProgressPayload,
   RouterDecisionPayload,
   SessionEventPayload,
+  StreamEventEnvelope,
+  SubagentCompletionPayload,
   TextDeltaPayload,
   ToolDeltaPayload,
   ToolResultPayload,
   ToolUsePayload,
+  WarningPayload,
 } from '@/types/rpc'
 import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcSubscriptions'
 import type { FrameInput } from '@/types/turnlog'
@@ -97,6 +101,7 @@ export interface UseChatRpcEventHandlersOptions {
   clearPendingRouterDecision: () => void
   handleRouterControlReplay: () => void
   showCompactionToast: (payload: CompactionPayload, meta?: Record<string, unknown>) => void
+  showWarningToast: (message: string) => void
   scheduleHistorySync: () => void
   schedulePendingDrainAfterTerminal: () => void
   popAllPendingIntoComposer: () => boolean
@@ -445,22 +450,22 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     }
   }, { flush: 'sync' })
 
-  function isStaleEpoch(payload: SessionEventPayload): boolean {
+  function isStaleEpoch(payload: StreamEventEnvelope): boolean {
     return payloadIsStaleEpoch(payload, currentEpoch.value)
   }
 
-  function isCurrentSessionPayload(payload: SessionEventPayload): boolean {
+  function isCurrentSessionPayload(payload: StreamEventEnvelope): boolean {
     return payloadIsCurrentSession(payload, sessionKey.value)
   }
 
   // Drop late events tagged with a different task than the one rendering now,
   // so a stale turn's tool_use/error/done can't leak into the current turn
   // (issue #344). Lenient: untagged events and unknown active task pass.
-  function isCurrentTaskPayload(payload: SessionEventPayload): boolean {
+  function isCurrentTaskPayload(payload: StreamEventEnvelope): boolean {
     return payloadIsCurrentTask(payload, activeStreamTaskId.value)
   }
 
-  function acceptStreamSeq(payload: SessionEventPayload): boolean {
+  function acceptStreamSeq(payload: StreamEventEnvelope): boolean {
     const decision = decideStreamSeq(payload, sessionKey.value, lastStreamSeq.value)
     if (decision.accepted) lastStreamSeq.value = decision.nextStreamSeq
     return decision.accepted
@@ -638,9 +643,82 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     options.showCompactionToast(payload || {}, safeMeta)
   }
 
-  function handleRpcWarning(payload: SessionEventPayload) {
+  function handleRpcWarning(payload: WarningPayload) {
     if (isStaleEpoch(payload)) return
-    console.warn((payload && payload.message) || 'Assistant warning')
+    if (!isCurrentSessionPayload(payload)) return
+    // Silent compatibility warnings still own their stream sequence. Consuming
+    // it before the display filter prevents a later replay from being accepted.
+    if (!acceptStreamSeq(payload)) return
+    if (payload.code === 'provider_reasoning_only_retry') return
+    // Let the view provide the locale-specific fallback when older gateways
+    // omit a warning message.
+    options.showWarningToast(String(payload.message || ''))
+  }
+
+  function messageAlreadyPresent(candidate: ChatMessage): boolean {
+    if (candidate.messageId) {
+      return messages.value.some(message => message.messageId === candidate.messageId)
+    }
+    return messages.value.some(message =>
+      message.role === candidate.role
+      && message.text === candidate.text
+      && message.provenanceKind === candidate.provenanceKind
+      && message.provenanceSourceSessionKey === candidate.provenanceSourceSessionKey
+      && message.provenanceSourceTool === candidate.provenanceSourceTool
+      && (candidate.provenanceSourceTool === 'subagent_completion' || message.ts === candidate.ts))
+  }
+
+  function appendDurableEventMessage(message: ChatMessage) {
+    if (messageAlreadyPresent(message)) return
+    messages.value.push(message)
+    // The pushed row is deliberately immediate. History remains authoritative
+    // for ordering and durable metadata and will replace/dedupe by message id.
+    options.scheduleHistorySync()
+  }
+
+  function handleRpcCronResult(payload: CronResultPayload) {
+    if (isStaleEpoch(payload)) return
+    if (!isCurrentSessionPayload(payload)) return
+    if (!acceptStreamSeq(payload)) return
+    const message = payload.message
+    if (!message || typeof message !== 'object') return
+    const text = typeof message.text === 'string' ? message.text : ''
+    if (!text) return
+    appendDurableEventMessage({
+      role: typeof message.role === 'string' && message.role ? message.role : 'assistant',
+      text,
+      ts: message.timestamp ?? new Date().toISOString(),
+      messageId: String(message.messageId || message.message_id || '') || undefined,
+      provenanceKind: String(message.provenanceKind || 'cron'),
+      provenanceSourceTool: String(message.provenanceSourceTool || ''),
+      provenanceSourceSessionKey: String(message.provenanceSourceSessionKey || ''),
+    })
+  }
+
+  function handleRpcSubagentCompletion(payload: SubagentCompletionPayload) {
+    if (isStaleEpoch(payload)) return
+    if (!isCurrentSessionPayload(payload)) return
+    if (!acceptStreamSeq(payload)) return
+    const durablePayload = { ...payload }
+    delete durablePayload.session_key
+    delete durablePayload.sessionKey
+    delete durablePayload.stream_seq
+    delete durablePayload.epoch
+    // message_id correlates this push with the separately persisted transcript
+    // row. It is transport metadata, not part of the subagent business payload
+    // stored/rendered as JSON.
+    delete durablePayload.message_id
+    delete durablePayload.messageId
+    const sourceSessionKey = String(payload.child_session_key || '')
+    appendDurableEventMessage({
+      role: 'system',
+      text: JSON.stringify(durablePayload),
+      ts: new Date().toISOString(),
+      messageId: String(payload.message_id || payload.messageId || '') || undefined,
+      provenanceKind: 'internal_system',
+      provenanceSourceSessionKey: sourceSessionKey,
+      provenanceSourceTool: 'subagent_completion',
+    })
   }
 
   function handleRpcEpochChanged(payload: SessionEventPayload) {
@@ -954,6 +1032,8 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     onRunHeartbeat: handleRpcRunHeartbeat,
     onCompaction: handleRpcCompaction,
     onWarning: handleRpcWarning,
+    onCronResult: handleRpcCronResult,
+    onSubagentCompletion: handleRpcSubagentCompletion,
     onEpochChanged: handleRpcEpochChanged,
     onSessionsChanged: handleRpcSessionsChanged,
     onTaskQueued: handleRpcTaskQueued,

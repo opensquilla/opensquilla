@@ -98,6 +98,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("gateway", "persistence"),
     ("gateway", "provider"),
     ("gateway", "sandbox"),
+    # Browser-facing approval projections reuse the canonical secret redactor;
+    # safety is a lower-level leaf and does not import gateway back.
+    ("gateway", "safety"),
     ("gateway", "scheduler"),
     ("gateway", "search"),
     ("gateway", "session"),

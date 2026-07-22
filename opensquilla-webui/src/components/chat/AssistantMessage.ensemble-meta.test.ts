@@ -51,6 +51,29 @@ beforeEach(() => {
 })
 
 describe('AssistantMessage ensemble footer metadata', () => {
+  it('marks only cron-provenance assistant rows as scheduled', async () => {
+    const { app, el } = await mountMessage(assistantMessage({
+      provenanceKind: 'cron',
+      provenanceSourceTool: 'cron.run',
+    }))
+
+    const badge = el.querySelector<HTMLElement>('.msg-provenance-chip')
+    expect(badge?.textContent).toContain('Scheduled')
+    expect(badge?.title).toContain('cron.run')
+    app.unmount()
+
+    const regular = await mountMessage(assistantMessage({ provenanceKind: 'internal_system' }))
+    expect(regular.el.querySelector('.msg-provenance-chip')).toBeNull()
+    regular.app.unmount()
+
+    const unsafe = await mountMessage(assistantMessage({
+      provenanceKind: 'cron',
+      provenanceSourceTool: 'cron.run\nBearer secret',
+    }))
+    expect(unsafe.el.querySelector<HTMLElement>('.msg-provenance-chip')?.title).not.toContain('Bearer')
+    unsafe.app.unmount()
+  })
+
   it('shows the current message token counts in its usage popover', async () => {
     const { app, el } = await mountMessage(
       assistantMessage({

@@ -159,12 +159,16 @@ export interface ArtifactPayload {
   [key: string]: unknown
 }
 
-export interface SessionEventPayload {
+export interface StreamEventEnvelope {
   key?: string
   session_key?: string
   sessionKey?: string
   epoch?: number
   stream_seq?: number
+  [key: string]: unknown
+}
+
+export interface SessionEventPayload extends StreamEventEnvelope {
   task_id?: string
   taskId?: string
   reason?: string
@@ -181,6 +185,50 @@ export interface SessionEventPayload {
   active_task?: RawSessionTask | null
   last_task?: RawSessionTask | null
   [key: string]: unknown
+}
+
+export interface WarningPayload extends SessionEventPayload {
+  message?: string
+  code?: string
+}
+
+export interface CronResultMessagePayload {
+  role?: string
+  text?: string
+  timestamp?: string | number | null
+  messageId?: string
+  message_id?: string
+  provenanceKind?: string
+  provenanceSourceTool?: string
+  provenanceSourceSessionKey?: string
+}
+
+export type CronResultPayload = StreamEventEnvelope & {
+  message?: CronResultMessagePayload
+}
+
+export interface SubagentCompletionPayload extends SessionEventPayload {
+  type?: 'subagent_completion'
+  parent_session_key?: string
+  child_session_key?: string
+  status?: string
+  terminal_reason?: string
+  message_id?: string
+  messageId?: string
+  result?: { text?: string; [key: string]: unknown }
+}
+
+export interface ApprovalStatusPayload {
+  found?: boolean
+  id?: string
+  namespace?: string
+  pending?: boolean
+  resolved?: boolean
+  approved?: boolean
+  resolution?: string
+  resolutionInProgress?: boolean
+  consumed?: boolean
+  deadline?: number
 }
 
 export interface TextDeltaPayload extends SessionEventPayload {

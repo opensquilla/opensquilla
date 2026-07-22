@@ -9,6 +9,7 @@ from opensquilla.application.approval_queue import get_approval_queue
 from opensquilla.application.approval_rpc import (
     approval_extend_rpc_payload,
     approval_forget_rpc_payload,
+    approval_lookup_status_rpc_payload,
     approval_request_rpc_payload,
     approval_resolve_rpc_payload,
     approval_settings_rpc_payload,
@@ -174,6 +175,17 @@ async def _handle_exec_approval_wait_decision(
         queue,
         params["id"],
         timeout_seconds=params.get("timeoutSeconds"),
+    )
+
+
+@_d.method("exec.approval.status", scope="operator.approvals")
+async def _handle_exec_approval_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    if not isinstance(params, dict) or not str(params.get("id") or "").strip():
+        raise ValueError("params.id is required")
+    return approval_lookup_status_rpc_payload(
+        get_approval_queue(),
+        str(params["id"]).strip(),
+        namespace="exec",
     )
 
 
@@ -353,6 +365,17 @@ async def _handle_plugin_approval_wait_decision(
         queue,
         params["id"],
         timeout_seconds=params.get("timeoutSeconds"),
+    )
+
+
+@_d.method("plugin.approval.status", scope="operator.approvals")
+async def _handle_plugin_approval_status(params: dict | None, ctx: RpcContext) -> dict[str, Any]:
+    if not isinstance(params, dict) or not str(params.get("id") or "").strip():
+        raise ValueError("params.id is required")
+    return approval_lookup_status_rpc_payload(
+        get_approval_queue(),
+        str(params["id"]).strip(),
+        namespace="plugin",
     )
 
 

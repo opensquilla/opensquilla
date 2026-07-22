@@ -44,12 +44,20 @@ function approvalEntry(): ChatApprovalEntry {
   }
 }
 
-function approvalHarness() {
+function approvalHarness(statusResponse: Record<string, unknown> = {
+  found: true,
+  pending: true,
+  resolved: false,
+  resolutionInProgress: true,
+}) {
   const interruptState = ref<ReadonlyMap<string, InterruptViewState>>(new Map())
   const onDenyFeedback = vi.fn()
   const approvals = useChatApprovals({
     rpc: {
-      call: vi.fn(),
+      call: vi.fn(async () => statusResponse) as <T = unknown>(
+        method: string,
+        params?: Record<string, unknown>,
+      ) => Promise<T>,
       on: vi.fn(() => () => {}),
     },
     sessionKey: ref('agent:main:web'),
@@ -165,8 +173,38 @@ describe('cross-surface resolve behavior', () => {
 
     expect(interruptState.value.get('approval-1')).toMatchObject({
       resolution: null,
-      busy: false,
+      busy: true,
       error: '',
+    })
+  })
+
+  it('uses status recovery to settle a resolve response that lost the final push', async () => {
+    installApprovalFetch({ pending: true, resolved: false, resolutionInProgress: true })
+    const { approvals, interruptState } = approvalHarness({
+      found: true,
+      pending: false,
+      resolved: true,
+      approved: false,
+      resolution: 'expired',
+    })
+
+    await approvals.resolveInterrupt('approval-1', 'allow-once')
+
+    expect(interruptState.value.get('approval-1')).toMatchObject({
+      resolution: 'expired',
+      busy: false,
+    })
+  })
+
+  it('marks a missing approval unavailable without guessing approve or deny', async () => {
+    installApprovalFetch({ pending: true, resolved: false, resolutionInProgress: true })
+    const { approvals, interruptState } = approvalHarness({ found: false })
+
+    await approvals.resolveInterrupt('approval-1', 'allow-once')
+
+    expect(interruptState.value.get('approval-1')).toMatchObject({
+      resolution: 'unavailable',
+      busy: false,
     })
   })
 })

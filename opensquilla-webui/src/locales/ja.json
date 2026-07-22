@@ -539,37 +539,42 @@
     },
     "modelStrategy": {
       "title": "モデルルーティング",
-      "desc": "Squilla が各リクエストで現在のモデルをどう使うかを選びます。",
-      "providerFirst": "先にモデルサービスを設定してから、ルーティング方法を選んでください。",
-      "providerAction": "モデルサービスへ →",
-      "configuredProvidersOnly": "ここにはモデルサービスで設定したプロバイダーだけが表示され、完全なカタログはルーティング操作に表示されません。",
-      "manageProviders": "プロバイダーを管理 →",
-      "routerTitle": "AI 単一モデルルーティング",
+      "desc": "新しいリクエストで Squilla が設定済みモデルを選択し、使用する方法を選びます。",
+      "modeTitle": "モデルの使い方を選択",
+      "modeDesc": "まずはインテリジェントルーティングを選びます。予測しやすさを重視する場合は固定モデルを、追加の呼び出しとコストに見合うタスクでは複数モデルの協調を使用します。",
+      "providerFirstTitle": "最初にモデルサービスを追加",
+      "providerFirst": "モデルルーティングには、保存済みのプロバイダーが少なくとも 1 つ必要です。1 つのプロバイダーだけでも、設定済みの複数モデル間でルーティングできます。",
+      "providerAction": "モデルサービスへ",
+      "configuredProvidersOnly": "利用できるプロバイダーとモデルは、モデルサービスの設定に基づきます。",
+      "manageProviders": "モデルサービスを管理",
+      "recommendedBadge": "おすすめ",
+      "advancedBadge": "高度",
+      "routerTitle": "インテリジェントモデルルーティング",
       "visualModeLabel": "ルーティングパネルの表示スタイル",
       "visualModeDesc": "チャット返信に表示されるルーティング決定パネルの表示方法。",
       "crossProviderNotice": "プロバイダー横断ルーティングが有効です。保存前に各ティアを確認してください。",
       "cards": {
         "router": {
-          "title": "AI 単一モデルルーティング",
-          "desc": "AI が各ターンで適切なモデルを 1 つ選び、低コストを優先します。"
+          "title": "インテリジェントモデルルーティング",
+          "desc": "リクエストの複雑さに応じて、設定済みモデルから適切な 1 つを選びます。"
         },
         "ensemble": {
-          "title": "AI 集約ルーティング",
-          "desc": "AI が複数モデルを協調させ、複雑なタスクでの能力を高めます。"
+          "title": "複数モデルの協調",
+          "desc": "複数モデルを実行し、その結果をまとめて難しいタスクに対応します。呼び出し回数が増え、コストが高くなる場合があります。"
         },
         "single": {
-          "title": "オフ",
-          "desc": "各ターンを現在選択中のモデルに送信します。"
+          "title": "固定モデル",
+          "desc": "すべてのリクエストを現在選択中のモデルに送信します。"
         }
       },
-      "routerDependency": "{provider} の認証情報を使用します。プロバイダーの既定モデルは {model} です。",
-      "ensembleTitle": "AI 集約ルーティング",
+      "routerDependency": "リクエストの各レベルにモデルを設定します。1 つのプロバイダーですべてのレベルに対応できます。",
+      "ensembleTitle": "複数モデルの協調",
       "ensembleDependency": "{provider} の認証情報を使用します。プロバイダーの既定モデルは {model} です。",
       "ensembleMinimum": "集約ルーティングの効果を得るには、候補モデルを少なくとももう 1 つ追加してください。",
       "ensembleFailure": "集約できない場合は現在のモデルにフォールバック:{provider} · {model}。",
-      "singleTitle": "オフ",
-      "singleDependency": "各ターンを現在選択中のモデルに送信します: {provider} · {model}。",
-      "singleDesc": "新しいリクエストでは AI ルーティングと集約ルーティングはオフです。",
+      "singleTitle": "固定モデル",
+      "singleDependency": "すべてのリクエストを現在のモデルに送信します: {provider} · {model}。",
+      "singleDesc": "自動ルーティングや複数モデルの協調を使わず、予測しやすい 1 つのモデルを使用します。",
       "openrouterFixedTitle": "{provider} 固定集約",
       "openrouterFixedDesc": "モデルサービスで {provider} を使用する場合、集約ルーティングは 4 つの提案モデルと 1 つの集約モデルを使います。",
       "openrouterFixedProposer": "提案モデル",
@@ -586,7 +591,7 @@
       "removeCandidateAria": "{model} を削除",
       "ensembleEmpty": "候補モデルがまだありません。モデルサービスの設定を保存してルーティング階層を生成するか、候補を手動で追加してください。",
       "ensemblePipeline": "仕組み:候補モデルが並行してドラフトを作成し、集約モデルがドラフトを集約して最終回答を生成します。ツールを呼び出せるのは集約モデルのみです。",
-      "ensembleFlowDesc": "複数の提案モデルが並行して下書きを作成し、集約モデルがまとめて最終回答を生成します。",
+      "ensembleFlowDesc": "複数モデルが並行して下書きを作り、集約モデルが 1 つの最終回答にまとめます。モデル呼び出しが増え、コストが高くなる場合があります。",
       "legacyDynamicNotice": "この設定は廃止された自動アンサンブルモードを使用しています。カスタム編成に変換すると編集を続けられます。",
       "legacyDynamicMigrate": "カスタム編成に変換",
       "schemeLabel": "アンサンブル方式",

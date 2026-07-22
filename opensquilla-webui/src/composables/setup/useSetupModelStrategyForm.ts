@@ -75,18 +75,20 @@ export function useSetupModelStrategyForm(
           enabled: activeStrategy.value === 'router',
           titleKey: 'setup.modelStrategy.cards.router.title',
           descKey: 'setup.modelStrategy.cards.router.desc',
-        },
-        {
-          id: 'ensemble' as const,
-          enabled: activeStrategy.value === 'ensemble',
-          titleKey: 'setup.modelStrategy.cards.ensemble.title',
-          descKey: 'setup.modelStrategy.cards.ensemble.desc',
+          badgeKey: 'setup.modelStrategy.recommendedBadge',
         },
         {
           id: 'single' as const,
           enabled: activeStrategy.value === 'single',
           titleKey: 'setup.modelStrategy.cards.single.title',
           descKey: 'setup.modelStrategy.cards.single.desc',
+        },
+        {
+          id: 'ensemble' as const,
+          enabled: activeStrategy.value === 'ensemble',
+          titleKey: 'setup.modelStrategy.cards.ensemble.title',
+          descKey: 'setup.modelStrategy.cards.ensemble.desc',
+          badgeKey: 'setup.modelStrategy.advancedBadge',
         },
       ],
     }))

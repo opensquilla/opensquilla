@@ -41,9 +41,9 @@ function panel(overrides: Record<string, unknown> = {}) {
     providerLabel: 'OpenRouter',
     routerTemplateState: 'recommended',
     cards: [
-      { id: 'router', enabled: true, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-      { id: 'ensemble', enabled: false, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
+      { id: 'router', enabled: true, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc', badgeKey: 'setup.modelStrategy.recommendedBadge' },
       { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
+      { id: 'ensemble', enabled: false, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc', badgeKey: 'setup.modelStrategy.advancedBadge' },
     ],
     router: {
       routerDefaultTier: 'c1',
@@ -142,18 +142,21 @@ beforeEach(() => {
 })
 
 describe('SetupModelStrategyPanel', () => {
-  it('renders router-first strategy rows without recommendation badges or legacy wording', async () => {
+  it('renders an ordered set of native routing choices with clear guidance', async () => {
     const { app, el } = await mountPanel()
 
-    expect(el.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Model routing')
-    expect(el.textContent).toContain('AI single-model routing')
-    expect(el.textContent).toContain('AI ensemble routing')
-    expect(el.textContent).toContain('Off')
+    expect(el.querySelector('[role="radiogroup"]')?.getAttribute('aria-label')).toBe('Choose how models are used')
+    expect(el.textContent).toContain('Intelligent model routing')
+    expect(el.textContent).toContain('Fixed model')
+    expect(el.textContent).toContain('Multi-model collaboration')
     expect(el.querySelector('[role="radiogroup"]')).toBeTruthy()
-    expect(el.querySelectorAll('[role="radio"]')).toHaveLength(3)
-    expect(el.querySelector('[data-strategy-id="router"]')?.getAttribute('aria-checked')).toBe('true')
+    const choices = Array.from(el.querySelectorAll<HTMLInputElement>('input[type="radio"][name="setup_model_strategy"]'))
+    expect(choices).toHaveLength(3)
+    expect(choices.map(choice => choice.value)).toEqual(['router', 'single', 'ensemble'])
+    expect(choices[0]?.checked).toBe(true)
     const strategyRowsText = el.querySelector('[role="radiogroup"]')?.textContent || ''
-    expect(strategyRowsText).not.toContain('Recommended')
+    expect(strategyRowsText).toContain('Recommended')
+    expect(strategyRowsText).toContain('Advanced')
     expect(strategyRowsText).not.toContain('Default')
     expect(strategyRowsText).not.toContain('Model ensemble')
     expect(el.textContent).not.toContain('Preset and credentials')
@@ -170,10 +173,31 @@ describe('SetupModelStrategyPanel', () => {
     const onUpdateStrategy = vi.fn()
     const { app, el } = await mountPanel({}, { onUpdateStrategy })
 
-    el.querySelector<HTMLButtonElement>('[data-strategy-id="ensemble"]')?.click()
+    el.querySelector<HTMLInputElement>('input[name="setup_model_strategy"][value="ensemble"]')?.click()
     await nextTick()
 
     expect(onUpdateStrategy).toHaveBeenCalledWith('ensemble')
+    app.unmount()
+  })
+
+  it('shows a provider-first empty state without selectable routing modes', async () => {
+    const onGoToSection = vi.fn()
+    const onUpdateStrategy = vi.fn()
+    const { app, el } = await mountPanel(
+      { hasSavedProvider: false },
+      { onGoToSection, onUpdateStrategy },
+    )
+
+    expect(el.querySelector('[data-testid="model-strategy-provider-first"]')).toBeTruthy()
+    expect(el.textContent).toContain('Add a model provider to start')
+    expect(el.querySelector('[role="radiogroup"]')).toBeNull()
+    expect(el.querySelector('input[name="setup_model_strategy"]')).toBeNull()
+
+    el.querySelector<HTMLButtonElement>('[data-testid="model-strategy-provider-first"] button')?.click()
+    await nextTick()
+
+    expect(onGoToSection).toHaveBeenCalledWith('provider')
+    expect(onUpdateStrategy).not.toHaveBeenCalled()
     app.unmount()
   })
 
@@ -181,7 +205,7 @@ describe('SetupModelStrategyPanel', () => {
     const { app, el } = await mountPanel({ activeStrategy: 'router' })
 
     expect(el.textContent).toContain('Default model tier')
-    expect(el.textContent).toContain('Uses OpenRouter credentials; provider default model is deepseek/deepseek-v4-pro.')
+    expect(el.textContent).toContain('Choose models for each request level. One provider can supply every level.')
     expect(el.textContent).not.toContain('Preset and credentials from OpenRouter')
     expect(el.querySelector('[role="table"]')).toBeTruthy()
     // The chat-panel visualization picker rides with the router details; losing
@@ -261,7 +285,7 @@ describe('SetupModelStrategyPanel', () => {
     app.unmount()
   })
 
-  it('uses the active provider and model without OpenRouter-specific copy', async () => {
+  it('explains that one provider can supply every routing level', async () => {
     const { app, el } = await mountPanel({
       providerLabel: 'Groq',
       ensemble: {
@@ -278,8 +302,8 @@ describe('SetupModelStrategyPanel', () => {
       },
     })
 
-    expect(el.textContent).toContain('Uses Groq credentials; provider default model is llama-3.3-70b-versatile.')
-    expect(el.textContent).not.toContain('OpenRouter credentials')
+    expect(el.textContent).toContain('One provider can supply every level.')
+    expect(el.textContent).not.toContain('provider default model')
 
     app.unmount()
   })
@@ -349,25 +373,21 @@ describe('SetupModelStrategyPanel', () => {
     app.unmount()
   })
 
-  it.each(['router', 'ensemble', 'single'] as const)(
-    'shows the provider model instead of the router default tier in %s mode',
-    async (activeStrategy) => {
-      const { app, el } = await mountPanel({
-        activeStrategy,
-        ensemble: {
-          activeModel: 'deepseek/deepseek-v4-flash',
-        },
-      })
+  it('shows the current model in fixed mode without calling it a routing default', async () => {
+    const { app, el } = await mountPanel({
+      activeStrategy: 'single',
+      ensemble: {
+        activeModel: 'deepseek/deepseek-v4-flash',
+      },
+    })
 
-      const detail = el.querySelector('.setup-model-strategy__detail')?.textContent || ''
-      expect(detail).toContain('deepseek/deepseek-v4-flash')
-      if (activeStrategy !== 'ensemble') {
-        expect(detail).not.toContain('deepseek/deepseek-v4-pro')
-      }
+    const detail = el.querySelector('.setup-model-strategy__detail')?.textContent || ''
+    expect(detail).toContain('deepseek/deepseek-v4-flash')
+    expect(detail).not.toContain('deepseek/deepseek-v4-pro')
+    expect(detail).not.toContain('default tier')
 
-      app.unmount()
-    },
-  )
+    app.unmount()
+  })
 
   it('adds and imports proposers without assigning an advisory role', async () => {
     const onAddEnsembleCandidate = vi.fn()
@@ -1032,8 +1052,8 @@ describe('SetupModelStrategyPanel', () => {
       activeStrategy: 'single',
       cards: [
         { id: 'router', enabled: false, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc' },
-        { id: 'ensemble', enabled: false, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
         { id: 'single', enabled: true, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
+        { id: 'ensemble', enabled: false, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc' },
       ],
       ensemble: {
         enabled: false,
@@ -1048,9 +1068,9 @@ describe('SetupModelStrategyPanel', () => {
       },
     })
 
-    expect(el.textContent).toContain('Off')
-    expect(el.textContent).toContain('Every turn goes to the current model: OpenRouter · deepseek/deepseek-v4-pro.')
-    expect(el.textContent).toContain('AI routing and ensemble routing are off')
+    expect(el.textContent).toContain('Fixed model')
+    expect(el.textContent).toContain('Every request goes to the current model: OpenRouter · deepseek/deepseek-v4-pro.')
+    expect(el.textContent).toContain('without automatic routing or multi-model collaboration')
     expect(el.textContent).not.toContain('Default model tier')
     expect(el.querySelector('[role="table"]')).toBeNull()
 
@@ -1080,20 +1100,6 @@ describe('SetupModelStrategyPanel', () => {
     const titles = Array.from(el.querySelectorAll('[title]')).map(node => node.getAttribute('title') || '').join('\n')
     expect(titles).not.toMatch(/openrouter-mix|router_dynamic|static_openrouter_b5|tier_profile|Recommended|Default/)
 
-    app.unmount()
-  })
-
-  it('shows provider-first guidance and emits provider navigation when no provider is saved', async () => {
-    const onGoToSection = vi.fn()
-    const { app, el } = await mountPanel({ hasSavedProvider: false }, { onGoToSection })
-
-    const guidance = el.querySelector('[data-testid="model-strategy-provider-first"]')
-    expect(guidance?.textContent).toContain('Choose a Model Service first')
-    expect(guidance?.querySelector('button')?.textContent).toContain('Go to Model Service')
-    guidance?.querySelector('button')?.click()
-    await nextTick()
-
-    expect(onGoToSection).toHaveBeenCalledWith('provider')
     app.unmount()
   })
 

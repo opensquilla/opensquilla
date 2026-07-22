@@ -539,37 +539,42 @@
     },
     "modelStrategy": {
       "title": "模型路由",
-      "desc": "选择 Squilla 每轮如何使用当前模型。",
-      "providerFirst": "请先配置模型服务，然后选择路由方式。",
-      "providerAction": "前往模型服务 →",
-      "configuredProvidersOnly": "这里仅显示模型服务中已配置的服务商；完整目录不会出现在路由控件中。",
-      "manageProviders": "管理服务商 →",
-      "routerTitle": "AI 智能单模型路由",
+      "desc": "选择 Squilla 如何为新请求选择和使用已配置的模型。",
+      "modeTitle": "选择模型使用方式",
+      "modeDesc": "建议从智能模型路由开始；需要稳定可预期时使用固定模型，只有复杂任务值得额外调用和成本时才使用多模型协作。",
+      "providerFirstTitle": "先添加模型服务商",
+      "providerFirst": "模型路由至少需要一个已保存的服务商。即使只有一个服务商，也可以在其多个模型之间路由。",
+      "providerAction": "前往模型服务",
+      "configuredProvidersOnly": "可用的服务商和模型来自模型服务。",
+      "manageProviders": "管理模型服务",
+      "recommendedBadge": "推荐",
+      "advancedBadge": "高级",
+      "routerTitle": "智能模型路由",
       "visualModeLabel": "路由面板样式",
       "visualModeDesc": "聊天回复中路由决策面板的呈现方式。",
       "crossProviderNotice": "跨服务商路由已启用。保存前请检查每个分层。",
       "cards": {
         "router": {
-          "title": "AI 智能单模型路由",
-          "desc": "由 AI 为每轮智能选择一个合适模型，优先降低成本。"
+          "title": "智能模型路由",
+          "desc": "根据请求复杂度，从已配置的模型中选择一个合适模型。"
         },
         "ensemble": {
-          "title": "AI 智能聚合路由",
-          "desc": "由 AI 协调多个模型协同生成，优先提升复杂任务能力。"
+          "title": "多模型协作",
+          "desc": "让多个模型共同处理复杂任务并合并结果；调用更多，成本可能更高。"
         },
         "single": {
-          "title": "关",
-          "desc": "每轮都发送到当前选定模型。"
+          "title": "固定模型",
+          "desc": "将每个请求都发送到当前选定模型。"
         }
       },
-      "routerDependency": "使用 {provider} 凭据；服务商默认模型为 {model}。",
-      "ensembleTitle": "AI 智能聚合路由",
+      "routerDependency": "按请求复杂度为各层级配置模型；一个服务商也可以覆盖所有层级。",
+      "ensembleTitle": "多模型协作",
       "ensembleDependency": "使用 {provider} 凭据；服务商默认模型为 {model}。",
       "ensembleMinimum": "再添加至少一个候选模型，才能获得聚合路由收益。",
       "ensembleFailure": "无法完成聚合时，回退到当前模型：{provider} · {model}。",
-      "singleTitle": "关",
-      "singleDependency": "每轮都发送到当前选定模型：{provider} · {model}。",
-      "singleDesc": "新请求不会启用 AI 智能路由或聚合路由。",
+      "singleTitle": "固定模型",
+      "singleDependency": "每个请求都发送到当前模型：{provider} · {model}。",
+      "singleDesc": "始终使用一个可预期的模型，不进行自动路由或多模型协作。",
       "openrouterFixedTitle": "{provider} 固定聚合",
       "openrouterFixedDesc": "当模型服务使用 {provider} 时，聚合路由固定使用四个候选生成模型和一个聚合模型。",
       "openrouterFixedProposer": "候选生成模型",
@@ -586,7 +591,7 @@
       "removeCandidateAria": "移除 {model}",
       "ensembleEmpty": "暂无候选模型。请保存模型服务设置以生成模型分层，或手动添加候选模型。",
       "ensemblePipeline": "工作方式：提案模型并行起草，聚合模型汇总草稿并产出最终回答；只有聚合模型可以调用工具。",
-      "ensembleFlowDesc": "多个提案模型并行起草，聚合模型汇总后输出最终回答。",
+      "ensembleFlowDesc": "多个模型并行起草，再由聚合模型合并为一个最终回答；这会增加模型调用，成本可能更高。",
       "legacyDynamicNotice": "当前配置使用已下线的自动聚合模式,转换为自定义阵容后可在此继续编辑。",
       "legacyDynamicMigrate": "转换为自定义阵容",
       "schemeLabel": "聚合方案",

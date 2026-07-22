@@ -500,7 +500,7 @@ describe('useSetupCatalog model strategy IA', () => {
     ])
     const { api, app } = await mountCatalog()
 
-    expect(api.modelStrategyPanel.value.cards.map(card => card.id)).toEqual(['router', 'ensemble', 'single'])
+    expect(api.modelStrategyPanel.value.cards.map(card => card.id)).toEqual(['router', 'single', 'ensemble'])
     expect(api.modelStrategyPanel.value.providerLabel).toBe('openrouter')
     app.unmount()
   })

@@ -539,37 +539,42 @@
     },
     "modelStrategy": {
       "title": "Routage des modèles",
-      "desc": "Choisissez comment Squilla utilise le modèle actuel pour chaque nouvelle requête.",
-      "providerFirst": "Choisissez d’abord un service de modèles, puis le fonctionnement du routage.",
-      "providerAction": "Accéder au service de modèles →",
-      "configuredProvidersOnly": "Seuls les fournisseurs configurés dans le service de modèles apparaissent ici ; le catalogue complet reste hors des contrôles de routage.",
-      "manageProviders": "Gérer les fournisseurs →",
-      "routerTitle": "Routage IA à modèle unique",
+      "desc": "Choisissez comment Squilla sélectionne et utilise les modèles configurés pour les nouvelles requêtes.",
+      "modeTitle": "Choisir l’utilisation des modèles",
+      "modeDesc": "Commencez par le routage intelligent. Utilisez un modèle fixe pour un résultat prévisible, ou la collaboration multimodèle quand la tâche justifie des appels et un coût supplémentaires.",
+      "providerFirstTitle": "Ajouter d’abord un service de modèles",
+      "providerFirst": "Le routage des modèles nécessite au moins un fournisseur enregistré. Un seul fournisseur suffit pour router entre ses modèles configurés.",
+      "providerAction": "Accéder au service de modèles",
+      "configuredProvidersOnly": "Les fournisseurs et modèles disponibles proviennent du service de modèles.",
+      "manageProviders": "Gérer le service de modèles",
+      "recommendedBadge": "Recommandé",
+      "advancedBadge": "Avancé",
+      "routerTitle": "Routage intelligent des modèles",
       "visualModeLabel": "Style du panneau de routage",
       "visualModeDesc": "Présentation du panneau de décision de routage dans les réponses du chat.",
       "crossProviderNotice": "Le routage inter-fournisseurs est actif. Vérifie chaque niveau avant d’enregistrer.",
       "cards": {
         "router": {
-          "title": "Routage IA à modèle unique",
-          "desc": "L’IA choisit un modèle adapté à chaque tour, en privilégiant un coût plus bas."
+          "title": "Routage intelligent des modèles",
+          "desc": "Choisit un modèle configuré adapté à chaque requête selon sa complexité."
         },
         "ensemble": {
-          "title": "Routage IA agrégé",
-          "desc": "L’IA coordonne plusieurs modèles pour de meilleurs résultats sur les tâches complexes."
+          "title": "Collaboration multimodèle",
+          "desc": "Exécute plusieurs modèles et combine leur travail pour les tâches complexes. Utilise plus d’appels et peut coûter plus cher."
         },
         "single": {
-          "title": "Désactivé",
-          "desc": "Envoie chaque tour au modèle actuellement sélectionné."
+          "title": "Modèle fixe",
+          "desc": "Envoie chaque requête au modèle actuellement sélectionné."
         }
       },
-      "routerDependency": "Utilise les identifiants {provider} ; le modèle par défaut du fournisseur est {model}.",
-      "ensembleTitle": "Routage IA agrégé",
+      "routerDependency": "Choisissez les modèles pour chaque niveau de requête. Un fournisseur peut couvrir tous les niveaux.",
+      "ensembleTitle": "Collaboration multimodèle",
       "ensembleDependency": "Utilise les identifiants {provider} ; le modèle par défaut du fournisseur est {model}.",
       "ensembleMinimum": "Ajoutez au moins un autre candidat pour bénéficier du routage agrégé.",
       "ensembleFailure": "Si la fusion est impossible, revenir au modèle actuel : {provider} · {model}.",
-      "singleTitle": "Désactivé",
-      "singleDependency": "Chaque tour va au modèle actuellement sélectionné : {provider} · {model}.",
-      "singleDesc": "Le routage IA et le routage agrégé sont désactivés pour les nouvelles requêtes.",
+      "singleTitle": "Modèle fixe",
+      "singleDependency": "Chaque requête est envoyée au modèle actuel : {provider} · {model}.",
+      "singleDesc": "Utilisez un modèle prévisible sans routage automatique ni collaboration multimodèle.",
       "openrouterFixedTitle": "Ensemble {provider} fixe",
       "openrouterFixedDesc": "Quand le service de modèles utilise {provider}, le routage agrégé utilise quatre modèles proposants et un agrégateur.",
       "openrouterFixedProposer": "Modèle proposant",
@@ -586,7 +591,7 @@
       "removeCandidateAria": "Retirer {model}",
       "ensembleEmpty": "Aucun modèle candidat pour le moment. Enregistrez les paramètres du service de modèles pour générer les niveaux de routage, ou ajoutez des candidats manuellement.",
       "ensemblePipeline": "Fonctionnement : les modèles proposants rédigent en parallèle, puis l'agrégateur fusionne les brouillons en réponse finale. Seul l'agrégateur peut appeler des outils.",
-      "ensembleFlowDesc": "Les proposants rédigent en parallèle. L'agrégateur fusionne leurs réponses en réponse finale.",
+      "ensembleFlowDesc": "Plusieurs modèles rédigent en parallèle, puis un agrégateur combine leur travail en une réponse finale. Cela utilise plus d’appels de modèles et peut coûter plus cher.",
       "legacyDynamicNotice": "Cette configuration utilise l'ancien mode d'ensemble automatique retiré. Convertissez-la en composition personnalisée pour continuer à l'éditer.",
       "legacyDynamicMigrate": "Convertir en composition personnalisée",
       "schemeLabel": "Schéma d'ensemble",

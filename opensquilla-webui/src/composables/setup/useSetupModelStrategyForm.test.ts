@@ -160,7 +160,7 @@ describe('useSetupModelStrategyForm', () => {
     expect(ensemble.selectionMode.value).toBe('static_tokenrhythm_b5')
   })
 
-  it('builds the three strategy rows with model router first and no badge metadata', () => {
+  it('builds the routing choices in progressive order with guidance badges', () => {
     const { router, ensemble, strategy } = makeForm()
     const routerPanel = router.createPanel({
       routerSummary: computed(() => ''),
@@ -182,7 +182,11 @@ describe('useSetupModelStrategyForm', () => {
       routerTemplateState: computed(() => 'recommended'),
     })
 
-    expect(panel.value.cards.map(card => card.id)).toEqual(['router', 'ensemble', 'single'])
-    expect(panel.value.cards.some(card => Object.prototype.hasOwnProperty.call(card, 'recommended'))).toBe(false)
+    expect(panel.value.cards.map(card => card.id)).toEqual(['router', 'single', 'ensemble'])
+    expect(panel.value.cards.map(card => card.badgeKey || '')).toEqual([
+      'setup.modelStrategy.recommendedBadge',
+      '',
+      'setup.modelStrategy.advancedBadge',
+    ])
   })
 })

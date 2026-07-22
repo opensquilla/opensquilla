@@ -539,37 +539,42 @@
     },
     "modelStrategy": {
       "title": "Modellrouting",
-      "desc": "Wähle, wie Squilla das aktuelle Modell pro neuer Anfrage nutzt.",
-      "providerFirst": "Wähle zuerst einen Modelldienst und dann die Routing-Art.",
-      "providerAction": "Zum Modelldienst →",
-      "configuredProvidersOnly": "Hier erscheinen nur im Modelldienst konfigurierte Anbieter; der vollständige Katalog bleibt außerhalb der Routing-Steuerung.",
-      "manageProviders": "Anbieter verwalten →",
-      "routerTitle": "AI-Routing mit einem Modell",
+      "desc": "Lege fest, wie Squilla konfigurierte Modelle für neue Anfragen auswählt und einsetzt.",
+      "modeTitle": "Modellnutzung auswählen",
+      "modeDesc": "Beginne mit intelligentem Routing. Nutze ein festes Modell für Vorhersehbarkeit oder die Zusammenarbeit mehrerer Modelle, wenn zusätzliche Aufrufe und Kosten sinnvoll sind.",
+      "providerFirstTitle": "Zuerst einen Modelldienst hinzufügen",
+      "providerFirst": "Modellrouting benötigt mindestens einen gespeicherten Anbieter. Ein Anbieter genügt, um zwischen seinen konfigurierten Modellen zu routen.",
+      "providerAction": "Zum Modelldienst",
+      "configuredProvidersOnly": "Verfügbare Anbieter und Modelle stammen aus dem Modelldienst.",
+      "manageProviders": "Modelldienst verwalten",
+      "recommendedBadge": "Empfohlen",
+      "advancedBadge": "Erweitert",
+      "routerTitle": "Intelligentes Modellrouting",
       "visualModeLabel": "Stil des Routing-Panels",
       "visualModeDesc": "Darstellung des Routing-Entscheidungspanels in Chat-Antworten.",
       "crossProviderNotice": "Provider-übergreifendes Routing ist aktiv. Prüfe jeden Tier vor dem Speichern.",
       "cards": {
         "router": {
-          "title": "AI-Routing mit einem Modell",
-          "desc": "AI wählt pro Runde ein passendes Modell und priorisiert niedrigere Kosten."
+          "title": "Intelligentes Modellrouting",
+          "desc": "Wählt für jede Anfrage anhand ihrer Komplexität ein passendes konfiguriertes Modell."
         },
         "ensemble": {
-          "title": "AI-Ensemble-Routing",
-          "desc": "AI koordiniert mehrere Modelle für stärkere Ergebnisse bei komplexen Aufgaben."
+          "title": "Zusammenarbeit mehrerer Modelle",
+          "desc": "Führt mehrere Modelle aus und kombiniert ihre Ergebnisse für anspruchsvolle Aufgaben. Benötigt mehr Aufrufe und kann mehr kosten."
         },
         "single": {
-          "title": "Aus",
-          "desc": "Sendet jede Runde an das aktuell ausgewählte Modell."
+          "title": "Festes Modell",
+          "desc": "Sendet jede Anfrage an das aktuell ausgewählte Modell."
         }
       },
-      "routerDependency": "Nutzt {provider}-Zugangsdaten; das Standardmodell des Anbieters ist {model}.",
-      "ensembleTitle": "AI-Ensemble-Routing",
+      "routerDependency": "Lege Modelle für jede Anforderungsstufe fest. Ein Anbieter kann alle Stufen abdecken.",
+      "ensembleTitle": "Zusammenarbeit mehrerer Modelle",
       "ensembleDependency": "Nutzt {provider}-Zugangsdaten; das Standardmodell des Anbieters ist {model}.",
       "ensembleMinimum": "Füge mindestens einen weiteren Kandidaten hinzu, um Ensemble-Routing zu nutzen.",
       "ensembleFailure": "Wenn die Fusion nicht möglich ist, auf das aktuelle Modell zurückfallen: {provider} · {model}.",
-      "singleTitle": "Aus",
-      "singleDependency": "Jede Runde geht an das aktuell ausgewählte Modell: {provider} · {model}.",
-      "singleDesc": "AI-Routing und Ensemble-Routing sind für neue Anfragen aus.",
+      "singleTitle": "Festes Modell",
+      "singleDependency": "Jede Anfrage geht an das aktuelle Modell: {provider} · {model}.",
+      "singleDesc": "Nutze ein vorhersehbares Modell ohne automatisches Routing oder Zusammenarbeit mehrerer Modelle.",
       "openrouterFixedTitle": "Feste {provider}-Ensemble-Konfiguration",
       "openrouterFixedDesc": "Wenn der Modelldienst {provider} nutzt, verwendet Ensemble-Routing vier Vorschlagsmodelle und einen Aggregator.",
       "openrouterFixedProposer": "Vorschlagsmodell",
@@ -586,7 +591,7 @@
       "removeCandidateAria": "{model} entfernen",
       "ensembleEmpty": "Noch keine Kandidatenmodelle. Speichere zuerst die Modelldienst-Einstellungen, um Routing-Stufen zu erzeugen, oder füge Kandidaten manuell hinzu.",
       "ensemblePipeline": "So funktioniert es: Die Entwurfsmodelle schreiben parallel, dann verschmilzt der Aggregator die Entwürfe zur endgültigen Antwort. Nur der Aggregator kann Tools aufrufen.",
-      "ensembleFlowDesc": "Entwurfsmodelle arbeiten parallel. Der Aggregator führt ihre Ergebnisse zur endgültigen Antwort zusammen.",
+      "ensembleFlowDesc": "Mehrere Modelle erstellen parallel Entwürfe; ein Aggregator führt sie zu einer Antwort zusammen. Das benötigt mehr Modellaufrufe und kann mehr kosten.",
       "legacyDynamicNotice": "Diese Konfiguration nutzt den eingestellten automatischen Ensemble-Modus. Zum Weiterbearbeiten in eine eigene Aufstellung umwandeln.",
       "legacyDynamicMigrate": "In eigene Aufstellung umwandeln",
       "schemeLabel": "Ensemble-Schema",

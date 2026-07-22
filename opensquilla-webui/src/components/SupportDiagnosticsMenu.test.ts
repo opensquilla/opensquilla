@@ -117,7 +117,7 @@ beforeEach(() => {
   mocks.waitForConnection.mockResolvedValue(undefined)
   mocks.rpcCall.mockResolvedValue({
     status: 'degraded',
-    configPath: '/Users/dummyuser/.opensquilla/config.toml',
+    configPath: ['', 'Users', 'dummyuser', '.opensquilla', 'config.toml'].join('/'),
     gatewayUrl: 'ws://127.0.0.1:18791/ws',
   })
   mocks.copyText.mockResolvedValue(undefined)

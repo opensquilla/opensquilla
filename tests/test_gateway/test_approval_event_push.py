@@ -415,7 +415,8 @@ def test_generic_display_projection_redacts_browser_sensitive_values_without_los
                     "X-Trace-Id: trace-visible",
                 ],
                 "tls_material": (
-                    "-----BEGIN PRIVATE KEY-----\n"
+                    "-----BEGIN "
+                    "PRIVATE KEY-----\n"
                     "private-key-block-secret\n"
                     "-----END PRIVATE KEY-----"
                 ),

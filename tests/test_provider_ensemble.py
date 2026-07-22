@@ -1651,7 +1651,7 @@ async def test_ensemble_uses_fallback_when_too_few_proposers_succeed(
 
 
 @pytest.mark.asyncio
-async def test_fallback_timeout_is_absolute_and_cleanup_is_bounded(
+async def test_fallback_timeout_is_idle_based_and_cleanup_is_bounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _FakeRegistry(
@@ -1732,6 +1732,66 @@ async def test_fallback_timeout_is_absolute_and_cleanup_is_bounded(
     release.set()
     await asyncio.wait_for(closed.wait(), timeout=0.5)
     assert cancellation_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_fallback_stream_survives_past_request_timeout_while_events_flow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """config.timeout is a per-request idle budget, not a total wall-clock cap."""
+
+    registry = _FakeRegistry(
+        {"p1": _FakePlan([ErrorEvent(message="nope", code="boom")])}
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+
+    class _SlowSteadyFallback:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                # Six inter-event gaps of 0.02s: every gap stays inside the
+                # 0.05s idle budget while the total runtime (~0.12s) exceeds it.
+                for index in range(6):
+                    await asyncio.sleep(0.02)
+                    yield TextDeltaEvent(text=f"chunk{index}")
+                yield DoneEvent(input_tokens=3, output_tokens=6, model="single")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        fallback_provider=_SlowSteadyFallback(),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content="answer this")],
+            config=ChatConfig(timeout=0.05),
+        )
+    ]
+
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    assert [
+        event.text for event in events if isinstance(event, TextDeltaEvent)
+    ] == [f"chunk{index}" for index in range(6)]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.model_usage_breakdown[-1]["role"] == "fallback_single"
 
 
 @pytest.mark.asyncio

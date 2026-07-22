@@ -142,14 +142,16 @@ async def _stream_with_heartbeats(
     phase: str,
     message: str,
     timeout_seconds: float | None,
+    reset_deadline_on_event: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     stream_iter = stream.__aiter__()
     pending: asyncio.Future[StreamEvent] = asyncio.ensure_future(stream_iter.__anext__())
-    deadline = (
-        time.monotonic() + timeout_seconds
+    timeout_budget = (
+        timeout_seconds
         if timeout_seconds is not None and timeout_seconds > 0
         else None
     )
+    deadline = time.monotonic() + timeout_budget if timeout_budget is not None else None
     try:
         while True:
             wait_seconds = _ensemble_heartbeat_interval()
@@ -167,6 +169,8 @@ async def _stream_with_heartbeats(
                     except StopAsyncIteration:
                         return
                     pending = asyncio.ensure_future(stream_iter.__anext__())
+                    if reset_deadline_on_event and timeout_budget is not None:
+                        deadline = time.monotonic() + timeout_budget
                     yield event
                     continue
                 wait_seconds = min(wait_seconds, remaining)
@@ -178,6 +182,10 @@ async def _stream_with_heartbeats(
                 event = pending.result()
             except StopAsyncIteration:
                 return
+            if reset_deadline_on_event and timeout_budget is not None:
+                # Idle budget: a healthy stream that keeps producing events may
+                # run arbitrarily long; only a silent stall expires the wait.
+                deadline = time.monotonic() + timeout_budget
             yield event
             pending = asyncio.ensure_future(stream_iter.__anext__())
     finally:
@@ -1727,6 +1735,13 @@ class EnsembleProvider:
                 phase="ensemble_fallback_wait",
                 message="Waiting for ensemble fallback model",
                 timeout_seconds=fallback_timeout_seconds,
+                # ``config.timeout`` is the agent's per-HTTP-request budget
+                # (read/idle semantics at every provider adapter), not a total
+                # wall-clock cap: a healthy fallback response may stream far
+                # longer. Reset the deadline on each event so only a silent
+                # stall — the condition the HTTP layer itself would flag —
+                # expires the fallback.
+                reset_deadline_on_event=True,
             ):
                 if isinstance(event, DoneEvent):
                     output_text = "".join(final_text_parts)
@@ -1790,7 +1805,7 @@ class EnsembleProvider:
             yield partial_error(
                 ErrorEvent(
                     message=(
-                        "ensemble fallback timed out after "
+                        "ensemble fallback stalled: no stream events for "
                         f"{fallback_timeout_seconds:g}s"
                     ),
                     code="ensemble_fallback_timeout",

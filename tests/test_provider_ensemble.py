@@ -1950,7 +1950,7 @@ async def test_ensemble_aggregator_build_failure_returns_explicit_error(
 
 
 @pytest.mark.asyncio
-async def test_unready_aggregator_preserves_completed_proposer_usage(
+async def test_unready_aggregator_errors_before_any_proposer_spend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _FakeRegistry(
@@ -1985,11 +1985,141 @@ async def test_unready_aggregator_preserves_completed_proposer_usage(
 
     events = await _collect(provider)
 
+    # No draft can be fused without an aggregator, so no proposer may bill.
+    assert registry.calls == []
     error = next(event for event in events if isinstance(event, ErrorEvent))
     assert error.code == "ensemble_aggregator_error"
-    assert [row["model"] for row in error.model_usage_breakdown] == ["p1"]
-    assert error.model_usage_breakdown[0]["input_tokens"] == 7
+    assert "missing_credential" in error.message
+    assert error.model_usage_breakdown == []
     assert error.usage_missing_count == 0
+
+
+@pytest.mark.asyncio
+async def test_unready_aggregator_uses_fallback_without_burning_proposer_spend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft"), DoneEvent(model="p1")]
+            ),
+        }
+    )
+
+    def build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        assert cfg.model != "missing-aggregator"
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+
+    class _FallbackProvider:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                yield TextDeltaEvent(text="single")
+                yield DoneEvent(input_tokens=7, output_tokens=8, model="single")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=replace(
+            _member("missing-aggregator"),
+            ready=False,
+            unavailable_reason="missing_credential",
+        ),
+        fallback_provider=_FallbackProvider(),
+        fallback_provider_name="deepseek",
+        fallback_model="deepseek-chat",
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert registry.calls == []
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.model_usage_breakdown[-1]["role"] == "fallback_single"
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["fallback_used"] is True
+    assert "aggregator deployment is not ready" in done.ensemble_trace["fallback_reason"]
+    assert done.ensemble_trace["fallback_code"] == "ensemble_aggregator_error"
+
+
+@pytest.mark.asyncio
+async def test_aggregator_build_failure_uses_fallback_and_preserves_proposer_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [
+                    TextDeltaEvent(text="draft"),
+                    DoneEvent(input_tokens=7, output_tokens=3, model="p1"),
+                ]
+            ),
+        }
+    )
+
+    def build_provider(cfg: ProviderConfig) -> _FakeProvider:
+        if cfg.model == "missing-aggregator":
+            raise RuntimeError("synthetic constructor failure")
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+
+    class _FallbackProvider:
+        provider_name = "fallback"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                yield TextDeltaEvent(text="single")
+                yield DoneEvent(input_tokens=1, output_tokens=2, model="single")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("missing-aggregator"),
+        fallback_provider=_FallbackProvider(),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert [call["model"] for call in registry.calls] == ["p1"]
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    rows = done.model_usage_breakdown
+    assert [row["role"] for row in rows] == ["proposer", "fallback_single"]
+    assert rows[0]["input_tokens"] == 7
+    assert done.ensemble_trace is not None
+    assert "could not be initialized" in done.ensemble_trace["fallback_reason"]
 
 
 @pytest.mark.asyncio

@@ -902,6 +902,23 @@ class EnsembleProvider:
                 yield event
             return
 
+        if not self.aggregator.ready:
+            # Without a ready aggregator no draft can ever be fused, so running
+            # (and billing) the proposers first would burn their full spend for
+            # zero output. Route to the single-provider fallback (or a terminal
+            # error) before any proposer request starts.
+            reason = self.aggregator.unavailable_reason or "deployment_unavailable"
+            async for event in self._fallback_or_error(
+                messages,
+                tools=tools,
+                config=config,
+                reason=f"ensemble aggregator deployment is not ready: {reason}",
+                code="ensemble_aggregator_error",
+                candidates=[],
+            ):
+                yield event
+            return
+
         yield ProviderHeartbeatEvent(
             phase="ensemble_proposers",
             message=f"Running {len(self.proposers)} proposer model(s)",
@@ -989,69 +1006,24 @@ class EnsembleProvider:
             final_request_messages=aggregator_messages,
             final_request_timeout_seconds=self.aggregator_timeout_seconds,
         )
-        if not self.aggregator.ready:
-            cfg = self.aggregator.provider_config
-            reason = self.aggregator.unavailable_reason or "deployment_unavailable"
-            error = ErrorEvent(
-                message=f"ensemble aggregator deployment is not ready: {reason}",
-                code="ensemble_aggregator_error",
-            )
-            yield EnsembleProgressEvent(
-                event_type="aggregator_start",
-                proposer_index=-1,
-                proposer_label="aggregator",
-                proposer_model=cfg.model,
-                proposer_provider=cfg.provider,
-                sample_index=0,
-            )
-            yield EnsembleProgressEvent(
-                event_type="aggregator_finish",
-                proposer_index=-1,
-                proposer_label="aggregator",
-                proposer_model=cfg.model,
-                proposer_provider=cfg.provider,
-                sample_index=0,
-                error=error.message,
-            )
-            yield replace(
-                error,
-                model_usage_breakdown=list(proposer_rows),
-                usage_missing_count=_candidate_missing_usage_count(candidates),
-            )
-            return
         try:
             provider = _build_provider(self.aggregator.provider_config)
         except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
-            cfg = self.aggregator.provider_config
-            error = ErrorEvent(
-                message=(
+            # The completed drafts are reusable, so aggregator construction
+            # failure follows the same fallback path as an unreachable quorum
+            # instead of discarding the whole (already billed) proposer round.
+            async for event in self._fallback_or_error(
+                messages,
+                tools=tools,
+                config=config,
+                reason=(
                     "ensemble aggregator could not be initialized: "
                     f"{type(exc).__name__}"
                 ),
                 code="ensemble_aggregator_error",
-            )
-            yield EnsembleProgressEvent(
-                event_type="aggregator_start",
-                proposer_index=-1,
-                proposer_label="aggregator",
-                proposer_model=cfg.model,
-                proposer_provider=cfg.provider,
-                sample_index=0,
-            )
-            yield EnsembleProgressEvent(
-                event_type="aggregator_finish",
-                proposer_index=-1,
-                proposer_label="aggregator",
-                proposer_model=cfg.model,
-                proposer_provider=cfg.provider,
-                sample_index=0,
-                error=error.message,
-            )
-            yield replace(
-                error,
-                model_usage_breakdown=list(proposer_rows),
-                usage_missing_count=_candidate_missing_usage_count(candidates),
-            )
+                candidates=candidates,
+            ):
+                yield event
             return
         async for event in self._stream_final_aggregator(
             provider=provider,

@@ -8,6 +8,7 @@ import pytest
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.gateway.rpc_config import (
+    _handle_config_apply,
     _handle_config_patch,
     _handle_config_patch_safe,
     _sync_provider_selector,
@@ -187,6 +188,90 @@ base_url = "https://custom.example.test/v1"
     assert cfg.llm.api_key == ""
     assert runtime.api_key == ""
     assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url"),
+    [
+        ("custom", "custom-model", "https://custom.example.test/v1"),
+        ("openrouter", "openai/gpt-test", "https://openrouter.ai/api/v1"),
+    ],
+)
+def test_load_from_toml_marks_absorbed_generic_key_before_resolution(
+    tmp_path,
+    monkeypatch,
+    provider: str,
+    model: str,
+    base_url: str,
+) -> None:
+    monkeypatch.delenv("NEW_ENDPOINT_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[llm]",
+                f'provider = "{provider}"',
+                f'model = "{model}"',
+                'api_key_env = "NEW_ENDPOINT_KEY"',
+                f'base_url = "{base_url}"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    cfg = GatewayConfig.load_from_toml(config_path)
+    absorbed_key = cfg.llm.api_key
+    runtime = resolve_llm_runtime_config(cfg)
+
+    assert absorbed_key == "synthetic-generic-key"
+    assert "llm.api_key" in cfg._runtime_secret_paths
+    assert runtime.api_key == ""
+    assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url"),
+    [
+        ("custom", "custom-model", "https://custom.example.test/v1"),
+        ("openrouter", "openai/gpt-test", "https://openrouter.ai/api/v1"),
+    ],
+)
+async def test_config_apply_marks_absorbed_generic_key_before_persist_and_resolution(
+    tmp_path,
+    monkeypatch,
+    provider: str,
+    model: str,
+    base_url: str,
+) -> None:
+    monkeypatch.delenv("NEW_ENDPOINT_KEY", raising=False)
+    config_path = tmp_path / "config.toml"
+    cfg = GatewayConfig(config_path=str(config_path))
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+
+    await _handle_config_apply(
+        {
+            "config": {
+                "llm": {
+                    "provider": provider,
+                    "model": model,
+                    "api_key_env": "NEW_ENDPOINT_KEY",
+                    "base_url": base_url,
+                }
+            }
+        },
+        ctx,
+    )
+
+    runtime = resolve_llm_runtime_config(ctx.config)
+    persisted = config_path.read_text(encoding="utf-8")
+    assert "llm.api_key" in ctx.config._runtime_secret_paths
+    assert runtime.api_key == ""
+    assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
+    assert "synthetic-generic-key" not in persisted
 
 
 def test_openrouter_runtime_uses_default_provider_routing() -> None:

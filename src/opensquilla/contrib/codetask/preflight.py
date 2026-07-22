@@ -61,6 +61,7 @@ def _effective_provider_config(
         cfg = GatewayConfig(**bundle.payload)
     except Exception:  # already validated in load_agent_config_bundle; defensive
         return None
+    cfg._mark_env_absorbed_secrets(bundle.payload)
     # Cross-provider router tiers resolve credentials per tier from
     # [llm_profiles]/pools that a primary-provider probe cannot see, and may
     # bypass the primary entirely — probing only the primary would risk a

@@ -948,6 +948,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     inherit_then_clear_explicit(
         ctx.config, new_config, _collect_paths(config_payload) - redacted_paths
     )
+    new_config._mark_env_absorbed_secrets(config_payload)
     # Runtime-override provenance must ride the candidate BEFORE runtime
     # resolution applies env values, so persist can un-bake them.
     if ctx.config is not None and hasattr(new_config, "inherit_persist_provenance"):

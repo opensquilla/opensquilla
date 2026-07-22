@@ -893,6 +893,13 @@ export function useSetupEnsembleForm() {
       const activeProvider = normalizeProvider(context.activeProvider.value)
       const activeModel = normalizeModel(context.activeModel?.value ?? '')
       const providerStaticMode = staticB5ModeForProvider(activeProvider)
+      // The STORED selection mode is what the runtime builder keys off: a
+      // static preset saved for one provider keeps running its own lineup
+      // even after the active provider changes (its members resolve
+      // credentials through the profile provider's env key).
+      const storedStaticMode = selectionMode.value in STATIC_B5_PROFILES
+        ? selectionMode.value
+        : null
 
       const scheme: EnsembleScheme = (
         selectionMode.value === 'router_dynamic'
@@ -928,10 +935,14 @@ export function useSetupEnsembleForm() {
         })
       const customCandidates = uniqueCandidateViews([...structuredCandidates, ...legacyCandidates])
 
+      // Render the preset card from the STORED profile, not the active
+      // provider's own preset: when they disagree, the stored lineup is the
+      // one that runs (and bills), so showing the active provider's lineup
+      // would misreport every turn's members.
       const activeStaticProfile = (
-        scheme === 'preset' && providerStaticMode !== null
+        scheme === 'preset' && storedStaticMode !== null
       )
-        ? STATIC_B5_PROFILES[providerStaticMode]
+        ? STATIC_B5_PROFILES[storedStaticMode]
         : null
       const fixedProfile: EnsembleFixedProfileView | null = activeStaticProfile
         ? {
@@ -986,6 +997,15 @@ export function useSetupEnsembleForm() {
         customCandidates,
         custom: customLineup,
         fixedProfile,
+        // True when the stored preset belongs to a different provider than
+        // the active one (both have static profiles): the stored lineup
+        // still runs, so the panel flags the divergence instead of quietly
+        // relabelling it.
+        presetProviderMismatch: (
+          scheme === 'preset'
+          && storedStaticMode !== null
+          && storedStaticMode !== providerStaticMode
+        ),
         presetFacts: effectiveFacts(
           activeStaticProfile ? activeStaticProfile.proposers.length : 4,
           true,

@@ -681,6 +681,7 @@
       "proposerCount": "{count} / {max} · empfohlen {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} von {max}",
       "presetReadOnlyHint": "Diese voreingestellte Aufstellung wird vom Anbieter verwaltet.",
+      "presetProviderMismatchNotice": "Die Durchläufe verwenden weiterhin die gespeicherte {presetProvider}-Voreinstellung, nicht die von {activeProvider} — wählen Sie „Voreinstellung“ erneut, um zu {activeProvider} zu wechseln.",
       "importTierCandidates": "Aus Modellstufen importieren",
       "roleSelectAria": "Rolle für {model}",
       "roleUnassigned": "Keine Rolle",

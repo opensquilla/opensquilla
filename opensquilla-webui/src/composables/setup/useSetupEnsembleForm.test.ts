@@ -793,6 +793,30 @@ describe('useSetupEnsembleForm — panel contract', () => {
     expect(panel.value.fixedProfile!.proposers.map(c => c.model))
       .toEqual([...TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS])
     expect(panel.value.fixedProfile!.aggregator.model).toBe(TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR)
+    expect(panel.value.presetProviderMismatch).toBe(false)
+  })
+
+  it('renders the stored preset lineup with a mismatch flag when it differs from the active provider', () => {
+    const f = useSetupEnsembleForm()
+    // Stored TokenRhythm preset; the user later switched the active provider
+    // to OpenRouter. The runtime builder keys off the stored mode, so the
+    // TokenRhythm lineup still runs (and bills) — the card must show it.
+    f.initFromConfig({ enabled: true, selection_mode: 'static_tokenrhythm_b5' })
+    const panel = makePanel(f, 'openrouter')
+    expect(panel.value.scheme).toBe('preset')
+    expect(panel.value.fixedProfile!.providerLabel).toBe('TokenRhythm')
+    expect(panel.value.fixedProfile!.proposers.map(c => c.model))
+      .toEqual([...TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS])
+    expect(panel.value.fixedProfile!.aggregator.model).toBe(TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR)
+    expect(panel.value.presetProviderMismatch).toBe(true)
+  })
+
+  it('reports no preset mismatch when the stored preset belongs to the active provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
+    const panel = makePanel(f, 'openrouter')
+    expect(panel.value.presetProviderMismatch).toBe(false)
+    expect(panel.value.fixedProfile!.providerLabel).toBe('OpenRouter')
   })
 
   it('reports the custom scheme (no preset cards) for non-preset providers even with a stored static mode', () => {

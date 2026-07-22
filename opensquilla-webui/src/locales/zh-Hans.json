@@ -681,6 +681,7 @@
       "proposerCount": "{count} / 上限 {max} · 推荐 {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} / {max}",
       "presetReadOnlyHint": "预设阵容由服务商维护，切换到“自定义”后可调整。",
+      "presetProviderMismatchNotice": "当前回合仍运行已保存的 {presetProvider} 预设，而非 {activeProvider} 的预设 — 重新选择“预设”即可切换到 {activeProvider}。",
       "importTierCandidates": "从模型分层导入",
       "roleSelectAria": "{model} 的角色",
       "roleUnassigned": "未指定角色",

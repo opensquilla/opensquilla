@@ -62,6 +62,7 @@ interface EnsemblePanelContract {
   customCandidates: readonly EnsembleCandidateView[]
   custom: EnsembleCustomLineupView
   fixedProfile: EnsembleFixedProfileView | null
+  presetProviderMismatch?: boolean
   presetFacts: EnsembleEffectiveFacts
   minSuccessfulProposers: number
   allFailedPolicy: string
@@ -709,6 +710,17 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           >
             {{ t('setup.modelStrategy.schemeCustomTitle') }}
           </button>
+        </div>
+
+        <div
+          v-if="ensembleScheme === 'preset' && panel.ensemble.presetProviderMismatch && panel.ensemble.fixedProfile"
+          class="setup-model-strategy__notice setup-model-strategy__notice--legacy"
+          data-testid="ensemble-preset-provider-mismatch"
+        >
+          <span>{{ t('setup.modelStrategy.presetProviderMismatchNotice', {
+            presetProvider: panel.ensemble.fixedProfile.providerLabel,
+            activeProvider: panel.providerLabel,
+          }) }}</span>
         </div>
 
         <div

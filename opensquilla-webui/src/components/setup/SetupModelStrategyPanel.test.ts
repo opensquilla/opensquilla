@@ -944,6 +944,7 @@ describe('SetupModelStrategyPanel', () => {
     expect(el.textContent).toContain('deepseek/deepseek-v4-pro')
     expect(el.textContent).toContain('moonshotai/kimi-k2.7-code')
     expect(el.textContent).toContain('Aggregator')
+    expect(el.querySelector('[data-testid="ensemble-preset-provider-mismatch"]')).toBeNull()
     const preset = el.querySelector<HTMLElement>('[data-testid="ensemble-preset-lineup"]')!
     const steps = preset.querySelectorAll<HTMLElement>('.setup-model-strategy__step')
     expect(steps).toHaveLength(2)
@@ -960,6 +961,39 @@ describe('SetupModelStrategyPanel', () => {
     expect(onUpdateEnsembleScheme).toHaveBeenCalledWith('custom')
     expect(el.textContent).not.toContain('legacy OpenRouter candidate template')
     expect(el.querySelector('.setup-model-strategy__candidate-provider')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('flags a stored preset that belongs to a different provider than the active one', async () => {
+    const { app, el } = await mountPanel({
+      activeStrategy: 'ensemble',
+      providerLabel: 'OpenRouter',
+      ensemble: {
+        enabled: true,
+        selectionMode: 'static_tokenrhythm_b5',
+        scheme: 'preset',
+        schemeCardsAvailable: true,
+        presetProviderMismatch: true,
+        fixedProfile: {
+          providerLabel: 'TokenRhythm',
+          proposers: [
+            { key: 'openrouter-fixed:proposer:tokenrhythm:deepseek-v4-pro', provider: 'tokenrhythm', model: 'deepseek-v4-pro', source: 'openrouter_fixed', enabled: true, role: '' },
+            { key: 'openrouter-fixed:proposer:tokenrhythm:glm-5.2', provider: 'tokenrhythm', model: 'glm-5.2', source: 'openrouter_fixed', enabled: true, role: '' },
+          ],
+          aggregator: { key: 'openrouter-fixed:aggregator:tokenrhythm:glm-5.2', provider: 'tokenrhythm', model: 'glm-5.2', source: 'openrouter_fixed', enabled: true, role: 'aggregator' },
+        },
+        showCandidateEditor: false,
+      },
+    })
+
+    const notice = el.querySelector<HTMLElement>('[data-testid="ensemble-preset-provider-mismatch"]')
+    expect(notice).toBeTruthy()
+    expect(notice!.textContent).toContain('TokenRhythm')
+    expect(notice!.textContent).toContain('OpenRouter')
+    // The card itself renders the stored (actually running) lineup.
+    const preset = el.querySelector<HTMLElement>('[data-testid="ensemble-preset-lineup"]')!
+    expect(preset.textContent).toContain('deepseek-v4-pro')
 
     app.unmount()
   })

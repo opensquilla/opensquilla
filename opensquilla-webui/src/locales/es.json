@@ -681,6 +681,7 @@
       "proposerCount": "{count} / {max} · recomendado {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} de {max}",
       "presetReadOnlyHint": "Esta alineación predefinida la gestiona el proveedor.",
+      "presetProviderMismatchNotice": "Los turnos siguen usando la alineación predefinida guardada de {presetProvider}, no la de {activeProvider} — vuelve a seleccionar «Predefinido» para cambiar a {activeProvider}.",
       "importTierCandidates": "Importar desde niveles de modelo",
       "roleSelectAria": "Rol de {model}",
       "roleUnassigned": "Sin rol",

@@ -681,6 +681,7 @@
       "proposerCount": "{count} / 上限 {max} · 推奨 {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} / {max}",
       "presetReadOnlyHint": "プリセット編成はプロバイダーによって管理されています。",
+      "presetProviderMismatchNotice": "ターンは保存済みの {presetProvider} プリセットで実行され、{activeProvider} のプリセットではありません — 「プリセット」を選び直すと {activeProvider} に切り替わります。",
       "importTierCandidates": "モデル階層からインポート",
       "roleSelectAria": "{model} の役割",
       "roleUnassigned": "役割なし",

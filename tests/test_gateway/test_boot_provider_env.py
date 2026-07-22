@@ -64,6 +64,24 @@ def test_boot_uses_explicit_key_and_base_url_before_standard_env(monkeypatch) ->
     assert runtime.base_url_from_env is False
 
 
+def test_existing_custom_provider_keeps_implicit_env_compatibility(monkeypatch) -> None:
+    monkeypatch.setenv("CUSTOM_LLM_API_KEY", "custom-env-key")
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY_ENV", raising=False)
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "custom-model",
+            "base_url": "https://existing.example.test/v1",
+        }
+    )
+
+    runtime = resolve_llm_runtime_config(cfg)
+
+    assert runtime.api_key == "custom-env-key"
+    assert runtime.api_key_from_env is True
+
+
 def test_openrouter_runtime_uses_default_provider_routing() -> None:
     cfg = GatewayConfig(llm={"provider": "openrouter"})
 

@@ -922,6 +922,72 @@ def test_upsert_llm_provider_optional_env_reference_never_crosses_origin():
     assert res.config.llm.api_key_env == ""
 
 
+@pytest.mark.parametrize(
+    "ambient_source",
+    ["stored", "registry", "settings_reference", "settings_key"],
+)
+def test_upsert_llm_provider_changed_origin_does_not_recover_ambient_key(
+    monkeypatch,
+    ambient_source: str,
+):
+    monkeypatch.delenv("CUSTOM_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_ORIGIN_A_KEY", raising=False)
+    monkeypatch.delenv("CUSTOM_SETTINGS_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY_ENV", raising=False)
+    if ambient_source == "stored":
+        monkeypatch.setenv("CUSTOM_ORIGIN_A_KEY", "sk-ambient-origin-a")
+    elif ambient_source == "registry":
+        monkeypatch.setenv("CUSTOM_LLM_API_KEY", "sk-ambient-origin-a")
+    elif ambient_source == "settings_reference":
+        monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY_ENV", "CUSTOM_SETTINGS_KEY")
+        monkeypatch.setenv("CUSTOM_SETTINGS_KEY", "sk-ambient-origin-a")
+    else:
+        monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "sk-ambient-origin-a")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key_env": "CUSTOM_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="ambient credential is active"):
+        upsert_llm_provider(
+            cfg,
+            provider_id="custom",
+            model="model-b",
+            base_url="https://b.example.test/v1",
+        )
+
+
+def test_upsert_llm_provider_changed_origin_accepts_new_env_reference(monkeypatch):
+    monkeypatch.setenv("CUSTOM_LLM_API_KEY", "sk-ambient-origin-a")
+    monkeypatch.setenv("CUSTOM_ORIGIN_B_KEY", "sk-explicit-origin-b")
+    cfg = GatewayConfig(
+        llm={
+            "provider": "custom",
+            "model": "model-a",
+            "api_key_env": "CUSTOM_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    changed = upsert_llm_provider(
+        cfg,
+        provider_id="custom",
+        model="model-b",
+        api_key_env="CUSTOM_ORIGIN_B_KEY",
+        base_url="https://b.example.test/v1",
+    )
+    runtime = resolve_llm_runtime_config(changed.config)
+
+    assert changed.config.llm.api_key_env == "CUSTOM_ORIGIN_B_KEY"
+    assert runtime.api_key == "sk-explicit-origin-b"
+    assert runtime.api_key_env_name == "CUSTOM_ORIGIN_B_KEY"
+
+
 def test_upsert_llm_provider_clears_optional_key_by_default():
     cfg = GatewayConfig(
         llm={
@@ -1890,6 +1956,46 @@ def test_upsert_image_generation_default_env_key_never_crosses_origin(monkeypatc
     assert changed.public_payload["api_key_source"] != "env"
 
 
+def test_upsert_image_generation_does_not_restore_default_env_after_origin_change(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shared-image-env")
+    first = upsert_image_generation_provider(GatewayConfig(), provider_id="openai")
+    changed = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        api_key="***",
+        base_url="https://other.example.test/v1",
+        enabled=False,
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_image_generation_provider(
+            changed.config,
+            provider_id="openai",
+            base_url="https://other.example.test/v2",
+            enabled=True,
+        )
+
+    assert changed.config.image_generation.providers.openai.api_key_env == ""
+    reauthorized = upsert_image_generation_provider(
+        changed.config,
+        provider_id="openai",
+        api_key_env="OPENAI_API_KEY",
+        base_url="https://other.example.test/v2",
+        enabled=True,
+    )
+    assert reauthorized.config.image_generation.providers.openai.api_key_env == (
+        "OPENAI_API_KEY"
+    )
+    assert (
+        "image_generation",
+        "providers",
+        "openai",
+        "api_key_env",
+    ) in reauthorized.config.force_persist_path_segments()
+
+
 def test_upsert_image_generation_fresh_default_origin_uses_default_env_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-shared-image-env")
     res = upsert_image_generation_provider(GatewayConfig(), provider_id="openai")
@@ -2015,6 +2121,46 @@ def test_upsert_audio_provider_default_env_key_never_crosses_origin(monkeypatch)
     assert provider_cfg.api_key == ""
     assert provider_cfg.api_key_env != "ELEVENLABS_API_KEY"
     assert changed.public_payload["api_key_source"] != "env"
+
+
+def test_upsert_audio_provider_does_not_restore_default_env_after_origin_change(
+    monkeypatch,
+):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-shared-audio-env")
+    first = upsert_audio_provider(GatewayConfig(), provider_id="elevenlabs")
+    changed = upsert_audio_provider(
+        first.config,
+        provider_id="elevenlabs",
+        api_key="***",
+        base_url="https://other.example.test/v1",
+        enabled=False,
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_audio_provider(
+            changed.config,
+            provider_id="elevenlabs",
+            base_url="https://other.example.test/v2",
+            enabled=True,
+        )
+
+    assert changed.config.audio.providers.elevenlabs.api_key_env == ""
+    reauthorized = upsert_audio_provider(
+        changed.config,
+        provider_id="elevenlabs",
+        api_key_env="ELEVENLABS_API_KEY",
+        base_url="https://other.example.test/v2",
+        enabled=True,
+    )
+    assert reauthorized.config.audio.providers.elevenlabs.api_key_env == (
+        "ELEVENLABS_API_KEY"
+    )
+    assert (
+        "audio",
+        "providers",
+        "elevenlabs",
+        "api_key_env",
+    ) in reauthorized.config.force_persist_path_segments()
 
 
 def test_upsert_audio_provider_resubmitted_env_reference_never_crosses_origin(monkeypatch):

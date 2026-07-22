@@ -306,6 +306,64 @@ def test_image_generation_llm_key_does_not_cross_endpoint_origin(monkeypatch) ->
     assert provider._resolve_api_key() == ""
 
 
+def test_image_generation_default_env_does_not_cross_endpoint_origin(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-default-origin-key")
+
+    from opensquilla.gateway.config import (
+        ImageGenerationConfig,
+        ImageGenerationOpenAIProviderConfig,
+        ImageGenerationProvidersConfig,
+    )
+    from opensquilla.tools.builtin.media import configure_image_generation
+
+    image_config = ImageGenerationConfig(
+        enabled=True,
+        primary="openai/gpt-image-1",
+        providers=ImageGenerationProvidersConfig(
+            openai=ImageGenerationOpenAIProviderConfig(
+                api_key_env="",
+                base_url="https://other.example.com/v1",
+            )
+        ),
+    )
+
+    configure_image_generation(image_config)
+
+    provider = get_image_generation_provider("openai")
+    assert provider is not None
+    assert provider._base_url == "https://other.example.com/v1"
+    assert provider._resolve_api_key() == ""
+
+
+def test_image_generation_explicit_env_is_allowed_for_custom_origin(monkeypatch) -> None:
+    monkeypatch.setenv("CUSTOM_IMAGE_KEY", "sk-custom-origin-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-default-origin-key")
+
+    from opensquilla.gateway.config import (
+        ImageGenerationConfig,
+        ImageGenerationOpenAIProviderConfig,
+        ImageGenerationProvidersConfig,
+    )
+    from opensquilla.tools.builtin.media import configure_image_generation
+
+    image_config = ImageGenerationConfig(
+        enabled=True,
+        primary="openai/gpt-image-1",
+        providers=ImageGenerationProvidersConfig(
+            openai=ImageGenerationOpenAIProviderConfig(
+                api_key_env="CUSTOM_IMAGE_KEY",
+                base_url="https://other.example.com/v1",
+            )
+        ),
+    )
+
+    configure_image_generation(image_config)
+
+    provider = get_image_generation_provider("openai")
+    assert provider is not None
+    assert provider._resolve_api_key() == "sk-custom-origin-key"
+
+
 def test_image_generation_llm_key_reused_on_same_endpoint_origin(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

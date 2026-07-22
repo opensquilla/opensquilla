@@ -10,7 +10,10 @@ from typing import Protocol
 
 import httpx
 
-from opensquilla.endpoint_identity import base_url_allows_credential_reuse
+from opensquilla.endpoint_identity import (
+    base_url_allows_credential_reuse,
+    credential_env_for_endpoint,
+)
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.app_attribution import provider_app_headers
 from opensquilla.secrets import clean_header_secret
@@ -291,16 +294,15 @@ def _resolve_configured_api_key(
     provider_id: str,
     provider_config: object | None,
     llm_config: object | None,
-    default_env: str,
+    api_key_env: str,
     default_base_url: str,
     effective_base_url: str,
 ) -> str | None:
-    env_name = _get_config_attr(provider_config, "api_key_env", default_env) or default_env
     explicit = _get_config_attr(provider_config, "api_key")
     if explicit:
         return explicit
 
-    env_value = os.environ.get(env_name, "")
+    env_value = os.environ.get(api_key_env, "")
     if env_value:
         return env_value
 
@@ -353,18 +355,24 @@ def reset_image_generation_providers(
         llm_config=llm_config,
         default_base_url="https://api.openai.com/v1",
     )
+    openai_api_key_env = credential_env_for_endpoint(
+        configured_env=_get_config_attr(openai_config, "api_key_env", "OPENAI_API_KEY"),
+        configured_explicitly=_field_was_set(openai_config, "api_key_env"),
+        default_env="OPENAI_API_KEY",
+        default_base_url="https://api.openai.com/v1",
+        effective_base_url=openai_base_url,
+    )
     register_image_generation_provider(
         OpenAIImageGenerationProvider(
             api_key=_resolve_configured_api_key(
                 provider_id="openai",
                 provider_config=openai_config,
                 llm_config=llm_config,
-                default_env="OPENAI_API_KEY",
+                api_key_env=openai_api_key_env,
                 default_base_url="https://api.openai.com/v1",
                 effective_base_url=openai_base_url,
             ),
-            api_key_env=_get_config_attr(openai_config, "api_key_env", "OPENAI_API_KEY")
-            or "OPENAI_API_KEY",
+            api_key_env=openai_api_key_env,
             base_url=openai_base_url,
         )
     )
@@ -374,18 +382,28 @@ def reset_image_generation_providers(
         llm_config=llm_config,
         default_base_url="https://openrouter.ai/api/v1",
     )
+    openrouter_api_key_env = credential_env_for_endpoint(
+        configured_env=_get_config_attr(
+            openrouter_config,
+            "api_key_env",
+            "OPENROUTER_API_KEY",
+        ),
+        configured_explicitly=_field_was_set(openrouter_config, "api_key_env"),
+        default_env="OPENROUTER_API_KEY",
+        default_base_url="https://openrouter.ai/api/v1",
+        effective_base_url=openrouter_base_url,
+    )
     register_image_generation_provider(
         OpenRouterImageGenerationProvider(
             api_key=_resolve_configured_api_key(
                 provider_id="openrouter",
                 provider_config=openrouter_config,
                 llm_config=llm_config,
-                default_env="OPENROUTER_API_KEY",
+                api_key_env=openrouter_api_key_env,
                 default_base_url="https://openrouter.ai/api/v1",
                 effective_base_url=openrouter_base_url,
             ),
-            api_key_env=_get_config_attr(openrouter_config, "api_key_env", "OPENROUTER_API_KEY")
-            or "OPENROUTER_API_KEY",
+            api_key_env=openrouter_api_key_env,
             base_url=openrouter_base_url,
         )
     )

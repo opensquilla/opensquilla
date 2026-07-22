@@ -49,6 +49,7 @@ from opensquilla.onboarding.redaction import (
     redact_search_payload,
 )
 from opensquilla.onboarding.search_specs import get_search_provider_setup_spec
+from opensquilla.provider.environment import environment_value
 from opensquilla.provider.preset_registry import ProviderPreset, get_preset
 from opensquilla.router_tiers import (
     DEFAULT_TEXT_TIER,
@@ -112,6 +113,17 @@ def _clean_optional_str(value: str | None) -> str:
     if value is None:
         return ""
     return value.strip()
+
+
+def _ambient_llm_credential_available(config: GatewayConfig, *, spec_env_key: str) -> bool:
+    """Return whether an external key source is active for the primary LLM."""
+
+    configured_env = str(getattr(config.llm, "api_key_env", "") or "").strip()
+    settings_env = environment_value("OPENSQUILLA_LLM_API_KEY_ENV").strip()
+    for env_name in (configured_env, settings_env, str(spec_env_key or "").strip()):
+        if env_name and environment_value(env_name):
+            return True
+    return bool(environment_value("OPENSQUILLA_LLM_API_KEY"))
 
 
 def _positive_int(value: int | str, *, label: str) -> int:
@@ -720,6 +732,24 @@ def upsert_llm_provider(
         and (spec.requires_api_key or spec.accepts_api_key)
     ):
         effective_api_key_env = getattr(config.llm, "api_key_env", "").strip()
+    if (
+        same_provider
+        and not stored_credentials_match_endpoint
+        and spec.accepts_api_key
+        and not spec.requires_api_key
+        and not effective_api_key
+        and not effective_api_key_env
+        and _ambient_llm_credential_available(config, spec_env_key=spec.env_key)
+    ):
+        # Optional/keyless providers may otherwise accept the endpoint change,
+        # clear the stored reference, and immediately recover the same secret
+        # through a registry or OPENSQUILLA_LLM_* fallback. Require a newly
+        # authored credential while that ambient source is active; existing
+        # custom-provider configs remain untouched until an origin is changed.
+        raise ValueError(
+            "changing provider endpoint origin while an ambient credential is active "
+            "requires a new api_key or api_key_env"
+        )
     stored_api_key_is_explicit = bool(config.llm.api_key) and (
         "llm.api_key" not in getattr(config, "_runtime_secret_paths", set())
     )
@@ -1407,10 +1437,15 @@ def upsert_image_generation_provider(
         # endpoint origin, so it is gated like every stored source.
         explicit_env_key = ""
     current_env_key = stored_env_key if endpoint_allows_reuse else ""
-    # The well-known registry default env var resolves the same shared
-    # secret, so it must not bind to a changed origin either; it still
-    # applies to a fresh or same-origin config.
-    default_env_key = spec.env_key if endpoint_allows_reuse else ""
+    # The registry env name is bound to the registry endpoint, independent of
+    # whichever endpoint happened to be stored by the previous save. This
+    # keeps a disabled foreign endpoint from regaining the default env source
+    # on a later same-endpoint enable.
+    default_env_key = (
+        spec.env_key
+        if base_url_allows_credential_reuse(spec.default_base_url, effective_base_url)
+        else ""
+    )
     if api_key:
         env_key = ""
     else:
@@ -1455,6 +1490,16 @@ def upsert_image_generation_provider(
     next_provider_cfg.api_key = effective_api_key
     next_provider_cfg.api_key_env = env_key
     next_provider_cfg.base_url = effective_base_url
+    if explicit_env_key == spec.env_key and not base_url_allows_credential_reuse(
+        spec.default_base_url,
+        effective_base_url,
+    ):
+        # Preserve authorship when the operator deliberately binds the
+        # registry-named env var to a custom endpoint. Without force-persist,
+        # a value equal to the model default may disappear from sparse TOML.
+        new_cfg.mark_force_persist(
+            f"image_generation.providers.{provider_id}.api_key_env"
+        )
     if api_key:
         clear_runtime_secret_paths(
             new_cfg, {f"image_generation.providers.{provider_id}.api_key"}
@@ -1574,10 +1619,14 @@ def upsert_audio_provider(
         # endpoint origin, so it is gated like every stored source.
         explicit_env_key = ""
     current_env_key = stored_env_key if endpoint_allows_reuse else ""
-    # The well-known registry default env var resolves the same shared
-    # secret, so it must not bind to a changed origin either; it still
-    # applies to a fresh or same-origin config.
-    default_env_key = spec.env_key if endpoint_allows_reuse else ""
+    # Bind the implicit registry env name to the registry endpoint rather
+    # than the previously stored endpoint, closing disable-then-enable
+    # recovery at a foreign origin.
+    default_env_key = (
+        spec.env_key
+        if base_url_allows_credential_reuse(spec.default_base_url, effective_base_url)
+        else ""
+    )
     env_key = "" if api_key else (explicit_env_key or current_env_key or default_env_key)
     api_key_source = _audio_api_key_source(
         api_key=effective_api_key,
@@ -1598,6 +1647,13 @@ def upsert_audio_provider(
     next_provider_cfg.api_key = effective_api_key
     next_provider_cfg.api_key_env = env_key
     next_provider_cfg.base_url = effective_base_url
+    if explicit_env_key == spec.env_key and not base_url_allows_credential_reuse(
+        spec.default_base_url,
+        effective_base_url,
+    ):
+        new_cfg.mark_force_persist(
+            f"audio.providers.{provider_id}.api_key_env"
+        )
     new_cfg.audio.tts.voice = effective_tts_voice
     new_cfg.audio.tts.model = effective_tts_model
     new_cfg.audio.tts.language_code = effective_language_code

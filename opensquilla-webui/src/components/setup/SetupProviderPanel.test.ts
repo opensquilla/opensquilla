@@ -385,7 +385,7 @@ describe('SetupProviderPanel — configured provider management', () => {
     expect(test?.textContent?.trim()).toBe('Verify saved configuration')
     expect(test?.getAttribute('aria-describedby')).toBe('setup-provider-configured-desc')
     expect(el.querySelector('#setup-provider-configured-desc')?.textContent).toContain(
-      'Configuration verification sends a small model request using the saved settings; provider charges may apply.',
+      'Verification sends one small model request and may incur provider charges.',
     )
 
     app.unmount()
@@ -649,26 +649,46 @@ describe('SetupProviderPanel — configured provider management', () => {
     app.unmount()
   })
 
-  it('shows routing state independently from saved providers and links to Model Routing', async () => {
+  it('summarizes the active model usage without presenting inactive features as settings', async () => {
     const onGoToSection = vi.fn()
     const { app, el } = await mountPanel({ configuredProviders: configured, routingEnabled: false }, { onGoToSection })
 
-    expect(el.textContent).toContain('Cross-provider · Off')
-    expect(el.textContent).toContain('Ensemble · Off')
+    const summary = el.querySelector<HTMLElement>('[data-testid="provider-model-usage"]')!
+    expect(summary.textContent).toContain('Model usage')
+    expect(summary.textContent).toContain('Fixed model')
+    expect(summary.textContent).not.toContain('Cross-provider')
+    expect(summary.textContent).not.toContain('Ensemble · Off')
     const cta = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
-      .find(button => button.textContent?.trim() === 'Open Model Routing →')
+      .find(button => button.textContent?.includes('Set up model routing'))
     cta?.click()
     expect(onGoToSection).toHaveBeenCalledWith('modelStrategy')
     app.unmount()
   })
 
-  it('uses singular provider copy for one saved deployment', async () => {
+  it('shows a concise readiness summary for one saved deployment', async () => {
     const { app, el } = await mountPanel({
       configuredProviders: [configured[0]],
     })
 
-    expect(el.textContent).toContain('1 provider saved · 1 ready')
-    expect(el.textContent).not.toContain('1 providers saved')
+    expect(el.textContent).toContain('1 of 1 credentials ready')
+    expect(el.textContent).not.toContain('Multi-provider features')
+
+    app.unmount()
+  })
+
+  it('keeps the zero-provider state focused on the first connection', async () => {
+    const { app, el } = await mountPanel({
+      configuredProviders: [],
+      providerSelected: '',
+    })
+
+    const empty = el.querySelector<HTMLElement>('[data-testid="provider-empty-state"]')!
+    expect(empty.textContent).toContain('Add your first model provider')
+    expect(empty.textContent).toContain('one provider can still route between multiple models')
+    expect(el.querySelector('[data-testid="provider-model-usage"]')).toBeNull()
+    expect(el.textContent).not.toContain('Multi-provider features')
+    expect(Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .filter(button => button.textContent?.includes('Add provider'))).toHaveLength(1)
 
     app.unmount()
   })
@@ -1512,7 +1532,7 @@ describe('SetupProviderPanel — context-window override', () => {
 })
 
 describe('SetupProviderPanel — model strategy wayfinding', () => {
-  it('shows a persistent routing state and CTA without SquillaRouter wording', async () => {
+  it('shows the active smart-routing mode and only surfaces cross-provider use when active', async () => {
     const onGoToSection = vi.fn()
     const preset = {
       hasPreset: true,
@@ -1524,14 +1544,20 @@ describe('SetupProviderPanel — model strategy wayfinding', () => {
       routerMode: 'custom',
       routerCustomized: true,
     }
-    const { app, el } = await mountPanel({ canConfigureRouter: true }, { preset, onGoToSection })
+    const { app, el } = await mountPanel({
+      canConfigureRouter: true,
+      routerEnabled: true,
+      crossProviderRoutingEnabled: true,
+    }, { preset, onGoToSection })
     const routingLinks = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
-      .filter(btn => /Open Model Routing/.test(btn.textContent || ''))
+      .filter(btn => /Set up model routing/.test(btn.textContent || ''))
 
     expect(routingLinks).toHaveLength(1)
-    expect(routingLinks[0]?.textContent).toContain('Open Model Routing')
-    expect(el.textContent).toContain('Cross-provider · Off')
+    expect(routingLinks[0]?.textContent).toContain('Set up model routing')
+    expect(el.textContent).toContain('Intelligent model routing')
+    expect(el.textContent).toContain('Cross-provider routing included')
     expect(el.textContent).not.toContain('SquillaRouter ready')
+    expect(el.textContent).not.toContain('Multi-provider features')
     expect(el.textContent).not.toContain('Routing template:')
     expect(el.textContent).not.toContain('Model Routing already uses')
 

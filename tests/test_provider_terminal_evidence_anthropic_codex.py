@@ -394,6 +394,141 @@ def test_anthropic_tool_block_after_message_delta_poison_response(
     _assert_incomplete(observed, code="invalid_stream_order")
 
 
+def test_anthropic_server_tool_block_deltas_do_not_fail_the_response(
+    monkeypatch: Any,
+) -> None:
+    """input_json_delta for a non-client-tool block (e.g. server_tool_use) is
+    tolerated diagnostics: the fully streamed response must still commit."""
+    events = [
+        {
+            "type": "message_start",
+            "message": {"id": "msg_1", "usage": {"input_tokens": 2}},
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "server_tool_use",
+                "id": "srvtoolu_1",
+                "name": "web_search",
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"query":"x"}'},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "text_delta", "text": "hello"},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 3},
+        },
+        {"type": "message_stop"},
+    ]
+    _patch_stream(monkeypatch, "anthropic", _sse(events, anthropic=True))
+
+    observed = _collect(AnthropicProvider(api_key="test", model="claude-test"))
+
+    assert not any(isinstance(event, ErrorEvent) for event in observed)
+    assert any(isinstance(event, DoneEvent) for event in observed)
+    assert [event.text for event in observed if isinstance(event, TextDeltaEvent)] == ["hello"]
+    # Server-side tool activity never surfaces as client tool events.
+    assert not any(
+        isinstance(event, ToolUseStartEvent | ToolUseDeltaEvent | ToolUseEndEvent)
+        for event in observed
+    )
+
+
+def test_anthropic_server_tool_block_coexists_with_client_tool_call(
+    monkeypatch: Any,
+) -> None:
+    events = [
+        {
+            "type": "message_start",
+            "message": {"id": "msg_1", "usage": {"input_tokens": 2}},
+        },
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "server_tool_use",
+                "id": "srvtoolu_1",
+                "name": "web_search",
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "input_json_delta", "partial_json": '{"query":"srv"}'},
+        },
+        {"type": "content_block_stop", "index": 0},
+        {
+            "type": "content_block_start",
+            "index": 1,
+            "content_block": {"type": "tool_use", "id": "toolu_1", "name": "search"},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 1,
+            "delta": {"type": "input_json_delta", "partial_json": '{"query":"x"}'},
+        },
+        {"type": "content_block_stop", "index": 1},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "tool_use"},
+            "usage": {"output_tokens": 1},
+        },
+        {"type": "message_stop"},
+    ]
+    _patch_stream(monkeypatch, "anthropic", _sse(events, anthropic=True))
+
+    observed = _collect(AnthropicProvider(api_key="test", model="claude-test"))
+
+    assert not any(isinstance(event, ErrorEvent) for event in observed)
+    (tool_end,) = [event for event in observed if isinstance(event, ToolUseEndEvent)]
+    assert (tool_end.tool_use_id, tool_end.arguments) == ("toolu_1", {"query": "x"})
+    assert any(isinstance(event, DoneEvent) for event in observed)
+
+
+def test_anthropic_delta_for_never_opened_index_still_fails_closed(
+    monkeypatch: Any,
+) -> None:
+    events = [
+        {
+            "type": "message_start",
+            "message": {"id": "msg_1", "usage": {"input_tokens": 2}},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 7,
+            "delta": {"type": "input_json_delta", "partial_json": "{}"},
+        },
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"output_tokens": 1},
+        },
+        {"type": "message_stop"},
+    ]
+    _patch_stream(monkeypatch, "anthropic", _sse(events, anthropic=True))
+
+    observed = _collect(AnthropicProvider(api_key="test", model="claude-test"))
+
+    _assert_incomplete(observed, code="incomplete_tool_call", expect_start=False)
+
+
 def _codex_auth(path: Path) -> Path:
     path.write_text(
         json.dumps(

@@ -489,6 +489,11 @@ class AnthropicProvider:
         message_terminal_seen = False
         deferred_tool_ends: list[tuple[ToolUseEndEvent, str]] = []
         invalid_tool_call_ids: set[str] = set()
+        # Content-block indices opened with a non-client-tool type (text,
+        # thinking, server-side tool blocks). Their input_json_delta frames
+        # are tolerated diagnostics, never client tool calls; only deltas for
+        # indices that were never opened at all remain protocol errors.
+        non_tool_block_indices: set[Any] = set()
 
         try:
             async with httpx.AsyncClient(
@@ -623,7 +628,12 @@ class AnthropicProvider:
                             index = event.get("index", -1)
                             block = event.get("content_block", {})
                             btype = block.get("type")
-                            if btype == "tool_use":
+                            if btype != "tool_use":
+                                non_tool_block_indices.add(index)
+                            else:
+                                # An index reopened as a client tool block is
+                                # a tool block from here on.
+                                non_tool_block_indices.discard(index)
                                 raw_tool_name = block.get("name")
                                 tool_name = (
                                     raw_tool_name if isinstance(raw_tool_name, str) else ""
@@ -656,6 +666,14 @@ class AnthropicProvider:
                                 yield TextDeltaEvent(text=text)
                             elif dtype == "input_json_delta":
                                 index = event.get("index", 0)
+                                if index in non_tool_block_indices:
+                                    # Not a client tool block at this index
+                                    # (e.g. a server-side tool call) — never
+                                    # a client tool call.
+                                    log.debug(
+                                        "anthropic.non_tool_block_delta", index=index
+                                    )
+                                    continue
                                 fragment = delta.get("partial_json", "")
                                 try:
                                     tool_events = tools_acc.append(index, fragment)
@@ -670,8 +688,8 @@ class AnthropicProvider:
                                     )
                                     continue
                                 if not tool_events:
-                                    # Not a tool block at this index (e.g. a
-                                    # server-tool result) — never a tool call.
+                                    # Identity still incomplete at this index —
+                                    # the delta is retained, not yet emitted.
                                     log.debug("anthropic.unknown_delta_index", index=index)
                                 for tool_event in tool_events:
                                     yield tool_event

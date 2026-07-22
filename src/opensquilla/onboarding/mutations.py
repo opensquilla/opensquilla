@@ -37,6 +37,7 @@ from opensquilla.onboarding.image_generation_specs import (
 from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.redaction import (
     REDACTED_PLACEHOLDER,
+    is_redacted_secret_sentinel,
     redact_audio_payload,
     redact_channel_entry,
     redact_error_text,
@@ -633,6 +634,13 @@ def upsert_llm_provider(
         raise ValueError(
             f"provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
+    if is_redacted_secret_sentinel(api_key):
+        # A round-tripped redaction mask ('***' or any all-asterisk echo)
+        # means "keep the stored key", never a literal credential. Enforced
+        # here, server-side, so every RPC/CLI client gets the same trust
+        # boundary the channel-secret merge already provides.
+        api_key = None
+        preserve_api_key = True
     api_key = api_key or ""
     api_key_env = api_key_env or ""
     preset = _resolve_provider_preset(preset_id or "", provider_id)
@@ -1138,6 +1146,10 @@ def upsert_search_provider(
         raise ValueError(
             f"search provider {provider_id!r} is not runtime-supported and cannot be configured"
         )
+    if is_redacted_secret_sentinel(api_key):
+        # Round-tripped redaction mask: keep the stored key (see
+        # upsert_llm_provider for the server-side trust-boundary rationale).
+        api_key = None
     api_key = api_key or ""
     api_key_env = api_key_env or ""
     if max_results is None:
@@ -1296,6 +1308,10 @@ def upsert_image_generation_provider(
     effective_fallbacks = cleaned_fallbacks or list(config.image_generation.fallbacks)
 
     current_provider_cfg = _image_generation_provider_config(config, provider_id)
+    if is_redacted_secret_sentinel(api_key):
+        # Round-tripped redaction mask: keep the stored key (see
+        # upsert_llm_provider for the server-side trust-boundary rationale).
+        api_key = ""
     explicit_env_key = _clean_optional_str(api_key_env)
     if api_key and explicit_env_key:
         raise ValueError("configure either api_key or api_key_env, not both")
@@ -1434,6 +1450,10 @@ def upsert_audio_provider(
         raise ValueError(f"audio provider {provider_id!r} is not supported")
 
     current_provider_cfg = _audio_provider_config(config, provider_id)
+    if is_redacted_secret_sentinel(api_key):
+        # Round-tripped redaction mask: keep the stored key (see
+        # upsert_llm_provider for the server-side trust-boundary rationale).
+        api_key = ""
     explicit_env_key = _clean_optional_str(api_key_env)
     if api_key and explicit_env_key:
         raise ValueError("configure either api_key or api_key_env, not both")
@@ -1508,6 +1528,10 @@ def upsert_memory_embedding(
     old_memory = config.memory.model_dump(mode="python")
     current = config.memory.embedding
     model_value = _clean_optional_str(model)
+    if is_redacted_secret_sentinel(api_key):
+        # Round-tripped redaction mask: keep the stored key (see
+        # upsert_llm_provider for the server-side trust-boundary rationale).
+        api_key = None
     api_key_value = _clean_optional_str(api_key)
     api_key_env_value = _clean_optional_str(api_key_env)
     if api_key_value and api_key_env_value:
@@ -1677,6 +1701,14 @@ def upsert_llm_profile(
         raise ValueError(
             f"provider {provider!r} is not runtime-supported and cannot be configured"
         )
+    if is_redacted_secret_sentinel(api_key):
+        # A round-tripped redaction mask means "keep the stored key" — the
+        # same server-side trust boundary as upsert_llm_provider. This also
+        # covers the draft-probe path, which builds its in-memory draft here:
+        # a probe of a masked payload must run with the stored credential,
+        # not with a literal '***' bearer token.
+        api_key = None
+        preserve_api_key = True
 
     profile_keys = _llm_profile_storage_keys(config, provider)
     existing_key = profile_keys[0] if profile_keys else None

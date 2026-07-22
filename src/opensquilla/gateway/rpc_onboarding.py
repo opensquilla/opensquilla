@@ -26,6 +26,7 @@ import structlog
 from opensquilla.gateway.config_secrets import inherit_runtime_secrets
 from opensquilla.gateway.model_routing import broadcast_model_routing_changed
 from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
+from opensquilla.onboarding.redaction import is_redacted_secret_sentinel
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 if TYPE_CHECKING:
@@ -970,6 +971,11 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     p = params if isinstance(params, dict) else {}
     cfg = _active_config(ctx)
     api_key = str(p.get("apiKey", "") or "")
+    if is_redacted_secret_sentinel(api_key):
+        # A round-tripped redaction mask is a display value, not a
+        # credential: fall through to the stored-credential reuse below
+        # instead of probing with a literal '***' bearer token.
+        api_key = ""
     api_key_env = str(p.get("apiKeyEnv", "") or "")
     base_url = str(p.get("baseUrl", "") or "")
     proxy = str(p.get("proxy", "") or "")
@@ -1083,6 +1089,10 @@ async def _models_discover(params: Any, ctx: RpcContext) -> dict[str, Any]:
     p = params if isinstance(params, dict) else {}
     cfg = _active_config(ctx)
     api_key = str(p.get("apiKey", "") or "")
+    if is_redacted_secret_sentinel(api_key):
+        # Same keep-current boundary as onboarding.provider.probe: never
+        # send a round-tripped '***' mask upstream as a bearer token.
+        api_key = ""
     api_key_env = str(p.get("apiKeyEnv", "") or "")
     base_url = str(p.get("baseUrl", "") or "")
     proxy = str(p.get("proxy", "") or "")

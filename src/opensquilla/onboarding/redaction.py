@@ -18,6 +18,23 @@ REDACTED_PLACEHOLDER = "***"
 _PROVIDER_SECRET_FIELDS = frozenset({"api_key"})
 
 
+def is_redacted_secret_sentinel(value: object) -> bool:
+    """True when a secret value is a round-tripped redaction mask.
+
+    Every redacted payload echo in this module uses ``REDACTED_PLACEHOLDER``,
+    and status surfaces render all-asterisk masks of varying width, so any
+    all-asterisk string can only be a display value a client read back —
+    never a real credential. Mutation and probe paths treat it server-side as
+    "keep the stored secret" (or reject it when nothing is stored), the same
+    trust boundary the channel-secret merge enforces, so a read-modify-write
+    RPC/CLI client cannot destroy a stored key by echoing its mask.
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return bool(text) and set(text) == {"*"}
+
+
 def redact_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
     out = dict(payload)
     for key in _PROVIDER_SECRET_FIELDS:

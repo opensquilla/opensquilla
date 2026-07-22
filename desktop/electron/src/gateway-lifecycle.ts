@@ -9,8 +9,13 @@ export interface LifecycleProcessDrainOptions<T> {
 export function lifecycleAllowsProcessSpawn(
   lifecycleClosing: boolean,
   profileWriterAdmissionClosed: boolean,
+  liveOwnedProcessCount = 0,
 ): boolean {
-  return !lifecycleClosing && !profileWriterAdmissionClosed
+  return (
+    !lifecycleClosing
+    && !profileWriterAdmissionClosed
+    && liveOwnedProcessCount === 0
+  )
 }
 
 /**

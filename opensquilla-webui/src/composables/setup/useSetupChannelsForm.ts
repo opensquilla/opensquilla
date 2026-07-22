@@ -73,8 +73,11 @@ export function useSetupChannelsForm() {
   const baseline = ref(serialized.value)
   const isDirty = computed(() => serialized.value !== baseline.value)
 
-  // Switching channel type resets the entry form; type choice alone is not an unsaved edit.
-  function resetForSpec(spec: ChannelSpec | null | undefined) {
+  // Switching channel type resets the entry form; type choice alone is not an
+  // unsaved edit. `seed` overlays spec defaults BEFORE the baseline capture,
+  // so a caller-provided prefill (e.g. the suggested channel name) is part of
+  // the pristine form, never a dirty edit.
+  function resetForSpec(spec: ChannelSpec | null | undefined, seed?: Record<string, unknown>) {
     mode.value = 'compose'
     editName.value = ''
     secretStates.value = {}
@@ -82,7 +85,7 @@ export function useSetupChannelsForm() {
     activeFields.value = (spec?.fields ?? []) as ChannelFieldSpec[]
     channelFieldValues.value = {}
     spec?.fields?.forEach(field => {
-      channelFieldValues.value[field.name] = field.default ?? ''
+      channelFieldValues.value[field.name] = seed?.[field.name] ?? field.default ?? ''
     })
     baseline.value = serialized.value
   }

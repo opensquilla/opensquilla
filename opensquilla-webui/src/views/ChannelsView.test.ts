@@ -1406,9 +1406,10 @@ describe('ChannelsView in-place configuration editor', () => {
     try {
       const page = await openConfiguration(ctx)
       const readFields = fieldNames(page)
-      // Spec-driven read rows: same set the edit form will own, secrets masked.
+      // Spec-driven read rows: same set the edit form will own, secrets
+      // masked, with the credentials group leading the rail.
       expect(readFields).toEqual(
-        ['name', 'connection_mode', 'slack_channel_id', 'token', 'signing_secret', 'reply_in_thread'])
+        ['token', 'signing_secret', 'name', 'connection_mode', 'slack_channel_id', 'reply_in_thread'])
       expect(page.querySelectorAll('.cfge input')).toHaveLength(0)
 
       await enterEditMode(ctx, page)

@@ -562,7 +562,7 @@
       "secretReplace": "Remplacer",
       "secretReplacePlaceholder": "Collez la nouvelle valeur",
       "secretKeepStored": "Conserver la valeur enregistrée",
-      "advancedGroup": "Avancé : accès et comportement",
+      "advancedGroup": "Avancé",
       "fieldRequired": "Ce champ est obligatoire",
       "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
       "jump": {

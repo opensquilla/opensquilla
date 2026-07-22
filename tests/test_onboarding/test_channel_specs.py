@@ -91,6 +91,24 @@ def test_each_channel_exposes_safe_session_and_busy_policy(type_name: str):
 
 
 @pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
+def test_safe_defaulted_identity_fields_fold_into_advanced(type_name: str):
+    """The first-time add form is credentials plus a name: the safe-defaulted
+    identity plumbing (agent routing, the enable switch) folds into the
+    Advanced disclosure on EVERY channel, while the identity key itself stays
+    front and required. Positive assertions so the posture cannot silently
+    drift back to an eight-row default view."""
+    fields = {field.name: field for field in get_channel_setup_spec(type_name).fields}
+
+    assert fields["agent_id"].advanced is True
+    assert fields["agent_id"].default == "main"
+    assert fields["enabled"].advanced is True
+    assert fields["enabled"].default is True
+
+    assert fields["name"].required is True
+    assert fields["name"].advanced is False
+
+
+@pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
 def test_spec_fields_align_with_pydantic_model(type_name: str):
     spec = get_channel_setup_spec(type_name)
     model = ENTRY_MODELS[type_name]

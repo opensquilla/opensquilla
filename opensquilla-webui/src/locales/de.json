@@ -562,7 +562,7 @@
       "secretReplace": "Ersetzen",
       "secretReplacePlaceholder": "Neuen Wert einfügen",
       "secretKeepStored": "Gespeicherten Wert behalten",
-      "advancedGroup": "Erweitert: Zugriff & Verhalten",
+      "advancedGroup": "Erweitert",
       "fieldRequired": "Dieses Feld ist erforderlich",
       "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
       "jump": {

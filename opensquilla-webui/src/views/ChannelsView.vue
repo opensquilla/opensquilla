@@ -1138,10 +1138,30 @@ async function requestExitCompose(): Promise<void> {
   exitCompose()
 }
 
+/** All known channel names (configured + orphan runtime) for the compose name
+ *  suggestion — undefined while channels.status has not answered yet, so the
+ *  editor skips seeding rather than suggesting against a blind list. */
+function existingChannelNames(): string[] | undefined {
+  const rows = channelsData.value?.channels
+  if (!rows) return undefined
+  return rows.filter(Boolean).map(ch => channelKey(ch))
+}
+
 function pickComposeType(type: string): void {
   composeType.value = type
-  void composeEditor.startCompose(type)
+  void composeEditor.startCompose(type, { existingNames: existingChannelNames() })
 }
+
+// Deep-linked compose (?compose=1&type=…) applies before channels.status has
+// answered, so the name suggestion is skipped rather than guessed blind. When
+// the FIRST snapshot lands and the draft is still pristine, reseed it once so
+// the deep-link path matches the click path; any typed edit wins.
+watch(channelsData, (data, old) => {
+  if (old || !data) return
+  if (composeMode.value && composeType.value && !composeEditor.form.isDirty.value) {
+    void composeEditor.startCompose(composeType.value, { existingNames: existingChannelNames() })
+  }
+})
 
 /** [Change] on the receipt chip: back to the gallery, guarded when dirty. */
 async function requestComposeRepick(): Promise<void> {
@@ -1506,7 +1526,7 @@ function applyComposeQuery(type: string): void {
   composeMode.value = true
   composeType.value = type
   composeEditor.reset()
-  if (type) void composeEditor.startCompose(type)
+  if (type) void composeEditor.startCompose(type, { existingNames: existingChannelNames() })
   else void composeEditor.loadCatalog()
 }
 

@@ -45,14 +45,29 @@ const transportLabel = computed(() => {
 })
 const testing = computed(() => props.editor.probe.value.phase === 'running')
 
-// Autofocus the Name field once the picked type's form is live.
+// Autofocus the first field the user must actually fill once the picked
+// type's form is live: the first visible required field whose value is empty
+// (the lead credential — the suggested name arrives prefilled), falling back
+// to the name field when everything required is already seeded.
+function firstActionableFieldName(): string {
+  const rows = props.editor.panel.value.channelFields
+  const target = rows.find(row =>
+    row.field.required === true
+    && row.field.advanced !== true
+    && !String(row.value ?? '').trim())
+  return target?.field.name || 'name'
+}
+
 watch(
   () => [props.pickedType, props.editor.phase.value] as const,
   ([type, phase], previous) => {
     const [oldType, oldPhase] = previous ?? ['', 'idle']
     if (type && phase === 'active' && (type !== oldType || oldPhase !== 'active')) {
       void nextTick(() => {
-        document.querySelector<HTMLElement>('.chc [data-field="name"] input')?.focus()
+        const name = firstActionableFieldName()
+        document.querySelector<HTMLElement>(
+          `.chc [data-field="${name}"] input, .chc [data-field="${name}"] select`,
+        )?.focus()
       })
     }
   },

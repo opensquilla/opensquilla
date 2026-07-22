@@ -562,7 +562,7 @@
       "secretReplace": "Replace",
       "secretReplacePlaceholder": "Paste the new value",
       "secretKeepStored": "Keep stored value",
-      "advancedGroup": "Advanced: access & behavior",
+      "advancedGroup": "Advanced",
       "fieldRequired": "This field is required",
       "fixRequired": "Fill the highlighted required fields first",
       "jump": {

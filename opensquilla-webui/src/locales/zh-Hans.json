@@ -562,7 +562,7 @@
       "secretReplace": "替换",
       "secretReplacePlaceholder": "粘贴新值",
       "secretKeepStored": "保留已存值",
-      "advancedGroup": "高级：访问与行为",
+      "advancedGroup": "高级",
       "fieldRequired": "此字段必填",
       "fixRequired": "请先填写高亮的必填字段",
       "jump": {

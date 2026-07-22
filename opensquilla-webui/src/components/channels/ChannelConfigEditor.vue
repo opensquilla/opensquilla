@@ -92,7 +92,21 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
     }
     mainByGroup.get(groupName)!.push(row)
   }
+  // Credentials lead: the values the user must actually fetch from the
+  // provider console render first; everything else keeps catalog order.
+  // Stable sort, and shared by read/edit/compose so the in-place edit flip
+  // never reflows the rail.
+  main.sort((a, b) => Number(a.name !== 'credentials') - Number(b.name !== 'credentials'))
   return { main, advanced }
+})
+
+// The Advanced fold summary names what it hides — first few field labels plus
+// an overflow count — so folded settings stay discoverable without expanding.
+const advancedPreview = computed(() => {
+  const labels = grouped.value.advanced.map(row => row.label)
+  const shown = labels.slice(0, 3)
+  const rest = labels.length - shown.length
+  return shown.join(' · ') + (rest > 0 ? ` +${rest}` : '')
 })
 
 // Setup aids (Feishu console shortcuts). Copy/link aids form a titled group
@@ -205,7 +219,10 @@ function onCancelReplace(name: string) {
       />
 
       <details v-if="grouped.advanced.length" class="cfge__advanced cfge__group">
-        <summary>{{ t('setup.channels.advancedGroup') }}</summary>
+        <summary>
+          <span>{{ t('setup.channels.advancedGroup') }}</span>
+          <span v-if="advancedPreview" class="cfge__advanced-preview">· {{ advancedPreview }}</span>
+        </summary>
         <div class="cfge__advanced-body">
           <ChannelConfigRow
             v-for="row in grouped.advanced"
@@ -344,6 +361,7 @@ function onCancelReplace(name: string) {
 .cfge__hint { color: var(--text-dim); font-size: var(--fs-sm); margin: var(--sp-3) 0 0; }
 .cfge__advanced { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
 .cfge__advanced > summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-sm); padding: var(--sp-1) 0; }
+.cfge__advanced-preview { color: var(--text-dim); font-size: var(--fs-xs); margin-inline-start: var(--sp-1); }
 .cfge__advanced-body { display: block; padding-top: var(--sp-3); }
 .cfge__load-error { align-items: center; color: var(--danger); display: flex; flex-wrap: wrap; font-size: var(--fs-sm); gap: var(--sp-2); justify-content: space-between; }
 .cfge__skeleton { display: grid; gap: var(--sp-4); }

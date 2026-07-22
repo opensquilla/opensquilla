@@ -65,11 +65,17 @@ def _common_fields() -> tuple[ChannelSetupField, ...]:
             "name", "Channel name", "text", required=True,
             description="Unique identifier for this channel entry.",
         ),
+        # Safe-defaulted identity plumbing: folded into the Advanced
+        # disclosure on every channel form so a first-time add is credentials
+        # plus a name, nothing else. Routing to a non-default agent and
+        # creating a channel disabled are deliberate, rare actions.
         ChannelSetupField(
             "agent_id", "Agent id", "text", required=False, default="main",
+            advanced=True,
         ),
         ChannelSetupField(
             "enabled", "Enabled", "bool", required=False, default=True,
+            advanced=True,
         ),
         ChannelSetupField(
             "group_session_scope",

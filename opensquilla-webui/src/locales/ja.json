@@ -562,7 +562,7 @@
       "secretReplace": "差し替え",
       "secretReplacePlaceholder": "新しい値を貼り付け",
       "secretKeepStored": "保存済みの値を保持",
-      "advancedGroup": "詳細設定：アクセスと動作",
+      "advancedGroup": "詳細設定",
       "fieldRequired": "この項目は必須です",
       "fixRequired": "ハイライトされた必須項目を先に入力してください",
       "jump": {

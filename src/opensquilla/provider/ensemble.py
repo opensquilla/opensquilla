@@ -30,6 +30,8 @@ from .protocol import (
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
 from .types import (
     ChatConfig,
+    ContentBlockImage,
+    ContentBlockToolResult,
     DoneEvent,
     EnsembleProgressEvent,
     ErrorEvent,
@@ -52,6 +54,11 @@ from .types import (
 TRACE_CONTENT_MAX_CHARS = 8_000
 _ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS = 5.0
+ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE = "ensemble_multimodal_unsupported"
+ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE = (
+    "Ensemble does not support image input yet. "
+    "Switch to a single-model routing mode and try again."
+)
 log = structlog.get_logger(__name__)
 
 
@@ -741,6 +748,29 @@ class EnsembleProvider:
             base_url="",
         )
 
+    def validate_chat_request(self, messages: list[Message]) -> ErrorEvent | None:
+        """Reject typed image input before any ensemble leg can start."""
+
+        for message in messages:
+            if not isinstance(message.content, list):
+                continue
+            for block in message.content:
+                if isinstance(block, ContentBlockImage):
+                    return ErrorEvent(
+                        message=ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE,
+                        code=ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE,
+                    )
+                if not isinstance(block, ContentBlockToolResult):
+                    continue
+                if isinstance(block.content, list) and any(
+                    isinstance(item, ContentBlockImage) for item in block.content
+                ):
+                    return ErrorEvent(
+                        message=ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE,
+                        code=ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE,
+                    )
+        return None
+
     async def list_models(self) -> list[ModelInfo]:
         models: list[ModelInfo] = []
         for member in [*self.proposers, self.aggregator]:
@@ -835,6 +865,11 @@ class EnsembleProvider:
         tools: list[ToolDefinition] | None = None,
         config: ChatConfig | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        validation_error = self.validate_chat_request(messages)
+        if validation_error is not None:
+            yield validation_error
+            return
+
         if not self.proposers:
             async for event in self._fallback_or_error(
                 messages,

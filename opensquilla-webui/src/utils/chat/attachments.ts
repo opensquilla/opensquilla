@@ -38,6 +38,27 @@ export function isImageDisplayAttachment(attachment: Pick<DisplayAttachment, 'mi
   return isImageAttachmentMime(attachment.mime)
 }
 
+const MODEL_INPUT_IMAGE_MIMES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/gif',
+  'image/webp',
+])
+
+/**
+ * Return the canonical MIME type for images the Gateway turns into model image
+ * blocks. Keep this narrower than the preview helper above: formats such as
+ * TIFF and SVG may be attachments, but they do not enter the model as images.
+ */
+export function normalizeModelInputImageMime(mime: unknown): string {
+  const essence = normalizeAttachmentMimeValue(mime, '').split(';', 1)[0].trim()
+  return essence === 'image/jpg' ? 'image/jpeg' : essence
+}
+
+export function isModelInputImageMime(mime: unknown): boolean {
+  return MODEL_INPUT_IMAGE_MIMES.has(normalizeModelInputImageMime(mime))
+}
+
 function safeImageDataUrl(value: unknown, declaredMime: string): string | undefined {
   if (typeof value !== 'string') return undefined
   const match = value.match(/^data:([^;,]+)(?:;[^,]*)?;base64,[a-z0-9+/=\s]*$/i)
@@ -53,6 +74,16 @@ export function isSendableAttachment(attachment: Attachment): attachment is Send
   if (attachment.kind === 'inline') return Boolean(attachment.data)
   if (attachment.kind === 'staged') return Boolean(attachment.file_uuid)
   return false
+}
+
+export function isSendableModelInputImageAttachment(
+  attachment: Attachment,
+): attachment is SendableAttachment {
+  return isSendableAttachment(attachment) && isModelInputImageMime(attachment.mime)
+}
+
+export function hasSendableModelInputImageAttachment(attachments: readonly Attachment[]): boolean {
+  return attachments.some(isSendableModelInputImageAttachment)
 }
 
 export function serializeSendableAttachment(attachment: SendableAttachment): ChatSendAttachmentPayload {

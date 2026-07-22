@@ -2848,6 +2848,8 @@
       "routerAnimationOn": "Router-Animation ein",
       "routerAnimationOff": "Router-Animation aus",
       "modelRouting": "Modell-Routing",
+      "ensembleImageUnsupported": "Ensemble unterstützt derzeit keine Bildeingaben. Wechseln Sie zum Einzelmodell-Routing und versuchen Sie es erneut.",
+      "routingUpdateImageBlocked": "Das Modell-Routing wird aktualisiert. Warten Sie, bevor Sie Bilder senden.",
       "modelRoutingOff": "Aus",
       "modelRoutingOffDesc": "Jeden Durchlauf an das ausgewählte Modell senden.",
       "modelRoutingSquillaRouter": "AI-gestützter Einzelmodell-Router",

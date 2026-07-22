@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
@@ -14,6 +14,9 @@ from opensquilla.engine.usage_accounting import normalize_provider_usage
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.provider import (
     ChatConfig,
+    ContentBlockDocument,
+    ContentBlockText,
+    ContentBlockToolResult,
     DoneEvent,
     ErrorEvent,
     Message,
@@ -32,6 +35,7 @@ from opensquilla.provider.ensemble import (
 )
 from opensquilla.provider.selector import ProviderConfig
 from opensquilla.provider.types import (
+    ContentBlockImage,
     EnsembleProgressEvent,
     ProviderBillingReceipt,
     ProviderMessageCountProjection,
@@ -562,6 +566,203 @@ async def test_tokenrhythm_b5_strict_quorum_partial_failure_preserves_fallback_r
     assert result.cache_read_tokens == sum(item.cache_read_tokens for item in result.items)
     assert result.cache_write_tokens == sum(item.cache_write_tokens for item in result.items)
     assert [item.billing_receipt for item in result.items] == receipts
+
+
+def _ensemble_for_validation(
+    *,
+    proposers: list[EnsembleMemberConfig] | None = None,
+    fallback_provider: _FakeProvider | None = None,
+    all_failed_policy: Literal["error", "fallback_single"] = "error",
+) -> EnsembleProvider:
+    return EnsembleProvider(
+        profile_name="image-validation",
+        proposers=proposers if proposers is not None else [_member("p1")],
+        aggregator=_member("agg"),
+        fallback_provider=fallback_provider,
+        fallback_provider_name="fake" if fallback_provider is not None else "",
+        fallback_model="fallback" if fallback_provider is not None else "",
+        all_failed_policy=all_failed_policy,
+        shuffle_candidates=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockImage(
+                        source_type="base64",
+                        media_type="image/png",
+                        data="aW1hZ2U=",
+                    )
+                ],
+            )
+        ],
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockImage(
+                        source_type="url",
+                        media_type="image/jpeg",
+                        data="https://example.invalid/image.jpg",
+                    )
+                ],
+            ),
+            Message(role="user", content="continue from the prior image"),
+        ],
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockText(text="describe this"),
+                    ContentBlockImage(
+                        source_type="base64",
+                        media_type="image/webp",
+                        data="aW1hZ2U=",
+                    ),
+                ],
+            )
+        ],
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call-image",
+                        content=[
+                            ContentBlockImage(
+                                source_type="base64",
+                                media_type="image/gif",
+                                data="aW1hZ2U=",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    ],
+    ids=["base64", "historical-url", "mixed", "typed-tool-result"],
+)
+async def test_ensemble_rejects_typed_images_before_starting_any_leg(
+    monkeypatch: pytest.MonkeyPatch,
+    messages: list[Message],
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([DoneEvent(model="p1")]),
+            "agg": _FakePlan([DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = _ensemble_for_validation()
+
+    events = [event async for event in provider.chat(messages)]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "ensemble_multimodal_unsupported"
+    assert events[0].message == (
+        "Ensemble does not support image input yet. "
+        "Switch to a single-model routing mode and try again."
+    )
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("all_failed_policy", ["error", "fallback_single"])
+async def test_ensemble_image_validation_precedes_empty_lineup_fallback(
+    all_failed_policy: Literal["error", "fallback_single"],
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "fallback": _FakePlan([DoneEvent(model="fallback")]),
+        }
+    )
+    fallback = _FakeProvider(
+        ProviderConfig(provider="fake", model="fallback"),
+        registry,
+    )
+    provider = _ensemble_for_validation(
+        proposers=[],
+        fallback_provider=fallback,
+        all_failed_policy=all_failed_policy,
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[ContentBlockImage(media_type="image/png", data="aW1hZ2U=")],
+        )
+    ]
+
+    events = [event async for event in provider.chat(messages)]
+
+    assert [getattr(event, "code", "") for event in events] == [
+        "ensemble_multimodal_unsupported"
+    ]
+    assert registry.calls == []
+
+
+def test_ensemble_image_validation_does_not_guess_untyped_or_document_content() -> None:
+    provider = _ensemble_for_validation()
+    messages = [
+        Message(role="user", content="the word image/png is plain text"),
+        Message(
+            role="user",
+            content=[
+                ContentBlockDocument(
+                    media_type="application/pdf",
+                    data="cGRm",
+                ),
+                ContentBlockToolResult(
+                    tool_use_id="call-dict",
+                    content=[
+                        {
+                            "type": "image",
+                            "source_type": "base64",
+                            "media_type": "image/png",
+                            "data": "aW1hZ2U=",
+                        }
+                    ],
+                ),
+            ],
+        ),
+    ]
+
+    assert provider.validate_chat_request(messages) is None
+
+
+@pytest.mark.asyncio
+async def test_ensemble_text_block_input_still_executes_normally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft"), DoneEvent(model="p1")]
+            ),
+            "agg": _FakePlan(
+                [TextDeltaEvent(text="final"), DoneEvent(model="agg")]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = _ensemble_for_validation()
+    messages = [
+        Message(
+            role="user",
+            content=[ContentBlockText(text="text extracted from an attachment")],
+        )
+    ]
+
+    events = [event async for event in provider.chat(messages)]
+
+    assert [call["model"] for call in registry.calls] == ["p1", "agg"]
+    assert any(isinstance(event, TextDeltaEvent) and event.text == "final" for event in events)
 
 
 def test_ensemble_message_count_projection_includes_aggregator_bundle(

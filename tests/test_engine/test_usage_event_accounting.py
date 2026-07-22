@@ -23,12 +23,14 @@ from opensquilla.engine.usage_accounting import (
     normalize_provider_usage,
     usd_to_nanos,
 )
-from opensquilla.provider import ChatConfig, Message
+from opensquilla.provider import ChatConfig, Message, ModelCapabilities
 from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import ErrorEvent as ProviderError
 from opensquilla.provider import TextDeltaEvent as ProviderText
+from opensquilla.provider.ensemble import EnsembleMemberConfig, EnsembleProvider
 from opensquilla.provider.preset_registry import get_preset
-from opensquilla.provider.types import ProviderBillingReceipt
+from opensquilla.provider.selector import ProviderConfig
+from opensquilla.provider.types import ContentBlockImage, ProviderBillingReceipt
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.storage import SessionStorage
 from opensquilla.skills.meta.orchestrator import make_llm_chat_from_provider
@@ -226,6 +228,135 @@ def _context() -> UsageExecutionContext:
         agent_id="main",
         run_kind="webchat",
     )
+
+
+def _image_rejecting_ensemble(*, fallback_provider: Any | None = None) -> EnsembleProvider:
+    return EnsembleProvider(
+        profile_name="image-validation",
+        proposers=[],
+        aggregator=EnsembleMemberConfig(
+            provider_config=ProviderConfig(provider="fake", model="never-called")
+        ),
+        fallback_provider=fallback_provider,
+        fallback_provider_name="fake" if fallback_provider is not None else "",
+        fallback_model="fallback-model" if fallback_provider is not None else "",
+        all_failed_policy="fallback_single" if fallback_provider is not None else "error",
+    )
+
+
+def _image_message() -> Message:
+    return Message(
+        role="user",
+        content=[ContentBlockImage(media_type="image/png", data="aW1hZ2U=")],
+    )
+
+
+class _CapturingTurnLog:
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    def write(self, kind: str, payload: dict[str, Any]) -> None:
+        self.records.append({"kind": kind, "payload": payload})
+
+
+@pytest.mark.asyncio
+async def test_selector_preflight_rejects_ensemble_image_before_usage_or_fallback() -> None:
+    sink = _RecordingSink()
+    fallback = _PhysicalLegProvider(
+        "anthropic",
+        [ProviderText(text="must not run"), ProviderDone(model="fallback-model")],
+    )
+    wrapper = _SelectorFallbackProvider(
+        _image_rejecting_ensemble(fallback_provider=fallback),
+        _FallbackSelector(fallback),
+    )
+    scope = UsageAccountingScope(sink=sink, context=_context())
+
+    with bind_usage_accounting_scope(scope):
+        events = [event async for event in wrapper.chat([_image_message()])]
+
+    assert [getattr(event, "code", "") for event in events] == [
+        "ensemble_multimodal_unsupported"
+    ]
+    assert fallback.calls == 0
+    assert sink.started == []
+    assert sink.finalized == []
+    assert sink.unknown == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("image_location", ["current", "history"])
+@pytest.mark.parametrize("wrapped_by_selector", [False, True])
+async def test_agent_preflight_rejects_ensemble_image_before_call_accounting(
+    image_location: str,
+    wrapped_by_selector: bool,
+) -> None:
+    sink = _RecordingSink()
+    tracker = _RecordingTracker()
+    fallback = _PhysicalLegProvider(
+        "anthropic",
+        [ProviderText(text="must not run"), ProviderDone(model="fallback-model")],
+    )
+    observer_calls: list[dict[str, Any]] = []
+    turn_log = _CapturingTurnLog()
+    turn_metadata: dict[str, Any] = {}
+    ensemble = _image_rejecting_ensemble(fallback_provider=fallback)
+    provider: Any = (
+        _SelectorFallbackProvider(
+            ensemble,
+            _FallbackSelector(fallback),
+            turn_metadata,
+        )
+        if wrapped_by_selector
+        else ensemble
+    )
+    agent = Agent(
+        provider=provider,
+        config=AgentConfig(
+            max_iterations=1,
+            max_provider_retries=3,
+            model_id="ensemble/image-validation",
+            model_capabilities=ModelCapabilities(supports_vision=True),
+            preserve_historical_images=True,
+            provider_call_observer=lambda **kwargs: observer_calls.append(kwargs),
+        ),
+        usage_tracker=tracker,
+        session_key="agent:main:image-validation",
+        turn_call_logger=turn_log,  # type: ignore[arg-type]
+        usage_event_sink=sink,
+        usage_execution_context=_context(),
+    )
+    if image_location == "history":
+        agent.set_history([_image_message()])
+        message = "continue"
+        extra_messages = None
+    else:
+        message = ""
+        extra_messages = [_image_message()]
+
+    events = [
+        event
+        async for event in agent.run_turn(
+            message,
+            extra_messages=extra_messages,
+        )
+    ]
+
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert [error.code for error in errors] == ["ensemble_multimodal_unsupported"]
+    assert fallback.calls == 0
+    assert sink.started == []
+    assert sink.finalized == []
+    assert sink.unknown == []
+    assert tracker.rows == []
+    assert observer_calls == []
+    assert "router_fallback_hops" not in turn_metadata
+    assert not any(record["kind"] == "llm_request" for record in turn_log.records)
+    [decision] = [
+        record for record in turn_log.records if record["kind"] == "turn_policy_decision"
+    ]
+    assert decision["payload"]["code"] == "ensemble_multimodal_unsupported"
+    assert "messages" not in decision["payload"]
 
 
 @pytest.mark.asyncio

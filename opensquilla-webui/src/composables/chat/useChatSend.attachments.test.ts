@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 
 import { useChatSend, type UseChatSendOptions } from './useChatSend'
 import { useChatMessageActions } from './useChatMessageActions'
 import type { FoldLiveTurnMode } from './useChatTurnLog'
 import type { Attachment, ChatMessage, ChatRenderedMessage } from '@/types/chat'
-import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
+import {
+  useChatPendingQueue,
+  type BusySendMode,
+} from '@/composables/chat/useChatPendingQueue'
 import { FINISHED_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 
 const pushToast = vi.hoisted(() => vi.fn())
@@ -46,6 +49,8 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     sessionKey: ref('agent:main:webchat:test'),
     pendingQueueOwnerContext: ref(null),
     busySendMode: ref<BusySendMode>('queue'),
+    modelRoutingMode: ref<'off'>('off'),
+    modelRoutingSettingsBusy: ref(false),
     elevatedMode: ref(''),
     runMode: ref('trusted'),
     pendingAttachments: ref<Attachment[]>([]),
@@ -1767,6 +1772,278 @@ describe('useChatSend attachment payloads', () => {
       sessionKey: 'agent:main:webchat:test',
       taskId: 'task-A',
       source: 'webui_stale_send',
+    })
+  })
+})
+
+describe('useChatSend Ensemble image guard', () => {
+  function readyAttachment(
+    mime: string,
+    overrides: Partial<Attachment> = {},
+  ): Attachment {
+    return {
+      kind: 'staged',
+      local_id: 91,
+      name: 'input.bin',
+      mime,
+      file_uuid: 'file-ready',
+      ...overrides,
+    }
+  }
+
+  it('blocks a direct Ensemble image send before any visible or RPC mutation', async () => {
+    const image = readyAttachment('image/png', { name: 'photo.png' })
+    const pendingAttachments = ref<Attachment[]>([image])
+    const inputText = ref('describe this')
+    const prepareAttachmentsForSend = vi.fn(async () => true)
+    const { api, options, rpc, stream } = makeOptions({
+      inputText,
+      pendingAttachments,
+      modelRoutingMode: ref<'llm_ensemble'>('llm_ensemble'),
+      prepareAttachmentsForSend,
+    })
+
+    await api.onSend()
+
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(prepareAttachmentsForSend).not.toHaveBeenCalled()
+    expect(options.messages.value).toEqual([])
+    expect(inputText.value).toBe('describe this')
+    expect(pendingAttachments.value).toEqual([image])
+    expect(options.pendingSessionIntent.value).toBeNull()
+    expect(options.closeSlashMenu).not.toHaveBeenCalled()
+    expect(stream.startStreaming).not.toHaveBeenCalled()
+  })
+
+  it('blocks image sends while routing settings are being written', async () => {
+    const image = readyAttachment('image/webp')
+    const pendingAttachments = ref<Attachment[]>([image])
+    const { api, options, rpc } = makeOptions({
+      pendingAttachments,
+      modelRoutingMode: ref<'off'>('off'),
+      modelRoutingSettingsBusy: ref(true),
+    })
+
+    await api.onSend()
+
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(options.messages.value).toEqual([])
+    expect(options.inputText.value).toBe('hello')
+    expect(pendingAttachments.value).toEqual([image])
+  })
+
+  it.each(['queue', 'steer'] as const)(
+    'does not consume an Ensemble image draft in %s mode',
+    async (busySendMode) => {
+      const image = readyAttachment('image/jpeg')
+      const pendingAttachments = ref<Attachment[]>([image])
+      const enqueuePendingInput = vi.fn(() => true)
+      const { api, options, rpc, stream } = makeOptions({
+        pendingAttachments,
+        busySendMode: ref<BusySendMode>(busySendMode),
+        modelRoutingMode: ref<'llm_ensemble'>('llm_ensemble'),
+        enqueuePendingInput,
+      })
+      stream.isStreaming.value = true
+
+      await api.onSend()
+
+      expect(rpc.call).not.toHaveBeenCalled()
+      expect(enqueuePendingInput).not.toHaveBeenCalled()
+      expect(options.messages.value).toEqual([])
+      expect(options.inputText.value).toBe('hello')
+      expect(pendingAttachments.value).toEqual([image])
+    },
+  )
+
+  it('rechecks routing after attachment preparation without consuming the draft', async () => {
+    const image = readyAttachment('image/gif')
+    const pendingAttachments = ref<Attachment[]>([image])
+    const modelRoutingMode = ref<'off' | 'llm_ensemble'>('off')
+    const prepareAttachmentsForSend = vi.fn(async () => {
+      modelRoutingMode.value = 'llm_ensemble'
+      return true
+    })
+    const { api, options, rpc } = makeOptions({
+      pendingAttachments,
+      modelRoutingMode,
+      prepareAttachmentsForSend,
+    })
+
+    await api.onSend()
+
+    expect(prepareAttachmentsForSend).toHaveBeenCalledOnce()
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(options.messages.value).toEqual([])
+    expect(options.inputText.value).toBe('hello')
+    expect(pendingAttachments.value).toEqual([image])
+  })
+
+  it('blocks a recovered image retry after the user switches to Ensemble', async () => {
+    const image = readyAttachment('image/jpg', { name: 'photo.jpg' })
+    const pendingAttachments = ref<Attachment[]>([image])
+    const modelRoutingMode = ref<'off' | 'llm_ensemble'>('off')
+    const rpc = {
+      call: vi.fn().mockRejectedValue(new Error('connection lost')),
+    }
+    const { api, options } = makeOptions({ rpc, pendingAttachments, modelRoutingMode })
+
+    await api.onSend()
+    expect(rpc.call).toHaveBeenCalledOnce()
+    modelRoutingMode.value = 'llm_ensemble'
+
+    await api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledOnce()
+    expect(options.inputText.value).toBe('hello')
+    expect(pendingAttachments.value).toEqual([image])
+  })
+
+  it('preserves an auto-drained queued image after routing switches to Ensemble', async () => {
+    vi.useFakeTimers()
+    try {
+      const image = readyAttachment('image/png')
+      const inputText = ref('queued image')
+      const pendingAttachments = ref<Attachment[]>([image])
+      const pendingSessionIntent = ref<string | null>(null)
+      const sessionKey = ref('agent:main:webchat:test')
+      const modelRoutingMode = ref<'off' | 'llm_ensemble'>('off')
+      const { stream } = makeOptions()
+      stream.isStreaming.value = true
+      let sendCurrentInput: () => void = () => {}
+      const pending = useChatPendingQueue({
+        sessionKey,
+        inputText,
+        pendingAttachments,
+        pendingSessionIntent,
+        isStreaming: stream.isStreaming,
+        isBlocked: () => false,
+        autoResizeTextarea: vi.fn(),
+        sendCurrentInput: () => sendCurrentInput(),
+        resetInputHistory: vi.fn(),
+        hasComposer: () => true,
+      })
+      const { api, options, rpc } = makeOptions({
+        inputText,
+        pendingAttachments,
+        pendingSessionIntent,
+        sessionKey,
+        modelRoutingMode,
+        busySendMode: pending.busySendMode,
+        stream,
+        enqueuePendingInput: pending.enqueuePendingInput,
+        popAllPendingIntoComposer: pending.popAllPendingIntoComposer,
+      })
+      sendCurrentInput = () => { void api.onSend() }
+
+      await api.onSend()
+      expect(pending.pendingQueue.value).toHaveLength(1)
+      expect(inputText.value).toBe('')
+      expect(pendingAttachments.value).toEqual([])
+
+      modelRoutingMode.value = 'llm_ensemble'
+      pending.schedulePendingDrainAfterTerminal()
+      stream.isStreaming.value = false
+      await nextTick()
+      await vi.runAllTimersAsync()
+      await nextTick()
+
+      expect(pending.pendingQueue.value).toEqual([])
+      expect(rpc.call).not.toHaveBeenCalled()
+      expect(options.messages.value).toEqual([])
+      expect(inputText.value).toBe('queued image')
+      expect(pendingAttachments.value).toEqual([image])
+      pending.cleanup()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('lets a handled local slash command run without consuming attached images', async () => {
+    const image = readyAttachment('image/png')
+    const pendingAttachments = ref<Attachment[]>([image])
+    const inputText = ref('/status')
+    const executeSlashCommand = vi.fn(async () => true)
+    const { api, options, rpc } = makeOptions({
+      inputText,
+      pendingAttachments,
+      modelRoutingMode: ref<'llm_ensemble'>('llm_ensemble'),
+      executeSlashCommand,
+    })
+
+    await api.onSend()
+
+    expect(executeSlashCommand).toHaveBeenCalledWith('/status')
+    expect(rpc.call).not.toHaveBeenCalled()
+    expect(inputText.value).toBe('/status')
+    expect(pendingAttachments.value).toEqual([image])
+    expect(options.messages.value).toEqual([])
+  })
+
+  it.each(['application/pdf', 'image/svg+xml', 'image/tiff'])(
+    'does not block the non-model-image MIME %s in Ensemble mode',
+    async (mime) => {
+      const pendingAttachments = ref<Attachment[]>([readyAttachment(mime)])
+      const { api, rpc } = makeOptions({
+        pendingAttachments,
+        modelRoutingMode: ref<'llm_ensemble'>('llm_ensemble'),
+      })
+
+      await api.onSend()
+
+      expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+        attachments: [expect.objectContaining({ mime })],
+      }))
+    },
+  )
+
+  it('localizes a defensive server rejection while preserving its error code', async () => {
+    const rpc = {
+      call: vi.fn().mockRejectedValue(Object.assign(new Error('server fallback text'), {
+        code: 'ensemble_multimodal_unsupported',
+        retryable: false,
+      })),
+    }
+    const { api, options } = makeOptions({ rpc })
+
+    await api.onSend()
+
+    expect(options.messages.value[options.messages.value.length - 1]).toMatchObject({
+      role: 'error',
+      errorCode: 'ensemble_multimodal_unsupported',
+      text: "Ensemble doesn't support image input yet. Switch to single-model routing and try again.",
+    })
+  })
+
+  it('localizes a terminal response code but leaves an unknown server message unchanged', async () => {
+    const knownRpc = {
+      call: vi.fn().mockResolvedValue({
+        sessionKey: 'agent:main:webchat:test',
+        task_status: 'failed',
+        terminal_reason: 'ensemble_multimodal_unsupported',
+        terminal_message: 'server fallback text',
+      }),
+    }
+    const known = makeOptions({ rpc: knownRpc })
+    await known.api.onSend()
+    expect(known.options.messages.value[known.options.messages.value.length - 1]).toMatchObject({
+      errorCode: 'ensemble_multimodal_unsupported',
+      text: "Ensemble doesn't support image input yet. Switch to single-model routing and try again.",
+    })
+
+    const unknownRpc = {
+      call: vi.fn().mockResolvedValue({
+        sessionKey: 'agent:main:webchat:test',
+        task_status: 'failed',
+        terminal_reason: 'provider_custom_failure',
+        terminal_message: 'Provider supplied this exact explanation.',
+      }),
+    }
+    const unknown = makeOptions({ rpc: unknownRpc })
+    await unknown.api.onSend()
+    expect(unknown.options.messages.value[unknown.options.messages.value.length - 1]).toMatchObject({
+      errorCode: 'provider_custom_failure',
+      text: 'Provider supplied this exact explanation.',
     })
   })
 })

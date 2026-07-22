@@ -1,12 +1,74 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  hasSendableModelInputImageAttachment,
   isImageDisplayAttachment,
+  isModelInputImageMime,
+  isSendableModelInputImageAttachment,
   normalizeDisplayAttachment,
   normalizeDisplayAttachments,
   serializeDisplayAttachment,
 } from './attachments'
 import type { Attachment } from '@/types/chat'
+
+describe('model-input image detection', () => {
+  it.each([
+    'image/png',
+    'IMAGE/JPEG',
+    'image/jpg',
+    'image/gif; charset=binary',
+    'image/webp',
+  ])('accepts the Gateway model-image MIME %s', (mime) => {
+    expect(isModelInputImageMime(mime)).toBe(true)
+  })
+
+  it.each([
+    'application/pdf',
+    'image/svg+xml',
+    'image/tiff',
+    'image/avif',
+    'text/plain',
+  ])('does not classify %s as a model image', (mime) => {
+    expect(isModelInputImageMime(mime)).toBe(false)
+  })
+
+  it('counts only ready inline and staged image attachments', () => {
+    const inline: Attachment = {
+      kind: 'inline',
+      local_id: 1,
+      name: 'inline.png',
+      mime: 'image/png',
+      data: 'aW1hZ2U=',
+    }
+    const staged: Attachment = {
+      kind: 'staged',
+      local_id: 2,
+      name: 'staged.jpg',
+      mime: 'image/jpg',
+      file_uuid: 'file-ready',
+    }
+    const uploading: Attachment = {
+      kind: 'uploading',
+      local_id: 3,
+      name: 'uploading.webp',
+      mime: 'image/webp',
+    }
+    const failed: Attachment = {
+      kind: 'failed',
+      local_id: 4,
+      name: 'failed.gif',
+      mime: 'image/gif',
+      error: 'failed',
+    }
+
+    expect(isSendableModelInputImageAttachment(inline)).toBe(true)
+    expect(isSendableModelInputImageAttachment(staged)).toBe(true)
+    expect(isSendableModelInputImageAttachment(uploading)).toBe(false)
+    expect(isSendableModelInputImageAttachment(failed)).toBe(false)
+    expect(hasSendableModelInputImageAttachment([uploading, failed])).toBe(false)
+    expect(hasSendableModelInputImageAttachment([uploading, staged])).toBe(true)
+  })
+})
 
 describe('attachment display normalization', () => {
   it('renders inline HTML history attachments as downloadable file chips without DOM data', () => {

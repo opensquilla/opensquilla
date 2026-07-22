@@ -497,7 +497,7 @@ async def test_agent_known_error_receipt_is_retained_in_totals_and_llm_error_log
                             },
                         }
                     ],
-                    usage_missing_count=0,
+                    usage_missing_count=1,
                 )
             ]
         ]
@@ -529,6 +529,7 @@ async def test_agent_known_error_receipt_is_retained_in_totals_and_llm_error_log
     assert error_log["usage"]["model_usage_breakdown"][0]["provider_usage"][
         "response_ids"
     ] == ["failed-call-1"]
+    assert error_log["usage_missing_count"] == 1
 
 
 def test_ensemble_breakdown_is_one_envelope_with_items(monkeypatch: pytest.MonkeyPatch) -> None:

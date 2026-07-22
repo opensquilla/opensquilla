@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import random
 import time
 from collections.abc import AsyncIterator, Callable, Mapping, Sequence
@@ -51,6 +52,8 @@ from .types import (
 TRACE_CONTENT_MAX_CHARS = 8_000
 _ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS = 5.0
+_GENERATION_POLICY_FILTER_REASON = "generation_policy_reasoning_unsupported"
+_RUNTIME_HARD_FILTER_REASONS_FIELD = "runtime_hard_filter_reasons"
 log = structlog.get_logger(__name__)
 
 
@@ -409,6 +412,83 @@ def openrouter_static_capabilities(model: str) -> ModelCapabilities | None:
             reasoning_format="openrouter",
         )
     return None
+
+
+def _apply_strict_generation_policy_candidate_filter(
+    snapshot: Mapping[str, Any],
+    policy: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Mark dynamic candidates that cannot honor the strict reasoning contract."""
+
+    if not isinstance(policy, Mapping):
+        return None
+    strict_routing = os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "")
+    if strict_routing.strip().lower() not in {"1", "true", "yes", "on", "enabled"}:
+        return None
+    if not bool(policy.get("require_highest_thinking")):
+        return None
+    if not bool(policy.get("thinking_enabled", True)):
+        return None
+
+    raw_mapping = policy.get("model_thinking_levels")
+    mapping = raw_mapping if isinstance(raw_mapping, Mapping) else {}
+    normalized_mapping = {
+        str(model).strip().lower(): str(level).strip().lower()
+        for model, level in mapping.items()
+    }
+    default_level = str(policy.get("default_thinking_level") or "xhigh").strip().lower()
+    rows = snapshot.get("models")
+    candidates = (
+        rows
+        if isinstance(rows, Sequence) and not isinstance(rows, (str, bytes))
+        else []
+    )
+    excluded: list[dict[str, Any]] = []
+    for row in candidates:
+        if not isinstance(row, Mapping):
+            continue
+        facts = row.get("registry_facts")
+        if not isinstance(facts, dict):
+            continue
+        provider = str(facts.get("provider") or "").strip().lower()
+        model = str(facts.get("model_id") or "").strip()
+        if provider != "openrouter" or not model:
+            continue
+        requested_thinking = normalized_mapping.get(model.lower(), default_level)
+        if requested_thinking in {"", "off", "none", "false"}:
+            continue
+        capabilities = openrouter_static_capabilities(model)
+        if capabilities is not None and capabilities.supports_reasoning:
+            continue
+
+        raw_reasons = facts.get(_RUNTIME_HARD_FILTER_REASONS_FIELD)
+        reasons = (
+            [str(reason) for reason in raw_reasons]
+            if isinstance(raw_reasons, Sequence)
+            and not isinstance(raw_reasons, (str, bytes))
+            else []
+        )
+        if _GENERATION_POLICY_FILTER_REASON not in reasons:
+            reasons.append(_GENERATION_POLICY_FILTER_REASON)
+        facts[_RUNTIME_HARD_FILTER_REASONS_FIELD] = reasons
+        excluded.append(
+            {
+                "identity": f"{provider}:{model}",
+                "provider": provider,
+                "model": model,
+                "requested_thinking": requested_thinking,
+                "reason": _GENERATION_POLICY_FILTER_REASON,
+            }
+        )
+
+    return {
+        "enabled": True,
+        "mode": "strict_require_highest_thinking",
+        "input_candidate_count": len(candidates),
+        "remaining_candidate_count": len(candidates) - len(excluded),
+        "excluded_count": len(excluded),
+        "excluded_models": excluded,
+    }
 
 
 def _member_model_capabilities(member: EnsembleMemberConfig) -> ModelCapabilities:
@@ -3127,6 +3207,11 @@ def _build_router_dynamic_members(
             credential_available = False
         facts["credential_available"] = credential_available
 
+    generation_policy = inputs.get("generation_policy")
+    generation_filter_trace = _apply_strict_generation_policy_candidate_filter(
+        snapshot,
+        generation_policy if isinstance(generation_policy, Mapping) else None,
+    )
     decision = rank_models(
         task_analysis=task_analysis,
         user_profile=user_profile,
@@ -3137,6 +3222,8 @@ def _build_router_dynamic_members(
         ranking_config=ranking_config,
         decision_id=decision_id,
     )
+    if generation_filter_trace is not None:
+        decision.trace["generation_policy_filter"] = generation_filter_trace
     proposers = [
         _member_from_ref(
             _EnsembleModelRef(

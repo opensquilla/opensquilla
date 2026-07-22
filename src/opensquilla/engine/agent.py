@@ -5927,6 +5927,12 @@ class Agent:
                         "got_done_event": _got_done_event,
                     }
                     if provider_done_for_log is not None:
+                        response_payload["usage_missing_count"] = max(
+                            0,
+                            _usage_int(
+                                getattr(provider_done_for_log, "usage_missing_count", 0)
+                            ),
+                        )
                         usage_payload: dict[str, Any] = {
                             "stop_reason": provider_done_for_log.stop_reason,
                             "input_tokens": provider_done_for_log.input_tokens,
@@ -5965,6 +5971,12 @@ class Agent:
                         if ensemble_trace:
                             response_payload["ensemble_trace"] = ensemble_trace
                     if provider_error_for_log is not None:
+                        response_payload["usage_missing_count"] = max(
+                            0,
+                            _usage_int(
+                                getattr(provider_error_for_log, "usage_missing_count", 0)
+                            ),
+                        )
                         if provider_error_usage_for_log is not None:
                             response_payload["usage"] = provider_error_usage_for_log
                         response_payload["error"] = {

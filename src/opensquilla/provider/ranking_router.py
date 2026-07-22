@@ -34,6 +34,7 @@ TASK_ANALYZER_PROVIDER_ID = "openrouter"
 TASK_ANALYZER_MODEL_ID = "anthropic/claude-opus-4.8"
 TASK_ANALYZER_VERSION = "opus-4.8-json-v2"
 TASK_PROFILE_SCHEMA_VERSION = "step2-task-profile-v1"
+GENERATION_POLICY_FILTER_REASON_PREFIX = "generation_policy_"
 
 CAPABILITIES = (
     "reasoning",
@@ -2923,6 +2924,15 @@ def _availability_reasons(
         reasons.append("rate_limited")
     if role.lower() not in {str(value).strip().lower() for value in facts.get("roles") or []}:
         reasons.append(f"role_{role}_unsupported")
+    runtime_reasons = facts.get("runtime_hard_filter_reasons")
+    if isinstance(runtime_reasons, Sequence) and not isinstance(
+        runtime_reasons, (str, bytes)
+    ):
+        reasons.extend(
+            str(reason).strip()
+            for reason in runtime_reasons
+            if str(reason).strip()
+        )
     return reasons
 
 
@@ -3800,6 +3810,29 @@ def rank_models(
         )
         if not reasons:
             eligible.append(model)
+    generation_policy_exclusions = [
+        {
+            "identity": row["identity"],
+            "model": row["model"],
+            "reasons": [
+                reason
+                for reason in row["reasons"]
+                if reason.startswith(GENERATION_POLICY_FILTER_REASON_PREFIX)
+            ],
+        }
+        for row in proposer_filters
+        if any(
+            reason.startswith(GENERATION_POLICY_FILTER_REASON_PREFIX)
+            for reason in row["reasons"]
+        )
+    ]
+    if generation_policy_exclusions and len(eligible) < minimum:
+        excluded = ", ".join(row["identity"] for row in generation_policy_exclusions)
+        raise DynamicRankingError(
+            "router_dynamic generation-policy filtering left "
+            f"{len(eligible)} eligible proposer(s), fewer than N_min={minimum}; "
+            f"excluded: {excluded}"
+        )
     if not eligible:
         no_eligible_reason_counts: dict[str, int] = {}
         for row in proposer_filters:
@@ -4024,6 +4057,11 @@ def rank_models(
             "N_max": maximum,
         }
 
+    if generation_policy_exclusions and len(selected) < minimum:
+        raise DynamicRankingError(
+            "router_dynamic generation-policy filtering allowed only "
+            f"{len(selected)} feasible proposer(s), fewer than N_min={minimum}"
+        )
     if not selected:
         raise DynamicRankingError(
             "router_dynamic cannot select a proposer with a feasible aggregator"
@@ -4037,6 +4075,19 @@ def rank_models(
         ranking_config=effective_ranking_config,
     )
     if not aggregator_rows:
+        aggregator_generation_exclusions = [
+            row["identity"]
+            for row in aggregator_filters
+            if any(
+                reason.startswith(GENERATION_POLICY_FILTER_REASON_PREFIX)
+                for reason in row["reasons"]
+            )
+        ]
+        if aggregator_generation_exclusions:
+            raise DynamicRankingError(
+                "router_dynamic generation-policy filtering left no feasible aggregator; "
+                f"excluded: {', '.join(aggregator_generation_exclusions)}"
+            )
         raise DynamicRankingError("router_dynamic has no feasible aggregator")
     aggregator_row = aggregator_rows[0]
     aggregator = aggregator_row["model"]

@@ -50,6 +50,7 @@ def test_default_b2_config_pins_g12_highest_thinking_and_tool_permissions() -> N
         "deepseek/deepseek-v4-pro": "xhigh",
         "google/gemini-3.1-pro-preview": "high",
         "moonshotai/kimi-k2.7-code": "max",
+        "openai/gpt-5.5": "xhigh",
         "openai/gpt-5.5-pro": "xhigh",
         "openai/gpt-5.6-sol": "max",
         "qwen/qwen3.7-max": "xhigh",

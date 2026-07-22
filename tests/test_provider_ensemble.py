@@ -1003,6 +1003,110 @@ def test_router_dynamic_selection_plan_is_materialized_without_rewriting_members
     )
 
 
+def test_router_dynamic_strict_highest_thinking_filters_unsupported_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "1")
+    config = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-pro",
+            "api_key": "fake",
+        },
+        llm_ensemble={
+            "enabled": True,
+            "selection_mode": "router_dynamic",
+            "shuffle_candidates": False,
+        },
+    )
+    provider = build_ensemble_provider_from_config(
+        config=config,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="deepseek/deepseek-v4-pro",
+            api_key="fake",
+        ),
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c2"},
+        ranking_inputs={
+            "generation_policy": {
+                "thinking_enabled": True,
+                "default_thinking_level": "xhigh",
+                "model_thinking_levels": {},
+                "require_highest_thinking": True,
+            }
+        },
+    )
+    plan = provider.selection_plan
+    generation_filter = plan["generation_policy_filter"]
+    excluded_models = {
+        row["model"] for row in generation_filter["excluded_models"]
+    }
+
+    assert excluded_models == {
+        "kwaipilot/kat-coder-air-v2.5",
+        "kwaipilot/kat-coder-pro-v2.5",
+        "meta-llama/llama-4-scout",
+    }
+    assert generation_filter["excluded_count"] == 3
+    assert generation_filter["remaining_candidate_count"] == (
+        generation_filter["input_candidate_count"] - 3
+    )
+    selected = {
+        *(member.provider_config.model for member in provider.proposers),
+        provider.aggregator.provider_config.model,
+    }
+    assert selected.isdisjoint(excluded_models)
+    by_model = {
+        row["model"]: row for row in plan["hard_filter"]["proposer_results"]
+    }
+    for model in excluded_models:
+        assert "generation_policy_reasoning_unsupported" in by_model[model]["reasons"]
+
+
+@pytest.mark.parametrize(
+    ("strict_routing", "require_highest"),
+    [("0", True), ("1", False)],
+)
+def test_router_dynamic_generation_filter_does_not_change_non_strict_or_non_highest(
+    monkeypatch: pytest.MonkeyPatch,
+    strict_routing: str,
+    require_highest: bool,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", strict_routing)
+    config = GatewayConfig(
+        llm={
+            "provider": "openrouter",
+            "model": "deepseek/deepseek-v4-pro",
+            "api_key": "fake",
+        },
+        llm_ensemble={"enabled": True, "selection_mode": "router_dynamic"},
+    )
+    provider = build_ensemble_provider_from_config(
+        config=config,
+        inherited_provider_config=ProviderConfig(
+            provider="openrouter",
+            model="deepseek/deepseek-v4-pro",
+            api_key="fake",
+        ),
+        fallback_provider=None,
+        turn_metadata={"routed_tier": "c2"},
+        ranking_inputs={
+            "generation_policy": {
+                "thinking_enabled": True,
+                "default_thinking_level": "xhigh",
+                "require_highest_thinking": require_highest,
+            }
+        },
+    )
+
+    assert "generation_policy_filter" not in provider.selection_plan
+    assert all(
+        "generation_policy_reasoning_unsupported" not in row["reasons"]
+        for row in provider.selection_plan["hard_filter"]["proposer_results"]
+    )
+
+
 @pytest.mark.parametrize(
     ("thinking", "expected_cap"),
     [("high", 567_800), ("off", 584_800)],

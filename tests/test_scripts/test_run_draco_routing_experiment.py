@@ -16,7 +16,7 @@ from opensquilla.provider.ensemble import (
     build_ensemble_provider_from_config,
 )
 from opensquilla.provider.selector import ProviderConfig
-from opensquilla.provider.types import ChatConfig
+from opensquilla.provider.types import ChatConfig, DoneEvent
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.sandbox.integration import configure_runtime, reset_runtime
 from opensquilla.sandbox.run_context import PublicNetworkGrant, RunContext
@@ -1043,6 +1043,45 @@ def test_runner_tool_mode_combinations_fail_closed() -> None:
     )
 
 
+def test_select_tasks_by_ids_preserves_reference_order_and_rejects_bad_ids() -> None:
+    tasks = [
+        {"id": "task-a", "prompt": "a"},
+        {"id": "task-b", "prompt": "b"},
+        {"id": "task-c", "prompt": "c"},
+    ]
+
+    selected = runner.select_tasks_by_ids(tasks, ["task-c", "task-a"])
+
+    assert [task["id"] for task in selected] == ["task-a", "task-c"]
+    with pytest.raises(ValueError, match="duplicate --task-ids"):
+        runner.select_tasks_by_ids(tasks, ["task-a", "task-a"])
+    with pytest.raises(ValueError, match="unknown --task-ids"):
+        runner.select_tasks_by_ids(tasks, ["task-missing"])
+
+
+def test_recovery_cli_arguments_are_manifested_and_reconstructed() -> None:
+    args = runner.build_parser().parse_args(
+        [
+            "--input",
+            "tasks.jsonl",
+            "--groups",
+            "B0,B1",
+            "--task-ids",
+            "task-a",
+            "--task-ids",
+            "task-c",
+            "--continue-after-cost-audit-failure",
+        ]
+    )
+
+    manifest = runner.manifest_args(args)
+    reconstructed = runner.reconstructed_cli_args(args)
+    assert manifest["task_ids"] == ["task-a", "task-c"]
+    assert manifest["continue_after_cost_audit_failure"] is True
+    assert reconstructed.count("--task-ids") == 2
+    assert "--continue-after-cost-audit-failure" in reconstructed
+
+
 @pytest.mark.asyncio
 async def test_preflight_failure_writes_audit_manifest_before_any_model(
     tmp_path: Path,
@@ -1094,6 +1133,69 @@ async def test_preflight_failure_writes_audit_manifest_before_any_model(
     assert manifest["failure"]["model_or_judge_started"] is False
     assert manifest["rows_written"] == 0
     assert not list(output_dir.glob("draco_ensemble_*.jsonl"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("continue_after_failure", "expected_rows"),
+    [(False, 1), (True, 2)],
+    ids=["fail-fast-default", "continue-recovery"],
+)
+async def test_cost_audit_recovery_mode_finishes_independent_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continue_after_failure: bool,
+    expected_rows: int,
+) -> None:
+    input_path = tmp_path / "tasks.jsonl"
+    input_path.write_text(
+        "\n".join(
+            json.dumps({"id": task_id, "prompt": f"prompt {task_id}"})
+            for task_id in ("task-a", "task-b")
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    output_dir = tmp_path / "output"
+    argv = [
+        "--input",
+        str(input_path),
+        "--output-dir",
+        str(output_dir),
+        "--groups",
+        "B0",
+        "--dry-run",
+        "--require-openrouter-non-byok",
+        "--concurrency",
+        "1",
+    ]
+    if continue_after_failure:
+        argv.append("--continue-after-cost-audit-failure")
+    args = runner.build_parser().parse_args(argv)
+    monkeypatch.setattr(runner.GatewayConfig, "load", lambda _path: GatewayConfig())
+
+    status = await runner.amain(args)
+
+    assert status == 2
+    result_paths = list(output_dir.glob("draco_ensemble_*.jsonl"))
+    manifest_paths = list(output_dir.glob("draco_run_*.manifest.json"))
+    assert len(result_paths) == 1
+    assert len(manifest_paths) == 1
+    rows = [
+        json.loads(line)
+        for line in result_paths[0].read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    manifest = json.loads(manifest_paths[0].read_text(encoding="utf-8"))
+    assert len(rows) == expected_rows
+    assert manifest["rows_written"] == expected_rows
+    assert manifest["status"] == "cost_audit_failed"
+    assert all(row["error"] == "openrouter_non_byok_verification_failed" for row in rows)
+    if continue_after_failure:
+        assert manifest["failure"]["failure_count"] == 2
+        assert len(manifest["failure"]["failures"]) == 2
+    else:
+        assert manifest["failure"]["task_id"] in {"task-a", "task-b"}
 
 
 def test_local_web_fetch_runtime_disables_hidden_firecrawl_by_default(
@@ -1244,6 +1346,152 @@ def test_agent_llm_error_without_usage_is_counted_as_unknown_cost() -> None:
     assert accounting["cost_exact"] is False
 
 
+def test_agent_llm_error_without_usage_honors_missing_request_count() -> None:
+    breakdown = runner.aggregate_agent_model_usage(
+        [
+            {
+                "kind": "llm_error",
+                "payload": {"iteration": 2, "attempt": 1, "usage_missing_count": 2},
+            }
+        ]
+    )
+
+    assert len(breakdown) == 2
+    assert all(row["cost_source"] == "none" for row in breakdown)
+
+
+def test_agent_usage_does_not_double_count_abandoned_stream_placeholder() -> None:
+    breakdown = runner.aggregate_agent_model_usage(
+        [
+            {
+                "kind": "llm_response",
+                "payload": {
+                    "iteration": 1,
+                    "attempt": 1,
+                    "usage_missing_count": 1,
+                    "usage": {
+                        "model_usage_breakdown": [
+                            {
+                                "role": "abandoned_stream_request",
+                                "provider": "openrouter",
+                                "model": "model-a",
+                                "input_tokens": 0,
+                                "output_tokens": 0,
+                                "billed_cost": 0.0,
+                                "cost_source": "none",
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+    )
+
+    assert len(breakdown) == 1
+    assert breakdown[0]["role"] == "abandoned_stream_request"
+
+
+def test_agent_usage_does_not_treat_generic_unpriced_row_as_missing_placeholder() -> None:
+    breakdown = runner.aggregate_agent_model_usage(
+        [
+            {
+                "kind": "llm_error",
+                "payload": {
+                    "iteration": 1,
+                    "attempt": 1,
+                    "usage_missing_count": 1,
+                    "usage": {
+                        "model_usage_breakdown": [
+                            {
+                                "role": "proposer",
+                                "provider": "openrouter",
+                                "model": "model-a",
+                                "input_tokens": 3,
+                                "output_tokens": 1,
+                                "billed_cost": 0.0,
+                                "cost_source": "none",
+                            }
+                        ]
+                    },
+                },
+            }
+        ]
+    )
+
+    assert len(breakdown) == 2
+    assert [row["role"] for row in breakdown] == [
+        "proposer",
+        "agent_llm_request_unknown",
+    ]
+
+
+def test_agent_retry_partial_error_preserves_missing_physical_request() -> None:
+    first_attempt_rows = [
+        {
+            "provider": "openrouter",
+            "model": f"proposer-{index}",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "billed_cost": 0.01,
+            "cost_source": "provider_billed",
+            "provider_usage": _openrouter_exact_evidence(
+                0.01, f"failed-attempt-proposer-{index}"
+            ),
+        }
+        for index in range(4)
+    ]
+    retry_rows = [
+        {
+            "provider": "openrouter",
+            "model": f"retry-model-{index}",
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "billed_cost": 0.02,
+            "cost_source": "provider_billed",
+            "provider_usage": _openrouter_exact_evidence(
+                0.02, f"successful-retry-{index}"
+            ),
+        }
+        for index in range(5)
+    ]
+
+    breakdown = runner.aggregate_agent_model_usage(
+        [
+            {
+                "kind": "llm_error",
+                "payload": {
+                    "iteration": 1,
+                    "attempt": 1,
+                    "usage_missing_count": 1,
+                    "usage": {"model_usage_breakdown": first_attempt_rows},
+                },
+            },
+            {
+                "kind": "llm_response",
+                "payload": {
+                    "iteration": 1,
+                    "attempt": 2,
+                    "usage": {"model_usage_breakdown": retry_rows},
+                },
+            },
+        ]
+    )
+
+    assert len(breakdown) == 10
+    assert sum(row["cost_source"] == "provider_billed" for row in breakdown) == 9
+    unknown = [row for row in breakdown if row["cost_source"] == "none"]
+    assert len(unknown) == 1
+    assert unknown[0]["role"] == "agent_llm_request_unknown"
+    accounting = runner.usage_cost_accounting(
+        {"model_usage_breakdown": breakdown},
+        expected_requests=9,
+        scope="generation",
+    )
+    assert accounting["request_count"] == 10
+    assert accounting["unknown_request_count"] == 1
+    assert accounting["cost_exact"] is False
+
+
 def test_estimated_and_mixed_usage_record_their_actual_cost_fields() -> None:
     accounting = runner.usage_cost_accounting(
         {
@@ -1370,6 +1618,7 @@ def test_main_and_resume_share_identical_critical_runtime_functions() -> None:
         "_mixed_usage_cost",
         "usage_cost_accounting",
         "merge_cost_accounting",
+        "aggregate_agent_model_usage",
         "row_cost_accounting",
         "canonical_json_sha256",
         "gateway_execution_contract",
@@ -1749,6 +1998,178 @@ def test_openrouter_non_byok_audit_fails_closed() -> None:
     audit = runner.openrouter_non_byok_audit(unverified)
     assert audit["pass"] is False
     assert audit["unverified_or_byok_request_count"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("strict", "expected_requests", "expected_judge_calls", "expected_error"),
+    [
+        (True, 5, 0, "openrouter_non_byok_verification_failed"),
+        (True, 4, 1, ""),
+        (False, 5, 1, ""),
+    ],
+    ids=["strict-missing-receipt", "strict-all-exact", "non-strict-unchanged"],
+)
+async def test_generation_non_byok_gate_runs_before_judge(
+    monkeypatch: pytest.MonkeyPatch,
+    strict: bool,
+    expected_requests: int,
+    expected_judge_calls: int,
+    expected_error: str,
+) -> None:
+    config, inherited = _openrouter_config()
+    rows = [
+        {
+            "provider": "openrouter",
+            "model": f"model-{index}",
+            "input_tokens": 3,
+            "output_tokens": 1,
+            "billed_cost": 0.01,
+            "cost_source": "provider_billed",
+            "provider_usage": _openrouter_exact_evidence(
+                0.01,
+                f"generation-{index}",
+            ),
+        }
+        for index in range(4)
+    ]
+    done = DoneEvent(
+        input_tokens=sum(int(row["input_tokens"]) for row in rows),
+        output_tokens=sum(int(row["output_tokens"]) for row in rows),
+        billed_cost=sum(float(row["billed_cost"]) for row in rows),
+        cost_source="provider_billed",
+        model="model-final",
+        provider="openrouter",
+        model_usage_breakdown=rows,
+        ensemble_trace={"llm_request_count": expected_requests},
+    )
+    result = runner.RunResult(final_text="answer", done=done)
+    attempts = [
+        {
+            "attempt": 1,
+            "retryable": False,
+            "retry_reason": "",
+            "will_retry": False,
+            "retry_backoff_s": 0.0,
+            "run": runner.run_result_summary(result),
+        }
+    ]
+
+    async def fake_build_experiment_provider(**_kwargs):
+        return runner.ProviderBuildResult(provider=object(), prompt="prompt")
+
+    async def fake_collect_generation_with_retries(*_args, **_kwargs):
+        return result, attempts, 1
+
+    judge_calls = 0
+
+    async def fake_judge_text(**_kwargs):
+        nonlocal judge_calls
+        judge_calls += 1
+        return {"total": 10.0}
+
+    monkeypatch.setattr(runner, "build_experiment_provider", fake_build_experiment_provider)
+    monkeypatch.setattr(
+        runner,
+        "collect_generation_with_retries",
+        fake_collect_generation_with_retries,
+    )
+    monkeypatch.setattr(runner, "judge_text", fake_judge_text)
+
+    row = await runner.run_one(
+        task={"id": "task-1", "prompt": "prompt"},
+        group="B3",
+        config=config,
+        inherited=inherited,
+        dry_run=False,
+        judge_provider=object(),
+        judge_candidates=False,
+        judge_repeats=1,
+        judge_concurrency=1,
+        judge_max_attempts=1,
+        judge_semaphore=None,
+        timeout=10.0,
+        ensemble_proposer_timeout=None,
+        ensemble_aggregator_timeout=None,
+        ensemble_proposer_early_stop_success_count=None,
+        ensemble_proposer_early_stop_after=None,
+        expand_ensemble_timeouts_to_task_timeout=False,
+        tool_policy={"tools_enabled": False, "tool_mode": "provider_only"},
+        generation_policy={},
+        require_openrouter_non_byok=strict,
+    )
+
+    assert judge_calls == expected_judge_calls
+    assert row["error"] == expected_error
+    assert (row.get("judge") is not None) is bool(expected_judge_calls)
+    if strict:
+        assert row["openrouter_non_byok_audit"]["pass"] is (not expected_error)
+    else:
+        assert "openrouter_non_byok_audit" not in row
+
+
+@pytest.mark.asyncio
+async def test_provider_build_failure_preserves_already_billed_setup_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config, inherited = _openrouter_config()
+    setup_usage = {
+        "provider": "openrouter",
+        "model": "anthropic/claude-opus-4.8",
+        "input_tokens": 12,
+        "output_tokens": 3,
+        "billed_cost": 0.25,
+        "cost_source": "provider_billed",
+        "provider_usage": _openrouter_exact_evidence(0.25, "setup-receipt-1"),
+    }
+
+    async def fake_build_experiment_provider(**_kwargs):
+        raise runner.ProviderBuildError(
+            RuntimeError("strict dynamic selection failed"),
+            setup_latency_ms=123,
+            setup_usage=[setup_usage],
+            routing_trace={"task_analyzer": {"model": setup_usage["model"]}},
+        )
+
+    judge_calls = 0
+
+    async def fake_judge_text(**_kwargs):
+        nonlocal judge_calls
+        judge_calls += 1
+        return {"total": 10.0}
+
+    monkeypatch.setattr(runner, "build_experiment_provider", fake_build_experiment_provider)
+    monkeypatch.setattr(runner, "judge_text", fake_judge_text)
+
+    row = await runner.run_one(
+        task={"id": "task-1", "prompt": "prompt"},
+        group="G1",
+        config=config,
+        inherited=inherited,
+        dry_run=False,
+        judge_provider=object(),
+        judge_candidates=False,
+        judge_repeats=1,
+        judge_concurrency=1,
+        judge_max_attempts=1,
+        judge_semaphore=None,
+        timeout=10.0,
+        ensemble_proposer_timeout=None,
+        ensemble_aggregator_timeout=None,
+        ensemble_proposer_early_stop_success_count=None,
+        ensemble_proposer_early_stop_after=None,
+        expand_ensemble_timeouts_to_task_timeout=False,
+        tool_policy={"tools_enabled": False, "tool_mode": "provider_only"},
+        generation_policy={},
+        require_openrouter_non_byok=True,
+    )
+
+    assert row["error"] == "RuntimeError: strict dynamic selection failed"
+    assert row["llm_request_count"] == 1
+    assert row["execution"]["routing_setup_latency_ms"] == 123
+    assert row["usage"]["model_usage_breakdown"] == [setup_usage]
+    assert runner.openrouter_non_byok_audit(row)["pass"] is True
+    assert judge_calls == 0
 
 
 @pytest.mark.parametrize("module", [runner, _load_resume_runner()], ids=["main", "resume"])

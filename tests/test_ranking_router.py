@@ -1137,6 +1137,65 @@ def test_hard_filter_records_availability_permission_modality_and_context_reason
     assert decision.proposers[0].model_id == "eligible"
 
 
+def test_runtime_generation_policy_reason_excludes_before_ranking() -> None:
+    primary = _model("primary", capability=0.95)
+    backup = _model("backup", capability=0.90)
+    contrast = _model("contrast", capability=0.85)
+    blocked = _model("blocked", capability=1.0)
+    blocked["registry_facts"]["runtime_hard_filter_reasons"] = [
+        "generation_policy_reasoning_unsupported"
+    ]
+
+    decision = _decision(
+        primary,
+        backup,
+        contrast,
+        blocked,
+        analysis=_analysis(tier=3, latency="interactive"),
+    )
+    selected = {
+        *(model.model_id for model in decision.proposers),
+        decision.aggregator.model_id,
+    }
+    proposer_row = next(
+        row
+        for row in decision.trace["hard_filter"]["proposer_results"]
+        if row["model"] == "blocked"
+    )
+    aggregator_row = next(
+        row
+        for row in decision.trace["hard_filter"]["aggregator_results"]
+        if row["model"] == "blocked"
+    )
+
+    assert "blocked" not in selected
+    assert proposer_row["eligible"] is False
+    assert aggregator_row["eligible"] is False
+    assert proposer_row["reasons"] == ["generation_policy_reasoning_unsupported"]
+    assert aggregator_row["reasons"] == ["generation_policy_reasoning_unsupported"]
+
+
+def test_generation_policy_filter_fails_clearly_when_below_n_min() -> None:
+    eligible = _model("eligible", capability=0.95)
+    blocked_one = _model("blocked-one", capability=0.90)
+    blocked_two = _model("blocked-two", capability=0.85)
+    for blocked in (blocked_one, blocked_two):
+        blocked["registry_facts"]["runtime_hard_filter_reasons"] = [
+            "generation_policy_reasoning_unsupported"
+        ]
+
+    with pytest.raises(
+        DynamicRankingError,
+        match=r"generation-policy filtering left 1 eligible proposer\(s\), fewer than N_min=2",
+    ):
+        _decision(
+            eligible,
+            blocked_one,
+            blocked_two,
+            analysis=_analysis(tier=3, latency="interactive"),
+        )
+
+
 def _profile_with_history(*, positive: list[str], negative: list[str], count: int) -> dict:
     profile = mock_user_profile()
     profile["history"]["positive_model_ids"] = positive

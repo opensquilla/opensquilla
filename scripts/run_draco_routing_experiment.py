@@ -195,6 +195,7 @@ DEFAULT_MODEL_MAX_GENERATION_THINKING: dict[str, str] = {
     "deepseek/deepseek-v4-pro": "xhigh",
     "google/gemini-3.1-pro-preview": "high",
     "moonshotai/kimi-k2.7-code": "max",
+    "openai/gpt-5.5": "xhigh",
     "openai/gpt-5.5-pro": "xhigh",
     "openai/gpt-5.6-sol": "max",
     "qwen/qwen3.7-max": "xhigh",
@@ -342,6 +343,23 @@ class ProviderBuildResult:
     setup_latency_ms: int = 0
     setup_usage: list[dict[str, Any]] = field(default_factory=list)
     routing_trace: dict[str, Any] = field(default_factory=dict)
+
+
+class ProviderBuildError(RuntimeError):
+    """Preserve already-billed setup receipts when provider construction fails."""
+
+    def __init__(
+        self,
+        cause: Exception,
+        *,
+        setup_latency_ms: int,
+        setup_usage: list[dict[str, Any]],
+        routing_trace: dict[str, Any],
+    ) -> None:
+        super().__init__(f"{type(cause).__name__}: {cause}")
+        self.setup_latency_ms = setup_latency_ms
+        self.setup_usage = list(setup_usage)
+        self.routing_trace = dict(routing_trace)
 
 
 def attach_provider_setup(provider: Any, build: ProviderBuildResult) -> Any:
@@ -495,6 +513,42 @@ def load_tasks(path: Path, *, max_tasks: int = 0) -> list[dict[str, Any]]:
         if max_tasks and len(tasks) >= max_tasks:
             break
     return tasks
+
+
+def select_tasks_by_ids(
+    tasks: list[dict[str, Any]],
+    requested_task_ids: list[str] | None,
+) -> list[dict[str, Any]]:
+    """Select an exact task subset while preserving reference-input order."""
+
+    if not requested_task_ids:
+        return tasks
+    normalized = [str(task_id).strip() for task_id in requested_task_ids]
+    if any(not task_id for task_id in normalized):
+        raise ValueError("--task-ids values must be non-empty")
+    duplicates = sorted(
+        task_id for task_id in set(normalized) if normalized.count(task_id) > 1
+    )
+    if duplicates:
+        raise ValueError(f"duplicate --task-ids value(s): {', '.join(duplicates)}")
+
+    source_counts: dict[str, int] = {}
+    for task in tasks:
+        task_id = str(task["id"])
+        source_counts[task_id] = source_counts.get(task_id, 0) + 1
+    missing = sorted(task_id for task_id in normalized if task_id not in source_counts)
+    if missing:
+        raise ValueError(f"unknown --task-ids value(s): {', '.join(missing)}")
+    repeated_source_ids = sorted(
+        task_id for task_id in normalized if source_counts.get(task_id, 0) != 1
+    )
+    if repeated_source_ids:
+        raise ValueError(
+            "selected task id(s) are not unique in the input: "
+            + ", ".join(repeated_source_ids)
+        )
+    requested = set(normalized)
+    return [task for task in tasks if str(task["id"]) in requested]
 
 
 def parse_groups(raw: str) -> list[str]:
@@ -2534,6 +2588,7 @@ async def build_experiment_provider(
             "user_profile": user_profile,
             "request_context": request_context,
             "ranking_config": ranking_config,
+            "generation_policy": dict(generation_policy or {}),
         }
         turn.metadata["router_dynamic_task_profile"] = task_analysis.profile
         turn.metadata["router_dynamic_task_analyzer"] = task_analysis.trace(ranking_config)
@@ -2558,32 +2613,42 @@ async def build_experiment_provider(
             "request_context_hash": request_context.get("snapshot_hash"),
         }
 
-    provider = build_ensemble_provider_from_config(
-        config=group_config,
-        inherited_provider_config=routed_config,
-        fallback_provider=routed_provider,
-        turn_metadata=turn.metadata,
-        ranking_inputs=ranking_inputs,
-    )
-    if b2_experiment is not None:
-        provider = align_b2_provider_to_g12(provider, b2_experiment)
-    if generation_policy is not None:
-        provider = apply_generation_policy_to_ensemble_provider(
-            provider,
-            generation_policy,
+    try:
+        provider = build_ensemble_provider_from_config(
+            config=group_config,
+            inherited_provider_config=routed_config,
+            fallback_provider=routed_provider,
+            turn_metadata=turn.metadata,
+            ranking_inputs=ranking_inputs,
         )
-        validate_strict_openrouter_ensemble_members(
-            provider,
-            generation_policy,
-            fallback_config=routed_config,
+        if b2_experiment is not None:
+            provider = align_b2_provider_to_g12(provider, b2_experiment)
+        if generation_policy is not None:
+            provider = apply_generation_policy_to_ensemble_provider(
+                provider,
+                generation_policy,
+            )
+            validate_strict_openrouter_ensemble_members(
+                provider,
+                generation_policy,
+                fallback_config=routed_config,
+            )
+        routing_trace.update(
+            {
+                "selection_mode": selection_mode,
+                "profile": provider.profile_name,
+                "selection_plan": provider.selection_plan,
+            }
         )
-    routing_trace.update(
-        {
-            "selection_mode": selection_mode,
-            "profile": provider.profile_name,
-            "selection_plan": provider.selection_plan,
-        }
-    )
+    except Exception as exc:
+        if setup_usage:
+            raise ProviderBuildError(
+                exc,
+                setup_latency_ms=int((time.monotonic() - started) * 1000),
+                setup_usage=setup_usage,
+                routing_trace=routing_trace,
+            ) from exc
+        raise
     result = ProviderBuildResult(
         provider=provider,
         prompt=turn.message,
@@ -2902,43 +2967,67 @@ def aggregate_agent_model_usage(records: list[dict[str, Any]]) -> list[dict[str,
     rows: list[dict[str, Any]] = []
     for call_index, record in enumerate(llm_response_records(records), start=1):
         payload = record["payload"]
+        missing_usage_count = max(
+            0,
+            coerce_metric_int(payload.get("usage_missing_count")),
+        )
+
+        def append_unknown_usage(count: int) -> None:
+            for missing_index in range(1, count + 1):
+                rows.append(
+                    {
+                        "role": "agent_llm_request_unknown",
+                        "agent_call_index": call_index,
+                        "agent_iteration": coerce_metric_int(payload.get("iteration")),
+                        "agent_call_attempt": coerce_metric_int(
+                            payload.get("attempt") or payload.get("call_attempt")
+                        ),
+                        "agent_missing_usage_index": missing_index,
+                        "model": "",
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "reasoning_tokens": 0,
+                        "cached_tokens": 0,
+                        "cache_write_tokens": 0,
+                        "billed_cost": 0.0,
+                        "cost_source": "none",
+                        "request_outcome": str(record.get("kind") or "unknown"),
+                    }
+                )
+
         usage = payload.get("usage") if isinstance(payload, dict) else None
         if not isinstance(usage, dict):
-            rows.append(
-                {
-                    "role": "agent_llm_request_unknown",
-                    "agent_call_index": call_index,
-                    "agent_iteration": coerce_metric_int(payload.get("iteration")),
-                    "agent_call_attempt": coerce_metric_int(payload.get("attempt")),
-                    "model": "",
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "reasoning_tokens": 0,
-                    "cached_tokens": 0,
-                    "cache_write_tokens": 0,
-                    "billed_cost": 0.0,
-                    "cost_source": "none",
-                    "request_outcome": str(record.get("kind") or "unknown"),
-                }
-            )
+            append_unknown_usage(max(1, missing_usage_count))
             continue
         breakdown = usage.get("model_usage_breakdown")
         if isinstance(breakdown, list) and breakdown:
+            represented_missing_count = sum(
+                1
+                for row in breakdown
+                if isinstance(row, dict)
+                and str(row.get("role") or "").strip().casefold()
+                == "abandoned_stream_request"
+            )
             for row in breakdown:
                 if not isinstance(row, dict):
                     continue
                 enriched = dict(row)
                 enriched["agent_call_index"] = call_index
                 enriched["agent_iteration"] = coerce_metric_int(payload.get("iteration"))
-                enriched["agent_call_attempt"] = coerce_metric_int(payload.get("call_attempt"))
+                enriched["agent_call_attempt"] = coerce_metric_int(
+                    payload.get("attempt") or payload.get("call_attempt")
+                )
                 rows.append(enriched)
+            append_unknown_usage(max(0, missing_usage_count - represented_missing_count))
             continue
         rows.append(
             {
                 "role": "agent_llm_call",
                 "agent_call_index": call_index,
                 "agent_iteration": coerce_metric_int(payload.get("iteration")),
-                "agent_call_attempt": coerce_metric_int(payload.get("call_attempt")),
+                "agent_call_attempt": coerce_metric_int(
+                    payload.get("attempt") or payload.get("call_attempt")
+                ),
                 "provider": str(usage.get("provider") or ""),
                 "model": str(usage.get("model") or ""),
                 "input_tokens": coerce_metric_int(usage.get("input_tokens")),
@@ -2955,6 +3044,7 @@ def aggregate_agent_model_usage(records: list[dict[str, Any]]) -> list[dict[str,
                 ),
             }
         )
+        append_unknown_usage(missing_usage_count)
     return rows
 
 
@@ -4092,12 +4182,16 @@ async def run_one(
     generation_retry_backoff: float = DEFAULT_GENERATION_RETRY_BACKOFF_SECONDS,
     tools: list[ToolDefinition] | None = None,
     run_compatibility_fingerprint: str = "",
+    require_openrouter_non_byok: bool = False,
 ) -> dict[str, Any]:
     spec = GROUP_SPECS[group]
     started = time.time()
     provider = None
     effective_prompt = str(task["prompt"])
     provider_error = ""
+    failed_build_setup_latency_ms = 0
+    failed_build_setup_usage: list[dict[str, Any]] = []
+    failed_build_routing_trace: dict[str, Any] = {}
     generation_attempt_limit = bounded_generation_attempts(generation_max_attempts)
     generation_retry_backoff_s = bounded_generation_retry_backoff(generation_retry_backoff)
     effective_timeout = group_timeout_seconds(
@@ -4141,7 +4235,13 @@ async def run_one(
             ),
         )
     except Exception as exc:  # noqa: BLE001 - report config errors per row
-        provider_error = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, ProviderBuildError):
+            provider_error = str(exc)
+            failed_build_setup_latency_ms = exc.setup_latency_ms
+            failed_build_setup_usage = list(exc.setup_usage)
+            failed_build_routing_trace = dict(exc.routing_trace)
+        else:
+            provider_error = f"{type(exc).__name__}: {exc}"
     if provider is not None:
         (
             run,
@@ -4163,11 +4263,41 @@ async def run_one(
             retry_backoff_seconds=generation_retry_backoff_s,
         )
     else:
-        run = RunResult(final_text="", done=None, error=provider_error)
+        run = RunResult(
+            final_text="",
+            done=None,
+            error=provider_error,
+            setup_latency_ms=failed_build_setup_latency_ms,
+            setup_usage=failed_build_setup_usage,
+            routing_trace=failed_build_routing_trace,
+        )
         generation_attempts = []
         selected_generation_attempt_index = 0
     terminal_generation_reason = generation_retry_reason(run)
     mark_retryable_generation_error(run, terminal_generation_reason)
+    usage_payload = run_result_usage_payload(run)
+    generation_non_byok_audit: dict[str, Any] | None = None
+    if require_openrouter_non_byok and not terminal_generation_reason:
+        generation_non_byok_audit = openrouter_non_byok_audit(
+            {
+                "llm_request_count": (
+                    llm_request_count_for_run(
+                        spec=spec,
+                        done=run.done,
+                        provider_attempted=provider is not None,
+                    )
+                    + len(run.setup_usage)
+                ),
+                "usage": usage_payload,
+                "execution": {"generation_attempts": generation_attempts},
+                "judge": None,
+                "candidate_judges": [],
+                "tool_policy": tool_policy,
+            }
+        )
+        if not generation_non_byok_audit["pass"]:
+            run.error = "openrouter_non_byok_verification_failed"
+            terminal_generation_reason = run.error
     profile_proposer_timeout_s = getattr(provider, "proposer_timeout_seconds", None)
     profile_aggregator_timeout_s = getattr(provider, "aggregator_timeout_seconds", None)
     profile_min_successful_proposers = getattr(
@@ -4232,7 +4362,6 @@ async def run_one(
     completed_at = time.time()
     final_text_sha = text_sha256(run.final_text)
     prompt_sha = text_sha256(str(task["prompt"]))
-    usage_payload = run_result_usage_payload(run)
     selected_server_tool_call_count = coerce_metric_int(usage_payload.get("server_tool_call_count"))
     server_tool_use = usage_payload.get("server_tool_use") or {}
     selected_total_tool_call_count = run.tool_call_count + selected_server_tool_call_count
@@ -4326,7 +4455,12 @@ async def run_one(
         "execution": {
             "provider_error": provider_error,
             "run_error": run.error,
-            "judge_skipped_reason": "run_not_done" if not should_judge else "",
+            "judge_skipped_reason": (
+                "generation_cost_audit_failed"
+                if generation_non_byok_audit
+                and not bool(generation_non_byok_audit.get("pass"))
+                else ("run_not_done" if not should_judge else "")
+            ),
             "requested_timeout_s": timeout,
             "effective_timeout_s": effective_timeout,
             "profile_proposer_timeout_s": profile_proposer_timeout_s,
@@ -4380,6 +4514,8 @@ async def run_one(
             else None
         ),
     }
+    if generation_non_byok_audit is not None:
+        row["openrouter_non_byok_audit"] = generation_non_byok_audit
     row["cost_accounting"] = row_cost_accounting(row)
     return row
 
@@ -5294,6 +5430,7 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "experiment_config_set",
         "output_dir",
         "groups",
+        "task_ids",
         "max_tasks",
         "concurrency",
         "timeout",
@@ -5320,6 +5457,7 @@ def manifest_args(args: argparse.Namespace) -> dict[str, Any]:
         "local_web_search_api_key_env",
         "allow_firecrawl_web_fetch",
         "require_openrouter_non_byok",
+        "continue_after_cost_audit_failure",
         "openrouter_web_search_engine",
         "openrouter_web_search_max_results",
         "openrouter_web_search_max_total_results",
@@ -5875,7 +6013,14 @@ async def amain(args: argparse.Namespace) -> int:
         args._draco_input_validation = input_validation
         if alignment is not None:
             alignment["input_validation"] = input_validation
-        tasks = all_tasks[: args.max_tasks] if args.max_tasks > 0 else all_tasks
+        tasks = select_tasks_by_ids(all_tasks, getattr(args, "task_ids", None))
+        if args.max_tasks > 0:
+            tasks = tasks[: args.max_tasks]
+    elif getattr(args, "task_ids", None):
+        all_tasks = load_tasks(args.input, max_tasks=0)
+        tasks = select_tasks_by_ids(all_tasks, args.task_ids)
+        if args.max_tasks > 0:
+            tasks = tasks[: args.max_tasks]
     else:
         tasks = load_tasks(args.input, max_tasks=args.max_tasks)
     if alignment is not None:
@@ -6128,12 +6273,19 @@ async def amain(args: argparse.Namespace) -> int:
                 run_compatibility_fingerprint=args._run_compatibility["fingerprints"][
                     group
                 ],
+                require_openrouter_non_byok=bool(
+                    getattr(args, "require_openrouter_non_byok", False)
+                ),
             )
 
     pending = [
         asyncio.create_task(_guarded(task, group)) for task in tasks for group in groups
     ]
     cost_audit_failure: dict[str, Any] | None = None
+    cost_audit_failures: list[dict[str, Any]] = []
+    continue_after_cost_audit_failure = bool(
+        getattr(args, "continue_after_cost_audit_failure", False)
+    )
     with (
         jsonl_path.open("w", encoding="utf-8") as fh,
         trace_path.open("w", encoding="utf-8") as trace_fh,
@@ -6147,13 +6299,16 @@ async def amain(args: argparse.Namespace) -> int:
                 if not audit["pass"]:
                     if not row.get("error"):
                         row["error"] = "openrouter_non_byok_verification_failed"
-                    cost_audit_failure = {
+                    failure = {
                         "stage": "openrouter_non_byok_audit",
                         "group": row.get("group"),
                         "task_id": row.get("task_id"),
                         "audit": audit,
                         "model_or_judge_started": True,
                     }
+                    cost_audit_failures.append(failure)
+                    if cost_audit_failure is None:
+                        cost_audit_failure = failure
             row = seal_result_row(row)
             trace_value = trace_row(row)
             result_line = json.dumps(row, ensure_ascii=False, allow_nan=False)
@@ -6164,13 +6319,21 @@ async def amain(args: argparse.Namespace) -> int:
             trace_fh.write(trace_line + "\n")
             trace_fh.flush()
             print(f"{row['group']} {row['task_id']} error={bool(row['error'])}", flush=True)
-            if cost_audit_failure is not None:
+            if cost_audit_failure is not None and not continue_after_cost_audit_failure:
                 break
-    if cost_audit_failure is not None:
+    if cost_audit_failure is not None and not continue_after_cost_audit_failure:
         for task in pending:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+    manifest_failure = cost_audit_failure
+    if len(cost_audit_failures) > 1:
+        manifest_failure = {
+            "stage": "openrouter_non_byok_audit",
+            "failure_count": len(cost_audit_failures),
+            "failures": cost_audit_failures,
+            "model_or_judge_started": True,
+        }
     summary = summarize(rows)
     summary_path = jsonl_path.with_suffix(".md")
     summary_path.write_text(
@@ -6202,7 +6365,7 @@ async def amain(args: argparse.Namespace) -> int:
         summary=summary,
         tool_policy=manifest_tool_policy,
         command=command,
-        failure=cost_audit_failure,
+        failure=manifest_failure,
     )
     print(f"wrote {jsonl_path}")
     print(f"wrote {trace_path}")
@@ -6255,6 +6418,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--groups",
         required=True,
         help="Comma-separated experiment groups to run, for example B0,B1,G3,G8.",
+    )
+    parser.add_argument(
+        "--task-ids",
+        action="append",
+        default=[],
+        metavar="TASK_ID",
+        help=(
+            "Run only the selected task ID after validating the complete reference input; "
+            "repeatable."
+        ),
     )
     parser.add_argument("--max-tasks", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=1)
@@ -6413,6 +6586,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Fail the experiment unless every OpenRouter LLM usage record proves "
             "is_byok=false. Missing evidence fails closed."
+        ),
+    )
+    parser.add_argument(
+        "--continue-after-cost-audit-failure",
+        action="store_true",
+        help=(
+            "Keep running independent rows after a strict OpenRouter cost-audit failure. "
+            "Failed rows remain invalid and the process still exits with status 2."
         ),
     )
     parser.add_argument(

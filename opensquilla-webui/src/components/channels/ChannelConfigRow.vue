@@ -42,6 +42,9 @@ const fieldType = computed(() => String(props.row.field.type || 'text'))
 const inputId = computed(() => `cfge-${props.row.field.name.replace(/[^a-zA-Z0-9_-]+/g, '-')}`)
 // Compose mode routes secret fields through here as plain rows (nothing is
 // stored yet) — they must still render as password inputs, never text.
+// These are API credentials, not login passwords: autocomplete="off" plus the
+// password-manager opt-out attributes (1Password/LastPass/Bitwarden) keep
+// autofill prompts from claiming bot tokens and app secrets.
 const isSecretInput = computed(
   () => props.row.field.secret === true || fieldType.value === 'password',
 )
@@ -128,8 +131,11 @@ function onInput(event: Event) {
               :id="inputId"
               class="cfge__input"
               type="password"
-              autocomplete="new-password"
+              autocomplete="off"
               data-secret="true"
+              data-1p-ignore
+              data-lpignore="true"
+              data-bwignore
               :value="row.value"
               :placeholder="t('setup.channels.secretReplacePlaceholder')"
               :name="`setup_channel_${row.field.name}`"
@@ -201,8 +207,11 @@ function onInput(event: Event) {
           :value="row.value"
           :placeholder="placeholder"
           :name="`setup_channel_${row.field.name}`"
-          :autocomplete="isSecretInput ? 'new-password' : undefined"
+          :autocomplete="isSecretInput ? 'off' : undefined"
           :data-secret="isSecretInput ? 'true' : undefined"
+          :data-1p-ignore="isSecretInput ? '' : undefined"
+          :data-lpignore="isSecretInput ? 'true' : undefined"
+          :data-bwignore="isSecretInput ? '' : undefined"
           @input="onInput"
         />
       </template>

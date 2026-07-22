@@ -2018,6 +2018,11 @@ describe('ChannelsView compose takeover', () => {
       expect(surface.querySelector('[data-field="app_id"] input')).toBeTruthy()
       const appSecret = surface.querySelector<HTMLInputElement>('[data-field="app_secret"] input')!
       expect(appSecret.type).toBe('password')
+      // API credentials, not login passwords: opted out of password managers
+      // so autofill prompts never claim an app secret.
+      expect(appSecret.getAttribute('autocomplete')).toBe('off')
+      expect(appSecret.hasAttribute('data-1p-ignore')).toBe(true)
+      expect(appSecret.getAttribute('data-lpignore')).toBe('true')
       expect(appSecret.value).toBe('')
       expect(surface.textContent).toContain('Feishu console shortcuts')
     } finally {

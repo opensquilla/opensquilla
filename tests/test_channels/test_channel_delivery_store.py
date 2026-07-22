@@ -185,6 +185,68 @@ def test_recovery_after_degraded_accept_does_not_double_dispatch(tmp_path) -> No
     store.close()
 
 
+def test_redelivery_after_passthrough_claim_does_not_double_dispatch(tmp_path) -> None:
+    """A redelivery arriving AFTER the pass-through claim must still be a
+    duplicate: the claim consumed the memory-only marker, so without a durable
+    trace the redelivery would journal a fresh 'accepted' row and hand out a
+    second claim for the same event."""
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    message = _message()
+    event_key = inbound_event_key("slack-main", message)
+    assert event_key is not None
+
+    # Delivery A during a storage fault: memory-only acceptance, no durable row.
+    with _blocked_journal(store):
+        assert store.accept_inbound("slack-main", message) is True
+    assert event_key in store._unjournaled_events
+    assert _durable_ingress_count(store) == 0
+
+    # Dispatch claims first: the marker is consumed by the pass-through claim.
+    claim = store.claim_inbound("slack-main", message)
+    assert claim is not None
+    assert claim.event_key == ""
+    assert event_key not in store._unjournaled_events
+
+    # Delivery B after storage recovers: the redelivery must be rejected — it
+    # must not commit an independently claimable 'accepted' row.
+    assert store.accept_inbound("slack-main", message) is False
+    with sqlite3.connect(store.path) as connection:
+        rows = connection.execute(
+            "SELECT state FROM channel_ingress WHERE event_key = ?", (event_key,)
+        ).fetchall()
+    assert len(rows) <= 1
+    assert all(row[0] != "accepted" for row in rows)
+    # Exactly ONE dispatchable claim across the whole sequence.
+    assert store.claim_inbound("slack-main", message) is None
+    store.close()
+
+
+def test_redelivery_after_passthrough_claim_survives_restart(tmp_path) -> None:
+    """The dedup trace left by the pass-through claim must be durable: a
+    restart clears the in-memory marker set, so only a journal row can stop a
+    post-restart redelivery from dispatching the event a second time."""
+    path = tmp_path / "channel_delivery.sqlite"
+    store = ChannelDeliveryStore(path)
+    message = _message()
+    event_key = inbound_event_key("slack-main", message)
+    assert event_key is not None
+
+    with _blocked_journal(store):
+        assert store.accept_inbound("slack-main", message) is True
+    claim = store.claim_inbound("slack-main", message)
+    assert claim is not None
+    assert claim.event_key == ""
+    store.close()
+
+    restarted = ChannelDeliveryStore(path)
+    # The trace row must not be resurrected as recoverable pending work.
+    assert restarted.recover_inbound("slack-main") == []
+    # A post-restart redelivery is a duplicate, not a second dispatch.
+    assert restarted.accept_inbound("slack-main", message) is False
+    assert restarted.claim_inbound("slack-main", message) is None
+    restarted.close()
+
+
 def test_normal_duplicate_without_fault_is_still_rejected(tmp_path) -> None:
     """Control: with healthy storage, a redelivered event is a durable duplicate
     and is rejected without going through the memory-only marker path."""

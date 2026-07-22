@@ -590,6 +590,37 @@ class ChannelDeliveryStore:
                 # pass-through claim eventless messages get. Returning ``None``
                 # here would drop the message as a duplicate.
                 self._unjournaled_events.discard(event_key)
+                # The marker was the only dedup trace, and it is both consumed
+                # here and lost on restart. Best-effort journal a finalized row
+                # so a later redelivery collides with the primary key in
+                # :meth:`accept_inbound` instead of committing a fresh
+                # ``accepted`` row that would dispatch the event a second time.
+                # ``completed`` (not ``processing``) keeps ``recover_inbound``
+                # from resurrecting the trace as pending work. If storage is
+                # still down the insert is skipped and behavior is unchanged.
+                trace_now = time.time()
+                try:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    self._conn.execute(
+                        "INSERT INTO channel_ingress "
+                        "(event_key, channel_name, account_id, lane_key, message_json, "
+                        "state, disposition, attempts, accepted_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'completed', 'memory_only_passthrough', "
+                        "1, ?, ?)",
+                        (
+                            event_key,
+                            channel_name,
+                            message.provenance.account_id or channel_name,
+                            f"{message.channel_id}:{message.sender_id}",
+                            _safe_message_json(message),
+                            trace_now,
+                            trace_now,
+                        ),
+                    )
+                    self._conn.commit()
+                except sqlite3.Error:
+                    with contextlib.suppress(sqlite3.Error):
+                        self._conn.rollback()
                 return IngressClaim("", "")
         token = uuid.uuid4().hex
         now = time.time()

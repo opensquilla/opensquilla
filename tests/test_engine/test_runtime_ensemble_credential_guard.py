@@ -60,7 +60,7 @@ def _static_b5_config(**ensemble_overrides: Any) -> GatewayConfig:
     )
 
 
-async def test_static_b5_tracks_missing_openrouter_credential_per_member(
+async def test_static_b5_wrap_skipped_without_openrouter_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -78,14 +78,13 @@ async def test_static_b5_tracks_missing_openrouter_credential_per_member(
         [],
     )
 
-    assert isinstance(provider, EnsembleProvider)
-    assert all(not member.ready for member in [*provider.proposers, provider.aggregator])
-    assert all(
-        member.unavailable_reason == "missing_credential"
-        for member in [*provider.proposers, provider.aggregator]
+    # A keyless static profile can never run a member; the turn must keep the
+    # plain single-model provider without ensemble labels or fallback budgets.
+    assert not isinstance(provider, EnsembleProvider)
+    assert turn.metadata["ensemble_wrap_skipped_reason"] == (
+        "static_openrouter_b5_no_credential"
     )
-    assert turn.metadata["ensemble_enabled"] is True
-    assert "ensemble_wrap_skipped_reason" not in turn.metadata
+    assert "ensemble_enabled" not in turn.metadata
 
 
 async def test_static_b5_wraps_when_openrouter_env_key_present(
@@ -132,7 +131,7 @@ async def test_static_b5_wraps_when_active_provider_is_keyed_openrouter(
     assert "ensemble_wrap_skipped_reason" not in turn.metadata
 
 
-async def test_static_tokenrhythm_b5_tracks_missing_credential_per_member(
+async def test_static_tokenrhythm_b5_wrap_skipped_without_tokenrhythm_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("TOKENRHYTHM_API_KEY", raising=False)
@@ -154,14 +153,11 @@ async def test_static_tokenrhythm_b5_tracks_missing_credential_per_member(
         [],
     )
 
-    assert isinstance(provider, EnsembleProvider)
-    assert all(not member.ready for member in [*provider.proposers, provider.aggregator])
-    assert all(
-        member.unavailable_reason == "missing_credential"
-        for member in [*provider.proposers, provider.aggregator]
+    assert not isinstance(provider, EnsembleProvider)
+    assert turn.metadata["ensemble_wrap_skipped_reason"] == (
+        "static_tokenrhythm_b5_no_credential"
     )
-    assert turn.metadata["ensemble_enabled"] is True
-    assert "ensemble_wrap_skipped_reason" not in turn.metadata
+    assert "ensemble_enabled" not in turn.metadata
 
 
 async def test_static_tokenrhythm_b5_wraps_when_active_provider_is_keyed(

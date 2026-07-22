@@ -5699,6 +5699,8 @@ class TurnRunner:
             from opensquilla.provider.ensemble import (
                 CUSTOM_B5_SELECTION_MODE,
                 build_ensemble_provider_from_config,
+                static_b5_credential_available,
+                static_b5_profile,
             )
 
             current_provider_config = (
@@ -5736,6 +5738,27 @@ class TurnRunner:
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason="incomplete_provider_selector_current_config",
+                )
+            elif static_b5_profile(selection_mode) is not None and not (
+                static_b5_credential_available(
+                    self._turn_config(),
+                    current_provider_config,
+                    selection_mode,
+                )
+            ):
+                # Every member of a static profile shares one provider
+                # credential; without it no member can ever succeed, and
+                # wrapping would run a degraded quorum-unavailable fallback
+                # round (with its heartbeats, labels, and fallback budget) on
+                # every turn instead of the user's plain single-model
+                # provider. Keep the wrap off, matching the config-side
+                # static_b5_ensemble_active() gate.
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason=f"{selection_mode}_no_credential",
+                )
+                turn.metadata["ensemble_wrap_skipped_reason"] = (
+                    f"{selection_mode}_no_credential"
                 )
             elif not custom_has_proposer:
                 log.warning(

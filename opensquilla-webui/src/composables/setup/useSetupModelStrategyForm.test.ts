@@ -210,9 +210,9 @@ describe('useSetupModelStrategyForm', () => {
 
     expect(panel.value.cards.map(card => card.id)).toEqual(['router', 'single', 'ensemble'])
     expect(panel.value.cards.map(card => card.badgeKey || '')).toEqual([
-      'setup.modelStrategy.recommendedBadge',
-      '',
-      'setup.modelStrategy.advancedBadge',
+      'setup.modelStrategy.cards.router.badge',
+      'setup.modelStrategy.cards.single.badge',
+      'setup.modelStrategy.cards.ensemble.badge',
     ])
   })
 })

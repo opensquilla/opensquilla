@@ -545,14 +545,12 @@
       "title": "Modellrouting",
       "desc": "Lege fest, wie Squilla konfigurierte Modelle für neue Anfragen auswählt und einsetzt.",
       "modeTitle": "Modellnutzung auswählen",
-      "modeDesc": "Beginne mit intelligentem Routing. Nutze ein festes Modell für Vorhersehbarkeit oder die Zusammenarbeit mehrerer Modelle, wenn zusätzliche Aufrufe und Kosten sinnvoll sind.",
+      "modeDesc": "Nach dem gewünschten Ergebnis auswählen: Intelligentes Routing gleicht Token-Nutzung und Modellleistung aus; ein festes Modell macht die Auswahl vorhersehbar; die Zusammenarbeit mehrerer Modelle priorisiert Leistung bei komplexen Aufgaben und verbraucht meist mehr Tokens.",
       "providerFirstTitle": "Zuerst einen Modelldienst hinzufügen",
       "providerFirst": "Modellrouting benötigt mindestens einen gespeicherten Anbieter. Ein Anbieter genügt, um zwischen seinen konfigurierten Modellen zu routen.",
       "providerAction": "Zum Modelldienst",
       "configuredProvidersOnly": "Verfügbare Anbieter und Modelle stammen aus dem Modelldienst.",
       "manageProviders": "Modelldienst verwalten",
-      "recommendedBadge": "Empfohlen",
-      "advancedBadge": "Erweitert",
       "routerTitle": "Intelligentes Modellrouting",
       "fallbackTierLabel": "Wenn das Routing unsicher ist",
       "fallbackTierDesc": "Diese Standardstufe wird verwendet, wenn das Routing die Anforderungsstufe nicht sicher bestimmen kann.",
@@ -566,15 +564,18 @@
       "cards": {
         "router": {
           "title": "Intelligentes Modellrouting",
-          "desc": "Wählt für jede Anfrage anhand ihrer Komplexität ein passendes konfiguriertes Modell."
+          "badge": "Token-effizient",
+          "desc": "Ordnet jeder Anfrage ein passendes Modell zu, damit einfache Aufgaben nicht unnötig mit leistungsstarken Modellen ausgeführt werden."
         },
         "ensemble": {
           "title": "Zusammenarbeit mehrerer Modelle",
-          "desc": "Führt mehrere Modelle aus und kombiniert ihre Ergebnisse für anspruchsvolle Aufgaben. Benötigt mehr Aufrufe und kann mehr kosten."
+          "badge": "Leistung im Fokus",
+          "desc": "Lässt mehrere Modelle parallel arbeiten und kombiniert ihre Ergebnisse für komplexe Aufgaben; dabei werden meist mehr Tokens verbraucht."
         },
         "single": {
           "title": "Festes Modell",
-          "desc": "Sendet jede Anfrage an das aktuell ausgewählte Modell."
+          "badge": "Vorhersehbar",
+          "desc": "Nutzt immer das von dir gewählte Modell; Auswahl und Verbrauch sind dadurch leichter abzuschätzen."
         }
       },
       "routerDependency": "Lege Modelle für jede Anforderungsstufe fest. Ein Anbieter kann alle Stufen abdecken.",

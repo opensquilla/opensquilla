@@ -545,14 +545,12 @@
       "title": "Routage des modèles",
       "desc": "Choisissez comment Squilla sélectionne et utilise les modèles configurés pour les nouvelles requêtes.",
       "modeTitle": "Choisir l’utilisation des modèles",
-      "modeDesc": "Commencez par le routage intelligent. Utilisez un modèle fixe pour un résultat prévisible, ou la collaboration multimodèle quand la tâche justifie des appels et un coût supplémentaires.",
+      "modeDesc": "Choisissez selon l’objectif : le routage intelligent équilibre l’usage des tokens et les capacités ; un modèle fixe garde une sélection prévisible ; la collaboration multimodèle privilégie les capacités pour les tâches complexes et utilise généralement plus de tokens.",
       "providerFirstTitle": "Ajouter d’abord un service de modèles",
       "providerFirst": "Le routage des modèles nécessite au moins un fournisseur enregistré. Un seul fournisseur suffit pour router entre ses modèles configurés.",
       "providerAction": "Accéder au service de modèles",
       "configuredProvidersOnly": "Les fournisseurs et modèles disponibles proviennent du service de modèles.",
       "manageProviders": "Gérer le service de modèles",
-      "recommendedBadge": "Recommandé",
-      "advancedBadge": "Avancé",
       "routerTitle": "Routage intelligent des modèles",
       "fallbackTierLabel": "Quand le routage est incertain",
       "fallbackTierDesc": "Utilisez ce niveau par défaut lorsque le routage ne peut pas déterminer avec certitude le niveau de la requête.",
@@ -566,15 +564,18 @@
       "cards": {
         "router": {
           "title": "Routage intelligent des modèles",
-          "desc": "Choisit un modèle configuré adapté à chaque requête selon sa complexité."
+          "badge": "Économe en tokens",
+          "desc": "Associe chaque requête à un modèle adapté afin d’éviter d’utiliser inutilement les modèles les plus puissants pour les tâches simples."
         },
         "ensemble": {
           "title": "Collaboration multimodèle",
-          "desc": "Exécute plusieurs modèles et combine leur travail pour les tâches complexes. Utilise plus d’appels et peut coûter plus cher."
+          "badge": "Capacités prioritaires",
+          "desc": "Exécute plusieurs modèles en parallèle et combine leurs résultats pour les tâches complexes ; cela utilise généralement plus de tokens."
         },
         "single": {
           "title": "Modèle fixe",
-          "desc": "Envoie chaque requête au modèle actuellement sélectionné."
+          "badge": "Prévisible",
+          "desc": "Utilise toujours le modèle choisi, ce qui rend la sélection et l’usage plus faciles à prévoir."
         }
       },
       "routerDependency": "Choisissez les modèles pour chaque niveau de requête. Un fournisseur peut couvrir tous les niveaux.",

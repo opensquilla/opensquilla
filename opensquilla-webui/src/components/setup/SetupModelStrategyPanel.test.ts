@@ -41,9 +41,9 @@ function panel(overrides: Record<string, unknown> = {}) {
     providerLabel: 'OpenRouter',
     routerTemplateState: 'recommended',
     cards: [
-      { id: 'router', enabled: true, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc', badgeKey: 'setup.modelStrategy.recommendedBadge' },
-      { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc' },
-      { id: 'ensemble', enabled: false, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc', badgeKey: 'setup.modelStrategy.advancedBadge' },
+      { id: 'router', enabled: true, titleKey: 'setup.modelStrategy.cards.router.title', descKey: 'setup.modelStrategy.cards.router.desc', badgeKey: 'setup.modelStrategy.cards.router.badge' },
+      { id: 'single', enabled: false, titleKey: 'setup.modelStrategy.cards.single.title', descKey: 'setup.modelStrategy.cards.single.desc', badgeKey: 'setup.modelStrategy.cards.single.badge' },
+      { id: 'ensemble', enabled: false, titleKey: 'setup.modelStrategy.cards.ensemble.title', descKey: 'setup.modelStrategy.cards.ensemble.desc', badgeKey: 'setup.modelStrategy.cards.ensemble.badge' },
     ],
     router: {
       routerDefaultTier: 'c1',
@@ -166,8 +166,11 @@ describe('SetupModelStrategyPanel', () => {
     expect(choices.map(choice => choice.value)).toEqual(['router', 'single', 'ensemble'])
     expect(choices[0]?.checked).toBe(true)
     const strategyRowsText = el.querySelector('[role="radiogroup"]')?.textContent || ''
-    expect(strategyRowsText).toContain('Recommended')
-    expect(strategyRowsText).toContain('Advanced')
+    expect(strategyRowsText).toContain('Token-efficient')
+    expect(strategyRowsText).toContain('Predictable')
+    expect(strategyRowsText).toContain('Capability-first')
+    expect(strategyRowsText).not.toContain('Recommended')
+    expect(strategyRowsText).not.toContain('Advanced')
     expect(strategyRowsText).not.toContain('Default')
     expect(strategyRowsText).not.toContain('Model ensemble')
     expect(el.textContent).not.toContain('Preset and credentials')

@@ -545,14 +545,12 @@
       "title": "Model routing",
       "desc": "Choose how Squilla selects and uses configured models for new requests.",
       "modeTitle": "Choose how models are used",
-      "modeDesc": "Start with intelligent routing. Use a fixed model for predictability, or multi-model collaboration when a task justifies extra calls and cost.",
+      "modeDesc": "Choose by outcome: intelligent routing balances token use and model capability; a fixed model keeps selection predictable; multi-model collaboration prioritizes capability for complex tasks and usually uses more tokens.",
       "providerFirstTitle": "Add a model provider to start",
       "providerFirst": "Model routing needs at least one saved provider. One provider is enough to route among its configured models.",
       "providerAction": "Go to Model Service",
       "configuredProvidersOnly": "Available providers and models come from Model Service.",
       "manageProviders": "Manage Model Service",
-      "recommendedBadge": "Recommended",
-      "advancedBadge": "Advanced",
       "routerTitle": "Intelligent model routing",
       "fallbackTierLabel": "When routing is uncertain",
       "fallbackTierDesc": "Use this default tier when routing cannot confidently determine the request level.",
@@ -578,15 +576,18 @@
       "cards": {
         "router": {
           "title": "Intelligent model routing",
-          "desc": "Choose one suitable configured model for each request, based on its complexity."
+          "badge": "Token-efficient",
+          "desc": "Match each request to an appropriate model so simple tasks avoid unnecessary high-capability usage."
         },
         "ensemble": {
           "title": "Multi-model collaboration",
-          "desc": "Run multiple models and combine their work for harder tasks. Uses more calls and may cost more."
+          "badge": "Capability-first",
+          "desc": "Run multiple models in parallel and combine their work for complex tasks; this usually uses more tokens."
         },
         "single": {
           "title": "Fixed model",
-          "desc": "Send every request to the currently selected model."
+          "badge": "Predictable",
+          "desc": "Always use the model you choose, making model selection and usage easier to anticipate."
         }
       },
       "openrouterFixedTitle": "{provider} fixed ensemble",

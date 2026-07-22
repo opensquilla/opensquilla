@@ -545,14 +545,12 @@
       "title": "模型路由",
       "desc": "选择 Squilla 如何为新请求选择和使用已配置的模型。",
       "modeTitle": "选择模型使用方式",
-      "modeDesc": "建议从智能模型路由开始；需要稳定可预期时使用固定模型，只有复杂任务值得额外调用和成本时才使用多模型协作。",
+      "modeDesc": "按目标选择：智能模型路由兼顾 Token 用量与模型能力；固定模型稳定可控；多模型协作面向复杂任务，通常使用更多 Token。",
       "providerFirstTitle": "先添加模型服务商",
       "providerFirst": "模型路由至少需要一个已保存的服务商。即使只有一个服务商，也可以在其多个模型之间路由。",
       "providerAction": "前往模型服务",
       "configuredProvidersOnly": "可用的服务商和模型来自模型服务。",
       "manageProviders": "管理模型服务",
-      "recommendedBadge": "推荐",
-      "advancedBadge": "高级",
       "routerTitle": "智能模型路由",
       "fallbackTierLabel": "路由无法确定时",
       "fallbackTierDesc": "当路由无法有把握地判断请求层级时，使用这个默认层级。",
@@ -566,15 +564,18 @@
       "cards": {
         "router": {
           "title": "智能模型路由",
-          "desc": "根据请求复杂度，从已配置的模型中选择一个合适模型。"
+          "badge": "按需省 Token",
+          "desc": "按请求复杂度选择模型，让简单任务避免不必要的高能力模型调用。"
         },
         "ensemble": {
           "title": "多模型协作",
-          "desc": "让多个模型共同处理复杂任务并合并结果；调用更多，成本可能更高。"
+          "badge": "能力优先",
+          "desc": "多个模型并行处理并合并结果，为复杂任务提供更充分的分析；通常使用更多 Token。"
         },
         "single": {
           "title": "固定模型",
-          "desc": "将每个请求都发送到当前选定模型。"
+          "badge": "稳定可控",
+          "desc": "始终使用你指定的模型，模型选择和用量更容易预估。"
         }
       },
       "routerDependency": "按请求复杂度为各层级配置模型；一个服务商也可以覆盖所有层级。",

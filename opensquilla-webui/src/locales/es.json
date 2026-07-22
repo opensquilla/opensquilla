@@ -545,14 +545,12 @@
       "title": "Enrutamiento de modelos",
       "desc": "Elige cómo Squilla selecciona y usa los modelos configurados para las solicitudes nuevas.",
       "modeTitle": "Elige cómo usar los modelos",
-      "modeDesc": "Empieza con el enrutamiento inteligente. Usa un modelo fijo para obtener resultados predecibles o la colaboración entre varios modelos cuando la tarea justifique más llamadas y coste.",
+      "modeDesc": "Elige según el objetivo: el enrutamiento inteligente equilibra el uso de tokens y la capacidad; el modelo fijo mantiene una selección predecible; la colaboración entre varios modelos prioriza la capacidad en tareas complejas y suele usar más tokens.",
       "providerFirstTitle": "Añade primero un servicio de modelos",
       "providerFirst": "El enrutamiento de modelos necesita al menos un proveedor guardado. Un solo proveedor basta para enrutar entre sus modelos configurados.",
       "providerAction": "Ir al servicio de modelos",
       "configuredProvidersOnly": "Los proveedores y modelos disponibles proceden del servicio de modelos.",
       "manageProviders": "Gestionar el servicio de modelos",
-      "recommendedBadge": "Recomendado",
-      "advancedBadge": "Avanzado",
       "routerTitle": "Enrutamiento inteligente de modelos",
       "fallbackTierLabel": "Cuando el enrutamiento no esté seguro",
       "fallbackTierDesc": "Usa este nivel predeterminado cuando el enrutamiento no pueda determinar con seguridad el nivel de la solicitud.",
@@ -566,15 +564,18 @@
       "cards": {
         "router": {
           "title": "Enrutamiento inteligente de modelos",
-          "desc": "Elige un modelo configurado adecuado para cada solicitud según su complejidad."
+          "badge": "Uso eficiente de tokens",
+          "desc": "Asigna un modelo adecuado a cada solicitud para evitar usar modelos de mayor capacidad en tareas sencillas."
         },
         "ensemble": {
           "title": "Colaboración entre varios modelos",
-          "desc": "Ejecuta varios modelos y combina su trabajo para tareas complejas. Usa más llamadas y puede costar más."
+          "badge": "Prioriza capacidad",
+          "desc": "Ejecuta varios modelos en paralelo y combina sus resultados para tareas complejas; normalmente usa más tokens."
         },
         "single": {
           "title": "Modelo fijo",
-          "desc": "Envía cada solicitud al modelo seleccionado actualmente."
+          "badge": "Predecible",
+          "desc": "Usa siempre el modelo que elijas, por lo que la selección y el consumo son más fáciles de prever."
         }
       },
       "routerDependency": "Elige modelos para cada nivel de solicitud. Un proveedor puede cubrir todos los niveles.",

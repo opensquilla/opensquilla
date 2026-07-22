@@ -481,7 +481,6 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
               <span
                 v-if="card.badgeKey"
                 class="control-pill"
-                :class="{ 'control-pill--accent': card.id === 'router' }"
               >{{ t(card.badgeKey) }}</span>
             </span>
             <span class="setup-model-strategy__card-desc">{{ t(card.descKey) }}</span>

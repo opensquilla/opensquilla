@@ -1276,6 +1276,33 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
 
 
 @pytest.mark.asyncio
+async def test_outer_stage_runs_done_handler_off_the_event_loop() -> None:
+    """The done handler can auto-publish and validate deliverables (PPTX
+    inflation plus deck parse); the stage must run it in a worker thread so
+    that blocking work never stalls the gateway event loop."""
+    import threading
+
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="hi world")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input()
+
+    handler_threads: list[threading.Thread] = []
+    real_handle = stage._done_handler.handle
+
+    def recording_handle(event: Any, inner_inp: Any, state: Any) -> Any:
+        handler_threads.append(threading.current_thread())
+        return real_handle(event, inner_inp, state)
+
+    stage._done_handler.handle = recording_handle  # type: ignore[method-assign]
+    loop_thread = threading.current_thread()
+    yielded = await _drain(stage, inp)
+
+    assert [type(e).__name__ for e in yielded] == ["DoneEvent"]
+    assert handler_threads
+    assert all(thread is not loop_thread for thread in handler_threads)
+
+
+@pytest.mark.asyncio
 async def test_outer_stage_persists_literal_text_before_native_tool_segment() -> None:
     literal = (
         '<tool_call>{"name":"search","arguments":{"query":"synthetic"}}'

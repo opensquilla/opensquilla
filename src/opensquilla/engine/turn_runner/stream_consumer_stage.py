@@ -26,6 +26,7 @@ No ``TurnHook`` is fired from inside the stream loop today.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final, Protocol, runtime_checkable
@@ -1128,8 +1129,13 @@ class StreamConsumerStage:
             elif isinstance(event, WarningEvent):
                 transformed = self._warning_handler.handle(event, state)
             elif isinstance(event, DoneEvent):
-                transformed, extra_yields = self._done_handler.handle(
-                    event, inp, state
+                # The done handler may auto-publish forgotten workspace
+                # deliverables, which re-reads and fully validates them
+                # (PPTX inflation plus deck parse). Run the whole sync
+                # handler in a worker thread so that CPU-bound work never
+                # blocks the gateway event loop.
+                transformed, extra_yields = await asyncio.to_thread(
+                    self._done_handler.handle, event, inp, state
                 )
             elif isinstance(event, CompactionEvent):
                 await self._compaction_handler.handle(event, inp)

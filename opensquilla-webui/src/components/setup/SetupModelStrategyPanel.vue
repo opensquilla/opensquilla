@@ -69,6 +69,14 @@ interface EnsemblePanelContract {
   statusText: string
 }
 
+interface SinglePanelContract {
+  providerId: string
+  providerLabel: string
+  model: string
+  models: DiscoveredModelCatalog['models']
+  modelSource: DiscoveredModelCatalog['source']
+}
+
 interface ModelStrategyPanelContract {
   activeStrategy: ModelStrategy
   hasSavedProvider: boolean
@@ -77,6 +85,7 @@ interface ModelStrategyPanelContract {
   cards: readonly StrategyCard[]
   router: RouterPanelContract
   ensemble: EnsemblePanelContract
+  single: SinglePanelContract
 }
 
 const props = defineProps<{
@@ -85,6 +94,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   updateStrategy: [value: ModelStrategy]
+  updateFixedModel: [value: string]
   updateRouterDefaultTier: [value: string]
   updateRouterVisualMode: [value: string]
   updateTierField: [name: string, key: 'provider' | 'model' | 'thinkingLevel' | 'supportsImage', value: string | boolean]
@@ -143,7 +153,8 @@ const activeProviderId = computed(() => String(
   || '',
 ).trim().toLowerCase())
 const currentModel = computed(() => (
-  props.panel.ensemble.activeModel
+  props.panel.single.model
+  || props.panel.ensemble.activeModel
   || customLineup.value.inheritedAggregatorModel
   || defaultRouteModel.value
   || props.panel.providerLabel
@@ -1241,6 +1252,24 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
             {{ t('setup.modelStrategy.singleDependency', { provider: currentProvider, model: currentModel }) }}
           </p>
         </div>
+        <div class="setup-model-strategy__single-provider">
+          <span>{{ t('setup.modelStrategy.singleProviderLabel') }}</span>
+          <strong>{{ panel.single.providerLabel }}</strong>
+        </div>
+        <SetupModelCombobox
+          data-testid="setup-model-strategy-fixed-model"
+          :field="{
+            name: 'model_strategy_fixed_model',
+            label: t('setup.modelStrategy.singleModelLabel'),
+            description: t('setup.modelStrategy.singleModelDesc'),
+            placeholder: t('setup.modelStrategy.singleModelPlaceholder'),
+            required: true,
+          }"
+          :value="panel.single.model"
+          :models="panel.single.models"
+          :model-source="panel.single.modelSource"
+          @update="emit('updateFixedModel', $event)"
+        />
         <p class="setup-model-strategy__muted">{{ t('setup.modelStrategy.singleDesc') }}</p>
       </section>
     </template>
@@ -1401,6 +1430,26 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
 .setup-model-strategy__detail {
   border-top: 1px solid var(--border);
   padding-top: var(--sp-3);
+}
+
+.setup-model-strategy__single-provider {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3);
+}
+
+.setup-model-strategy__single-provider span {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+}
+
+.setup-model-strategy__single-provider strong {
+  font-size: var(--fs-sm);
 }
 
 .setup-model-strategy__roles-head {

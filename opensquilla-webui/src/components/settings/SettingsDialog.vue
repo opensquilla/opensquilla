@@ -189,6 +189,7 @@
               v-else-if="section === 'modelStrategy'"
               :panel="modelStrategyPanel"
               @update-strategy="setModelStrategy"
+              @update-fixed-model="setFixedModel"
               @update-router-default-tier="setRouterDefaultTier"
               @update-router-visual-mode="setRouterVisualMode"
               @update-tier-field="updateTierField"
@@ -334,6 +335,7 @@ const {
   setAutoSessionTitles,
   setDisableNetworkObservability,
   setModelStrategy,
+  setFixedModel,
   setRouterDefaultTier,
   setRouterVisualMode,
   addEnsembleCandidate,

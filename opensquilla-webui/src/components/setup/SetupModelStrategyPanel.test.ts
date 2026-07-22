@@ -66,6 +66,13 @@ function panel(overrides: Record<string, unknown> = {}) {
       discoveredModelsByProvider: {},
       hasMixedTierProviders: false,
     },
+    single: {
+      providerId: 'openrouter',
+      providerLabel: 'OpenRouter',
+      model: 'deepseek/deepseek-v4-pro',
+      models: [],
+      modelSource: 'none',
+    },
     ensemble: {
       enabled: false,
       activeProvider: 'openrouter',
@@ -122,6 +129,10 @@ function panel(overrides: Record<string, unknown> = {}) {
     ensemble: {
       ...base.ensemble,
       ...((overrides.ensemble as Record<string, unknown> | undefined) || {}),
+    },
+    single: {
+      ...base.single,
+      ...((overrides.single as Record<string, unknown> | undefined) || {}),
     },
   }
 }
@@ -380,18 +391,39 @@ describe('SetupModelStrategyPanel', () => {
     app.unmount()
   })
 
-  it('shows the current model in fixed mode without calling it a routing default', async () => {
+  it('edits the current provider model in fixed mode without calling it a routing default', async () => {
+    const onUpdateFixedModel = vi.fn()
+    const discoveredModel = {
+      id: 'deepseek/deepseek-v4-flash',
+      name: 'DeepSeek V4 Flash',
+      contextWindow: 128000,
+      maxOutputTokens: 8192,
+      capabilities: ['chat'],
+      pricing: null,
+      capabilitySource: 'provider',
+    }
     const { app, el } = await mountPanel({
       activeStrategy: 'single',
-      ensemble: {
-        activeModel: 'deepseek/deepseek-v4-flash',
+      single: {
+        model: discoveredModel.id,
+        models: [discoveredModel],
+        modelSource: 'live',
       },
-    })
+    }, { onUpdateFixedModel })
 
     const detail = el.querySelector('.setup-model-strategy__detail')?.textContent || ''
-    expect(detail).toContain('deepseek/deepseek-v4-flash')
-    expect(detail).not.toContain('deepseek/deepseek-v4-pro')
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model_strategy_fixed_model"]')
+    expect(detail).toContain('Current model provider')
+    expect(detail).toContain('OpenRouter')
+    expect(input?.value).toBe(discoveredModel.id)
     expect(detail).not.toContain('default tier')
+
+    if (input) {
+      input.value = 'deepseek/deepseek-v4-pro'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await nextTick()
+    }
+    expect(onUpdateFixedModel).toHaveBeenCalledWith('deepseek/deepseek-v4-pro')
 
     app.unmount()
   })
@@ -1076,8 +1108,10 @@ describe('SetupModelStrategyPanel', () => {
     })
 
     expect(el.textContent).toContain('Fixed model')
-    expect(el.textContent).toContain('Every request goes to the current model: OpenRouter · deepseek/deepseek-v4-pro.')
+    expect(el.textContent).toContain('Choose the model used for every request.')
+    expect(el.textContent).toContain('Fixed and fallback model')
     expect(el.textContent).toContain('without automatic routing or multi-model collaboration')
+    expect(el.querySelector('[data-testid="setup-model-strategy-fixed-model"]')).toBeTruthy()
     expect(el.textContent).not.toContain('When routing is uncertain')
     expect(el.querySelector('[role="table"]')).toBeNull()
 

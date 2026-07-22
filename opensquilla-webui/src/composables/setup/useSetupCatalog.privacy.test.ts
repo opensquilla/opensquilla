@@ -687,6 +687,56 @@ describe('useSetupCatalog model strategy IA', () => {
     app.unmount()
   })
 
+  it('owns fixed-model edits in Model Routing and patches only llm.model', async () => {
+    let savedModel = 'openrouter/auto'
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return {}
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openrouter', model: savedModel },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      if (method === 'config.patch') {
+        const patches = params?.patches as Record<string, unknown> | undefined
+        savedModel = String(patches?.['llm.model'] || '')
+        return { restartRequired: false }
+      }
+      if (method === 'config.effective') return { fields: {} }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    // The legacy Model Service model field and the new Fixed model editor
+    // share one draft; changing either surface belongs to Model Routing.
+    api.updateProviderField('model', 'deepseek/deepseek-v4-pro')
+    expect(api.modelStrategyPanel.value.single.model).toBe('deepseek/deepseek-v4-pro')
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.sectionDirty('provider')).toBe(false)
+
+    await api.discardChanges()
+    expect(api.modelStrategyPanel.value.single.model).toBe('openrouter/auto')
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+
+    api.setFixedModel('deepseek/deepseek-v4-pro')
+    await api.saveDirtySections()
+
+    expect(rpcCall).toHaveBeenCalledWith('config.patch', {
+      patches: { 'llm.model': 'deepseek/deepseek-v4-pro' },
+    })
+    expect(rpcCall).not.toHaveBeenCalledWith(
+      'onboarding.provider.configure',
+      expect.anything(),
+    )
+    expect(api.modelStrategyPanel.value.single.model).toBe('deepseek/deepseek-v4-pro')
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+    app.unmount()
+  })
+
   it('represents router and ensemble dirty state under Model Strategy', async () => {
     mockConfigSequence([
       {
@@ -1730,7 +1780,7 @@ describe('useSetupCatalog configured provider management', () => {
     app.unmount()
   })
 
-  it('does not discard a dirty editor when the selected provider is clicked again', async () => {
+  it('does not discard the shared model draft when the selected provider is clicked again', async () => {
     rpcCall.mockImplementation(async (method: string) => {
       if (method === 'onboarding.catalog') return { providers }
       if (method === 'onboarding.status') return statusWithDeepSeek()
@@ -1741,14 +1791,15 @@ describe('useSetupCatalog configured provider management', () => {
     const { api, app } = await mountCatalog()
 
     api.updateProviderField('model', 'unsaved-model')
-    expect(api.sectionDirty('provider')).toBe(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.sectionDirty('provider')).toBe(false)
 
     await api.requestSelectConfiguredProvider('openai')
 
     expect(confirmAction).not.toHaveBeenCalled()
     expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
       .toBe('unsaved-model')
-    expect(api.sectionDirty('provider')).toBe(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
     app.unmount()
   })
 

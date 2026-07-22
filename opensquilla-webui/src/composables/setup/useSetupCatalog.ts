@@ -9,6 +9,7 @@ import {
   normalizeProbeTimings,
   useSetupProviderForm,
   type ConnectionState,
+  type DiscoveredModelCatalog,
   type DiscoveredModelsByProvider,
   type DiscoveredModel,
   type EffectiveMaxTokens,
@@ -410,24 +411,36 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
     try {
       // Deliberately provider-only. Never forward the selected provider's
       // unsaved apiKey/baseUrl/proxy into another provider's request.
-      const discover = () => rpc.call<{
+      const discoverProfile = () => rpc.call<{
         ok?: boolean
         source?: string
         models?: unknown
       }>('onboarding.llmProfile.models.discover', { providerId: provider })
       let res: { ok?: boolean; source?: string; models?: unknown }
-      try {
-        res = await discover()
-      } catch (err) {
-        if (!isRpcMethodUnavailableError(err)) throw err
-        // Compatibility with pre-profile gateways: the legacy endpoint can
-        // still resolve the provider's registry env key. Never send another
-        // provider's unsaved credentials in this fallback.
+      if (provider === normalizeProviderId(config.value.llm?.provider)) {
+        // The current provider lives in [llm], not llm_profiles. This branch
+        // matters when Model Service is currently editing a different saved
+        // profile: the fixed-model picker must still discover the active
+        // provider through its primary deployment.
         res = await rpc.call<{
           ok?: boolean
           source?: string
           models?: unknown
         }>('onboarding.models.discover', { providerId: provider })
+      } else {
+        try {
+          res = await discoverProfile()
+        } catch (err) {
+          if (!isRpcMethodUnavailableError(err)) throw err
+          // Compatibility with pre-profile gateways: the legacy endpoint can
+          // still resolve the provider's registry env key. Never send another
+          // provider's unsaved credentials in this fallback.
+          res = await rpc.call<{
+            ok?: boolean
+            source?: string
+            models?: unknown
+          }>('onboarding.models.discover', { providerId: provider })
+        }
       }
       if (epoch !== tierModelDiscoveryEpoch) return
       const source = res?.ok && res.source === 'live' ? 'live' : 'none'
@@ -466,6 +479,8 @@ async function maybeDiscoverModelsForStrategy(): Promise<void> {
   )
   const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
   if (selectedProvider) providers.add(selectedProvider)
+  const activeProvider = normalizeProviderId(config.value.llm?.provider)
+  if (activeProvider) providers.add(activeProvider)
   for (const candidate of ensembleForm.candidates.value) {
     if (candidate.enabled === false) continue
     const provider = normalizeProviderId(candidate.provider)
@@ -527,6 +542,7 @@ async function loadData() {
       runtimeProviders.value,
       primaryProviderIsConfigured(config.value.llm, status.value, effectiveConfig.value),
     )
+    modelStrategyForm.initFixedModel(config.value.llm?.model || '')
     providerSelectionKind.value = 'primary'
     // Model discovery is a read-only UI accelerator. Populate the active
     // provider's combobox as soon as the saved editor opens, independently of
@@ -605,6 +621,7 @@ const modelStrategyForm = useSetupModelStrategyForm(
   ensembleForm,
   currentProvider,
   modelStrategyTierCandidates,
+  currentModel,
 )
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
@@ -1253,7 +1270,7 @@ const activationRouterConflict = computed(() => (
   routerConflictsWithTarget(providerActivation.value.providerId)
 ))
 
-const providerPanel = providerForm.createPanel({
+const providerFormPanel = providerForm.createPanel({
   currentConfig: providerEditorConfig,
   providerSummary,
   runtimeProviders,
@@ -1285,6 +1302,22 @@ const providerPanel = providerForm.createPanel({
   activationRouterConflict,
   configuredProviderProbes,
   activation: providerActivation,
+})
+const providerPanel = computed(() => {
+  const panel = providerFormPanel.value
+  return {
+    ...panel,
+    // Once a primary provider exists, llm.model is owned by Model Routing.
+    // Keep the legacy Model Service field as a synchronized secondary view so
+    // older operator habits still work without creating a second draft.
+    providerFieldValue: (field: Parameters<typeof panel.providerFieldValue>[0]) => (
+      editingPrimaryProvider.value
+      && hasConfiguredPrimaryProvider.value
+      && field.name === 'model'
+        ? modelStrategyForm.fixedModel.value
+        : panel.providerFieldValue(field)
+    ),
+  }
 })
 
 const behaviorPanel = behaviorForm.createPanel({
@@ -1430,12 +1463,26 @@ const ensemblePanel = ensembleForm.createPanel({
   credentialStatus: modelStrategyCredentialStatus,
 })
 
+const emptyFixedModelCatalog: DiscoveredModelCatalog = { models: [], source: 'none' }
+const fixedModelCatalog = computed<DiscoveredModelCatalog>(() => {
+  const provider = normalizeProviderId(currentProvider.value)
+  if (!provider) return emptyFixedModelCatalog
+  if (provider === normalizeProviderId(providerForm.selectedProvider.value)) {
+    return {
+      models: providerForm.connection.value.models,
+      source: providerForm.connection.value.modelSource,
+    }
+  }
+  return tierModelCatalogs.value[provider] || emptyFixedModelCatalog
+})
+
 const modelStrategyPanel = modelStrategyForm.createPanel({
   hasSavedProvider,
   providerLabel: providerSummary,
   routerPanel,
   ensemblePanel,
   routerTemplateState: routerForm.tierTemplateState,
+  fixedModelCatalog,
 })
 
 const channelsPanel = channelsForm.createPanel({
@@ -2021,12 +2068,21 @@ function onProviderChange() {
 // The model id currently entered in the provider form (form value → saved
 // config → spec default), trimmed. Drives the per-model context-window override.
 function currentFormModelValue(): string {
+  if (editingPrimaryProvider.value && hasConfiguredPrimaryProvider.value) {
+    return modelStrategyForm.fixedModel.value.trim()
+  }
   const modelField = providerFields.value.find(f => f.name === 'model') || { name: 'model', label: 'model' }
   return String(providerForm.fieldValue(modelField, providerEditorConfig.value) || '').trim()
 }
 
 function updateProviderField(name: string, value: unknown) {
   if (providerInteractionLocked()) return
+  if (name === 'model' && editingPrimaryProvider.value && hasConfiguredPrimaryProvider.value) {
+    const model = String(value ?? '')
+    modelStrategyForm.setFixedModel(model)
+    promotedForm.reseedContextWindow(config.value, providerForm.selectedProvider.value, model.trim())
+    return
+  }
   providerForm.updateField(name, value)
   // Editing the model field switches which per-model override applies, so reseed
   // the context-window field from the saved override for the new model id.
@@ -2432,6 +2488,9 @@ function sameEndpointOrigin(candidateValue: unknown, storedValue: unknown): bool
 
 function providerConfigurePayload(): Record<string, unknown> {
   const payload = providerForm.payload()
+  if (editingPrimaryProvider.value && hasConfiguredPrimaryProvider.value) {
+    payload.model = modelStrategyForm.fixedModel.value.trim()
+  }
   const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
   const savedCredential = status.value.llmCredentialStatus || {}
   const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
@@ -2603,10 +2662,16 @@ async function saveEnsemble() {
 async function saveModelStrategy() {
   const routerRoutingPayload = routerForm.routingDirty.value ? routerForm.payload() : null
   const routerVisualPatches = routerForm.visualModePatches()
+  const fixedModelPatches = modelStrategyForm.fixedModelPatches()
   const ensemblePayload = ensembleForm.payload()
   const hasRouterWork = Boolean(routerRoutingPayload) || Object.keys(routerVisualPatches).length > 0
+  const hasFixedModelWork = Object.keys(fixedModelPatches).length > 0
   const hasEnsembleWork = Object.keys(ensemblePayload).length > 0
-  if (!hasRouterWork && !hasEnsembleWork) return
+  if (!hasRouterWork && !hasFixedModelWork && !hasEnsembleWork) return
+  if (hasFixedModelWork && !modelStrategyForm.fixedModel.value.trim()) {
+    pushToast(t('setup.toast.chooseFixedModel'), { tone: 'danger' })
+    return
+  }
 
   let savedAny = false
   try {
@@ -2624,6 +2689,14 @@ async function saveModelStrategy() {
     if (hasEnsembleWork) {
       await rpc.call('onboarding.ensemble.configure', ensemblePayload)
       pushToast(t('setup.toast.ensembleSaved'))
+      savedAny = true
+    }
+
+    if (hasFixedModelWork) {
+      const restart = await patchConfig(fixedModelPatches)
+      if (!hasRouterWork) {
+        pushToast(restart ? t('setup.toast.routerSavedRestart') : t('setup.toast.routerSaved'))
+      }
       savedAny = true
     }
 
@@ -2860,6 +2933,7 @@ async function copyConfigPath() {
     setAutoSessionTitles,
     setDisableNetworkObservability,
     setModelStrategy: modelStrategyForm.setStrategy,
+    setFixedModel: modelStrategyForm.setFixedModel,
     setRouterMode,
     setRouterDefaultTier,
     setRouterVisualMode,

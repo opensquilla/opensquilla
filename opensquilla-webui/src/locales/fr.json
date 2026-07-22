@@ -164,6 +164,42 @@
       "sidebarWidthCompactStatus": "La disposition compacte utilise {current} px. Votre préférence sur ordinateur de {saved} px est conservée.",
       "sidebarWidthDrawerStatus": "La disposition en tiroir utilise {current} px. Votre préférence sur ordinateur de {saved} px est conservée."
     },
+    "dataMigration": {
+      "title": "Données et sauvegardes",
+      "desc": "Recherchez et vérifiez les données d’une autre installation OpenSquilla. L’analyse ne commence qu’à l’ouverture de cette page et rien ne change sans confirmation.",
+      "refresh": "Rechercher à nouveau",
+      "scanning": "Recherche de données OpenSquilla importables…",
+      "unsupportedTitle": "Mettez OpenSquilla à jour pour vérifier les imports",
+      "unsupportedDesc": "Cette passerelle ou version Desktop ne prend pas encore en charge l’API de prévisualisation sécurisée. Mettez l’hôte à jour puis revenez ici.",
+      "invalidResponse": "La passerelle a renvoyé une prévisualisation de migration non prise en charge.",
+      "compatibilityTitle": "Emplacement des anciennes données Agent",
+      "compatibilityDesc": "OpenSquilla utilise un emplacement compatible pour les anciennes données Agent. Le changer modifie la source d’identité et de mémoire sans déplacer, fusionner ni supprimer les données.",
+      "chooseLegacyAgentData": "Choisir l’emplacement des données Agent",
+      "recoveryTitle": "L’import est indisponible dans un profil de récupération",
+      "loadFailed": "OpenSquilla n’a pas pu vérifier les sources d’import.",
+      "emptyTitle": "Aucune autre donnée OpenSquilla trouvée",
+      "emptyDesc": "Vous pourrez relancer la recherche plus tard. Desktop permet aussi de choisir manuellement un dossier.",
+      "chooseSourceDesc": "Vérifiez une source avant l’import. Les sources restent intactes et ne sont jamais fusionnées avec les données actuelles.",
+      "previewSource": "Vérifier les données de {source}",
+      "webReadOnly": "Cette connexion Web permet seulement de prévisualiser l’import. Terminez-le dans Desktop ou sur l’hôte de la passerelle.",
+      "hostCliHint": "Pour terminer depuis un terminal, exécutez l’outil de migration sur l’hôte de la passerelle. Aucun chemin serveur n’est exposé ici.",
+      "blockers": {
+        "source_in_use": "La source est actuellement utilisée.",
+        "source_schema_newer": "La source a été créée par une version plus récente d’OpenSquilla.",
+        "source_database_invalid": "La base de données source n’a pas pu être validée.",
+        "source_config_invalid": "La configuration source n’a pas pu être validée.",
+        "source_unreadable": "La source n’a pas pu être lue en toute sécurité.",
+        "insufficient_disk": "L’espace disque disponible est insuffisant.",
+        "target_recovery_required": "Les données actuelles doivent être récupérées avant l’import.",
+        "target_not_replaceable": "Les données actuelles ne peuvent pas être remplacées en toute sécurité.",
+        "preview_unavailable": "Aucune prévisualisation sûre n’est disponible pour cette source."
+      },
+      "notices": {
+        "whole_profile_replacement": "Le profil actuel sera entièrement sauvegardé puis remplacé ; les données ne sont pas fusionnées.",
+        "previously_imported": "Cette source a déjà été importée et reste disponible pour vérification.",
+        "scheduled_jobs_will_be_paused": "Les tâches planifiées importées restent en pause jusqu’à votre vérification."
+      }
+    },
     "dialog": {
       "title": "Paramètres",
       "actionNeeded": "Action requise ({count})",
@@ -996,6 +1032,10 @@
       "agentConfigLabel": "Configuration des agents (avancée)",
       "agentConfigDesc": "Gérez les configurations d'agents existantes. Cette zone évoluera lors d'une future refonte multi-agent.",
       "agentConfigAction": "Ouvrir",
+      "dataMaintenanceLabel": "Maintenance des données",
+      "dataMaintenanceDesc": "Consultez les imports et sauvegardes. Sur ordinateur, vous pouvez aussi réinitialiser ou supprimer les données du profil local.",
+      "dataMaintenanceAction": "Gérer",
+      "dataMaintenanceAria": "Ouvrir la maintenance des données",
       "runTraceLabel": "Tiroir de trace d'exécution dans les Journaux",
       "runTraceDesc": "Rend les lignes de journal interactives et ouvre un tiroir de détail par étape de nœud dans la vue Journaux.",
       "runTraceAria": "Tiroir de trace d'exécution dans les Journaux (prend effet après rechargement)"
@@ -2569,14 +2609,6 @@
       "hint": "La passerelle n'est pas encore prête à fonctionner.",
       "finishSetup": "Terminer la configuration",
       "viewReadiness": "Voir la préparation"
-    },
-    "legacyDataBanner": {
-      "ariaLabel": "Une autre installation OpenSquilla a été trouvée",
-      "title": "Une autre installation OpenSquilla a été trouvée",
-      "dismiss": "Pas maintenant",
-      "dismissNotice": "Ignorer l’avis de transfert de données",
-      "hintWeb": "Vos données actuelles sont déjà utilisées ; aucune action n’est requise. Pour les remplacer par l’autre installation, arrêtez la passerelle puis exécutez :",
-      "copyCommand": "Copier la commande de transfert de données"
     },
     "shortcuts": {
       "toggleSidebar": {

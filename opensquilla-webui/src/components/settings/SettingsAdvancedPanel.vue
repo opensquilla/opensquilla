@@ -7,6 +7,7 @@ import MemoryLearningGroup from '@/components/settings/MemoryLearningGroup.vue'
 const { t } = useI18n()
 const emit = defineEmits<{
   'open-agent-configuration': []
+  'open-data-maintenance': []
 }>()
 
 // Client-only "Labs" preferences. Each row reads/writes ONE localStorage key
@@ -163,6 +164,23 @@ const agentConfigAriaLabel = computed(() =>
         </button>
       </div>
     </div>
+
+    <div class="control-row advanced-maintenance" data-testid="advanced-data-maintenance">
+      <div class="control-row__label-block">
+        <span class="control-row__label">{{ t('setup.advanced.dataMaintenanceLabel') }}</span>
+        <span class="control-row__desc">{{ t('setup.advanced.dataMaintenanceDesc') }}</span>
+      </div>
+      <div class="control-row__control">
+        <button
+          type="button"
+          class="btn btn--ghost"
+          :aria-label="t('setup.advanced.dataMaintenanceAria')"
+          @click="emit('open-data-maintenance')"
+        >
+          {{ t('setup.advanced.dataMaintenanceAction') }}
+        </button>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -193,5 +211,15 @@ const agentConfigAriaLabel = computed(() =>
   color: var(--danger);
   font-size: var(--fs-xs);
   width: 100%;
+}
+
+.advanced-maintenance {
+  margin-top: var(--sp-3);
+  opacity: 0.82;
+}
+
+.advanced-maintenance:focus-within,
+.advanced-maintenance:hover {
+  opacity: 1;
 }
 </style>

@@ -69,6 +69,7 @@ declare global {
     cancelOnboarding: () => Promise<unknown>
     getBootState: () => Promise<unknown>
     getRecoveryState?: () => Promise<unknown>
+    chooseLegacyAgentDataLocation?: (payload?: Record<string, never>) => Promise<unknown>
     getDesktopProfileKind?: () => Promise<'primary' | 'recovery' | null>
     retryStartup: () => Promise<DesktopRetryStartupResult>
     quitApp: () => Promise<unknown>

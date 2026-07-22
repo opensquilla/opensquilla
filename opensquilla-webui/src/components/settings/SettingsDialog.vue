@@ -119,9 +119,9 @@
               type="button"
               role="tab"
               class="settings-rail__item"
-              :class="{ 'is-active': section === s.id }"
-              :aria-selected="section === s.id ? 'true' : 'false'"
-              :aria-controls="'settings-section-' + s.id"
+              :class="{ 'is-active': activeRailSection === s.id }"
+              :aria-selected="activeRailSection === s.id ? 'true' : 'false'"
+              :aria-controls="'settings-section-' + (activeRailSection === s.id ? section : s.id)"
               :aria-label="s.client ? t('settings.rail.' + s.id) : `${t('settings.rail.' + s.id)}: ${sectionStatus(s.id).label}${sectionDirty(s.id) ? t('settings.dialog.unsavedSuffix') : ''}`"
               @click="selectSection(s.id)"
             >
@@ -139,16 +139,21 @@
           ref="panelRef"
           class="settings-panel"
           role="tabpanel"
-          :aria-labelledby="'settings-rail-' + section"
+          :aria-labelledby="'settings-rail-' + activeRailSection"
         >
           <!-- Connection renders regardless of load state: it is how you point
                the UI at a reachable gateway when nothing has loaded yet. -->
           <SetupConnectionPanel v-if="section === 'connection'" />
 
           <!-- Runtime (desktop only) also renders regardless of load state: it
-               reports the owned gateway and offers restart/reset precisely for
+               reports the owned gateway and offers logs/restart precisely for
                when the gateway is down and config never loaded. -->
           <DesktopRuntimePanel v-else-if="section === 'runtime' && isDesktop" />
+
+          <!-- Optional cross-installation discovery is deliberately mounted
+               only when the user opens this section. It never runs at app or
+               Settings-dialog startup. -->
+          <DataMigrationPanel v-else-if="section === 'dataMigration'" />
 
           <!-- Config-backed sections wait for readiness so their baselines are
                final before any field can be edited. -->
@@ -233,6 +238,7 @@
             <SettingsAdvancedPanel
               v-else-if="section === 'advanced'"
               @open-agent-configuration="openAgentConfiguration"
+              @open-data-maintenance="openDataMaintenance"
             />
           </template>
         </div>
@@ -284,6 +290,7 @@ import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePan
 import SettingsKeyboardPanel from '@/components/settings/SettingsKeyboardPanel.vue'
 import SettingsAdvancedPanel from '@/components/settings/SettingsAdvancedPanel.vue'
 import DesktopRuntimePanel from '@/components/settings/DesktopRuntimePanel.vue'
+import DataMigrationPanel from '@/components/settings/DataMigrationPanel.vue'
 import { useSetupCatalog, SETTINGS_SECTIONS } from '@/composables/setup/useSetupCatalog'
 import { parseProviderHash, sectionFromRouteParam } from '@/composables/setup/useSettingsSection'
 import { useConfirm } from '@/composables/useConfirm'
@@ -374,6 +381,13 @@ const {
   copyCommand,
   copyConfigPath,
 } = useSetupCatalog()
+
+// The maintenance screen is a child of Advanced, not a first-level tab. Keep
+// the parent selected while its nested route is open so the rail communicates
+// hierarchy without advertising migration during normal Settings use.
+const activeRailSection = computed(() => (
+  section.value === 'dataMigration' ? 'advanced' : section.value
+))
 
 const modalRef = ref<HTMLElement | null>(null)
 const railRef = ref<HTMLElement | null>(null)
@@ -491,6 +505,10 @@ function applyRouteSection() {
     return
   }
   const resolved = sectionFromRouteParam(routeParam.value)
+  if (resolved === 'dataMigration') {
+    setSection(resolved)
+    return
+  }
   // A desktopOnly section requested where it is unavailable (e.g. a stale
   // /settings/runtime deep link on web) has no rail entry or panel branch; fall
   // back to the default so the dialog never renders an empty body.
@@ -602,6 +620,17 @@ async function openAgentConfiguration() {
     transferringFocus = false
     throw error
   }
+}
+
+// Unlike a cold/deep-linked maintenance route (where the modal close button
+// deliberately keeps initial focus), an explicit activation inside Advanced
+// is an in-dialog view transition. Move context to the newly mounted heading
+// after Vue has replaced the panel so keyboard and screen-reader users do not
+// remain focused on a control that just left the DOM.
+async function openDataMaintenance() {
+  selectSection('dataMigration')
+  await nextTick()
+  panelRef.value?.querySelector<HTMLElement>('[data-testid="data-migration-heading"]')?.focus()
 }
 
 // One discard prompt shared by every exit path: requestClose (Escape, the

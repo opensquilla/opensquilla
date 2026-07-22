@@ -164,6 +164,42 @@
       "sidebarWidthCompactStatus": "Compact layout uses {current}px. Your desktop preference of {saved}px is preserved.",
       "sidebarWidthDrawerStatus": "Drawer layout uses {current}px. Your desktop preference of {saved}px is preserved."
     },
+    "dataMigration": {
+      "title": "Data & backups",
+      "desc": "Find and review data from another OpenSquilla installation. Nothing is scanned until you open this page, and nothing is changed without your confirmation.",
+      "refresh": "Scan again",
+      "scanning": "Looking for importable OpenSquilla data…",
+      "unsupportedTitle": "Update OpenSquilla to preview imports",
+      "unsupportedDesc": "This gateway or Desktop shell does not support the private preview API yet. Update the host, then return to this page.",
+      "invalidResponse": "The gateway returned an unsupported migration preview.",
+      "compatibilityTitle": "Legacy Agent data location",
+      "compatibilityDesc": "OpenSquilla is using a compatible legacy Agent data location. Changing it switches the identity and memory source; it does not move, merge, or delete data.",
+      "chooseLegacyAgentData": "Choose Agent data location",
+      "recoveryTitle": "Import is unavailable in a recovery profile",
+      "loadFailed": "OpenSquilla could not inspect import sources.",
+      "emptyTitle": "No other OpenSquilla data found",
+      "emptyDesc": "You can scan again later. Desktop can also choose a data folder manually.",
+      "chooseSourceDesc": "Review a source before importing. Sources remain unchanged and are never merged with current data.",
+      "previewSource": "Review {source} data",
+      "webReadOnly": "This web connection can preview the import only. Complete it in Desktop or on the gateway host.",
+      "hostCliHint": "To complete the import from a terminal, run the migration tool on the gateway host. No server path is exposed in this browser.",
+      "blockers": {
+        "source_in_use": "The source is currently in use.",
+        "source_schema_newer": "The source was created by a newer OpenSquilla version.",
+        "source_database_invalid": "The source database could not be validated.",
+        "source_config_invalid": "The source configuration could not be validated.",
+        "source_unreadable": "The source could not be read safely.",
+        "insufficient_disk": "There is not enough free disk space.",
+        "target_recovery_required": "The current data must be recovered before importing.",
+        "target_not_replaceable": "The current data cannot be safely replaced.",
+        "preview_unavailable": "A safe preview is not available for this source."
+      },
+      "notices": {
+        "whole_profile_replacement": "The current profile will be backed up and replaced as a whole; data is not merged.",
+        "previously_imported": "This source was imported previously and is still available for review.",
+        "scheduled_jobs_will_be_paused": "Imported scheduled jobs remain paused until you review them."
+      }
+    },
     "dialog": {
       "title": "Settings",
       "actionNeeded": "Action needed ({count})",
@@ -996,6 +1032,10 @@
       "agentConfigLabel": "Agent configuration (advanced)",
       "agentConfigDesc": "Manage existing agent configurations. This area will change in a future multi-agent redesign.",
       "agentConfigAction": "Open",
+      "dataMaintenanceLabel": "Data maintenance",
+      "dataMaintenanceDesc": "Review imports and backups. Desktop can also reset or delete local profile data.",
+      "dataMaintenanceAction": "Manage",
+      "dataMaintenanceAria": "Open data maintenance",
       "runTraceLabel": "Run-trace drawer in Logs",
       "runTraceDesc": "Make log lines interactive and open a per-line node-step detail drawer in the Logs view.",
       "runTraceAria": "Run-trace drawer in Logs (takes effect after reload)"
@@ -2569,14 +2609,6 @@
       "hint": "The gateway isn't ready to run yet.",
       "finishSetup": "Finish setup",
       "viewReadiness": "View readiness"
-    },
-    "legacyDataBanner": {
-      "ariaLabel": "Another OpenSquilla installation was found",
-      "title": "Another OpenSquilla installation was found",
-      "dismiss": "Not now",
-      "dismissNotice": "Dismiss data transfer notice",
-      "hintWeb": "Your current data is already in use; no action is required. To replace it with the other installation, stop the gateway and run:",
-      "copyCommand": "Copy data transfer command"
     },
     "shortcuts": {
       "toggleSidebar": {

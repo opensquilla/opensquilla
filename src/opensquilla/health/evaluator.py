@@ -3,7 +3,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from opensquilla.health.model import FixStep, HealthFinding, HealthSeverity, ReadinessImpact
+from opensquilla.health.model import FixStep, HealthFinding, HealthSeverity
 from opensquilla.router_runtime_diagnostics import (
     MACOS_LIBOMP_MISSING,
     ROUTER_ASSETS_MISSING,
@@ -1767,67 +1767,6 @@ def evaluate_squilla_router_runtime(payload: dict[str, Any]) -> list[HealthFindi
             ),
             evidence=evidence,
             fix_steps=fix_steps,
-            restart_required=True,
-        )
-    ]
-
-
-def evaluate_legacy_home(payload: dict[str, Any]) -> list[HealthFinding]:
-    """Advisory finding when importable legacy OpenSquilla data is detected.
-
-    Detection is a read-only path scan and safe under a running gateway; the
-    import itself needs a quiesced gateway, so the fix steps hand the operator
-    the exact CLI invocations instead of offering any in-gateway action. No
-    candidate detected → no findings, matching how the other advisory
-    surfaces (``evaluate_llm_ensemble``, ``evaluate_squilla_router_runtime``)
-    express absence: they stay silent when there is nothing to report.
-    """
-    if not bool(payload.get("detected")):
-        return []
-    path = str(payload.get("path") or "")
-    if not path:
-        return []
-    kind = str(payload.get("kind") or "cli-home")
-    target_fresh = bool(payload.get("targetFresh"))
-    # The collector supplies the ready-quoted command so this package never
-    # imports the migration machinery (health stays cycle-free in the package
-    # import graph); the inline form is a display-only fallback.
-    preview_command = str(
-        payload.get("command") or f"opensquilla migrate opensquilla --kind {kind} --source {path}"
-    )
-    if target_fresh:
-        severity: HealthSeverity = "warn"
-        readiness_impact: ReadinessImpact = "degrades"
-        detail = (
-            f"A legacy OpenSquilla home ({kind}) was found at {path}, and this "
-            "install holds no session data yet. You can import the legacy data "
-            "after previewing it. Applying the import requires the gateway to "
-            "stop and restart; it replaces the target data rather than merging "
-            "the two data sets."
-        )
-    else:
-        severity = "info"
-        readiness_impact = "optional"
-        detail = (
-            f"A legacy OpenSquilla home ({kind}) was found at {path}, but this "
-            "install already holds session data and needs no action. Import only "
-            "if you want the legacy data to replace the current data after a "
-            "preview and full backup; the two data sets are not merged. The "
-            "source remains available, so this optional item can appear again."
-        )
-    return [
-        HealthFinding(
-            id="migration.legacy_home_detected",
-            severity=severity,
-            surface="migration",
-            title=f"Legacy OpenSquilla data found at {path}",
-            detail=detail,
-            readiness_impact=readiness_impact,
-            evidence={"path": path, "kind": kind, "target_fresh": target_fresh},
-            fix_steps=[
-                FixStep(label="Preview the import", command=preview_command),
-                FixStep(label="Apply the import", command=f"{preview_command} --apply"),
-            ],
             restart_required=True,
         )
     ]

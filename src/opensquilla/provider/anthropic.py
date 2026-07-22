@@ -587,6 +587,7 @@ class AnthropicProvider:
                             trace.record_chunk(event)
 
                         if message_terminal_seen and etype not in {
+                            "message_delta",
                             "message_stop",
                             "ping",
                             "error",
@@ -758,12 +759,23 @@ class AnthropicProvider:
                                 invalid_tool_call_ids.add(tool_use_id)
 
                         elif etype == "message_delta":
-                            usage = event.get("usage", {})
+                            # The Messages stream may carry more than one
+                            # message_delta (usage and stop_reason can arrive
+                            # split across frames on Anthropic-compatible
+                            # endpoints). Merge each field only when the frame
+                            # actually provides it so a sparse epilogue frame
+                            # cannot regress an earlier frame's data; content
+                            # mutation stays rejected by the post-terminal
+                            # frame-order guard above.
+                            usage = event.get("usage") or {}
                             (
                                 iteration_input_tokens,
                                 iteration_output_tokens,
                             ) = _anthropic_iteration_token_counts(usage)
-                            output_tokens = iteration_output_tokens
+                            if "output_tokens" in usage or isinstance(
+                                usage.get("iterations"), list
+                            ):
+                                output_tokens = iteration_output_tokens
                             cached_tokens = max(
                                 cached_tokens,
                                 usage.get("cache_read_input_tokens", 0),
@@ -780,7 +792,11 @@ class AnthropicProvider:
                                 input_tokens = (
                                     base_input_tokens + cached_tokens + cache_creation_tokens
                                 )
-                            stop_reason = event.get("delta", {}).get("stop_reason", "end_turn")
+                            delta_body = event.get("delta") or {}
+                            if not message_terminal_seen:
+                                stop_reason = delta_body.get("stop_reason", "end_turn")
+                            elif "stop_reason" in delta_body:
+                                stop_reason = delta_body["stop_reason"]
                             message_terminal_seen = True
 
                         elif etype == "message_stop":

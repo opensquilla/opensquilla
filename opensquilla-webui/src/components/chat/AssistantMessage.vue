@@ -25,6 +25,17 @@
     </button>
     <div class="msg-ai-main">
       <ReasoningPart v-if="reasoningPart" :part="reasoningPart" />
+      <button
+        v-if="hasMultipleToolGroups"
+        type="button"
+        class="msg-tool-collapse-btn"
+        :aria-expanded="anyToolGroupOpen"
+        :title="anyToolGroupOpen ? t('chat.tool.collapseAll') : t('chat.tool.expandAll')"
+        @click="toggleAllToolGroups"
+      >
+        <Icon :name="anyToolGroupOpen ? 'chevronDown' : 'chevronRight'" :size="13" />
+        <span>{{ anyToolGroupOpen ? t('chat.tool.collapseAll') : t('chat.tool.expandAll') }}</span>
+      </button>
       <ToolCallTimeline
         v-if="message.timelineItems?.length"
         :items="message.timelineItems"
@@ -454,6 +465,34 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   }))
 })
 
+// Group ids for whichever timeline is actually rendered (streaming items win;
+// otherwise the reconstructed legacy groups). Drives the message-level
+// collapse/expand-all control below.
+const toolGroupIds = computed<string[]>(() => {
+  const items = props.message.timelineItems?.length
+    ? props.message.timelineItems
+    : legacyTimelineItems.value
+  return items
+    .filter((item): item is Extract<ChatStreamTimelineItem, { type: 'tool-group' }> => item.type === 'tool-group')
+    .map(item => item.group.groupId)
+})
+
+// Only worth showing a bulk toggle once a turn has more than one tool group.
+const hasMultipleToolGroups = computed(() => toolGroupIds.value.length > 1)
+
+// Reactive via props.isToolGroupOpen, which reads the shared openToolGroups set.
+const anyToolGroupOpen = computed(() => toolGroupIds.value.some(id => props.isToolGroupOpen(id)))
+
+// Collapse every group when any is open, otherwise expand them all. Reuses the
+// existing per-group toggle so the shared open-state stays the single source of
+// truth; only groups whose state differs from the target are toggled.
+function toggleAllToolGroups() {
+  const targetOpen = !anyToolGroupOpen.value
+  for (const id of toolGroupIds.value) {
+    if (props.isToolGroupOpen(id) !== targetOpen) emit('toggleToolGroup', id)
+  }
+}
+
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return
   if (props.message.stopNotice) return
@@ -487,6 +526,40 @@ function ensembleRole(role: string, label: string): string {
   padding: 0.5rem 0;
   align-items: flex-start;
   max-width: calc(100% - 48px);
+}
+
+.msg-tool-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  align-self: flex-start;
+  margin-bottom: var(--sp-1);
+  padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-standard), color var(--dur-fast) var(--ease-standard);
+}
+
+.msg-tool-collapse-btn:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--text);
+}
+
+.msg-tool-collapse-btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-tool-collapse-btn {
+    transition: none;
+  }
 }
 
 .msg-ai--share-mode {

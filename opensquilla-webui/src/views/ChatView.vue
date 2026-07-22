@@ -165,6 +165,7 @@
           :tool-status-text="toolStatusText"
           :tool-secondary-text="toolSecondaryText"
           :copy-message="copyMessage"
+          :download-attachment="downloadAttachment"
           :fork-busy="forkInFlight"
           @fork-conversation="forkConversation"
           @edit-message="editMessage"
@@ -383,6 +384,16 @@
       </div>
     </div>
 
+    <SandboxSetupBanner
+      v-if="sandboxSetupVisible"
+      :status="sandboxSetupStatus"
+      :can-setup="sandboxSetupCanSetup"
+      :ensuring="sandboxSetupEnsuring"
+      :error="sandboxSetupError"
+      @setup="ensureSandboxSetup"
+      @dismiss="dismissSandboxSetup"
+    />
+
     <!-- Composer dock: positioning context so the slash menu anchors directly
          above the composer in any layout. The new-chat landing centers the
          composer instead of pinning it to the bottom, so the menu must not
@@ -520,6 +531,7 @@ import MetaRibbon from '@/components/chat/MetaRibbon.vue'
 import MetaRunHistoryDrawer from '@/components/chat/MetaRunHistoryDrawer.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
+import SandboxSetupBanner from '@/components/chat/SandboxSetupBanner.vue'
 import SharePreviewModal from '@/components/chat/SharePreviewModal.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
 import ToolResultModal from '@/components/chat/ToolResultModal.vue'
@@ -553,6 +565,7 @@ import { useChatAnswerReveal } from '@/composables/chat/useChatAnswerReveal'
 import { useChatRpcEventHandlers } from '@/composables/chat/useChatRpcEventHandlers'
 import { useChatRpcSubscriptions } from '@/composables/chat/useChatRpcSubscriptions'
 import { useChatSend } from '@/composables/chat/useChatSend'
+import { useSandboxSetupRecovery } from '@/composables/chat/useSandboxSetupRecovery'
 import { useChatStallWatchdog } from '@/composables/chat/useChatStallWatchdog'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
 import { runStatusLabelText as sessionRunStatusLabelText } from '@/composables/useSessions'
@@ -566,6 +579,7 @@ import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
 import { useChatUsageWidget } from '@/composables/chat/useChatUsageWidget'
 import { useVoiceInput } from '@/composables/chat/useVoiceInput'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
+import { hasOpenDialogLayer } from '@/composables/useDialogA11y'
 import { useToasts } from '@/composables/useToasts'
 import type {
   ChatMessage,
@@ -573,6 +587,7 @@ import type {
   ChatRunStatus,
   ChatRunStatusSource,
   ChatRunStatusState,
+  DisplayAttachment,
   ToolResultContext,
 } from '@/types/chat'
 import type {
@@ -583,6 +598,7 @@ import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
+import { fetchDisplayAttachmentBlob } from '@/utils/chat/attachmentAccess'
 import { createHistoryNavigationScrollLock } from '@/utils/chat/historyNavigationScrollLock'
 import {
   PENDING_STREAM_TASK_ID,
@@ -710,6 +726,21 @@ const {
     return auth?.runModePolicy
   },
 })
+
+const sandboxSetupRecovery = useSandboxSetupRecovery({
+  rpc,
+  connectionState: computed(() => rpc.state),
+  runMode,
+})
+const {
+  status: sandboxSetupStatus,
+  ensuring: sandboxSetupEnsuring,
+  error: sandboxSetupError,
+  visible: sandboxSetupVisible,
+  canSetup: sandboxSetupCanSetup,
+  ensureSetup: ensureSandboxSetup,
+  dismiss: dismissSandboxSetup,
+} = sandboxSetupRecovery
 
 // Run status
 const runStatus = ref<ChatRunStatus>({ status: 'idle', label: t('chat.status.idle'), task: null })
@@ -1330,6 +1361,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   clearPendingRouterDecision,
   handleRouterControlReplay,
   showCompactionToast,
+  showWarningToast: message => pushToast(message || t('chat.warning.default'), { tone: 'warn', duration: 5000 }),
   scheduleHistorySync,
   schedulePendingDrainAfterTerminal,
   popAllPendingIntoComposer,
@@ -1657,6 +1689,24 @@ function subagentBody(text: string): string {
 }
 
 /* ── Artifacts ─────────────────────────────────────────────────────── */
+
+async function downloadAttachment(attachment: DisplayAttachment): Promise<boolean> {
+  const result = await fetchDisplayAttachmentBlob(attachment, {
+    baseOrigin: window.location.origin,
+    sessionKey: sessionKey.value,
+    authToken: readAuthToken(),
+  })
+  if (!result.ok) {
+    if (result.status > 0) {
+      pushToast(t('chat.toast.downloadFailedHttp', { status: result.status }), { tone: 'danger' })
+    } else {
+      pushToast(t('chat.toast.downloadFailed'), { tone: 'danger' })
+    }
+    return false
+  }
+  downloadBlob(result.blob, result.filename)
+  return true
+}
 
 async function downloadArtifact(artifact: ArtifactPayload) {
   const token = readAuthToken()
@@ -2038,6 +2088,7 @@ function onDocumentPaste(e: ClipboardEvent) {
 function onDocumentKeydown(e: KeyboardEvent) {
   if (e.key !== 'Escape') return
   if (e.defaultPrevented) return
+  if (hasOpenDialogLayer()) return
 
   // The share preview modal owns Escape while it is open: it closes only the
   // preview (share mode stays active) via its own handler, so bail here and let
@@ -2049,6 +2100,13 @@ function onDocumentKeydown(e: KeyboardEvent) {
     endShareMode()
     return
   }
+
+  const target = e.target
+  const editableTarget = target instanceof HTMLInputElement
+    || target instanceof HTMLSelectElement
+    || (target instanceof HTMLTextAreaElement && !composerRef.value?.isTextareaFocused())
+    || (target instanceof HTMLElement && target.isContentEditable)
+  if (editableTarget) return
 
   if (canStop.value) {
     e.preventDefault()

@@ -1301,6 +1301,7 @@ def build_cron_result_payload(
             "role": "assistant",
             "text": text,
             "timestamp": getattr(entry, "created_at", None),
+            "messageId": getattr(entry, "message_id", None),
             "provenanceKind": getattr(entry, "provenance_kind", None),
             "provenanceSourceTool": getattr(entry, "provenance_source_tool", None),
             "provenanceSourceSessionKey": getattr(entry, "provenance_source_session_key", None),

@@ -379,6 +379,7 @@
     "tests/test_gateway/test_config_ws_writer_queue.py": 0.406,
     "tests/test_gateway/test_context_overflow.py": 0.885,
     "tests/test_gateway/test_control_ui_locale.py": 0.15,
+    "tests/test_gateway/test_cron_result_payload.py": 0.01,
     "tests/test_gateway/test_debug_file_logging.py": 0.232,
     "tests/test_gateway/test_desktop_ownership.py": 0.01,
     "tests/test_gateway/test_emit_stream_task_id.py": 0.029,

@@ -188,6 +188,7 @@
       :proposal="selectedProposal"
       :loading-content="selectedSkillLoading"
       :content-error="selectedSkillError"
+      :install-feedback="installFeedback"
       :installing-deps-id="installingDepsId"
       :uninstalling-name="uninstallingName"
       @close="closeDialog"
@@ -209,6 +210,7 @@ import SkillGroup from '@/components/skills/SkillGroup.vue'
 import SkillsRegistryPanel from '@/components/skills/SkillsRegistryPanel.vue'
 import SkillsStats from '@/components/skills/SkillsStats.vue'
 import { useSkillProposals } from '@/composables/skills/useSkillProposals'
+import { useSkillDetailController } from '@/composables/skills/useSkillDetailController'
 import { useSkillRegistry } from '@/composables/skills/useSkillRegistry'
 import { skillLayerHelp, skillLayerLabel, useSkillsCatalog } from '@/composables/skills/useSkillsCatalog'
 import { useToasts } from '@/composables/useToasts'
@@ -238,10 +240,7 @@ const { pushToast } = useToasts()
 const rpc = useRpcStore()
 const activeTab = ref('installed')
 const reloading = ref(false)
-const selectedSkill = ref<Skill | null>(null)
 const selectedProposal = ref<Proposal | null>(null)
-const selectedSkillLoading = ref(false)
-const selectedSkillError = ref('')
 const proposalsPanelRef = ref<InstanceType<typeof PendingSkillProposals> | null>(null)
 
 let loadData: () => Promise<boolean>
@@ -346,6 +345,17 @@ const {
   uninstallSkill,
 } = registry
 
+const skillDetail = useSkillDetailController({ rpc, installDeps })
+const {
+  selectedSkill,
+  selectedSkillLoading,
+  selectedSkillError,
+  installFeedback,
+  openSkill,
+  closeSkill,
+  installCurrentDependencies,
+} = skillDetail
+
 // This view is kept-alive (route meta.keepAlive), so the data fetch is bound on
 // activation rather than mount — onMounted/onUnmounted only fire on first mount /
 // cache eviction, not when navigating away and back. onActivated also runs on
@@ -358,6 +368,7 @@ let unsubs: Array<() => void> = []
 function teardownLive() {
   unsubs.forEach(unsub => unsub())
   unsubs = []
+  closeDialog()
 }
 
 onActivated(() => {
@@ -383,47 +394,24 @@ async function showProposalsFromStats() {
 }
 
 async function openSkillDialog(skill: Skill) {
-  selectedSkill.value = skill
   selectedProposal.value = null
-  selectedSkillError.value = ''
-  selectedSkillLoading.value = true
-  try {
-    const detail = await rpc.call<Skill>('skills.get', { name: skill.name })
-    if (selectedSkill.value?.name === skill.name) {
-      selectedSkill.value = { ...skill, ...detail }
-    }
-  } catch (err) {
-    if (selectedSkill.value?.name === skill.name) {
-      selectedSkillError.value = (err as Error).message
-    }
-  } finally {
-    if (selectedSkill.value?.name === skill.name) {
-      selectedSkillLoading.value = false
-    }
-  }
+  await openSkill(skill)
 }
 
 async function openProposalDialog(proposalId: string) {
   const proposal = await showProposal(proposalId)
   if (!proposal) return
+  closeSkill()
   selectedProposal.value = proposal
-  selectedSkill.value = null
 }
 
 function closeDialog() {
-  selectedSkill.value = null
+  closeSkill()
   selectedProposal.value = null
-  selectedSkillLoading.value = false
-  selectedSkillError.value = ''
 }
 
 async function installDepsAndMaybeClose(name: string, installId: string) {
-  const done = await installDeps(name, installId)
-  if (done) {
-    setTimeout(() => {
-      closeDialog()
-    }, 600)
-  }
+  await installCurrentDependencies(name, installId)
 }
 
 async function uninstallSkillAndClose(name: string) {
@@ -620,6 +608,28 @@ async function uninstallSkillAndClose(name: string) {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   line-height: 1.4;
+}
+.sk-card__deps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.sk-card__dep {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  padding: 1px 5px;
+}
+.sk-card__dep--missing {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+  color: var(--warn);
+}
+.sk-card__dep--advisory {
+  border-style: dashed;
+  color: var(--text-muted);
 }
 .sk-card__sub-row {
   display: flex;
@@ -903,6 +913,45 @@ async function uninstallSkillAndClose(name: string) {
 .sk-detail__missing li {
   margin-bottom: 4px;
 }
+.sk-detail__declared {
+  margin-top: 0;
+}
+.sk-detail__dependency-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+.sk-detail__dependency-stat {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 4px;
+  text-align: center;
+}
+.sk-detail__dependency-stat strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+.sk-detail__dependency-stat span {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.sk-detail__dependency-stat.is-missing {
+  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
+}
+.sk-detail__dependency-stat.is-missing strong {
+  color: var(--warn);
+}
+.sk-detail__advisory-note {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin: 0;
+}
 .sk-detail__install-row {
   display: flex;
   justify-content: space-between;
@@ -933,6 +982,10 @@ async function uninstallSkillAndClose(name: string) {
 .sk-detail__content-state--error {
   color: var(--danger);
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+}
+.sk-detail__content-state--warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--border));
+  color: var(--warn);
 }
 .sk-detail__foot {
   display: flex;
@@ -1102,6 +1155,9 @@ async function uninstallSkillAndClose(name: string) {
   }
   .sk-grid {
     grid-template-columns: 1fr;
+  }
+  .sk-detail__dependency-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .sk-proposal-row {
     flex-direction: column;

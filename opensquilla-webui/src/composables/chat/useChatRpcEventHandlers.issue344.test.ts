@@ -80,6 +80,7 @@ function makeHarness(activeStreamTaskId = '') {
     clearPendingRouterDecision: vi.fn(),
     handleRouterControlReplay: vi.fn(),
     showCompactionToast: vi.fn(),
+    showWarningToast: vi.fn(),
     scheduleHistorySync: vi.fn(),
     schedulePendingDrainAfterTerminal: vi.fn(),
     popAllPendingIntoComposer: vi.fn(() => false),

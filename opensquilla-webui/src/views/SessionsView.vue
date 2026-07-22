@@ -85,6 +85,7 @@
         v-else
         :entries="ledgerEntries"
         :agent-names="agentNames"
+        :agents-loaded="agentsLoaded"
         :needs-input-keys="needsInputKeys"
         @open="openSession"
         @remove="removeSession"
@@ -132,6 +133,7 @@ import {
   localSessionsDeletedDetail,
   LOCAL_SESSIONS_DELETED_EVENT,
 } from '@/utils/sessionSync'
+import { sessionAgentIdentity } from '@/components/sessions/sessionDisplay'
 
 type FilterId = 'all' | 'chats' | 'automations' | 'channels'
 
@@ -170,6 +172,8 @@ const { sessionsList, allSessions, isLoading, sessionListError, loadSessions } =
 const filter = ref<FilterId>('all')
 const search = ref('')
 const agentNames = ref<Map<string, string>>(new Map())
+const agentsLoaded = ref(false)
+let agentsRequestGeneration = 0
 const pendingApprovals = ref<string[]>([])
 const costUsd = ref<number | null>(null)
 const costPeriod = ref<'today' | 'total'>('total')
@@ -226,9 +230,14 @@ const inspectParent = computed(() => {
 })
 
 const inspectAgentName = computed(() => {
-  const id = inspectItem.value?.effectiveAgentId
-  if (!id || id === 'unknown') return t('sessions.unknownAgent')
-  return agentNames.value.get(id) || id
+  const identity = sessionAgentIdentity(
+    inspectItem.value?.effectiveAgentId,
+    agentNames.value,
+    agentsLoaded.value,
+  )
+  if (identity.kind === 'unknown') return t('sessions.unknownAgent')
+  if (identity.kind === 'deleted') return t('sessions.deletedAgent', { id: identity.value })
+  return identity.value
 })
 
 // ---------------------------------------------------------------------------
@@ -236,14 +245,21 @@ const inspectAgentName = computed(() => {
 // ---------------------------------------------------------------------------
 
 async function loadAgents() {
+  const generation = ++agentsRequestGeneration
   try {
     const data = await rpc.call<AgentsListResponse>('agents.list')
+    if (generation !== agentsRequestGeneration) return
     agentNames.value = new Map(
       (data?.agents || [])
         .filter(agent => agent.id)
         .map(agent => [String(agent.id), String(agent.name || agent.id)]))
+    agentsLoaded.value = true
   } catch {
-    // Ledger falls back to agent ids.
+    if (generation === agentsRequestGeneration) {
+      // A stale directory must not produce false “Deleted agent” labels after
+      // the current authoritative lookup failed.
+      agentsLoaded.value = false
+    }
   }
 }
 

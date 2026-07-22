@@ -63,4 +63,25 @@ describe('useSkillRegistry install state', () => {
 
     expect(pushToast).toHaveBeenCalledWith(expect.any(String), { tone: 'warn' })
   })
+
+  it('treats an unresolved envAny group as an incomplete dependency install', async () => {
+    const call = vi.fn(async () => ({
+      success: true,
+      message: 'binary installed',
+      missing_still: {
+        bins: [],
+        env: [],
+        env_any: [['OPENROUTER_API_KEY', 'ARK_API_KEY']],
+      },
+    }))
+    const registry = useSkillRegistry({ call } as never, vi.fn(async () => true))
+
+    const outcome = await registry.installDeps('audio-cog', 'ffmpeg')
+
+    expect(outcome.success).toBe(true)
+    expect(outcome.complete).toBe(false)
+    expect(outcome.missingStill.env_any).toEqual([
+      ['OPENROUTER_API_KEY', 'ARK_API_KEY'],
+    ])
+  })
 })

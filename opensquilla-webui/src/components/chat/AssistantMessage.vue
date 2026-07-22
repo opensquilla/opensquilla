@@ -90,6 +90,14 @@
         <SourcesRow v-if="message.toolCalls?.length" ref="sourcesRowRef" :calls="message.toolCalls" :sources="message.sources ?? []" />
 
         <div v-if="showFooter" class="msg-ai-footer">
+          <span
+            v-if="isCronMessage"
+            class="msg-provenance-chip"
+            :title="cronBadgeTitle"
+          >
+            <Icon name="cron" :size="11" />
+            {{ t('chat.provenance.scheduled') }}
+          </span>
           <div v-if="message.meta" class="msg-ai-meta">
             <span v-if="message.meta.model && !message.meta.ensemble" class="msg-meta__model">{{ message.meta.modelShort }}</span>
             <span v-if="message.meta.costUsd && !message.meta.ensemble" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
@@ -349,6 +357,14 @@ const interruptParts = computed(
 // The persisted activity timeline for this finished turn. Empty (fold hidden)
 // for OFF-mode turns and reloaded threads, which carry no snapshot.
 const statusHistory = computed(() => props.message.statusHistory ?? [])
+const isCronMessage = computed(() => props.message.provenanceKind === 'cron')
+const safeCronSourceTool = computed(() => {
+  const value = String(props.message.provenanceSourceTool || '').trim()
+  return /^[a-zA-Z0-9_.:-]{1,80}$/.test(value) ? value : ''
+})
+const cronBadgeTitle = computed(() => safeCronSourceTool.value
+  ? t('chat.provenance.cronSource', { tool: safeCronSourceTool.value })
+  : t('chat.provenance.cron'))
 const showFooter = computed(() => !!props.message.meta || (!props.shareMode && !props.message.stopNotice))
 
 // A citation pill in the body asks the paired SourcesRow to reveal + highlight
@@ -578,6 +594,18 @@ function ensembleRole(role: string, label: string): string {
   align-items: center;
   gap: 0.625rem;
   margin-top: 0.25rem;
+}
+
+.msg-provenance-chip {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  display: inline-flex;
+  font-size: var(--fs-xs);
+  gap: var(--sp-1);
+  padding: 1px var(--sp-2);
 }
 
 .msg-ai-ending--done {

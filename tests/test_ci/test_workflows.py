@@ -1298,37 +1298,35 @@ def test_webui_browser_workflow_is_manual_and_opt_in() -> None:
     assert "playwright install chromium" in text
 
 
-def test_manual_browser_workflows_build_the_verified_webui_from_source() -> None:
-    for workflow_name, test_path in [
-        ("webui-browser-smoke.yml", "tests/functional/test_webui_browser_e2e.py"),
-        ("live-release-e2e.yml", "tests/functional/test_webui_browser_chat_e2e.py"),
-    ]:
-        data = _workflow(workflow_name)
-        steps = data["jobs"][workflow_name.removesuffix(".yml")]["steps"]
-        setup_node = next(step for step in steps if step.get("name") == "Set up Node")
-        install = next(
-            step for step in steps if step.get("name") == "Install Web UI dependencies"
-        )
-        build = next(step for step in steps if step.get("name") == "Build and verify Web UI")
+def test_manual_browser_workflow_builds_the_verified_webui_from_source() -> None:
+    data = _workflow("webui-browser-smoke.yml")
+    steps = data["jobs"]["webui-browser-smoke"]["steps"]
+    setup_node = next(step for step in steps if step.get("name") == "Set up Node")
+    install = next(
+        step for step in steps if step.get("name") == "Install Web UI dependencies"
+    )
+    build = next(step for step in steps if step.get("name") == "Build and verify Web UI")
 
-        assert setup_node["with"]["node-version-file"] == "opensquilla-webui/.node-version"
-        assert setup_node["with"]["cache-dependency-path"] == (
-            "opensquilla-webui/package-lock.json"
-        )
-        assert install == {
-            "name": "Install Web UI dependencies",
-            "working-directory": "opensquilla-webui",
-            "run": "npm ci",
-        }
-        assert build == {
-            "name": "Build and verify Web UI",
-            "working-directory": "opensquilla-webui",
-            "run": "npm run build",
-        }
-        test_index = next(
-            index for index, step in enumerate(steps) if test_path in step.get("run", "")
-        )
-        assert steps.index(install) < steps.index(build) < test_index
+    assert setup_node["with"]["node-version-file"] == "opensquilla-webui/.node-version"
+    assert setup_node["with"]["cache-dependency-path"] == (
+        "opensquilla-webui/package-lock.json"
+    )
+    assert install == {
+        "name": "Install Web UI dependencies",
+        "working-directory": "opensquilla-webui",
+        "run": "npm ci",
+    }
+    assert build == {
+        "name": "Build and verify Web UI",
+        "working-directory": "opensquilla-webui",
+        "run": "npm run build",
+    }
+    test_index = next(
+        index
+        for index, step in enumerate(steps)
+        if "tests/functional/test_webui_browser_e2e.py" in step.get("run", "")
+    )
+    assert steps.index(install) < steps.index(build) < test_index
 
 
 def test_llm_workflow_is_single_manual_smoke() -> None:
@@ -1348,8 +1346,10 @@ def test_live_release_e2e_workflow_is_manual_and_separates_private_inputs() -> N
 
     assert _trigger_keys(data) == {"workflow_dispatch"}
     assert "tests/functional/test_gateway_llm_e2e.py" in text
-    assert "tests/functional/test_webui_browser_chat_e2e.py" in text
     assert "tests/functional/test_live_channel_telegram_smoke.py" in text
+    assert "test_webui_browser_chat_e2e.py" not in text
+    assert "OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E" not in text
+    assert "playwright install chromium" not in text
     assert "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}" in text
     assert (
         "OPENSQUILLA_LIVE_TELEGRAM_BOT_TOKEN: "

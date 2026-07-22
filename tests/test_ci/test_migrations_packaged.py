@@ -47,6 +47,17 @@ def test_wheel_contains_migrations_and_webui_artifact(
     assert f"opensquilla/gateway/static/dist/{MANIFEST_NAME}" in names
     assert packaged_probe == SYNTHETIC_JS
 
+    assert "opensquilla/gateway/templates/legacy_index.html" not in names
+    for removed_prefix in (
+        "opensquilla/gateway/static/js/",
+        "opensquilla/gateway/static/css/",
+        "opensquilla/gateway/static/fonts/",
+        "opensquilla/gateway/static/vendor/",
+    ):
+        assert not any(name.startswith(removed_prefix) for name in names), (
+            f"retired frontend assets leaked into wheel under {removed_prefix}"
+        )
+
 
 def test_usage_query_client_source_is_part_of_webui_build_inputs() -> None:
     """Protect the Usage client and its post-Vite runtime bundle guard."""
@@ -148,7 +159,12 @@ def test_docker_image_resolves_migrations() -> None:
 
     run = subprocess.run(
         [
-            "docker", "run", "--rm", "--entrypoint", "python", tag,
+            "docker",
+            "run",
+            "--rm",
+            "--entrypoint",
+            "python",
+            tag,
             "-c",
             (
                 "from opensquilla.gateway.boot import _resolve_migrations_dir;"

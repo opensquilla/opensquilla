@@ -26,7 +26,6 @@ OFFLINE_MARKER_EXCLUSIONS = {
     "tests/functional/test_live_channel_telegram_smoke.py",
     "tests/functional/test_live_openrouter_compaction.py",
     "tests/functional/test_llm_smoke.py",
-    "tests/functional/test_webui_browser_chat_e2e.py",
     "tests/functional/test_webui_browser_e2e.py",
     "tests/integration/cli/tui_real_terminal/test_architecture_prompt.py",
     "tests/integration/cli/tui_real_terminal/test_completion_menu.py",

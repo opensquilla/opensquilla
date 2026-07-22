@@ -1,6 +1,6 @@
 """Smoke tests for Cache-Control on /control/static/* responses.
 
-The Control UI serves vendored JS/CSS through a `_CachedStaticFiles` subclass
+The Control UI serves generated Vue assets through a `_CachedStaticFiles` subclass
 (see ``opensquilla.gateway.control_ui``). These tests pin the header semantics
 so a refactor that drops the subclass — or breaks the env-rollback knob —
 shows up immediately.
@@ -24,9 +24,27 @@ from opensquilla.gateway.control_ui import create_control_ui_routes
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+def _write_vite_static(static_dir: Path) -> Path:
+    dist_dir = static_dir / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/index.css">',
+        encoding="utf-8",
+    )
+    (assets_dir / "index.js").write_text("export {};\n", encoding="utf-8")
+    (assets_dir / "index.css").write_text("body{}\n", encoding="utf-8")
+    return dist_dir
+
+
 @pytest.fixture
-def _app(monkeypatch: pytest.MonkeyPatch) -> Starlette:
+def _app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Starlette:
     monkeypatch.delenv("OPENSQUILLA_STATIC_NO_CACHE", raising=False)
+    static_dir = tmp_path / "static"
+    dist_dir = _write_vite_static(static_dir)
+    monkeypatch.setattr(control_ui, "_STATIC_DIR", static_dir)
+    monkeypatch.setattr(control_ui, "_DIST_DIR", dist_dir)
     config = GatewayConfig()
     config.control_ui.enabled = True
     routes = create_control_ui_routes(config)
@@ -35,14 +53,18 @@ def _app(monkeypatch: pytest.MonkeyPatch) -> Starlette:
 
 def test_static_asset_carries_long_cache_control(_app: Starlette) -> None:
     client = TestClient(_app)
-    response = client.get("/control/static/js/app.js")
+    response = client.get("/control/static/dist/assets/index.js")
     assert response.status_code == 200, response.text
     cache = response.headers.get("Cache-Control", "")
     assert "max-age=2592000" in cache, cache
     assert "public" in cache, cache
 
 
-def test_control_ui_bootstrap_includes_config_path(tmp_path) -> None:
+def test_control_ui_bootstrap_includes_config_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_ui, "_DIST_DIR", _write_vite_static(tmp_path / "static"))
     config = GatewayConfig()
     config.config_path = str(tmp_path / "OpenSquilla Config.toml")
     config.control_ui.enabled = True
@@ -132,8 +154,8 @@ def test_control_ui_defaults_to_vue_bootstrap(
     response = client.get("/control/")
 
     assert response.status_code == 200
-    assert '/control/static/dist/assets/index.js' in response.text
-    assert '/control/static/js/app.js' not in response.text
+    assert "/control/static/dist/assets/index.js" in response.text
+    assert "/control/static/js/app.js" not in response.text
 
 
 def test_control_ui_explains_how_to_build_missing_vue_assets(
@@ -155,9 +177,7 @@ def test_control_ui_explains_how_to_build_missing_vue_assets(
 
 
 def test_missing_vue_asset_recovery_is_in_troubleshooting_guide() -> None:
-    troubleshooting = (REPO_ROOT / "docs" / "troubleshooting.md").read_text(
-        encoding="utf-8"
-    )
+    troubleshooting = (REPO_ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
     normalized = " ".join(troubleshooting.split())
 
     assert "## Control UI Assets Are Unavailable" in troubleshooting
@@ -186,8 +206,8 @@ def test_control_ui_legacy_frontend_compat_input_serves_vue(
 
     assert response.status_code == 200
     assert control_config.frontend == "vue"
-    assert '/control/static/dist/assets/index.js' in response.text
-    assert '/control/static/js/' not in response.text
+    assert "/control/static/dist/assets/index.js" in response.text
+    assert "/control/static/js/" not in response.text
 
 
 def test_control_ui_frontend_reads_env_override(
@@ -246,12 +266,16 @@ def test_control_ui_legacy_frontend_compat_uses_configured_base_path(
     response = client.get("/ops/")
 
     assert response.status_code == 200
-    assert '/ops/static/dist/assets/index.js' in response.text
-    assert '/control/static/dist/assets/index.js' not in response.text
-    assert '/ops/static/js/' not in response.text
+    assert "/ops/static/dist/assets/index.js" in response.text
+    assert "/control/static/dist/assets/index.js" not in response.text
+    assert "/ops/static/js/" not in response.text
 
 
-def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host() -> None:
+def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(control_ui, "_DIST_DIR", _write_vite_static(tmp_path / "static"))
     config = GatewayConfig()
     config.host = "0.0.0.0"
     config.port = 20002
@@ -267,17 +291,22 @@ def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host() -> No
 
 
 def test_env_rollback_disables_cache_control(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # OPENSQUILLA_STATIC_NO_CACHE=1 must completely skip the Cache-Control
     # header so a release with a static-cache problem can be defused without
     # a redeploy.
     monkeypatch.setenv("OPENSQUILLA_STATIC_NO_CACHE", "1")
+    static_dir = tmp_path / "static"
+    dist_dir = _write_vite_static(static_dir)
+    monkeypatch.setattr(control_ui, "_STATIC_DIR", static_dir)
+    monkeypatch.setattr(control_ui, "_DIST_DIR", dist_dir)
     config = GatewayConfig()
     config.control_ui.enabled = True
     app = Starlette(routes=create_control_ui_routes(config))
     client = TestClient(app)
-    response = client.get("/control/static/js/app.js")
+    response = client.get("/control/static/dist/assets/index.js")
     assert response.status_code == 200
     # Either header is absent or it does not advertise our long max-age.
     cache = response.headers.get("Cache-Control", "")
@@ -286,7 +315,7 @@ def test_env_rollback_disables_cache_control(
 
 def test_nonexistent_path_does_not_add_header(_app: Starlette) -> None:
     client = TestClient(_app)
-    response = client.get("/control/static/js/does-not-exist-12345.js")
+    response = client.get("/control/static/dist/assets/does-not-exist-12345.js")
     # 404 must not be tagged with a long-cache header — clients would otherwise
     # remember a "missing" asset for 30 days.
     assert response.status_code == 404

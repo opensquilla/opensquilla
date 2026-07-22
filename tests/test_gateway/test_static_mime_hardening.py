@@ -72,14 +72,6 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     )
     (dist_dir / "assets" / "control-ui.js").write_bytes(b"export {};\n")
     (dist_dir / "assets" / "control-ui.css").write_bytes(b"body{}\n")
-    for relative in (
-        "js/app.js",
-        "vendor/prism-core.min.js",
-        "vendor/prism-autoloader.min.js",
-    ):
-        path = static_dir / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"export {};\n")
     monkeypatch.setattr(control_ui, "_STATIC_DIR", static_dir)
     monkeypatch.setattr(control_ui, "_DIST_DIR", dist_dir)
     monkeypatch.delenv("OPENSQUILLA_STATIC_NO_CACHE", raising=False)
@@ -90,9 +82,7 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return TestClient(app)
 
 
-def _pollute_mime_db(
-    monkeypatch: pytest.MonkeyPatch, mime: str = "text/plain"
-) -> None:
+def _pollute_mime_db(monkeypatch: pytest.MonkeyPatch, mime: str = "text/plain") -> None:
     """Make guess_type behave like a corrupt Windows registry: everything the
     registry knows about comes back as `mime` (text/plain in the wild)."""
 
@@ -181,27 +171,20 @@ def test_missing_asset_still_404s(client: TestClient) -> None:
     assert response.status_code == 404
 
 
-def test_vite_and_legacy_assets_pinned_on_polluted_host(
+def test_vite_entrypoint_is_pinned_on_polluted_host(
     monkeypatch: pytest.MonkeyPatch,
     client: TestClient,
 ) -> None:
     # End-to-end against a synthetic static tree: the Vite module entry (the
-    # asset whose text/plain mislabel white-screens the Vue console), the legacy
-    # frontend entry, and the prism vendor scripts the white-screen reports also
-    # named. Keeping the fixture synthetic lets source-only checkouts run this
-    # regression test without a generated Control UI bundle.
+    # asset whose text/plain mislabel white-screens the Vue console). Keeping the
+    # fixture synthetic lets source-only checkouts run this regression test
+    # without a generated Control UI bundle.
     _pollute_mime_db(monkeypatch)
 
     vite_js_url, _css_urls = control_ui._read_vite_assets("/control")
     assert vite_js_url.startswith("/control/static/dist/assets/"), vite_js_url
 
-    for path in (
-        vite_js_url,
-        "/control/static/js/app.js",
-        "/control/static/vendor/prism-core.min.js",
-        "/control/static/vendor/prism-autoloader.min.js",
-    ):
-        response = client.get(path)
-        assert response.status_code == 200, path
-        content_type = response.headers.get("content-type", "")
-        assert content_type.startswith("text/javascript"), (path, content_type)
+    response = client.get(vite_js_url)
+    assert response.status_code == 200, vite_js_url
+    content_type = response.headers.get("content-type", "")
+    assert content_type.startswith("text/javascript"), (vite_js_url, content_type)

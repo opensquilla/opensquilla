@@ -51,6 +51,32 @@ beforeEach(() => {
 })
 
 describe('AssistantMessage ensemble footer metadata', () => {
+  it('shows the current message token counts in its usage popover', async () => {
+    const { app, el } = await mountMessage(
+      assistantMessage({
+        meta: {
+          model: 'z-ai/glm-5.2-20260616',
+          modelShort: 'glm-5.2-20260616',
+          input: 120,
+          output: 40,
+          hasTokens: true,
+          cachedTokens: 0,
+          reasoningTokens: 0,
+          costUsd: 0.050328,
+          hasSaved: false,
+          savedLabel: '',
+        },
+      }),
+    )
+
+    el.querySelector<HTMLButtonElement>('.msg-meta__more-btn')?.click()
+    await nextTick()
+
+    expect(el.querySelector('.msg-meta-popover__label')?.textContent).toBe('tokens')
+    expect(el.querySelector('.msg-meta-popover__value')?.textContent).toBe('↑120 ↓40')
+    app.unmount()
+  })
+
   it('does not present ensemble aggregate metadata as single-model footer metadata', async () => {
     const { app, el } = await mountMessage(
       assistantMessage({

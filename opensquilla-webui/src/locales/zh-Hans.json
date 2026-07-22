@@ -969,7 +969,11 @@
     "channelCatalog": {
       "fields": {
         "group_session_scope": {
-          "label": "群聊会话范围"
+          "label": "群聊会话范围",
+          "choices": {
+            "per_sender": "按成员隔离",
+            "shared_room": "全群共享"
+          }
         },
         "busy_input_mode": {
           "label": "忙碌时的输入处理"
@@ -1003,7 +1007,11 @@
           "label": "默认会话 ID"
         },
         "connection_mode": {
-          "label": "连接方式"
+          "label": "连接方式",
+          "choices": {
+            "webhook": "Webhook（回调）",
+            "websocket": "长连接（WebSocket）"
+          }
         },
         "app_id": {
           "label": "应用 ID（App ID）"
@@ -1037,6 +1045,12 @@
         },
         "debounce_window_s": {
           "label": "去抖窗口（秒）"
+        },
+        "transport_name": {
+          "choices": {
+            "polling": "轮询",
+            "webhook": "Webhook（回调）"
+          }
         }
       },
       "groups": {
@@ -1104,6 +1118,12 @@
         "fields": {
           "token": {
             "label": "机器人令牌（Bot token）"
+          },
+          "connection_mode": {
+            "choices": {
+              "socket": "Socket 模式",
+              "webhook": "Webhook（回调）"
+            }
           }
         },
         "description": "Slack 工作区机器人——Socket 模式（websocket）或 Events API webhook。",

@@ -2070,7 +2070,27 @@ describe('feishu final-step callout', () => {
     }
   })
 
-  it('self-resolves once the first inbound event lands', async () => {
+  it('self-resolves durably: completed ingress rows (the steady state) count', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [{
+        ...FEISHU_ROW,
+        // The ledger lifecycle is accepted → processing → completed and
+        // completed rows persist — a healthy channel with its backlog drained
+        // reports ONLY completed counts, and must stay resolved.
+        diagnostics: { delivery: { ingress: { completed: { count: 2 } }, outbox: {}, leases: [] } },
+      }],
+      channelsGet: feishuGet('websocket'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('stays resolved while an event is still in flight', async () => {
     const ctx = await mountChannelsView({
       channelRows: [{
         ...FEISHU_ROW,
@@ -2095,6 +2115,24 @@ describe('feishu final-step callout', () => {
     try {
       await ctx.flush()
       const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('fails closed when the channel config cannot be loaded', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [FEISHU_ROW],
+      channelsGet: () => {
+        throw new Error('config read failed')
+      },
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      // Mode unknown → no websocket guidance rather than guessing: a webhook
+      // channel must never see the long-connection final-step callout.
       expect(page.querySelector('.ch-alert--step')).toBeNull()
     } finally {
       ctx.app.unmount()

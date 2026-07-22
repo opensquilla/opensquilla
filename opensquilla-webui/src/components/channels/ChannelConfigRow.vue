@@ -80,7 +80,10 @@ function onInput(event: Event) {
 <template>
   <div class="cfge__row" :data-field="row.field.name">
     <div class="cfge__rail">
-      <label class="cfge__label" :for="inputId">
+      <!-- A segmented group has no single labelable control; its buttons carry
+           the row label via the group's aria-label instead, so `for` must not
+           dangle (a label click would otherwise activate the first option). -->
+      <label class="cfge__label" :for="edit && segmentedChoices ? undefined : inputId">
         {{ row.label }}<span v-if="edit && row.field.required" aria-hidden="true"> *</span>
       </label>
       <span

@@ -969,7 +969,11 @@
     "channelCatalog": {
       "fields": {
         "group_session_scope": {
-          "label": "Portée de session de groupe"
+          "label": "Portée de session de groupe",
+          "choices": {
+            "per_sender": "Par expéditeur",
+            "shared_room": "Salon partagé"
+          }
         },
         "busy_input_mode": {
           "label": "Saisie pendant l'exécution"
@@ -1003,7 +1007,11 @@
           "label": "Id de discussion par défaut"
         },
         "connection_mode": {
-          "label": "Mode de connexion"
+          "label": "Mode de connexion",
+          "choices": {
+            "webhook": "Webhook (rappel)",
+            "websocket": "WebSocket (connexion longue)"
+          }
         },
         "app_id": {
           "label": "App id"
@@ -1037,6 +1045,12 @@
         },
         "debounce_window_s": {
           "label": "Fenêtre de regroupement (s)"
+        },
+        "transport_name": {
+          "choices": {
+            "polling": "Interrogation (polling)",
+            "webhook": "Webhook"
+          }
         }
       },
       "groups": {
@@ -1104,6 +1118,12 @@
         "fields": {
           "token": {
             "label": "Jeton du bot"
+          },
+          "connection_mode": {
+            "choices": {
+              "socket": "Socket Mode",
+              "webhook": "Webhook (rappel)"
+            }
           }
         },
         "description": "Bot d'espace Slack — mode Socket (websocket) ou webhook Events API.",

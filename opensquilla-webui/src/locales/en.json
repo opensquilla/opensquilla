@@ -969,7 +969,11 @@
     "channelCatalog": {
       "fields": {
         "group_session_scope": {
-          "label": "Group session scope"
+          "label": "Group session scope",
+          "choices": {
+            "per_sender": "Per sender",
+            "shared_room": "Shared room"
+          }
         },
         "busy_input_mode": {
           "label": "Input while busy"
@@ -1003,7 +1007,11 @@
           "label": "Default chat id"
         },
         "connection_mode": {
-          "label": "Connection mode"
+          "label": "Connection mode",
+          "choices": {
+            "webhook": "Webhook (callback)",
+            "websocket": "WebSocket (long connection)"
+          }
         },
         "app_id": {
           "label": "App id"
@@ -1037,6 +1045,12 @@
         },
         "debounce_window_s": {
           "label": "Debounce window (s)"
+        },
+        "transport_name": {
+          "choices": {
+            "polling": "Polling",
+            "webhook": "Webhook"
+          }
         }
       },
       "groups": {
@@ -1104,6 +1118,12 @@
         "fields": {
           "token": {
             "label": "Bot token"
+          },
+          "connection_mode": {
+            "choices": {
+              "socket": "Socket Mode",
+              "webhook": "Webhook (callback)"
+            }
           }
         },
         "description": "Slack workspace bot — Socket Mode (websocket) or Events API webhook.",

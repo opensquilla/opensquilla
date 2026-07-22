@@ -493,6 +493,7 @@ import {
   deliveryCount,
   delivery,
   diagnostics,
+  ingressTotal,
   formatConnectedDuration,
   formatSince,
   humanize,
@@ -587,17 +588,20 @@ const selectedProbe = computed(() =>
 
 // Fresh feishu websocket channel awaiting its console-side final step: the
 // Feishu console only saves the long-connection event subscription while a
-// client is connected, so it must be flipped AFTER the first save. Self
-// resolves on the first inbound event; an entry without connection_mode is
-// websocket (the model default), and webhook channels never match.
+// client is connected, so it must be flipped AFTER the first save. Resolution
+// is ANY inbound row in the delivery ledger — the lifecycle is accepted →
+// processing → completed and completed rows persist, so a channel that ever
+// received an event stays resolved. The mode check reads the LOADED entry
+// only (never the live draft, never a default while config is in flight or
+// failed), so a webhook channel can never see websocket guidance.
 const feishuFinalStepVisible = computed(() => {
   const ch = selectedChannel.value
   if (!ch || String(ch.type || '') !== 'feishu') return false
   if (presentationFor(ch).key !== 'connected') return false
-  if (deliveryCount(ch, 'ingress', 'accepted') > 0
-    || deliveryCount(ch, 'ingress', 'processing') > 0) return false
-  const mode = editor.panel.value.channelFields.find(row => row.field.name === 'connection_mode')
-  return String(mode?.value || 'websocket') !== 'webhook'
+  if (ingressTotal(ch) > 0) return false
+  if (editor.phase.value !== 'active' || editor.loadedName.value !== channelKey(ch)) return false
+  const entry = editor.loadedEntry.value
+  return String(entry?.connection_mode || 'websocket') !== 'webhook'
 })
 
 // Home mode — 'gallery' when nothing is configured yet (the inline platform

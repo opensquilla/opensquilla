@@ -115,29 +115,45 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
   return { main, advanced }
 })
 
-// The Advanced fold summary names what it hides — first few field labels plus
-// an overflow count — so folded settings stay discoverable without expanding.
+// Field names present in EVERY catalog spec are the shared plumbing
+// (agent routing, enable switch, session/access policy) — identical across
+// channel types, so previewing them tells the user nothing type-specific.
+const commonFieldNames = computed<Set<string>>(() => {
+  let names: Set<string> | null = null
+  for (const s of props.editor.catalog.value) {
+    const current = new Set<string>((s.fields ?? []).map(f => String(f.name)))
+    if (names === null) {
+      names = current
+      continue
+    }
+    const kept = new Set<string>()
+    for (const candidate of names) {
+      if (current.has(candidate)) kept.add(candidate)
+    }
+    names = kept
+  }
+  return names ?? new Set<string>()
+})
+
+// The Advanced fold summary names what it hides — channel-specific folds
+// first (a webhook operator sees "Connection mode" hinted without expanding),
+// then the shared plumbing, plus an overflow count.
 const advancedPreview = computed(() => {
-  const labels = grouped.value.advanced.map(row => row.label)
+  const rows = grouped.value.advanced
+  const specific = rows.filter(row => !commonFieldNames.value.has(row.field.name))
+  const shared = rows.filter(row => commonFieldNames.value.has(row.field.name))
+  const labels = [...specific, ...shared].map(row => row.label)
   const shown = labels.slice(0, 3)
   const rest = labels.length - shown.length
   return shown.join(' · ') + (rest > 0 ? ` +${rest}` : '')
 })
 
-// Setup aids (Feishu console shortcuts). Copy/link aids form a titled group
-// between the credential groups and Advanced; note aids render directly above
-// the transport (connection_mode) field they explain.
+// Setup aids (Feishu console shortcuts): copy/link aids form a titled group
+// between the credential groups and Advanced. Note-kind aids have no in-form
+// rendering — the only one (feishu ws_order_note) is post-save guidance,
+// rendered by the channel page's final-step callout.
 const setupAids = computed(() => spec.value?.setupAids ?? [])
 const inlineAids = computed(() => setupAids.value.filter(a => a.kind === 'copy' || a.kind === 'link'))
-const noteAids = computed(() => setupAids.value.filter(a => a.kind === 'note'))
-const transportFieldName = computed(() => {
-  const fields = props.editor.specFields.value
-  return fields.some(f => f.name === 'connection_mode') ? 'connection_mode' : ''
-})
-function notesBefore(row: ConfigRowModel) {
-  if (!editing.value) return []
-  return transportFieldName.value && row.field.name === transportFieldName.value ? noteAids.value : []
-}
 
 const currentAppId = computed(() => {
   const row = props.editor.panel.value.channelFields.find(r => r.field.name === 'app_id')
@@ -210,19 +226,16 @@ function onCancelReplace(name: string) {
         :aria-label="group.name ? groupTitle(group.name) : undefined"
       >
         <h4 v-if="group.name" class="cfge__group-title">{{ groupTitle(group.name) }}</h4>
-        <template v-for="row in group.rows" :key="row.field.name">
-          <p v-for="aid in notesBefore(row)" :key="aid.id" class="cfge__note">
-            {{ t(`setup.channels.aids.${aid.id}`) }}
-          </p>
-          <ChannelConfigRow
-            :row="row"
-            :edit="editing"
-            :error="fieldErrors[row.field.name]"
-            @update="onUpdate"
-            @replace="onReplace"
-            @cancel-replace="onCancelReplace"
-          />
-        </template>
+        <ChannelConfigRow
+          v-for="row in group.rows"
+          :key="row.field.name"
+          :row="row"
+          :edit="editing"
+          :error="fieldErrors[row.field.name]"
+          @update="onUpdate"
+          @replace="onReplace"
+          @cancel-replace="onCancelReplace"
+        />
       </section>
 
       <FeishuSetupAids
@@ -319,8 +332,7 @@ function onCancelReplace(name: string) {
    two columns so a saved channel reads at a glance instead of as a strip. */
 @media (min-width: 1100px) {
   .cfge:not(.is-edit) section.cfge__group { column-gap: 56px; display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); row-gap: var(--sp-4); }
-  .cfge:not(.is-edit) section.cfge__group > .cfge__group-title,
-  .cfge:not(.is-edit) section.cfge__group > .cfge__note { grid-column: 1 / -1; }
+  .cfge:not(.is-edit) section.cfge__group > .cfge__group-title { grid-column: 1 / -1; }
   /* The strip layout's sibling margin (below) misaligns the first row of each
      grid column and doubles the rhythm inside cells — the grid's row-gap owns
      the spacing here. */
@@ -336,7 +348,7 @@ function onCancelReplace(name: string) {
   padding-bottom: var(--sp-2);
 }
 .cfge__row { align-items: start; column-gap: var(--sp-2); display: grid; grid-template-columns: 148px minmax(0, 1fr); }
-.cfge__row + .cfge__row, .cfge__note + .cfge__row, .cfge__row + .cfge__note { margin-top: var(--sp-4); }
+.cfge__row + .cfge__row { margin-top: var(--sp-4); }
 .cfge :deep(.cfge__rail) { align-items: baseline; display: flex; gap: 6px; min-width: 0; padding-top: 6px; }
 .cfge :deep(.cfge__label) { color: var(--text-dim); font-size: var(--fs-sm); font-weight: 500; overflow-wrap: anywhere; }
 .cfge :deep(.cfge__tick) { color: var(--text); flex: none; font-size: 8px; line-height: 1; }
@@ -399,7 +411,6 @@ function onCancelReplace(name: string) {
 .cfge :deep(.cfge__desc) { color: var(--text-dim); font-size: var(--fs-xs); line-height: 1.45; padding: 0 10px; }
 .cfge :deep(.cfge__field-error) { color: var(--danger); font-size: var(--fs-xs); margin: 0; padding: 0 10px; }
 .cfge :deep(.cfge__sr-only) { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
-.cfge__note { color: var(--text-muted); font-size: var(--fs-sm); line-height: 1.5; margin: 0; }
 .cfge__hint { color: var(--text-dim); font-size: var(--fs-sm); margin: var(--sp-3) 0 0; }
 .cfge__advanced { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
 .cfge__advanced > summary { color: var(--text-muted); cursor: pointer; font-size: var(--fs-sm); padding: var(--sp-1) 0; }

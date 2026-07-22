@@ -969,7 +969,11 @@
     "channelCatalog": {
       "fields": {
         "group_session_scope": {
-          "label": "グループセッションの範囲"
+          "label": "グループセッションの範囲",
+          "choices": {
+            "per_sender": "送信者ごと",
+            "shared_room": "ルーム共有"
+          }
         },
         "busy_input_mode": {
           "label": "実行中の入力の扱い"
@@ -1003,7 +1007,11 @@
           "label": "既定のチャット ID"
         },
         "connection_mode": {
-          "label": "接続モード"
+          "label": "接続モード",
+          "choices": {
+            "webhook": "Webhook（コールバック）",
+            "websocket": "長接続（WebSocket）"
+          }
         },
         "app_id": {
           "label": "アプリ ID（App ID）"
@@ -1037,6 +1045,12 @@
         },
         "debounce_window_s": {
           "label": "デバウンス期間（秒）"
+        },
+        "transport_name": {
+          "choices": {
+            "polling": "ポーリング",
+            "webhook": "Webhook"
+          }
         }
       },
       "groups": {
@@ -1104,6 +1118,12 @@
         "fields": {
           "token": {
             "label": "ボットトークン"
+          },
+          "connection_mode": {
+            "choices": {
+              "socket": "Socket Mode",
+              "webhook": "Webhook（コールバック）"
+            }
           }
         },
         "description": "Slack ワークスペースボット — Socket モード（websocket）または Events API webhook。",

@@ -454,6 +454,7 @@ export function useChannelEditor() {
     phase,
     canEdit,
     loadedName,
+    loadedEntry,
     loadError,
     entryType,
     extraRows,

@@ -64,7 +64,9 @@ test.describe.serial('channel workspace compose + edit', () => {
 
     // Dirty the draft: the sticky bar names the changed field and offers
     // Test/Discard/Save. The draft probe merges blank secrets against the
-    // stored entry server-side — no retyping.
+    // stored entry server-side — no retyping. default_chat_id folded into the
+    // Advanced disclosure, so expand it first.
+    await editor.locator('.cfge__advanced > summary').click()
     await editor.locator('input[name="setup_channel_default_chat_id"]').fill('4242')
     const bar = page.locator('.ceb')
     await expect(bar).toBeVisible()
@@ -73,9 +75,10 @@ test.describe.serial('channel workspace compose + edit', () => {
     await expect(editor.locator('.cfge__transcript-row')).toBeVisible({ timeout: 20000 })
 
     // Save: probe → upsert, baseline reset, back to read mode; the secret
-    // stays masked and the change persisted.
+    // stays masked and the change persisted (expand Advanced to read it).
     await bar.getByRole('button', { name: 'Save changes' }).click()
     await expect(bar).toHaveCount(0, { timeout: 15000 })
+    await editor.locator('.cfge__advanced > summary').click()
     await expect(editor.locator('[data-field="default_chat_id"]')).toContainText('4242', { timeout: 15000 })
     await expect(editor.locator('[data-field="token"]')).toContainText('Stored')
     await expect(page).not.toHaveURL(/edit=1/)

@@ -265,12 +265,26 @@ def _feishu_spec() -> ChannelSetupSpec:
             ChannelSetupField("app_secret", "App secret", "password",
                               required=True, secret=True, group="credentials",
                               placeholder="app secret"),
+            # Folded: websocket is the default and right for almost everyone;
+            # switching to webhook happens inside Advanced, where the mode
+            # select is declared FIRST so the webhook fields it reveals appear
+            # below it. The websocket save-order guidance lives post-save (the
+            # channel page's final-step callout) plus the spec help above for
+            # headless clients.
+            ChannelSetupField("connection_mode", "Connection mode", "select",
+                              required=False, default="websocket",
+                              choices=("webhook", "websocket"),
+                              advanced=True),
             ChannelSetupField("encrypt_key", "Encrypt key", "password",
                               required=False, secret=True, default="",
                               group="webhook", advanced=True,
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("verification_token", "Verification token", "password",
                               required=False, secret=True, default="",
+                              group="webhook", advanced=True,
+                              show_when={"connection_mode": "webhook"}),
+            ChannelSetupField("webhook_path", "Webhook path", "text",
+                              required=False, default="/feishu/events",
                               group="webhook", advanced=True,
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("default_chat_id", "Default chat id", "text",
@@ -284,22 +298,9 @@ def _feishu_spec() -> ChannelSetupSpec:
                 advanced=True,
                 help="Adds short-lived Feishu reactions while a message is received and processed.",
             ),
-            ChannelSetupField("webhook_path", "Webhook path", "text",
-                              required=False, default="/feishu/events",
-                              group="webhook", advanced=True,
-                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("api_base", "API base", "text",
                               required=False,
                               default="https://open.feishu.cn/open-apis",
-                              advanced=True),
-            # Folded: websocket is the default and right for almost everyone;
-            # switching to webhook happens inside Advanced, where all four
-            # webhook fields sit together. The websocket save-order guidance
-            # lives post-save (the channel page's final-step callout) plus the
-            # spec help above for headless clients.
-            ChannelSetupField("connection_mode", "Connection mode", "select",
-                              required=False, default="websocket",
-                              choices=("webhook", "websocket"),
                               advanced=True),
             # The one genuine decision besides credentials: which console
             # issued the app. Stays front — a Lark operator on the feishu

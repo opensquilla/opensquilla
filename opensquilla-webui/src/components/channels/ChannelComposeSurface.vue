@@ -64,6 +64,11 @@ watch(
     const [oldType, oldPhase] = previous ?? ['', 'idle']
     if (type && phase === 'active' && (type !== oldType || oldPhase !== 'active')) {
       void nextTick(() => {
+        // The deep-link late-seed re-runs startCompose (phase bounces
+        // loading → active); if the user already put focus somewhere in the
+        // form, the reseed must not yank it away.
+        const active = document.activeElement
+        if (active instanceof HTMLElement && active.closest('.chc__editor')) return
         const name = firstActionableFieldName()
         document.querySelector<HTMLElement>(
           `.chc [data-field="${name}"] input, .chc [data-field="${name}"] select`,

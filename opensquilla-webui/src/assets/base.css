@@ -1226,10 +1226,6 @@ pre {
   position: relative;
 }
 
-.main.main--chat.main--chat-sidebar-collapsed .content--chat .chat-header {
-  padding-left: 76px;
-}
-
 /* Main is pushed when sidebar is docked */
 .main.docked {
   margin-left: var(--sidebar-width);
@@ -1257,9 +1253,8 @@ pre {
   min-height: 44px;
 }
 
-/* The compact dock leaves 509–699px for the main pane. Preserve the high-value
-   connection/theme affordances, but collapse language to its icon and hide the
-   optional music control so the chat title and actions retain real space. */
+/* The compact dock leaves 509–699px for the main pane. Collapse language to
+   its icon; the Chat action group responds to the space left after app chrome. */
 .main--sidebar-compact .topbar-right {
   gap: var(--sp-1);
 }
@@ -1270,8 +1265,7 @@ pre {
   padding-inline: 0;
 }
 
-.main--sidebar-compact .topbar-right .lang-menu-current,
-.main--sidebar-compact .topbar-right .bgm-menu-wrap {
+.main--sidebar-compact .topbar-right .lang-menu-current {
   display: none;
 }
 
@@ -1307,10 +1301,33 @@ pre {
 }
 
 .topbar--chat {
-  inset: 5.333px 5.333px auto 5.333px;
-  height: 42px;
-  min-height: 42px;
-  padding: 6px 24px 0 16px;
+  position: relative;
+  inset: auto;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  flex: 0 0 49px;
+  box-sizing: border-box;
+  height: 49px;
+  min-height: 49px;
+  margin: var(--sp-1) 0 0 var(--sp-1);
+  padding: 0 20px 0 12px;
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: var(--radius-lg) 0 0 0;
+  background: var(--bg-surface);
+  gap: var(--sp-2);
+  pointer-events: auto;
+}
+
+.topbar:not(.topbar--chat) .topbar-route-header {
+  display: none;
+}
+
+.topbar-route-header {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  min-width: 0;
 }
 
 .topbar-left,
@@ -1324,7 +1341,7 @@ pre {
 }
 
 .topbar--chat .topbar-left {
-  min-width: 34px;
+  min-width: 0;
 }
 
 .topbar-left,
@@ -1430,7 +1447,7 @@ pre {
   /* No right inset: the chat panel meets the screen edge so the thread's
      scrollbar sits where the cursor lands when flung to the edge, instead of
      hiding behind a dead padding strip. */
-  padding: var(--sp-1) 0 var(--sp-1) var(--sp-1);
+  padding: 0 0 var(--sp-1) var(--sp-1);
   background: var(--sidebar-bg);
   border: 0;
   border-radius: 0;
@@ -1438,8 +1455,10 @@ pre {
   overflow: hidden;
 }
 
-.content--chat .chat {
+.main .content--chat .chat {
   border-right: 0;
+  border-top: 0;
+  border-top-left-radius: 0;
   border-top-right-radius: 0;
   border-bottom-right-radius: 0;
 }
@@ -1480,7 +1499,7 @@ pre {
   }
 
   .content--chat {
-    padding: var(--sp-1) 0 var(--sp-1) var(--sp-1);
+    padding: 0 0 var(--sp-1) var(--sp-1);
   }
 
   .topbar {
@@ -1489,6 +1508,41 @@ pre {
     min-height: 40px;
     padding: 0;
     gap: var(--sp-2);
+  }
+
+  .topbar.topbar--chat {
+    position: relative;
+    inset: auto;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    flex-basis: calc(56px + env(safe-area-inset-top, 0px));
+    box-sizing: border-box;
+    height: calc(56px + env(safe-area-inset-top, 0px));
+    min-height: calc(56px + env(safe-area-inset-top, 0px));
+    margin: var(--sp-1) 0 0 var(--sp-1);
+    padding: env(safe-area-inset-top, 0px) 10px 0 8px;
+    gap: var(--sp-1);
+  }
+
+  .topbar--chat .topbar-right {
+    gap: var(--sp-1);
+  }
+
+  .topbar--chat .topbar-right .lang-menu-current,
+  .topbar--chat .topbar-right > .theme-menu-wrap:not(.bgm-menu-wrap):not(.lang-menu-wrap) {
+    display: none;
+  }
+
+  .topbar--chat .topbar-right .lang-menu-trigger {
+    justify-content: center;
+    padding-inline: 0;
+    width: 44px;
+  }
+
+  .topbar--chat .topbar-right--attention .conn-pill,
+  .topbar--chat .topbar-right--attention .bgm-menu-wrap,
+  .topbar--chat .topbar-right--attention .lang-menu-wrap,
+  .topbar--chat .topbar-right--attention > .theme-menu-wrap:not(.bgm-menu-wrap):not(.lang-menu-wrap) {
+    display: none;
   }
 
   .sidebar-dock-toggle {
@@ -1670,6 +1724,14 @@ pre {
 
   .sidebar-foot .sidebar-fn-item {
     min-height: 32px;
+  }
+}
+
+@media (max-width: 400px) {
+  /* Language and theme remain available from the mobile More → Settings path;
+     reclaim their header space so the conversation menu keeps a 44px target. */
+  .topbar--chat .topbar-right .lang-menu-wrap {
+    display: none;
   }
 }
 

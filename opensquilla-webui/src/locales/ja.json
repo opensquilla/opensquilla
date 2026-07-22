@@ -2664,6 +2664,7 @@
     "copied": "コピーしました",
     "copy": "コピー",
     "copySessionKey": "セッションキーをコピー",
+    "sessionActions": "セッション操作",
     "share": "共有",
     "shareSendFirst": "共有するには、まずメッセージを送信してください",
     "shareSelectHint": "共有画像として保存するバブルを選択してください",

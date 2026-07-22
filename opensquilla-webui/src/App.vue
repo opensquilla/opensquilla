@@ -171,7 +171,6 @@
 
   <!-- Main content -->
   <div
-    ref="mainRef"
     id="app-main"
     class="main"
     :inert="appStore.sidebarOpen && isSidebarDrawer"
@@ -206,7 +205,17 @@
           </span>
         </button>
       </div>
-      <div ref="topbarRightRef" class="topbar-right">
+      <!-- Permanent target: Chat teleports its route-owned actions into the
+           same in-flow header as the app controls without duplicating state. -->
+      <div
+        id="app-route-header"
+        class="topbar-route-header"
+        data-testid="route-header-host"
+      ></div>
+      <div
+        class="topbar-right"
+        :class="{ 'topbar-right--attention': appStore.approvalCount > 0 }"
+      >
         <button
           v-if="appStore.approvalCount > 0"
           class="approval-inline"
@@ -458,11 +467,6 @@ const router = useRouter()
 // explicit re-localize of the tab title.
 watch(() => appStore.locale, () => {
   document.title = `${routeTitle($route)} — OpenSquilla`
-  // The language switcher prints the locale's own name, so switching locales
-  // resizes the topbar cluster; drop the memoized pill width and re-measure once
-  // the new label has laid out.
-  invalidatePillWidthCache()
-  void nextTick(syncTopbarReserve)
 })
 const { allSessions, sessionListError, isLoading, loadSessions } = useSessions()
 const { bottomRoutes, workNav } = useNavigation()
@@ -521,93 +525,6 @@ const themeIconName = computed(() => {
 const themeMenuOpen = ref(false)
 const themeButtonRef = ref<HTMLButtonElement | null>(null)
 
-// The floating topbar's right cluster (connection pill + language switcher +
-// theme menu) is absolutely positioned and overlays the chat header band. Its
-// width is dynamic — it grows with the connection state string, the pending-
-// approval button, and (the regression source) the locale's own language label
-// ("中文" vs "Français") — so a hardcoded reservation can never stay correct.
-// Measure the band the cluster occupies (from the main panel's right edge) plus
-// a breathing gap and publish it as --topbar-right-reserve; chat-view.css
-// consumes it so header actions never slide under the pill in any locale.
-//
-// The connection pill is special: its text flips between the connected /
-// connecting / disconnected states at runtime (uppercased by CSS) WITHOUT a
-// layout pass that would re-run this measurement in time, and a flip to a wider
-// state label must not momentarily occlude the actions. So the pill is always
-// reserved at its widest state — measured across the localized labels of all
-// three states in the active locale (the e2e occlusion probe in share.spec.ts
-// runs in the default 'en' locale, where the widest is "DISCONNECTED") — while
-// the rest of the cluster is measured live.
-const mainRef = ref<HTMLElement | null>(null)
-const topbarRightRef = ref<HTMLElement | null>(null)
-let topbarReserveObserver: ResizeObserver | null = null
-let pillMeasureCanvas: HTMLCanvasElement | null = null
-
-const CONNECTION_STATES = ['connected', 'connecting', 'disconnected'] as const
-
-// The widest-pill measurement (getComputedStyle + 3× canvas measureText) is
-// invariant across a dock/resize animation — only the locale labels and the
-// rendered font change it. Memoize by that signature so the high-frequency
-// ResizeObserver path doesn't re-run text metrics every callback.
-let pillWidthCache: { key: string; value: number } | null = null
-function invalidatePillWidthCache() { pillWidthCache = null }
-
-function widestPillWidth(pill: Element): number {
-  const cs = getComputedStyle(pill)
-  const cacheKey = `${appStore.locale}|${cs.fontStyle}|${cs.fontWeight}|${cs.fontSize}|${cs.fontFamily}|${cs.letterSpacing}|${cs.paddingLeft}|${cs.paddingRight}|${cs.borderLeftWidth}|${cs.borderRightWidth}`
-  if (pillWidthCache && pillWidthCache.key === cacheKey) return pillWidthCache.value
-  const chrome =
-    parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight) +
-    parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)
-  if (!pillMeasureCanvas) pillMeasureCanvas = document.createElement('canvas')
-  const ctx = pillMeasureCanvas.getContext('2d')
-  if (!ctx) return pill.getBoundingClientRect().width
-  ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`
-  const letterSpacing = parseFloat(cs.letterSpacing) || 0
-  let widest = 0
-  for (const state of CONNECTION_STATES) {
-    // toUpperCase mirrors the pill's text-transform so Latin labels measure at
-    // their rendered width; it is a no-op for CJK labels.
-    const text = t(`chrome.connectionState.${state}`).toUpperCase()
-    const width = ctx.measureText(text).width + letterSpacing * text.length + chrome
-    if (width > widest) widest = width
-  }
-  pillWidthCache = { key: cacheKey, value: widest }
-  return widest
-}
-
-// Coalesce bursts of reserve recalcs into one per frame. The ResizeObserver and
-// window-resize listeners can fire many times per animation frame (e.g. while a
-// panel resizes); each syncTopbarReserve() forces synchronous layout, so without
-// this they thrash the main thread. nextTick-driven one-shot callers still call
-// syncTopbarReserve() directly since they need it after a specific layout pass.
-let topbarReserveRaf = 0
-function scheduleTopbarReserve() {
-  if (sidebarResizeActive.value) return
-  if (topbarReserveRaf) return
-  topbarReserveRaf = requestAnimationFrame(() => {
-    topbarReserveRaf = 0
-    syncTopbarReserve()
-  })
-}
-
-function syncTopbarReserve() {
-  if (sidebarResizeActive.value) return
-  const main = mainRef.value
-  const cluster = topbarRightRef.value
-  if (!main || !cluster) return
-  const mainRect = main.getBoundingClientRect()
-  const gap = 16
-  const pill = cluster.querySelector('.conn-pill')
-  // Chrome to the right of the pill (language switcher + theme + topbar inset)
-  // is measured live so it tracks the locale label width; the pill itself is
-  // reserved at its widest state. Fall back to the cluster's live left edge if
-  // the pill is somehow absent.
-  const reserve = pill
-    ? mainRect.right - pill.getBoundingClientRect().right + widestPillWidth(pill) + gap
-    : mainRect.right - cluster.getBoundingClientRect().left + gap
-  main.style.setProperty('--topbar-right-reserve', `${Math.max(0, Math.round(reserve))}px`)
-}
 // The compact topbar menu deliberately lists only the basic modes (Light / Dark
 // / System). Custom value themes live in Settings → Appearance, reached via the
 // "More themes…" action below — see themePickerOptions({ scope }) in registry.ts.
@@ -648,11 +565,6 @@ const currentSessionKey = computed(() => {
 
 // Chat layout applies to both the session view and the draft route.
 const isChatRoute = computed(() => $route.path === '/chat' || $route.path === '/chat/new')
-
-// Entering the chat route swaps the topbar into its chat inset and mounts the
-// chat header that consumes --topbar-right-reserve; re-measure so the fresh
-// header gets an accurate reservation (a size-only observer won't fire here).
-watch(isChatRoute, () => void nextTick(syncTopbarReserve))
 
 // The Settings overlay (route-mounted dialog) is open on these routes. It owns
 // its own Escape/focus, so App-level keyboard shortcuts defer to it. Both web
@@ -825,10 +737,6 @@ function closeSidebarDrawer() {
 
 function handleSidebarResizeStart() {
   sidebarResizeActive.value = true
-  if (topbarReserveRaf) {
-    cancelAnimationFrame(topbarReserveRaf)
-    topbarReserveRaf = 0
-  }
 }
 
 function applySidebarPreview(width: number) {
@@ -859,7 +767,6 @@ function collapseSidebarFromResize() {
 function handleSidebarResizeEnd() {
   sidebarResizeActive.value = false
   setSidebarCssWidth(sidebarEffectiveWidth.value)
-  void nextTick(syncTopbarReserve)
 }
 
 // Layout mode is a single state machine shared with Settings. Entering a drawer
@@ -883,7 +790,6 @@ watch(sidebarLayoutMode, (nextMode, previousMode) => {
   } else if (previousMode === 'resizable' && focusWasOnResizer) {
     void nextTick(() => sidebarDockToggleRef.value?.focus())
   }
-  void nextTick(syncTopbarReserve)
 }, { immediate: true })
 
 watch(sidebarDynamicMaximum, () => {
@@ -891,7 +797,6 @@ watch(sidebarDynamicMaximum, () => {
   sidebarResizerRef.value?.cancel()
   sidebarResizeActive.value = false
   setSidebarCssWidth(sidebarEffectiveWidth.value)
-  void nextTick(syncTopbarReserve)
 })
 
 // Primary new-chat path: ordinary tasks always start against the default Agent.
@@ -1295,16 +1200,7 @@ useDocumentEvent('keydown', handleKeydown)
 
 onMounted(() => {
   window.visualViewport?.addEventListener('resize', syncMobileKeyboard)
-  // Re-measure the topbar reserve whenever the panel or the cluster itself
-  // changes size (window resize, sidebar dock, approval button, font swap).
-  if (typeof ResizeObserver !== 'undefined') {
-    topbarReserveObserver = new ResizeObserver(scheduleTopbarReserve)
-    if (mainRef.value) topbarReserveObserver.observe(mainRef.value)
-    if (topbarRightRef.value) topbarReserveObserver.observe(topbarRightRef.value)
-  }
-  window.addEventListener('resize', scheduleTopbarReserve)
   window.addEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
-  syncTopbarReserve()
   loadAgents()
   loadSessions()
   sessionListSubscription.subscribe()
@@ -1316,15 +1212,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (topbarReserveObserver) {
-    topbarReserveObserver.disconnect()
-    topbarReserveObserver = null
-  }
-  if (topbarReserveRaf) {
-    cancelAnimationFrame(topbarReserveRaf)
-    topbarReserveRaf = 0
-  }
-  window.removeEventListener('resize', scheduleTopbarReserve)
   window.removeEventListener(LOCAL_SESSIONS_DELETED_EVENT, handleLocalSessionsDeleted)
   if (sessionRefreshTimer) clearTimeout(sessionRefreshTimer)
   sessionListSubscription.cleanup()

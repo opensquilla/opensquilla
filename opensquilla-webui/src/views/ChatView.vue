@@ -21,70 +21,30 @@
       </div>
     </div>
 
-    <!-- Header -->
-    <div v-if="!isNewChatLanding" class="chat-header">
-      <div class="chat-header-left">
-        <label class="chat-label" :title="sessionKey">{{ currentChatTitle }}</label>
-        <button
-          class="chat-session-copy-btn"
-          :class="{ 'chat-session-copy-btn--ok': sessionCopyState === 'ok' }"
-          :title="sessionCopyState === 'ok' ? t('chat.copied') : t('chat.copySessionKey')"
-          :aria-label="sessionCopyState === 'ok' ? t('chat.copied') : t('chat.copySessionKey')"
-          @click="onSessionCopyClick"
-        >
-          <Icon :name="sessionCopyIcon" :size="14" />
-        </button>
-        <span class="chat-copy-live" aria-live="polite">{{ sessionCopyLiveText }}</span>
-      </div>
-      <div class="chat-header-right">
-        <button
-          v-if="sessionArtifacts.length > 0"
-          type="button"
-          class="chat-share-btn chat-deliverables-btn"
-          :title="t('chat.deliverablesCount', { count: sessionArtifacts.length })"
-          :aria-label="t('chat.deliverablesCount', { count: sessionArtifacts.length })"
-          @click="openDeliverables"
-        >
-          <Icon name="download" :size="14" />
-          <span class="chat-share-btn__label">{{ t('chat.deliverablesCount', { count: sessionArtifacts.length }) }}</span>
-        </button>
-        <button
-          v-if="appStore.features.metaRuns"
-          type="button"
-          class="chat-share-btn"
-          :title="t('chat.metaRunHistory')"
-          :aria-label="t('chat.metaRunHistory')"
-          @click="metaRunsHistoryOpen = true"
-        >
-          <Icon name="clock" :size="14" />
-          <span class="chat-share-btn__label">{{ t('chat.runs') }}</span>
-        </button>
-        <button
-          v-if="!shareMode"
-          ref="shareEntryBtnRef"
-          type="button"
-          class="chat-share-btn"
-          :disabled="shareableMessageCount === 0"
-          :title="shareableMessageCount === 0 ? t('chat.shareSendFirst') : t('chat.shareSelectHint')"
-          :aria-label="shareableMessageCount === 0 ? t('chat.shareSendFirst') : t('chat.share')"
-          @click="startShareMode"
-        >
-          <Icon name="share" :size="14" />
-          <span class="chat-share-btn__label">{{ t('chat.share') }}</span>
-        </button>
-        <span
-          v-if="contextWarning"
-          class="chat-chip chat-ctx-warn"
-          :title="t('chat.contextPressureTitle', { used: contextWarning.usedK, window: contextWarning.windowK, pct: contextWarning.pct })"
-        >{{ t('chat.contextPressure', { pct: contextWarning.pct }) }}</span>
-        <span class="chat-chip" :class="runStatusChipClass" :title="runStatusTitle">{{ runStatusLabel }}</span>
-      </div>
-    </div>
+    <!-- Chat owns the actions; App owns their stable, in-flow shell position. -->
+    <Teleport to="#app-route-header">
+      <ChatHeaderActions
+        v-if="!isNewChatLanding"
+        ref="chatHeaderActionsRef"
+        :title="currentChatTitle"
+        :session-key="sessionKey"
+        :copy-state="sessionCopyState"
+        :copy-icon="sessionCopyIcon"
+        :copy-live-text="sessionCopyLiveText"
+        :deliverable-count="sessionArtifacts.length"
+        :run-history-visible="appStore.features.metaRuns"
+        :share-mode="shareMode"
+        :shareable-message-count="shareableMessageCount"
+        @open-deliverables="openDeliverables"
+        @open-run-history="openMetaRunHistory"
+        @start-share="startShareMode"
+        @copy-session-key="onSessionCopyClick"
+      />
+    </Teleport>
 
     <!-- Thread -->
     <div class="chat-body">
-      <!-- Share-mode banner: pinned above the scrolling thread, below the
-           header, so it can never collide with the floating topbar cluster. -->
+      <!-- Share-mode banner stays pinned above the scrolling thread. -->
       <div
         v-if="shareMode"
         ref="shareBannerRef"
@@ -483,7 +443,7 @@
       :artifacts="sessionArtifacts"
       :session-key="sessionKey"
       :auth-token="readAuthToken()"
-      @close="deliverablesOpen = false"
+      @close="closeDeliverables"
       @download="downloadArtifact"
     />
 
@@ -492,7 +452,7 @@
       :open="metaRunsHistoryOpen"
       :rpc="rpc"
       :session-key="sessionKey"
-      @close="metaRunsHistoryOpen = false"
+      @close="closeMetaRunHistory"
     />
 
     <SharePreviewModal
@@ -519,6 +479,7 @@ import { useRpcCall } from '@/composables/useRpc'
 import { useAppStore } from '@/stores/app'
 import ApprovalCard from '@/components/chat/ApprovalCard.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
+import ChatHeaderActions from '@/components/chat/ChatHeaderActions.vue'
 import DeliverablesDrawer from '@/components/chat/DeliverablesDrawer.vue'
 import ChatComposer from '@/components/chat/ChatComposer.vue'
 import ChatMessageList from '@/components/chat/ChatMessageList.vue'
@@ -678,6 +639,10 @@ const pendingAutoSend = ref('')
 
 const threadRef = ref<HTMLElement | null>(null)
 const composerRef = ref<ChatComposerHandle | null>(null)
+type ChatHeaderActionsHandle = {
+  focusAction: (action: 'deliverables' | 'runs' | 'share' | 'copy-session-key') => boolean
+}
+const chatHeaderActionsRef = ref<ChatHeaderActionsHandle | null>(null)
 
 /* ── State ─────────────────────────────────────────────────────────── */
 
@@ -698,7 +663,6 @@ const shareMode = ref(false)
 const shareSaving = ref(false)
 const selectedShareMessageIds = ref<Set<string>>(new Set())
 const shareBannerRef = ref<HTMLElement | null>(null)
-const shareEntryBtnRef = ref<HTMLButtonElement | null>(null)
 // Preview-before-download: Save renders the PNG to a blob and opens the modal
 // instead of downloading blind. The view owns the object-URL lifecycle.
 const sharePreview = ref<{ url: string; blob: Blob; filename: string } | null>(null)
@@ -906,7 +870,6 @@ const chatUsageWidget = useChatUsageWidget({
 const {
   usageAccum,
   usageModel,
-  contextWarning,
   resetSavingsPopupCooldown,
   saveWidgetState,
   restoreWidgetState,
@@ -1508,22 +1471,6 @@ let composerResizeObserver: ResizeObserver | null = null
 
 /* ── Computed ──────────────────────────────────────────────────────── */
 
-const runStatusLabel = computed(() => runStatus.value.label)
-const runStatusChipClass = computed(() => {
-  const cls: Record<string, string> = {
-    queued: 'chat-chip-warn', running: 'chat-chip-ok', approval_pending: 'chat-chip-warn', interrupted: 'chat-chip-warn',
-    failed: 'chat-chip-danger', timeout: 'chat-chip-warn',
-  }
-  return cls[runStatus.value.status] || ''
-})
-const runStatusTitle = computed(() => {
-  const task = runStatus.value.task
-  const parts = [runStatus.value.label]
-  if (task?.task_id) parts.push(task.task_id)
-  if (task?.terminal_reason) parts.push(task.terminal_reason)
-  return parts.filter(Boolean).join(' - ')
-})
-
 const isNewChatLanding = computed(() => {
   // Only the draft route (/chat/new — bare /chat redirects here) shows the
   // "new chat" landing. Without this gate, switching between existing
@@ -1780,9 +1727,27 @@ const sessionArtifacts = computed<ArtifactPayload[]>(() => {
 const deliverablesOpen = ref(false)
 const metaRunsHistoryOpen = ref(false)
 
+function focusHeaderAction(action: 'deliverables' | 'runs' | 'share' | 'copy-session-key') {
+  void nextTick(() => chatHeaderActionsRef.value?.focusAction(action))
+}
+
 function openDeliverables() {
   if (sessionArtifacts.value.length === 0) return
   deliverablesOpen.value = true
+}
+
+function closeDeliverables() {
+  deliverablesOpen.value = false
+  focusHeaderAction('deliverables')
+}
+
+function openMetaRunHistory() {
+  metaRunsHistoryOpen.value = true
+}
+
+function closeMetaRunHistory() {
+  metaRunsHistoryOpen.value = false
+  focusHeaderAction('runs')
 }
 
 /* ── Fork ──────────────────────────────────────────────────────────── */
@@ -1870,7 +1835,7 @@ function endShareMode() {
     URL.revokeObjectURL(sharePreview.value.url)
     sharePreview.value = null
   }
-  if (modeUiHadFocus) nextTick(() => shareEntryBtnRef.value?.focus())
+  if (modeUiHadFocus) focusHeaderAction('share')
 }
 
 function toggleShareMessage(messageId: string) {
@@ -1911,12 +1876,11 @@ function onShareDownload() {
   if (!preview) return
   downloadBlob(preview.blob, preview.filename)
   pushToast(t('chat.toast.saved', { filename: preview.filename }), { duration: 4000 })
-  // endShareMode revokes the preview URL and drops the modal, then exits share
-  // mode (which remounts the header Share button); focus lands back on it. The
-  // modal's Download button held focus, outside the banner, so endShareMode's
-  // own conditional restore does not fire — focus the entry button explicitly.
+  // endShareMode revokes the preview URL and drops the modal. The modal's
+  // Download button held focus outside the banner, so restore the best visible
+  // Share entry (or the stable session-actions trigger) explicitly.
   endShareMode()
-  nextTick(() => shareEntryBtnRef.value?.focus())
+  focusHeaderAction('share')
 }
 
 async function onShareCopy() {
@@ -1969,7 +1933,7 @@ function closeSharePreview() {
   sharePreview.value = null
   nextTick(() => {
     if (shareMode.value) shareBannerRef.value?.focus()
-    else shareEntryBtnRef.value?.focus()
+    else chatHeaderActionsRef.value?.focusAction('share')
   })
 }
 
@@ -2284,6 +2248,7 @@ watch(sessionKey, () => {
   pendingForkBeforeMessageId.value = null
   if (shareMode.value) endShareMode()
   deliverablesOpen.value = false
+  metaRunsHistoryOpen.value = false
 })
 
 watch(shareableMessageCount, (count) => {

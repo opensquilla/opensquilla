@@ -1543,7 +1543,12 @@ def test_desktop_native_artifact_open_allows_active_documents_with_file_extensio
 
 def test_desktop_cleanup_does_not_claim_os_app_uninstall() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
-    panel_vue = _read("opensquilla-webui/src/components/settings/DesktopRuntimePanel.vue")
+    runtime_panel_vue = _read(
+        "opensquilla-webui/src/components/settings/DesktopRuntimePanel.vue"
+    )
+    maintenance_panel_vue = _read(
+        "opensquilla-webui/src/components/settings/DataMigrationPanel.vue"
+    )
     en_locale = json.loads(_read("opensquilla-webui/src/locales/en.json"))
     zh_locale = json.loads(_read("opensquilla-webui/src/locales/zh-Hans.json"))
 
@@ -1564,7 +1569,8 @@ def test_desktop_cleanup_does_not_claim_os_app_uninstall() -> None:
     assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in child_environment
     assert "OPENSQUILLA_STATE_DIR: profile.home" in child_environment
     assert "installed app itself will remain" in main_ts
-    assert "setup.runtime.cleanup.label" in panel_vue
+    assert "setup.runtime.cleanup.label" not in runtime_panel_vue
+    assert "setup.runtime.cleanup.label" in maintenance_panel_vue
 
     en_runtime = en_locale["setup"]["runtime"]
     zh_runtime = zh_locale["setup"]["runtime"]

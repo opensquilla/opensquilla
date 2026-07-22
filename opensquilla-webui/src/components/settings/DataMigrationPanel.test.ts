@@ -65,7 +65,7 @@ afterEach(() => {
 function desktopCandidate() {
   return {
     kind: 'cli-home',
-    path: '/Users/private/.opensquilla',
+    path: '/synthetic/migration-source/.opensquilla',
     version: '0.4.0',
     estimated_activity_at: '2026-07-18T12:00:00Z',
     session_count: 26,
@@ -81,12 +81,12 @@ function desktopReport() {
       {
         kind: 'preflight/target',
         status: 'error',
-        reason: 'Target /Users/private/current already contains data.',
+        reason: 'Target /synthetic/migration-target/current already contains data.',
       },
       {
         kind: 'database',
         status: 'error',
-        reason: 'Could not read /Users/private/.opensquilla/state.db.',
+        reason: 'Could not read /synthetic/migration-source/.opensquilla/state.db.',
       },
     ],
     paused_jobs: [],
@@ -164,23 +164,23 @@ describe('DataMigrationPanel desktop provider', () => {
     await settle()
     expect(migrationSummary).toHaveBeenLastCalledWith({ source: candidate.path })
     const primarySummary = el.querySelector('[data-testid="data-migration-primary-summary"]')
-    expect(primarySummary?.textContent).not.toContain('/Users/private')
+    expect(primarySummary?.textContent).not.toContain('/synthetic/migration-')
     const technical = el.querySelector('.migration-summary__technical')
     expect(technical?.textContent).toContain(candidate.path)
-    expect(technical?.textContent).toContain('/Users/private/current')
+    expect(technical?.textContent).toContain('/synthetic/migration-target/current')
     expect(el.querySelector('[data-testid="data-migration-run"]')).toBeTruthy()
 
-    progress?.({ phase: 'validating', detail: 'Reading /Users/secret-progress/source.db' })
+    progress?.({ phase: 'validating', detail: 'Reading /synthetic/migration-progress/source.db' })
     await settle()
     const phase = el.querySelector('.migration-summary__phase')
     expect(phase?.textContent).toContain('validating')
-    expect(phase?.textContent).not.toContain('/Users/secret-progress')
+    expect(phase?.textContent).not.toContain('/synthetic/migration-progress')
   })
 
   it('shows known legacy Agent compatibility state only in this settings panel', async () => {
     const chooseLegacyAgentDataLocation = vi.fn(async () => ({
       ok: false,
-      error: 'Could not select /Users/private/legacy-agent-data.',
+      error: 'Could not select /synthetic/legacy-agent-data.',
     }))
     const { el } = await mountPanel({
       desktopApi: {
@@ -203,7 +203,7 @@ describe('DataMigrationPanel desktop provider', () => {
     expect(el.querySelector('[data-testid="data-migration-error"]')?.textContent)
       .toContain('could not inspect import sources')
     expect(el.querySelector('[data-testid="data-migration-error"]')?.textContent)
-      .not.toContain('/Users/private')
+      .not.toContain('/synthetic/legacy-agent-data')
   })
 
   it('confirms an empty-target copy and sends only the opaque preview approval', async () => {
@@ -280,7 +280,7 @@ describe('DataMigrationPanel desktop provider', () => {
       ok: true,
       migrationApplied: true,
       restartOk: true,
-      source: '/Users/private/old-profile',
+      source: '/synthetic/migration-source/old-profile',
       sourceKind: 'cli-home',
     }))
     const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
@@ -298,7 +298,7 @@ describe('DataMigrationPanel desktop provider', () => {
     expect(migrationPeekLastResult).toHaveBeenCalledTimes(1)
     const result = el.querySelector<HTMLElement>('.data-migration__result')!
     expect(result.textContent).toContain('Data transfer complete')
-    expect(result.querySelector('details')?.textContent).toContain('/Users/private/old-profile')
+    expect(result.querySelector('details')?.textContent).toContain('/synthetic/migration-source/old-profile')
     const dismiss = Array.from(result.querySelectorAll<HTMLButtonElement>('button'))
       .find(button => button.textContent?.includes('Dismiss'))!
     dismiss.click()

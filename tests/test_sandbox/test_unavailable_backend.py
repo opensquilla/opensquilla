@@ -12,6 +12,7 @@ from opensquilla.sandbox.integration import (
     configure_runtime,
     escalate_unavailable_backend_in_managed_mode,
     gate_action,
+    refresh_runtime_backend_after_setup,
     reset_runtime,
 )
 from opensquilla.sandbox.policy import LevelHints
@@ -148,6 +149,77 @@ async def test_standard_mode_unavailable_backend_does_not_request_host_retry(
         assert result is None
         assert queue.list_pending("exec") == []
     finally:
+        queue.close()
+
+
+def test_setup_refresh_promotes_only_backend_and_preserves_runtime_services(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration
+
+    queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
+    settings = SandboxSettings(sandbox=True, backend="auto", run_mode="standard")
+
+    monkeypatch.setattr(
+        integration,
+        "select_backend",
+        lambda _settings: (_ for _ in ()).throw(SandboxBackendError("setup required")),
+    )
+    runtime = configure_runtime(settings, approval_queue=queue, workspace=tmp_path)
+    original_services = (
+        runtime.gate,
+        runtime.ledger,
+        runtime.cache,
+        runtime.approval_queue,
+        runtime.workspace,
+    )
+    replacement = SimpleNamespace(name="windows_default")
+    monkeypatch.setattr(integration, "select_backend", lambda _settings: replacement)
+
+    try:
+        promoted = refresh_runtime_backend_after_setup()
+
+        assert promoted is replacement
+        assert integration.get_runtime() is runtime
+        assert runtime.backend is replacement
+        assert (
+            runtime.gate,
+            runtime.ledger,
+            runtime.cache,
+            runtime.approval_queue,
+            runtime.workspace,
+        ) == original_services
+    finally:
+        reset_runtime()
+        queue.close()
+
+
+def test_setup_refresh_does_not_replace_an_already_available_backend(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from opensquilla.sandbox import integration
+
+    queue = ApprovalQueue(db_path=str(tmp_path / "approvals.sqlite"))
+    original = SimpleNamespace(name="windows_default")
+    monkeypatch.setattr(integration, "select_backend", lambda _settings: original)
+    runtime = configure_runtime(
+        SandboxSettings(sandbox=True, backend="auto", run_mode="standard"),
+        approval_queue=queue,
+        workspace=tmp_path,
+    )
+    monkeypatch.setattr(
+        integration,
+        "select_backend",
+        lambda _settings: (_ for _ in ()).throw(AssertionError("must not reselect backend")),
+    )
+
+    try:
+        assert refresh_runtime_backend_after_setup() is original
+        assert runtime.backend is original
+    finally:
+        reset_runtime()
         queue.close()
 
 

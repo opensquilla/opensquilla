@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -306,6 +307,113 @@ def test_elevated_setup_helper_main_writes_failure_report(monkeypatch, tmp_path)
     report = json.loads((marker.parent / "setup_helper_report.json").read_text())
     assert report["state"] == "failed"
     assert "Set-LocalUser access denied" in report["detail"]
+
+
+def test_elevated_setup_helper_serializes_mutation_and_rechecks_readiness(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    marker = mod.default_setup_marker_path(profile)
+    payload = mod._encode_setup_helper_payload(marker, user_sid="S-1-real")
+    events = []
+
+    @contextmanager
+    def fake_process_lock(_marker_path):
+        events.append("lock_enter")
+        try:
+            yield
+        finally:
+            events.append("lock_exit")
+
+    monkeypatch.setattr(mod, "_windows_profile_path_for_sid", lambda _sid: profile)
+    monkeypatch.setattr(mod, "_windows_setup_process_lock", fake_process_lock, raising=False)
+    monkeypatch.setattr(
+        mod,
+        "_windows_setup_is_ready",
+        lambda _marker_path, _profile_path: events.append("ready_check") or False,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        mod,
+        "establish_windows_network_setup",
+        lambda _path: (_ for _ in ()).throw(OSError("stop after ordering check")),
+    )
+
+    assert mod.elevated_setup_helper_main(["--elevated-helper", payload]) == 1
+    assert events == ["lock_enter", "ready_check", "lock_exit"]
+
+
+def test_elevated_setup_helper_skips_duplicate_mutation_after_wait(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    marker = mod.default_setup_marker_path(profile)
+    payload = mod._encode_setup_helper_payload(marker, user_sid="S-1-real")
+    reports = []
+
+    monkeypatch.setattr(mod, "_windows_profile_path_for_sid", lambda _sid: profile)
+    monkeypatch.setattr(mod, "_windows_setup_is_ready", lambda *_args: True, raising=False)
+    monkeypatch.setattr(
+        mod,
+        "establish_windows_network_setup",
+        lambda _path: (_ for _ in ()).throw(AssertionError("setup must not run twice")),
+    )
+    monkeypatch.setattr(
+        mod,
+        "write_setup_helper_report",
+        lambda _path, *, state, detail=None: reports.append((state, detail)),
+    )
+
+    assert mod.elevated_setup_helper_main(["--elevated-helper", payload]) == 0
+    assert reports == [("ready", "already_ready")]
+
+
+def test_windows_setup_process_lock_releases_named_mutex(monkeypatch, tmp_path) -> None:
+    import ctypes
+
+    from opensquilla.sandbox.backend import windows_default_setup as mod
+
+    calls = []
+
+    class FakeApi:
+        def __init__(self, name, result):
+            self.name = name
+            self.result = result
+            self.argtypes = None
+            self.restype = None
+
+        def __call__(self, *args):
+            calls.append((self.name, args))
+            return self.result
+
+    kernel32 = type(
+        "FakeKernel32",
+        (),
+        {
+            "CreateMutexW": FakeApi("create", 123),
+            "WaitForSingleObject": FakeApi("wait", 0),
+            "ReleaseMutex": FakeApi("release", True),
+            "CloseHandle": FakeApi("close", True),
+        },
+    )()
+    monkeypatch.setattr(mod.sys, "platform", "win32")
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_args, **_kwargs: kernel32, raising=False)
+
+    with mod._windows_setup_process_lock(tmp_path / "setup_marker.json"):
+        calls.append(("body", ()))
+
+    assert [name for name, _args in calls] == ["create", "wait", "body", "release", "close"]
+    mutex_name = calls[0][1][2]
+    assert mutex_name.startswith("Local\\OpenSquillaSandboxSetup-")
+    assert calls[1][1] == (123, mod.SETUP_PROCESS_LOCK_TIMEOUT_MS)
 
 
 def test_elevated_setup_rejects_payload_path_before_any_report_write(monkeypatch, tmp_path) -> None:

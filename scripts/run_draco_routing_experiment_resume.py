@@ -1266,13 +1266,18 @@ def build_local_web_tool_registry(tool_policy: dict[str, Any]) -> ToolRegistry:
     registry = ToolRegistry()
     blocked_domains = parse_domain_list(tool_policy.get("contamination_blocked_domains") or [])
     default_max_results = local_web_search_max_results(tool_policy)
+    configured_search_provider = local_web_search_provider(tool_policy)
     default_fetch_max_chars = local_web_fetch_max_chars(tool_policy)
 
     async def _web_search(query: str, max_results: int | None = None) -> str:
         from opensquilla.tools.builtin.web import run_web_search_payload
 
         original_query = str(query or "")
-        executed_query = append_search_exclusions(original_query, blocked_domains)
+        executed_query = (
+            append_search_exclusions(original_query, blocked_domains)
+            if configured_search_provider == "duckduckgo"
+            else original_query
+        )
         limit = bounded_tool_int(
             max_results,
             default=default_max_results,
@@ -1283,6 +1288,7 @@ def build_local_web_tool_registry(tool_policy: dict[str, Any]) -> ToolRegistry:
             executed_query,
             limit,
             exclude_domains=blocked_domains,
+            provider=configured_search_provider,
         )
         filtered = filter_blocked_search_results(
             payload,

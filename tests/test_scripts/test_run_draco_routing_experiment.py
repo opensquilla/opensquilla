@@ -682,11 +682,12 @@ async def test_local_web_preflight_does_not_enable_full_host_access(
 ) -> None:
     calls = {"search": 0, "fetch": 0}
 
-    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+    async def _fake_search(query: str, max_results: int, *, exclude_domains, provider: str):
         calls["search"] += 1
         assert "OpenAI official website" in query
         assert max_results == 1
         assert "github.com" in exclude_domains
+        assert provider == "duckduckgo"
         return {
             "query": query,
             "results": [
@@ -783,7 +784,8 @@ async def test_local_web_preflight_fails_closed_on_denial_payload(
     monkeypatch: pytest.MonkeyPatch,
     configured_tool_runtime,
 ) -> None:
-    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+    async def _fake_search(query: str, max_results: int, *, exclude_domains, provider: str):
+        assert provider == "duckduckgo"
         return {
             "query": query,
             "results": [{"title": "OpenAI", "url": "https://openai.com/"}],
@@ -874,11 +876,12 @@ async def test_local_web_search_filters_results_sources_and_internal_fetches(
 ) -> None:
     captured: dict[str, object] = {}
 
-    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+    async def _fake_search(query: str, max_results: int, *, exclude_domains, provider: str):
         captured.update(
             query=query,
             max_results=max_results,
             exclude_domains=list(exclude_domains),
+            provider=provider,
         )
         return {
             "query": query,
@@ -897,6 +900,7 @@ async def test_local_web_search_filters_results_sources_and_internal_fetches(
         _fake_search,
     )
     policy = _local_web_tool_policy()
+    policy["local_web_tools"]["web_search"]["provider"] = "brave"
     context = runner.build_benchmark_tool_context(
         task_id="search-task",
         group="B1",
@@ -915,8 +919,10 @@ async def test_local_web_search_filters_results_sources_and_internal_fetches(
     )
 
     payload = json.loads(result.content)
+    assert captured["query"] == "test"
     assert captured["max_results"] == runner.local_web_search_max_results(policy)
     assert "github.com" in captured["exclude_domains"]
+    assert captured["provider"] == "brave"
     assert [item["url"] for item in payload["results"]] == [
         "https://example.com/allowed"
     ]
@@ -975,7 +981,8 @@ async def test_local_web_preflight_retries_and_records_all_setup_calls(
 ) -> None:
     fetch_attempt = 0
 
-    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+    async def _fake_search(query: str, max_results: int, *, exclude_domains, provider: str):
+        assert provider == "duckduckgo"
         return {"query": query, "results": [{"url": "https://openai.com/"}]}
 
     async def _flaky_fetch(*args, **kwargs):
@@ -1010,7 +1017,8 @@ async def test_local_web_preflight_times_out_closed(
     monkeypatch: pytest.MonkeyPatch,
     configured_tool_runtime,
 ) -> None:
-    async def _fake_search(query: str, max_results: int, *, exclude_domains):
+    async def _fake_search(query: str, max_results: int, *, exclude_domains, provider: str):
+        assert provider == "duckduckgo"
         return {"query": query, "results": [{"url": "https://openai.com/"}]}
 
     async def _hanging_fetch(*args, **kwargs):

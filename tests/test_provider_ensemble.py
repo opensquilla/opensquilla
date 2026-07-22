@@ -2454,6 +2454,90 @@ async def test_static_openrouter_b5_quorum_cancels_slow_proposer(
 
 
 @pytest.mark.asyncio
+async def test_cancel_resistant_straggler_counts_as_missing_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A straggler that outlives the cancel window still issued a real request."""
+
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([TextDeltaEvent(text="d1"), DoneEvent(model="p1")]),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    release = asyncio.Event()
+    closed = asyncio.Event()
+
+    class _CancellationResistantProposer:
+        provider_name = "fake"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                try:
+                    while not release.is_set():
+                        try:
+                            await release.wait()
+                        except asyncio.CancelledError:
+                            # Simulate a provider adapter whose teardown
+                            # swallows cancellation while unwinding I/O.
+                            continue
+                    yield DoneEvent(model="straggler")
+                finally:
+                    closed.set()
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    def build_provider(cfg: ProviderConfig) -> Any:
+        if cfg.model == "straggler":
+            return _CancellationResistantProposer()
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS",
+        0.01,
+    )
+    provider = EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_member("p1"), _member("straggler")],
+        aggregator=_member("agg"),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=10,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0.01,
+        shuffle_candidates=False,
+    )
+
+    try:
+        events = await asyncio.wait_for(_collect(provider), timeout=2.0)
+    finally:
+        release.set()
+    await asyncio.wait_for(closed.wait(), timeout=1.0)
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    straggler_row = next(
+        row
+        for row in done.ensemble_trace["candidates"]
+        if row["model"] == "straggler"
+    )
+    assert straggler_row["ok"] is False
+    assert straggler_row["error_code"] == "quorum_cancelled"
+    assert straggler_row["request_started"] is True
+    # The detached request may bill upstream without a usage receipt; the
+    # reconciliation counter must flag it rather than report a clean turn.
+    assert done.usage_missing_count == 1
+
+
+@pytest.mark.asyncio
 async def test_quorum_grace_keeps_a_final_proposer_that_finishes_in_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

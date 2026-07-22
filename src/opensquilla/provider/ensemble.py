@@ -1178,6 +1178,13 @@ class EnsembleProvider:
                                 model=cfg.model,
                                 error=controlled_message,
                                 error_code=controlled_code,
+                                # A task only reaches the quorum-cancel path
+                                # after issuing its upstream request — fast
+                                # exits (not-ready members, immediate errors)
+                                # complete with a real result instead. The
+                                # request may bill without a usage receipt, so
+                                # it must count in usage_missing_count.
+                                request_started=True,
                             )
                         )
             return sorted(results, key=lambda result: (result.index, result.sample_index))

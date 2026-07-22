@@ -73,8 +73,12 @@ def test_openrouter_runtime_uses_default_provider_routing() -> None:
     assert runtime.provider_routing["z-ai/glm-5.1"] == "z-ai"
     assert runtime.provider_routing["z-ai/glm-5.2"] == "z-ai"
     assert runtime.provider_routing["anthropic/claude-opus-4.8"] == "anthropic"
+    assert runtime.provider_routing["anthropic/claude-sonnet-5"] == "anthropic"
     assert runtime.provider_routing["moonshotai/kimi-k2.6"] == "moonshotai"
     assert runtime.provider_routing["openai/gpt-5.5"] == "openai"
+    assert runtime.provider_routing["openai/gpt-5.6-luna"] == "openai"
+    assert runtime.provider_routing["qwen/qwen3.7-plus"] == "alibaba"
+    assert runtime.provider_routing["x-ai/grok-4.5"] == "xai"
 
 
 def test_openrouter_runtime_provider_routing_overrides_default() -> None:

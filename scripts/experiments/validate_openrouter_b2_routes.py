@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed, read-only OpenRouter endpoint preflight for formal DRACO B2."""
+"""Fail-closed, read-only OpenRouter endpoint preflight for formal DRACO runs."""
 
 from __future__ import annotations
 
@@ -17,28 +17,84 @@ from urllib.parse import quote
 import httpx
 
 API_ORIGIN = "https://openrouter.ai"
-EXPECTED_ROUTES = {
+B2_EXPECTED_ROUTES = {
     "deepseek/deepseek-v4-pro": "deepseek",
     "z-ai/glm-5.2": "z-ai",
     "moonshotai/kimi-k2.7-code": "moonshotai",
     "qwen/qwen3.7-max": "alibaba",
     "google/gemini-3.1-pro-preview": "google-ai-studio",
 }
+FORMAL_EXPECTED_ROUTES = {
+    **B2_EXPECTED_ROUTES,
+    "anthropic/claude-opus-4.8": "anthropic",
+    "anthropic/claude-sonnet-5": "anthropic",
+    "deepseek/deepseek-v4-flash": "deepseek",
+    "google/gemini-3-flash-preview": "google-ai-studio",
+    "kwaipilot/kat-coder-air-v2.5": "streamlake",
+    "kwaipilot/kat-coder-pro-v2.5": "streamlake",
+    "meta-llama/llama-4-scout": "groq",
+    "minimax/minimax-m3": "minimax",
+    "mistralai/mistral-medium-3-5": "mistral",
+    "openai/gpt-5.5": "openai",
+    "openai/gpt-5.6-luna": "openai",
+    "poolside/laguna-xs-2.1": "poolside",
+    "qwen/qwen3.7-plus": "alibaba",
+    "tencent/hy3": "tencent",
+    "x-ai/grok-4.5": "xai",
+}
 EXPECTED_PROVIDER_NAMES = {
+    "anthropic": "Anthropic",
     "deepseek": "DeepSeek",
     "z-ai": "Z.AI",
     "moonshotai": "Moonshot AI",
     "alibaba": "Alibaba",
     "google-ai-studio": "Google AI Studio",
+    "openai": "OpenAI",
+    "xai": "xAI",
+    "streamlake": "StreamLake",
+    "groq": "Groq",
+    "minimax": "Minimax",
+    "mistral": "Mistral",
+    "poolside": "Poolside",
+    "tencent": "Tencent",
 }
 # Match the actual frozen request surface.  B2 proposers do not receive tool
 # definitions; only the GLM aggregator can call the local tool surface.  The
 # Gemini Judge is also text-only.  Over-requiring tool support on every
 # proposer would reject an otherwise valid formal route before the canary.
-REQUIRED_PARAMETERS = {
-    model: {"max_tokens", "reasoning"} for model in EXPECTED_ROUTES
+B2_REQUIRED_PARAMETERS = {
+    model: {"max_tokens", "reasoning"} for model in B2_EXPECTED_ROUTES
 }
-REQUIRED_PARAMETERS["z-ai/glm-5.2"] |= {"tools", "tool_choice"}
+B2_REQUIRED_PARAMETERS["deepseek/deepseek-v4-pro"].add("temperature")
+B2_REQUIRED_PARAMETERS["z-ai/glm-5.2"] |= {
+    "temperature",
+    "tools",
+}
+B2_REQUIRED_PARAMETERS["qwen/qwen3.7-max"].add("temperature")
+B2_REQUIRED_PARAMETERS["google/gemini-3.1-pro-preview"].add("temperature")
+FORMAL_REASONING_INELIGIBLE_MODELS = frozenset(
+    {
+        "kwaipilot/kat-coder-air-v2.5",
+        "kwaipilot/kat-coder-pro-v2.5",
+        "meta-llama/llama-4-scout",
+    }
+)
+FORMAL_UNSUPPORTED_TEMPERATURE_MODELS = frozenset(
+    {
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-sonnet-5",
+        "moonshotai/kimi-k2.7-code",
+        "openai/gpt-5.5",
+        "openai/gpt-5.6-luna",
+    }
+)
+FORMAL_REQUIRED_PARAMETERS = {
+    model: {"max_tokens", "tools"} for model in FORMAL_EXPECTED_ROUTES
+}
+for model in set(FORMAL_EXPECTED_ROUTES) - FORMAL_REASONING_INELIGIBLE_MODELS:
+    FORMAL_REQUIRED_PARAMETERS[model].add("reasoning")
+for model in set(FORMAL_EXPECTED_ROUTES) - FORMAL_UNSUPPORTED_TEMPERATURE_MODELS:
+    FORMAL_REQUIRED_PARAMETERS[model].add("temperature")
 
 
 def canonical_sha256(value: Any) -> str:
@@ -93,12 +149,27 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
         raise
 
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
-    args = parser.parse_args()
+    parser.add_argument("--scope", choices=("b2", "formal"), default="formal")
+    args = parser.parse_args(argv)
     if args.output.exists():
         parser.error(f"refusing to overwrite route preflight evidence: {args.output}")
+    return args
+
+
+def main() -> int:
+    args = parse_args()
+
+    expected_routes = (
+        FORMAL_EXPECTED_ROUTES if args.scope == "formal" else B2_EXPECTED_ROUTES
+    )
+    required_parameters = (
+        FORMAL_REQUIRED_PARAMETERS
+        if args.scope == "formal"
+        else B2_REQUIRED_PARAMETERS
+    )
 
     with httpx.Client(
         timeout=httpx.Timeout(20.0),
@@ -117,12 +188,12 @@ def main() -> int:
             for row in provider_rows
             if isinstance(row, dict) and row.get("slug")
         }
-        missing_slugs = sorted(set(EXPECTED_ROUTES.values()) - provider_slugs)
+        missing_slugs = sorted(set(expected_routes.values()) - provider_slugs)
         if missing_slugs:
             raise SystemExit(f"OpenRouter provider slug(s) unavailable: {missing_slugs}")
 
         model_evidence: dict[str, Any] = {}
-        for model, expected_provider in EXPECTED_ROUTES.items():
+        for model, expected_provider in expected_routes.items():
             encoded_model = "/".join(quote(part, safe="") for part in model.split("/"))
             payload, response_sha256 = get_json(
                 client,
@@ -144,7 +215,7 @@ def main() -> int:
             compatible = [
                 row
                 for row in operational
-                if REQUIRED_PARAMETERS[model]
+                if required_parameters[model]
                 <= {str(item) for item in (row.get("supported_parameters") or [])}
                 and row.get("provider_name")
                 == EXPECTED_PROVIDER_NAMES[expected_provider]
@@ -181,18 +252,30 @@ def main() -> int:
                 ],
                 "operational_match_count": len(operational),
                 "compatible_operational_match_count": len(compatible),
-                "required_parameters": sorted(REQUIRED_PARAMETERS[model]),
+                "required_parameters": sorted(required_parameters[model]),
             }
 
     evidence = {
-        "schema": "opensquilla.openrouter-route-preflight/v1",
+        "schema": "opensquilla.openrouter-route-preflight/v2",
         "captured_at": datetime.now(UTC).isoformat(),
         "api_origin": API_ORIGIN,
+        "scope": args.scope,
         "trust_env": False,
         "providers_response_sha256": providers_sha256,
-        "expected_routes": EXPECTED_ROUTES,
+        "expected_routes": expected_routes,
+        "expected_routes_sha256": canonical_sha256(expected_routes),
+        "required_parameters_sha256": canonical_sha256(
+            {model: sorted(parameters) for model, parameters in required_parameters.items()}
+        ),
         "models": model_evidence,
-        "pass": True,
+        "route_metadata_pass": True,
+        "non_byok_verified": None,
+        "billing_verified": None,
+        "reasoning_ineligible_models": (
+            sorted(FORMAL_REASONING_INELIGIBLE_MODELS)
+            if args.scope == "formal"
+            else []
+        ),
         "scope_note": (
             "Public metadata availability only; per-request router metadata, non-BYOK "
             "usage evidence, canary, and account reconciliation remain mandatory."

@@ -370,20 +370,42 @@ def _normalize_thinking(value: str | None) -> tuple[bool | None, Any | None]:
     return True, normalized
 
 
-def _openrouter_static_capabilities(model: str) -> ModelCapabilities | None:
+def openrouter_static_capabilities(model: str) -> ModelCapabilities | None:
     model_l = model.strip().lower()
     reasoning_prefixes = (
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-sonnet-5",
         "deepseek/",
         "google/gemini",
+        "minimax/minimax-m3",
+        "mistralai/mistral-medium-3-5",
         "moonshotai/kimi-k2",
+        "openai/gpt-5.5",
+        "openai/gpt-5.6",
+        "poolside/laguna-xs-2.1",
         "qwen/qwen3",
+        "tencent/hy3",
+        "x-ai/grok-4.5",
         "z-ai/glm-",
     )
     if model_l.startswith(reasoning_prefixes):
         return ModelCapabilities(
             supports_reasoning=True,
             supports_tools=True,
-            supports_vision=model_l.startswith("google/gemini"),
+            supports_vision=model_l.startswith(
+                (
+                    "anthropic/claude-opus-4.8",
+                    "anthropic/claude-sonnet-5",
+                    "google/gemini",
+                    "minimax/minimax-m3",
+                    "mistralai/mistral-medium-3-5",
+                    "moonshotai/kimi-k2",
+                    "openai/gpt-5.5",
+                    "openai/gpt-5.6",
+                    "qwen/qwen3",
+                    "x-ai/grok-4.5",
+                )
+            ),
             reasoning_format="openrouter",
         )
     return None
@@ -393,7 +415,7 @@ def _member_model_capabilities(member: EnsembleMemberConfig) -> ModelCapabilitie
     cfg = member.provider_config
     provider = cfg.provider.strip().lower()
     if provider == "openrouter":
-        static_caps = _openrouter_static_capabilities(cfg.model)
+        static_caps = openrouter_static_capabilities(cfg.model)
         if static_caps is not None:
             return static_caps
     try:

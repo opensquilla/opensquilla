@@ -2764,6 +2764,100 @@ def test_openrouter_still_sends_temperature(monkeypatch: Any) -> None:
     assert captured["payload"]["temperature"] == 0
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-sonnet-5",
+        "openai/gpt-5.5",
+        "openai/gpt-5.6-luna",
+        "moonshotai/kimi-k2.6",
+        "moonshotai/kimi-k2.7-code",
+    ],
+)
+def test_openrouter_models_omit_unsupported_temperature_without_capabilities(
+    monkeypatch: Any,
+    model: str,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model=model,
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    _collect(provider, ChatConfig(temperature=0))
+
+    assert "temperature" not in captured["payload"]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "deepseek/deepseek-v4-pro",
+        "qwen/qwen3.7-max",
+        "z-ai/glm-5.2",
+    ],
+)
+def test_openrouter_other_models_keep_configured_temperature(
+    monkeypatch: Any,
+    model: str,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model=model,
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    _collect(provider, ChatConfig(temperature=0))
+
+    assert captured["payload"]["temperature"] == 0
+
+
+@pytest.mark.parametrize(
+    ("model", "thinking_level", "expected_effort"),
+    [
+        ("anthropic/claude-opus-4.8", ThinkingLevel.MAX, "max"),
+        ("openai/gpt-5.5", ThinkingLevel.XHIGH, "xhigh"),
+    ],
+)
+def test_openrouter_baseline_models_send_configured_reasoning_effort(
+    monkeypatch: Any,
+    model: str,
+    thinking_level: ThinkingLevel,
+    expected_effort: str,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    provider = OpenAIProvider(
+        api_key="test",
+        model=model,
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+    config = ChatConfig(
+        thinking=True,
+        thinking_level=thinking_level,
+        thinking_budget_tokens=50_000,
+        temperature=0,
+        model_capabilities=ModelCapabilities(
+            supports_reasoning=True,
+            supports_tools=True,
+            supports_vision=True,
+            reasoning_format="openrouter",
+        ),
+    )
+
+    _collect(provider, config)
+
+    assert captured["payload"]["reasoning"] == {"effort": expected_effort}
+    assert "temperature" not in captured["payload"]
+
+
 def test_openai_payload_omits_top_p_by_default(monkeypatch: Any) -> None:
     captured: dict[str, Any] = {}
     _patch_transport(monkeypatch, captured)
@@ -4504,6 +4598,26 @@ def test_openrouter_routing_pin_strict_env_sends_only_without_fallbacks(
     assert done.stop_reason == "stop"
 
 
+def test_openrouter_routing_strict_env_rejects_unmapped_model_before_request(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "enabled")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="vendor/unmapped-model",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+        provider_routing={},
+    )
+
+    with pytest.raises(ValueError, match="has no upstream provider pin"):
+        _collect_events(provider, ChatConfig())
+
+    assert "payload" not in captured
+
+
 def test_openrouter_routing_pin_default_keeps_order_with_fallbacks(
     monkeypatch: Any,
 ) -> None:
@@ -4538,6 +4652,24 @@ def test_openrouter_routing_pin_default_keeps_order_with_fallbacks(
         "allow_fallbacks": True,
     }
     assert done.stop_reason == "stop"
+
+
+def test_openrouter_require_parameters_applies_without_provider_pin(
+    monkeypatch: Any,
+) -> None:
+    captured: dict[str, Any] = {}
+    _patch_transport(monkeypatch, captured)
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", "1")
+    provider = OpenAIProvider(
+        api_key="test",
+        model="x-ai/grok-4.5",
+        base_url="https://openrouter.ai/api/v1",
+        provider_kind="openrouter",
+    )
+
+    _collect(provider, ChatConfig())
+
+    assert captured["payload"]["provider"] == {"require_parameters": True}
 
 
 def _stream_error_frame_handler(request: httpx.Request) -> httpx.Response:

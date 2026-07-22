@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from opensquilla.engine.types import ThinkingLevel
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.provider.ensemble import (
     _member_chat_config,
@@ -64,6 +65,9 @@ def _load_resume_runner():
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+resume_runner = _load_resume_runner()
 
 
 @pytest.fixture
@@ -336,6 +340,208 @@ def test_generation_config_preserves_provider_native_max_level() -> None:
     assert config.thinking is True
     assert config.thinking_level == "max"
     assert config.thinking_budget_tokens == 50_000
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+@pytest.mark.parametrize(
+    ("model", "expected_level"),
+    [
+        ("anthropic/claude-opus-4.8", "max"),
+        ("openai/gpt-5.5", "xhigh"),
+    ],
+)
+def test_generation_config_enables_openrouter_baseline_reasoning(
+    module,
+    model: str,
+    expected_level: str,
+) -> None:
+    config = module.generation_chat_config(
+        module.generation_thinking_policy(),
+        model=model,
+    )
+
+    assert config.thinking is True
+    assert config.thinking_level == expected_level
+    assert config.model_capabilities is not None
+    assert config.model_capabilities.supports_reasoning is True
+    assert config.model_capabilities.reasoning_format == "openrouter"
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_router_single_selected_model_receives_reasoning_capabilities(module) -> None:
+    config = module.generation_chat_config(
+        module.generation_thinking_policy(),
+        model=None,
+    )
+    assert config.model_capabilities is None
+
+    resolved = module.with_openrouter_model_capabilities(config, "openai/gpt-5.5")
+
+    assert resolved.model_capabilities is not None
+    assert resolved.model_capabilities.supports_reasoning is True
+    assert resolved.model_capabilities.reasoning_format == "openrouter"
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_agent_loop_preserves_provider_native_max_thinking(module) -> None:
+    chat_config = module.generation_chat_config(
+        module.generation_thinking_policy(),
+        model="anthropic/claude-opus-4.8",
+    )
+
+    agent_config = module.agent_config_from_chat_config(
+        chat_config,
+        timeout=3600,
+        model_id="anthropic/claude-opus-4.8",
+        max_iterations=12,
+    )
+
+    assert agent_config.thinking is ThinkingLevel.MAX
+    assert agent_config.resolve_thinking("prompt") == (True, 50_000)
+
+
+def _ensemble_member(module, model: str, *, thinking: str = "low"):
+    return module.EnsembleMemberConfig(
+        provider_config=ProviderConfig(
+            provider="openrouter",
+            model=model,
+            provider_routing={model: "verified-upstream"},
+        ),
+        label=model.rsplit("/", 1)[-1],
+        temperature=0.7,
+        max_tokens=1024,
+        thinking=thinking,
+    )
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_run_wide_generation_policy_overrides_realized_ensemble_members(module) -> None:
+    provider = module.EnsembleProvider(
+        profile_name="router_dynamic/c3",
+        proposers=[
+            _ensemble_member(module, "anthropic/claude-opus-4.8"),
+            _ensemble_member(module, "qwen/qwen3.7-max"),
+            _ensemble_member(module, "x-ai/grok-4.5"),
+        ],
+        aggregator=_ensemble_member(module, "anthropic/claude-sonnet-5"),
+    )
+    policy = {
+        **module.generation_thinking_policy(),
+        "temperature": 0.0,
+        "max_tokens": 16_384,
+        "max_tokens_overridden": True,
+        "thinking_budget_tokens": 50_000,
+    }
+
+    aligned = module.apply_generation_policy_to_ensemble_provider(provider, policy)
+
+    assert [member.thinking for member in aligned.proposers] == [
+        "max",
+        "xhigh",
+        "xhigh",
+    ]
+    assert aligned.aggregator.thinking == "xhigh"
+    assert all(member.temperature == 0.0 for member in aligned.proposers)
+    assert aligned.aggregator.temperature == 0.0
+    assert all(member.max_tokens == 16_384 for member in aligned.proposers)
+    assert aligned.aggregator.max_tokens == 16_384
+    assert aligned.selection_plan["generation_policy_applied"] is True
+    assert {
+        row["model"]: row["thinking"]
+        for row in aligned.selection_plan["member_generation"]
+    } == {
+        "anthropic/claude-opus-4.8": "max",
+        "qwen/qwen3.7-max": "xhigh",
+        "x-ai/grok-4.5": "xhigh",
+        "anthropic/claude-sonnet-5": "xhigh",
+    }
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_strict_ensemble_validation_rejects_unproved_reasoning_member(
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = "kwaipilot/kat-coder-pro-v2.5"
+    provider = module.EnsembleProvider(
+        profile_name="router_dynamic/c3",
+        proposers=[_ensemble_member(module, model, thinking="xhigh")],
+        aggregator=_ensemble_member(module, "x-ai/grok-4.5", thinking="xhigh"),
+    )
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "1")
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", "1")
+
+    with pytest.raises(ValueError, match="cannot prove support"):
+        module.validate_strict_openrouter_ensemble_members(
+            provider,
+            module.generation_thinking_policy(),
+        )
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_strict_ensemble_validation_requires_upstream_pin(
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = "x-ai/grok-4.5"
+    member = _ensemble_member(module, model, thinking="xhigh")
+    member.provider_config.provider_routing.clear()
+    provider = module.EnsembleProvider(
+        profile_name="router_dynamic/c3",
+        proposers=[member],
+        aggregator=_ensemble_member(module, "anthropic/claude-sonnet-5"),
+    )
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "1")
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", "1")
+
+    with pytest.raises(ValueError, match="no strict upstream provider pin"):
+        module.validate_strict_openrouter_ensemble_members(
+            provider,
+            module.generation_thinking_policy(),
+        )
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_strict_ensemble_validation_checks_fallback_and_enabled_boolean(
+    module,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = "deepseek/deepseek-v4-pro"
+    provider = module.EnsembleProvider(
+        profile_name="static_openrouter_b5",
+        proposers=[_ensemble_member(module, model, thinking="xhigh")],
+        aggregator=_ensemble_member(module, "z-ai/glm-5.2", thinking="xhigh"),
+        fallback_model=model,
+    )
+    fallback_config = ProviderConfig(
+        provider="openrouter",
+        model=model,
+        provider_routing={},
+    )
+    monkeypatch.setenv("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "enabled")
+    monkeypatch.setenv("OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", "enabled")
+
+    with pytest.raises(ValueError, match="no strict upstream provider pin"):
+        module.validate_strict_openrouter_ensemble_members(
+            provider,
+            module.generation_thinking_policy(),
+            fallback_config=fallback_config,
+        )
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_ensemble_fallback_model_receives_openrouter_reasoning_capabilities(module) -> None:
+    policy = module.generation_thinking_policy()
+    config = module.generation_chat_config(policy, model=None)
+
+    resolved = module.with_openrouter_model_capabilities(
+        config,
+        "deepseek/deepseek-v4-pro",
+    )
+
+    assert resolved.model_capabilities is not None
+    assert resolved.model_capabilities.supports_reasoning is True
+    assert resolved.model_capabilities.reasoning_format == "openrouter"
 
 
 def test_non_b2_groups_do_not_apply_g12_argument_alignment() -> None:

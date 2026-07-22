@@ -80,12 +80,16 @@ def test_cli_thinking_flag_overrides_toml_llm_thinking(
     assert updated.llm.thinking == "xhigh"
 
 
-def test_resolve_thinking_budgets_for_high_and_xhigh() -> None:
+def test_resolve_thinking_budgets_for_high_xhigh_and_max() -> None:
     assert AgentConfig(thinking=ThinkingLevel.HIGH).resolve_thinking(None) == (
         True,
         20_000,
     )
     assert AgentConfig(thinking=ThinkingLevel.XHIGH).resolve_thinking(None) == (
+        True,
+        50_000,
+    )
+    assert AgentConfig(thinking=ThinkingLevel.MAX).resolve_thinking(None) == (
         True,
         50_000,
     )

@@ -30,6 +30,7 @@ from opensquilla.provider.ensemble import (
     _MemberRequestBudgetBinding,
     _rollup_cost_source,
     build_ensemble_provider_from_config,
+    openrouter_static_capabilities,
 )
 from opensquilla.provider.selector import ProviderConfig
 from opensquilla.provider.types import (
@@ -1795,6 +1796,46 @@ async def test_openrouter_members_get_member_specific_reasoning_capabilities(
     assert aggregator_cfg.thinking_level == "high"
     assert aggregator_cfg.model_capabilities.supports_reasoning is True
     assert aggregator_cfg.model_capabilities.reasoning_format == "openrouter"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "anthropic/claude-opus-4.8",
+        "anthropic/claude-sonnet-5",
+        "google/gemini-3.1-pro-preview",
+        "openai/gpt-5.5",
+        "qwen/qwen3.7-max",
+        "x-ai/grok-4.5",
+    ],
+)
+def test_openrouter_formal_models_have_static_reasoning_capabilities(model: str) -> None:
+    capabilities = openrouter_static_capabilities(model)
+
+    assert capabilities is not None
+    assert capabilities.supports_reasoning is True
+    assert capabilities.supports_tools is True
+    assert capabilities.supports_vision is True
+    assert capabilities.reasoning_format == "openrouter"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "minimax/minimax-m3",
+        "mistralai/mistral-medium-3-5",
+        "openai/gpt-5.6-luna",
+        "poolside/laguna-xs-2.1",
+        "tencent/hy3",
+    ],
+)
+def test_openrouter_dynamic_reasoning_models_have_static_capabilities(model: str) -> None:
+    capabilities = openrouter_static_capabilities(model)
+
+    assert capabilities is not None
+    assert capabilities.supports_reasoning is True
+    assert capabilities.supports_tools is True
+    assert capabilities.reasoning_format == "openrouter"
 
 
 @pytest.mark.asyncio

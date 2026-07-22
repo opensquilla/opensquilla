@@ -85,6 +85,7 @@ from opensquilla.provider.ensemble import (
     EnsembleMemberConfig,
     EnsembleProvider,
     build_ensemble_provider_from_config,
+    openrouter_static_capabilities,
 )
 from opensquilla.provider.registry import get_provider_spec
 from opensquilla.provider.selector import (
@@ -1626,6 +1627,18 @@ def generation_thinking_for_model(
     )
 
 
+def with_openrouter_model_capabilities(
+    config: ChatConfig,
+    model: str | None,
+) -> ChatConfig:
+    if config.model_capabilities is not None:
+        return config
+    capabilities = openrouter_static_capabilities(model or "")
+    if capabilities is None:
+        return config
+    return config.model_copy(update={"model_capabilities": capabilities})
+
+
 def generation_chat_config(
     policy: dict[str, Any],
     *,
@@ -1641,13 +1654,16 @@ def generation_chat_config(
         if isinstance(raw_budget, int | float) and not isinstance(raw_budget, bool)
         else THINKING_BUDGETS[budget_level]
     )
-    return ChatConfig(
-        max_tokens=int(policy.get("max_tokens") or ChatConfig().max_tokens),
-        temperature=policy.get("temperature"),
-        thinking=bool(policy.get("thinking_enabled", True)),
-        thinking_level=thinking_level,
-        thinking_budget_tokens=thinking_budget,
-        tool_choice=tool_choice,
+    return with_openrouter_model_capabilities(
+        ChatConfig(
+            max_tokens=int(policy.get("max_tokens") or ChatConfig().max_tokens),
+            temperature=policy.get("temperature"),
+            thinking=bool(policy.get("thinking_enabled", True)),
+            thinking_level=thinking_level,
+            thinking_budget_tokens=thinking_budget,
+            tool_choice=tool_choice,
+        ),
+        model,
     )
 
 
@@ -1803,12 +1819,17 @@ def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> 
     preserve_temperature = bool(getattr(profile, "preserve_member_temperature", False))
 
     def _apply_member_policy(member: Any) -> Any:
-        update: dict[str, Any] = {
-            "temperature": policy.get("temperature"),
-            "thinking": generation_thinking_for_model(
+        thinking = (
+            generation_thinking_for_model(
                 str(getattr(member, "model", "") or ""),
                 policy,
-            ),
+            )
+            if bool(policy.get("thinking_enabled", True))
+            else "off"
+        )
+        update: dict[str, Any] = {
+            "temperature": policy.get("temperature"),
+            "thinking": thinking,
         }
         if preserve_temperature and getattr(member, "temperature", None) is not None:
             update.pop("temperature", None)
@@ -1822,6 +1843,103 @@ def apply_generation_policy_to_profile(profile: Any, policy: dict[str, Any]) -> 
     if getattr(profile, "candidate_scorer", None) is not None:
         update["candidate_scorer"] = _apply_member_policy(profile.candidate_scorer)
     return profile.model_copy(update=update)
+
+
+def apply_generation_policy_to_ensemble_provider(
+    provider: EnsembleProvider,
+    policy: dict[str, Any],
+) -> EnsembleProvider:
+    """Apply the run-wide frozen generation policy to realized ensemble members."""
+
+    def _apply(member: EnsembleMemberConfig) -> EnsembleMemberConfig:
+        model = member.provider_config.model
+        thinking = (
+            generation_thinking_for_model(model, policy)
+            if bool(policy.get("thinking_enabled", True))
+            else "off"
+        )
+        updates: dict[str, Any] = {
+            "temperature": policy.get("temperature"),
+            "thinking": thinking,
+        }
+        if policy.get("max_tokens_overridden"):
+            updates["max_tokens"] = int(policy["max_tokens"])
+        return replace(member, **updates)
+
+    provider.proposers = [_apply(member) for member in provider.proposers]
+    provider.aggregator = _apply(provider.aggregator)
+    provider._member_request_budget_bindings = {}
+    member_generation = [
+        {
+            "role": role,
+            "label": member.label,
+            "provider": member.provider_config.provider,
+            "model": member.provider_config.model,
+            "temperature": member.temperature,
+            "max_tokens": member.max_tokens,
+            "thinking": member.thinking,
+            "thinking_budget_tokens": int(policy.get("thinking_budget_tokens") or 0),
+            "k": member.k,
+        }
+        for role, member in [
+            *(("proposer", member) for member in provider.proposers),
+            ("aggregator", provider.aggregator),
+        ]
+    ]
+    provider.selection_plan = {
+        **dict(provider.selection_plan),
+        "generation_policy_applied": True,
+        "member_generation": member_generation,
+    }
+    return provider
+
+
+def validate_strict_openrouter_ensemble_members(
+    provider: EnsembleProvider,
+    policy: dict[str, Any],
+    *,
+    fallback_config: ProviderConfig | None = None,
+) -> None:
+    """Fail before billing when a realized member cannot honor the frozen request."""
+
+    strict_routing = os.environ.get("OPENSQUILLA_PROVIDER_ROUTING_STRICT", "").strip().lower()
+    truthy = {"1", "true", "yes", "on", "enabled"}
+    strict_routing_enabled = strict_routing in truthy
+    require_parameters = os.environ.get(
+        "OPENSQUILLA_OPENROUTER_REQUIRE_PARAMETERS", ""
+    ).strip().lower()
+    require_parameters_enabled = require_parameters in truthy
+    requests: list[tuple[ProviderConfig, str]] = [
+        (member.provider_config, str(member.thinking or ""))
+        for member in [*provider.proposers, provider.aggregator]
+    ]
+    if fallback_config is not None:
+        fallback_thinking = (
+            generation_thinking_for_model(fallback_config.model, policy)
+            if bool(policy.get("thinking_enabled", True))
+            else "off"
+        )
+        requests.append((fallback_config, fallback_thinking))
+    for cfg, raw_thinking in requests:
+        if cfg.provider.strip().lower() != "openrouter":
+            continue
+        model = cfg.model.strip()
+        thinking = raw_thinking.strip().lower()
+        if bool(policy.get("thinking_enabled", True)) and thinking not in {"", "off"}:
+            capabilities = openrouter_static_capabilities(model)
+            if capabilities is None or not capabilities.supports_reasoning:
+                raise ValueError(
+                    f"OpenRouter model {model!r} cannot prove support for "
+                    f"frozen thinking={thinking!r}"
+                )
+        if strict_routing_enabled and model not in cfg.provider_routing:
+            raise ValueError(
+                f"OpenRouter model {model!r} has no strict upstream provider pin"
+            )
+        if strict_routing_enabled and not require_parameters_enabled:
+            raise ValueError(
+                "strict OpenRouter routing requires parameter compatibility enforcement"
+            )
 
 
 def compact_chat_config(
@@ -2129,6 +2247,7 @@ async def build_experiment_provider(
     ensemble_proposer_timeout: float | None,
     ensemble_aggregator_timeout: float | None,
     experiment_config: DracoExperimentConfig | None = None,
+    generation_policy: dict[str, Any] | None = None,
 ) -> ProviderBuildResult:
     """Build one DRACO provider through the same routing primitives as runtime.py."""
 
@@ -2303,6 +2422,7 @@ async def build_experiment_provider(
             "routing_applied": turn.metadata.get("routing_applied"),
             "rollout_phase": turn.metadata.get("rollout_phase"),
         }
+    routing_trace["fallback_model"] = routed_config.model
     if kind == "router_single":
         result = ProviderBuildResult(
             provider=routed_provider,
@@ -2444,6 +2564,16 @@ async def build_experiment_provider(
     )
     if b2_experiment is not None:
         provider = align_b2_provider_to_g12(provider, b2_experiment)
+    if generation_policy is not None:
+        provider = apply_generation_policy_to_ensemble_provider(
+            provider,
+            generation_policy,
+        )
+        validate_strict_openrouter_ensemble_members(
+            provider,
+            generation_policy,
+            fallback_config=routed_config,
+        )
     routing_trace.update(
         {
             "selection_mode": selection_mode,
@@ -3993,9 +4123,20 @@ async def run_one(
             ensemble_proposer_timeout=ensemble_proposer_timeout,
             ensemble_aggregator_timeout=ensemble_aggregator_timeout,
             experiment_config=experiment_config,
+            generation_policy=generation_policy,
         )
         provider = build.provider
         effective_prompt = build.prompt
+        generation_config = with_openrouter_model_capabilities(
+            generation_config,
+            str(
+                build.routing_trace.get("fallback_model")
+                or build.routing_trace.get("applied_model")
+                or build.routing_trace.get("routed_model")
+                or build.routing_trace.get("model")
+                or ""
+            ),
+        )
     except Exception as exc:  # noqa: BLE001 - report config errors per row
         provider_error = f"{type(exc).__name__}: {exc}"
     if provider is not None:

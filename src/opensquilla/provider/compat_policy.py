@@ -85,6 +85,9 @@ class OpenAICompatPolicy:
     # dropped rather than rejected by the API.
     fixed_sampling_model_prefixes: tuple[str, ...] = ()
 
+    # Models whose official endpoint does not accept ``temperature`` at all.
+    unsupported_temperature_model_prefixes: tuple[str, ...] = ()
+
     # Models that reject a temperature while extended thinking is active
     # (official host only).
     omit_temperature_when_thinking_model_prefixes: tuple[str, ...] = ()
@@ -220,6 +223,17 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
         log_payload_cache_shape=True,
         replay_reasoning_format="openrouter",
         disable_reasoning_by_default_models=_OPENROUTER_DISABLE_REASONING_MODELS,
+        # These pinned upstreams do not advertise ``temperature`` support.
+        # With OpenRouter's require_parameters gate, forwarding the field
+        # rejects every otherwise-compatible endpoint instead of ignoring it.
+        unsupported_temperature_model_prefixes=(
+            "claude-opus-4.8",
+            "claude-sonnet-5",
+            "gpt-5.5",
+            "gpt-5.6",
+            "kimi-k2.6",
+            "kimi-k2.7",
+        ),
         allow_post_terminal_noop_choice=True,
         post_terminal_metadata_keys=frozenset(
             {"openrouter_metadata", "provider"}

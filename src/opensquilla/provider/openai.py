@@ -578,6 +578,12 @@ def _should_send_temperature(
         return False
     model_name = _model_basename(model)
     if (
+        policy.unsupported_temperature_model_prefixes
+        and _on_official_host(policy, base_url)
+        and model_name.startswith(policy.unsupported_temperature_model_prefixes)
+    ):
+        return False
+    if (
         policy.fixed_sampling_model_prefixes
         and model_name.startswith(policy.fixed_sampling_model_prefixes)
         and cfg.temperature != 1.0
@@ -2852,6 +2858,11 @@ class OpenAIProvider:
                 payload["tool_choice"] = cfg.tool_choice
         if self._compat.supports_provider_routing_pin:
             pinned_provider = self._provider_routing.get(self._model)
+            if self._provider_routing_strict and not pinned_provider:
+                raise ValueError(
+                    "strict OpenRouter routing has no upstream provider pin for "
+                    f"model {self._model!r}"
+                )
             if pinned_provider:
                 if self._provider_routing_strict:
                     payload["provider"] = {
@@ -2863,8 +2874,9 @@ class OpenAIProvider:
                         "order": [pinned_provider],
                         "allow_fallbacks": True,
                     }
-                if self._openrouter_require_parameters:
-                    payload["provider"]["require_parameters"] = True
+            if self._openrouter_require_parameters:
+                provider_settings = payload.setdefault("provider", {})
+                provider_settings["require_parameters"] = True
 
         # Reasoning injection (gated on thinking being enabled). Gating —
         # which model/capability profile triggers a payload at all — lives

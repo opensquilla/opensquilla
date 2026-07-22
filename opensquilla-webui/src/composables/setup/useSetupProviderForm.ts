@@ -159,6 +159,7 @@ export interface ProviderCredentialPanelState {
   requiresApiKey: boolean
   source: string
   available: boolean
+  removable: boolean
   envKey: string
   masked: string
   revealAllowed: boolean
@@ -177,6 +178,7 @@ export interface ProviderCredentialPanelState {
   onHideReveal?: () => void
   onReplace?: () => void
   onCancelReplace?: () => void
+  onRemoveCredential?: () => void
 }
 
 // Probe failure kinds that mean "the credential itself was rejected" (vs. the

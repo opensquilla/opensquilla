@@ -339,6 +339,7 @@ const providerActivation = ref<{
 // Keep a synchronous lock as well as the rendered phase so a second click in
 // the confirmation microtask cannot start another activation.
 let providerActivationRequestPending = false
+let providerCredentialRemovalPending = false
 const providerSelectionKind = ref<'primary' | 'profile' | 'new'>('primary')
 const behaviorForm = useSetupBehaviorForm()
 const routerForm = useSetupRouterForm()
@@ -1063,6 +1064,25 @@ const providerCredentialPanel = computed<ProviderCredentialPanelState | null>(()
         masked: '',
         revealAllowed: false,
       }
+  const configuredPrimaryEnv = String((config.value.llm || {}).api_key_env || '').trim()
+  const storedProfile = storedProfileConfig(selectedProviderId)
+  const configuredProfileEnv = String(storedProfile.api_key_env || '').trim()
+  const configuredProfilePool = Array.isArray(storedProfile.api_key_env_pool)
+    && storedProfile.api_key_env_pool.some(value => String(value || '').trim())
+  const rawProfileCredentialSource = String(profileCredential?.credentialSource || '')
+  const removable = savedMatchesSelected && (
+    editingPrimaryProvider.value
+      ? savedCredential.source === 'explicit' || Boolean(configuredPrimaryEnv)
+      : (
+          ['profile', 'profile_pool', 'profile_pool_env', 'profile_env', 'explicit'].includes(
+            rawProfileCredentialSource,
+          )
+          || (
+            rawProfileCredentialSource === 'env'
+            && (Boolean(configuredProfileEnv) || configuredProfilePool)
+          )
+        )
+  )
   const requiresApiKey = providerSpec.value.requiresApiKey !== false
   const acceptsApiKey = providerSpec.value.acceptsApiKey !== undefined
     ? providerSpec.value.acceptsApiKey === true
@@ -1092,6 +1112,7 @@ const providerCredentialPanel = computed<ProviderCredentialPanelState | null>(()
     acceptsApiKey,
     requiresApiKey,
     available: savedMatchesSelected ? savedCredential.available === true : !requiresApiKey,
+    removable,
     source: savedMatchesSelected
       ? String(savedCredential.source || 'none')
       : (requiresApiKey ? 'none' : 'not_required'),
@@ -1119,6 +1140,9 @@ const providerCredentialPanel = computed<ProviderCredentialPanelState | null>(()
     },
     onCancelReplace: () => {
       if (!providerInteractionLocked()) providerForm.cancelCredentialReplace()
+    },
+    onRemoveCredential: () => {
+      void removeProviderCredential()
     },
   }
 })
@@ -1744,7 +1768,11 @@ function providerProbeFieldLabel(field: FieldSpec): string {
 }
 
 function providerInteractionLocked(): boolean {
-  return providerActivationRequestPending || providerActivation.value.phase === 'activating'
+  return (
+    providerActivationRequestPending
+    || providerActivation.value.phase === 'activating'
+    || providerCredentialRemovalPending
+  )
 }
 
 function selectProvider(value: string) {
@@ -2021,6 +2049,62 @@ async function revealProviderCredential() {
     providerForm.setRevealError(t('setup.provider.credentialRevealUnavailable'))
   } catch (err) {
     providerForm.setRevealError(saveFailedMessage(err))
+  }
+}
+
+async function removeProviderCredential() {
+  if (providerInteractionLocked()) return
+  const credential = providerCredentialPanel.value
+  const provider = normalizeProviderId(providerForm.selectedProvider.value)
+  if (!credential || !provider) return
+  if (!['explicit', 'env', 'missing_env'].includes(credential.source)) return
+  if (!editingPrimaryProvider.value && !selectedStoredProfile.value) return
+  if (!(await confirmProviderDraftDiscard())) return
+
+  const clearingPrimary = editingPrimaryProvider.value
+  const providerLabel = credential.providerLabel || providerCatalogLabel(provider)
+  const ok = await confirm({
+    title: t('setup.provider.removeCredentialConfirmTitle'),
+    body: t('setup.provider.removeCredentialConfirmBody', {
+      provider: providerLabel,
+    }),
+    primaryLabel: t('setup.provider.removeCredentialConfirmPrimary'),
+  })
+  if (!ok) return
+
+  providerCredentialRemovalPending = true
+  providerForm.hideRevealedCredential()
+  try {
+    const method = clearingPrimary
+      ? 'onboarding.provider.credential.clear'
+      : 'onboarding.llmProfile.credential.clear'
+    const response = await rpc.call<{
+      entry?: {
+        externalCredentialActive?: boolean
+        credentialEnv?: string
+      }
+    }>(method, { providerId: provider })
+    if (response?.entry?.externalCredentialActive) {
+      pushToast(t('setup.toast.providerCredentialExternalStillActive', {
+        provider: providerLabel,
+        envKey: response.entry.credentialEnv || credential.envKey,
+      }), { tone: 'warn' })
+    } else {
+      pushToast(t('setup.toast.providerCredentialRemoved', {
+        provider: providerLabel,
+      }))
+    }
+    await loadData()
+    // A reload intentionally rehydrates the primary editor. Credential removal
+    // does not remove a stored profile, so return the user to the provider they
+    // were editing instead of making the successful action look like navigation.
+    if (!clearingPrimary && storedProfileIds.value.has(provider)) {
+      applyConfiguredProviderSelection(provider)
+    }
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+  } finally {
+    providerCredentialRemovalPending = false
   }
 }
 
@@ -2804,6 +2888,7 @@ async function copyConfigPath() {
     activateProvider,
     removeProviderProfile,
     revealProviderCredential,
+    removeProviderCredential,
     updateTierField,
     updateChannelField,
     updateCapabilityField,

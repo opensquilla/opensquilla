@@ -701,6 +701,7 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
       @hide-reveal="panel.credentialPanel.onHideReveal?.()"
       @replace="panel.credentialPanel.onReplace?.()"
       @cancel-replace="panel.credentialPanel.onCancelReplace?.()"
+      @remove-credential="panel.credentialPanel.onRemoveCredential?.()"
       @test-connection="emit('probeConnection')"
       @update-field="(name, value) => emit('updateProviderField', name, value)"
     />

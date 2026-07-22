@@ -12,6 +12,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     acceptsApiKey: true,
     requiresApiKey: true,
     available: true,
+    removable: true,
     source: 'env',
     envKey: 'DEEPSEEK_API_KEY',
     masked: 'sk-••••7890',
@@ -60,7 +61,13 @@ beforeEach(() => {
   // The verdict keys land in the locale JSONs via the i18n merge step; inject
   // them here so assertions exercise interpolation instead of raw key names.
   i18n.global.mergeLocaleMessage('en', {
-    setup: { provider: { verdictModels: '{count} models · e.g. {samples}', verdictSampleJoiner: ', ' } },
+    setup: {
+      provider: {
+        removeCredential: 'Remove saved key',
+        verdictModels: '{count} models · e.g. {samples}',
+        verdictSampleJoiner: ', ',
+      },
+    },
   })
   i18n.global.mergeLocaleMessage('zh-Hans', {
     setup: { provider: { verdictModels: '{count} 个模型 · 例如 {samples}', verdictSampleJoiner: '、' } },
@@ -209,6 +216,67 @@ describe('SetupProviderCredentialCard', () => {
     expect(inputShell?.querySelector('.setup-provider-credential__input-action[aria-label="Show API key"]')).toBeTruthy()
     expect(fieldRow?.querySelector('.setup-provider-credential__replace')?.textContent).toContain('Replace key')
     expect(el.querySelector('.setup-provider-credential__actions')).toBeNull()
+
+    app.unmount()
+  })
+
+  it.each(['explicit', 'env', 'missing_env'])(
+    'offers a low-emphasis removal action for a saved %s credential reference',
+    async source => {
+      const onRemoveCredential = vi.fn()
+      const { app, el } = await mountCard({ source }, { onRemoveCredential })
+
+      const remove = el.querySelector<HTMLButtonElement>('.setup-provider-credential__remove')
+      expect(remove).toBeTruthy()
+      expect(remove?.textContent?.trim()).toBe('Remove saved key')
+      expect(remove?.classList.contains('btn--ghost')).toBe(true)
+      expect(remove?.getAttribute('aria-label')).toBe('Remove saved key — DeepSeek')
+
+      remove?.click()
+      expect(onRemoveCredential).toHaveBeenCalledTimes(1)
+
+      app.unmount()
+    },
+  )
+
+  it('keeps removal available for a write-only saved credential', async () => {
+    const onRemoveCredential = vi.fn()
+    const { app, el } = await mountCard(
+      { source: 'explicit', masked: '', revealAllowed: false, available: true },
+      { onRemoveCredential },
+    )
+
+    expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeTruthy()
+    const remove = el.querySelector<HTMLButtonElement>('.setup-provider-credential__remove')
+    expect(remove).toBeTruthy()
+
+    remove?.click()
+    expect(onRemoveCredential).toHaveBeenCalledTimes(1)
+
+    app.unmount()
+  })
+
+  it.each(['none', 'not_required'])(
+    'does not offer credential removal when the current source is %s',
+    async source => {
+      const { app, el } = await mountCard({
+        source,
+        masked: '',
+        available: false,
+        removable: false,
+      })
+
+      expect(el.querySelector('.setup-provider-credential__remove')).toBeNull()
+
+      app.unmount()
+    },
+  )
+
+  it('does not compete with replacement controls while a replacement is in progress', async () => {
+    const { app, el } = await mountCard({ source: 'explicit', replacing: true })
+
+    expect(el.querySelector('.setup-provider-credential__remove')).toBeNull()
+    expect(Array.from(el.querySelectorAll('button')).some(btn => btn.textContent?.trim() === 'Cancel')).toBe(true)
 
     app.unmount()
   })

@@ -386,6 +386,27 @@ describe('useSetupProviderForm — connection state machine', () => {
     })
   })
 
+  it('lets a canonical model override replace the form model for a probe', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    f.updateField('model', 'stale-provider-form-model')
+
+    await f.probeConnection({
+      defaultModel: 'fallback-model',
+      modelOverride: 'canonical-fixed-model',
+    })
+
+    expect(callMock).toHaveBeenNthCalledWith(1, 'onboarding.provider.probe', {
+      providerId: 'openai',
+      model: 'canonical-fixed-model',
+    })
+    expect(callMock).toHaveBeenNthCalledWith(2, 'onboarding.models.discover', {
+      providerId: 'openai',
+      model: 'canonical-fixed-model',
+    })
+  })
+
   it('classifies auth_invalid as key_invalid', async () => {
     mockRpc({
       probe: {

@@ -550,8 +550,14 @@
       "recommendedBadge": "Recommandé",
       "advancedBadge": "Avancé",
       "routerTitle": "Routage intelligent des modèles",
-      "visualModeLabel": "Style du panneau de routage",
-      "visualModeDesc": "Présentation du panneau de décision de routage dans les réponses du chat.",
+      "fallbackTierLabel": "Quand le routage est incertain",
+      "fallbackTierDesc": "Utilisez ce niveau par défaut lorsque le routage ne peut pas déterminer avec certitude le niveau de la requête.",
+      "modelRolesTitle": "Rôles des modèles",
+      "modelRolesDesc": "Définissez le modèle chargé de chaque niveau de complexité des requêtes.",
+      "advancedTitle": "Options d’affichage",
+      "advancedDesc": "Modifiez l’affichage des informations de routage dans le chat sans affecter la sélection des modèles.",
+      "visualModeLabel": "Style du panneau de décision de routage",
+      "visualModeDesc": "Choisissez l’apparence du panneau de décision de routage dans les réponses du chat. Cela ne modifie pas le comportement du routage.",
       "crossProviderNotice": "Le routage inter-fournisseurs est actif. Vérifie chaque niveau avant d’enregistrer.",
       "cards": {
         "router": {

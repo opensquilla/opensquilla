@@ -499,7 +499,8 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
 
         <label class="control-row">
           <div class="control-row__label-block">
-            <span class="control-row__label">{{ t('setup.router.defaultRoutingTier') }}</span>
+            <span class="control-row__label">{{ t('setup.modelStrategy.fallbackTierLabel') }}</span>
+            <span class="control-row__desc">{{ t('setup.modelStrategy.fallbackTierDesc') }}</span>
           </div>
           <div class="control-row__control">
             <select
@@ -514,26 +515,10 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           </div>
         </label>
 
-        <label class="control-row">
-          <div class="control-row__label-block">
-            <span class="control-row__label">{{ t('setup.modelStrategy.visualModeLabel') }}</span>
-            <span class="control-row__desc">{{ t('setup.modelStrategy.visualModeDesc') }}</span>
-          </div>
-          <div class="control-row__control">
-            <!-- Chat-panel visualization for routing decisions (squilla_router.visual_mode):
-                 cosmetic only, but user-persisted — without this row a saved
-                 legacy_grid choice becomes unreachable from the UI. -->
-            <select
-              class="control-input"
-              :value="panel.router.routerVisualMode"
-              name="setup_model_strategy_router_visual_mode"
-              :disabled="routerEditingDisabled"
-              @change="emit('updateRouterVisualMode', ($event.target as HTMLSelectElement).value)"
-            >
-              <option v-for="option in panel.router.routerVisualModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
-            </select>
-          </div>
-        </label>
+        <div class="setup-model-strategy__roles-head">
+          <h4>{{ t('setup.modelStrategy.modelRolesTitle') }}</h4>
+          <p>{{ t('setup.modelStrategy.modelRolesDesc') }}</p>
+        </div>
 
         <SetupTierTable
           :rows="panel.router.tierRows"
@@ -544,6 +529,42 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           :models-by-provider="panel.router.discoveredModelsByProvider || {}"
           @update-tier-field="(name, key, value) => emit('updateTierField', name, key, value)"
         />
+
+        <details
+          class="setup-model-strategy__runtime setup-model-strategy__advanced"
+          data-testid="router-advanced-options"
+        >
+          <summary>
+            <Icon name="gear" :size="16" aria-hidden="true" />
+            <span class="setup-model-strategy__runtime-title">
+              {{ t('setup.modelStrategy.advancedTitle') }}
+              <small>{{ t('setup.modelStrategy.advancedDesc') }}</small>
+            </span>
+            <Icon class="setup-model-strategy__runtime-chevron" name="chevronDown" :size="15" aria-hidden="true" />
+          </summary>
+          <div class="setup-model-strategy__runtime-body">
+            <label class="control-row">
+              <div class="control-row__label-block">
+                <span class="control-row__label">{{ t('setup.modelStrategy.visualModeLabel') }}</span>
+                <span class="control-row__desc">{{ t('setup.modelStrategy.visualModeDesc') }}</span>
+              </div>
+              <div class="control-row__control">
+                <!-- Chat-panel visualization for routing decisions (squilla_router.visual_mode):
+                     cosmetic only, but user-persisted — without this row a saved
+                     legacy_grid choice becomes unreachable from the UI. -->
+                <select
+                  class="control-input"
+                  :value="panel.router.routerVisualMode"
+                  name="setup_model_strategy_router_visual_mode"
+                  :disabled="routerEditingDisabled"
+                  @change="emit('updateRouterVisualMode', ($event.target as HTMLSelectElement).value)"
+                >
+                  <option v-for="option in panel.router.routerVisualModeOptions" :key="option.value" :value="option.value">{{ option.label }}</option>
+                </select>
+              </div>
+            </label>
+          </div>
+        </details>
       </section>
 
       <section
@@ -1380,6 +1401,23 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
 .setup-model-strategy__detail {
   border-top: 1px solid var(--border);
   padding-top: var(--sp-3);
+}
+
+.setup-model-strategy__roles-head {
+  display: grid;
+  gap: 3px;
+  margin-top: var(--sp-1);
+}
+
+.setup-model-strategy__roles-head h4,
+.setup-model-strategy__roles-head p {
+  margin: 0;
+}
+
+.setup-model-strategy__roles-head p {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.45;
 }
 
 .setup-model-strategy__candidate-list {

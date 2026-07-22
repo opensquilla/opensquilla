@@ -550,8 +550,14 @@
       "recommendedBadge": "推荐",
       "advancedBadge": "高级",
       "routerTitle": "智能模型路由",
-      "visualModeLabel": "路由面板样式",
-      "visualModeDesc": "聊天回复中路由决策面板的呈现方式。",
+      "fallbackTierLabel": "路由无法确定时",
+      "fallbackTierDesc": "当路由无法有把握地判断请求层级时，使用这个默认层级。",
+      "modelRolesTitle": "模型角色",
+      "modelRolesDesc": "按请求复杂度，指定每个层级负责的模型。",
+      "advancedTitle": "显示选项",
+      "advancedDesc": "调整聊天中路由信息的显示方式，不影响模型选择。",
+      "visualModeLabel": "路由决策面板样式",
+      "visualModeDesc": "选择路由决策面板在聊天回复中的显示方式，不会改变路由行为。",
       "crossProviderNotice": "跨服务商路由已启用。保存前请检查每个分层。",
       "cards": {
         "router": {

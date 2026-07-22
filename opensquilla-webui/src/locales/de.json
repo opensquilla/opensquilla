@@ -550,8 +550,14 @@
       "recommendedBadge": "Empfohlen",
       "advancedBadge": "Erweitert",
       "routerTitle": "Intelligentes Modellrouting",
-      "visualModeLabel": "Stil des Routing-Panels",
-      "visualModeDesc": "Darstellung des Routing-Entscheidungspanels in Chat-Antworten.",
+      "fallbackTierLabel": "Wenn das Routing unsicher ist",
+      "fallbackTierDesc": "Diese Standardstufe wird verwendet, wenn das Routing die Anforderungsstufe nicht sicher bestimmen kann.",
+      "modelRolesTitle": "Modellrollen",
+      "modelRolesDesc": "Lege fest, welches Modell die jeweilige Komplexitätsstufe bearbeitet.",
+      "advancedTitle": "Anzeigeoptionen",
+      "advancedDesc": "Passe die Routing-Anzeige im Chat an, ohne die Modellauswahl zu verändern.",
+      "visualModeLabel": "Stil des Routing-Entscheidungspanels",
+      "visualModeDesc": "Lege fest, wie das Routing-Entscheidungspanel in Chat-Antworten erscheint. Das Routing-Verhalten bleibt unverändert.",
       "crossProviderNotice": "Provider-übergreifendes Routing ist aktiv. Prüfe jeden Tier vor dem Speichern.",
       "cards": {
         "router": {

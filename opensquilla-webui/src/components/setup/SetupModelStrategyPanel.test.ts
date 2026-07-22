@@ -204,7 +204,8 @@ describe('SetupModelStrategyPanel', () => {
   it('shows router details when model router is active', async () => {
     const { app, el } = await mountPanel({ activeStrategy: 'router' })
 
-    expect(el.textContent).toContain('Default model tier')
+    expect(el.textContent).toContain('When routing is uncertain')
+    expect(el.textContent).toContain('Model roles')
     expect(el.textContent).toContain('Choose models for each request level. One provider can supply every level.')
     expect(el.textContent).not.toContain('Preset and credentials from OpenRouter')
     expect(el.querySelector('[role="table"]')).toBeTruthy()
@@ -212,7 +213,13 @@ describe('SetupModelStrategyPanel', () => {
     // it strands a saved legacy_grid choice with no UI path back.
     const visualMode = el.querySelector<HTMLSelectElement>('select[name="setup_model_strategy_router_visual_mode"]')
     expect(visualMode?.value).toBe('real_candidates')
-    expect(el.textContent).toContain('Routing panel style')
+    const advanced = visualMode?.closest<HTMLDetailsElement>('details')
+    expect(advanced?.open).toBe(false)
+    expect(advanced?.querySelector('summary')?.textContent).toContain('Display options')
+    advanced?.querySelector<HTMLElement>('summary')?.click()
+    await nextTick()
+    expect(advanced?.open).toBe(true)
+    expect(el.textContent).toContain('Routing decision panel style')
 
     app.unmount()
   })
@@ -1071,7 +1078,7 @@ describe('SetupModelStrategyPanel', () => {
     expect(el.textContent).toContain('Fixed model')
     expect(el.textContent).toContain('Every request goes to the current model: OpenRouter · deepseek/deepseek-v4-pro.')
     expect(el.textContent).toContain('without automatic routing or multi-model collaboration')
-    expect(el.textContent).not.toContain('Default model tier')
+    expect(el.textContent).not.toContain('When routing is uncertain')
     expect(el.querySelector('[role="table"]')).toBeNull()
 
     app.unmount()

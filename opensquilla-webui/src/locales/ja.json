@@ -550,8 +550,14 @@
       "recommendedBadge": "おすすめ",
       "advancedBadge": "高度",
       "routerTitle": "インテリジェントモデルルーティング",
-      "visualModeLabel": "ルーティングパネルの表示スタイル",
-      "visualModeDesc": "チャット返信に表示されるルーティング決定パネルの表示方法。",
+      "fallbackTierLabel": "ルーティングが確信できない場合",
+      "fallbackTierDesc": "リクエストのレベルを十分な確信をもって判断できない場合、この既定の階層を使用します。",
+      "modelRolesTitle": "モデルの役割",
+      "modelRolesDesc": "リクエストの複雑さごとに担当するモデルを設定します。",
+      "advancedTitle": "表示オプション",
+      "advancedDesc": "モデル選択に影響を与えず、チャット内のルーティング情報の表示方法を変更します。",
+      "visualModeLabel": "ルーティング決定パネルの表示スタイル",
+      "visualModeDesc": "チャット返信でのルーティング決定パネルの表示方法を選びます。ルーティング動作は変わりません。",
       "crossProviderNotice": "プロバイダー横断ルーティングが有効です。保存前に各ティアを確認してください。",
       "cards": {
         "router": {

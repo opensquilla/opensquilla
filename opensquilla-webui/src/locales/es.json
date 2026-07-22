@@ -550,8 +550,14 @@
       "recommendedBadge": "Recomendado",
       "advancedBadge": "Avanzado",
       "routerTitle": "Enrutamiento inteligente de modelos",
-      "visualModeLabel": "Estilo del panel de enrutamiento",
-      "visualModeDesc": "Cómo se muestra el panel de decisión de enrutamiento en las respuestas del chat.",
+      "fallbackTierLabel": "Cuando el enrutamiento no esté seguro",
+      "fallbackTierDesc": "Usa este nivel predeterminado cuando el enrutamiento no pueda determinar con seguridad el nivel de la solicitud.",
+      "modelRolesTitle": "Roles de los modelos",
+      "modelRolesDesc": "Define qué modelo gestiona cada nivel de complejidad de las solicitudes.",
+      "advancedTitle": "Opciones de visualización",
+      "advancedDesc": "Cambia cómo aparece la información de enrutamiento en el chat sin afectar la selección de modelos.",
+      "visualModeLabel": "Estilo del panel de decisión de enrutamiento",
+      "visualModeDesc": "Elige cómo aparece el panel de decisión de enrutamiento en las respuestas del chat. Esto no cambia el comportamiento del enrutamiento.",
       "crossProviderNotice": "El routing entre proveedores está activo. Revisa cada nivel antes de guardar.",
       "cards": {
         "router": {

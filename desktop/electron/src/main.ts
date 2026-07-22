@@ -24,6 +24,8 @@ import { DesktopWriterAdmission } from './desktop-writer-admission.js'
 import {
   createDesktopGatewayInstanceNonce,
   desktopGatewayOwnershipMatchesLaunch,
+  desktopGatewayStartIdentityConflict,
+  desktopProcessStartIdentity,
   desktopProfileFingerprint,
   loadDesktopGatewayOwnershipRecord,
   requestVerifiedDesktopGatewayShutdown,
@@ -5780,6 +5782,7 @@ async function verifyDesktopGatewayOwnershipWhenReady(
   record: DesktopGatewayOwnershipRecord,
 ): Promise<boolean> {
   const deadline = Date.now() + VERIFIED_ORPHAN_IDENTITY_READY_TIMEOUT_MS
+  let startIdentityChecked = false
   do {
     if (await verifyDesktopGatewayOwnership(record, { timeoutMs: 750 })) return true
     const current = loadDesktopGatewayOwnershipRecord(ownershipDir)
@@ -5788,6 +5791,20 @@ async function verifyDesktopGatewayOwnershipWhenReady(
       || !sameDesktopGatewayOwnershipInstance(current.record, record)
       || !processIdMayStillBeAlive(record.pid)
     ) return false
+    if (!startIdentityChecked) {
+      // The liveness probe cannot tell a slowly-starting orphan from an
+      // unrelated process that recycled the recorded PID (EPERM also counts
+      // as alive). When the live process's start identity provably disagrees
+      // with the record, the record is stale: stop waiting out the full
+      // ready timeout for a Gateway that no longer exists. An unavailable
+      // probe keeps the conservative wait; it never grants stop authority.
+      startIdentityChecked = true
+      const liveStartIdentity = desktopProcessStartIdentity(record.pid)
+      if (desktopGatewayStartIdentityConflict(record.start_identity, liveStartIdentity)) {
+        desktopLog('gateway_ownership_pid_recycled', { pid: record.pid, port: record.port })
+        return false
+      }
+    }
     if (Date.now() >= deadline) break
     await new Promise((resolveWait) => setTimeout(resolveWait, 250))
   } while (true)

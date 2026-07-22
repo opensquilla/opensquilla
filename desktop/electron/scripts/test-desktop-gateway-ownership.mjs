@@ -18,8 +18,12 @@ import {
   desktopGatewayOwnershipMatchesLaunch,
   desktopGatewayOwnershipRecordPath,
   desktopGatewayShutdownProof,
+  desktopGatewayStartIdentityConflict,
+  desktopProcessStartIdentity,
   desktopProfileFingerprint,
+  linuxProcStatStartIdentity,
   loadDesktopGatewayOwnershipRecord,
+  posixPsLstartIdentity,
   requestVerifiedDesktopGatewayShutdown,
   sameDesktopGatewayOwnershipInstance,
   verifyDesktopGatewayOwnership,
@@ -221,5 +225,106 @@ try {
 } finally {
   rmSync(root, { recursive: true, force: true })
 }
+
+// --- process-start identity: PID recycling is detected, never over-claimed ---
+
+// /proc stat parsing tolerates a parenthesized comm with spaces and ')'.
+const procStatSuffix = 'S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654321'
+assert.equal(
+  linuxProcStatStartIdentity(`4242 (gateway wor)ker) ${procStatSuffix}`),
+  'linux-proc-start-ticks:987654321',
+)
+assert.equal(linuxProcStatStartIdentity('no close paren'), null)
+assert.equal(linuxProcStatStartIdentity('4242 (short) S 1 2'), null)
+assert.equal(
+  linuxProcStatStartIdentity(`4242 (x) ${procStatSuffix.replace('987654321', 'oops')}`),
+  null,
+)
+
+// ps lstart output is whitespace-normalized exactly like the Gateway does.
+assert.equal(
+  posixPsLstartIdentity('Mon Jul 20 12:34:56  2026\n'),
+  'posix-ps-lstart:Mon Jul 20 12:34:56 2026',
+)
+assert.equal(posixPsLstartIdentity('   \n'), null)
+assert.equal(posixPsLstartIdentity(''), null)
+
+// Only a same-scheme, different-value identity is a conflict. Unknown, null,
+// cross-scheme, and the Gateway's opaque runtime fallback all fail open.
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'posix-ps-lstart:Mon Jul 20 12:34:56 2026',
+    'posix-ps-lstart:Tue Jul 21 08:00:00 2026',
+  ),
+  true,
+  'a recycled PID with a different start time must invalidate the record',
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'linux-proc-start-ticks:100',
+    'linux-proc-start-ticks:200',
+  ),
+  true,
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'windows-creation-filetime:133700000000000000',
+    'windows-creation-filetime:133700000000000001',
+  ),
+  true,
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'posix-ps-lstart:Mon Jul 20 12:34:56 2026',
+    'posix-ps-lstart:Mon Jul 20 12:34:56 2026',
+  ),
+  false,
+  'a matching start identity keeps the conservative wait',
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict('posix-ps-lstart:Mon Jul 20 12:34:56 2026', null),
+  false,
+  'an unavailable probe must fail open',
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'runtime-start:4242:1:abcd',
+    'posix-ps-lstart:Mon Jul 20 12:34:56 2026',
+  ),
+  false,
+  'the opaque runtime fallback identity is never comparable',
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'linux-proc-start-ticks:100',
+    'posix-ps-lstart:Mon Jul 20 12:34:56 2026',
+  ),
+  false,
+  'cross-scheme identities are never comparable',
+)
+assert.equal(
+  desktopGatewayStartIdentityConflict(
+    'unknown-scheme:1',
+    'unknown-scheme:2',
+  ),
+  false,
+  'unknown schemes are never comparable',
+)
+
+// The live probe answers for this very process with a comparable scheme, is
+// stable across calls, and never conflicts with itself.
+{
+  const own = desktopProcessStartIdentity(process.pid)
+  assert.ok(own, 'the platform probe should answer for the current process')
+  assert.match(
+    own,
+    /^(linux-proc-start-ticks|windows-creation-filetime|posix-ps-lstart):/,
+  )
+  assert.equal(desktopProcessStartIdentity(process.pid), own)
+  assert.equal(desktopGatewayStartIdentityConflict(own, own), false)
+}
+assert.equal(desktopProcessStartIdentity(0), null)
+assert.equal(desktopProcessStartIdentity(-1), null)
+assert.equal(desktopProcessStartIdentity(1.5), null)
 
 console.log('desktop gateway ownership checks passed')

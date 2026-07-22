@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
     return kind === 'primary' || kind === 'recovery' ? kind : null
   },
   chooseRecoveryWorkspace: (payload: unknown) => ipcRenderer.invoke('desktop:recovery:choose-workspace', payload),
+  chooseLegacyAgentDataLocation: (payload: unknown) => ipcRenderer.invoke('desktop:recovery:choose-legacy-agent-data', payload),
   recoverProfileTransaction: () => ipcRenderer.invoke('desktop:recovery:recover-transaction'),
   launchSafeProfile: (payload: unknown) => ipcRenderer.invoke('desktop:recovery:launch-safe', payload),
   retryPrimaryProfile: () => ipcRenderer.invoke('desktop:recovery:retry-primary'),
@@ -50,10 +51,6 @@ contextBridge.exposeInMainWorld('opensquillaDesktop', {
   migrationTakeLastResult: () => ipcRenderer.invoke('desktop:migration:last-result'),
   migrationPeekLastResult: () => ipcRenderer.invoke('desktop:migration:peek-last-result'),
   migrationDismissLastResult: () => ipcRenderer.invoke('desktop:migration:dismiss-last-result'),
-  selectOnboardingMigration: (payload: unknown) => ipcRenderer.invoke('desktop:onboarding:migrate:select', payload),
-  browseOnboardingMigration: (payload: unknown) => ipcRenderer.invoke('desktop:onboarding:migrate:browse', payload),
-  previewOnboardingMigration: () => ipcRenderer.invoke('desktop:onboarding:migrate:preview'),
-  applyOnboardingMigration: () => ipcRenderer.invoke('desktop:onboarding:migrate:apply'),
   onBootStatus: (callback: (payload: unknown) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => callback(payload)
     ipcRenderer.on('desktop:boot:status', listener)

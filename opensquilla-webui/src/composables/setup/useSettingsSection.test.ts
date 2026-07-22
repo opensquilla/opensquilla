@@ -14,6 +14,12 @@ describe('settings section IA', () => {
     expect(ids.indexOf('modelStrategy')).toBeLessThan(ids.indexOf('capabilities'))
   })
 
+  it('keeps data maintenance as a nested route instead of a first-level rail section', () => {
+    expect(SETTINGS_SECTIONS.map(s => s.id)).not.toContain('dataMigration')
+    expect(sectionFromRouteParam('dataMigration')).toBe('dataMigration')
+    expect(isKnownSectionParam('dataMigration')).toBe(true)
+  })
+
   it('retires the obsolete approval-policy Safety section', () => {
     const ids = SETTINGS_SECTIONS.map(s => s.id)
     expect(ids).not.toContain('safety')

@@ -164,6 +164,42 @@
       "sidebarWidthCompactStatus": "El diseño compacto usa {current}px. Se conserva tu preferencia de escritorio de {saved}px.",
       "sidebarWidthDrawerStatus": "El diseño de cajón usa {current}px. Se conserva tu preferencia de escritorio de {saved}px."
     },
+    "dataMigration": {
+      "title": "Datos y copias de seguridad",
+      "desc": "Busca y revisa datos de otra instalación de OpenSquilla. No se analiza nada hasta abrir esta página ni se cambia nada sin tu confirmación.",
+      "refresh": "Buscar de nuevo",
+      "scanning": "Buscando datos de OpenSquilla que se puedan importar…",
+      "unsupportedTitle": "Actualiza OpenSquilla para revisar importaciones",
+      "unsupportedDesc": "Esta puerta de enlace o versión de Desktop aún no admite la API de vista previa segura. Actualiza el host y vuelve a esta página.",
+      "invalidResponse": "La puerta de enlace devolvió una vista previa de migración no compatible.",
+      "compatibilityTitle": "Ubicación de datos antiguos del Agent",
+      "compatibilityDesc": "OpenSquilla usa una ubicación compatible de datos antiguos del Agent. Cambiarla modifica el origen de identidad y memoria; no mueve, combina ni elimina datos.",
+      "chooseLegacyAgentData": "Elegir ubicación de datos del Agent",
+      "recoveryTitle": "La importación no está disponible en un perfil de recuperación",
+      "loadFailed": "OpenSquilla no pudo revisar las fuentes de importación.",
+      "emptyTitle": "No se encontraron otros datos de OpenSquilla",
+      "emptyDesc": "Puedes buscar de nuevo más tarde. Desktop también permite elegir una carpeta manualmente.",
+      "chooseSourceDesc": "Revisa una fuente antes de importar. Las fuentes permanecen intactas y nunca se combinan con los datos actuales.",
+      "previewSource": "Revisar datos de {source}",
+      "webReadOnly": "Esta conexión web solo puede previsualizar la importación. Complétala en Desktop o en el host de la puerta de enlace.",
+      "hostCliHint": "Para completar desde una terminal, ejecuta la herramienta de migración en el host de la puerta de enlace. El navegador no muestra rutas del servidor.",
+      "blockers": {
+        "source_in_use": "La fuente está en uso.",
+        "source_schema_newer": "La fuente fue creada por una versión más reciente de OpenSquilla.",
+        "source_database_invalid": "No se pudo validar la base de datos de origen.",
+        "source_config_invalid": "No se pudo validar la configuración de origen.",
+        "source_unreadable": "No se pudo leer la fuente de forma segura.",
+        "insufficient_disk": "No hay suficiente espacio libre en disco.",
+        "target_recovery_required": "Hay que recuperar los datos actuales antes de importar.",
+        "target_not_replaceable": "Los datos actuales no se pueden sustituir de forma segura.",
+        "preview_unavailable": "No hay una vista previa segura disponible para esta fuente."
+      },
+      "notices": {
+        "whole_profile_replacement": "Se hará una copia completa del perfil actual antes de sustituirlo; los datos no se combinan.",
+        "previously_imported": "Esta fuente ya se importó y sigue disponible para revisión.",
+        "scheduled_jobs_will_be_paused": "Las tareas programadas importadas permanecen en pausa hasta que las revises."
+      }
+    },
     "dialog": {
       "title": "Ajustes",
       "actionNeeded": "Acción necesaria ({count})",
@@ -1033,6 +1069,10 @@
       "agentConfigLabel": "Configuración de agentes (avanzada)",
       "agentConfigDesc": "Gestiona las configuraciones de agentes existentes. Esta área cambiará en un futuro rediseño multiagente.",
       "agentConfigAction": "Abrir",
+      "dataMaintenanceLabel": "Mantenimiento de datos",
+      "dataMaintenanceDesc": "Revisa importaciones y copias. En escritorio también puedes restablecer o eliminar los datos del perfil local.",
+      "dataMaintenanceAction": "Gestionar",
+      "dataMaintenanceAria": "Abrir el mantenimiento de datos",
       "runTraceLabel": "Panel de traza de ejecución en Registros",
       "runTraceDesc": "Hace que las líneas de registro sean interactivas y abre un panel de detalle de pasos por nodo para cada línea en la vista de Registros.",
       "runTraceAria": "Panel de traza de ejecución en Registros (surte efecto tras recargar)"
@@ -2609,14 +2649,6 @@
       "hint": "La puerta de enlace aún no está lista para ejecutarse.",
       "finishSetup": "Finalizar configuración",
       "viewReadiness": "Ver preparación"
-    },
-    "legacyDataBanner": {
-      "ariaLabel": "Se encontró otra instalación de OpenSquilla",
-      "title": "Se encontró otra instalación de OpenSquilla",
-      "dismiss": "Ahora no",
-      "dismissNotice": "Descartar el aviso de transferencia de datos",
-      "hintWeb": "Tus datos actuales ya están en uso; no hace falta hacer nada. Para sustituirlos por la otra instalación, detén la puerta de enlace y ejecuta:",
-      "copyCommand": "Copiar el comando de transferencia de datos"
     },
     "shortcuts": {
       "toggleSidebar": {

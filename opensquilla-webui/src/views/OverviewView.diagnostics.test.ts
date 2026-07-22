@@ -174,6 +174,28 @@ afterEach(() => {
 const DIAGNOSE_SELECTOR = '[title="Diagnose with agent"]'
 
 describe('OverviewView diagnose-with-agent hand-off', () => {
+  it('does not render an old gateway migration finding or degraded summary', async () => {
+    const { el } = await mountOverview({
+      report: {
+        status: 'ready',
+        ready: true,
+        summary: 'Ready, 1 optional setup item',
+        counts: { error: 0, warn: 0, info: 1, ok: 0 },
+        impactCounts: { blocks_ready: 0, degrades: 0, optional: 1, none: 0 },
+        findings: [{
+          id: 'migration.legacy_home_detected',
+          surface: 'migration',
+          severity: 'info',
+          readinessImpact: 'optional',
+          title: 'Legacy data found',
+        }],
+      },
+    })
+    expect(el.textContent).not.toContain('Legacy data found')
+    expect(el.textContent).not.toContain('optional setup item')
+    expect(el.textContent).toContain('Ready')
+  })
+
   it('shows the button and routes a sanitized, escaped report into a new chat', async () => {
     const { el, push, flush } = await mountOverview()
     const button = el.querySelector<HTMLButtonElement>(DIAGNOSE_SELECTOR)
@@ -218,7 +240,7 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
     expect(el.querySelector(DIAGNOSE_SELECTOR)).toBeNull()
   })
 
-  it('removes commands from a local Desktop hand-off and supplies in-app remediations', async () => {
+  it('filters an old migration finding from local Desktop diagnostics', async () => {
     const report = baseReport()
     report.findings = [
       {
@@ -245,8 +267,8 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
     expect(prefill).toContain('"hasTerminalWorkflow":false')
     expect(prefill).toContain('"ownsGateway":true')
     expect(prefill).toContain('"connectionScope":"local_owned"')
-    expect(prefill).toContain('"route":"/settings/runtime"')
-    expect(prefill).toContain('"advancedCliAvailable":true')
+    expect(prefill).not.toContain('/settings/runtime')
+    expect(prefill).not.toContain('migration.legacy_home_detected')
     expect(prefill).not.toContain('"command":"opensquilla migrate')
     expect(prefill).not.toContain('dummyuser')
   })
@@ -279,7 +301,7 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
     expect(prefill).not.toContain('/settings/runtime')
   })
 
-  it('keeps commands in a Web hand-off with a terminal workflow', async () => {
+  it('filters old migration commands from a Web hand-off too', async () => {
     const report = baseReport()
     report.findings = [
       {
@@ -293,8 +315,9 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
     el.querySelector<HTMLButtonElement>(DIAGNOSE_SELECTOR)!.click()
     await flush()
 
-    expect(String(push.mock.calls[0][0].state?.prefill))
-      .toContain('"command":"opensquilla migrate opensquilla --source /tmp/old"')
+    const prefill = String(push.mock.calls[0][0].state?.prefill)
+    expect(prefill).not.toContain('migration.legacy_home_detected')
+    expect(prefill).not.toContain('opensquilla migrate opensquilla')
   })
 })
 
@@ -329,7 +352,7 @@ describe('OverviewView recovery activation copy', () => {
     expect(el.textContent).toContain('Restart gateway')
   })
 
-  it('keeps only the migration preview when the current target already has data', async () => {
+  it('hides old migration commands when the current target already has data', async () => {
     const report = baseReport()
     report.findings = [
       {
@@ -355,12 +378,12 @@ describe('OverviewView recovery activation copy', () => {
 
     const { el } = await mountOverview({ report })
 
-    expect(el.textContent).toContain('Preview the import')
+    expect(el.textContent).not.toContain('Preview the import')
     expect(el.textContent).not.toContain('Apply the import')
     expect(el.textContent).not.toContain('--apply')
   })
 
-  it('keeps the migration apply step for a fresh target', async () => {
+  it('hides old migration commands for a fresh target too', async () => {
     const report = baseReport()
     report.findings = [
       {
@@ -385,8 +408,9 @@ describe('OverviewView recovery activation copy', () => {
 
     const { el } = await mountOverview({ report })
 
-    expect(el.textContent).toContain('Apply the import')
-    expect(el.textContent).toContain('--apply')
+    expect(el.textContent).not.toContain('Preview the import')
+    expect(el.textContent).not.toContain('Apply the import')
+    expect(el.textContent).not.toContain('--apply')
   })
 })
 
@@ -420,7 +444,7 @@ describe('OverviewView finding settings links', () => {
     expect(push).toHaveBeenCalledWith({ path: '/settings/provider', hash: '#provider-openrouter' })
   })
 
-  it('links local Desktop migration to Runtime and capability findings to Capabilities', async () => {
+  it('filters old Desktop migration findings while retaining capability links', async () => {
     const report = baseReport()
     report.findings = [
       {
@@ -441,11 +465,8 @@ describe('OverviewView finding settings links', () => {
     const { el, push, flush } = await mountOverview({ report, desktop: true })
 
     const links = el.querySelectorAll<HTMLButtonElement>('.health-settings-link')
-    expect(links.length).toBe(2)
+    expect(links.length).toBe(1)
     links[0].click()
-    await flush()
-    expect(push).toHaveBeenCalledWith({ path: '/settings/runtime' })
-    links[1].click()
     await flush()
     expect(push).toHaveBeenCalledWith({ path: '/settings/capabilities' })
   })

@@ -276,6 +276,7 @@ import {
   buildAgentDiagnosisHandoff,
   formatLatencyLine,
   normalizeHomePaths,
+  withoutLegacyMigrationFinding,
   providerBlocksAgent,
   settingsLinkForFinding,
   xmlEscape,
@@ -709,7 +710,8 @@ async function loadHealth() {
 
   try {
     await rpc.waitForConnection()
-    const data = await rpc.call<HealthReport>('doctor.status', { agentId: 'main', deep: true })
+    const response = await rpc.call<HealthReport>('doctor.status', { agentId: 'main', deep: true })
+    const data = withoutLegacyMigrationFinding(response)
     if (!data.gatewayUrl) data.gatewayUrl = gatewayContextUrl()
     healthReport.value = data
     healthCheckedAt.value = new Date().toISOString()

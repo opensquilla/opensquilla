@@ -278,8 +278,8 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
         "sectionDetails": s.section_details,
         "envRecoveryCommands": env_recovery_commands(s),
         "warnings": list(s.warnings),
-        # Read-only legacy-home advisory for the Web UI setup flow; execution
-        # stays at the CLI layer (the block carries the command to run).
+        # Frozen compatibility key. Discovery moved to the settings-only
+        # migration RPC and this value remains null through this major.
         "legacyData": legacy_data_payload(),
     }
 

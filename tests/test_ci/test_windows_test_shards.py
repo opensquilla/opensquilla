@@ -65,6 +65,7 @@ RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_gateway/test_memory_repair_storage_gate.py",
     "tests/test_gateway/test_rpc_llm_profiles.py",
     "tests/test_gateway/test_rpc_provider_credential_clear.py",
+    "tests/test_gateway/test_rpc_migration.py",
     "tests/test_gateway/test_rpc_storage_busy.py",
     "tests/test_gateway/test_task_runtime_reservations.py",
     "tests/test_gateway/test_turn_ingress_fork.py",

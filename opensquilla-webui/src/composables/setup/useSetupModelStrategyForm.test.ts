@@ -9,7 +9,15 @@ function makeForm(provider = 'openai') {
   const ensemble = useSetupEnsembleForm()
   router.initFromConfig({ enabled: true, tier_profile: provider }, {}, provider)
   ensemble.initFromConfig({ enabled: false })
-  return { router, ensemble, strategy: useSetupModelStrategyForm(router, ensemble, computed(() => provider)) }
+  const strategy = useSetupModelStrategyForm(
+    router,
+    ensemble,
+    computed(() => provider),
+    undefined,
+    computed(() => 'gpt-5.4-mini'),
+  )
+  strategy.initFixedModel()
+  return { router, ensemble, strategy }
 }
 
 describe('useSetupModelStrategyForm', () => {
@@ -44,6 +52,23 @@ describe('useSetupModelStrategyForm', () => {
 
     ensembleDirtyForm.ensemble.setEnabled(true)
     expect(ensembleDirtyForm.strategy.isDirty.value).toBe(true)
+  })
+
+  it('tracks the fixed model as part of Model Routing and emits only its config patch', () => {
+    const { strategy } = makeForm()
+
+    expect(strategy.fixedModel.value).toBe('gpt-5.4-mini')
+    expect(strategy.fixedModelDirty.value).toBe(false)
+
+    strategy.setFixedModel('gpt-5.5')
+
+    expect(strategy.fixedModelDirty.value).toBe(true)
+    expect(strategy.isDirty.value).toBe(true)
+    expect(strategy.fixedModelPatches()).toEqual({ 'llm.model': 'gpt-5.5' })
+
+    strategy.initFixedModel('gpt-5.5')
+    expect(strategy.fixedModelPatches()).toEqual({})
+    expect(strategy.fixedModelDirty.value).toBe(false)
   })
 
   it('selecting single model disables ensemble and router', () => {
@@ -160,7 +185,7 @@ describe('useSetupModelStrategyForm', () => {
     expect(ensemble.selectionMode.value).toBe('static_tokenrhythm_b5')
   })
 
-  it('builds the three strategy rows with model router first and no badge metadata', () => {
+  it('builds the routing choices in progressive order with guidance badges', () => {
     const { router, ensemble, strategy } = makeForm()
     const routerPanel = router.createPanel({
       routerSummary: computed(() => ''),
@@ -180,9 +205,14 @@ describe('useSetupModelStrategyForm', () => {
       routerPanel,
       ensemblePanel,
       routerTemplateState: computed(() => 'recommended'),
+      fixedModelCatalog: computed(() => ({ models: [], source: 'none' as const })),
     })
 
-    expect(panel.value.cards.map(card => card.id)).toEqual(['router', 'ensemble', 'single'])
-    expect(panel.value.cards.some(card => Object.prototype.hasOwnProperty.call(card, 'recommended'))).toBe(false)
+    expect(panel.value.cards.map(card => card.id)).toEqual(['router', 'single', 'ensemble'])
+    expect(panel.value.cards.map(card => card.badgeKey || '')).toEqual([
+      'setup.modelStrategy.cards.router.badge',
+      'setup.modelStrategy.cards.single.badge',
+      'setup.modelStrategy.cards.ensemble.badge',
+    ])
   })
 })

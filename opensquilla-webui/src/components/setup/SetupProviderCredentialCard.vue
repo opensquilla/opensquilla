@@ -13,6 +13,8 @@ interface ProviderCredentialPanelContract {
   requiresApiKey: boolean
   source: string
   available: boolean
+  removable: boolean
+  removing: boolean
   envKey: string
   masked: string
   revealAllowed: boolean
@@ -34,8 +36,10 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   reveal: []
+  hideReveal: []
   replace: []
   cancelReplace: []
+  removeCredential: []
   testConnection: []
   updateField: [name: string, value: string]
 }>()
@@ -87,6 +91,10 @@ const sourceText = computed(() => {
 })
 const displayValue = computed(() => props.panel.revealed || props.panel.masked || '')
 const showRevealButton = computed(() => props.panel.revealAllowed && Boolean(props.panel.masked))
+const credentialRevealed = computed(() => Boolean(props.panel.revealed))
+const credentialToggleLabel = computed(() => (
+  credentialRevealed.value ? t('setup.provider.hideApiKey') : t('setup.provider.showApiKey')
+))
 const writeOnlySavedCredential = computed(() => (
   props.panel.available && !props.panel.revealAllowed && !props.panel.masked
 ))
@@ -94,6 +102,18 @@ const showPublicHint = computed(() => (
   !props.panel.revealAllowed && (Boolean(props.panel.masked) || props.panel.available)
 ))
 const showCredentialControls = computed(() => props.panel.providerSelected && props.panel.acceptsApiKey)
+const hasRemovableCredential = computed(() => (
+  showCredentialControls.value
+  && props.panel.removable
+))
+const removeCredentialLabel = computed(() => t(
+  props.panel.removing
+    ? 'setup.provider.removingCredential'
+    : 'setup.provider.removeCredential',
+))
+const removeCredentialAriaLabel = computed(() => (
+  `${removeCredentialLabel.value} — ${props.panel.providerLabel}`
+))
 const apiKeyLabel = computed(() => (
   props.panel.requiresApiKey
     ? t('setup.common.apiKey')
@@ -223,7 +243,10 @@ const verdictModelsText = computed(() => {
 </script>
 
 <template>
-  <section class="setup-provider-credential">
+  <section
+    class="setup-provider-credential"
+    :aria-busy="panel.removing ? 'true' : undefined"
+  >
     <div class="setup-provider-credential__head">
       <div>
         <h4 class="setup-provider-credential__title">{{ title }}</h4>
@@ -253,14 +276,30 @@ const verdictModelsText = computed(() => {
                 v-if="showRevealButton"
                 type="button"
                 class="setup-provider-credential__input-action"
-                :aria-label="t('setup.provider.viewCredential')"
-                :title="t('setup.provider.viewCredential')"
-                @click="emit('reveal')"
+                :aria-label="credentialToggleLabel"
+                :title="credentialToggleLabel"
+                @click="credentialRevealed ? emit('hideReveal') : emit('reveal')"
               >
-                <Icon name="eye" :size="14" />
+                <Icon :name="credentialRevealed ? 'eye-off' : 'eye'" :size="14" />
               </button>
             </div>
-            <button type="button" class="btn setup-provider-credential__replace" @click="emit('replace')">{{ t('setup.provider.replaceCredential') }}</button>
+            <button
+              type="button"
+              class="btn setup-provider-credential__replace"
+              @click="emit('replace')"
+            >{{ t('setup.provider.replaceCredential') }}</button>
+            <button
+              v-if="hasRemovableCredential"
+              type="button"
+              class="btn btn--ghost setup-provider-credential__remove"
+              :disabled="panel.removing"
+              :aria-busy="panel.removing ? 'true' : undefined"
+              :aria-label="removeCredentialAriaLabel"
+              @click="emit('removeCredential')"
+            >
+              <span v-if="panel.removing" class="setup-connection__spinner" aria-hidden="true"></span>
+              {{ removeCredentialLabel }}
+            </button>
           </div>
         </label>
         <p v-if="panel.revealError" class="setup-provider-credential__error">{{ panel.revealError }}</p>
@@ -299,6 +338,18 @@ const verdictModelsText = computed(() => {
               class="btn setup-provider-credential__replace"
               @click="emit('cancelReplace')"
             >{{ t('common.cancel') }}</button>
+            <button
+              v-else-if="hasRemovableCredential"
+              type="button"
+              class="btn btn--ghost setup-provider-credential__remove"
+              :disabled="panel.removing"
+              :aria-busy="panel.removing ? 'true' : undefined"
+              :aria-label="removeCredentialAriaLabel"
+              @click="emit('removeCredential')"
+            >
+              <span v-if="panel.removing" class="setup-connection__spinner" aria-hidden="true"></span>
+              {{ removeCredentialLabel }}
+            </button>
           </div>
         </label>
       </template>
@@ -477,6 +528,20 @@ const verdictModelsText = computed(() => {
   white-space: nowrap;
 }
 
+.setup-provider-credential__remove {
+  align-items: center;
+  color: var(--danger);
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+  white-space: nowrap;
+}
+
+.setup-provider-credential__remove.btn--ghost:not(:disabled):hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+
 .setup-connection__actions {
   align-items: center;
   display: flex;
@@ -589,6 +654,18 @@ const verdictModelsText = computed(() => {
   }
 
   .setup-provider-credential__replace {
+    width: auto;
+  }
+
+  .setup-provider-credential__field-row {
+    flex-wrap: wrap;
+  }
+
+  .setup-provider-credential__field-row .setup-provider-credential__input-shell {
+    flex-basis: 100%;
+  }
+
+  .setup-provider-credential__remove {
     width: auto;
   }
 

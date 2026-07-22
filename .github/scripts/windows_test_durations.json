@@ -436,6 +436,7 @@
     "tests/test_gateway/test_rpc_onboarding_errors.py": 0.056,
     "tests/test_gateway/test_rpc_product_cli_gaps.py": 3.206,
     "tests/test_gateway/test_rpc_proposals.py": 0.136,
+    "tests/test_gateway/test_rpc_provider_credential_clear.py": 0.01,
     "tests/test_gateway/test_rpc_router_decisions.py": 14.966,
     "tests/test_gateway/test_rpc_routing_hold.py": 0.348,
     "tests/test_gateway/test_rpc_sandbox_setup.py": 0.01,

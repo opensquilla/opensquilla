@@ -1867,7 +1867,7 @@ class TlsConfig(BaseSettings):
     certfile: str = ""
 
 
-class LlmProviderProfile(BaseSettings):
+class LlmProviderProfile(BaseModel):
     """Named credential profile for a non-primary LLM provider.
 
     Written as ``[llm_profiles.<provider_id>]`` in the config TOML and
@@ -1877,7 +1877,12 @@ class LlmProviderProfile(BaseSettings):
     registry env key), then the registry default base URL.
     """
 
-    model_config = SettingsConfigDict(extra="ignore")
+    # Profiles are config records, not independent settings roots.  Reading
+    # process variables here would give every profile the same unscoped
+    # ``API_KEY`` / ``API_KEY_ENV`` values whenever a field is absent (for
+    # example after an explicit credential clear).  Named environment sources
+    # are resolved deliberately by provider.deployment instead.
+    model_config = ConfigDict(extra="ignore")
 
     # Remember the provider-scoped direct/fallback model while this deployment
     # is not primary.  Older configs omit it and continue to resolve the
@@ -2489,8 +2494,23 @@ class GatewayConfig(BaseSettings):
         if isinstance(llm, dict):
             if not llm.get("api_key_env"):
                 llm.pop("api_key_env", None)
-            elif not llm.get("api_key"):
+            if not llm.get("api_key"):
                 llm.pop("api_key", None)
+        llm_profiles = data.get("llm_profiles")
+        if isinstance(llm_profiles, dict):
+            # Empty credential fields are absence, not a stored credential.
+            # Keeping them out of the canonical dump also lets the sparse
+            # persister delete a previously populated field when an explicit
+            # credential-clear mutation sets it back to empty.
+            for profile in llm_profiles.values():
+                if not isinstance(profile, dict):
+                    continue
+                if not profile.get("api_key"):
+                    profile.pop("api_key", None)
+                if not profile.get("api_key_env"):
+                    profile.pop("api_key_env", None)
+                if not profile.get("api_key_env_pool"):
+                    profile.pop("api_key_env_pool", None)
         if not data.get("search_api_key_env"):
             data.pop("search_api_key_env", None)
         elif not data.get("search_api_key"):

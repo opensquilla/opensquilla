@@ -16,7 +16,6 @@ handler bodies.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -27,6 +26,7 @@ from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 if TYPE_CHECKING:
+    from opensquilla.onboarding.config_store import CredentialBackupRedaction
     from opensquilla.onboarding.probe import ProviderProbeResult
 
 
@@ -176,7 +176,13 @@ def _sync_search_provider(config: Any) -> None:
     )
 
 
-def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
+def _persist(
+    ctx: RpcContext,
+    new_cfg: Any,
+    *,
+    restart_required: bool,
+    backup_credential_redaction: CredentialBackupRedaction | None = None,
+) -> str:
     from opensquilla.onboarding.config_store import persist_config
 
     # Mutation results are cloned from the active config and carry their own
@@ -186,7 +192,19 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     # back would silently omit the replacement from disk and keep exposing the
     # startup environment credential through the live settings UI.
     path = _config_path_for(ctx, new_cfg) or _config_path_for(ctx, ctx.config)
-    persist = persist_config(new_cfg, path=path, restart_required=restart_required)
+    if backup_credential_redaction is None:
+        persist = persist_config(
+            new_cfg,
+            path=path,
+            restart_required=restart_required,
+        )
+    else:
+        persist = persist_config(
+            new_cfg,
+            path=path,
+            restart_required=restart_required,
+            backup_credential_redaction=backup_credential_redaction,
+        )
     # Preserve the resolved path on the running config so subsequent saves
     # round-trip to the same file.
     if hasattr(new_cfg, "config_path") and not getattr(new_cfg, "config_path", None):
@@ -198,6 +216,18 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     ):
         ctx.config.config_path = str(persist.path)
     return str(persist.path)
+
+
+def _provider_backup_credential_redaction(
+    provider_id: str,
+) -> CredentialBackupRedaction:
+    """Build a secret-safe backup scrub request for one provider."""
+
+    from opensquilla.onboarding.config_store import CredentialBackupRedaction
+
+    return CredentialBackupRedaction(
+        provider_id=str(provider_id or "").strip().lower(),
+    )
 
 
 def _status_payload(ctx: RpcContext) -> dict[str, Any]:
@@ -255,6 +285,7 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
 
 
 def _active_llm_credential_reveal_payload(ctx: RpcContext, provider_id: str) -> dict[str, Any]:
+    from opensquilla.gateway.llm_runtime import resolve_llm_credential
     from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 
     if not ctx.principal.is_owner:
@@ -280,38 +311,80 @@ def _active_llm_credential_reveal_payload(ctx: RpcContext, provider_id: str) -> 
             "onboarding.provider.credential.unsupported_provider",
             f"Unsupported active provider: {active_provider}",
         ) from exc
-    env_key = (
-        str(getattr(llm, "api_key_env", "") or "").strip()
-        or str(getattr(spec, "env_key", "") or "").strip()
+    credential = resolve_llm_credential(
+        cfg,
+        registry_env_key=str(getattr(spec, "env_key", "") or "").strip(),
+        include_runtime_cache=False,
     )
-    runtime_secret_paths: set[str] = getattr(cfg, "_runtime_secret_paths", set())
-    explicit_key = (
-        ""
-        if "llm.api_key" in runtime_secret_paths
-        else str(getattr(llm, "api_key", "") or "")
-    )
-    if explicit_key:
+    if credential.source in {"explicit", "env"} and credential.api_key:
         return {
             "ok": True,
             "provider": active_provider,
-            "source": "explicit",
-            "envKey": env_key,
-            "apiKey": explicit_key,
+            "source": credential.source,
+            "envKey": credential.env_name,
+            "apiKey": credential.api_key,
         }
-    if env_key:
-        env_value = str(os.environ.get(env_key) or "")
-        if env_value:
-            return {
-                "ok": True,
-                "provider": active_provider,
-                "source": "env",
-                "envKey": env_key,
-                "apiKey": env_value,
-            }
     raise RpcHandlerError(
         "onboarding.provider.credential.unavailable",
         "No revealable credential is available for the active provider.",
     )
+
+
+def _credential_clear_effective_payload(
+    config: Any,
+    provider_id: str,
+    *,
+    active: bool,
+) -> dict[str, Any]:
+    """Describe post-clear credential availability without exposing a value.
+
+    Clearing removes stored sources only. Provider registry environment
+    variables are process-owned external inputs, so an exported default key
+    can remain effective after the config fields are gone. Report that state
+    explicitly so clients never promise that an external credential was
+    deleted.
+    """
+    from opensquilla.onboarding.status import get_onboarding_status
+
+    provider = str(provider_id or "").strip().lower()
+    status = get_onboarding_status(config)
+    if active:
+        row = dict(status.llm_credential_status)
+        source = str(row.get("source") or "none")
+        env_key = str(row.get("envKey") or "")
+        available = bool(row.get("available"))
+    else:
+        row = next(
+            (
+                dict(candidate)
+                for candidate in status.llm_profile_status
+                if str(candidate.get("provider") or "").strip().lower() == provider
+            ),
+            {},
+        )
+        raw_source = str(row.get("credentialSource") or "none")
+        if raw_source in {
+            "member_env",
+            "profile_env",
+            "profile_pool",
+            "profile_pool_env",
+            "registry_env",
+        }:
+            source = "env"
+        elif raw_source == "keyless":
+            source = "not_required"
+        elif raw_source in {"member", "profile", "inherited"}:
+            source = "explicit"
+        else:
+            source = "none"
+        env_key = str(row.get("credentialEnv") or "")
+        available = source in {"explicit", "env", "not_required"}
+    return {
+        "credentialAvailable": available,
+        "credentialSource": source,
+        "credentialEnv": env_key,
+        "externalCredentialActive": source == "env",
+    }
 
 
 @_d.method("onboarding.status", scope="operator.read")
@@ -475,6 +548,46 @@ async def _llm_profile_upsert(params: Any, ctx: RpcContext) -> dict[str, Any]:
         "restartRequired": res.restart_required,
         "configPath": config_path,
         "entry": res.public_payload,
+        "warnings": res.warnings,
+    }
+
+
+@_d.method("onboarding.llmProfile.credential.clear", scope="operator.admin")
+async def _llm_profile_credential_clear(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Clear stored profile credentials without removing the profile."""
+    from opensquilla.gateway.llm_runtime import discard_profile_credential_pool
+    from opensquilla.onboarding.mutations import clear_llm_profile_credentials
+
+    provider_id = str(_require(params, "providerId"))
+    cfg = _active_config(ctx)
+    backup_redaction = _provider_backup_credential_redaction(provider_id)
+    with _validation_error("onboarding.llmProfile.invalid"):
+        res = clear_llm_profile_credentials(cfg, provider_id=provider_id)
+    config_path = _persist(
+        ctx,
+        res.config,
+        restart_required=res.restart_required,
+        backup_credential_redaction=backup_redaction,
+    )
+    _apply_inplace(ctx, res.config)
+    # A configured rotation pool holds resolved key values, cooldowns and
+    # session pins in process memory. Purge that provider only after disk is
+    # committed and the live config is updated.
+    discard_profile_credential_pool(provider_id)
+    _sync_image_generation(res.config)
+    entry = {
+        **res.public_payload,
+        **_credential_clear_effective_payload(
+            ctx.config if ctx.config is not None else res.config,
+            provider_id,
+            active=False,
+        ),
+    }
+    return {
+        "changed": res.changed,
+        "restartRequired": res.restart_required,
+        "configPath": config_path,
+        "entry": entry,
         "warnings": res.warnings,
     }
 
@@ -885,6 +998,54 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
 async def _provider_credential_reveal(params: Any, ctx: RpcContext) -> dict[str, Any]:
     provider_id = _require(params, "providerId")
     return _active_llm_credential_reveal_payload(ctx, provider_id)
+
+
+@_d.method("onboarding.provider.credential.clear", scope="operator.admin")
+async def _provider_credential_clear(params: Any, ctx: RpcContext) -> dict[str, Any]:
+    """Clear stored credentials for the active provider, preserving its setup."""
+    from opensquilla.onboarding.mutations import clear_llm_provider_credentials
+
+    provider_id = str(_require(params, "providerId"))
+    cfg = _active_config(ctx)
+    backup_redaction = _provider_backup_credential_redaction(provider_id)
+    with _validation_error("onboarding.provider.invalid"):
+        res = clear_llm_provider_credentials(cfg, provider_id=provider_id)
+    # Keep the same transaction boundary as provider.configure: no runtime
+    # consumer sees the cleared value until the durable write succeeds.
+    config_path = _persist(
+        ctx,
+        res.config,
+        restart_required=res.restart_required,
+        backup_credential_redaction=backup_redaction,
+    )
+    _apply_inplace(ctx, res.config)
+    _sync_provider_selector(ctx, res.config.llm)
+    live_config = ctx.config if ctx.config is not None else res.config
+    # Selector sync may resolve the provider's registry-default environment
+    # key on a scratch config. The selector may keep using that external key,
+    # but the cleared live config itself holds no cached secret and therefore
+    # must not retain stale runtime-secret provenance.
+    if not str(getattr(live_config.llm, "api_key", "") or ""):
+        live_config._runtime_secret_paths.discard("llm.api_key")
+    _sync_image_generation(res.config)
+    from opensquilla.gateway.model_catalog_refresh import refresh_live_model_catalog
+
+    await refresh_live_model_catalog(live_config)
+    entry = {
+        **res.public_payload,
+        **_credential_clear_effective_payload(
+            live_config,
+            provider_id,
+            active=True,
+        ),
+    }
+    return {
+        "changed": res.changed,
+        "restartRequired": res.restart_required,
+        "configPath": config_path,
+        "entry": entry,
+        "warnings": res.warnings,
+    }
 
 
 @_d.method("onboarding.models.discover", scope="operator.admin")

@@ -159,6 +159,8 @@ export interface ProviderCredentialPanelState {
   requiresApiKey: boolean
   source: string
   available: boolean
+  removable: boolean
+  removing: boolean
   envKey: string
   masked: string
   revealAllowed: boolean
@@ -174,8 +176,10 @@ export interface ProviderCredentialPanelState {
   probeButtonLabel: string
   connection: ConnectionState
   onReveal?: () => void
+  onHideReveal?: () => void
   onReplace?: () => void
   onCancelReplace?: () => void
+  onRemoveCredential?: () => void
 }
 
 // Probe failure kinds that mean "the credential itself was rejected" (vs. the
@@ -357,19 +361,21 @@ export function useSetupProviderForm() {
   // Params for probe/discover: the CURRENT form values, including an unsaved
   // pasted key — this is what makes "test before save" possible. Empty values
   // are dropped (the gateway falls back to the stored config / spec env key).
-  function connectionParams(defaultModel = ''): Record<string, unknown> {
+  function connectionParams(defaultModel = '', modelOverride?: string): Record<string, unknown> {
     const p = payload()
     const params: Record<string, unknown> = { providerId: providerSelected.value }
     for (const key of ['apiKey', 'apiKeyEnv', 'baseUrl', 'proxy'] as const) {
       if (p[key] !== undefined) params[key] = p[key]
     }
-    const model = String(p.model ?? '').trim() || String(defaultModel || '').trim()
+    const model = modelOverride !== undefined
+      ? String(modelOverride).trim()
+      : String(p.model ?? '').trim() || String(defaultModel || '').trim()
     if (model) params.model = model
     return params
   }
 
-  function profileDraftParams(defaultModel = ''): Record<string, unknown> {
-    const params = connectionParams(defaultModel)
+  function profileDraftParams(defaultModel = '', modelOverride?: string): Record<string, unknown> {
+    const params = connectionParams(defaultModel, modelOverride)
     // Empty endpoint fields are meaningful in a draft: they mean “remove the
     // stored override and use the registry/global fallback”. buildProviderPayload
     // intentionally drops empties for ordinary saves, so restore these two from
@@ -387,6 +393,7 @@ export function useSetupProviderForm() {
 
   async function probeConnection(options: {
     defaultModel?: string
+    modelOverride?: string
     storedProfile?: boolean
     draftProfile?: boolean
   } = {}): Promise<void> {
@@ -397,8 +404,8 @@ export function useSetupProviderForm() {
     const rpc = useRpcStore()
     let outcome: ConnectionState
     try {
-      const params = connectionParams(options.defaultModel)
-      const draftParams = profileDraftParams(options.defaultModel)
+      const params = connectionParams(options.defaultModel, options.modelOverride)
+      const draftParams = profileDraftParams(options.defaultModel, options.modelOverride)
       const res = await rpc.call<{
         ok?: boolean
         failureKind?: string
@@ -445,13 +452,18 @@ export function useSetupProviderForm() {
       // re-probes so a newly issued key or recovered provider is not masked by
       // a stale verdict.
       await discoverModels({
+        modelOverride: options.modelOverride,
         storedProfile: options.storedProfile,
         draftProfile: options.draftProfile,
       })
     }
   }
 
-  function discoverModels(options: { storedProfile?: boolean; draftProfile?: boolean } = {}): Promise<void> {
+  function discoverModels(options: {
+    modelOverride?: string
+    storedProfile?: boolean
+    draftProfile?: boolean
+  } = {}): Promise<void> {
     if (!providerSelected.value) return Promise.resolve()
     if (discoverPromise) return discoverPromise
     const epoch = connectionEpoch
@@ -471,10 +483,10 @@ export function useSetupProviderForm() {
                 ? 'onboarding.llmProfile.models.discover'
                 : 'onboarding.models.discover'),
           options.draftProfile
-            ? profileDraftParams()
+            ? profileDraftParams('', options.modelOverride)
             : (options.storedProfile
                 ? { providerId: providerSelected.value }
-                : connectionParams()),
+                : connectionParams('', options.modelOverride)),
         )
         if (epoch !== connectionEpoch) return
         if (res?.ok) {
@@ -638,6 +650,10 @@ export function useSetupProviderForm() {
     }
   }
 
+  function hideRevealedCredential() {
+    clearRevealedCredential()
+  }
+
   function setRevealError(value: string) {
     clearRevealedCredential()
     revealError.value = value
@@ -726,7 +742,10 @@ export function useSetupProviderForm() {
     startCredentialReplace,
     cancelCredentialReplace,
     setRevealedCredential,
+    hideRevealedCredential,
     setRevealError,
+    resetConnectionState: resetConnection,
+    invalidateProbeVerdict: invalidateProbeVerdictPreservingCatalog,
     payload,
     probeConnection,
     discoverModels,

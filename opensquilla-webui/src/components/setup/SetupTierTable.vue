@@ -110,6 +110,21 @@ function dependentFieldsDisabled(row: SetupTierRow): boolean {
   return props.disabled || !providerIsConfigured(row)
 }
 
+const showProviderColumn = computed(() => {
+  if (props.readonly) return true
+  if (props.rows.some(row => credentialFor(row)?.available === false)) return true
+
+  const configuredProviders = new Set(props.providerOptions
+    .filter(option => option.disabled !== true)
+    .map(option => String(option.providerId || '').trim().toLowerCase())
+    .filter(Boolean))
+
+  if (configuredProviders.size !== 1) return true
+
+  const [onlyProvider] = [...configuredProviders]
+  return props.rows.some(row => row.provider.trim().toLowerCase() !== onlyProvider)
+})
+
 // The combobox dropdown is absolutely positioned; the table's rounded-corner
 // overflow clip would cut it off, so overflow opens up only when a combobox
 // is actually rendered.
@@ -119,41 +134,46 @@ const hasCombobox = computed(() => props.rows.some(row => hasLiveCatalog(row)))
 <template>
   <div
     class="setup-tier-table"
-    :class="{ 'setup-tier-table--open': hasCombobox }"
+    :class="{
+      'setup-tier-table--open': hasCombobox,
+      'setup-tier-table--without-provider': !showProviderColumn,
+    }"
     role="table"
     :aria-disabled="disabled ? 'true' : undefined"
   >
     <div class="setup-tier-table__row is-head" role="row">
-      <span>{{ t('setup.router.colTier') }}</span><span>{{ t('setup.router.colProvider') }}</span><span>{{ t('setup.router.colModel') }}</span><span>{{ t('setup.router.colThinking') }}</span><span>{{ t('setup.router.colImage') }}</span>
+      <span>{{ t('setup.router.colTier') }}</span><span v-if="showProviderColumn">{{ t('setup.router.colProvider') }}</span><span>{{ t('setup.router.colModel') }}</span><span>{{ t('setup.router.colThinking') }}</span><span>{{ t('setup.router.colImage') }}</span>
     </div>
     <div v-for="tier in rows" :key="tier.name" class="setup-tier-table__row" role="row">
       <span class="setup-tier-table__tier">{{ tierLabel(tier.name) }}</span>
-      <span v-if="readonly" class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
-      <div v-else class="setup-tier-table__provider-cell">
-        <select
-          :value="tier.provider.trim().toLowerCase()"
-          :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })"
-          :aria-invalid="credentialFor(tier) && !credentialFor(tier)?.available ? 'true' : undefined"
-          :disabled="disabled"
-          @change="emit('updateTierField', tier.name, 'provider', ($event.target as HTMLSelectElement).value)"
-        >
-          <option v-if="!tier.provider" value="" disabled>-</option>
-          <option
-            v-for="option in providerOptionsFor(tier)"
-            :key="option.providerId"
-            :value="option.providerId"
-            :disabled="option.disabled"
+      <template v-if="showProviderColumn">
+        <span v-if="readonly" class="setup-tier-table__readonly" :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })" :title="t('setup.router.tierProviderAria', { tier: tier.name })">{{ tier.provider || '-' }}</span>
+        <div v-else class="setup-tier-table__provider-cell">
+          <select
+            :value="tier.provider.trim().toLowerCase()"
+            :aria-label="t('setup.router.tierProviderAria', { tier: tier.name })"
+            :aria-invalid="credentialFor(tier) && !credentialFor(tier)?.available ? 'true' : undefined"
+            :disabled="disabled"
+            @change="emit('updateTierField', tier.name, 'provider', ($event.target as HTMLSelectElement).value)"
           >
-            {{ option.label }}
-          </option>
-        </select>
-        <small
-          v-if="credentialFor(tier) && !credentialFor(tier)?.available"
-          class="setup-tier-table__provider-warning"
-        >
-          {{ t('setup.modelStrategy.credentialNeeded', { provider: providerLabel(tier) }) }}
-        </small>
-      </div>
+            <option v-if="!tier.provider" value="" disabled>-</option>
+            <option
+              v-for="option in providerOptionsFor(tier)"
+              :key="option.providerId"
+              :value="option.providerId"
+              :disabled="option.disabled"
+            >
+              {{ option.label }}
+            </option>
+          </select>
+          <small
+            v-if="credentialFor(tier) && !credentialFor(tier)?.available"
+            class="setup-tier-table__provider-warning"
+          >
+            {{ t('setup.modelStrategy.credentialNeeded', { provider: providerLabel(tier) }) }}
+          </small>
+        </div>
+      </template>
       <template v-if="readonly">
         <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierModelAria', { tier: tier.name })" :title="tier.model || undefined">{{ tier.model || '-' }}</span>
         <span class="setup-tier-table__readonly" :aria-label="t('setup.router.tierThinkingAria', { tier: tier.name })">{{ tier.thinkingLevel || '-' }}</span>
@@ -189,6 +209,10 @@ const hasCombobox = computed(() => props.rows.some(row => hasLiveCatalog(row)))
   border-radius: var(--radius-md) var(--radius-md) 0 0;
 }
 
+.setup-tier-table--without-provider .setup-tier-table__row {
+  grid-template-columns: 140px minmax(0, 1fr) 120px 60px;
+}
+
 .setup-tier-table__provider-cell {
   display: grid;
   gap: 2px;
@@ -204,5 +228,11 @@ const hasCombobox = computed(() => props.rows.some(row => hasLiveCatalog(row)))
   color: var(--danger);
   font-size: 10px;
   line-height: 1.2;
+}
+
+@media (max-width: 760px) {
+  .setup-tier-table--without-provider .setup-tier-table__row {
+    min-width: 460px;
+  }
 }
 </style>

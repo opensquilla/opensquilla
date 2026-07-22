@@ -186,6 +186,48 @@ describe('catalog parity', () => {
     })
   })
 
+  it('describes model strategies by user outcome instead of product rank', () => {
+    expect({
+      en: [
+        en.setup.modelStrategy.cards.router.badge,
+        en.setup.modelStrategy.cards.single.badge,
+        en.setup.modelStrategy.cards.ensemble.badge,
+      ],
+      zhHans: [
+        zhHans.setup.modelStrategy.cards.router.badge,
+        zhHans.setup.modelStrategy.cards.single.badge,
+        zhHans.setup.modelStrategy.cards.ensemble.badge,
+      ],
+      ja: [
+        ja.setup.modelStrategy.cards.router.badge,
+        ja.setup.modelStrategy.cards.single.badge,
+        ja.setup.modelStrategy.cards.ensemble.badge,
+      ],
+      fr: [
+        fr.setup.modelStrategy.cards.router.badge,
+        fr.setup.modelStrategy.cards.single.badge,
+        fr.setup.modelStrategy.cards.ensemble.badge,
+      ],
+      de: [
+        de.setup.modelStrategy.cards.router.badge,
+        de.setup.modelStrategy.cards.single.badge,
+        de.setup.modelStrategy.cards.ensemble.badge,
+      ],
+      es: [
+        es.setup.modelStrategy.cards.router.badge,
+        es.setup.modelStrategy.cards.single.badge,
+        es.setup.modelStrategy.cards.ensemble.badge,
+      ],
+    }).toEqual({
+      en: ['Token-efficient', 'Predictable', 'Capability-first'],
+      zhHans: ['按需省 Token', '稳定可控', '能力优先'],
+      ja: ['トークン効率重視', '安定・予測可能', '能力重視'],
+      fr: ['Économe en tokens', 'Prévisible', 'Capacités prioritaires'],
+      de: ['Token-effizient', 'Vorhersehbar', 'Leistung im Fokus'],
+      es: ['Uso eficiente de tokens', 'Predecible', 'Prioriza capacidad'],
+    })
+  })
+
   it('ships localized TokenRhythm recommendation copy with exact English and zh-Hans wording', () => {
     expect(en.setup.provider.recommendation).toEqual({
       title: 'Recommended: TokenRhythm',

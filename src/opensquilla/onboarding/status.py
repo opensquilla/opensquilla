@@ -18,6 +18,7 @@ from opensquilla.gateway.config import (
     GatewayConfig,
     LlmProviderProfile,
 )
+from opensquilla.gateway.llm_runtime import resolve_llm_credential
 from opensquilla.onboarding.audio_specs import get_audio_provider_setup_spec
 from opensquilla.onboarding.config_store import default_config_path
 from opensquilla.onboarding.image_generation_specs import (
@@ -42,6 +43,7 @@ from opensquilla.onboarding.section_status import (
 from opensquilla.onboarding.section_status import (
     needs_onboarding as _needs_onboarding,
 )
+from opensquilla.provider.environment import environment_value
 from opensquilla.provider.preset_registry import get_preset
 
 
@@ -246,22 +248,28 @@ def _llm_provider_credential_status(
     current_provider = str(getattr(llm, "provider", "") or "").strip().lower()
     if provider == current_provider:
         configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
-        env_key = configured_env_key or env_key
-        if _saved_llm_api_key(cfg):
+        settings_env_key = environment_value("OPENSQUILLA_LLM_API_KEY_ENV").strip()
+        credential = resolve_llm_credential(
+            cfg,
+            registry_env_key=env_key,
+            include_runtime_cache=False,
+        )
+        env_key = credential.env_name
+        if credential.source == "explicit":
             return {
                 "provider": provider,
                 "available": True,
                 "source": "explicit",
                 "envKey": env_key,
             }
-        if env_key and os.environ.get(env_key):
+        if credential.source == "env":
             return {
                 "provider": provider,
                 "available": True,
                 "source": "env",
                 "envKey": env_key,
             }
-        if not spec.requires_api_key and not configured_env_key:
+        if not spec.requires_api_key and not (configured_env_key or settings_env_key):
             return {
                 "provider": provider,
                 "available": True,
@@ -306,14 +314,6 @@ def _mask_credential(value: str) -> str:
     return f"{'*' * (len(secret) - 4)}{secret[-4:]}"
 
 
-def _saved_llm_api_key(cfg: GatewayConfig) -> str:
-    llm = getattr(cfg, "llm", None)
-    runtime_secret_paths: set[str] = getattr(cfg, "_runtime_secret_paths", set())
-    if "llm.api_key" in runtime_secret_paths:
-        return ""
-    return str(getattr(llm, "api_key", "") or "")
-
-
 def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
     llm = getattr(cfg, "llm", None)
     provider = str(getattr(llm, "provider", "") or "").strip().lower()
@@ -341,7 +341,13 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
 
     env_key = str(getattr(spec, "env_key", "") or "").strip()
     configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
-    resolved_env_key = configured_env_key or env_key
+    settings_env_key = environment_value("OPENSQUILLA_LLM_API_KEY_ENV").strip()
+    credential = resolve_llm_credential(
+        cfg,
+        registry_env_key=env_key,
+        include_runtime_cache=False,
+    )
+    resolved_env_key = credential.env_name
 
     if not spec.runtime_supported:
         # Mirror ``_llm_source``'s "unsupported" enumerant so the status
@@ -366,29 +372,28 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
             "revealAllowed": False,
         }
 
-    explicit_key = _saved_llm_api_key(cfg)
-    if explicit_key:
+    if credential.source == "explicit":
         return {
             "provider": provider,
             "available": True,
             "source": "explicit",
             "envKey": resolved_env_key,
-            "masked": _mask_credential(explicit_key),
+            "masked": _mask_credential(credential.api_key),
+            "revealAllowed": False,
+        }
+
+    if credential.source == "env":
+        return {
+            "provider": provider,
+            "available": True,
+            "source": "env",
+            "envKey": resolved_env_key,
+            "masked": _mask_credential(credential.api_key),
             "revealAllowed": False,
         }
 
     if resolved_env_key:
-        env_value = str(os.environ.get(resolved_env_key) or "")
-        if env_value:
-            return {
-                "provider": provider,
-                "available": True,
-                "source": "env",
-                "envKey": resolved_env_key,
-                "masked": _mask_credential(env_value),
-                "revealAllowed": False,
-            }
-        if not spec.requires_api_key and not configured_env_key:
+        if not spec.requires_api_key and not (configured_env_key or settings_env_key):
             return {
                 "provider": provider,
                 "available": True,

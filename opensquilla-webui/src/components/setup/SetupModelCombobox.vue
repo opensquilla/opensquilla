@@ -63,11 +63,18 @@ const typedSinceOpen = ref(false)
 
 const fieldId = computed(() => `setup-provider-${String(props.field.name || 'model')}`)
 const fieldName = computed(() => `setup_provider_${String(props.field.name || 'model')}`)
+const fieldDescriptionId = computed(() => `${fieldId.value}-description`)
 
 const query = computed(() => String(props.value || '').trim().toLowerCase())
 const catalogAvailable = computed(() => (
   !props.disabled && props.modelSource === 'live' && props.models.length > 0
 ))
+const describedBy = computed(() => {
+  const ids: string[] = []
+  if (!props.cell && props.field.description) ids.push(fieldDescriptionId.value)
+  if (catalogAvailable.value) ids.push(`${fieldId.value}-catalog-count`)
+  return ids.join(' ') || undefined
+})
 
 // The discovered id exactly matching the field's current value, if any.
 const selectedId = computed(() => {
@@ -288,7 +295,11 @@ function onKeydown(event: KeyboardEvent) {
   <div :class="cell ? 'setup-model-combobox--cellwrap' : 'control-row control-row--stack'" :data-name="cell ? undefined : field.name" :data-scope="cell ? undefined : 'provider'">
     <div v-if="!cell" class="control-row__label-block">
       <label class="control-row__label" :for="fieldId">{{ field.label }}{{ field.required ? ' *' : '' }}</label>
-      <span v-if="field.description" class="control-row__desc">{{ field.description }}</span>
+      <span
+        v-if="field.description"
+        :id="fieldDescriptionId"
+        class="control-row__desc"
+      >{{ field.description }}</span>
     </div>
     <div
       class="setup-model-combobox"
@@ -305,7 +316,7 @@ function onKeydown(event: KeyboardEvent) {
         :aria-expanded="catalogAvailable ? (open ? 'true' : 'false') : undefined"
         :aria-controls="catalogAvailable ? `${fieldId}-listbox` : undefined"
         :aria-activedescendant="catalogAvailable ? activeOptionId : undefined"
-        :aria-describedby="catalogAvailable ? `${fieldId}-catalog-count` : undefined"
+        :aria-describedby="describedBy"
         :aria-label="cell ? field.label : undefined"
         autocomplete="off"
         :disabled="disabled"

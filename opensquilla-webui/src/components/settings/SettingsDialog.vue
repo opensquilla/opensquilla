@@ -15,6 +15,7 @@
           ref="closeBtn"
           type="button"
           class="btn btn--icon btn--ghost"
+          :disabled="saveAllPending"
           :aria-label="t('common.close')"
           :title="t('common.close')"
           @click="requestClose()"
@@ -102,7 +103,11 @@
       </div>
       </template>
 
-      <div class="settings-body">
+      <div
+        class="settings-body"
+        :inert="saveAllPending ? true : undefined"
+        :aria-busy="saveAllPending ? 'true' : undefined"
+      >
         <nav ref="railRef" class="settings-rail" role="tablist" :aria-label="t('settings.dialog.sections')" :aria-orientation="railOrientation">
           <template v-for="(s, i) in visibleSections" :key="s.id">
             <!-- Presentational group eyebrow: labels the rail without adding a
@@ -141,6 +146,11 @@
           role="tabpanel"
           :aria-labelledby="'settings-rail-' + activeRailSection"
         >
+          <fieldset
+            class="settings-panel__interactions"
+            :disabled="saveAllPending"
+            :aria-busy="saveAllPending ? 'true' : undefined"
+          >
           <!-- Connection renders regardless of load state: it is how you point
                the UI at a reachable gateway when nothing has loaded yet. -->
           <SetupConnectionPanel v-if="section === 'connection'" />
@@ -194,6 +204,7 @@
               v-else-if="section === 'modelStrategy'"
               :panel="modelStrategyPanel"
               @update-strategy="setModelStrategy"
+              @update-fixed-model="setFixedModel"
               @update-router-default-tier="setRouterDefaultTier"
               @update-router-visual-mode="setRouterVisualMode"
               @update-tier-field="updateTierField"
@@ -241,15 +252,30 @@
               @open-data-maintenance="openDataMaintenance"
             />
           </template>
+          </fieldset>
         </div>
       </div>
 
-      <div v-if="loaded && hasUnsavedChanges" class="settings-dirtybar">
+      <div
+        v-if="loaded && hasUnsavedChanges"
+        class="settings-dirtybar"
+        :aria-busy="saveAllPending ? 'true' : undefined"
+      >
         <span class="settings-dirtybar__pulse" aria-hidden="true"></span>
-        <span class="settings-dirtybar__text" role="status" aria-live="polite" aria-atomic="true">{{ dirtyBarText }}</span>
+        <span class="settings-dirtybar__text" role="status" aria-live="polite" aria-atomic="true">
+          {{ saveAllPending ? t('settings.dialog.savingChanges') : dirtyBarText }}
+        </span>
         <span class="settings-dirtybar__spacer"></span>
-        <button type="button" class="btn" @click="discardChanges">{{ dirtyDiscardLabel }}</button>
-        <button type="button" class="btn btn--primary" @click="saveDirtySections">{{ dirtySaveLabel }}</button>
+        <button type="button" class="btn" :disabled="saveAllPending" @click="discardChanges">
+          {{ dirtyDiscardLabel }}
+        </button>
+        <button
+          type="button"
+          class="btn btn--primary"
+          :disabled="saveAllPending"
+          :aria-busy="saveAllPending ? 'true' : undefined"
+          @click="saveDirtySections"
+        >{{ saveAllPending ? t('settings.dialog.savingChanges') : dirtySaveLabel }}</button>
       </div>
 
       <footer class="settings-foot">
@@ -333,6 +359,7 @@ const {
   sectionDirty,
   dirtySections,
   hasUnsavedChanges,
+  saveAllPending,
   saveDirtySections,
   discardChanges,
   selectProvider,
@@ -341,6 +368,7 @@ const {
   setAutoSessionTitles,
   setDisableNetworkObservability,
   setModelStrategy,
+  setFixedModel,
   setRouterDefaultTier,
   setRouterVisualMode,
   addEnsembleCandidate,
@@ -645,6 +673,7 @@ function confirmDiscard(): Promise<boolean> {
 
 // Closes unless a section carries unsaved edits and the user keeps them.
 async function requestClose(): Promise<boolean> {
+  if (saveAllPending.value) return false
   if (hasUnsavedChanges.value && !(await confirmDiscard())) return false
   closeOverlay()
   return true
@@ -662,6 +691,7 @@ async function requestClose(): Promise<boolean> {
 const removeLeaveGuard = router.beforeEach(async (to) => {
   if (closing) return true
   if (to.path === '/settings' || to.path.startsWith('/settings/')) return true
+  if (saveAllPending.value) return false
   if (!hasUnsavedChanges.value) return true
   // requestClose already has the prompt up — hold this navigation instead of
   // stacking a second prompt (useConfirm cancels a pending request).
@@ -1041,6 +1071,13 @@ onUnmounted(() => {
   min-width: 0;
   overflow-y: auto;
   padding: var(--sp-4);
+}
+
+.settings-panel__interactions {
+  border: 0;
+  margin: 0;
+  min-inline-size: 0;
+  padding: 0;
 }
 
 /* Dirty bar */

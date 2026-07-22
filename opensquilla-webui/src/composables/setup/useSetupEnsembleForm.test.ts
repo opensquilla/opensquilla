@@ -926,6 +926,75 @@ describe('useSetupEnsembleForm — panel contract', () => {
   })
 })
 
+describe('useSetupEnsembleForm — effective timeout facts', () => {
+  it('surfaces explicit operator timeout overrides instead of the static defaults', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'static_openrouter_b5',
+      proposer_timeout_seconds: 600,
+      aggregator_timeout_seconds: 900,
+    })
+    const facts = makePanel(f, 'openrouter').value.presetFacts
+    expect(facts.proposerTimeoutSeconds).toBe(600)
+    expect(facts.aggregatorTimeoutSeconds).toBe(900)
+    expect(facts.quorumGraceSeconds).toBe(5)
+    // The stored timeouts are read-only facts, never a pending edit.
+    expect(f.isDirty.value).toBe(false)
+    expect(f.payload()).toEqual({})
+  })
+
+  it('keeps the static defaults for legacy-default and absent stored values', () => {
+    const explicitLegacy = useSetupEnsembleForm()
+    explicitLegacy.initFromConfig({
+      enabled: true,
+      selection_mode: 'static_openrouter_b5',
+      proposer_timeout_seconds: 3600,
+      aggregator_timeout_seconds: 3600,
+    })
+    const legacyFacts = makePanel(explicitLegacy, 'openrouter').value.presetFacts
+    expect(legacyFacts.proposerTimeoutSeconds).toBe(300)
+    expect(legacyFacts.aggregatorTimeoutSeconds).toBe(480)
+
+    // Older gateways may omit the keys from the config slice entirely.
+    const absent = useSetupEnsembleForm()
+    absent.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
+    const absentFacts = makePanel(absent, 'openrouter').value.presetFacts
+    expect(absentFacts.proposerTimeoutSeconds).toBe(300)
+    expect(absentFacts.aggregatorTimeoutSeconds).toBe(480)
+  })
+
+  it('applies a partial override to the custom lineup facts', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        { provider: 'deepseek', model: 'a' },
+        { provider: 'deepseek', model: 'b' },
+      ],
+      proposer_timeout_seconds: 720,
+    })
+    const facts = makePanel(f, 'deepseek').value.custom.facts
+    expect(facts.proposerTimeoutSeconds).toBe(720)
+    expect(facts.aggregatorTimeoutSeconds).toBe(480)
+    expect(facts.quorumGraceSeconds).toBe(5)
+  })
+
+  it('reports raw stored timeouts and no grace for the legacy router_dynamic mode', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_dynamic',
+      candidates: [{ provider: 'deepseek', model: 'a' }],
+    })
+    const facts = makePanel(f, 'deepseek').value.custom.facts
+    expect(facts.proposerTimeoutSeconds).toBe(3600)
+    expect(facts.aggregatorTimeoutSeconds).toBe(3600)
+    expect(facts.quorumGraceSeconds).toBe(0)
+  })
+})
+
 describe('staticB5ModeForProvider', () => {
   it('maps preset providers to their static mode and everything else to null', () => {
     expect(staticB5ModeForProvider('openrouter')).toBe('static_openrouter_b5')

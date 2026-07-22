@@ -111,6 +111,11 @@ const STATIC_B5_EFFECTIVE_QUORUM = 3
 const STATIC_B5_PROPOSER_TIMEOUT_SECONDS = 300
 const STATIC_B5_AGGREGATOR_TIMEOUT_SECONDS = 480
 const STATIC_B5_QUORUM_GRACE_SECONDS = 5
+// The gateway builder substitutes the static-B5 timeout defaults above ONLY
+// when the stored value still equals this legacy default; an explicit
+// operator override (e.g. proposer_timeout_seconds = 600 in TOML) runs as
+// configured and must be surfaced as such.
+const LEGACY_ENSEMBLE_TIMEOUT_SECONDS = 3600
 
 export type EnsembleScheme = 'preset' | 'custom' | 'legacy'
 
@@ -185,6 +190,10 @@ export interface EnsembleConfigSlice {
   candidates?: EnsembleCandidateConfig[]
   min_successful_proposers?: number
   all_failed_policy?: string
+  // Read-only in this form (no editor yet): consumed so effectiveFacts can
+  // report an explicit operator override instead of the static default.
+  proposer_timeout_seconds?: number
+  aggregator_timeout_seconds?: number
 }
 
 interface EnsembleTierCandidate {
@@ -218,6 +227,11 @@ function normalizeAllFailedPolicy(value: unknown): string {
 function normalizeMinSuccessful(value: unknown): number {
   const num = Math.trunc(Number(value))
   return Number.isFinite(num) && num >= 1 ? num : DEFAULT_MIN_SUCCESSFUL_PROPOSERS
+}
+
+function normalizeStoredTimeoutSeconds(value: unknown): number {
+  const num = Number(value)
+  return Number.isFinite(num) && num > 0 ? num : LEGACY_ENSEMBLE_TIMEOUT_SECONDS
 }
 
 function normalizeModelOptions(value: unknown): string[] {
@@ -393,6 +407,11 @@ export function useSetupEnsembleForm() {
   const candidates = ref<EnsembleCandidateConfig[]>([])
   const minSuccessfulProposers = ref(DEFAULT_MIN_SUCCESSFUL_PROPOSERS)
   const allFailedPolicy = ref(DEFAULT_ALL_FAILED_POLICY)
+  // Stored timeout values mirrored from config (read-only here — the panel
+  // has no editor for them, but effectiveFacts must reflect explicit
+  // operator overrides instead of always claiming the static defaults).
+  const storedProposerTimeoutSeconds = ref(LEGACY_ENSEMBLE_TIMEOUT_SECONDS)
+  const storedAggregatorTimeoutSeconds = ref(LEGACY_ENSEMBLE_TIMEOUT_SECONDS)
 
   // Per-key baselines: partial payloads need to know WHICH keys changed, not
   // just that something did. Seeded from the initial state so the pristine
@@ -452,6 +471,12 @@ export function useSetupEnsembleForm() {
       config.min_successful_proposers ?? DEFAULT_MIN_SUCCESSFUL_PROPOSERS,
     )
     allFailedPolicy.value = normalizeAllFailedPolicy(config.all_failed_policy)
+    storedProposerTimeoutSeconds.value = normalizeStoredTimeoutSeconds(
+      config.proposer_timeout_seconds,
+    )
+    storedAggregatorTimeoutSeconds.value = normalizeStoredTimeoutSeconds(
+      config.aggregator_timeout_seconds,
+    )
     snapshotBaseline()
   }
 
@@ -837,13 +862,28 @@ export function useSetupEnsembleForm() {
       configuredQuorum === DEFAULT_MIN_SUCCESSFUL_PROPOSERS ? autoQuorum : configuredQuorum,
       Math.max(1, proposerCount),
     )
+    // Mirrors the gateway builder: static presets and custom_b5 lineups get
+    // the static defaults only while the stored value still equals the legacy
+    // default; an explicit override runs (and reads) as configured. The
+    // hidden legacy router_dynamic mode runs the stored values untouched and
+    // has no quorum grace.
+    const staticDefaultsApply = isPreset || selectionMode.value !== 'router_dynamic'
+    const substituteLegacy = (stored: number, staticDefault: number): number => (
+      staticDefaultsApply && stored === LEGACY_ENSEMBLE_TIMEOUT_SECONDS ? staticDefault : stored
+    )
     return {
       perTurnCalls: proposerCount + 1,
       quorum,
       proposerCount,
-      proposerTimeoutSeconds: STATIC_B5_PROPOSER_TIMEOUT_SECONDS,
-      aggregatorTimeoutSeconds: STATIC_B5_AGGREGATOR_TIMEOUT_SECONDS,
-      quorumGraceSeconds: STATIC_B5_QUORUM_GRACE_SECONDS,
+      proposerTimeoutSeconds: substituteLegacy(
+        storedProposerTimeoutSeconds.value,
+        STATIC_B5_PROPOSER_TIMEOUT_SECONDS,
+      ),
+      aggregatorTimeoutSeconds: substituteLegacy(
+        storedAggregatorTimeoutSeconds.value,
+        STATIC_B5_AGGREGATOR_TIMEOUT_SECONDS,
+      ),
+      quorumGraceSeconds: staticDefaultsApply ? STATIC_B5_QUORUM_GRACE_SECONDS : 0,
     }
   }
 

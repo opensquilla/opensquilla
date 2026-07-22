@@ -36,14 +36,22 @@ _PATH_TOKEN_RE = re.compile(
     re.IGNORECASE,
 )
 _PATH_TRAILING_PUNCT = "`\"'，。；;,)）]】"
-_SHORT_DRAMA_SHOT_HEADER_RE = re.compile(
-    r"(?m)^=== SHOT_(10|[1-9]) ===[ \t]*$",
+_SHORT_DRAMA_SECTION_HEADER_RE = re.compile(
+    r"(?m)^=== (OVERVIEW|SHOT_(?:10|[1-9])) ===[ \t]*\r?$",
 )
-_SHORT_DRAMA_DURATION_RE = re.compile(
-    r"(?m)^DURATION_S:[ \t]*(\d+(?:\.\d+)?)[ \t]*$",
+_SHORT_DRAMA_ANY_SECTION_HEADER_RE = re.compile(
+    r"(?m)^=== ([A-Z][A-Z0-9_]*) ===[ \t]*\r?$",
 )
-_SHORT_DRAMA_DECLARED_SHOTS_RE = re.compile(
-    r"(?m)^N_SHOTS:[ \t]*(10|[1-9])[ \t]*$",
+_SHORT_DRAMA_SECTION_NAME_RE = re.compile(r"(?:OVERVIEW|SHOT_(?:10|[1-9]))")
+_SHORT_DRAMA_REFERENCE_OVERVIEW_FIELDS = frozenset(
+    {"IDENTITY_ANCHOR", "RENDER_STYLE"},
+)
+_SHORT_DRAMA_REFERENCE_SHOT_FIELDS = frozenset({"IMAGE_PROMPT", "VIDEO_PROMPT"})
+_SHORT_DRAMA_DURATION_FIELD_RE = re.compile(
+    r"(?m)^[ \t]*DURATION_S:[ \t]*(.*?)[ \t]*\r?$",
+)
+_SHORT_DRAMA_DECLARED_SHOTS_FIELD_RE = re.compile(
+    r"(?m)^[ \t]*N_SHOTS:[ \t]*(.*?)[ \t]*\r?$",
 )
 
 
@@ -56,6 +64,58 @@ def _filter_truncate(value: object, length: int = 1024) -> str:
     if length <= 0 or len(text) <= length:
         return text
     return text[:length]
+
+
+def _filter_short_drama_section(value: object, section: object) -> str:
+    """Return one complete strict-format drama section without clipping it.
+
+    Media-preparation prompts need the exact consented shot bytes, but sending
+    the whole ten-shot script to every extractor wastes context.  Sectioning
+    preserves the requested block verbatim and bounds each per-shot prompt by
+    the script format's own field budgets instead of an arbitrary global
+    character cutoff.
+    """
+
+    text = str(value or "")
+    requested = str(section or "").strip().upper()
+    if _SHORT_DRAMA_SECTION_NAME_RE.fullmatch(requested) is None:
+        return ""
+    headers = list(_SHORT_DRAMA_SECTION_HEADER_RE.finditer(text))
+    for index, header in enumerate(headers):
+        if header.group(1) != requested:
+            continue
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        return text[header.start() : end]
+    return ""
+
+
+def _filter_short_drama_reference_context(value: object) -> str:
+    """Keep the exact identity-bearing fields from every consented shot.
+
+    The reference-card model must inspect all ten shots, while unrelated
+    voiceover and card copy needlessly consume its context window.  This is a
+    structural projection, not a character cutoff: every complete relevant
+    field from the immutable script snapshot is retained verbatim.
+    """
+
+    text = str(value or "")
+    headers = list(_SHORT_DRAMA_SECTION_HEADER_RE.finditer(text))
+    context_lines: list[str] = []
+    for index, header in enumerate(headers):
+        section = header.group(1)
+        allowed = (
+            _SHORT_DRAMA_REFERENCE_OVERVIEW_FIELDS
+            if section == "OVERVIEW"
+            else _SHORT_DRAMA_REFERENCE_SHOT_FIELDS
+        )
+        end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+        selected = [header.group(0).rstrip()]
+        for line in text[header.end() : end].splitlines():
+            field, separator, _value = line.partition(":")
+            if separator and field.strip() in allowed:
+                selected.append(line)
+        context_lines.extend(selected)
+    return "\n".join(context_lines)
 
 
 def _filter_slugify(value: object) -> str:
@@ -100,60 +160,115 @@ def _filter_int(value: object, default: int = 0) -> int:
         return default
 
 
-def _short_drama_cost_basis(value: object) -> tuple[int, Decimal, Decimal] | None:
-    """Return active shots and the provider-billed duration range.
+def _short_drama_single_integer_field(
+    section: str,
+    pattern: re.Pattern[str],
+    *,
+    field_name: str,
+) -> int:
+    values = pattern.findall(section)
+    if len(values) != 1:
+        raise ValueError(f"short-drama {field_name} must appear exactly once")
+    value = values[0]
+    if re.fullmatch(r"[0-9]+", value) is None:
+        raise ValueError(f"short-drama {field_name} must be an integer")
+    return int(value)
 
-    A valid short-drama script has one exact ``=== SHOT_N ===`` block per
-    active shot and one ``DURATION_S`` line in each block. The paid media DAG
-    uses the same exact headers and clamps each video request to 3-15 seconds,
-    so the estimate mirrors the work that can actually be submitted. If a
-    malformed block omits its duration, use the provider-billed 4-15 second
-    interval instead of inventing a precise figure. OpenRouter's Seedance 2.0
-    routes bill the workflow's 3-second option as a 4-second generation before
-    the local runtime trims the delivered clip back to 3 seconds.
+
+def _short_drama_duration_contract(value: object) -> dict[int, int]:
+    """Parse the one duration contract used by consent and paid execution.
+
+    The script is an immutable, user-approved execution snapshot.  Every paid
+    video duration therefore comes directly from a unique canonical shot field,
+    never from an LLM extraction or a permissive fallback.  Any ambiguity fails
+    closed before a provider submission can be scheduled.
     """
 
     text = str(value or "")
-    headers = list(_SHORT_DRAMA_SHOT_HEADER_RE.finditer(text))
-    durations: dict[int, Decimal | None] = {}
-    for index, header in enumerate(headers):
-        shot_number = int(header.group(1))
-        if shot_number in durations:
-            continue
+    headers = list(_SHORT_DRAMA_SECTION_HEADER_RE.finditer(text))
+    all_headers = list(_SHORT_DRAMA_ANY_SECTION_HEADER_RE.finditer(text))
+    if not headers or len(headers) != len(all_headers):
+        raise ValueError("short-drama script contains an invalid section header")
+    if text[: headers[0].start()].strip():
+        raise ValueError("short-drama script must begin with the overview section")
+
+    section_names = [header.group(1) for header in headers]
+    if section_names[0] != "OVERVIEW":
+        raise ValueError("short-drama script must begin with the overview section")
+
+    overview_end = headers[1].start() if len(headers) > 1 else len(text)
+    overview = text[headers[0].end() : overview_end]
+    shot_count = _short_drama_single_integer_field(
+        overview,
+        _SHORT_DRAMA_DECLARED_SHOTS_FIELD_RE,
+        field_name="N_SHOTS",
+    )
+    if not 1 <= shot_count <= 10:
+        raise ValueError("short-drama N_SHOTS must be between 1 and 10")
+
+    expected_sections = ["OVERVIEW", *(f"SHOT_{number}" for number in range(1, shot_count + 1))]
+    if section_names != expected_sections:
+        raise ValueError("short-drama shot sections must be unique and contiguous")
+
+    durations: dict[int, int] = {}
+    for index, header in enumerate(headers[1:], start=1):
         end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
-        duration_match = _SHORT_DRAMA_DURATION_RE.search(text, header.end(), end)
-        duration = Decimal(duration_match.group(1)) if duration_match else None
-        durations[shot_number] = duration
+        section = text[header.end() : end]
+        duration = _short_drama_single_integer_field(
+            section,
+            _SHORT_DRAMA_DURATION_FIELD_RE,
+            field_name=f"SHOT_{index}.DURATION_S",
+        )
+        if not 3 <= duration <= 15:
+            raise ValueError("short-drama shot DURATION_S must be between 3 and 15")
+        durations[index] = duration
 
-    if not durations:
-        declared_match = _SHORT_DRAMA_DECLARED_SHOTS_RE.search(text)
-        overview_end = headers[0].start() if headers else len(text)
-        overview_duration = _SHORT_DRAMA_DURATION_RE.search(text, 0, overview_end)
-        if declared_match is None or overview_duration is None:
-            return None
-        shot_count = int(declared_match.group(1))
-        duration = Decimal(overview_duration.group(1))
-        minimum = Decimal(3 * shot_count)
-        maximum = Decimal(15 * shot_count)
-        clamped = min(max(duration, minimum), maximum)
-        # The overview-only fallback does not expose how the total is split
-        # across shots. Each 3-second shot can therefore add one billed second.
-        billed_high = min(maximum, clamped + Decimal(shot_count))
-        billed_low = max(clamped, Decimal(4 * shot_count))
-        return shot_count, billed_low, max(billed_low, billed_high)
+    overview_duration = _short_drama_single_integer_field(
+        overview,
+        _SHORT_DRAMA_DURATION_FIELD_RE,
+        field_name="OVERVIEW.DURATION_S",
+    )
+    if overview_duration != sum(durations.values()):
+        raise ValueError("short-drama overview duration must equal the shot-duration sum")
+    return durations
 
-    duration_low = Decimal("0")
-    duration_high = Decimal("0")
-    for duration in durations.values():
-        if duration is None:
-            duration_low += Decimal("4")
-            duration_high += Decimal("15")
-            continue
-        clamped = min(max(duration, Decimal("3")), Decimal("15"))
-        billed = Decimal("4") if clamped == Decimal("3") else clamped
-        duration_low += billed
-        duration_high += billed
-    return len(durations), duration_low, duration_high
+
+def _filter_short_drama_duration_contract_valid(value: object) -> bool:
+    try:
+        _short_drama_duration_contract(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _filter_short_drama_shot_duration(value: object, section: object) -> int:
+    requested = str(section or "").strip().upper()
+    match = re.fullmatch(r"SHOT_(10|[1-9])", requested)
+    if match is None:
+        raise ValueError("short-drama duration requires a SHOT_1..SHOT_10 selector")
+    shot_number = int(match.group(1))
+    durations = _short_drama_duration_contract(value)
+    try:
+        return durations[shot_number]
+    except KeyError as exc:
+        raise ValueError(f"short-drama script does not contain SHOT_{shot_number}") from exc
+
+
+def _short_drama_cost_basis(value: object) -> tuple[int, Decimal, Decimal] | None:
+    """Return active shots and exact provider-billed duration.
+
+    OpenRouter bills the workflow's 3-second execution option as a 4-second
+    generation before the local runtime trims the delivered clip.  All other
+    valid durations are billed as requested.
+    """
+
+    try:
+        durations = _short_drama_duration_contract(value)
+    except ValueError:
+        return None
+    billed_duration = sum(4 if duration == 3 else duration for duration in durations.values())
+    billed = Decimal(billed_duration)
+    return len(durations), billed, billed
 
 
 def _format_duration_range(low: Decimal, high: Decimal, *, language: str) -> str:
@@ -229,6 +344,8 @@ def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
     env.filters = {
         "xml_escape": _filter_xml_escape,
         "truncate": _filter_truncate,
+        "short_drama_section": _filter_short_drama_section,
+        "short_drama_reference_context": _filter_short_drama_reference_context,
         "slugify": _filter_slugify,
         "tojson": jinja2.filters.do_tojson,
         "default": jinja2.filters.do_default,
@@ -238,6 +355,10 @@ def _build_jinja_env() -> jinja2.sandbox.ImmutableSandboxedEnvironment:
         "extract_path": _filter_extract_path,
         "contains_cjk": _filter_contains_cjk,
         "int": _filter_int,
+        "short_drama_duration_contract_valid": (
+            _filter_short_drama_duration_contract_valid
+        ),
+        "short_drama_shot_duration": _filter_short_drama_shot_duration,
         "short_drama_media_cost": _filter_short_drama_media_cost,
     }
     return env

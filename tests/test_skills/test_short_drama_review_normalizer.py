@@ -300,6 +300,40 @@ def test_media_approval_keeps_single_gate_explicit_approval_path() -> None:
     assert fields["HAS_OVERRIDES"] == "no"
 
 
+@pytest.mark.parametrize("decision", ["proceed", "hold", "cancel"])
+def test_canonical_script_snapshot_echoes_exact_in_memory_value(decision: str) -> None:
+    script = (
+        "=== OVERVIEW ===\nDURATION_S: 3\nN_SHOTS: 1\n"
+        "=== SHOT_1 ===\nDURATION_S: 3\nVOICEOVER: approved bytes"
+    )
+
+    frozen = normalizer.normalize_review(
+        {
+            "phase": "canonical_script_snapshot",
+            "approval": f"DECISION: {decision}\nCONSENT_BASIS: deterministic_test",
+            "script": script,
+        }
+    )
+
+    assert frozen == script
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"approval": "DECISION: revise", "script": "approved"},
+        {"approval": "DECISION: proceed\nDECISION: proceed", "script": "approved"},
+        {"approval": "DECISION: proceed", "script": ""},
+        {"approval": "DECISION: proceed", "script": "x" * 200_001},
+    ],
+)
+def test_canonical_script_snapshot_fails_closed(payload: dict[str, str]) -> None:
+    with pytest.raises(ValueError, match="canonical script snapshot"):
+        normalizer.normalize_review(
+            {"phase": "canonical_script_snapshot", **payload}
+        )
+
+
 def test_direct_script_file_edit_requires_a_new_snapshot_approval() -> None:
     fields = _fields(
         normalizer.normalize_review(

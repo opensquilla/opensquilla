@@ -1,4 +1,4 @@
-"""V025 - bounded durable outbox for unaccepted MetaSkill launch requests.
+"""V026 - bounded durable outbox for unaccepted MetaSkill launch requests.
 
 The browser can close after ``meta.run`` but before the hidden ``chat.send`` is
 accepted.  This table retains the exact user-authored launch locally so the Web
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from yoyo import step
 
-__depends__: set[str] = {"V024__meta_control_intents"}
+__depends__: set[str] = {"V025__meta_control_intents"}
 
 TABLE = "meta_launch_drafts"
 REQUEST_INDEX = "uq_meta_launch_drafts_request"

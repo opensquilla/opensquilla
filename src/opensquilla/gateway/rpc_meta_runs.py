@@ -39,7 +39,9 @@ from opensquilla.session.storage import (
     MetaControlIntentConflictError,
     MetaLaunchDraftCapacityError,
     MetaLaunchDraftConflictError,
+    MetaLaunchDraftDiscardedError,
     MetaLaunchDraftUnavailableError,
+    normalize_meta_launch_coordinates,
 )
 from opensquilla.skills.hub.deps import install_deps
 from opensquilla.skills.meta.author_seed import draft_meta_skill_seed
@@ -1061,24 +1063,35 @@ async def _handle_meta_drafts_discard(params: Any, ctx: RpcContext) -> dict[str,
 
     _require_meta_draft_owner(ctx)
     p = params if isinstance(params, dict) else {}
-    session_key = str(p.get("sessionKey") or p.get("key") or "").strip()
-    client_request_id = str(
+    raw_session_key = p.get("sessionKey") or p.get("key") or ""
+    raw_client_request_id = (
         p.get("clientRequestId") or p.get("client_request_id") or ""
-    ).strip()
-    if not session_key or not client_request_id:
+    )
+    try:
+        session_key, client_request_id = normalize_meta_launch_coordinates(
+            raw_session_key,
+            raw_client_request_id,
+        )
+    except ValueError as exc:
         raise RpcHandlerError(
             ERROR_INVALID_REQUEST,
-            "sessionKey and clientRequestId are required",
-        )
+            "sessionKey and clientRequestId must be valid bounded identifiers",
+        ) from exc
     storage = get_session_storage(getattr(ctx, "session_manager", None))
     discard_draft = getattr(storage, "discard_meta_launch_draft", None)
     if callable(discard_draft):
-        discarded = bool(
-            await discard_draft(
-                session_key=session_key,
-                client_request_id=client_request_id,
+        try:
+            discarded = bool(
+                await discard_draft(
+                    session_key=session_key,
+                    client_request_id=client_request_id,
+                )
             )
-        )
+        except MetaLaunchDraftCapacityError as exc:
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill cancellation could not be retained safely; retry later",
+            ) from exc
         accepted = not discarded
     else:
         discarded = False
@@ -1154,6 +1167,17 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
         raise RpcHandlerError(ERROR_INVALID_REQUEST, "name is required")
     if not session_key:
         raise RpcHandlerError(ERROR_INVALID_REQUEST, "sessionKey is required")
+    if client_request_id is not None:
+        try:
+            session_key, client_request_id = normalize_meta_launch_coordinates(
+                session_key,
+                client_request_id,
+            )
+        except ValueError as exc:
+            raise RpcHandlerError(
+                ERROR_INVALID_REQUEST,
+                "sessionKey and clientRequestId must be valid bounded identifiers",
+            ) from exc
 
     if not is_meta_skill_enabled(ctx.config):
         return {"ok": False, "error": "meta-skills are disabled", "disabled": True}
@@ -1174,6 +1198,29 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
         return {"ok": False, "error": f"{name!r} is not an available meta-skill"}
 
     storage = get_session_storage(getattr(ctx, "session_manager", None))
+    is_discarded = getattr(storage, "is_meta_launch_discarded", None)
+    if client_request_id is not None and callable(is_discarded):
+        try:
+            request_was_discarded = bool(
+                await is_discarded(
+                    session_key=session_key,
+                    client_request_id=client_request_id,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - cancellation checks fail closed
+            raise RpcHandlerError(
+                ERROR_UNAVAILABLE,
+                "MetaSkill cancellation state could not be checked; retry shortly",
+                retryable=True,
+                accepted=False,
+            ) from exc
+        if request_was_discarded:
+            raise RpcHandlerError(
+                "META_DRAFT_DISCARDED",
+                "This MetaSkill request was explicitly discarded and cannot be resumed",
+                retryable=False,
+                accepted=False,
+            )
     stage_draft = getattr(storage, "stage_meta_launch_draft", None)
     draft_disposition: str | None = None
     if launch_text is not None and client_request_id is not None:
@@ -1191,6 +1238,13 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
                 meta_skill_name=name,
                 launch_text=launch_text,
             )
+        except MetaLaunchDraftDiscardedError as exc:
+            raise RpcHandlerError(
+                "META_DRAFT_DISCARDED",
+                "This MetaSkill request was explicitly discarded and cannot be resumed",
+                retryable=False,
+                accepted=False,
+            ) from exc
         except (MetaLaunchDraftConflictError, ValueError) as exc:
             raise RpcHandlerError(
                 "IDEMPOTENCY_CONFLICT",
@@ -1250,6 +1304,13 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
                 meta_skill_name=name,
                 launch_text=launch_text,
             )
+        except MetaLaunchDraftDiscardedError as exc:
+            raise RpcHandlerError(
+                "META_DRAFT_DISCARDED",
+                "This MetaSkill request was explicitly discarded and cannot be resumed",
+                retryable=False,
+                accepted=False,
+            ) from exc
         except MetaLaunchDraftUnavailableError as exc:
             raise RpcHandlerError(
                 "META_DRAFT_UNAVAILABLE",
@@ -1286,6 +1347,13 @@ async def _handle_meta_run(params: Any, ctx: RpcContext) -> dict[str, Any]:
                 correlation_id=f"request:{client_request_id}",
                 meta_skill_name=name,
             )
+        except MetaLaunchDraftDiscardedError as exc:
+            raise RpcHandlerError(
+                "META_DRAFT_DISCARDED",
+                "This MetaSkill request was explicitly discarded and cannot be resumed",
+                retryable=False,
+                accepted=False,
+            ) from exc
         except MetaControlIntentConflictError as exc:
             raise RpcHandlerError(
                 "IDEMPOTENCY_CONFLICT",

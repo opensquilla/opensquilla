@@ -7,6 +7,7 @@ import argparse
 import base64
 import binascii
 import concurrent.futures
+import io
 import json
 import os
 import re
@@ -32,6 +33,9 @@ META_CAPABILITY_BASE_URL_ENV = "OPENSQUILLA_META_CAPABILITY_BASE_URL"
 META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
 MAX_PROVIDER_JSON_RESPONSE_BYTES = 48 * 1024 * 1024
 MAX_IMAGE_DOWNLOAD_BYTES = 32 * 1024 * 1024
+MAX_IMAGE_DIMENSION = 16_384
+MAX_IMAGE_PIXELS = 25_000_000
+MIN_IMAGE_DIMENSION = 64
 
 
 def _emit(label: str, payload: dict[str, Any]) -> None:
@@ -490,6 +494,48 @@ def _detected_image_mime(payload: bytes) -> str | None:
     return None
 
 
+def _validated_image_mime(payload: bytes) -> str:
+    """Return the decoded raster MIME only after a complete local decode."""
+
+    detected_mime = _detected_image_mime(payload)
+    if detected_mime is None:
+        raise RuntimeError("invalid_image_payload")
+    expected_format = {
+        "image/png": "PNG",
+        "image/jpeg": "JPEG",
+        "image/gif": "GIF",
+        "image/webp": "WEBP",
+    }[detected_mime]
+    try:
+        from PIL import Image  # type: ignore
+    except ImportError:
+        raise RuntimeError("local_image_validation_unavailable") from None
+    try:
+        with Image.open(io.BytesIO(payload)) as probe:
+            actual_format = str(probe.format or "").upper()
+            width, height = probe.size
+            frame_count = int(getattr(probe, "n_frames", 1) or 1)
+            if actual_format != expected_format:
+                raise RuntimeError("invalid_image_payload")
+            if (
+                width < MIN_IMAGE_DIMENSION
+                or height < MIN_IMAGE_DIMENSION
+                or width > MAX_IMAGE_DIMENSION
+                or height > MAX_IMAGE_DIMENSION
+                or width * height > MAX_IMAGE_PIXELS
+                or frame_count != 1
+            ):
+                raise RuntimeError("invalid_image_payload")
+            probe.verify()
+        with Image.open(io.BytesIO(payload)) as decoded:
+            decoded.load()
+    except RuntimeError:
+        raise
+    except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
+        raise RuntimeError("invalid_image_payload") from None
+    return detected_mime
+
+
 def _scrub_error(exc: object, api_key: str) -> str:
     text = str(exc)
     if api_key:
@@ -564,10 +610,7 @@ def _generate_one(
             base_url=base_url,
             proxy=proxy,
         )
-        detected_mime = _detected_image_mime(image_bytes)
-        if detected_mime is None or len(image_bytes) < 1024:
-            raise RuntimeError("invalid_image_payload")
-        mime = detected_mime
+        mime = _validated_image_mime(image_bytes)
         ext = _extension_for_mime(mime)
         filename = _clean_slot(slot_id) + ext
         out_path = (output_dir / filename).resolve()

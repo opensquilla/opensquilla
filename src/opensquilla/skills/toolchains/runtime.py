@@ -10,11 +10,12 @@ import subprocess
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from opensquilla.skills.toolchains import registry
 from opensquilla.skills.toolchains.manager import (
     ToolchainError,
+    backfill_legacy_historical_marker_layout,
     package_payload_matches,
     toolchains_root,
 )
@@ -288,11 +289,25 @@ def _descriptor_for_receipt(
         receipt.get("component_id") == current.component_id
         and receipt.get("platform_key") == current.platform_key
         and receipt.get("install_backend") == current.install_backend
-        and receipt.get("bin_relpaths") == list(current.bin_relpaths)
     ):
         return None
     version = receipt.get("version")
     if not isinstance(version, str) or _SAFE_VERSION_RE.fullmatch(version) is None:
+        return None
+
+    marker_bin_relpaths = marker.get("bin_relpaths")
+    if version == current.version and marker_bin_relpaths is None:
+        # Compatibility for a current-version package installed by the first
+        # managed-toolchain build. Reuse/install backfills the marker before a
+        # future catalog can make this package historical.
+        marker_bin_relpaths = list(current.bin_relpaths)
+    historical_bin_relpaths = _validated_relative_path_list(
+        marker_bin_relpaths,
+        require_nonempty=True,
+    )
+    if historical_bin_relpaths is None or receipt.get("bin_relpaths") != list(
+        historical_bin_relpaths
+    ):
         return None
 
     raw_receipt_sha = receipt.get("sha256")
@@ -304,6 +319,8 @@ def _descriptor_for_receipt(
         # still pinned by the code-owned catalog.
         if raw_receipt_sha not in {None, expected_receipt_sha}:
             return None
+        if historical_bin_relpaths != current.bin_relpaths:
+            return None
         effective = current
     elif current.install_backend == "archive":
         if (
@@ -312,7 +329,12 @@ def _descriptor_for_receipt(
             or marker.get("sha256") != raw_receipt_sha
         ):
             return None
-        effective = replace(current, version=version, sha256=raw_receipt_sha)
+        effective = replace(
+            current,
+            version=version,
+            sha256=raw_receipt_sha,
+            bin_relpaths=historical_bin_relpaths,
+        )
     elif current.install_backend == "brew":
         # A Homebrew receipt points at the formula's live external prefix, not
         # an OpenSquilla-owned versioned payload.  Once the catalog version
@@ -328,6 +350,42 @@ def _descriptor_for_receipt(
     return effective
 
 
+def _validated_relative_path(value: object) -> str | None:
+    """Return one canonical archive-relative path or fail closed."""
+
+    if (
+        not isinstance(value, str)
+        or not value
+        or "\x00" in value
+        or "\\" in value
+        or value.startswith("/")
+        or re.match(r"^[A-Za-z]:", value)
+    ):
+        return None
+    path = PurePosixPath(value)
+    parts = tuple(part for part in path.parts if part not in {"", "."})
+    if not parts or ".." in parts:
+        return None
+    normalized = PurePosixPath(*parts).as_posix()
+    return normalized if normalized == value else None
+
+
+def _validated_relative_path_list(
+    value: object,
+    *,
+    require_nonempty: bool,
+) -> tuple[str, ...] | None:
+    if not isinstance(value, list) or (require_nonempty and not value):
+        return None
+    normalized: list[str] = []
+    for item in value:
+        selected = _validated_relative_path(item)
+        if selected is None or selected in normalized:
+            return None
+        normalized.append(selected)
+    return tuple(normalized)
+
+
 def _validated_resources(
     package: Path,
     receipt: Mapping[str, object],
@@ -337,6 +395,8 @@ def _validated_resources(
 ) -> dict[str, str] | None:
     raw_resources = receipt.get("resources")
     marker_assets = marker.get("auxiliary_assets")
+    marker_resources = marker.get("resources")
+    marker_asset_kinds = marker.get("auxiliary_asset_kinds")
     manifest = marker.get("payload_manifest")
     if not (
         isinstance(raw_resources, dict)
@@ -344,44 +404,70 @@ def _validated_resources(
         and isinstance(manifest, dict)
     ):
         return None
-    if any(
-        not isinstance(key, str) or not isinstance(value, str)
-        for key, value in raw_resources.items()
-    ):
-        return None
-    resources = {str(key): str(value) for key, value in raw_resources.items()}
-
-    expected_resources = {asset.asset_id: asset.destination for asset in current.auxiliary_assets}
-    if resources != expected_resources:
-        # The current catalog owns the resource ID/path layout even when the
-        # historical package owns an older, marker-bound resource digest.
-        return None
+    expected_resources = {
+        asset.asset_id: asset.destination for asset in current.auxiliary_assets
+    }
+    expected_asset_kinds = {
+        asset.asset_id: "archive" if asset.archive_type is not None else "direct"
+        for asset in current.auxiliary_assets
+    }
     if descriptor.version == current.version:
         expected_assets = {asset.asset_id: asset.sha256 for asset in current.auxiliary_assets}
-        if marker_assets != expected_assets:
+        if marker_resources is None:
+            marker_resources = expected_resources
+        if marker_asset_kinds is None:
+            marker_asset_kinds = expected_asset_kinds
+        if (
+            marker_assets != expected_assets
+            or marker_resources != expected_resources
+            or marker_asset_kinds != expected_asset_kinds
+        ):
             return None
-    elif set(expected_resources) != set(marker_assets):
+    elif not isinstance(marker_resources, dict) or not isinstance(
+        marker_asset_kinds, dict
+    ):
         return None
 
-    assets_by_id = {asset.asset_id: asset for asset in current.auxiliary_assets}
+    if not isinstance(marker_resources, dict) or not isinstance(marker_asset_kinds, dict):
+        return None
+    if not (
+        set(raw_resources) == set(marker_resources) == set(marker_assets) == set(marker_asset_kinds)
+    ):
+        return None
+
+    resources: dict[str, str] = {}
+    destinations: set[str] = set()
+    for raw_asset_id, raw_destination in marker_resources.items():
+        if (
+            not isinstance(raw_asset_id, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", raw_asset_id) is None
+        ):
+            return None
+        destination = _validated_relative_path(raw_destination)
+        if destination is None or destination in destinations:
+            return None
+        if raw_resources.get(raw_asset_id) != destination:
+            return None
+        resources[raw_asset_id] = destination
+        destinations.add(destination)
+
     for asset_id, relative_resource in resources.items():
         expected_digest = marker_assets.get(asset_id)
+        asset_kind = marker_asset_kinds.get(asset_id)
         manifest_entry = manifest.get(relative_resource)
         if (
             not isinstance(expected_digest, str)
             or _SHA256_RE.fullmatch(expected_digest) is None
+            or asset_kind not in {"archive", "direct"}
             or not isinstance(manifest_entry, dict)
             or manifest_entry.get("type") != "file"
             or _SHA256_RE.fullmatch(str(manifest_entry.get("sha256", ""))) is None
         ):
             return None
-        asset = assets_by_id.get(asset_id)
-        if asset is None:
-            return None
         # Direct resources remain byte-identical to their download. Archived
         # resources are source-verified before extraction and may then be
         # transformed before the complete payload manifest is written.
-        if asset.archive_type is None and manifest_entry.get("sha256") != expected_digest:
+        if asset_kind == "direct" and manifest_entry.get("sha256") != expected_digest:
             return None
         try:
             resource = _contained_path(package, relative_resource)
@@ -401,6 +487,23 @@ def _validated_activation(
     receipt = _read_mapping(root / "active" / f"{current.component_id}.json")
     if receipt is None:
         return None
+    return _validated_activation_receipt(
+        root,
+        current,
+        receipt,
+        verify_payload=verify_payload,
+    )
+
+
+def _validated_activation_receipt(
+    root: Path,
+    current: registry.ToolchainDescriptor,
+    receipt: Mapping[str, object],
+    *,
+    verify_payload: bool,
+) -> _ValidatedActivation | None:
+    """Validate a receipt, safely upgrading a verified legacy archive marker."""
+
     raw_package = receipt.get("package_relpath")
     if not isinstance(raw_package, str):
         return None
@@ -411,6 +514,19 @@ def _validated_activation(
     marker = _read_mapping(package / ".opensquilla-toolchain.json")
     if marker is None:
         return None
+    if receipt.get("version") != current.version and any(
+        field not in marker
+        for field in ("bin_relpaths", "resources", "auxiliary_asset_kinds")
+    ):
+        marker = backfill_legacy_historical_marker_layout(
+            root,
+            package,
+            current,
+            receipt,
+            marker,
+        )
+        if marker is None:
+            return None
     descriptor = _descriptor_for_receipt(receipt, marker, current)
     if descriptor is None:
         return None

@@ -109,7 +109,11 @@ class MetaLaunchDraftCapacityError(RuntimeError):
 
 
 class MetaLaunchDraftUnavailableError(RuntimeError):
-    """Raised when a draft was discarded or expired before control promotion."""
+    """Raised when a draft expired before control promotion."""
+
+
+class MetaLaunchDraftDiscardedError(RuntimeError):
+    """Raised when a cancelled draft identity is reused before its tombstone expires."""
 
 
 class TaskCollectionUnavailableError(RuntimeError):
@@ -156,6 +160,51 @@ _META_LAUNCH_DRAFT_PER_SESSION_LIMIT = 20
 _META_LAUNCH_DRAFT_GLOBAL_LIMIT = 512
 _META_LAUNCH_DRAFT_GC_BATCH = 512
 _META_LAUNCH_DRAFT_GC_INTERVAL_SECONDS = 60.0
+_META_LAUNCH_DISCARD_PER_SESSION_LIMIT = 64
+_META_LAUNCH_DISCARD_GLOBAL_LIMIT = 2048
+_META_LAUNCH_ACCEPTED_PER_SESSION_LIMIT = 20
+_META_LAUNCH_SESSION_KEY_MAX_LENGTH = 512
+_META_LAUNCH_REQUEST_ID_MAX_LENGTH = 256
+
+
+def normalize_meta_launch_coordinates(
+    session_key: object,
+    client_request_id: object,
+) -> tuple[str, str]:
+    """Validate bounded, content-free coordinates for draft and tombstone rows."""
+
+    if not isinstance(session_key, str) or not isinstance(client_request_id, str):
+        raise ValueError("meta launch draft coordinates must be strings")
+    if len(session_key.strip()) > _META_LAUNCH_SESSION_KEY_MAX_LENGTH:
+        raise ValueError("meta launch draft session is invalid")
+    normalized_session = canonicalize_session_key(session_key)
+    normalized_request_id = client_request_id.strip()
+    if not normalized_session or len(normalized_session) > _META_LAUNCH_SESSION_KEY_MAX_LENGTH:
+        raise ValueError("meta launch draft session is invalid")
+    if (
+        not normalized_request_id
+        or len(normalized_request_id) > _META_LAUNCH_REQUEST_ID_MAX_LENGTH
+        or any(character.isspace() for character in normalized_request_id)
+    ):
+        raise ValueError("meta launch draft request identity is invalid")
+    return normalized_session, normalized_request_id
+
+
+def _clear_pending_meta_launch_boundary(
+    session_key: str,
+    *,
+    preserve_client_request_id: str | None = None,
+    preserve_message: object = None,
+) -> int:
+    """Clear the process compatibility cache after a committed session boundary."""
+
+    from opensquilla.engine.steps.meta_command import pending_meta_launch_clear_session
+
+    return pending_meta_launch_clear_session(
+        session_key,
+        preserve_client_request_id=preserve_client_request_id,
+        preserve_message=preserve_message,
+    )
 
 
 def _is_sqlite_busy(exc: BaseException) -> bool:
@@ -549,6 +598,22 @@ ON meta_launch_drafts(session_key, client_request_id)
 _CREATE_IDX_META_LAUNCH_DRAFT_SESSION_EXPIRY = """
 CREATE INDEX IF NOT EXISTS idx_meta_launch_drafts_session_expiry
 ON meta_launch_drafts(session_key, expires_at, created_at)
+"""
+
+_CREATE_META_LAUNCH_DISCARD_TOMBSTONES = """
+CREATE TABLE IF NOT EXISTS meta_launch_discard_tombstones (
+    session_key TEXT NOT NULL,
+    client_request_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (session_key, client_request_id)
+)
+"""
+
+_CREATE_IDX_META_LAUNCH_DISCARD_TOMBSTONES_EXPIRY = """
+CREATE INDEX IF NOT EXISTS idx_meta_launch_discard_tombstones_expiry
+ON meta_launch_discard_tombstones(expires_at, created_at)
 """
 
 _CREATE_MEMORY_DURABLE_RECEIPTS = """
@@ -1251,6 +1316,8 @@ class SessionStorage:
         await self._conn.execute(_CREATE_META_LAUNCH_DRAFTS)
         await self._conn.execute(_CREATE_IDX_META_LAUNCH_DRAFT_REQUEST)
         await self._conn.execute(_CREATE_IDX_META_LAUNCH_DRAFT_SESSION_EXPIRY)
+        await self._conn.execute(_CREATE_META_LAUNCH_DISCARD_TOMBSTONES)
+        await self._conn.execute(_CREATE_IDX_META_LAUNCH_DISCARD_TOMBSTONES_EXPIRY)
         await self._conn.execute(_CREATE_MEMORY_DURABLE_RECEIPTS)
         await self._conn.execute(_CREATE_IDX_MEMORY_DURABLE_RECEIPTS_SESSION)
         await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
@@ -2727,8 +2794,15 @@ class SessionStorage:
         async with self._write_transaction("delete_session") as conn:
             # Drafts and controls may predate the first accepted turn and
             # therefore be attached to a provisional key with no sessions row.
-            # Revoke both before the early return below so a browser outbox
-            # cannot consume an orphaned authorization and recreate the chat.
+            # Convert their content-free coordinates into finite tombstones
+            # before the early return below, so a stale browser outbox cannot
+            # recreate a deleted chat with the same ingress identity.
+            await self._tombstone_meta_launches_for_boundary(
+                conn,
+                session_key=session_key,
+                now_ms=_now_ms(),
+                intent_statuses=("staged", "accepted"),
+            )
             await conn.execute(
                 "DELETE FROM meta_launch_drafts WHERE session_key = ?",
                 (session_key,),
@@ -2741,49 +2815,47 @@ class SessionStorage:
                 "SELECT * FROM sessions WHERE session_key = ?", (session_key,)
             ) as cur:
                 row = await cur.fetchone()
-            if row is None:
-                return
-            session = SessionNode(**_deserialize_row(dict(row)))
-            for table in (
-                "transcript_entries",
-                "compacted_transcript_entries",
-                "session_summaries",
-            ):
+            if row is not None:
+                session = SessionNode(**_deserialize_row(dict(row)))
+            if session is not None:
+                for table in (
+                    "transcript_entries",
+                    "compacted_transcript_entries",
+                    "session_summaries",
+                ):
+                    await conn.execute(
+                        f"DELETE FROM {table} WHERE session_id = ?",  # noqa: S608
+                        (session.session_id,),
+                    )
                 await conn.execute(
-                    f"DELETE FROM {table} WHERE session_id = ?",  # noqa: S608 - fixed literals
+                    "DELETE FROM session_context_states WHERE session_id = ?",
                     (session.session_id,),
                 )
-            await conn.execute(
-                "DELETE FROM session_context_states WHERE session_id = ?",
-                (session.session_id,),
-            )
-            for table in ("router_decisions", "turn_errors"):
-                async with conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-                    (table,),
-                ) as cur:
-                    exists = await cur.fetchone() is not None
-                if exists:
+                for table in ("router_decisions", "turn_errors"):
+                    async with conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
+                        (table,),
+                    ) as cur:
+                        exists = await cur.fetchone() is not None
+                    if exists:
+                        await conn.execute(
+                            f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608
+                            (session_key,),
+                        )
+                for table in ("agent_tasks", "memory_durable_receipts"):
                     await conn.execute(
-                        f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608 - fixed literals
+                        f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608
                         (session_key,),
                     )
-            for table in ("agent_tasks", "memory_durable_receipts"):
                 await conn.execute(
-                    f"DELETE FROM {table} WHERE session_key = ?",  # noqa: S608 - fixed literals
+                    "DELETE FROM turn_ingress_receipts WHERE accepted_session_key = ?",
                     (session_key,),
                 )
-            await conn.execute(
-                "DELETE FROM turn_ingress_receipts WHERE accepted_session_key = ?",
-                (session_key,),
-            )
-            await conn.execute(
-                "DELETE FROM meta_control_intents WHERE session_key = ?",
-                (session_key,),
-            )
-            await conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
+                await conn.execute("DELETE FROM sessions WHERE session_key = ?", (session_key,))
 
-        assert session is not None
+        _clear_pending_meta_launch_boundary(session_key)
+        if session is None:
+            return
 
         # Cascade the on-disk session material (transcript media + workspace
         # attachment copies). DB-only deletion otherwise leaks both stores until
@@ -2848,8 +2920,9 @@ class SessionStorage:
 
         The epoch transition and staged-control deletion share one transaction,
         so another client retaining an old hidden control can never observe the
-        new epoch while its pre-reset authorization is still consumable.
-        Accepted intents are immutable history and remain untouched.
+        new epoch while its pre-reset authorization is still consumable. Recent
+        accepted browser coordinates are also fenced against stale outbox
+        retries; their intent rows remain immutable history.
         """
 
         session_key = canonicalize_session_key(session_key)
@@ -2864,6 +2937,12 @@ class SessionStorage:
                 row = await cur.fetchone()
             if row is None:
                 raise KeyError(f"Session not found: {session_key}")
+            await self._tombstone_meta_launches_for_boundary(
+                conn,
+                session_key=session_key,
+                now_ms=_now_ms(),
+                intent_statuses=("staged", "accepted"),
+            )
             await conn.execute(
                 "DELETE FROM meta_control_intents WHERE session_key = ? AND status = 'staged'",
                 (session_key,),
@@ -2872,7 +2951,9 @@ class SessionStorage:
                 "DELETE FROM meta_launch_drafts WHERE session_key = ?",
                 (session_key,),
             )
-            return int(row[0])
+            new_epoch = int(row[0])
+        _clear_pending_meta_launch_boundary(session_key)
+        return new_epoch
 
     @_serialized_read
     async def get_epoch(self, session_key: str) -> int:
@@ -3862,6 +3943,11 @@ class SessionStorage:
                 raise ValueError("manual meta control requires a request correlation")
             if replay_run_id is not None or replay_mode is not None:
                 raise ValueError("manual meta control cannot carry replay coordinates")
+            session_key, request_id = normalize_meta_launch_coordinates(
+                session_key,
+                correlation_id.removeprefix("request:"),
+            )
+            correlation_id = f"request:{request_id}"
         elif (
             not correlation_id.startswith("nonce:")
             or replay_run_id is None
@@ -3893,7 +3979,8 @@ class SessionStorage:
     ) -> tuple[MetaControlIntent, str]:
         """Insert or replay a validated control on an existing write transaction."""
 
-        cutoff_ms = _now_ms() - _META_CONTROL_STAGED_RETENTION_MS
+        now_ms = _now_ms()
+        cutoff_ms = now_ms - _META_CONTROL_STAGED_RETENTION_MS
         await conn.execute(
             """
             DELETE FROM meta_control_intents
@@ -3906,6 +3993,27 @@ class SessionStorage:
             """,
             (cutoff_ms, _META_CONTROL_STAGED_GC_BATCH),
         )
+        if control_kind == "manual":
+            request_id = correlation_id.removeprefix("request:")
+            await conn.execute(
+                """
+                DELETE FROM meta_launch_discard_tombstones
+                WHERE session_key = ? AND client_request_id = ? AND expires_at <= ?
+                """,
+                (session_key, request_id, now_ms),
+            )
+            async with conn.execute(
+                """
+                SELECT 1 FROM meta_launch_discard_tombstones
+                WHERE session_key = ? AND client_request_id = ? AND expires_at > ?
+                """,
+                (session_key, request_id, now_ms),
+            ) as cur:
+                discarded = await cur.fetchone()
+            if discarded is not None:
+                raise MetaLaunchDraftDiscardedError(
+                    "meta launch draft identity was explicitly discarded"
+                )
         existing = await self._select_meta_control_intent(
             conn,
             session_key=session_key,
@@ -3922,6 +4030,14 @@ class SessionStorage:
                     "meta control identity was already used for another launch"
                 )
             return existing, "replayed"
+
+        if control_kind == "manual":
+            await self._ensure_meta_launch_coordinate_capacity(
+                conn,
+                now_ms=now_ms,
+                session_key=session_key,
+                client_request_id=correlation_id.removeprefix("request:"),
+            )
 
         intent = MetaControlIntent(
             session_key=session_key,
@@ -3974,6 +4090,159 @@ class SessionStorage:
             row = await cur.fetchone()
         return MetaLaunchDraft(**_deserialize_row(dict(row))) if row is not None else None
 
+    async def _select_live_meta_launch_coordinates(
+        self,
+        conn: Any,
+        *,
+        now_ms: int,
+        session_key: str | None = None,
+        include_drafts: bool = True,
+        include_tombstones: bool = True,
+        include_staged: bool = True,
+        include_accepted: bool = True,
+        exclude_intent_id: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """Return the bounded live launch identities represented across ledgers.
+
+        One browser request may briefly exist as both a raw draft and a staged
+        control. Capacity is therefore defined over exact coordinates, not row
+        counts. Accepted controls contribute only the newest browser-outbox
+        window per session; older accepted history is not a live resend source.
+        """
+
+        canonical_session = canonicalize_session_key(session_key) if session_key else ""
+        coordinates: set[tuple[str, str]] = set()
+
+        def append_coordinate(raw_session: object, raw_request: object) -> None:
+            try:
+                coordinate = normalize_meta_launch_coordinates(
+                    raw_session,
+                    raw_request,
+                )
+            except ValueError:
+                # Older ledgers may contain identifiers that current ingress no
+                # longer accepts. They cannot be replayed through the bounded RPC.
+                return
+            if canonical_session and coordinate[0] != canonical_session:
+                return
+            coordinates.add(coordinate)
+
+        async def append_rows(sql: str, params: tuple[Any, ...]) -> None:
+            async with conn.execute(sql, params) as cur:
+                for row in await cur.fetchall():
+                    append_coordinate(row[0], row[1])
+
+        session_clause = " AND session_key = ?" if canonical_session else ""
+        session_params: tuple[Any, ...] = (canonical_session,) if canonical_session else ()
+        if include_drafts:
+            await append_rows(
+                "SELECT session_key, client_request_id FROM meta_launch_drafts "
+                f"WHERE expires_at > ?{session_clause}",
+                (now_ms, *session_params),
+            )
+        if include_tombstones:
+            await append_rows(
+                "SELECT session_key, client_request_id "
+                "FROM meta_launch_discard_tombstones "
+                f"WHERE expires_at > ?{session_clause}",
+                (now_ms, *session_params),
+            )
+        if include_staged:
+            exclude_clause = " AND intent_id <> ?" if exclude_intent_id else ""
+            exclude_params: tuple[Any, ...] = (
+                (exclude_intent_id,) if exclude_intent_id else ()
+            )
+            await append_rows(
+                "SELECT session_key, substr(correlation_id, 9) "
+                "FROM meta_control_intents "
+                "WHERE control_kind = 'manual' AND status = 'staged' "
+                "AND correlation_id LIKE 'request:%' AND created_at > ?"
+                f"{session_clause}{exclude_clause}",
+                (
+                    now_ms - _META_CONTROL_STAGED_RETENTION_MS,
+                    *session_params,
+                    *exclude_params,
+                ),
+            )
+        if include_accepted:
+            exclude_clause = " AND intent_id <> ?" if exclude_intent_id else ""
+            exclude_params = (exclude_intent_id,) if exclude_intent_id else ()
+            accepted_sql = (
+                "SELECT session_key, substr(correlation_id, 9) "
+                "FROM meta_control_intents "
+                "WHERE control_kind = 'manual' AND status = 'accepted' "
+                "AND correlation_id LIKE 'request:%' AND updated_at > ?"
+                f"{session_clause}{exclude_clause} "
+                "ORDER BY session_key ASC, updated_at DESC, intent_id DESC"
+            )
+            accepted_params = (
+                now_ms - _META_LAUNCH_DRAFT_RETENTION_MS,
+                *session_params,
+                *exclude_params,
+            )
+            if canonical_session:
+                accepted_sql += " LIMIT ?"
+                accepted_params = (
+                    *accepted_params,
+                    _META_LAUNCH_ACCEPTED_PER_SESSION_LIMIT,
+                )
+            async with conn.execute(accepted_sql, accepted_params) as cur:
+                accepted_counts: dict[str, int] = {}
+                for row in await cur.fetchall():
+                    row_session = canonicalize_session_key(str(row[0]))
+                    seen = accepted_counts.get(row_session, 0)
+                    if seen >= _META_LAUNCH_ACCEPTED_PER_SESSION_LIMIT:
+                        continue
+                    accepted_counts[row_session] = seen + 1
+                    append_coordinate(row[0], row[1])
+
+        return coordinates
+
+    async def _ensure_meta_launch_coordinate_capacity(
+        self,
+        conn: Any,
+        *,
+        now_ms: int,
+        session_key: str,
+        client_request_id: str,
+    ) -> None:
+        """Reserve one exact live coordinate without exceeding either bound."""
+
+        coordinate = normalize_meta_launch_coordinates(session_key, client_request_id)
+        live = await self._select_live_meta_launch_coordinates(conn, now_ms=now_ms)
+        if coordinate in live:
+            return
+        if sum(1 for item in live if item[0] == coordinate[0]) >= (
+            _META_LAUNCH_DISCARD_PER_SESSION_LIMIT
+        ):
+            raise MetaLaunchDraftCapacityError(
+                "MetaSkill cancellation retention is full for this session"
+            )
+        if len(live) >= _META_LAUNCH_DISCARD_GLOBAL_LIMIT:
+            raise MetaLaunchDraftCapacityError("MetaSkill cancellation retention is full")
+
+    @_serialized_read
+    async def is_meta_launch_discarded(
+        self,
+        *,
+        session_key: str,
+        client_request_id: str,
+    ) -> bool:
+        """Return whether a live terminal marker fences this request identity."""
+
+        session_key, client_request_id = normalize_meta_launch_coordinates(
+            session_key,
+            client_request_id,
+        )
+        async with self.conn.execute(
+            """
+            SELECT 1 FROM meta_launch_discard_tombstones
+            WHERE session_key = ? AND client_request_id = ? AND expires_at > ?
+            """,
+            (session_key, client_request_id, _now_ms()),
+        ) as cur:
+            return await cur.fetchone() is not None
+
     @staticmethod
     async def _purge_expired_meta_launch_drafts(
         conn: Any,
@@ -3981,9 +4250,22 @@ class SessionStorage:
         now_ms: int,
         limit: int,
     ) -> int:
-        """Delete a bounded page of expired raw prompts and their staged controls."""
+        """Delete bounded pages of expired raw prompts and cancellation markers."""
 
         bounded_limit = max(1, min(int(limit), _META_LAUNCH_DRAFT_GLOBAL_LIMIT))
+        await conn.execute(
+            """
+            DELETE FROM meta_launch_discard_tombstones
+            WHERE rowid IN (
+                SELECT rowid
+                FROM meta_launch_discard_tombstones
+                WHERE expires_at <= ?
+                ORDER BY expires_at ASC, created_at ASC
+                LIMIT ?
+            )
+            """,
+            (now_ms, bounded_limit),
+        )
         async with conn.execute(
             """
             SELECT draft_id, session_key, client_request_id
@@ -4016,6 +4298,63 @@ class SessionStorage:
         )
         return len(expired)
 
+    async def _tombstone_meta_launches_for_boundary(
+        self,
+        conn: Any,
+        *,
+        session_key: str,
+        now_ms: int,
+        intent_statuses: tuple[str, ...],
+        exclude_intent_id: str | None = None,
+        exclude_client_request_id: str | None = None,
+    ) -> int:
+        """Fence stale MetaSkill identities while erasing their raw content."""
+
+        statuses = tuple(
+            status for status in intent_statuses if status in {"staged", "accepted"}
+        )
+        if not statuses:
+            return 0
+        await self._purge_expired_meta_launch_drafts(
+            conn,
+            now_ms=now_ms,
+            limit=_META_LAUNCH_DRAFT_GC_BATCH,
+        )
+        coordinates = await self._select_live_meta_launch_coordinates(
+            conn,
+            now_ms=now_ms,
+            session_key=session_key,
+            include_tombstones=False,
+            include_staged="staged" in statuses,
+            include_accepted="accepted" in statuses,
+            exclude_intent_id=exclude_intent_id,
+        )
+        request_ids = {
+            request_id
+            for _coordinate_session, request_id in coordinates
+            if request_id != exclude_client_request_id
+        }
+
+        for request_id in sorted(request_ids):
+            await conn.execute(
+                """
+                INSERT INTO meta_launch_discard_tombstones (
+                    session_key, client_request_id, created_at, expires_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_key, client_request_id) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                WHERE meta_launch_discard_tombstones.expires_at <= excluded.created_at
+                """,
+                (
+                    session_key,
+                    request_id,
+                    now_ms,
+                    now_ms + _META_LAUNCH_DRAFT_RETENTION_MS,
+                ),
+            )
+        return len(request_ids)
+
     async def stage_meta_launch_draft(
         self,
         *,
@@ -4031,17 +4370,11 @@ class SessionStorage:
         retries safe after an RPC response loss or application restart.
         """
 
-        session_key = canonicalize_session_key(session_key)
-        client_request_id = client_request_id.strip()
+        session_key, client_request_id = normalize_meta_launch_coordinates(
+            session_key,
+            client_request_id,
+        )
         meta_skill_name = meta_skill_name.strip()
-        if not session_key or len(session_key) > 512:
-            raise ValueError("meta launch draft session is invalid")
-        if (
-            not client_request_id
-            or len(client_request_id) > 256
-            or any(character.isspace() for character in client_request_id)
-        ):
-            raise ValueError("meta launch draft request identity is invalid")
         if (
             not meta_skill_name
             or len(meta_skill_name) > 256
@@ -4063,6 +4396,29 @@ class SessionStorage:
                 now_ms=now_ms,
                 limit=_META_LAUNCH_DRAFT_GC_BATCH,
             )
+            # The bounded global GC page may not include this coordinate when
+            # many markers expire together. Remove its own expired marker so a
+            # legitimate reuse after the retention window is deterministic.
+            await conn.execute(
+                """
+                DELETE FROM meta_launch_discard_tombstones
+                WHERE session_key = ? AND client_request_id = ? AND expires_at <= ?
+                """,
+                (session_key, client_request_id, now_ms),
+            )
+            async with conn.execute(
+                """
+                SELECT 1
+                FROM meta_launch_discard_tombstones
+                WHERE session_key = ? AND client_request_id = ? AND expires_at > ?
+                """,
+                (session_key, client_request_id, now_ms),
+            ) as cur:
+                discarded = await cur.fetchone()
+            if discarded is not None:
+                raise MetaLaunchDraftDiscardedError(
+                    "meta launch draft identity was explicitly discarded"
+                )
             existing = await self._select_meta_launch_draft(
                 conn,
                 session_key=session_key,
@@ -4088,8 +4444,15 @@ class SessionStorage:
                 raise MetaLaunchDraftCapacityError("MetaSkill draft outbox is full")
             async with conn.execute("SELECT COUNT(*) FROM meta_launch_drafts") as cur:
                 global_row = await cur.fetchone()
-            if int(global_row[0] if global_row else 0) >= _META_LAUNCH_DRAFT_GLOBAL_LIMIT:
+            global_drafts = int(global_row[0] if global_row else 0)
+            if global_drafts >= _META_LAUNCH_DRAFT_GLOBAL_LIMIT:
                 raise MetaLaunchDraftCapacityError("MetaSkill draft outbox is full")
+            await self._ensure_meta_launch_coordinate_capacity(
+                conn,
+                now_ms=now_ms,
+                session_key=session_key,
+                client_request_id=client_request_id,
+            )
 
             draft = MetaLaunchDraft(
                 session_key=session_key,
@@ -4125,10 +4488,12 @@ class SessionStorage:
         created and the caller receives a retry-safe failure.
         """
 
-        session_key = canonicalize_session_key(session_key)
-        client_request_id = client_request_id.strip()
+        session_key, client_request_id = normalize_meta_launch_coordinates(
+            session_key,
+            client_request_id,
+        )
         meta_skill_name = meta_skill_name.strip()
-        if not session_key or not client_request_id or not meta_skill_name or not launch_text:
+        if not meta_skill_name or not launch_text:
             raise ValueError("meta launch draft promotion coordinates are required")
 
         now_ms = _now_ms()
@@ -4138,6 +4503,18 @@ class SessionStorage:
                 now_ms=now_ms,
                 limit=_META_LAUNCH_DRAFT_GC_BATCH,
             )
+            async with conn.execute(
+                """
+                SELECT 1 FROM meta_launch_discard_tombstones
+                WHERE session_key = ? AND client_request_id = ? AND expires_at > ?
+                """,
+                (session_key, client_request_id, now_ms),
+            ) as cur:
+                discarded = await cur.fetchone()
+            if discarded is not None:
+                raise MetaLaunchDraftDiscardedError(
+                    "meta launch draft identity was explicitly discarded"
+                )
             draft = await self._select_meta_launch_draft(
                 conn,
                 session_key=session_key,
@@ -4229,12 +4606,16 @@ class SessionStorage:
         session_key: str,
         client_request_id: str,
     ) -> bool:
-        """Remove a draft after explicit user discard."""
+        """Make an explicit user discard terminal for a bounded retention window."""
 
-        session_key = canonicalize_session_key(session_key)
-        client_request_id = client_request_id.strip()
-        if not session_key or not client_request_id:
+        try:
+            session_key, client_request_id = normalize_meta_launch_coordinates(
+                session_key,
+                client_request_id,
+            )
+        except ValueError:
             return False
+        now_ms = _now_ms()
         async with self._write_transaction("discard_meta_launch_draft") as conn:
             intent = await self._select_meta_control_intent(
                 conn,
@@ -4248,6 +4629,46 @@ class SessionStorage:
             # restore it as a newly sendable composer draft.
             if intent is not None and intent.status == "accepted":
                 return False
+            await self._purge_expired_meta_launch_drafts(
+                conn,
+                now_ms=now_ms,
+                limit=_META_LAUNCH_DRAFT_GC_BATCH,
+            )
+            async with conn.execute(
+                """
+                SELECT 1 FROM meta_launch_discard_tombstones
+                WHERE session_key = ? AND client_request_id = ? AND expires_at > ?
+                """,
+                (session_key, client_request_id, now_ms),
+            ) as cur:
+                existing_tombstone = await cur.fetchone()
+            if existing_tombstone is None:
+                await self._ensure_meta_launch_coordinate_capacity(
+                    conn,
+                    now_ms=now_ms,
+                    session_key=session_key,
+                    client_request_id=client_request_id,
+                )
+            # Keep only the request coordinates, never the raw launch text or
+            # skill name. Repeated response-loss retries do not extend the
+            # finite retention window established by the first discard.
+            await conn.execute(
+                """
+                INSERT INTO meta_launch_discard_tombstones (
+                    session_key, client_request_id, created_at, expires_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_key, client_request_id) DO UPDATE SET
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                WHERE meta_launch_discard_tombstones.expires_at <= excluded.created_at
+                """,
+                (
+                    session_key,
+                    client_request_id,
+                    now_ms,
+                    now_ms + _META_LAUNCH_DRAFT_RETENTION_MS,
+                ),
+            )
             await conn.execute(
                 "DELETE FROM meta_launch_drafts WHERE session_key = ? AND client_request_id = ?",
                 (session_key, client_request_id),
@@ -4507,6 +4928,19 @@ class SessionStorage:
                         """,
                         (session_node.session_key,),
                     )
+                    await self._tombstone_meta_launches_for_boundary(
+                        conn,
+                        session_key=session_node.session_key,
+                        now_ms=_now_ms(),
+                        intent_statuses=("staged", "accepted"),
+                        exclude_intent_id=meta_control_intent_id,
+                        exclude_client_request_id=(
+                            client_request_id
+                            if meta_control_intent_id is not None
+                            and request_session_key == session_node.session_key
+                            else None
+                        ),
+                    )
                     if meta_control_intent_id is None:
                         await conn.execute(
                             """
@@ -4733,13 +5167,20 @@ class SessionStorage:
                         raise MetaControlIntentConflictError(
                             "MetaSkill control authorization changed during acceptance"
                         )
-            return TurnAcceptanceResult(
+            acceptance_result = TurnAcceptanceResult(
                 receipt=receipt,
                 replayed=False,
                 fresh_user_session=fresh_user_session,
                 task_status=task_record.status,
                 reset_archive_snapshot=reset_archive_snapshot,
             )
+        if reset_from_session_id is not None:
+            _clear_pending_meta_launch_boundary(
+                entry.session_key,
+                preserve_client_request_id=client_request_id,
+                preserve_message=entry.content,
+            )
+        return acceptance_result
 
     @_serialized_read
     async def get_transcript(

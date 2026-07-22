@@ -13,6 +13,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from opensquilla.skills.paper_visibility import find_unsafe_text_visibility_controls
+
 _SAFE_META_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _SECTION_NAMES = (
     "abstract",
@@ -41,9 +43,38 @@ _REFERENCE_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
-
 class PaperArtifactError(RuntimeError):
     """Raised when an artifact operation fails its deterministic contract."""
+
+
+def _without_tex_comments(text: str) -> str:
+    """Remove TeX comments without treating escaped percent signs as comments."""
+
+    visible_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        comment_at: int | None = None
+        for index, character in enumerate(line):
+            if character != "%":
+                continue
+            slash_count = 0
+            cursor = index - 1
+            while cursor >= 0 and line[cursor] == "\\":
+                slash_count += 1
+                cursor -= 1
+            if slash_count % 2 == 0:
+                comment_at = index
+                break
+        visible_lines.append(line if comment_at is None else line[:comment_at] + "\n")
+    return "".join(visible_lines)
+
+
+def _reject_invisible_text_controls(tex: str) -> None:
+    controls = find_unsafe_text_visibility_controls(_without_tex_comments(tex))
+    if controls:
+        raise PaperArtifactError(
+            "COMPILE_FAILED: manuscript contains TeX text-visibility controls: "
+            + ", ".join(controls[:8])
+        )
 
 
 def _text(payload: Mapping[str, Any], key: str, default: str = "") -> str:
@@ -970,6 +1001,7 @@ def compile_pdf(payload: Mapping[str, Any]) -> str:
     if expected_tex.is_symlink() or expected_bib.is_symlink():
         raise PaperArtifactError("COMPILE_FAILED: paper input/output files must not be symlinks")
     tex_body, bibliography, target_pages = _extract_compile_inputs(payload, paper)
+    _reject_invisible_text_controls(tex_body)
     tex_body = _prepare_tex(tex_body)
     enforce_page_target = _boolean(payload, "enforce_page_target", True)
     reuse_existing = _boolean(payload, "reuse_existing", False)

@@ -15,6 +15,7 @@ import pytest
 from opensquilla.engine.steps.meta_command import (
     format_meta_replay_sentinel,
     meta_command_launch,
+    pending_meta_launch_clear_session,
     pending_meta_launch_consumed_count,
     pending_meta_launch_peek,
     pending_meta_launch_pop,
@@ -26,6 +27,46 @@ from opensquilla.engine.steps.meta_command import (
     pending_meta_replay_put,
 )
 from opensquilla.session.turn_context import turn_context_scope
+
+
+def test_pending_meta_launch_clear_session_removes_only_the_target_session() -> None:
+    pending_meta_launch_put("boundary-target", "meta-short-drama")
+    pending_meta_launch_put(
+        "boundary-target", "meta-paper-write", client_request_id="old-request"
+    )
+    pending_meta_launch_put("boundary-other", "meta-short-drama")
+
+    assert pending_meta_launch_clear_session("boundary-target") == 2
+    assert pending_meta_launch_peek("boundary-target") is None
+    assert pending_meta_launch_peek("boundary-other") == "meta-short-drama"
+    pending_meta_launch_pop("boundary-other")
+
+
+def test_pending_meta_launch_clear_session_preserves_exact_reset_launch() -> None:
+    pending_meta_launch_put(
+        "boundary-reset", "meta-short-drama", client_request_id="old-request"
+    )
+    pending_meta_launch_put(
+        "boundary-reset", "meta-paper-write", client_request_id="reset-request"
+    )
+    pending_meta_launch_promote(
+        "boundary-reset",
+        client_request_id="reset-request",
+        message="/meta meta-paper-write",
+    )
+
+    assert pending_meta_launch_clear_session(
+        "boundary-reset",
+        preserve_client_request_id="reset-request",
+        preserve_message="/meta meta-paper-write",
+    ) == 1
+    assert pending_meta_launch_peek(
+        "boundary-reset", client_request_id="old-request"
+    ) is None
+    assert pending_meta_launch_peek(
+        "boundary-reset", client_request_id="reset-request"
+    ) == "meta-paper-write"
+    pending_meta_launch_pop("boundary-reset", client_request_id="reset-request")
 
 
 def _make_ctx(session_key: str, message: str = ""):

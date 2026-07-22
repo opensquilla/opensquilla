@@ -65,6 +65,10 @@ _TRUSTED_META_CAPABILITY_PARENTS = frozenset(
     {_TRUSTED_SHORT_DRAMA_PARENT, _TRUSTED_AWESOME_WEBPAGE_PARENT}
 )
 _CONSENT_PROCEED_WHEN = "'DECISION: proceed' in outputs.review_normalize"
+_SHORT_DRAMA_DURATION_GATE = (
+    "(outputs.final_script | short_drama_duration_contract_valid)"
+)
+_SHORT_DRAMA_PAID_WHEN = f"{_CONSENT_PROCEED_WHEN} and {_SHORT_DRAMA_DURATION_GATE}"
 _AWESOME_APPROVAL_VALUE = "APPROVE_MEDIA_SEND_AND_COST"
 _AWESOME_APPROVAL_WHEN = (
     "inputs.get('collected', {}).get('media_provider_approval', {})"
@@ -233,11 +237,11 @@ def _trusted_paid_step_contracts() -> dict[str, tuple[str, str]]:
     """Return the code-owned paid-step allowlist for the short-drama plan."""
 
     contracts = {
-        "reference_image": ("nano-banana-pro", _CONSENT_PROCEED_WHEN),
+        "reference_image": ("nano-banana-pro", _SHORT_DRAMA_PAID_WHEN),
     }
     for shot in range(1, 11):
         present = (
-            f"{_CONSENT_PROCEED_WHEN} and "
+            f"{_SHORT_DRAMA_PAID_WHEN} and "
             f"'=== SHOT_{shot} ===' in outputs.final_script.splitlines()"
         )
         contracts[f"shot{shot}_image"] = (

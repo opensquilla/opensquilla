@@ -873,6 +873,218 @@ def test_install_activation_failure_rollback_and_runtime_path_order(
     assert toolchain_runtime.list_active_components(root=state_root) == ()
 
 
+def test_historical_archive_keeps_install_time_layout_and_rollback_is_atomic(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    font_v1 = b"historical-font-v1"
+    font_v2 = b"current-font-v2"
+    archive_v1 = tmp_path / "tool-v1.tar.xz"
+    archive_v2 = tmp_path / "tool-v2.tar.xz"
+    bin_v1 = "paper-build-v1/bin"
+    bin_v2 = "paper-build-v2/bin"
+    _write_tar_xz(
+        archive_v1,
+        {f"{bin_v1}/{executable_name}": b"historical executable"},
+        executable={f"{bin_v1}/{executable_name}"},
+    )
+    _write_tar_xz(
+        archive_v2,
+        {f"{bin_v2}/{executable_name}": b"current executable"},
+        executable={f"{bin_v2}/{executable_name}"},
+    )
+
+    def descriptor_for(
+        version: str,
+        archive: Path,
+        bin_relpath: str,
+        font: bytes,
+    ) -> ToolchainDescriptor:
+        return replace(
+            _descriptor(version=version, size=archive.stat().st_size),
+            archive_root=bin_relpath.partition("/")[0],
+            bin_relpaths=(bin_relpath,),
+            auxiliary_assets=(
+                registry.AuxiliaryAssetDescriptor(
+                    asset_id="test-font",
+                    url=f"https://example.invalid/{version}.ttc",
+                    sha256=hashlib.sha256(font).hexdigest(),
+                    size=len(font),
+                    destination=f"resources-{version}/test-font.ttc",
+                    license="OFL-1.1",
+                    source="https://example.invalid/fonts",
+                ),
+            ),
+        )
+
+    descriptors = {
+        "v1": descriptor_for("v1", archive_v1, bin_v1, font_v1),
+        "v2": descriptor_for("v2", archive_v2, bin_v2, font_v2),
+    }
+    archives = {"v1": archive_v1, "v2": archive_v2}
+    fonts = {"v1": font_v1, "v2": font_v2}
+    selected = {"version": "v1"}
+    real_describe = manager.registry.describe_component
+
+    def describe(component_id: str) -> ToolchainDescriptor:
+        if component_id == "paper-tex":
+            return descriptors[selected["version"]]
+        return real_describe(component_id)
+
+    monkeypatch.setattr(manager.registry, "describe_component", describe)
+    monkeypatch.setattr(
+        manager,
+        "_download",
+        lambda _descriptor, destination, _progress, **_kwargs: shutil.copyfile(
+            archives[selected["version"]], destination
+        ),
+    )
+
+    def download_font(
+        _url: str,
+        sha256: str,
+        size: int,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        font = fonts[selected["version"]]
+        assert len(font) == size
+        assert hashlib.sha256(font).hexdigest() == sha256
+        destination.write_bytes(font)
+
+    monkeypatch.setattr(manager, "_download_pinned", download_font)
+    state_root = tmp_path / "state"
+    receipt_v1 = manager.install_component("paper-tex", root=state_root)
+    package_v1 = state_root / str(receipt_v1.package_relpath)
+    marker_v1 = json.loads(
+        (package_v1 / ".opensquilla-toolchain.json").read_text(encoding="utf-8")
+    )
+    assert marker_v1["bin_relpaths"] == [bin_v1]
+    assert marker_v1["resources"] == {
+        "test-font": "resources-v1/test-font.ttc"
+    }
+
+    # Simulate a package installed by an earlier OpenSquilla build, before
+    # package markers recorded the archive layout, then upgrade OpenSquilla
+    # directly to a catalog whose archive root and resource paths have changed.
+    marker_path_v1 = package_v1 / ".opensquilla-toolchain.json"
+    for key in ("bin_relpaths", "resources", "auxiliary_asset_kinds"):
+        marker_v1.pop(key)
+    marker_path_v1.write_text(json.dumps(marker_v1), encoding="utf-8")
+    selected["version"] = "v2"
+    manager.invalidate_probe_cache()
+    toolchain_runtime.invalidate_payload_validation_cache()
+
+    old_binary = package_v1 / bin_v1 / executable_name
+    old_font = package_v1 / "resources-v1/test-font.ttc"
+
+    # A corroborated receipt is still insufficient when any manifest-covered
+    # payload byte changed. Recovery fails without writing either state file.
+    active_path = state_root / "active/paper-tex.json"
+    active_v1 = active_path.read_bytes()
+    marker_v1_legacy = marker_path_v1.read_bytes()
+    old_font.write_bytes(b"tampered-font-v1")
+    assert (
+        resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+        is None
+    )
+    assert active_path.read_bytes() == active_v1
+    assert marker_path_v1.read_bytes() == marker_v1_legacy
+    old_font.write_bytes(font_v1)
+    manager.invalidate_probe_cache()
+    toolchain_runtime.invalidate_payload_validation_cache()
+
+    # An attacker-controlled active receipt cannot redirect recovery to another
+    # manifest-covered directory: the durable receipt copy must corroborate the
+    # layout, and a failed attempt leaves both marker and activation unchanged.
+    tampered_active = json.loads(active_v1)
+    tampered_active["bin_relpaths"] = ["resources-v1"]
+    active_path.write_text(json.dumps(tampered_active), encoding="utf-8")
+    tampered_active_bytes = active_path.read_bytes()
+    assert (
+        resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+        is None
+    )
+    assert active_path.read_bytes() == tampered_active_bytes
+    assert marker_path_v1.read_bytes() == marker_v1_legacy
+
+    active_path.write_bytes(active_v1)
+    manager.invalidate_probe_cache()
+    toolchain_runtime.invalidate_payload_validation_cache()
+    assert (
+        resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+        == old_binary
+    )
+    assert (
+        resolve_managed_resource("test-font", component_id="paper-tex", root=state_root)
+        == old_font
+    )
+    upgraded_marker_v1 = json.loads(marker_path_v1.read_text(encoding="utf-8"))
+    assert upgraded_marker_v1["bin_relpaths"] == [bin_v1]
+    assert upgraded_marker_v1["resources"] == {
+        "test-font": "resources-v1/test-font.ttc"
+    }
+    assert upgraded_marker_v1["auxiliary_asset_kinds"] == {"test-font": "direct"}
+    historical_probe = manager.probe_component(
+        "paper-tex",
+        root=state_root,
+        base_env={"PATH": ""},
+    )
+    assert historical_probe.ready is True
+    assert historical_probe.version == "v1"
+
+    receipt_v2 = manager.install_component("paper-tex", root=state_root)
+    assert receipt_v2.version == "v2"
+
+    # Rollback independently repairs the same legacy marker when the old
+    # activation is now nested as the current receipt's previous candidate.
+    marker_v1 = json.loads(marker_path_v1.read_text(encoding="utf-8"))
+    for key in ("bin_relpaths", "resources", "auxiliary_asset_kinds"):
+        marker_v1.pop(key)
+    marker_path_v1.write_text(json.dumps(marker_v1), encoding="utf-8")
+    active_v2 = active_path.read_bytes()
+    rollback_marker_before = marker_path_v1.read_bytes()
+    tampered_rollback = json.loads(active_v2)
+    tampered_rollback["previous"]["bin_relpaths"] = ["resources-v1"]
+    active_path.write_text(json.dumps(tampered_rollback), encoding="utf-8")
+    tampered_rollback_bytes = active_path.read_bytes()
+
+    with pytest.raises(manager.ToolchainError, match="failed validation"):
+        manager.rollback_component("paper-tex", root=state_root)
+
+    assert active_path.read_bytes() == tampered_rollback_bytes
+    assert marker_path_v1.read_bytes() == rollback_marker_before
+
+    active_path.write_bytes(active_v2)
+    manager.invalidate_probe_cache()
+    toolchain_runtime.invalidate_payload_validation_cache()
+    assert manager.rollback_component("paper-tex", root=state_root) is True
+    assert (
+        resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+        == old_binary
+    )
+    assert (
+        resolve_managed_resource("test-font", component_id="paper-tex", root=state_root)
+        == old_font
+    )
+
+    # The inverse rollback candidate is v2. A single-file marker mutation must
+    # fail before active state changes and must never report success.
+    active_before = active_path.read_bytes()
+    package_v2 = state_root / str(receipt_v2.package_relpath)
+    marker_v2_path = package_v2 / ".opensquilla-toolchain.json"
+    marker_v2 = json.loads(marker_v2_path.read_text(encoding="utf-8"))
+    marker_v2["bin_relpaths"] = ["paper-build-v2/other-bin"]
+    marker_v2_path.write_text(json.dumps(marker_v2), encoding="utf-8")
+
+    with pytest.raises(manager.ToolchainError, match="failed validation"):
+        manager.rollback_component("paper-tex", root=state_root)
+
+    assert active_path.read_bytes() == active_before
+
+
 def test_runtime_rejects_historical_brew_receipt_for_live_external_prefix() -> None:
     current = replace(
         _descriptor(version="v2"),
@@ -967,8 +1179,15 @@ def test_rollback_serializes_with_install_per_root_and_component(
     manager._ensure_root(first_root)
 
     previous_package = first_root / "packages/paper-tex/v1/test-x64"
-    previous_package.mkdir(parents=True)
-    (previous_package / ".opensquilla-toolchain.json").write_text("{}", encoding="utf-8")
+    previous_binary = previous_package / "Bundle/bin" / (
+        "paperbin.exe" if os.name == "nt" else "paperbin"
+    )
+    _make_executable(previous_binary)
+    previous_descriptor = replace(descriptor, version="v1", sha256="1" * 64)
+    (previous_package / ".opensquilla-toolchain.json").write_text(
+        json.dumps(manager._package_marker(previous_descriptor, previous_package)),
+        encoding="utf-8",
+    )
     previous = {
         "component_id": "paper-tex",
         "version": "v1",
@@ -1854,7 +2073,9 @@ def test_media_capability_report_uses_active_managed_bins_and_font_env(
         _bin_dirs: tuple[Path, ...],
         *,
         env_override: dict[str, str],
+        resource_paths: dict[str, Path],
     ) -> None:
+        assert resource_paths["noto-cjk-font"] == package / font_asset.destination
         capability_calls.append((payload, env_override["PATH"]))
 
     monkeypatch.setattr(manager, "_ffmpeg_media_capability", fake_media_capability)

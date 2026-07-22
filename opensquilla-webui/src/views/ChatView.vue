@@ -1352,6 +1352,9 @@ const metaSkillSetup = useMetaSkillSetup({
   onDraftAlreadyAccepted: () => {
     pushToast(t('chat.metaRuns.cancelAlreadyAccepted'), { tone: 'info', duration: 7000 })
   },
+  forgetHiddenControl: (draftSessionKey: string, clientRequestId: string) => {
+    forgetHiddenControlOutbox(draftSessionKey, clientRequestId)
+  },
 })
 const {
   setupState,

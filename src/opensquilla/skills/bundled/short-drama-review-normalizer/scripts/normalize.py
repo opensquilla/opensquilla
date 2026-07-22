@@ -21,6 +21,9 @@ _EMPTY_SENTINELS = frozenset(
     }
 )
 
+_CANONICAL_SNAPSHOT_PHASE = "canonical_script_snapshot"
+_MAX_CANONICAL_SCRIPT_BYTES = 200_000
+
 _CJK_PUNCTUATION_RE = re.compile(r"[\s，,。.!！?？、；;：:\"'“”‘’（）()\[\]【】]+")
 _ASCII_PUNCTUATION_RE = re.compile(r"[^a-z0-9]+")
 
@@ -575,6 +578,36 @@ def _flag(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
 
 
+def freeze_canonical_script_snapshot(payload: Mapping[str, Any]) -> str:
+    """Return the exact in-memory script bound to one final review decision.
+
+    The published ``script.txt`` remains user-editable, so it cannot be the
+    authority for later paid arguments. This helper receives scheduler output
+    directly and emits that value without reading the workspace or involving a
+    model. Proceed, hold, and cancel all retain a canonical delivery snapshot;
+    only the downstream paid-step conditions interpret proceed as consent.
+    """
+
+    approval = payload.get("approval")
+    script = payload.get("script")
+    decision_lines = (
+        [line for line in approval.splitlines() if line.startswith("DECISION: ")]
+        if isinstance(approval, str)
+        else []
+    )
+    if len(decision_lines) != 1 or decision_lines[0] not in {
+        "DECISION: proceed",
+        "DECISION: hold",
+        "DECISION: cancel",
+    }:
+        raise ValueError("canonical script snapshot requires one valid final decision")
+    if not isinstance(script, str) or not script.strip():
+        raise ValueError("canonical script snapshot is empty")
+    if len(script.encode("utf-8")) > _MAX_CANONICAL_SCRIPT_BYTES:
+        raise ValueError("canonical script snapshot exceeds the 200000-byte limit")
+    return script
+
+
 def normalize_review(payload: Mapping[str, Any]) -> str:
     """Return a fail-closed, bounded decision block for the review workflow.
 
@@ -582,6 +615,9 @@ def normalize_review(payload: Mapping[str, Any]) -> str:
     is the final provider-call gate: if that first reply requested a revision,
     a separate explicit confirmation is required after the revised preview.
     """
+
+    if payload.get("phase") == _CANONICAL_SNAPSHOT_PHASE:
+        return freeze_canonical_script_snapshot(payload)
 
     review = _clean_review(payload.get("review", ""))
     initial = _normalize_initial_review(review)
@@ -615,7 +651,12 @@ def main() -> int:
         payload = {}
     if not isinstance(payload, Mapping):
         payload = {}
-    sys.stdout.write(normalize_review(payload) + "\n")
+    try:
+        output = normalize_review(payload)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    sys.stdout.write(output + "\n")
     return 0
 
 

@@ -1,5 +1,6 @@
 import { ref, type Ref } from 'vue'
 import i18n from '@/i18n'
+import type { RpcClientError } from '@/lib/rpc'
 import type { HiddenControlDispatchResult } from '@/types/chat'
 import type { MetaSetupReadiness } from '@/types/metaSetup'
 import type { MetaLaunchDraftPayload } from '@/types/rpc'
@@ -187,7 +188,7 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
     launchText: string
     originatingSessionKey: string
     clientRequestId: string
-  }): Promise<'accepted' | 'queued' | 'setup' | 'failed'> {
+  }): Promise<'accepted' | 'queued' | 'setup' | 'failed' | 'discarded'> {
     const {
       skillName,
       launchText,
@@ -297,6 +298,15 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
       )
       return 'failed'
     } catch (err: unknown) {
+      const rpcError = err as RpcClientError | undefined
+      if (rpcError?.code === 'META_DRAFT_DISCARDED') {
+        // Another tab already committed the user's cancellation. This identity
+        // is terminal: never recreate a setup card or a sendable composer copy.
+        options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', {
+          error: rpcError.message,
+        }))
+        return 'discarded'
+      }
       // A transport error can happen after the Gateway commits the draft. Keep
       // the same request id in a retry card; restoring plain text would race
       // server recovery and create a second logical request.
@@ -321,6 +331,7 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         originatingSessionKey: draft.sessionKey,
         clientRequestId: draft.clientRequestId,
       })
+      if (outcome === 'discarded') continue
       // A setup card or queued hidden turn owns the next user-visible slot.
       // Remaining server drafts stay durable and will be resumed later.
       if (outcome !== 'accepted') return attemptedRequestIds

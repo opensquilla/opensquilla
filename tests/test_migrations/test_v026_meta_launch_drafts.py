@@ -11,11 +11,11 @@ from opensquilla.persistence.migrator import apply_pending
 from opensquilla.session.storage import SessionStorage
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
-V025_ID = "V025__meta_launch_drafts"
+V026_ID = "V026__meta_launch_drafts"
 
 
 @pytest.mark.asyncio
-async def test_v025_preserves_runtime_created_table_and_adds_indexes(tmp_path: Path) -> None:
+async def test_v026_preserves_runtime_created_table_and_adds_indexes(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     storage = await SessionStorage.open(str(db_path))
     try:
@@ -36,7 +36,7 @@ async def test_v025_preserves_runtime_created_table_and_adds_indexes(tmp_path: P
     finally:
         connection.close()
 
-    assert V025_ID in apply_pending(str(db_path), MIGRATIONS_DIR)
+    assert V026_ID in apply_pending(str(db_path), MIGRATIONS_DIR)
 
     connection = sqlite3.connect(db_path)
     try:
@@ -56,9 +56,9 @@ async def test_v025_preserves_runtime_created_table_and_adds_indexes(tmp_path: P
     assert indexes["idx_meta_launch_drafts_session_expiry"] is False
 
 
-def test_v025_applies_additive_schema_on_migrated_database(tmp_path: Path) -> None:
+def test_v026_applies_additive_schema_on_migrated_database(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
-    assert V025_ID in apply_pending(str(db_path), MIGRATIONS_DIR)
+    assert V026_ID in apply_pending(str(db_path), MIGRATIONS_DIR)
 
     connection = sqlite3.connect(db_path)
     try:

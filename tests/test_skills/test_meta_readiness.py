@@ -83,6 +83,10 @@ def _trusted_short_drama_fixture(
     )
     review = _spec("short-drama-review-normalizer")
     consent = "'DECISION: proceed' in outputs.review_normalize"
+    paid_consent = (
+        f"{consent} and "
+        "(outputs.final_script | short_drama_duration_contract_valid)"
+    )
     steps: list[dict[str, object]] = [
         {
             "id": "review_gate",
@@ -168,12 +172,12 @@ def _trusted_short_drama_fixture(
             "kind": "skill_exec",
             "skill": image.name,
             "side_effect": "external_paid_submit",
-            "when": consent,
+            "when": paid_consent,
         }
     ]
     for shot in range(1, 11):
         present = (
-            f"{consent} and "
+            f"{paid_consent} and "
             f"'=== SHOT_{shot} ===' in outputs.final_script.splitlines()"
         )
         steps.extend(

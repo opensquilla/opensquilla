@@ -46,7 +46,6 @@ _STATIC_STEP_LABELS: dict[str, tuple[str, str]] = {
 _SHOT_STEP_LABELS: dict[str, tuple[str, str]] = {
     "img_prompt": ("图提示", "image prompt"),
     "vid_prompt": ("视频提示", "video prompt"),
-    "duration": ("时长", "duration"),
     "image": ("图像", "image"),
     "video": ("视频", "video"),
     "video_fallback": ("视频兜底", "video fallback"),
@@ -488,7 +487,7 @@ composition:
           Previous script (re-read from disk — if the user hand-edited
           script.txt during review, those edits are already baked in
           here, so preserve them):
-          {{ outputs.script_reread | truncate(8000) }}
+          {{ outputs.script_reread }}
 
           Parsed overrides:
           {{ outputs.review_intent | truncate(1500) }}
@@ -569,9 +568,9 @@ composition:
           approval_snapshot_changed: "{{ outputs.script_reread != outputs.script_draft }}"
 
     # =========================================================================
-    # 6. Persist the exact consented snapshot, then read it back
-    #    deterministically. A model never gets an opportunity to alter the
-    #    shot count, duration, prompts, or price basis after approval.
+    # 6. Persist the exact consented snapshot, then freeze that same scheduler
+    #    value in memory. script.txt remains a user-visible artifact, but a
+    #    post-approval file edit can never alter paid count/duration/arguments.
     # =========================================================================
     - id: script_save
       kind: tool_call
@@ -584,10 +583,13 @@ composition:
 
     - id: final_script
       kind: skill_exec
-      skill: text-file-read
+      skill: short-drama-review-normalizer
       depends_on: [script_save, review_normalize]
       with:
-        input: "<<SLUG>>/script.txt"
+        payload:
+          phase: "canonical_script_snapshot"
+          approval: "{{ outputs.review_normalize }}"
+          script: "{{ outputs.get('script_revised', '') or outputs.script_reread }}"
 
     # =========================================================================
     # 8. Title / subtitle / ending text extracts (cheap llm_chat).
@@ -603,7 +605,7 @@ composition:
           inside the "=== OVERVIEW ===" block. Single line.
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('OVERVIEW') }}
 
     - id: subtitle_extract
       kind: llm_chat
@@ -619,7 +621,7 @@ composition:
             English script → "AI Short Drama · 30s"
 
           Script (read OVERVIEW.TITLE / DURATION_S / AUDIENCE):
-          {{ outputs.final_script | truncate(2000) }}
+          {{ outputs.final_script | short_drama_section('OVERVIEW') }}
 
     - id: ending_text_extract
       kind: llm_chat
@@ -634,7 +636,7 @@ composition:
             Other languages → THE END
 
           Script (sample to detect language):
-          {{ outputs.final_script | truncate(1500) }}
+          {{ outputs.final_script | short_drama_section('OVERVIEW') }}
 
     # =========================================================================
     # 8b. Universal identity-reference image. One full-cast neutral lineup
@@ -687,16 +689,16 @@ composition:
           Output a single line. No quotes. No commentary outside the
           prompt itself.
 
-          Script (READ THE FULL SCRIPT, including every SHOT_N block,
-          not just OVERVIEW):
-          {{ outputs.final_script | truncate(8000) }}
+          Reference-relevant context (from the exact full script snapshot;
+          includes every SHOT_N block, not just OVERVIEW):
+          {{ outputs.final_script | short_drama_reference_context }}
 
     - id: reference_image
       kind: skill_exec
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [reference_prompt_extract, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid)"
       with:
         prompt: "{{ outputs.reference_prompt_extract | truncate(800) }}"
         filename: "<<SLUG>>/reference.png"
@@ -745,7 +747,8 @@ composition:
         zoom_rate: 0.0008
 '''
 
-# Per-shot extract block template (img_prompt, vid_prompt, duration).
+# Per-shot prompt-extract block template. Duration is parsed locally from the
+# exact approved script snapshot and never delegated to an LLM.
 EXTRACT_TMPL = '''
     # ---- SHOT_{N} extracts (deterministically skip absent script blocks) ----
     - id: shot{N}_img_prompt
@@ -762,7 +765,7 @@ EXTRACT_TMPL = '''
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{{{ outputs.final_script | truncate(8000) }}}}
+          {{{{ outputs.final_script | short_drama_section('SHOT_{N}') }}}}
 
     - id: shot{N}_vid_prompt
       kind: llm_chat
@@ -777,22 +780,7 @@ EXTRACT_TMPL = '''
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{{{ outputs.final_script | truncate(8000) }}}}
-
-    - id: shot{N}_duration
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_{N} ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_{N} ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{{{ outputs.final_script | truncate(8000) }}}}
+          {{{{ outputs.final_script | short_drama_section('SHOT_{N}') }}}}
 '''
 
 # Per-shot image + video + fallback template.
@@ -803,7 +791,7 @@ EXEC_TMPL = '''
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot{N}_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_{N} ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot{N}_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_{N} ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot{N}_img_prompt"
       with:
         prompt: "{{{{ outputs.shot{N}_img_prompt | truncate(800) }}}}"
         filename: "<<SLUG>>/{N}_shot.png"
@@ -817,8 +805,8 @@ EXEC_TMPL = '''
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot{N}_vid_prompt, shot{N}_duration, reference_image, shot{N}_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_{N} ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot{N}_vid_prompt"
+      depends_on: [shot{N}_vid_prompt, reference_image, shot{N}_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_{N} ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot{N}_vid_prompt"
       on_failure: shot{N}_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -835,12 +823,10 @@ EXEC_TMPL = '''
         input_reference: "<<SLUG>>/reference.png"
         input_reference_2: "<<SLUG>>/{N}_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{{{ outputs.shot{N}_duration | int(5) }}}}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{{{ outputs.final_script | short_drama_shot_duration('SHOT_{N}') }}}}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -850,7 +836,7 @@ EXEC_TMPL = '''
       with:
         input_image: "<<SLUG>>/{N}_shot.png"
         output_path: "<<SLUG>>/{N}_shot.mp4"
-        duration: "{{{{ outputs.shot{N}_duration | int(5) }}}}"
+        duration: "{{{{ outputs.final_script | short_drama_shot_duration('SHOT_{N}') }}}}"
         width: 720
         height: 1280
         fps: 24
@@ -1149,8 +1135,9 @@ produces a revised preview and requires a second explicit approval.
    explicit approval. **`review_normalize`** is the final paid-media consent
    authority; cancel, missing, ambiguous, off-topic, and further-edit replies
    fail closed without provider calls.
-6. **`final_script`** echoes the canonical script.
-7. **`script_save`** writes `script.txt` to the run folder
+6. **`final_script`** freezes the canonical scheduler snapshot in memory; it
+   never re-reads the user-editable artifact.
+7. **`script_save`** writes that same canonical content to `script.txt` in the run folder
    (always — even on cancel, so the user keeps the draft).
 8. **`title_extract` / `subtitle_extract` / `ending_text_extract`**
    pull cover/ending text in the script's language.

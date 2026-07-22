@@ -447,7 +447,7 @@ composition:
           Previous script (re-read from disk — if the user hand-edited
           script.txt during review, those edits are already baked in
           here, so preserve them):
-          {{ outputs.script_reread | truncate(8000) }}
+          {{ outputs.script_reread }}
 
           Parsed overrides:
           {{ outputs.review_intent | truncate(1500) }}
@@ -532,9 +532,9 @@ composition:
           approval_snapshot_changed: "{{ outputs.script_reread != outputs.script_draft }}"
 
     # =========================================================================
-    # 6. Persist the exact consented snapshot, then read it back
-    #    deterministically. A model never gets an opportunity to alter the
-    #    shot count, duration, prompts, or price basis after approval.
+    # 6. Persist the exact consented snapshot, then freeze that same scheduler
+    #    value in memory. script.txt remains a user-visible artifact, but a
+    #    post-approval file edit can never alter paid count/duration/arguments.
     # =========================================================================
     - id: script_save
       label: "保存剧本"
@@ -551,10 +551,13 @@ composition:
       label: "最终剧本"
       label_en: "Final script"
       kind: skill_exec
-      skill: text-file-read
+      skill: short-drama-review-normalizer
       depends_on: [script_save, review_normalize]
       with:
-        input: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/script.txt"
+        payload:
+          phase: "canonical_script_snapshot"
+          approval: "{{ outputs.review_normalize }}"
+          script: "{{ outputs.get('script_revised', '') or outputs.script_reread }}"
 
     # =========================================================================
     # 8. Title / subtitle / ending text extracts (cheap llm_chat).
@@ -572,7 +575,7 @@ composition:
           inside the "=== OVERVIEW ===" block. Single line.
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('OVERVIEW') }}
 
     - id: subtitle_extract
       label: "字幕提取"
@@ -590,7 +593,7 @@ composition:
             English script → "AI Short Drama · 30s"
 
           Script (read OVERVIEW.TITLE / DURATION_S / AUDIENCE):
-          {{ outputs.final_script | truncate(2000) }}
+          {{ outputs.final_script | short_drama_section('OVERVIEW') }}
 
     - id: ending_text_extract
       label: "结尾文案"
@@ -607,7 +610,7 @@ composition:
             Other languages → THE END
 
           Script (sample to detect language):
-          {{ outputs.final_script | truncate(1500) }}
+          {{ outputs.final_script | short_drama_section('OVERVIEW') }}
 
     # =========================================================================
     # 8b. Universal identity-reference image. One full-cast neutral lineup
@@ -662,9 +665,9 @@ composition:
           Output a single line. No quotes. No commentary outside the
           prompt itself.
 
-          Script (READ THE FULL SCRIPT, including every SHOT_N block,
-          not just OVERVIEW):
-          {{ outputs.final_script | truncate(8000) }}
+          Reference-relevant context (from the exact full script snapshot;
+          includes every SHOT_N block, not just OVERVIEW):
+          {{ outputs.final_script | short_drama_reference_context }}
 
     - id: reference_image
       label: "参考图"
@@ -673,7 +676,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [reference_prompt_extract, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid)"
       with:
         prompt: "{{ outputs.reference_prompt_extract | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
@@ -742,7 +745,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_1') }}
 
     - id: shot1_vid_prompt
       label: "镜头1视频提示"
@@ -759,24 +762,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot1_duration
-      label: "镜头1时长"
-      label_en: "Shot 1 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_1 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_1 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_1') }}
 
     # ---- SHOT_2 extracts (deterministically skip absent script blocks) ----
     - id: shot2_img_prompt
@@ -795,7 +781,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_2') }}
 
     - id: shot2_vid_prompt
       label: "镜头2视频提示"
@@ -812,24 +798,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot2_duration
-      label: "镜头2时长"
-      label_en: "Shot 2 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_2 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_2 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_2') }}
 
     # ---- SHOT_3 extracts (deterministically skip absent script blocks) ----
     - id: shot3_img_prompt
@@ -848,7 +817,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_3') }}
 
     - id: shot3_vid_prompt
       label: "镜头3视频提示"
@@ -865,24 +834,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot3_duration
-      label: "镜头3时长"
-      label_en: "Shot 3 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_3 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_3 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_3') }}
 
     # ---- SHOT_4 extracts (deterministically skip absent script blocks) ----
     - id: shot4_img_prompt
@@ -901,7 +853,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_4') }}
 
     - id: shot4_vid_prompt
       label: "镜头4视频提示"
@@ -918,24 +870,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot4_duration
-      label: "镜头4时长"
-      label_en: "Shot 4 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_4 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_4 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_4') }}
 
     # ---- SHOT_5 extracts (deterministically skip absent script blocks) ----
     - id: shot5_img_prompt
@@ -954,7 +889,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_5') }}
 
     - id: shot5_vid_prompt
       label: "镜头5视频提示"
@@ -971,24 +906,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot5_duration
-      label: "镜头5时长"
-      label_en: "Shot 5 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_5 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_5 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_5') }}
 
     # ---- SHOT_6 extracts (deterministically skip absent script blocks) ----
     - id: shot6_img_prompt
@@ -1007,7 +925,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_6') }}
 
     - id: shot6_vid_prompt
       label: "镜头6视频提示"
@@ -1024,24 +942,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot6_duration
-      label: "镜头6时长"
-      label_en: "Shot 6 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_6 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_6 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_6') }}
 
     # ---- SHOT_7 extracts (deterministically skip absent script blocks) ----
     - id: shot7_img_prompt
@@ -1060,7 +961,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_7') }}
 
     - id: shot7_vid_prompt
       label: "镜头7视频提示"
@@ -1077,24 +978,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot7_duration
-      label: "镜头7时长"
-      label_en: "Shot 7 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_7 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_7 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_7') }}
 
     # ---- SHOT_8 extracts (deterministically skip absent script blocks) ----
     - id: shot8_img_prompt
@@ -1113,7 +997,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_8') }}
 
     - id: shot8_vid_prompt
       label: "镜头8视频提示"
@@ -1130,24 +1014,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot8_duration
-      label: "镜头8时长"
-      label_en: "Shot 8 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_8 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_8 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_8') }}
 
     # ---- SHOT_9 extracts (deterministically skip absent script blocks) ----
     - id: shot9_img_prompt
@@ -1166,7 +1033,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_9') }}
 
     - id: shot9_vid_prompt
       label: "镜头9视频提示"
@@ -1183,24 +1050,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot9_duration
-      label: "镜头9时长"
-      label_en: "Shot 9 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_9 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_9 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_9') }}
 
     # ---- SHOT_10 extracts (deterministically skip absent script blocks) ----
     - id: shot10_img_prompt
@@ -1219,7 +1069,7 @@ composition:
             output exactly the literal sentinel: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_10') }}
 
     - id: shot10_vid_prompt
       label: "镜头10视频提示"
@@ -1236,24 +1086,7 @@ composition:
           If it does NOT: output exactly: __SHOT_ABSENT__
 
           Script:
-          {{ outputs.final_script | truncate(8000) }}
-
-    - id: shot10_duration
-      label: "镜头10时长"
-      label_en: "Shot 10 duration"
-      kind: llm_chat
-      depends_on: [final_script, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_10 ===' in outputs.final_script.splitlines()"
-      with:
-        system: "Return exactly one integer or the literal __SHOT_ABSENT__. No commentary."
-        task: |
-          If the script contains a "=== SHOT_10 ===" block:
-            output exactly the integer after "DURATION_S:" inside that
-            block, clamped to [3, 15]. Digits only, no units.
-          If it does NOT: output exactly: __SHOT_ABSENT__
-
-          Script:
-          {{ outputs.final_script | truncate(8000) }}
+          {{ outputs.final_script | short_drama_section('SHOT_10') }}
 
     # ---- SHOT_1 image / video / fallback ----
     - id: shot1_image
@@ -1263,7 +1096,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot1_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_1 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot1_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_1 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot1_img_prompt"
       with:
         prompt: "{{ outputs.shot1_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/1_shot.png"
@@ -1279,8 +1112,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot1_vid_prompt, shot1_duration, reference_image, shot1_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_1 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot1_vid_prompt"
+      depends_on: [shot1_vid_prompt, reference_image, shot1_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_1 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot1_vid_prompt"
       on_failure: shot1_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1297,12 +1130,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/1_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot1_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_1') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1314,7 +1145,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/1_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/1_shot.mp4"
-        duration: "{{ outputs.shot1_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_1') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1327,7 +1158,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot2_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_2 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot2_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_2 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot2_img_prompt"
       with:
         prompt: "{{ outputs.shot2_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/2_shot.png"
@@ -1343,8 +1174,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot2_vid_prompt, shot2_duration, reference_image, shot2_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_2 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot2_vid_prompt"
+      depends_on: [shot2_vid_prompt, reference_image, shot2_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_2 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot2_vid_prompt"
       on_failure: shot2_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1361,12 +1192,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/2_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot2_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_2') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1378,7 +1207,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/2_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/2_shot.mp4"
-        duration: "{{ outputs.shot2_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_2') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1391,7 +1220,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot3_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_3 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot3_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_3 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot3_img_prompt"
       with:
         prompt: "{{ outputs.shot3_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/3_shot.png"
@@ -1407,8 +1236,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot3_vid_prompt, shot3_duration, reference_image, shot3_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_3 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot3_vid_prompt"
+      depends_on: [shot3_vid_prompt, reference_image, shot3_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_3 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot3_vid_prompt"
       on_failure: shot3_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1425,12 +1254,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/3_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot3_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_3') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1442,7 +1269,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/3_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/3_shot.mp4"
-        duration: "{{ outputs.shot3_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_3') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1455,7 +1282,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot4_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_4 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot4_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_4 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot4_img_prompt"
       with:
         prompt: "{{ outputs.shot4_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/4_shot.png"
@@ -1471,8 +1298,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot4_vid_prompt, shot4_duration, reference_image, shot4_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_4 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot4_vid_prompt"
+      depends_on: [shot4_vid_prompt, reference_image, shot4_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_4 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot4_vid_prompt"
       on_failure: shot4_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1489,12 +1316,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/4_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot4_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_4') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1506,7 +1331,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/4_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/4_shot.mp4"
-        duration: "{{ outputs.shot4_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_4') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1519,7 +1344,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot5_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_5 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot5_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_5 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot5_img_prompt"
       with:
         prompt: "{{ outputs.shot5_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/5_shot.png"
@@ -1535,8 +1360,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot5_vid_prompt, shot5_duration, reference_image, shot5_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_5 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot5_vid_prompt"
+      depends_on: [shot5_vid_prompt, reference_image, shot5_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_5 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot5_vid_prompt"
       on_failure: shot5_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1553,12 +1378,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/5_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot5_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_5') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1570,7 +1393,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/5_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/5_shot.mp4"
-        duration: "{{ outputs.shot5_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_5') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1583,7 +1406,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot6_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_6 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot6_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_6 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot6_img_prompt"
       with:
         prompt: "{{ outputs.shot6_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/6_shot.png"
@@ -1599,8 +1422,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot6_vid_prompt, shot6_duration, reference_image, shot6_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_6 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot6_vid_prompt"
+      depends_on: [shot6_vid_prompt, reference_image, shot6_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_6 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot6_vid_prompt"
       on_failure: shot6_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1617,12 +1440,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/6_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot6_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_6') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1634,7 +1455,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/6_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/6_shot.mp4"
-        duration: "{{ outputs.shot6_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_6') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1647,7 +1468,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot7_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_7 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot7_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_7 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot7_img_prompt"
       with:
         prompt: "{{ outputs.shot7_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/7_shot.png"
@@ -1663,8 +1484,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot7_vid_prompt, shot7_duration, reference_image, shot7_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_7 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot7_vid_prompt"
+      depends_on: [shot7_vid_prompt, reference_image, shot7_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_7 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot7_vid_prompt"
       on_failure: shot7_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1681,12 +1502,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/7_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot7_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_7') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1698,7 +1517,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/7_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/7_shot.mp4"
-        duration: "{{ outputs.shot7_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_7') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1711,7 +1530,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot8_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_8 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot8_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_8 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot8_img_prompt"
       with:
         prompt: "{{ outputs.shot8_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/8_shot.png"
@@ -1727,8 +1546,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot8_vid_prompt, shot8_duration, reference_image, shot8_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_8 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot8_vid_prompt"
+      depends_on: [shot8_vid_prompt, reference_image, shot8_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_8 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot8_vid_prompt"
       on_failure: shot8_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1745,12 +1564,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/8_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot8_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_8') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1762,7 +1579,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/8_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/8_shot.mp4"
-        duration: "{{ outputs.shot8_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_8') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1775,7 +1592,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot9_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_9 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot9_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_9 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot9_img_prompt"
       with:
         prompt: "{{ outputs.shot9_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/9_shot.png"
@@ -1791,8 +1608,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot9_vid_prompt, shot9_duration, reference_image, shot9_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_9 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot9_vid_prompt"
+      depends_on: [shot9_vid_prompt, reference_image, shot9_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_9 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot9_vid_prompt"
       on_failure: shot9_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1809,12 +1626,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/9_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot9_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_9') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1826,7 +1641,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/9_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/9_shot.mp4"
-        duration: "{{ outputs.shot9_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_9') }}"
         width: 720
         height: 1280
         fps: 24
@@ -1839,7 +1654,7 @@ composition:
       skill: nano-banana-pro
       side_effect: external_paid_submit
       depends_on: [shot10_img_prompt, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_10 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot10_img_prompt"
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_10 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot10_img_prompt"
       with:
         prompt: "{{ outputs.shot10_img_prompt | truncate(800) }}"
         filename: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/10_shot.png"
@@ -1855,8 +1670,8 @@ composition:
       kind: skill_exec
       skill: seedance-2-prompt
       side_effect: external_paid_submit
-      depends_on: [shot10_vid_prompt, shot10_duration, reference_image, shot10_image, review_normalize]
-      when: "'DECISION: proceed' in outputs.review_normalize and '=== SHOT_10 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot10_vid_prompt"
+      depends_on: [shot10_vid_prompt, reference_image, shot10_image, review_normalize]
+      when: "'DECISION: proceed' in outputs.review_normalize and (outputs.final_script | short_drama_duration_contract_valid) and '=== SHOT_10 ===' in outputs.final_script.splitlines() and '__SHOT_ABSENT__' not in outputs.shot10_vid_prompt"
       on_failure: shot10_video_fallback
       with:
         # Prepend Assets Mapping so seedance knows the role of each
@@ -1873,12 +1688,10 @@ composition:
         input_reference: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/reference.png"
         input_reference_2: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/10_shot.png"
         aspect_ratio: "9:16"
-        # `| int(5)` parses the duration extract as an integer, falling
-        # back to 5 if the LLM emitted anything non-numeric (sentinel
-        # __SHOT_ABSENT__, units like "10s", chain-of-thought text). A
-        # raw truncate would slice "__SHOT_ABSENT__" to "__S" and crash
-        # the downstream CLI's duration validator.
-        duration: "{{ outputs.shot10_duration | int(5) }}"
+        # Parse the exact unique DURATION_S from the approved script with
+        # the same strict local contract used for consent-time pricing.
+        # Missing, repeated, non-integer, or out-of-range values fail closed.
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_10') }}"
         model: "bytedance/seedance-2.0"
         max_retries: 2
 
@@ -1890,7 +1703,7 @@ composition:
       with:
         input_image: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/10_shot.png"
         output_path: "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}/10_shot.mp4"
-        duration: "{{ outputs.shot10_duration | int(5) }}"
+        duration: "{{ outputs.final_script | short_drama_shot_duration('SHOT_10') }}"
         width: 720
         height: 1280
         fps: 24
@@ -2213,8 +2026,9 @@ produces a revised preview and requires a second explicit approval.
    explicit approval. **`review_normalize`** is the final paid-media consent
    authority; cancel, missing, ambiguous, off-topic, and further-edit replies
    fail closed without provider calls.
-6. **`final_script`** echoes the canonical script.
-7. **`script_save`** writes `script.txt` to the run folder
+6. **`final_script`** freezes the canonical scheduler snapshot in memory; it
+   never re-reads the user-editable artifact.
+7. **`script_save`** writes that same canonical content to `script.txt` in the run folder
    (always — even on cancel, so the user keeps the draft).
 8. **`title_extract` / `subtitle_extract` / `ending_text_extract`**
    pull cover/ending text in the script's language.

@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from opensquilla.skills.paper_visibility import find_unsafe_text_visibility_controls
+
 _MAX_TEX_BYTES = 5 * 1024 * 1024
 _TARGET_RE = re.compile(
     r"^\s*TARGET_PAGES\s*:\s*(?:>=|≥|at\s+least\s+)?(\d+)\s*$",
@@ -29,11 +31,6 @@ _INVISIBLE_CONDITIONAL_RE = re.compile(
     r"\\(?:if[A-Za-z@]*|else|fi)\b",
     re.IGNORECASE,
 )
-_INVISIBLE_CONTENT_COMMAND_RE = re.compile(
-    r"\\(?:phantom|hphantom|vphantom|smash|rlap|llap)\b",
-    re.IGNORECASE,
-)
-
 # These are delivery-oriented floors, not page-count estimates.  Title matter,
 # floats, and the bibliography can move the compiled count, so compile_pdf
 # remains authoritative.  The floor still has to scale with the target: the old
@@ -269,7 +266,7 @@ def audit(payload: dict[str, Any]) -> dict[str, Any]:
                 "manuscript contains TeX conditionals that can hide counted prose: "
                 + ", ".join(invisible_conditionals[:8])
             )
-        invisible_commands = sorted(set(_INVISIBLE_CONTENT_COMMAND_RE.findall(clean)))
+        invisible_commands = find_unsafe_text_visibility_controls(clean)
         if invisible_commands:
             blockers.append(
                 "manuscript contains commands that can make counted prose invisible: "

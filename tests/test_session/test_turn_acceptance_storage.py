@@ -14,7 +14,11 @@ from opensquilla.session.models import (
     SessionStatus,
     TranscriptEntry,
 )
-from opensquilla.session.storage import SessionStorage, StorageBusyError
+from opensquilla.session.storage import (
+    MetaLaunchDraftDiscardedError,
+    SessionStorage,
+    StorageBusyError,
+)
 
 SESSION_KEY = "agent:main:webchat:durable-acceptance"
 SESSION_ID = "session-durable-acceptance"
@@ -159,7 +163,9 @@ async def test_meta_control_staging_prunes_only_abandoned_rows_after_30_days(
 
 
 @pytest.mark.asyncio
-async def test_reset_epoch_invalidates_only_staged_meta_controls(tmp_path) -> None:
+async def test_reset_epoch_invalidates_staged_and_fences_recent_accepted_controls(
+    tmp_path,
+) -> None:
     storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
     try:
         await storage.upsert_session(_session())
@@ -196,6 +202,14 @@ async def test_reset_epoch_invalidates_only_staged_meta_controls(tmp_path) -> No
         assert preserved is not None
         assert preserved.intent_id == accepted.intent_id
         assert preserved.status == "accepted"
+        assert await storage.is_meta_launch_discarded(
+            session_key=SESSION_KEY,
+            client_request_id="staged-before-reset",
+        )
+        assert await storage.is_meta_launch_discarded(
+            session_key=SESSION_KEY,
+            client_request_id="accepted-before-reset",
+        )
     finally:
         await storage.close()
 
@@ -210,6 +224,12 @@ async def test_atomic_turn_reset_invalidates_staged_meta_controls(tmp_path) -> N
             control_kind="manual",
             correlation_id="request:before-atomic-reset",
             meta_skill_name="meta-paper-write",
+        )
+        await storage.stage_meta_launch_draft(
+            session_key=SESSION_KEY,
+            client_request_id="atomic-reset-turn",
+            meta_skill_name="meta-paper-write",
+            launch_text="/meta meta-paper-write -- stale collision with reset ingress",
         )
         reset_node = _session(updated_at=300)
         reset_node.session_id = "session-after-atomic-reset"
@@ -254,6 +274,13 @@ async def test_atomic_turn_reset_invalidates_staged_meta_controls(tmp_path) -> N
         assert rotated is not None
         assert rotated.session_id == reset_node.session_id
         assert rotated.epoch == 1
+        with pytest.raises(MetaLaunchDraftDiscardedError):
+            await storage.stage_meta_launch_draft(
+                session_key=SESSION_KEY,
+                client_request_id="atomic-reset-turn",
+                meta_skill_name="meta-paper-write",
+                launch_text="/meta meta-paper-write -- stale collision with reset ingress",
+            )
     finally:
         await storage.close()
 
@@ -271,6 +298,17 @@ async def test_atomic_turn_reset_preserves_only_control_accepted_by_new_turn(
             correlation_id="request:stale-before-reset",
             meta_skill_name="meta-paper-write",
         )
+        accepted_old, _ = await storage.stage_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id="request:accepted-before-atomic-reset",
+            meta_skill_name="meta-paper-write",
+        )
+        await storage.conn.execute(
+            "UPDATE meta_control_intents SET status = 'accepted' WHERE intent_id = ?",
+            (accepted_old.intent_id,),
+        )
+        await storage.conn.commit()
         current, _ = await storage.stage_meta_control_intent(
             session_key=SESSION_KEY,
             control_kind="manual",
@@ -337,6 +375,25 @@ async def test_atomic_turn_reset_preserves_only_control_accepted_by_new_turn(
         assert preserved is not None
         assert preserved.status == "accepted"
         assert preserved.accepted_task_id == task.task_id
+        accepted_history = await storage.get_meta_control_intent(
+            session_key=SESSION_KEY,
+            control_kind="manual",
+            correlation_id=accepted_old.correlation_id,
+        )
+        assert accepted_history is not None
+        assert accepted_history.status == "accepted"
+        assert await storage.is_meta_launch_discarded(
+            session_key=SESSION_KEY,
+            client_request_id="stale-before-reset",
+        )
+        assert await storage.is_meta_launch_discarded(
+            session_key=SESSION_KEY,
+            client_request_id="accepted-before-atomic-reset",
+        )
+        assert not await storage.is_meta_launch_discarded(
+            session_key=SESSION_KEY,
+            client_request_id="current-reset-turn",
+        )
     finally:
         await storage.close()
 

@@ -655,6 +655,39 @@ def test_paid_step_contract_drift_revokes_all_capability_consumers(
     )
 
 
+def test_short_drama_duration_gate_is_part_of_the_trusted_capability_contract(
+    tmp_path: Path,
+) -> None:
+    parent_spec, plan, loader = _trusted_short_drama(tmp_path)
+    assert set(
+        trusted_capability_consumers_for_meta_plan(
+            parent_spec,
+            plan,
+            skill_resolver=loader,
+        )
+    ) == {"nano-banana-pro", "seedance-2-prompt"}
+
+    steps = list(plan.steps)
+    paid_index = next(
+        index for index, step in enumerate(steps) if step.id == "shot1_video"
+    )
+    paid_step = steps[paid_index]
+    assert "short_drama_duration_contract_valid" in paid_step.when
+    steps[paid_index] = replace(
+        paid_step,
+        when=paid_step.when.replace(
+            " and (outputs.final_script | short_drama_duration_contract_valid)",
+            "",
+        ),
+    )
+
+    assert trusted_capability_consumers_for_meta_plan(
+        parent_spec,
+        replace(plan, steps=tuple(steps)),
+        skill_resolver=loader,
+    ) == ()
+
+
 def test_non_paid_review_step_drift_revokes_all_capability_consumers(
     tmp_path: Path,
 ) -> None:

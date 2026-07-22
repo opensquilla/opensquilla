@@ -94,6 +94,8 @@ export interface MetaSetupState {
   providerHandoff?: MetaSetupProviderHandoff
   /** Stable ingress id retained until the resumed hidden launch is accepted. */
   resumeRequestId?: string
+  /** A stale provider detour keeps its draft identity but requires an explicit retry. */
+  suppressAutoResume?: boolean
   blockedReason?:
     | 'no_actions'
     | 'requirements_remaining'

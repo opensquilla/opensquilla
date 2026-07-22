@@ -606,8 +606,16 @@ def _short_drama_consent_e2e_plan(loader: SkillLoader) -> MetaPlan:
                 depends_on=("review_intent", "revision_confirm_gate"),
             ),
             replace(
+                full_steps["final_script"],
+                depends_on=(
+                    "review_normalize",
+                    "script_reread",
+                    "script_revised",
+                ),
+            ),
+            replace(
                 full_steps["reference_image"],
-                depends_on=("review_normalize",),
+                depends_on=("review_normalize", "final_script"),
                 with_args={},
             ),
         ),
@@ -661,7 +669,7 @@ def _short_drama_consent_e2e_harness(
         if step.id in {"script_draft", "script_reread"}:
             yield _StepDone(text=draft_script)
             return
-        if step.id in {"review_intent", "review_normalize"}:
+        if step.id in {"review_intent", "review_normalize", "final_script"}:
             async for event in orch._dispatch_step_stream(
                 step,
                 effective_skill,
@@ -784,6 +792,40 @@ async def test_short_drama_direct_explicit_approval_keeps_single_pause_path(
     assert "CONSENT_BASIS: explicit_approval" in approved.step_outputs[
         "review_normalize"
     ]
+
+
+@pytest.mark.asyncio
+async def test_short_drama_hold_keeps_canonical_snapshot_without_paid_calls(
+    writer: MetaRunWriter,
+    tmp_path: Path,
+) -> None:
+    plan, inputs, orch, paid_calls, dispatch = _short_drama_consent_e2e_harness(
+        writer,
+        tmp_path,
+        run_id="short-drama-hold",
+    )
+    initial = await orch.run_once(
+        MetaMatch(plan=plan, inputs=inputs),
+        run_id="short-drama-hold",
+        session_id="S1",
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+    assert initial.paused is True
+
+    held = await orch.resume(
+        run_id="short-drama-hold",
+        session_id="S1",
+        filled_fields={"review": "谢谢"},
+        dispatch_step_stream=dispatch,
+        yield_skill_view_preface=_sv,
+    )
+
+    assert held.ok is True
+    assert held.paused is False
+    assert paid_calls == []
+    assert "DECISION: hold" in held.step_outputs["review_normalize"]
+    assert held.step_outputs["final_script"] == held.step_outputs["script_reread"].rstrip()
 
 
 @pytest.mark.asyncio

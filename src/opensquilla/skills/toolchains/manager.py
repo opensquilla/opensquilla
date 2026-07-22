@@ -20,7 +20,7 @@ import zipfile
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -39,6 +39,7 @@ _CODESIGN_PATH = Path("/usr/bin/codesign")
 _POST_INSTALL_TIMEOUT_SECONDS = 600.0
 _INSTALL_LOCK_TIMEOUT_SECONDS = 900.0
 _SAFE_COMPONENT_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_SAFE_RECEIPT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _PAYLOAD_MANIFEST_VERSION = 1
 _PAPER_CJK_LINEBREAK_LINES = (
     r'\XeTeXlinebreaklocale "zh"',
@@ -865,22 +866,51 @@ The identity $e^{i\pi}+1=0$ is cited here~\cite{smoke}.
     return source
 
 
+def _capability_resource_path(
+    descriptor: ToolchainDescriptor,
+    payload: Path,
+    asset_id: str,
+    resource_paths: Mapping[str, Path] | None,
+) -> Path:
+    if resource_paths is not None:
+        selected = resource_paths.get(asset_id)
+        if selected is not None:
+            return selected
+    asset = next(
+        (item for item in descriptor.auxiliary_assets if item.asset_id == asset_id),
+        None,
+    )
+    if asset is None:
+        # Keep the capability helper independently testable and compatible
+        # with early descriptors that predated explicit resource metadata.
+        if asset_id == "noto-cjk-font":
+            return payload / "fonts/NotoSansCJK-Regular.ttc"
+        return payload / "__missing_managed_resource__"
+    relative = _safe_archive_name(asset.destination)
+    return payload.joinpath(*relative.parts)
+
+
 def _paper_capability(
     descriptor: ToolchainDescriptor,
     payload: Path,
     bin_dirs: tuple[Path, ...],
     *,
     env_override: Mapping[str, str] | None = None,
+    resource_paths: Mapping[str, Path] | None = None,
 ) -> None:
     """Capability-test CJK, bibliography, math, table, and hyperlink output."""
-    del descriptor
     executables: dict[str, Path] = {}
     for name in ("kpsewhich", "xelatex", "bibtex"):
         executable = _find_in_bins(name, bin_dirs)
         if executable is None:
             raise ToolchainProbeError(f"Paper toolchain is missing: {name}")
         executables[name] = executable
-    cjk_font = payload / "fonts/NotoSansCJK-Regular.ttc"
+    cjk_font = _capability_resource_path(
+        descriptor,
+        payload,
+        "noto-cjk-font",
+        resource_paths,
+    )
     if not cjk_font.is_file():
         raise ToolchainProbeError("Paper toolchain is missing its pinned CJK font")
     if env_override is None:
@@ -1012,6 +1042,7 @@ def _ffmpeg_media_capability(
     bin_dirs: tuple[Path, ...],
     *,
     env_override: Mapping[str, str] | None = None,
+    resource_paths: Mapping[str, Path] | None = None,
 ) -> None:
     """Verify the filters and codecs used by the short-drama workflow."""
     executables: dict[str, Path] = {}
@@ -1020,7 +1051,12 @@ def _ffmpeg_media_capability(
         if executable is None:
             raise ToolchainProbeError(f"Managed media toolchain is missing: {name}")
         executables[name] = executable
-    cjk_font = payload / "fonts/NotoSansCJK-Regular.ttc"
+    cjk_font = _capability_resource_path(
+        descriptor,
+        payload,
+        "noto-cjk-font",
+        resource_paths,
+    )
     if not cjk_font.is_file():
         raise ToolchainProbeError("Managed media toolchain is missing its pinned CJK font")
     if env_override is None:
@@ -1221,11 +1257,23 @@ def _run_capability_only(
     descriptor: ToolchainDescriptor,
     payload: Path,
     bin_dirs: tuple[Path, ...],
+    *,
+    resource_paths: Mapping[str, Path] | None = None,
 ) -> None:
     if descriptor.post_install == "paper-capability":
-        _paper_capability(descriptor, payload, bin_dirs)
+        _paper_capability(
+            descriptor,
+            payload,
+            bin_dirs,
+            resource_paths=resource_paths,
+        )
     elif descriptor.post_install == "ffmpeg-media-capability":
-        _ffmpeg_media_capability(descriptor, payload, bin_dirs)
+        _ffmpeg_media_capability(
+            descriptor,
+            payload,
+            bin_dirs,
+            resource_paths=resource_paths,
+        )
 
 
 def _atomic_json(path: Path, value: Mapping[str, Any]) -> None:
@@ -1328,6 +1376,11 @@ def _valid_existing_package(package: Path, descriptor: ToolchainDescriptor) -> b
     expected_assets = {
         asset.asset_id: asset.sha256 for asset in descriptor.auxiliary_assets
     }
+    expected_asset_kinds = {
+        asset.asset_id: "archive" if asset.archive_type is not None else "direct"
+        for asset in descriptor.auxiliary_assets
+    }
+    expected_resources = _descriptor_resources(descriptor)
     valid_marker = bool(
         marker
         and marker.get("component_id") == descriptor.component_id
@@ -1336,8 +1389,13 @@ def _valid_existing_package(package: Path, descriptor: ToolchainDescriptor) -> b
         and marker.get("sha256") == descriptor.sha256
         and marker.get("source") == descriptor.source
         and marker.get("install_backend") == descriptor.install_backend
+        and marker.get("bin_relpaths", list(descriptor.bin_relpaths))
+        == list(descriptor.bin_relpaths)
+        and marker.get("resources", expected_resources) == expected_resources
         and marker.get("package_closure") == list(descriptor.package_closure)
         and marker.get("auxiliary_assets") == expected_assets
+        and marker.get("auxiliary_asset_kinds", expected_asset_kinds)
+        == expected_asset_kinds
     )
     if not valid_marker:
         return False
@@ -1363,6 +1421,239 @@ def _valid_existing_package(package: Path, descriptor: ToolchainDescriptor) -> b
             if not hmac.compare_digest(digest.hexdigest(), asset.sha256):
                 return False
     return True
+
+
+def _backfill_package_marker_layout(
+    package: Path,
+    descriptor: ToolchainDescriptor,
+) -> None:
+    """Add install-time layout fields to a verified current-version marker.
+
+    Early managed-toolchain builds already persisted a complete payload
+    manifest but not the bin/resource layout needed after a later catalog
+    changes its archive root. The marker itself is excluded from that manifest,
+    so it can be upgraded atomically after the old marker and payload have both
+    passed current-descriptor validation.
+    """
+
+    marker_path = package / ".opensquilla-toolchain.json"
+    marker = _read_json(marker_path)
+    if marker is None:
+        raise ToolchainError("Managed package marker disappeared during validation")
+    expected = {
+        "bin_relpaths": list(descriptor.bin_relpaths),
+        "resources": _descriptor_resources(descriptor),
+        "auxiliary_asset_kinds": {
+            asset.asset_id: "archive" if asset.archive_type is not None else "direct"
+            for asset in descriptor.auxiliary_assets
+        },
+    }
+    changed = False
+    for key, value in expected.items():
+        if key not in marker:
+            marker[key] = value
+            changed = True
+    if changed:
+        _atomic_json(marker_path, marker)
+
+
+def _canonical_receipt_relative_path(value: object) -> str | None:
+    """Return one canonical package-relative receipt path or fail closed."""
+
+    if not isinstance(value, str):
+        return None
+    try:
+        relative = _safe_archive_name(value)
+    except UnsafeArchiveError:
+        return None
+    normalized = relative.as_posix()
+    return normalized if normalized == value else None
+
+
+def _historical_receipt_attests_layout(
+    root: Path,
+    receipt: Mapping[str, Any],
+) -> bool:
+    """Require the durable receipt copy to corroborate caller-owned layout fields."""
+
+    component_id = receipt.get("component_id")
+    receipt_id = receipt.get("receipt_id")
+    if (
+        not isinstance(component_id, str)
+        or _SAFE_COMPONENT_RE.fullmatch(component_id) is None
+        or not isinstance(receipt_id, str)
+        or _SAFE_RECEIPT_ID_RE.fullmatch(receipt_id) is None
+    ):
+        return False
+    historical = _read_json(root / "receipts" / component_id / f"{receipt_id}.json")
+    if historical is None:
+        return False
+    attested_fields = (
+        "component_id",
+        "version",
+        "platform_key",
+        "sha256",
+        "install_backend",
+        "package_relpath",
+        "external_root",
+        "bin_relpaths",
+        "resources",
+        "activated_at_ms",
+        "receipt_id",
+    )
+    return all(historical.get(field) == receipt.get(field) for field in attested_fields)
+
+
+def _contained_existing_package_path(
+    package: Path,
+    relative_value: str,
+) -> Path | None:
+    """Resolve a receipt path only when it remains inside the verified package."""
+
+    try:
+        relative = _safe_archive_name(relative_value)
+        package_root = package.resolve(strict=True)
+        candidate = package.joinpath(*relative.parts)
+        candidate.resolve(strict=True).relative_to(package_root)
+    except (OSError, RuntimeError, UnsafeArchiveError, ValueError):
+        return None
+    return candidate
+
+
+def backfill_legacy_historical_marker_layout(
+    root: Path,
+    package: Path,
+    current: ToolchainDescriptor,
+    receipt: Mapping[str, Any],
+    marker: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Safely recover a pre-layout archive marker after a catalog upgrade.
+
+    Early package markers omitted their bin/resource layout, while activation
+    receipts already recorded it. Once the code-owned catalog advances, the
+    current descriptor can no longer reconstruct those old paths. Recovery is
+    therefore allowed only when the durable receipt copy corroborates every
+    layout field and the marker's complete payload manifest still validates.
+    Receipt paths are treated as untrusted until both checks pass.
+    """
+
+    layout_fields = ("bin_relpaths", "resources", "auxiliary_asset_kinds")
+    missing_fields = tuple(field for field in layout_fields if field not in marker)
+    if not missing_fields:
+        return dict(marker)
+    version = receipt.get("version")
+    sha256 = receipt.get("sha256")
+    package_relpath = receipt.get("package_relpath")
+    marker_assets = marker.get("auxiliary_assets")
+    manifest = marker.get("payload_manifest")
+    if not (
+        current.install_backend == "archive"
+        and receipt.get("install_backend") == "archive"
+        and receipt.get("external_root") is None
+        and isinstance(version, str)
+        and version != current.version
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,127}", version) is not None
+        and isinstance(sha256, str)
+        and re.fullmatch(r"[0-9a-f]{64}", sha256) is not None
+        and isinstance(package_relpath, str)
+        and isinstance(marker_assets, dict)
+        and marker.get("payload_manifest_version") == _PAYLOAD_MANIFEST_VERSION
+        and isinstance(manifest, dict)
+        and marker.get("component_id") == receipt.get("component_id") == current.component_id
+        and marker.get("version") == version
+        and marker.get("platform_key")
+        == receipt.get("platform_key")
+        == current.platform_key
+        and marker.get("install_backend") == "archive"
+        and marker.get("sha256") == sha256
+        and _historical_receipt_attests_layout(root, receipt)
+    ):
+        return None
+
+    expected_package_relpath = (
+        Path("packages") / current.component_id / version / current.platform_key
+    ).as_posix()
+    if package_relpath != expected_package_relpath:
+        return None
+    expected_package = root.joinpath(*PurePosixPath(expected_package_relpath).parts)
+    try:
+        if package.resolve(strict=True) != expected_package.resolve(strict=True):
+            return None
+    except OSError:
+        return None
+
+    raw_bin_relpaths = receipt.get("bin_relpaths")
+    if not isinstance(raw_bin_relpaths, list) or not raw_bin_relpaths:
+        return None
+    bin_relpaths: list[str] = []
+    for raw_relative in raw_bin_relpaths:
+        relative = _canonical_receipt_relative_path(raw_relative)
+        if relative is None or relative in bin_relpaths:
+            return None
+        directory = _contained_existing_package_path(package, relative)
+        if directory is None or not directory.is_dir():
+            return None
+        bin_relpaths.append(relative)
+
+    raw_resources = receipt.get("resources")
+    if not isinstance(raw_resources, dict) or set(raw_resources) != set(marker_assets):
+        return None
+    resources: dict[str, str] = {}
+    auxiliary_asset_kinds: dict[str, str] = {}
+    destinations: set[str] = set()
+    for raw_asset_id, raw_destination in raw_resources.items():
+        if (
+            not isinstance(raw_asset_id, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", raw_asset_id) is None
+        ):
+            return None
+        destination = _canonical_receipt_relative_path(raw_destination)
+        expected_digest = marker_assets.get(raw_asset_id)
+        manifest_entry = manifest.get(destination) if destination is not None else None
+        if (
+            destination is None
+            or destination in destinations
+            or not isinstance(expected_digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None
+            or not isinstance(manifest_entry, dict)
+            or manifest_entry.get("type") != "file"
+            or re.fullmatch(r"[0-9a-f]{64}", str(manifest_entry.get("sha256", ""))) is None
+        ):
+            return None
+        resource = _contained_existing_package_path(package, destination)
+        if resource is None or resource.is_symlink() or not resource.is_file():
+            return None
+        resources[raw_asset_id] = destination
+        destinations.add(destination)
+        auxiliary_asset_kinds[raw_asset_id] = (
+            "direct" if manifest_entry.get("sha256") == expected_digest else "archive"
+        )
+
+    recovered = {
+        "bin_relpaths": bin_relpaths,
+        "resources": resources,
+        "auxiliary_asset_kinds": auxiliary_asset_kinds,
+    }
+    for field, value in recovered.items():
+        if field in marker and marker.get(field) != value:
+            return None
+
+    historical_descriptor = replace(
+        current,
+        version=version,
+        sha256=sha256,
+        bin_relpaths=tuple(bin_relpaths),
+    )
+    if not package_payload_matches(package, historical_descriptor, marker=marker):
+        return None
+
+    upgraded = dict(marker)
+    upgraded.update(recovered)
+    try:
+        _atomic_json(package / ".opensquilla-toolchain.json", upgraded)
+    except OSError:
+        return None
+    return upgraded
 
 
 def _manifest_entry(path: Path, *, package: Path) -> dict[str, Any]:
@@ -1496,6 +1787,7 @@ def _package_marker(
     descriptor: ToolchainDescriptor,
     package: Path | None = None,
 ) -> dict[str, Any]:
+    resources = _descriptor_resources(descriptor)
     marker: dict[str, Any] = {
         "component_id": descriptor.component_id,
         "version": descriptor.version,
@@ -1503,9 +1795,19 @@ def _package_marker(
         "sha256": descriptor.sha256,
         "source": descriptor.source,
         "install_backend": descriptor.install_backend,
+        # Persist the install-time runtime layout. Archive root names routinely
+        # contain an upstream version/build identifier (notably FFmpeg on
+        # Linux and Windows), so a future catalog cannot reconstruct an older
+        # package's safe bin/resource paths from its current descriptor.
+        "bin_relpaths": list(descriptor.bin_relpaths),
+        "resources": resources,
         "package_closure": list(descriptor.package_closure),
         "auxiliary_assets": {
             asset.asset_id: asset.sha256 for asset in descriptor.auxiliary_assets
+        },
+        "auxiliary_asset_kinds": {
+            asset.asset_id: "archive" if asset.archive_type is not None else "direct"
+            for asset in descriptor.auxiliary_assets
         },
     }
     if package is not None:
@@ -1642,6 +1944,7 @@ def _reuse_existing_package(
 ) -> ActivationReceipt | None:
     if not package.exists() or not _valid_existing_package(package, descriptor):
         return None
+    _backfill_package_marker_layout(package, descriptor)
     try:
         selected_bin_dirs = bin_dirs or _find_payload_bins(package, descriptor)
         _run_capability_only(descriptor, package, selected_bin_dirs)
@@ -2031,6 +2334,39 @@ def _rollback_component_unlocked(
         if not external_path.is_absolute() or not external_path.is_dir():
             raise ToolchainError("The previous external activation root is unavailable")
 
+    # Validate the exact candidate before changing active state. In particular,
+    # a historical archive may have versioned bin/resource paths that differ
+    # from the current catalog; its install-time marker must bind those paths,
+    # its complete payload manifest must still match, and its native capability
+    # probes must still succeed. A failed rollback therefore leaves the current
+    # activation untouched instead of returning a false success.
+    from opensquilla.skills.toolchains.runtime import _validated_activation_receipt
+
+    activation = _validated_activation_receipt(
+        root,
+        descriptor,
+        previous,
+        verify_payload=True,
+    )
+    if activation is None:
+        raise ToolchainError("The previous managed activation failed validation")
+    resource_paths = {
+        asset_id: activation.package.joinpath(*_safe_archive_name(relative).parts)
+        for asset_id, relative in activation.resources.items()
+    }
+    _run_capability_only(
+        activation.descriptor,
+        activation.package,
+        activation.bin_dirs,
+        resource_paths=resource_paths,
+    )
+    _run_probes(
+        activation.descriptor,
+        activation.package,
+        activation.bin_dirs,
+        None,
+    )
+
     # Retain a one-step inverse pointer, making rollback itself recoverable.
     inverse = dict(current)
     inverse["previous"] = None
@@ -2084,6 +2420,7 @@ def _probe_cache_key(
             descriptor.platform_key,
             env.get("PATH", ""),
             env.get("OPENSQUILLA_MEDIA_FONTS_DIR", ""),
+            env.get("OSFONTDIR", ""),
             active_digest,
         )
     )
@@ -2123,18 +2460,44 @@ def probe_component(
     from opensquilla.skills.toolchains.runtime import (
         MEDIA_FONTS_ENV,
         PAPER_FONTS_ENV,
+        _validated_activation,
         managed_env,
     )
 
-    descriptor = registry.describe_component(component_id)
+    current_descriptor = registry.describe_component(component_id)
     state_root = toolchains_root(root)
+    activation = _validated_activation(
+        state_root,
+        current_descriptor,
+        verify_payload=True,
+    )
+    descriptor = activation.descriptor if activation is not None else current_descriptor
+    checked_at_ms = int(time.time() * 1000)
+    if (
+        activation is not None
+        and descriptor.version == current_descriptor.version
+        and descriptor.install_backend == "archive"
+    ):
+        try:
+            _backfill_package_marker_layout(activation.package, current_descriptor)
+        except (OSError, ToolchainError) as exc:
+            return CapabilityReport(
+                component_id=component_id,
+                version=descriptor.version,
+                platform_key=descriptor.platform_key,
+                supported=descriptor.supported,
+                ready=False,
+                reason=f"Managed package metadata upgrade failed: {exc}",
+                binaries={},
+                resources={},
+                checked_at_ms=checked_at_ms,
+            )
     env = managed_env(base_env, root=state_root)
     cache_key = _probe_cache_key(descriptor, state_root, env)
     cached = _cached_probe(cache_key)
     if cached is not None:
         return cached
 
-    checked_at_ms = int(time.time() * 1000)
     required_names = {command[0] for command in descriptor.probe_commands if command}
     if descriptor.post_install == "paper-capability":
         required_names.add("kpsewhich")
@@ -2149,8 +2512,20 @@ def probe_component(
             binaries[name] = resolved
 
     resources: dict[str, str] = {}
+    resource_paths: dict[str, Path] = {}
     payload = Path.cwd()
-    if descriptor.post_install == "paper-capability":
+    if activation is not None:
+        payload = activation.package
+        for asset_id, relative in activation.resources.items():
+            resource = activation.package.joinpath(*_safe_archive_name(relative).parts)
+            resources[asset_id] = str(resource)
+            resource_paths[asset_id] = resource
+        if (
+            descriptor.post_install in {"paper-capability", "ffmpeg-media-capability"}
+            and "noto-cjk-font" not in resource_paths
+        ):
+            missing.append("noto-cjk-font")
+    elif descriptor.post_install == "paper-capability":
         fonts_dir_raw = env.get(PAPER_FONTS_ENV, "").split(os.pathsep, maxsplit=1)[0]
         fonts_dir = Path(fonts_dir_raw) if fonts_dir_raw else None
         font = fonts_dir / "NotoSansCJK-Regular.ttc" if fonts_dir is not None else None
@@ -2158,7 +2533,8 @@ def probe_component(
             missing.append("noto-cjk-font")
         else:
             resources["noto-cjk-font"] = str(font)
-            payload = font.parent.parent
+            resource_paths["noto-cjk-font"] = font
+            payload = font.parent
     elif descriptor.post_install == "ffmpeg-media-capability":
         fonts_dir_raw = env.get(MEDIA_FONTS_ENV, "")
         fonts_dir = Path(fonts_dir_raw) if fonts_dir_raw else None
@@ -2167,7 +2543,8 @@ def probe_component(
             missing.append("noto-cjk-font")
         else:
             resources["noto-cjk-font"] = str(font)
-            payload = font.parent.parent
+            resource_paths["noto-cjk-font"] = font
+            payload = font.parent
 
     if missing:
         reason = f"Missing runtime capabilities: {', '.join(sorted(missing))}"
@@ -2206,6 +2583,7 @@ def probe_component(
                 payload,
                 path_dirs,
                 env_override=env,
+                resource_paths=resource_paths,
             )
         elif descriptor.post_install == "ffmpeg-media-capability":
             _ffmpeg_media_capability(
@@ -2213,6 +2591,7 @@ def probe_component(
                 payload,
                 path_dirs,
                 env_override=env,
+                resource_paths=resource_paths,
             )
     except (OSError, ToolchainError, subprocess.SubprocessError) as exc:
         report = CapabilityReport(

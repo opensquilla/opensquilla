@@ -24,7 +24,11 @@ from opensquilla.engine.steps.meta_command import (
     pending_meta_launch_promote,
 )
 from opensquilla.gateway.auth import Principal
-from opensquilla.gateway.protocol import ERROR_UNAUTHORIZED
+from opensquilla.gateway.protocol import (
+    ERROR_INVALID_REQUEST,
+    ERROR_UNAUTHORIZED,
+    ERROR_UNAVAILABLE,
+)
 from opensquilla.gateway.rpc import get_dispatcher
 from opensquilla.gateway.rpc.registry import RpcContext, RpcHandlerError
 from opensquilla.gateway.rpc_meta_runs import (
@@ -34,6 +38,7 @@ from opensquilla.gateway.rpc_meta_runs import (
 )
 from opensquilla.gateway.scopes import ADMIN_SCOPE, METHOD_SCOPES, READ_SCOPE, WRITE_SCOPE
 from opensquilla.session.manager import SessionManager
+from opensquilla.session.models import SessionNode
 from opensquilla.session.storage import SessionStorage
 from opensquilla.session.turn_context import turn_context_scope
 from opensquilla.skills.loader import SkillLoader
@@ -189,6 +194,111 @@ async def test_meta_draft_survives_app_close_reopen_with_exact_request(
 
 
 @pytest.mark.asyncio
+async def test_meta_run_rejects_a_stale_request_after_explicit_discard(
+    tmp_path: Path,
+) -> None:
+    session_key = "agent:main:webchat:terminal-draft-discard"
+    request_id = "terminal-draft-discard-request"
+    launch_text = "/meta meta-tiny -- Do not run after cancellation"
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    ctx = RpcContext(
+        conn_id="terminal-draft-discard",
+        config=_enabled_cfg(),
+        skill_loader=_make_loader_with_meta(tmp_path),
+        session_manager=SessionManager(storage, inject_time_prefix=False),
+    )
+    try:
+        staged = await _handle_meta_run(
+            {
+                "name": "meta-tiny",
+                "sessionKey": session_key,
+                "clientRequestId": request_id,
+                "launchText": launch_text,
+            },
+            ctx,
+        )
+        assert staged["drafted"] is True
+
+        discarded = await _handle_meta_drafts_discard(
+            {"sessionKey": session_key, "clientRequestId": request_id},
+            ctx,
+        )
+        assert discarded == {"ok": True, "discarded": True, "accepted": False}
+
+        with pytest.raises(RpcHandlerError) as exc_info:
+            await _handle_meta_run(
+                {
+                    "name": "meta-tiny",
+                    "sessionKey": session_key,
+                    "clientRequestId": request_id,
+                    "launchText": launch_text,
+                },
+                ctx,
+            )
+        assert exc_info.value.code == "META_DRAFT_DISCARDED"
+        assert exc_info.value.retryable is False
+        assert exc_info.value.accepted is False
+        assert await storage.get_meta_control_intent(
+            session_key=session_key,
+            control_kind="manual",
+            correlation_id=f"request:{request_id}",
+        ) is None
+    finally:
+        await storage.close()
+
+
+@pytest.mark.parametrize("boundary", ("reset", "delete"))
+@pytest.mark.asyncio
+async def test_meta_run_rejects_a_stale_request_after_session_boundary(
+    tmp_path: Path,
+    boundary: str,
+) -> None:
+    session_key = f"agent:main:webchat:terminal-draft-{boundary}"
+    request_id = f"terminal-draft-{boundary}-request"
+    launch_text = "/meta meta-tiny -- Do not restore the old session request"
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    ctx = RpcContext(
+        conn_id=f"terminal-draft-{boundary}",
+        config=_enabled_cfg(),
+        skill_loader=_make_loader_with_meta(tmp_path),
+        session_manager=SessionManager(storage, inject_time_prefix=False),
+    )
+    try:
+        await storage.upsert_session(
+            SessionNode(
+                session_key=session_key,
+                session_id=f"terminal-draft-{boundary}-session",
+            )
+        )
+        await storage.stage_meta_launch_draft(
+            session_key=session_key,
+            client_request_id=request_id,
+            meta_skill_name="meta-tiny",
+            launch_text=launch_text,
+        )
+        if boundary == "reset":
+            assert await storage.advance_reset_epoch(session_key) == 1
+        else:
+            await storage.delete_session(session_key)
+
+        with pytest.raises(RpcHandlerError) as exc_info:
+            await _handle_meta_run(
+                {
+                    "name": "meta-tiny",
+                    "sessionKey": session_key,
+                    "clientRequestId": request_id,
+                    "launchText": launch_text,
+                },
+                ctx,
+            )
+        assert exc_info.value.code == "META_DRAFT_DISCARDED"
+        assert exc_info.value.retryable is False
+        assert exc_info.value.accepted is False
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_meta_draft_discard_reports_an_already_accepted_launch(
     tmp_path: Path,
 ) -> None:
@@ -235,6 +345,78 @@ async def test_meta_draft_discard_reports_an_already_accepted_launch(
         )
         assert preserved is not None
         assert preserved.status == "accepted"
+    finally:
+        await storage.close()
+
+
+@pytest.mark.parametrize(
+    ("session_key", "client_request_id"),
+    (
+        ("x" * 513, "valid-request"),
+        ("agent:main:webchat:discard", "contains whitespace"),
+        ("agent:main:webchat:discard", "x" * 257),
+        ("agent:main:webchat:discard", "/meta meta-tiny -- raw prompt"),
+        (42, "valid-request"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_meta_draft_discard_rejects_unbounded_or_contentful_coordinates(
+    tmp_path: Path,
+    session_key: object,
+    client_request_id: object,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    ctx = RpcContext(
+        conn_id="invalid-meta-discard",
+        config=_enabled_cfg(),
+        skill_loader=_make_loader_with_meta(tmp_path),
+        session_manager=SessionManager(storage, inject_time_prefix=False),
+    )
+    try:
+        with pytest.raises(RpcHandlerError) as exc_info:
+            await _handle_meta_drafts_discard(
+                {"sessionKey": session_key, "clientRequestId": client_request_id},
+                ctx,
+            )
+        assert exc_info.value.code == ERROR_INVALID_REQUEST
+        async with storage.conn.execute(
+            "SELECT COUNT(*) FROM meta_launch_discard_tombstones"
+        ) as cur:
+            assert (await cur.fetchone())[0] == 0
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_meta_draft_discard_capacity_is_retryable_not_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "opensquilla.session.storage._META_LAUNCH_DISCARD_PER_SESSION_LIMIT",
+        0,
+    )
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    ctx = RpcContext(
+        conn_id="full-meta-discard",
+        config=_enabled_cfg(),
+        skill_loader=_make_loader_with_meta(tmp_path),
+        session_manager=SessionManager(storage, inject_time_prefix=False),
+    )
+    try:
+        with pytest.raises(RpcHandlerError) as exc_info:
+            await _handle_meta_drafts_discard(
+                {
+                    "sessionKey": "agent:main:webchat:discard-full",
+                    "clientRequestId": "discard-full-request",
+                },
+                ctx,
+            )
+        assert exc_info.value.code == ERROR_UNAVAILABLE
+        async with storage.conn.execute(
+            "SELECT COUNT(*) FROM meta_launch_discard_tombstones"
+        ) as cur:
+            assert (await cur.fetchone())[0] == 0
     finally:
         await storage.close()
 
@@ -481,7 +663,7 @@ def test_meta_run_client_request_id_is_idempotent_after_launch_is_consumed(
 
 @pytest.mark.parametrize(
     "client_request_id",
-    ["", "   ", 42, "x" * 257],
+    ["", "   ", "request id with spaces", 42, "x" * 257],
 )
 def test_meta_run_rejects_invalid_client_request_id(
     tmp_path: Path,
@@ -693,6 +875,47 @@ async def test_setup_required_meta_run_saves_original_request_before_return(
 
 
 @pytest.mark.asyncio
+async def test_legacy_meta_run_observes_terminal_discard_before_setup_readiness(
+    tmp_path: Path,
+) -> None:
+    session_key = "agent:main:webchat:legacy-discard-before-readiness"
+    request_id = "legacy-discard-before-readiness-request"
+    loader = _make_loader_with_meta(tmp_path)
+    spec = loader.get_by_name("meta-tiny")
+    assert spec is not None
+    spec.metadata = SkillPlatformMeta(
+        requires=SkillRequires(bins=["opensquilla-definitely-missing-binary"])
+    )
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        assert await storage.discard_meta_launch_draft(
+            session_key=session_key,
+            client_request_id=request_id,
+        )
+        ctx = RpcContext(
+            conn_id="legacy-discard-before-readiness",
+            config=_enabled_cfg(),
+            skill_loader=loader,
+            session_manager=SessionManager(storage, inject_time_prefix=False),
+        )
+
+        with pytest.raises(RpcHandlerError) as exc_info:
+            await _handle_meta_run(
+                {
+                    "name": "meta-tiny",
+                    "sessionKey": session_key,
+                    "clientRequestId": request_id,
+                },
+                ctx,
+            )
+        assert exc_info.value.code == "META_DRAFT_DISCARDED"
+        assert exc_info.value.retryable is False
+        assert exc_info.value.accepted is False
+    finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
 async def test_discard_during_slow_readiness_prevents_late_control_promotion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -737,7 +960,9 @@ async def test_discard_during_slow_readiness_prevents_late_control_promotion(
 
         with pytest.raises(RpcHandlerError) as exc_info:
             await run_task
-        assert exc_info.value.code == "META_DRAFT_UNAVAILABLE"
+        assert exc_info.value.code == "META_DRAFT_DISCARDED"
+        assert exc_info.value.retryable is False
+        assert exc_info.value.accepted is False
         assert await storage.get_meta_control_intent(
             session_key=session_key,
             control_kind="manual",

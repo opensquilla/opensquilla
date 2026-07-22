@@ -275,6 +275,52 @@ describe('useChatSlashCommands MetaSkill readiness', () => {
     )
   })
 
+  it('does not resurrect a durable draft cancelled by another tab', async () => {
+    const discarded = Object.assign(new Error('The saved request was already discarded.'), {
+      code: 'META_DRAFT_DISCARDED',
+      retryable: false,
+      accepted: false,
+    })
+    const requestMetaSetup = vi.fn()
+    let runCount = 0
+    const { api, dispatchHidden, notify, restoreDraft } = harness(
+      vi.fn(async () => {
+        runCount += 1
+        if (runCount === 1) throw discarded
+        return { ok: true }
+      }),
+      requestMetaSetup,
+    )
+    const draft = {
+      sessionKey: 'agent:main:test',
+      clientRequestId: 'cancelled-in-another-tab',
+      name: 'meta-short-drama',
+      launchText: '/meta meta-short-drama -- cancelled elsewhere',
+      createdAt: 100,
+      expiresAt: 200,
+      sessionExists: true,
+    }
+
+    const liveDraft = {
+      ...draft,
+      clientRequestId: 'still-live-in-server-outbox',
+      launchText: '/meta meta-short-drama -- still live',
+    }
+    const attempted = await api.restoreDurableMetaDrafts([draft, liveDraft])
+
+    expect(attempted).toEqual([draft.clientRequestId, liveDraft.clientRequestId])
+    expect(requestMetaSetup).not.toHaveBeenCalled()
+    expect(dispatchHidden).toHaveBeenCalledWith(
+      liveDraft.launchText,
+      liveDraft.launchText,
+      liveDraft.clientRequestId,
+      liveDraft.sessionKey,
+    )
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(notify).toHaveBeenCalledOnce()
+    expect(notify.mock.calls[0]?.[0]).toContain('already discarded')
+  })
+
   it('restores only a rejection that happened before server draft ownership', async () => {
     const rejected = harness(vi.fn(async () => ({ ok: false, error: 'Not available' })))
     rejected.api.selectSlashCmd(META_COMMAND, 'meta-paper-write -- rejected request')

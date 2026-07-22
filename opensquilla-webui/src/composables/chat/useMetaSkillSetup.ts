@@ -1,5 +1,6 @@
 import { getCurrentScope, onScopeDispose, ref, watch, type Ref } from 'vue'
 
+import type { RpcClientError } from '@/lib/rpc'
 import type {
   MetaSetupInstallResponse,
   MetaSetupJob,
@@ -60,6 +61,9 @@ export interface UseMetaSkillSetupOptions {
   // user clicks "Not now". Surface that terminal state without restoring a
   // second sendable copy of the same paid request.
   onDraftAlreadyAccepted?: (sessionKey: string, clientRequestId: string) => void
+  // Remove a browser-side hidden-control retry when the Gateway proves the
+  // same stable identity was cancelled in another tab.
+  forgetHiddenControl?: (sessionKey: string, clientRequestId: string) => void
 }
 
 const STORAGE_PREFIX = 'opensquilla.chat.metaSetupJob:'
@@ -331,6 +335,7 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         readiness: current.readiness,
         ...(providerHandoff ? { providerHandoff } : {}),
         ...(resumeRequestId ? { resumeRequestId } : {}),
+        ...(current.suppressAutoResume ? { suppressAutoResume: true } : {}),
       }))
       return true
     } catch {
@@ -350,6 +355,7 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         readiness?: unknown
         providerHandoff?: unknown
         resumeRequestId?: unknown
+        suppressAutoResume?: unknown
       }
       if (
         typeof parsed.name !== 'string'
@@ -372,12 +378,27 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         restored.readiness,
       )
       const resumeRequestId = normalizeClientRequestId(parsed.resumeRequestId)
-      if (providerHandoff) {
+      const providerMatchesResume = Boolean(
+        providerHandoff
+        && (!resumeRequestId || providerHandoff.clientRequestId === resumeRequestId),
+      )
+      if (providerHandoff && providerMatchesResume) {
         restored.providerHandoff = providerHandoff
-        restored.resumeRequestId = providerHandoff.clientRequestId
-      } else if (parsed.providerHandoff === undefined && resumeRequestId) {
+        restored.resumeRequestId = resumeRequestId || providerHandoff.clientRequestId
+      } else if (resumeRequestId) {
         restored.resumeRequestId = resumeRequestId
-      } else if (parsed.providerHandoff !== undefined || parsed.resumeRequestId !== undefined) {
+        restored.suppressAutoResume = Boolean(
+          parsed.suppressAutoResume === true || parsed.providerHandoff !== undefined,
+        )
+      }
+      if (
+        (parsed.providerHandoff !== undefined && !providerMatchesResume)
+        || (
+          parsed.suppressAutoResume !== undefined
+          && parsed.suppressAutoResume !== restored.suppressAutoResume
+        )
+        || (parsed.resumeRequestId !== undefined && !resumeRequestId)
+      ) {
         persistSetupCheckpoint(restored)
       }
       return restored
@@ -666,6 +687,24 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
       )
     } catch (error) {
       if (!isCurrent(token) || !setupState.value) return
+      const rpcError = error as RpcClientError | undefined
+      if (rpcError?.code === 'META_DRAFT_DISCARDED') {
+        // A cancellation committed in another tab wins over this stale setup
+        // checkpoint. Consume it terminally without restoring sendable text.
+        removePendingMetaDiscard(sessionKey, stableClientRequestId, discardStorage)
+        try {
+          options.forgetHiddenControl?.(sessionKey, stableClientRequestId)
+        } catch {
+          // The server tombstone remains authoritative even if local cleanup fails.
+        }
+        beginOperation()
+        installInFlight = false
+        clearPersistedJobMarker(sessionKey)
+        clearPersistedLaunch(sessionKey)
+        clearPersistedManualSetup(sessionKey)
+        setupState.value = null
+        return
+      }
       setupState.value = failedState(setupState.value, errorMessage(error), 'launch')
     }
   }
@@ -1002,8 +1041,9 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     }
 
     const clientRequestId = setupResumeRequestId(current) || createClientRequestId()
+    const { suppressAutoResume: _suppressAutoResume, ...resumableCurrent } = current
     const next: MetaSetupState = {
-      ...current,
+      ...resumableCurrent,
       resumeRequestId: clientRequestId,
       providerHandoff: {
         kind: 'provider_settings',
@@ -1031,14 +1071,10 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
       || normalizedRequestId !== current.providerHandoff.clientRequestId
     ) return
 
-    const {
-      providerHandoff: _providerHandoff,
-      resumeRequestId: currentResumeRequestId,
-      ...rest
-    } = current
-    const next: MetaSetupState = currentResumeRequestId === normalizedRequestId
-      ? rest
-      : { ...rest, resumeRequestId: currentResumeRequestId }
+    // The handoff marker is one-shot navigation state. The resume identity is
+    // the durable server draft identity and must survive a cancelled/failed
+    // route so a later dismissal can atomically discard that exact request.
+    const { providerHandoff: _providerHandoff, ...next } = current
     setupState.value = next
     persistSetupCheckpoint(next)
   }
@@ -1078,10 +1114,27 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
     const token = beginOperation()
     setupState.value = {
       ...current,
+      suppressAutoResume: undefined,
       phase: 'verifying',
       message: '',
       error: '',
       retryMode: undefined,
+    }
+    const stableClientRequestId = normalizeClientRequestId(
+      clientRequestId || setupResumeRequestId(current),
+    )
+    if (stableClientRequestId) {
+      // meta.run is itself the authoritative, idempotent readiness check for a
+      // durable draft. Calling it first also observes a cancellation tombstone
+      // immediately, even while provider requirements are still missing.
+      await resumeAfterSetup(
+        current.name,
+        current.sessionKey,
+        current.readiness,
+        token,
+        stableClientRequestId,
+      )
+      return
     }
     try {
       const result = await rpcCall<MetaSetupPlanResponse>('meta.setup.plan', {
@@ -1109,9 +1162,6 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
         result.readiness,
         current.sessionKey,
         current.launchText || `/meta ${current.name}`,
-      )
-      const stableClientRequestId = normalizeClientRequestId(
-        clientRequestId || setupResumeRequestId(current),
       )
       if (setupState.value && stableClientRequestId) {
         setupState.value.resumeRequestId = stableClientRequestId
@@ -1293,7 +1343,7 @@ export function useMetaSkillSetup(options: UseMetaSkillSetupOptions) {
       const restored = readPersistedSetupCheckpoint(sessionKey)
       setupState.value = restored
       const resumeRequestId = setupResumeRequestId(restored)
-      if (restored && resumeRequestId) {
+      if (restored && resumeRequestId && !restored.suppressAutoResume) {
         // Retain the checkpoint until chat ingress explicitly reports durable
         // acceptance. Re-running this path is safe because the stable request id
         // is also the Gateway idempotency key.

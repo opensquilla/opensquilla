@@ -789,6 +789,7 @@ def test_openrouter_audio_bounds_total_sse_stream_with_short_lines(monkeypatch) 
 def test_openrouter_video_resolves_relative_polling_url(
     tmp_path: Path,
     monkeypatch,
+    capsys,
 ) -> None:
     module = _load_openrouter_video_module()
     requests: list[tuple[str, str]] = []
@@ -851,6 +852,170 @@ def test_openrouter_video_resolves_relative_polling_url(
 
     assert ("GET", "https://openrouter.ai/api/v1/videos/job-abc123") in requests
     assert (tmp_path / "sample.mp4").read_bytes() == _probable_mp4_bytes()
+    output = capsys.readouterr().out
+    assert '"job_id":"job-abc123"' in output
+    assert "sk-or-test" not in output
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("job-provider-456", "job-provider-456"),
+        (12345, "12345"),
+        ("sk-or-must-not-persist", None),
+        ("SK_PRIVATE", None),
+        ("Bearer-secret", None),
+        ("job id with spaces", None),
+        ("j" * 257, None),
+        (True, None),
+    ],
+)
+def test_openrouter_video_job_id_uses_bounded_secret_safe_contract(
+    value: object,
+    expected: str | None,
+) -> None:
+    module = _load_openrouter_video_module()
+
+    assert module._safe_job_id(value) == expected
+
+
+@pytest.mark.parametrize(
+    "reflected",
+    [
+        "custom-api-secret-123456",
+        "job-custom-api-secret-123456-reflected",
+        "api-secret-123456",
+    ],
+)
+def test_openrouter_video_job_id_rejects_actual_custom_key_and_fragments(
+    reflected: str,
+) -> None:
+    module = _load_openrouter_video_module()
+
+    assert module._safe_job_id(
+        reflected,
+        secrets=("custom-api-secret-123456",),
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("queued", "queued"),
+        (" IN_PROGRESS ", "in_progress"),
+        ("completed", "completed"),
+        ("sk-or-provider-reflected-secret", "unknown"),
+        ("Bearer private", "unknown"),
+        ("provider-specific-state", "unknown"),
+        (401, "unknown"),
+        (None, "unknown"),
+    ],
+)
+def test_openrouter_video_status_uses_public_allowlist(value: object, expected: str) -> None:
+    module = _load_openrouter_video_module()
+
+    assert module._safe_job_status(value) == expected
+
+
+def test_openrouter_video_does_not_persist_reflected_submit_or_poll_status(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_openrouter_video_module()
+    submit_secret = "sk-or-reflected-submit-status"
+    poll_secret = "Bearer-reflected-poll-status"
+    responses = iter(
+        [
+            {
+                "id": "job-reflected-status",
+                "status": submit_secret,
+                "polling_url": "/api/v1/videos/job-reflected-status",
+            },
+            {"status": poll_secret},
+        ]
+    )
+    clock = iter([0.0, 0.0, 2.0])
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(module, "_request_json", lambda *_args, **_kwargs: next(responses))
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(module.time, "time", lambda: next(clock))
+    monkeypatch.setattr(sys, "stdin", io.StringIO("make a short video"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_video.py",
+            "--model",
+            "bytedance/seedance-2.0-fast",
+            "--output-dir",
+            str(tmp_path),
+            "--filename",
+            "sample.mp4",
+            "--max-wait",
+            "1",
+        ],
+    )
+
+    assert module.main() == 0
+
+    output = capsys.readouterr().out
+    assert "VIDEO_GENERATION_FAILED" in output
+    assert '"status":"unknown"' in output
+    assert submit_secret not in output
+    assert poll_secret not in output
+    assert not (tmp_path / "sample.mp4").exists()
+
+
+def test_openrouter_video_rejects_key_like_job_id_without_persisting_it(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    module = _load_openrouter_video_module()
+    reflected_secret = "custom-api-secret-123456"
+    requests: list[tuple[str, str]] = []
+
+    def fake_request_json(
+        url: str,
+        *,
+        method: str = "GET",
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        requests.append((method, url))
+        return {
+            "id": reflected_secret,
+            "status": "queued",
+            "polling_url": "/api/v1/videos/reflected",
+        }
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", reflected_secret)
+    monkeypatch.setattr(module, "_request_json", fake_request_json)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("make a short video"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "openrouter_video.py",
+            "--model",
+            "bytedance/seedance-2.0-fast",
+            "--output-dir",
+            str(tmp_path),
+            "--filename",
+            "sample.mp4",
+        ],
+    )
+
+    assert module.main() == 0
+
+    output = capsys.readouterr().out
+    assert "VIDEO_GENERATION_FAILED" in output
+    assert '"phase":"submit"' in output
+    assert '"reason":"invalid_job_id"' in output
+    assert reflected_secret not in output
+    assert requests == [("POST", "https://openrouter.ai/api/v1/videos")]
+    assert not (tmp_path / "sample.mp4").exists()
 
 
 def test_openrouter_video_rejects_downloaded_non_video_payload(

@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (
     ROOT
@@ -252,3 +254,100 @@ def test_length_gate_rejects_conditionally_hidden_content_and_structure(
     assert result.returncode != 0
     assert "TeX conditionals that can hide counted prose" in result.stdout
     assert r"\iffalse" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "visibility_control",
+    (
+        r"\color{white}",
+        r"\textcolor{white}{hidden}",
+        r"\color{white!100!black}",
+        r"\textcolor{black!0}{hidden}",
+        r"\color{red!1}",
+        r"\textcolor{white!99!red}{hidden}",
+        r"\definecolor{paperwhite}{RGB}{255,255,255}\color{paperwhite}",
+        r"\color[cmy]{0,0,0}",
+        r"\textcolor[hsb]{0,0,1}{hidden}",
+        r"\textcolor[Hsb]{240,0,1}{hidden}",
+        r"\textcolor[Gray]{15}{hidden}",
+        r"\pagecolor{black}\color{black}",
+        r"\colorbox{black}{hidden}",
+        r"\rowcolor{black}\color{black}",
+        r"\rowcolors{1}{black}{black}\color{black}",
+        r"\transparent{0}",
+        r"\texttransparent{0}{hidden}",
+        r"\fontsize{0.1}{0.1}\selectfont",
+        r"\fontsize{4}{4}\selectfont",
+        r"\fontsize{4pt}{4pt}\selectfont",
+        r"\scalebox{0.001}{hidden}",
+        r"\scalebox{0.1}{hidden}",
+        r"\resizebox{0.1pt}{!}{hidden}",
+        r"\resizebox{4pt}{!}{hidden}",
+        r"\resizebox{0.1\linewidth}{!}{hidden}",
+        r"\resizebox{!}{0.1\textheight}{hidden}",
+        r"\resizebox{1sp}{!}{hidden}",
+        r"\resizebox{0.1\hsize}{!}{hidden}",
+        r"\resizebox{\unknownwidth}{!}{hidden}",
+        r"\raisebox{10000pt}[0pt][0pt]{hidden}",
+        r"\raisebox{100pt}[0pt][0pt]{hidden}",
+        r"\raisebox{\paperheight}[0pt][0pt]{hidden}",
+        r"\raisebox{100\height}[0pt][0pt]{hidden}",
+        r"\begin{picture}(0,0)\put(10000,0){hidden}\end{picture}",
+        r"\typeout{hidden prose is not rendered}",
+        r"\begin{lrbox}{\box0}hidden prose\end{lrbox}",
+    ),
+)
+def test_length_gate_rejects_text_visibility_controls(
+    tmp_path: Path,
+    visibility_control: str,
+) -> None:
+    paper = tmp_path / "paper.tex"
+    manuscript = _manuscript(repeats=100).replace(
+        r"\begin{document}",
+        "\\begin{document}\n" + visibility_control,
+        1,
+    )
+    paper.write_text(manuscript, encoding="utf-8")
+
+    result = _run(_payload(str(paper), pages="4", mode="COMPACT_SKELETON"), tmp_path)
+
+    assert result.returncode != 0
+    assert "commands that can make counted prose invisible" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "formatting_control",
+    (
+        r"\definecolor{brandblue}{RGB}{10,80,160}\textcolor{brandblue}{visible}",
+        r"\textcolor[cmy]{0.2,0,0}{visible}",
+        r"\textcolor[hsb]{0,1,1}{visible}",
+        r"\textcolor[Gray]{8}{visible}",
+        r"\fontsize{10}{12}\selectfont",
+        r"\fontsize{10pt}{12pt}\selectfont",
+        r"\scalebox{0.9}{visible}",
+        r"\scalebox{1}[1]{visible}",
+        r"\resizebox{\linewidth}{!}{visible table}",
+        r"\resizebox{\hsize}{!}{visible table}",
+        r"\raisebox{1ex}{visible}",
+        r"\raisebox{-.5\height}{visible}",
+        r"\transparent{0.8}",
+        r"\texttransparent{0.8}{visible}",
+        r"\tiny compact table note\normalsize",
+    ),
+)
+def test_length_gate_allows_ordinary_scholarly_formatting(
+    tmp_path: Path,
+    formatting_control: str,
+) -> None:
+    paper = tmp_path / "paper.tex"
+    manuscript = _manuscript(repeats=100).replace(
+        r"\begin{document}",
+        "\\begin{document}\n" + formatting_control,
+        1,
+    )
+    paper.write_text(manuscript, encoding="utf-8")
+
+    result = _run(_payload(str(paper), pages="4", mode="COMPACT_SKELETON"), tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LENGTH_GATE: pass" in result.stdout

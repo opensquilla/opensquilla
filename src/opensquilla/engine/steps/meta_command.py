@@ -279,6 +279,45 @@ def pending_meta_launch_pop(
         return launch.name
 
 
+def pending_meta_launch_clear_session(
+    session_id: str,
+    *,
+    preserve_client_request_id: str | None = None,
+    preserve_message: object = None,
+) -> int:
+    """Drop pre-boundary launch markers while retaining the reset turn itself.
+
+    A same-key reset can itself be an exact MetaSkill launch. In that case only
+    the marker matching both its request identity (or the legacy ``None`` key)
+    and exact command name survives; ordinary reset/delete calls preserve none.
+    """
+
+    if not session_id:
+        return 0
+    request_id = _normalize_client_request_id(preserve_client_request_id)
+    parsed = _parse_launch_text(preserve_message) if isinstance(preserve_message, str) else None
+    preserve_name = parsed[0] if parsed is not None else None
+    with _pending_lock:
+        entries = _pending_meta_launch.get(session_id)
+        if not entries:
+            return 0
+        retained: dict[str | None, PendingMetaLaunch] = {}
+        if preserve_name is not None:
+            if request_id is not None:
+                bound = entries.get(request_id)
+                if bound is not None and bound.name == preserve_name:
+                    retained[request_id] = bound
+            legacy = entries.get(None)
+            if legacy is not None and legacy.name == preserve_name:
+                retained[None] = legacy
+        removed = len(entries) - len(retained)
+        if retained:
+            _pending_meta_launch[session_id] = retained
+        else:
+            _pending_meta_launch.pop(session_id, None)
+        return removed
+
+
 def pending_meta_launch_peek(
     session_id: str,
     *,

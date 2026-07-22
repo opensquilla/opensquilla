@@ -1,4 +1,4 @@
-"""V024 - durable hidden MetaSkill control intents.
+"""V025 - durable hidden MetaSkill control intents.
 
 ``meta.run`` and committed failed-step replay previously handed the following
 ``chat.send`` an in-process marker.  A gateway restart or a long client-side
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from yoyo import step
 
-__depends__: set[str] = {"V023__router_deployment_telemetry"}
+__depends__: set[str] = {"V024__usage_native_billing_receipts"}
 
 TABLE = "meta_control_intents"
 CORRELATION_INDEX = "uq_meta_control_intents_correlation"

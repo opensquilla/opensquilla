@@ -48,14 +48,7 @@ describe('MetaSkill setup manual recovery flow', () => {
         available: true,
       }],
     }
-    const ready: MetaSetupReadiness = {
-      ready: true,
-      status: 'ready',
-      missing_env: [],
-      setup_actions: [],
-    }
     const call = vi.fn(async (method: string, _params?: Record<string, unknown>) => {
-      if (method === 'meta.setup.plan') return { ok: true, readiness: ready }
       if (method === 'meta.run') return { ok: true }
       throw new Error(`Unexpected RPC: ${method}`)
     })
@@ -118,7 +111,7 @@ describe('MetaSkill setup manual recovery flow', () => {
     configure?.click()
     await settle()
 
-    expect(call.mock.calls.map(([method]) => method)).toEqual(['meta.setup.plan', 'meta.run'])
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['meta.run'])
     expect(dispatchHidden).toHaveBeenCalledWith(
       launchText,
       launchText,

@@ -1285,6 +1285,120 @@ def test_meta_compile_rejects_hidden_prose_with_near_empty_page_padding(
         )
 
 
+@pytest.mark.parametrize(
+    "visibility_control",
+    (
+        r"\color{white}",
+        r"\textcolor{white}{hidden}",
+        r"\color{white!100!black}",
+        r"\textcolor{black!0}{hidden}",
+        r"\color{red!1}",
+        r"\textcolor{white!99!red}{hidden}",
+        r"\definecolor{paperwhite}{RGB}{255,255,255}\color{paperwhite}",
+        r"\color[cmy]{0,0,0}",
+        r"\textcolor[hsb]{0,0,1}{hidden}",
+        r"\textcolor[Hsb]{240,0,1}{hidden}",
+        r"\textcolor[Gray]{15}{hidden}",
+        r"\pagecolor{black}\color{black}",
+        r"\colorbox{black}{hidden}",
+        r"\cellcolor{black}\color{black}",
+        r"\rowcolors{1}{black}{black}\color{black}",
+        r"\transparent{0}",
+        r"\texttransparent{0}{hidden}",
+        r"\fontsize{0.1}{0.1}\selectfont",
+        r"\fontsize{4}{4}\selectfont",
+        r"\fontsize{4pt}{4pt}\selectfont",
+        r"\scalebox{0.001}{hidden}",
+        r"\scalebox{0.1}{hidden}",
+        r"\resizebox{0.1pt}{!}{hidden}",
+        r"\resizebox{4pt}{!}{hidden}",
+        r"\resizebox{0.1\linewidth}{!}{hidden}",
+        r"\resizebox{!}{0.1\paperheight}{hidden}",
+        r"\resizebox{1sp}{!}{hidden}",
+        r"\resizebox{0.1\vsize}{!}{hidden}",
+        r"\resizebox{\unknownwidth}{!}{hidden}",
+        r"\raisebox{10000pt}[0pt][0pt]{hidden}",
+        r"\raisebox{100pt}[0pt][0pt]{hidden}",
+        r"\raisebox{\paperheight}[0pt][0pt]{hidden}",
+        r"\raisebox{100\height}[0pt][0pt]{hidden}",
+        r"\begin{picture}(0,0)\put(10000,0){hidden}\end{picture}",
+        r"\typeout{hidden prose is not rendered}",
+        r"\begin{lrbox}{\box0}hidden prose\end{lrbox}",
+    ),
+)
+def test_meta_compile_rejects_text_visibility_controls_before_xelatex(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    visibility_control: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    package = _compile_fixture_package().replace(
+        r"\begin{document}",
+        "\\begin{document}\n" + visibility_control,
+        1,
+    )
+    monkeypatch.setenv("MANUSCRIPT_PKG", package)
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_tex_run(calls, page_count=4))
+
+    with pytest.raises(
+        PAPER_ARTIFACT_RUNTIME.PaperArtifactError,
+        match="TeX text-visibility controls",
+    ):
+        _run_paper_operation("compile_pdf")
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "formatting_control",
+    (
+        r"\definecolor{brandblue}{RGB}{10,80,160}\textcolor{brandblue}{visible}",
+        r"\textcolor[cmy]{0.2,0,0}{visible}",
+        r"\textcolor[hsb]{0,1,1}{visible}",
+        r"\textcolor[Gray]{8}{visible}",
+        r"\fontsize{10}{12}\selectfont",
+        r"\fontsize{10pt}{12pt}\selectfont",
+        r"\scalebox{0.9}{visible}",
+        r"\scalebox{1}[1]{visible}",
+        r"\resizebox{\linewidth}{!}{visible table}",
+        r"\resizebox{\hsize}{!}{visible table}",
+        r"\raisebox{1ex}{visible}",
+        r"\raisebox{-.5\height}{visible}",
+        r"\transparent{0.8}",
+        r"\texttransparent{0.8}{visible}",
+        r"\tiny compact table note\normalsize",
+    ),
+)
+def test_meta_compile_allows_ordinary_scholarly_formatting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    formatting_control: str,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    package = _compile_fixture_package().replace(
+        r"\begin{document}",
+        "\\begin{document}\n" + formatting_control,
+        1,
+    )
+    monkeypatch.setenv("MANUSCRIPT_PKG", package)
+    monkeypatch.setenv(
+        "PAPER_CONTRACT",
+        "PAPER_MODE: COMPACT_SKELETON\nTARGET_PAGES: 4\n",
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", _fake_tex_run(calls, page_count=4))
+
+    result = _run_paper_operation("compile_pdf")
+
+    assert "PDF_PAGES: 4" in result
+    assert len(calls) == 4
+
+
 def test_pdf_content_report_allows_sparse_cover_and_reference_tail() -> None:
     class Page:
         def __init__(self, text: str) -> None:

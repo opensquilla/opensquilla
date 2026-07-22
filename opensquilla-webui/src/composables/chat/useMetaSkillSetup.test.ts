@@ -74,6 +74,7 @@ function harness(
       clientRequestId: string,
     ) => boolean | MetaDraftDiscardOutcome | Promise<boolean | MetaDraftDiscardOutcome>
     onDraftAlreadyAccepted?: (sessionKey: string, clientRequestId: string) => void
+    forgetHiddenControl?: (sessionKey: string, clientRequestId: string) => void
   } = {},
 ) {
   const currentSessionKey = ref(options.session || SESSION)
@@ -107,6 +108,7 @@ function harness(
     restoreDraft: options.restoreDraft,
     discardDraft: options.discardDraft,
     onDraftAlreadyAccepted: options.onDraftAlreadyAccepted,
+    forgetHiddenControl: options.forgetHiddenControl,
   })
   return { api, currentSessionKey, dispatchHidden }
 }
@@ -858,29 +860,13 @@ describe('useMetaSkillSetup', () => {
     // Opening provider settings unmounts ChatView and its setup composable.
     first.api.dispose()
     const secondCall = vi.fn(async (method: string) => {
-      if (method === 'meta.setup.plan') {
-        return {
-          ok: true,
-          readiness: readiness({
-            ready: true,
-            status: 'ready',
-            missing_bins: [],
-            missing_env: [],
-            setup_actions: [],
-            manual_setup_actions: [],
-          }),
-        }
-      }
       if (method === 'meta.run') return { ok: true }
       throw new Error(`Unexpected RPC: ${method}`)
     })
     const second = harness(secondCall, { storage })
     await flushPromises()
 
-    expect(secondCall.mock.calls.map(([method]) => method)).toEqual([
-      'meta.setup.plan',
-      'meta.run',
-    ])
+    expect(secondCall.mock.calls.map(([method]) => method)).toEqual(['meta.run'])
     expect(secondCall).toHaveBeenCalledWith('meta.run', {
       name: 'meta-short-drama',
       sessionKey: SESSION,
@@ -902,6 +888,71 @@ describe('useMetaSkillSetup', () => {
     await flushPromises()
     expect(thirdCall).not.toHaveBeenCalled()
     expect(third.dispatchHidden).not.toHaveBeenCalled()
+    third.api.dispose()
+  })
+
+  it('consumes a setup checkpoint cancelled by another tab without resurrecting it', async () => {
+    const launchText = '/meta meta-short-drama -- cancelled while provider settings were open'
+    const storage = memoryStorage()
+    const providerReadiness = readiness({
+      missing_bins: [],
+      setup_actions: [],
+      manual_setup_actions: [{
+        id: 'provider:openrouter',
+        kind: 'provider_connection',
+        provider_id: 'openrouter',
+        available: true,
+      }],
+    })
+    const first = harness(vi.fn(async () => ({ ok: true })), { storage })
+    await first.api.requestSetup('meta-short-drama', providerReadiness, SESSION, launchText)
+    const clientRequestId = first.api.beginProviderHandoff('openrouter')
+    first.api.dispose()
+
+    const discarded = Object.assign(new Error('The saved request was already discarded.'), {
+      code: 'META_DRAFT_DISCARDED',
+      retryable: false,
+      accepted: false,
+    })
+    const restoreDraft = vi.fn()
+    const forgetHiddenControl = vi.fn()
+    const call = vi.fn(async (method: string) => {
+      if (method === 'meta.setup.plan') {
+        return {
+          ok: true,
+          readiness: readiness({
+            ready: true,
+            status: 'ready',
+            missing_bins: [],
+            setup_actions: [],
+            manual_setup_actions: [],
+          }),
+        }
+      }
+      if (method === 'meta.run') throw discarded
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
+    const second = harness(call, { storage, restoreDraft, forgetHiddenControl })
+    await flushPromises()
+
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['meta.run'])
+    expect(call).toHaveBeenCalledWith('meta.run', {
+      name: 'meta-short-drama',
+      sessionKey: SESSION,
+      clientRequestId,
+      launchText,
+    })
+    expect(second.dispatchHidden).not.toHaveBeenCalled()
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(forgetHiddenControl).toHaveBeenCalledWith(SESSION, clientRequestId)
+    expect(second.api.setupState.value).toBeNull()
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toBeNull()
+    second.api.dispose()
+
+    const thirdCall = vi.fn(async () => ({ ok: true }))
+    const third = harness(thirdCall, { storage })
+    await flushPromises()
+    expect(thirdCall).not.toHaveBeenCalled()
     third.api.dispose()
   })
 
@@ -1264,15 +1315,6 @@ describe('useMetaSkillSetup', () => {
     first.api.dispose()
 
     const call = vi.fn(async (method: string) => {
-      if (method === 'meta.setup.plan') {
-        return { ok: true, readiness: readiness({
-          ready: true,
-          status: 'ready',
-          missing_bins: [],
-          setup_actions: [],
-          manual_setup_actions: [],
-        }) }
-      }
       if (method === 'meta.run') return { ok: true }
       throw new Error(`Unexpected RPC: ${method}`)
     })
@@ -1283,10 +1325,7 @@ describe('useMetaSkillSetup', () => {
     expect(second.dispatchHidden).not.toHaveBeenCalled()
 
     await second.api.restoreSetupJob()
-    expect(call.mock.calls.map(([method]) => method)).toEqual([
-      'meta.setup.plan',
-      'meta.run',
-    ])
+    expect(call.mock.calls.map(([method]) => method)).toEqual(['meta.run'])
     expect(second.dispatchHidden).toHaveBeenCalledWith(
       launchText,
       launchText,
@@ -1361,6 +1400,8 @@ describe('useMetaSkillSetup', () => {
   })
 
   it('correlates provider handoff cancellation to its own ingress identity', async () => {
+    const launchText = '/meta meta-short-drama -- Keep this server draft identity'
+    const stableRequestId = 'server-draft-before-provider-handoff'
     const storage = memoryStorage()
     const first = harness(vi.fn(async () => ({ ok: true })), { storage })
     await first.api.requestSetup('meta-short-drama', readiness({
@@ -1372,16 +1413,63 @@ describe('useMetaSkillSetup', () => {
         provider_id: 'acme-media',
         available: true,
       }],
-    }), SESSION)
+    }), SESSION, launchText, stableRequestId)
 
     const clientRequestId = first.api.beginProviderHandoff('acme-media')
+    expect(clientRequestId).toBe(stableRequestId)
     expect(first.api.beginProviderHandoff('acme-media')).toBe('')
     first.api.cancelProviderHandoff('acme-media', 'different-request')
     expect(first.api.setupState.value?.providerHandoff?.clientRequestId).toBe(clientRequestId)
 
     first.api.cancelProviderHandoff('acme-media', clientRequestId)
     expect(first.api.setupState.value?.providerHandoff).toBeUndefined()
+    expect(first.api.setupState.value?.resumeRequestId).toBe(stableRequestId)
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).not.toContain('providerHandoff')
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(stableRequestId)
+    first.api.dispose()
+  })
+
+  it('discards the original server draft before restoring after a failed handoff', async () => {
+    const launchText = '/meta meta-short-drama -- Cancel after provider navigation fails'
+    const stableRequestId = 'server-draft-provider-navigation-failed'
+    const storage = memoryStorage()
+    const restoreDraft = vi.fn()
+    let completeDiscard!: (outcome: MetaDraftDiscardOutcome) => void
+    const discardDraft = vi.fn(() => new Promise<MetaDraftDiscardOutcome>((resolve) => {
+      completeDiscard = resolve
+    }))
+    const first = harness(vi.fn(async () => ({ ok: true })), {
+      storage,
+      restoreDraft,
+      discardDraft,
+    })
+    await first.api.requestSetup('meta-short-drama', readiness({
+      missing_bins: [],
+      setup_actions: [],
+      manual_setup_actions: [{
+        id: 'provider:acme-media',
+        kind: 'provider_connection',
+        provider_id: 'acme-media',
+        available: true,
+      }],
+    }), SESSION, launchText, stableRequestId)
+
+    expect(first.api.beginProviderHandoff('acme-media')).toBe(stableRequestId)
+    first.api.cancelProviderHandoff('acme-media', stableRequestId)
+    const cancellation = first.api.cancelSetup()
+    await flushPromises()
+
+    expect(discardDraft).toHaveBeenCalledOnce()
+    expect(discardDraft).toHaveBeenCalledWith(SESSION, stableRequestId)
+    expect(restoreDraft).not.toHaveBeenCalled()
+    expect(first.api.setupState.value?.resumeRequestId).toBe(stableRequestId)
+
+    completeDiscard('discarded')
+    await cancellation
+
+    expect(restoreDraft).toHaveBeenCalledOnce()
+    expect(restoreDraft).toHaveBeenCalledWith(launchText, SESSION)
+    expect(first.api.setupState.value).toBeNull()
     first.api.dispose()
   })
 
@@ -1406,23 +1494,34 @@ describe('useMetaSkillSetup', () => {
 
     expect(first.api.setupState.value?.phase).toBe('confirm')
     expect(first.api.setupState.value?.actionIds).toEqual([])
-    expect(first.api.beginProviderHandoff('acme-media')).toEqual(expect.any(String))
+    const clientRequestId = first.api.beginProviderHandoff('acme-media')
+    expect(clientRequestId).toEqual(expect.any(String))
     first.api.dispose()
 
     vi.setSystemTime(Date.now() + META_SETUP_PROVIDER_HANDOFF_TTL_MS + 1)
     const secondCall = vi.fn(async () => ({ ok: true }))
-    const second = harness(secondCall, { storage })
+    const restoreDraft = vi.fn()
+    const discardDraft = vi.fn(async () => 'discarded' as const)
+    const second = harness(secondCall, { storage, restoreDraft, discardDraft })
     await flushPromises()
 
     expect(second.api.setupState.value?.phase).toBe('confirm')
     expect(second.api.setupState.value?.providerHandoff).toBeUndefined()
+    expect(second.api.setupState.value?.resumeRequestId).toBe(clientRequestId)
+    expect(second.api.setupState.value?.suppressAutoResume).toBe(true)
     expect(secondCall).not.toHaveBeenCalled()
     expect(second.dispatchHidden).not.toHaveBeenCalled()
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).not.toContain('providerHandoff')
+    expect(storage.getItem(metaSetupManualStorageKey(SESSION))).toContain(clientRequestId)
+
+    await second.api.cancelSetup()
+    expect(discardDraft).toHaveBeenCalledWith(SESSION, clientRequestId)
+    expect(restoreDraft).toHaveBeenCalledWith(launchText, SESSION)
+    expect(second.api.setupState.value).toBeNull()
     second.api.dispose()
   })
 
-  it('cancels the handoff checkpoint when provider navigation does not complete', async () => {
+  it('keeps the server draft identity when provider navigation does not complete', async () => {
     const storage = memoryStorage()
     const first = harness(vi.fn(async () => ({ ok: true })), { storage })
     await first.api.requestSetup('meta-short-drama', readiness({
@@ -1442,11 +1541,35 @@ describe('useMetaSkillSetup', () => {
     expect(storage.getItem(metaSetupManualStorageKey(SESSION))).not.toContain('providerHandoff')
     first.api.dispose()
 
-    const secondCall = vi.fn(async () => ({ ok: true }))
+    const secondCall = vi.fn(async (method: string) => {
+      if (method === 'meta.run') {
+        return {
+          ok: false,
+          setup_required: true,
+          readiness: readiness({
+            missing_bins: [],
+            setup_actions: [],
+            manual_setup_actions: [{
+              id: 'provider:openrouter',
+              kind: 'provider_connection',
+              provider_id: 'openrouter',
+              available: true,
+            }],
+          }),
+        }
+      }
+      throw new Error(`Unexpected RPC: ${method}`)
+    })
     const second = harness(secondCall, { storage })
     await flushPromises()
-    expect(secondCall).not.toHaveBeenCalled()
+    expect(secondCall).toHaveBeenCalledWith('meta.run', {
+      name: 'meta-short-drama',
+      sessionKey: SESSION,
+      clientRequestId,
+      launchText: '/meta meta-short-drama',
+    })
     expect(second.api.setupState.value?.phase).toBe('confirm')
+    expect(second.api.setupState.value?.resumeRequestId).toBe(clientRequestId)
     second.api.dispose()
   })
 

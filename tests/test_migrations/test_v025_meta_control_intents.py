@@ -12,11 +12,11 @@ from opensquilla.persistence.migrator import apply_pending
 from opensquilla.session.storage import SessionStorage
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
-V024_ID = "V024__meta_control_intents"
+V025_ID = "V025__meta_control_intents"
 
 
 @pytest.mark.asyncio
-async def test_v024_accepts_compatible_table_created_before_migration(tmp_path: Path) -> None:
+async def test_v025_accepts_compatible_table_created_before_migration(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     storage = await SessionStorage.open(str(db_path))
     try:
@@ -30,7 +30,7 @@ async def test_v024_accepts_compatible_table_created_before_migration(tmp_path: 
         await storage.close()
 
     # Model an out-of-band compatible table as well as the runtime-created
-    # upgrade path: V024 must preserve rows and add any missing guarantees.
+    # upgrade path: V025 must preserve rows and add any missing guarantees.
     connection = sqlite3.connect(db_path)
     try:
         connection.execute("DROP INDEX uq_meta_control_intents_correlation")
@@ -41,7 +41,7 @@ async def test_v024_accepts_compatible_table_created_before_migration(tmp_path: 
 
     applied = apply_pending(str(db_path), MIGRATIONS_DIR)
 
-    assert V024_ID in applied
+    assert V025_ID in applied
     connection = sqlite3.connect(db_path)
     try:
         preserved = connection.execute(
@@ -60,10 +60,10 @@ async def test_v024_accepts_compatible_table_created_before_migration(tmp_path: 
     assert indexes["idx_meta_control_intents_session_status"] is False
 
 
-def test_v024_applies_constraints_indexes_and_rolls_back(tmp_path: Path) -> None:
+def test_v025_applies_constraints_indexes_and_rolls_back(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
     applied = apply_pending(str(db_path), MIGRATIONS_DIR)
-    assert V024_ID in applied
+    assert V025_ID in applied
 
     connection = sqlite3.connect(db_path)
     try:
@@ -130,7 +130,7 @@ def test_v024_applies_constraints_indexes_and_rolls_back(tmp_path: Path) -> None
 
     backend = get_backend(f"sqlite:///{db_path}")
     migrations = read_migrations(str(MIGRATIONS_DIR)).filter(
-        lambda migration: migration.id == V024_ID
+        lambda migration: migration.id == V025_ID
     )
     with backend.lock():
         backend.rollback_migrations(migrations)

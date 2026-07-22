@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -24,6 +25,13 @@ from opensquilla.skills.bundled._provider_http import (
 )
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "expired"}
+PUBLIC_JOB_STATUSES = TERMINAL_STATUSES | {
+    "in_progress",
+    "pending",
+    "processing",
+    "queued",
+    "running",
+}
 SAFE_NO_SUBMIT_EXIT_CODE = 78
 META_CAPABILITY_LEASE_REQUIRED_ENV = "OPENSQUILLA_META_CAPABILITY_LEASE_REQUIRED"
 META_CAPABILITY_PROVIDER_ENV = "OPENSQUILLA_META_CAPABILITY_PROVIDER"
@@ -33,6 +41,8 @@ META_CAPABILITY_PROXY_ENV = "OPENSQUILLA_META_CAPABILITY_PROXY"
 MAX_PROVIDER_JSON_RESPONSE_BYTES = 1024 * 1024
 MAX_VIDEO_DOWNLOAD_BYTES = 256 * 1024 * 1024
 MIN_VIDEO_DOWNLOAD_BYTES = 1024
+_SAFE_JOB_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
+_SENSITIVE_TOKEN_PREFIXES = ("sk-", "sk_", "bearer")
 
 
 def _safe_filename(value: str, default: str) -> str:
@@ -47,6 +57,51 @@ def _safe_filename(value: str, default: str) -> str:
 
 def _preview(text: str) -> str:
     return " ".join(text.split())[:80]
+
+
+def _safe_job_id(
+    value: object,
+    *,
+    secrets: tuple[str, ...] = (),
+) -> str | None:
+    """Return one bounded public job identifier, never a key-like value."""
+
+    if isinstance(value, (str, int)) and not isinstance(value, bool):
+        candidate = str(value).strip()
+        leaks_secret = False
+        for raw_secret in secrets:
+            secret = str(raw_secret or "").strip()
+            if not secret:
+                continue
+            if hmac.compare_digest(candidate.encode(), secret.encode()):
+                leaks_secret = True
+                break
+            # Provider-controlled identifiers are persisted in run output.
+            # Reject meaningful fragments in either direction so a reflected
+            # custom-prefix key or JWT cannot bypass prefix-only heuristics.
+            if (
+                (len(secret) >= 8 and secret in candidate)
+                or (len(candidate) >= 8 and candidate in secret)
+            ):
+                leaks_secret = True
+                break
+        if (
+            _SAFE_JOB_ID.fullmatch(candidate)
+            and not candidate.casefold().startswith(_SENSITIVE_TOKEN_PREFIXES)
+            and not leaks_secret
+        ):
+            return candidate
+    return None
+
+
+def _safe_job_status(value: object) -> str:
+    """Map provider-controlled status text to the public workflow vocabulary."""
+
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+        if candidate in PUBLIC_JOB_STATUSES:
+            return candidate
+    return "unknown"
 
 
 def _print_record(label: str, payload: dict[str, object]) -> None:
@@ -256,7 +311,15 @@ def main() -> int:
         )
         return 0
 
-    job_id = str(submit.get("id") or "")
+    job_id = _safe_job_id(submit.get("id"), secrets=(key,))
+    if job_id is None:
+        _failure(
+            "VIDEO_GENERATION_FAILED",
+            filename,
+            phase="submit",
+            reason="invalid_job_id",
+        )
+        return 0
     try:
         poll_url = resolve_authenticated_url(
             str(submit.get("polling_url") or f"videos/{job_id}"),
@@ -272,7 +335,7 @@ def main() -> int:
         )
         return 0
     last = submit
-    status = str(last.get("status") or "pending")
+    status = _safe_job_status(last.get("status"))
     deadline = time.time() + max(1.0, args.max_wait)
     while status not in TERMINAL_STATUSES and time.time() < deadline:
         time.sleep(max(1.0, args.poll_interval))
@@ -296,7 +359,7 @@ def main() -> int:
                 job_id=job_id,
             )
             return 0
-        status = str(last.get("status") or "unknown")
+        status = _safe_job_status(last.get("status"))
 
     if status != "completed":
         _failure("VIDEO_GENERATION_FAILED", filename, status=status, job_id=job_id)

@@ -22,7 +22,9 @@ entrypoint:
 # short-drama-review-normalizer
 
 Internal, deterministic consent boundary used by `meta-short-drama` after its
-free-form draft review and before any image/video provider call.
+free-form draft review and before any image/video provider call. Its
+`canonical_script_snapshot` phase also freezes the final in-memory script; it
+never re-reads the user-editable `script.txt`.
 
 The initial-review phase accepts the verbatim `review` string and emits a
 bounded decision block. Explicit approval proceeds without overrides. A
@@ -43,3 +45,6 @@ privacy restrictions without one of those explicit constraints.
 This helper does not call a model or the network. The final `media_approval`
 `DECISION` output is the sole authority for downstream paid media conditions;
 a language model never gets to promote an edit or unclear reply to consent.
+The snapshot phase requires exactly one final `DECISION: proceed|hold|cancel`,
+accepts at most 200,000 UTF-8 bytes, and echoes the supplied script without
+consulting disk. Only `proceed` can unlock the separate paid-step conditions.

@@ -40,4 +40,13 @@ for _name in _NAMES:
         log.warning("builtin_tool.import_failed", module=_name, error=str(exc))
         continue
 
+# Contrib bridges register alongside the builtins so config-driven agents can
+# allow-list them; their tools are hidden (exposed_by_default=False) unless
+# surfaced. Never fatal: a broken contrib bridge must not take down the core
+# tool surface.
+try:
+    import_module("opensquilla.contrib.aiq")
+except Exception as exc:  # pragma: no cover - defensive
+    log.warning("contrib_tool.import_failed", module="opensquilla.contrib.aiq", error=str(exc))
+
 __all__ = _NAMES

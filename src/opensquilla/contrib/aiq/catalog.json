@@ -1,0 +1,1539 @@
+[
+ {
+  "name": "prints_latest",
+  "module": "lib.tools.sql_data_tools.print_tools",
+  "attr": "prints_latest",
+  "group": "read",
+  "description": "Get most recent trade (bond print) per CUSIP. When: \"latest\", \"last\", \"most recent\", or \"current\" print. Params: cusips (1-25 CUSIPs). Returns: JSON mapping CUSIP -> print object (or null).",
+  "params": {
+   "cusips": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   }
+  },
+  "required": [
+   "cusips"
+  ]
+ },
+ {
+  "name": "prints_search",
+  "module": "lib.tools.sql_data_tools.print_tools",
+  "attr": "prints_search",
+  "group": "read",
+  "description": "Search individual FINRA TRACE bond trades (prints) by CUSIP or market-wide filters. When: user wants to see individual trades \u2014 specific bond history, block trades, market-wide large prints, portfolio trades, trades in a sector. Also use when: \"show me trades\", \"what traded\", \"find prints\", \"recent trades\". Requires at least one primary filter: cusip, sector, credit_grade, min_quantity, max_quantity, or portfolio_trade_only=True. Date range alone is NOT sufficient. DEFAULT BEHAVIOUR: when neither start_date nor end_date is provided, results are scoped to last 90 days. Pass a start_date or end_date to search beyond 90 days. NOT for: rankings or most-active bonds (use securities_search). NOT for: trends or time-series (use prints_group_by_period). NOT for: VWAP or volume-weighted analytics (use analytics_vwap). DATA: covers HISTORICAL (2023-2024) + EOD (daily) + REALTIME (today's intraday). For the single most recent intraday print use prints_latest instead.",
+  "params": {
+   "cusip": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "single 9-character CUSIP for bond-specific search."
+   },
+   "sector": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "GICS sector name (e.g. 'Energy', 'Financials') \u2014 market-wide search."
+   },
+   "credit_grade": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "IG or HY instrument classification."
+   },
+   "min_quantity": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "minimum par value in USD (e.g. 1000000 = $1MM). Exclusive bound."
+   },
+   "max_quantity": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "maximum par value in USD. Exclusive bound."
+   },
+   "start_date": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Inclusive ISO date or timestamp in US EASTERN market time (America/New_York) \u2014 see TIMEZONE below. Defaults to 90 days ago when omitted."
+   },
+   "end_date": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Inclusive ISO date or timestamp in US EASTERN market time."
+   },
+   "portfolio_trade_only": {
+    "type": "boolean",
+    "description": "True to filter to basket/portfolio trades only."
+   },
+   "distinct_cusips": {
+    "type": "boolean",
+    "description": "True to dedupe to ONE print per CUSIP (its largest by quantity) \u2014 e.g. \"the biggest trade in each bond\". ``total`` then counts distinct CUSIPs. Still NOT a ranking tool (use securities_search)."
+   },
+   "limit": {
+    "type": "integer",
+    "description": "1-10000, default 25."
+   },
+   "offset": {
+    "type": "integer",
+    "description": "pagination offset, default 0."
+   },
+   "order_by": {
+    "type": "string",
+    "description": "time (default) | quantity | yield."
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "prints_group_by_period",
+  "module": "lib.tools.sql_data_tools.print_tools",
+  "attr": "prints_group_by_period",
+  "group": "read",
+  "description": "Aggregate trading statistics by CUSIP and time period \u2014 DEFAULT for trends. When: trends, patterns, time-series, trading history, or activity over time. Also the DEFAULT for a G-spread-over-time series (\"plot the G-spread\", \"daily G-spread chart\") \u2014 pass group_by='day', include_g_spread=true. NOT for: individual trade lookup (use prints_search) or latest single print (use prints_latest). Params: - cusips (1-20). - group_by (month|week|day|quarter|year, default month). - include_g_spread (default False): on day/week/month mode, adds a per-period ``g_spread_bps`` = period avg yield \u2212 matched-tenor Treasury yield (FRED, as-of the period) via the same calculate_gspread path as securities_search / issuer_bond_snapshot. Day mode carries a higher period cap for multi-month daily series. Returns: CUSIP -> period aggregates (newest first; up to MAX_OUTPUT_DAY_PERIODS for day mode, else MAX_OUTPUT_PERIODS_PER_CUSIP) with explicit units: - sum_par: Principal amount traded (par units) - sum_notional_usd: Approximate USD notional (sum_par * price/100) plus counts, prices, yields, and (when requested) g_spread_bps. ``meta.history_floor`` marks the oldest date the daily-agg store covers.",
+  "params": {
+   "cusips": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "group_by": {
+    "type": "string"
+   },
+   "include_g_spread": {
+    "type": "boolean"
+   }
+  },
+  "required": [
+   "cusips"
+  ]
+ },
+ {
+  "name": "get_security_stats",
+  "module": "lib.tools.sql_data_tools.print_tools",
+  "attr": "get_security_stats",
+  "group": "read",
+  "description": "Get trading statistics (High, Low, VWAP) for a security over a period. When: \"52-week high\", \"YTD volume\", \"all-time low\", or general stats. Params: cusip (single CUSIP), period (3y|1y|6m|ytd|all, default 3y).",
+  "params": {
+   "cusip": {
+    "type": "string"
+   },
+   "period": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "cusip"
+  ]
+ },
+ {
+  "name": "analytics_vwap",
+  "module": "lib.tools.sql_data_tools.print_tools",
+  "attr": "analytics_vwap",
+  "group": "read",
+  "description": "VWAP + volume-weighted yield + high/low/median stats for a security, issuer, or sector. When: VWAP / volume-weighted pricing, sector/issuer VWAP comparison, AND per-security trading stats \u2014 \"52-week high\", \"YTD low\", \"all-time high\", high/low/volume over a period. For a single security's stats, call with cusips=[one] and the period as window (e.g. '1y', 'ytd'). NOT for: time-series trends (use prints_group_by_period) or single latest print (use prints_latest).",
+  "params": {
+   "cusips": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "description": "List of CUSIPs (1-25). Required when group_by='cusip'."
+   },
+   "issuer": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Issuer name filter (partial match). Use with group_by='issuer'."
+   },
+   "sector": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "GICS sector filter. Use with group_by='sector'."
+   },
+   "window": {
+    "type": "string",
+    "description": "Time window - preset: 1d, 5d, 20d, 60d; custom: e.g. '3m', '1y', 'ytd'."
+   },
+   "group_by": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Aggregation level - 'cusip' (default), 'issuer', 'sector', 'credit_grade' ('I'/'H' market rollup)."
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "securities_search",
+  "module": "lib.tools.sql_data_tools.securities_tools",
+  "attr": "securities_search",
+  "group": "read",
+  "description": "Screen the bond universe. Returns the LATEST print snapshot only (prices/yields/ spreads as of each bond's last trade) \u2014 it CANNOT answer as-of/historical-date price questions; for prices or yields as of a past date use prints_search(start_date/end_date). When: finding bonds by issuer / CUSIP / ISIN / sector / credit grade / coupon / yield / maturity / liquidity; rankings and leaderboards (order_by). NOT for: historical prices (prints_search), individual trade history (prints_search), single-CUSIP CP+ deep-dive (mktx_cpplus). Date semantics: - Prices/yields/spreads in the response are ALWAYS the latest print \u2014 no date filter changes that. - liquidity_start / liquidity_end (YYYY-MM-DD) date-scope the LIQUIDITY aggregates (trade counts / notional) only \u2014 use for exact date-scoped activity leaderboards. - issue_start / issue_end (YYYY-MM-DD) filter by issuance date (\"bonds issued today\"). Returns: JSON bonds array (sector, industry; CP+ fields auto-enriched for authorised users) with meta.snapshot_semantics='latest_only'.",
+  "params": {
+   "cusip_id": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "isin": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "issuer": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "issuer_type": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "sector": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "industry_group": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "credit_grade": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "coupon_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "coupon_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "yield_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "yield_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "maturity_start": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "maturity_end": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "issue_start": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "issue_end": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "is_callable": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "is_taxable": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "is_144a": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "rating_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "rating_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "rating_in": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "order_by": {
+    "type": "string"
+   },
+   "limit": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "offset": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "include_liquidity": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "liquidity_min_volume": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "liquidity_max_trades": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "liquidity_lookback_days": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "liquidity_start": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "liquidity_end": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "mktx_liquidity_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "mktx_cpp_price_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "mktx_cpp_price_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "mktx_cpp_price_diff_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "mktx_cpp_price_diff_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "trace_notional",
+  "module": "lib.tools.sql_data_tools.market_data_tools",
+  "attr": "trace_notional",
+  "group": "read",
+  "description": "Get TRACE market-wide notional aggregates over a rolling window. When: market volume, sector breakdown, sector x credit-grade matrix, net customer buying/selling by sector, most-active issuer names, or today-vs-yesterday comparison. NOT for: bond-level trade history (use prints_search or prints_group_by_period).",
+  "params": {
+   "group_by": {
+    "type": "string"
+   },
+   "lookback_days": {
+    "type": "integer"
+   },
+   "offset_days": {
+    "type": "integer"
+   },
+   "limit": {
+    "type": [
+     "integer",
+     "null"
+    ]
+   },
+   "trade_date": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "sector": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "order_by": {
+    "type": "string"
+   },
+   "credit_grade": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "trace_volume_by_size",
+  "module": "lib.tools.sql_data_tools.market_data_tools",
+  "attr": "trace_volume_by_size",
+  "group": "read",
+  "description": "TRACE notional share of prints above a size threshold (block volume %). When: \"% of TRACE volume for size > $5MM\", \"block trade share\", \"what percent of volume was blocks yesterday\". Deterministic: ``block_notional / total_notional \u00d7 100`` for one trading day. Scope (priority): 1. ``cusips`` \u2014 explicit CUSIP list (use CUSIPs from a prior issuer list when the user is following up on an issuer drill-down). 2. ``issuer`` \u2014 fuzzy issuer match (same as securities_search). 3. neither \u2014 market-wide TRACE for that day. NOT for: market volume time series (use trace_notional), listing individual block prints (use prints_search with min_quantity), or volume surge rankings (use volume_surge_search).",
+  "params": {
+   "trade_date": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "min_notional_usd": {
+    "type": "number"
+   },
+   "cusips": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string"
+    }
+   },
+   "issuer": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "movers_search",
+  "module": "lib.tools.sql_data_tools.mover_tools",
+  "attr": "movers_search",
+  "group": "read",
+  "description": "Biggest Movers: top bonds by magnitude of session-over-session change. When: \"biggest movers\", \"wideners\", \"tighteners\", \"today vs yesterday\", \"price gappers\" (approximate), or the movers for a specific past session (\"movers on Thursday\"). Pairs a session's last print per CUSIP with the most recent prior-session last print and returns the price and yield deltas. Date convention: \"movers for day X\" means X's last prints vs. the prior trading session (e.g. Thursday's movers = Thursday vs. Wednesday). To ask for a specific past day, resolve it to a date and pass ``as_of``; omit ``as_of`` for the latest session vs. its prior session. MULTI-SESSION (\"5-day movers\", \"biggest N-day spread moves\"): pass ``window_sessions=N`` (1-5). This compares the latest active session to the one N sessions earlier (nearest-prior-print endpoints) and, for N>1, returns a true ``g_spread_delta_bps`` (yield delta net of the Treasury-curve move at both endpoint dates) that the rows are re-ranked by. A slow-and-steady bond that never enters any single-day top-N cannot be reconstructed by chaining daily calls \u2014 use ``window_sessions`` for N-day/N-session move asks. OAS is out of scope. NOT for: intra-session rankings (use securities_search with order_by='notional'|'trades'), volume surges (not yet supported), or net customer buy/sell flow by sector (use trace_notional group_by='net_flow').",
+  "params": {
+   "credit_grade": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "sector": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "direction": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "as_of": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "min_trades_today": {
+    "type": "integer"
+   },
+   "window_sessions": {
+    "type": "integer"
+   },
+   "min_delta_bps": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "limit": {
+    "type": "integer"
+   },
+   "offset": {
+    "type": "integer"
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "sector_activity_search",
+  "module": "lib.tools.sql_data_tools.sector_tools",
+  "attr": "sector_activity_search",
+  "group": "read",
+  "description": "Sector Activity: one row per GICS sector with today's volume, trailing-20-day average notional, volume multiplier, and an average-yield delta as a spread-change proxy. When: \"sector activity heatmap\", \"which sectors are most active today\", \"sector spread moves\", \"sector flow\". Aggregates across every CUSIP that printed today grouped by ``GOLD_DIM.DIM_SECURITY.SECTOR``. NOT for: per-CUSIP rankings (use securities_search), single-bond session deltas (use movers_search), volume surges at the bond level (use volume_surge_search).",
+  "params": {
+   "limit": {
+    "type": "integer"
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "mktx_cpp_movers",
+  "module": "lib.tools.sql_data_tools.marketaxess_tools",
+  "attr": "mktx_cpp_movers",
+  "group": "read",
+  "description": "Top movers ranked by CP+ EOD day-over-day mid-price change. When: \"top movers by CP+ EOD\", \"biggest CP+ price changes\", CP+ gainers/losers \u2014 the CP+ (MarketAxess fair value) analogue of TRACE print movers. Each row carries BOTH CP+ mid values and their dates (the diff inputs), liquidity score, rating, sector, and 7-day TRACE trade count + notional. NOT for: TRACE print movers (use securities_search order_by price change) or CP+ history series (use mktx_history). Params: credit_grade 'I' (IG) or 'H' (HY), optional; direction 'up' | 'down' | 'abs' (default \u2014 biggest absolute moves); limit 1-50 (default 10). Returns: {movers: [...], meta}. Only fresh pairs rank (current mark <=5 days old, candles <=5 days apart). Surface STALE_DAYS/GAP_DAYS and the PRICE_SUSPECT flag (conversion-adjusted/distressed mids) INLINE in any table you render. Movers with LIQUIDITY_SCORE null have no current MKTX liquidity coverage \u2014 say so, don't guess.",
+  "params": {
+   "credit_grade": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "direction": {
+    "type": "string"
+   },
+   "limit": {
+    "type": "integer"
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "mktx_cpplus",
+  "module": "lib.tools.sql_data_tools.marketaxess_tools",
+  "attr": "mktx_cpplus",
+  "group": "read",
+  "description": "Get CP+ pricing, liquidity scores, and tradability matrix for bonds. When: CP+ prices, fair value, liquidity assessment, or tradability analysis. NOT for: historical CP+ trends (use mktx_history). Params: cusips (1-50 CUSIPs; 12-char ISINs are accepted and resolved to CUSIPs). Returns: CUSIP -> {issuer, ticker, coupon, maturity, cpp_mid, cpp_bid, cpp_offer, cpp_yld, cpp_ts, cpp_stale_days, cpp_is_stale, liq_score, tradability}. cpp_is_stale is session-aware (EOD feed: Friday's mark counts fresh through Monday); if true, present CP+ as a prior-close mark dated cpp_ts. ALWAYS use the returned issuer/ticker/coupon/maturity to identify the bond \u2014 do NOT infer the security name from the CUSIP or prior context. See system prompt for CP+ field semantics.",
+  "params": {
+   "cusips": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   }
+  },
+  "required": [
+   "cusips"
+  ]
+ },
+ {
+  "name": "mktx_history",
+  "module": "lib.tools.sql_data_tools.marketaxess_tools",
+  "attr": "mktx_history",
+  "group": "read",
+  "description": "Get daily CP+ history with TRACE last-print comparison. When: CP+ price/yield trends over time (daily), or comparing CP+ EOD vs the day's last TRACE print. MKTX is EOD-only \u2014 one snapshot per CUSIP per day, no intraday. NOT for: current snapshot (use mktx_cpplus). Params: cusips (1-20 CUSIPs or ISINs), lookback_days (default 30, max 90). Returns: per CUSIP array of [{ts, mid, yld, bid, offer, last_px, diff_cents}, ...]. diff_cents is cash price diff in cents (last_px - mid) * 100; positive = trading rich, negative = cheap. meta.securities maps each CUSIP to its {issuer, ticker, sector, coupon, maturity} \u2014 use this for the bond identity/label; do NOT infer the security name from the CUSIP. Provenance: each row blends two sources \u2014 mid/bid/offer/yld come from MarketAxess CP+, while last_px and diff_cents come from FINRA TRACE prints. meta.source and the per-field source_fields block disclose this explicitly.",
+  "params": {
+   "cusips": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "lookback_days": {
+    "type": [
+     "integer",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "cusips"
+  ]
+ },
+ {
+  "name": "bond_lookalikes",
+  "module": "lib.tools.sql_data_tools.lookalike_tools",
+  "attr": "bond_lookalikes",
+  "group": "read",
+  "description": "Find similar bonds (look-alikes) for given CUSIPs. When: \"similar bonds\", \"alternatives\", \"comparable\", or relative value analysis. Params: cusips (1-5), num_recommendations per bond (default 5, max 20), include_same_issuer (default false), target_sector (optional GICS sector to swap INTO \u2014 e.g. \"Pharmaceuticals, Biotechnology & Life Sciences\" or a sector name; overrides the same-sector anchor so you can replace a Utility with Pharma comps of similar maturity/credit/spread). Returns: ranked matches with coupon_d, mat_d, sprd_d (spread bps: +WIDER/CHEAPER, -TIGHTER/RICHER), px_vs_cpp (cash price cents: +RICH/above CP+, -CHEAP/below CP+), similarity score, rationale.",
+  "params": {
+   "cusips": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "include_same_issuer": {
+    "type": "boolean"
+   },
+   "num_recommendations": {
+    "type": "integer"
+   },
+   "target_sector": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "cusips"
+  ]
+ },
+ {
+  "name": "issuer_bond_snapshot",
+  "module": "lib.tools.sql_data_tools.issuer_tools",
+  "attr": "issuer_bond_snapshot",
+  "group": "read",
+  "description": "Outstanding issuer bond table with multi-day G-spread change. When: \"list all outstanding <issuer> bonds\", issuer bond list with maturity / coupon / last price / yield / N-day spread change, ranked by most recently traded. Prefer this over ``securities_search`` whenever the user asks for a multi-day spread change column (``securities_search`` only has the current G-spread level; ``movers_search`` is 1-session yield delta market-wide, not per-issuer). NOT for: market-wide movers (use movers_search), single-CUSIP drill (use securities_search / prints_latest), or volume-by-size share (use trace_volume_by_size).",
+  "params": {
+   "issuer": {
+    "type": "string"
+   },
+   "include_spread_change_days": {
+    "type": "integer"
+   },
+   "order_by": {
+    "type": "string"
+   },
+   "outstanding_only": {
+    "type": "boolean"
+   },
+   "limit": {
+    "type": "integer"
+   },
+   "offset": {
+    "type": "integer"
+   }
+  },
+  "required": [
+   "issuer"
+  ]
+ },
+ {
+  "name": "volume_surge_search",
+  "module": "lib.tools.sql_data_tools.volume_tools",
+  "attr": "volume_surge_search",
+  "group": "read",
+  "description": "Volume Surge: bonds trading louder today than their trailing 20-day average. When: \"volume surge\", \"volume spike\", \"unusual volume\", \"louder than usual\", \"today vs 20-day average\". Pairs today's cumulative per-CUSIP notional with the per-active-day average over the prior 20 calendar days and returns the multiplier. NOT for: session-over-session price/yield moves (use movers_search), intra-session ranking (use securities_search with order_by='notional'). Params: - credit_grade: \"IG\" | \"HY\" | None (both). - sector: optional GICS sector label (e.g. \"Industrials\"). - min_multiplier: minimum ``today / avg`` ratio to surface (default 1.5 \u2014 filters bonds trading roughly at their normal pace). - min_trades_today: minimum prints today for a CUSIP to be eligible (default 1 \u2014 increase to 3+ to filter one-print noise). - limit: top N by multiplier (1-200, default 50). - offset: pagination offset for browsing past the top N (default 0). Returns: JSON ``{\"bonds\": [...], \"meta\": {...}}`` with the standard \u00a74 envelope. Each row carries cusip, issuer, sector, credit_grade, volume_today, volume_avg_20d, volume_multiplier, trades_today, last_trade.",
+  "params": {
+   "credit_grade": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "sector": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "min_multiplier": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "min_trades_today": {
+    "type": "integer"
+   },
+   "limit": {
+    "type": "integer"
+   },
+   "offset": {
+    "type": "integer"
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "etf_reference",
+  "module": "lib.tools.sql_data_tools.etf_reference",
+  "attr": "etf_reference",
+  "group": "read",
+  "description": "ETF constituent reference \u2014 membership, rating/sector mix, and holdings list. When: \"what's in LQD\", \"LQD sector breakdown\", \"top holdings of HYG\", \"is <CUSIP> in LQD\", ETF membership / constituent / rating-distribution asks. COVERAGE: only the two iShares ETFs LQD (investment grade) and HYG (high yield) have constituent holdings. Index families with factsheet profiles ONLY (Bloomberg US Corp, ICE BofA, USHY, ...) have NO per-bond membership \u2014 this tool cannot list their constituents; say so and offer LQD/HYG as the nearest held proxy. There is no movers/deltas mode (no prior-date holdings). Params: - ticker: ETF ticker (LQD or HYG). - detail: \"summary\" (default) \u2014 total count + weighted live yield/duration + sector and credit-grade distribution; or \"constituents\" \u2014 the paginated holdings list (cusip, name, sector, rating, weight). - limit / offset: pagination for detail=\"constituents\" (default 25, max 100). Disclose truncation from meta.truncated / meta.total. Returns: JSON. summary -> {ticker, as_of_date, total_constituents, live_yield, target_duration, sector_weights_pct, credit_grade_distribution}. sector_weights_pct and credit_grade_distribution[*].weight_pct are both PERCENTAGES (0-100), each summing to ~100 \u2014 never fractions. constituents -> {ticker, as_of_date, constituents: [...], meta: {...}}. Absence of a CUSIP is NOT evidence it is un-held elsewhere \u2014 it means not in THIS ETF on this date. Never fabricate constituents, weights, or ratings.",
+  "params": {
+   "ticker": {
+    "type": "string"
+   },
+   "detail": {
+    "type": "string"
+   },
+   "limit": {
+    "type": "integer"
+   },
+   "offset": {
+    "type": "integer"
+   }
+  },
+  "required": [
+   "ticker"
+  ]
+ },
+ {
+  "name": "get_rates_snapshot",
+  "module": "lib.tools.treasury_tools",
+  "attr": "get_rates_snapshot",
+  "group": "external",
+  "description": "Get benchmark rates and yields for market context. When: yield curve, index yields, policy rate queries, or macro backdrop. NOT for: bond spread calculations \u2014 securities_search includes spreads automatically.",
+  "params": {
+   "rate_type": {
+    "type": "string"
+   },
+   "date": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "bond_calculate",
+  "module": "lib.tools.bond_calculator",
+  "attr": "bond_calculate",
+  "group": "local",
+  "description": "Bond calculator for price-yield, accrued interest, duration, DV01, and convexity. When: User asks to calculate bond yield, price, duration, DV01, accrued interest, convexity, or yield-to-worst for a specific bond. NOT for: Portfolio-level analytics \u2014 use portfolio_analytics instead. Inputs come from market data, not guesses: read coupon, maturity, and the CLEAN price (securities_search last_px is clean) before calling; never fabricate them. full_analytics / price_to_yield / ytw require a price. There is no yield\u2192duration mode \u2014 to get duration from a yield, call yield_to_price first, then full_analytics with that price. Params: - calculation: One of 'price_to_yield', 'yield_to_price', 'full_analytics', 'accrued_interest', 'ytw' - coupon_rate: Annual coupon rate as percentage (e.g. 5.0 for 5%) - maturity_date: Bond maturity date (YYYY-MM-DD, absolute \u2014 not \"7-year\") - price: Clean price per 100 face, NOT dirty (required for price_to_yield, full_analytics, ytw) - yield_pct: Yield as percentage (required for yield_to_price) - settlement_date: Settlement date (YYYY-MM-DD, defaults to today; pass the trade date when pricing off a historical print) - day_count: Day count convention: '30/360', 'ACT/ACT', 'ACT/360' - face_value: Face value (default 100) - frequency: Coupon frequency per year (default 2 = semi-annual) - call_schedule: JSON array of call dates for YTW, e.g. '[{\"date\":\"2028-01-15\",\"price\":102}]' - notional: Notional amount in dollars for scaled DV01 calculation",
+  "params": {
+   "calculation": {
+    "type": "string"
+   },
+   "coupon_rate": {
+    "type": "number"
+   },
+   "maturity_date": {
+    "type": "string"
+   },
+   "price": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "yield_pct": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "settlement_date": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "day_count": {
+    "type": "string"
+   },
+   "face_value": {
+    "type": "number"
+   },
+   "frequency": {
+    "type": "integer"
+   },
+   "call_schedule": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "notional": {
+    "type": [
+     "number",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "calculation",
+   "coupon_rate",
+   "maturity_date"
+  ]
+ },
+ {
+  "name": "render_chart",
+  "module": "lib.tools.chart_tools",
+  "attr": "render_chart",
+  "group": "local",
+  "description": "Render an interactive chart in the user's chat interface. When: user asks for a visualisation, graph, chart, or plot of data. NOT for: dual-scale comparisons (e.g. price ~100 vs yield ~5%) \u2014 call twice with separate charts. Params: data (JSON string of [{...}, ...]), chart_type (bar|line|area|scatter|pie), title, x_key, y_keys, orientation (vertical|horizontal), stacked, show_legend, right_y_keys (secondary Y-axis for dual-scale charts, line/bar/area only), x_label/y_label (axis titles), x_min/x_max and y_min/y_max (explicit numeric domains; omit either bound for automatic scaling). Domain bounds must be ordered. Returns: confirmation JSON with chart metadata.",
+  "params": {
+   "data": {
+    "type": "string"
+   },
+   "chart_type": {
+    "type": "string"
+   },
+   "title": {
+    "type": "string"
+   },
+   "x_key": {
+    "type": "string"
+   },
+   "y_keys": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   },
+   "description": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "orientation": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "stacked": {
+    "type": "boolean"
+   },
+   "show_legend": {
+    "type": "boolean"
+   },
+   "right_y_keys": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string"
+    }
+   },
+   "x_label": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "y_label": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "x_min": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "x_max": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "y_min": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "y_max": {
+    "type": [
+     "number",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "data",
+   "chart_type",
+   "title",
+   "x_key",
+   "y_keys"
+  ]
+ },
+ {
+  "name": "draft_trade_ticket",
+  "module": "lib.tools.ticket_tools",
+  "attr": "draft_trade_ticket",
+  "group": "local",
+  "description": "Draft a trade ticket and render it in the chat. When: user wants a ticket drafted, asks to copy/export/send a trade from the current insight, or has finished refining the action and is ready to act. Call this AFTER confirming the trade details with the user \u2014 do not draft tickets from unverified prices or sizes. Required: action (buy|sell|switch), primary_cusip (9-char CUSIP), primary_security (\"MSFT 6.40 12/30\"), portfolio (name, not id), notional (dollars as integer), rationale (1-2 sentences on the relative-value or portfolio reason). Optional: price (execution/agreed clean price per $100 face \u2014 when given the tool computes proceeds = notional * price/100; when omitted the ticket is flagged price_unverified so the desk fills the level), limit_price, min_clip, urgency (low|medium|high), time_in_force, execution_notes (list of bullet-style strings), to_cusip + to_security (only for switch, for the target leg), impact_yield / impact_duration / impact_sector (estimated portfolio effect, e.g. \"+3-5bps\", \"Neutral\", \"+0.6% Technology\"). Basket sells: pass legs=[{side, cusip, security, notional, price?}, ...] to draft ONE reconcilable ticket for a multi-bond order (proceeds computed and summed across legs) instead of N separate single-CUSIP tickets. The primary fields still describe the headline leg. Returns: validated ticket JSON. Tool-computed proceeds and the price_unverified flag (per leg) are echoed in the returned payload; the chat UI renders the ticket as a copyable text block, CSV/XLSX/PDF downloads, and a Send-to-Desk button.",
+  "params": {
+   "action": {
+    "type": "string"
+   },
+   "primary_cusip": {
+    "type": "string"
+   },
+   "primary_security": {
+    "type": "string"
+   },
+   "portfolio": {
+    "type": "string"
+   },
+   "notional": {
+    "type": "integer"
+   },
+   "rationale": {
+    "type": "string"
+   },
+   "price": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "limit_price": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "min_clip": {
+    "type": [
+     "integer",
+     "null"
+    ]
+   },
+   "urgency": {
+    "type": "string"
+   },
+   "time_in_force": {
+    "type": "string"
+   },
+   "execution_notes": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string"
+    }
+   },
+   "to_cusip": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "to_security": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "legs": {
+    "type": [
+     "array",
+     "null"
+    ]
+   },
+   "impact_yield": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "impact_duration": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "impact_sector": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "action",
+   "primary_cusip",
+   "primary_security",
+   "portfolio",
+   "notional",
+   "rationale"
+  ]
+ },
+ {
+  "name": "search_tools",
+  "module": "lib.tools.tool_registry",
+  "attr": "search_tools",
+  "group": "local",
+  "description": "Find additional (long-tail) tools by keyword and get their calling schema. When: the request needs a capability none of your first-class tools cover \u2014 issuer snapshot/overview, volume by trade-size bucket, volume-surge detection, platform release notes, issuer fundamentals, issuer equity context, ETF constituents / rating & sector distribution (LQD, HYG). Params: query \u2014 a few keywords (e.g. \"volume by size\", \"fundamentals leverage\"). Returns: matching tools as {name, summary, parameters} \u2014 then invoke with call_tool(name, arguments). Never guess a tail tool's name or parameters: search first.",
+  "params": {
+   "query": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "query"
+  ]
+ },
+ {
+  "name": "call_tool",
+  "module": "lib.tools.tool_registry",
+  "attr": "call_tool",
+  "group": "read",
+  "description": "Invoke a long-tail tool found via search_tools. When: after search_tools returned the tool's schema. Params: name (exact tool name from the search result), arguments (JSON object string matching that schema; omit or \"{}\" when the tool takes no arguments). Returns: the tool's own JSON output, verbatim.",
+  "params": {
+   "name": {
+    "type": "string"
+   },
+   "arguments": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "name"
+  ]
+ },
+ {
+  "name": "get_insight",
+  "module": "lib.tools.insight_tools",
+  "attr": "get_insight",
+  "group": "read",
+  "description": "Fetch a single insight by its UUID, scoped to the current user. When: the user opens a chat thread from an insight card, or references an insight by id. The chat's opening prompt is intentionally terse \u2014 just the insight and portfolio UUIDs \u2014 so call this FIRST to load the full title, summary, suggested_action, and supporting_data before responding. Do not ask the user for these details; they're in the graph.",
+  "params": {
+   "insight_id": {
+    "type": "string",
+    "description": "UUID of the insight."
+   }
+  },
+  "required": [
+   "insight_id"
+  ]
+ },
+ {
+  "name": "news_search",
+  "module": "lib.tools.news_tools",
+  "attr": "news_search",
+  "group": "external",
+  "description": "Search recent financial news articles. When: news, headlines, market events, or articles about a topic. Coverage: only the ~100 most recent Reuters/Greenwich RSS items (50 per source) \u2014 a zero-hit here is NOT evidence a story does not exist; verify via headline (web) search before concluding. Params: query (search term, optional), source ('reuters'|'greenwich'|omit for all), limit (1-50, default 10), offset (default 0). Returns: JSON ``{\"articles\": [...], \"meta\": {...}}`` per \u00a74.",
+  "params": {
+   "query": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "source": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "limit": {
+    "type": "integer"
+   },
+   "offset": {
+    "type": "integer"
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "remember_user_fact",
+  "module": "lib.tools.user_facts_tools",
+  "attr": "remember_user_fact",
+  "group": "write",
+  "description": "MANDATORY: Call this IMMEDIATELY when user shares personal information. TRIGGERS (call this tool when you see these patterns): - \"My favorite X is Y\" \u2192 remember_user_fact(fact=\"favorite X is Y\") - \"I like X\" \u2192 remember_user_fact(fact=\"likes X\") - \"I work at X\" \u2192 remember_user_fact(fact=\"works at X\") - \"I prefer X\" \u2192 remember_user_fact(fact=\"prefers X\") Parameters: - fact: The fact to store (e.g., \"favorite company is Apple\") - category: Optional category like \"preference\", \"company\", \"interest\"",
+  "params": {
+   "fact": {
+    "type": "string"
+   },
+   "category": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": [
+   "fact"
+  ]
+ },
+ {
+  "name": "recall_user_facts",
+  "module": "lib.tools.user_facts_tools",
+  "attr": "recall_user_facts",
+  "group": "read",
+  "description": "MANDATORY: Call this BEFORE answering questions about user preferences. TRIGGERS (call this tool when you see these patterns): - \"What is my favorite X?\" \u2192 recall_user_facts(query=\"favorite\") - \"Do you remember X?\" \u2192 recall_user_facts(query=\"X\") - \"What did I tell you?\" \u2192 recall_user_facts() - Any question about user's preferences, favorites, or personal details NEVER say \"I don't know\" without calling this first. Parameters: - query: Search term to filter facts (e.g., \"favorite\", \"company\") - category: Optional category filter",
+  "params": {
+   "query": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "category": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "get_release_notes",
+  "module": "lib.tools.release_notes_tools",
+  "attr": "get_release_notes",
+  "group": "external",
+  "description": "Fetch AIQ Insight release notes from GitHub. When: \"what's new\", \"latest changes\", \"what changed in vX.Y.Z\", or changelog queries.",
+  "params": {
+   "version": {
+    "type": "string",
+    "description": "specific tag e.g. \"v1.2.3\", empty for latest."
+   },
+   "limit": {
+    "type": "integer",
+    "description": "1-10, default 5."
+   },
+   "offset": {
+    "type": "integer",
+    "description": "pagination offset (default 0). Ignored when ``version`` is set."
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "fmp_fundamentals",
+  "module": "lib.tools.fmp_tools",
+  "attr": "fmp_fundamentals",
+  "group": "external",
+  "description": "Get issuer fundamental financial data from Financial Modeling Prep. Issuer-level equity fundamentals (income statement, balance sheet, cash flow, ratios, key metrics, profile). Fundamentals questions are IN SCOPE \u2014 use this tool both for credit context on bond issuers (leverage, coverage, cash flow vs debt load) and for direct fundamentals questions about an issuer (earnings, revenue, margins). Data is keyed by stock ticker (e.g. \"LUMN\", \"AAPL\"), not CUSIP \u2014 resolve the bond's issuer ticker first.",
+  "params": {
+   "symbol": {
+    "type": "string",
+    "description": "Equity ticker of the issuer (e.g. \"LUMN\")."
+   },
+   "dataset": {
+    "type": "string",
+    "description": "One of \"income\" (income statement), \"balance\" (balance sheet), \"cashflow\" (cash-flow statement), \"ratios\" (financial ratios), \"key_metrics\" (per-share/valuation metrics), or \"profile\" (company profile: sector, CIK, market cap, description)."
+   },
+   "period": {
+    "type": "string",
+    "description": "\"annual\" or \"quarter\" reporting periods (ignored for \"profile\")."
+   },
+   "limit": {
+    "type": "integer",
+    "description": "Number of periods to return, newest first (default 4, max 20)."
+   },
+   "offset": {
+    "type": "integer",
+    "description": "Periods to skip from the newest (0 = most recent)."
+   }
+  },
+  "required": [
+   "symbol"
+  ]
+ },
+ {
+  "name": "eodhd_market_data",
+  "module": "lib.tools.eodhd_tools",
+  "attr": "eodhd_market_data",
+  "group": "external",
+  "description": "Get issuer equity market data (prices, quote, dividends) from EODHD. Cross-asset context for bond issuers: how the issuer's *equity* is trading alongside its bonds. Symbols are equity tickers in EODHD's ``TICKER.EXCHANGE`` form; bare US tickers are normalised (\"LUMN\" -> \"LUMN.US\"). For ``bond``, pass a CUSIP or ISIN instead.",
+  "params": {
+   "symbol": {
+    "type": "string",
+    "description": "Equity ticker (e.g. \"LUMN\" or \"LUMN.US\"); CUSIP/ISIN for the \"bond\" dataset."
+   },
+   "dataset": {
+    "type": "string",
+    "description": "One of \"eod\" (daily OHLCV history, newest first), \"quote\" (delayed live quote, single record), \"dividends\", \"splits\", \"fundamentals\" (company fundamentals), or \"bond\" (bond terms by CUSIP/ISIN). \"fundamentals\" and \"bond\" require a paid EODHD plan."
+   },
+   "from_date": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Optional ISO date (YYYY-MM-DD) lower bound for eod/dividends/splits. Defaults to ~6 months back for \"eod\"."
+   },
+   "to_date": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Optional ISO date upper bound."
+   },
+   "limit": {
+    "type": "integer",
+    "description": "Max records to return (default 30, max 60)."
+   },
+   "offset": {
+    "type": "integer",
+    "description": "Records to skip from the newest (0 = most recent)."
+   }
+  },
+  "required": [
+   "symbol"
+  ]
+ },
+ {
+  "name": "generate_portfolio_proposal",
+  "module": "lib.tools.portfolio_construction_tools",
+  "attr": "generate_portfolio_proposal",
+  "group": "read",
+  "description": "Generate a deterministic portfolio proposal based on a benchmark. Use this tool when the user wants to build, create, or generate a new portfolio using structured criteria rather than manual bond selection. The optimizer uses CVXPY convex optimization to: 1. Fetch liquid bonds matching the benchmark's credit grade and maturity range 2. Filter by sector exclusions 3. Optimize bond selection based on the chosen objective 4. Enforce concentration limits (max % per issuer and sector)",
+  "params": {
+   "benchmark_id": {
+    "type": "string",
+    "description": "Benchmark to track. Options: - \"IG_SHORT\": 1-3 year Investment Grade (duration ~2y) - \"IG_INTERMEDIATE\": 3-5 year Investment Grade (duration ~4y) - \"IG_BROAD\": Broad Investment Grade (duration ~7y) - \"HY_BROAD\": High Yield (duration ~4y)"
+   },
+   "total_amount": {
+    "type": "number",
+    "description": "Total portfolio value in USD (default $10mm)"
+   },
+   "target_duration": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Override benchmark's default duration target"
+   },
+   "target_yield": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Minimum yield target (optional)"
+   },
+   "sector_exclusions": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string"
+    },
+    "description": "List of GICS sectors to exclude. Valid GICS sectors: Communication Services, Consumer Discretionary, Consumer Staples, Energy, Financials, Health Care, Industrials, Information Technology, Materials, Real Estate, Utilities"
+   },
+   "objective": {
+    "type": "string",
+    "description": "Optimization goal. Options: - \"max_yield\": Maximize portfolio yield within duration constraint (income-focused) - \"min_tracking_error\": Minimize deviation from benchmark duration and sector weights (best for index-tracking portfolios) - \"max_liquidity\": Maximize trading volume (best for portfolios requiring execution) - \"balanced\": Weighted combination of yield (60%) and liquidity (40%)"
+   },
+   "weighting_strategy": {
+    "type": "string",
+    "description": "Position sizing approach. Options: - \"optimized\": Use CVXPY optimization weights (default - maximizes objective) - \"equal\": Equal weight all selected bonds"
+   },
+   "min_position_size": {
+    "type": "number",
+    "description": "Minimum position value in USD (default $100K). Positions below this threshold are dropped and remaining positions are rescaled."
+   },
+   "max_issuer_pct": {
+    "type": "number",
+    "description": "Maximum percentage per issuer (default 3%)"
+   },
+   "max_sector_pct": {
+    "type": "number",
+    "description": "Maximum percentage per sector (default 20%)"
+   },
+   "num_holdings": {
+    "type": "integer",
+    "description": "Target number of holdings (default 30)"
+   },
+   "min_bond_age_days": {
+    "type": "integer",
+    "description": "Exclude bonds issued within the last N days (default 14). New issues lack stable pricing and trade history. Set to 0 to include all."
+   },
+   "use_marketaxess": {
+    "type": "boolean",
+    "description": "Enable MarketAxess data enrichment (CP+ pricing, liquidity scores, tradability). Only works if user has an active MKTX licence."
+   },
+   "targets_json": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Optional JSON object string with target overrides for deterministic checks/output. Supported keys: target_duration, target_yield, max_issuer_pct, max_sector_pct, num_holdings."
+   }
+  },
+  "required": [
+   "benchmark_id"
+  ]
+ },
+ {
+  "name": "get_portfolio_drift",
+  "module": "lib.tools.portfolio_construction_tools",
+  "attr": "get_portfolio_drift",
+  "group": "read",
+  "description": "Analyse drift between a portfolio's current state and its original construction targets. Use when: User asks about portfolio drift, deviation from benchmark, or how a portfolio has changed since it was built. Only works for portfolios built via the construction wizard (i.e., those with a saved benchmark_id and construction parameters). Returns target vs actual for duration, yield, and sector weights.",
+  "params": {
+   "portfolio_id": {
+    "type": "string",
+    "description": "Portfolio UUID to analyse"
+   }
+  },
+  "required": [
+   "portfolio_id"
+  ]
+ },
+ {
+  "name": "get_available_benchmarks",
+  "module": "lib.tools.portfolio_construction_tools",
+  "attr": "get_available_benchmarks",
+  "group": "read",
+  "description": "Get list of available portfolio benchmarks with their characteristics. Use this tool to show the user what benchmarks are available for portfolio construction. Call this before generate_portfolio_proposal if the user hasn't specified a benchmark.",
+  "params": {},
+  "required": []
+ },
+ {
+  "name": "portfolio_create",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_create",
+  "group": "write",
+  "description": "Create a new user-managed portfolio or watchlist. Use when: User asks to \"create\", \"make\", or \"set up\" a new portfolio or watchlist. Args: ctx: Tool context (auto-supplied) containing HumanUserProfile. name: Portfolio name (e.g., \"High Yield Strategy\", \"My Watchlist\") description: Optional description type: Portfolio type. Options: - \"LIVE\": Real holdings (requires quantity/price) - \"MODEL\": Simulated/Strategy holdings (requires quantity/price) - \"WATCHLIST\": Monitoring only (quantity/price optional/ignored) Returns: JSON with new portfolio details.",
+  "params": {
+   "name": {
+    "type": "string"
+   },
+   "description": {
+    "type": "string"
+   },
+   "type": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "name"
+  ]
+ },
+ {
+  "name": "portfolio_add_holding",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_add_holding",
+  "group": "write",
+  "description": "Add security holdings to a portfolio (batch operation). Use when: User asks to \"add\", \"buy\", or \"put bonds into my portfolio\".",
+  "params": {
+   "portfolio_id": {
+    "type": "string",
+    "description": "Portfolio ID to add to"
+   },
+   "holdings": {
+    "type": "array",
+    "description": "List of holdings to add (max 100). Each holding has: - cusip: CUSIP identifier (9 chars, required) - quantity: Notional amount in dollars (e.g., 1000000 = $1mm notional) - purchase_price: Clean price per $100 face (e.g., 98.5 = $98.50 per $100 face, NOT decimal 0.985) - purchase_date: Purchase date (ISO format YYYY-MM-DD, defaults to now)"
+   }
+  },
+  "required": [
+   "portfolio_id",
+   "holdings"
+  ]
+ },
+ {
+  "name": "portfolio_remove_holding",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_remove_holding",
+  "group": "write",
+  "description": "Remove security holdings from a portfolio (batch operation). Use when: User asks to \"remove\", \"sell\", \"delete\", or \"take bonds out of my portfolio\". Args: portfolio_id: Portfolio ID cusips: List of CUSIP identifiers to remove (max 25, each 9 chars) Example: [\"912828ZT6\", \"037833AK6\"] Returns: JSON with updated portfolio holdings and per-item results.",
+  "params": {
+   "portfolio_id": {
+    "type": "string"
+   },
+   "cusips": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    }
+   }
+  },
+  "required": [
+   "portfolio_id",
+   "cusips"
+  ]
+ },
+ {
+  "name": "portfolio_swap",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_swap",
+  "group": "write",
+  "description": "Swap one bond for another in a portfolio (atomic remove/reduce + add). Use when: User asks to \"swap\", \"replace\", \"switch\", or \"trade out\" a bond for another.",
+  "params": {
+   "portfolio_id": {
+    "type": "string",
+    "description": "Portfolio ID"
+   },
+   "sell_cusip": {
+    "type": "string",
+    "description": "CUSIP of bond to sell (9 chars)"
+   },
+   "buy_cusip": {
+    "type": "string",
+    "description": "CUSIP of bond to add (9 chars)"
+   },
+   "buy_quantity": {
+    "type": "number",
+    "description": "Notional amount in dollars for the new bond (e.g., 1000000 = $1mm)"
+   },
+   "buy_price": {
+    "type": "number",
+    "description": "Clean price per $100 face for the new bond (e.g., 98.5 = $98.50 per $100)"
+   },
+   "sell_quantity": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Optional notional to sell. If None, sells entire position. If provided, reduces position by that amount."
+   }
+  },
+  "required": [
+   "portfolio_id",
+   "sell_cusip",
+   "buy_cusip",
+   "buy_quantity",
+   "buy_price"
+  ]
+ },
+ {
+  "name": "portfolio_list",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_list",
+  "group": "read",
+  "description": "List all user-managed portfolios. Use when: User asks to \"show\", \"list\", \"get\", or \"see my portfolios\" (user's holdings). Args: name: Optional case-insensitive portfolio-name search. Use this when the user names a portfolio so older matches are not hidden by paging. Returns: JSON with up to 10 newest matching portfolios and pagination metadata.",
+  "params": {
+   "name": {
+    "type": [
+     "string",
+     "null"
+    ]
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "portfolio_list_holdings",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_list_holdings",
+  "group": "read",
+  "description": "List all holdings in a portfolio with current market data and P&L. Use when: User asks to \"show\", \"list\", \"get\", or \"view holdings in\" a specific portfolio. Args: portfolio_id: Portfolio ID Returns: JSON with holdings array and portfolio analytics.",
+  "params": {
+   "portfolio_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "portfolio_id"
+  ]
+ },
+ {
+  "name": "portfolio_analytics",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_analytics",
+  "group": "read",
+  "description": "Get detailed analytics for a portfolio including allocation, metrics, and P&L. Supports two modes: - **Persisted**: Pass `portfolio_id` to analyze an existing portfolio from the database. - **Draft**: Pass `holdings` array to analyze a portfolio before saving (for preview/validation). Use when: - User asks for \"analytics\", \"performance\", \"allocation\", or \"metrics\" for a portfolio. - You need to validate a draft portfolio before creating it.",
+  "params": {
+   "portfolio_id": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Portfolio UUID (for existing portfolios)"
+   },
+   "holdings": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "description": "List of holdings for draft analysis. Each item requires: - cusip: 9-character CUSIP - quantity: Notional amount in dollars (e.g., 1000000 = $1mm) - purchase_price: Clean price per $100 face (e.g., 98.5 = $98.50 per $100) - purchase_date: Optional ISO date (YYYY-MM-DD)"
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "portfolio_liquidation_analysis",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_liquidation_analysis",
+  "group": "read",
+  "description": "Estimate days to liquidate each position based on TRACE ADV and a participation rate cap. When: User asks about liquidation time, exit time, how long to sell/unwind a portfolio. Formula: daily_tradable = ADV \u00d7 participation_rate; estimated_days = position_notional \u00f7 daily_tradable. Assumptions (returned in the ``assumptions`` block, do not present as exact): par/face-value basis (\u2261 price=100); ADV = average daily PAR traded over a 30-calendar-day TRACE window; portfolio weighted_avg_days/max_days EXCLUDE no-volume names, so the portfolio figure skews optimistic (AIQ-2021/2022).",
+  "params": {
+   "portfolio_id": {
+    "type": "string",
+    "description": "Portfolio ID to analyze."
+   },
+   "participation_rate": {
+    "type": "number",
+    "description": "Fraction of ADV to trade per day (default 0.25 = 25%). Range 0.05\u20130.50."
+   }
+  },
+  "required": [
+   "portfolio_id"
+  ]
+ },
+ {
+  "name": "portfolio_delete",
+  "module": "lib.tools.portfolio_tools",
+  "attr": "portfolio_delete",
+  "group": "write",
+  "description": "Delete a portfolio and all its holdings. Use when: User asks to \"delete\", \"remove\", or \"get rid of\" a portfolio. Args: ctx: Tool context (auto-supplied) containing HumanUserProfile. portfolio_id: Portfolio ID to delete Returns: JSON confirmation.",
+  "params": {
+   "portfolio_id": {
+    "type": "string"
+   }
+  },
+  "required": [
+   "portfolio_id"
+  ]
+ }
+]

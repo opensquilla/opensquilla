@@ -575,3 +575,35 @@ default_mode = "bypass"                 # off | on | bypass | full
 # top_k = 5                        # consider at most N patterns per fire
 # on_dream_complete = false        # Path 2 dream-hook toggle (independent)
 # agent_ids = ["main"]             # empty/omitted = all configured agents
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AIQ market-data bridge (contrib) — see docs/features/aiq-agent.md
+#
+# Bridges the AIQ fixed-income agent tool surface (FINRA TRACE prints,
+# securities screening, MarketAxess CP+, portfolio construction, bond math,
+# the search_tools/call_tool long-tail registry) as native OpenSquilla tools.
+# The AIQ implementations are imported lazily at tool-call time from
+# `repo_path`; the tools are hidden unless allow-listed by an agent (the
+# [[agents]] example below). Env vars AIQ_REPO_PATH / AIQ_USER_EMAIL override
+# the TOML keys. NO credentials go here: live data needs the AIQ checkout's
+# own dependency install and its .env (Snowflake, Neo4j, FRED, ...), which the
+# AIQ repo loads itself — OpenSquilla only needs the path.
+# ─────────────────────────────────────────────────────────────────────────────
+[aiq]
+# Path to a checkout of the AIQ repo with its dependencies installed.
+# repo_path = "/path/to/aiq"
+# Identity for AIQ's per-user entitlement gates (e.g. MarketAxess CP+ is
+# @aiqmarkets.com / @marketaxess.com only). Leave unset for anonymous access
+# (licensed MarketAxess data stays off).
+# user_email = "you@example.com"
+
+# The AIQ agent: TraceAgent persona + allowlist of the bridged tools.
+# Register either with this block (then `opensquilla gateway restart`) or
+# programmatically via opensquilla.contrib.aiq.agent.ensure_aiq_agent(...),
+# which also fills in the full allowlist and persona for you.
+# [[agents]]
+# id = "aiq"
+# name = "AIQ Markets"
+# description = "US corporate bond (FINRA TRACE) market-data analyst"
+# model = "claude-sonnet-4-5"    # Anthropic Claude per [llm] provider config
+# tools = { allow = [ ... ] }    # use aiq_agent_tool_allowlist(); see the docs

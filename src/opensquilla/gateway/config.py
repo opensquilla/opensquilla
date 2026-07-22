@@ -1898,6 +1898,23 @@ class MetaSkillConfig(BaseSettings):
     )
 
 
+class AiqBridgeConfig(BaseSettings):
+    """``[aiq]``: the AIQ market-data contrib bridge (docs/features/aiq-agent.md).
+
+    Consumed lazily at tool-call time by ``opensquilla.contrib.aiq.runtime``,
+    which re-reads the gateway TOML; the ``AIQ_REPO_PATH`` / ``AIQ_USER_EMAIL``
+    env vars take precedence over these keys. No credentials belong here —
+    the AIQ checkout loads its own secrets.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_AIQ_",
+        extra="forbid",
+    )
+    repo_path: str | None = None
+    user_email: str | None = None
+
+
 class TlsConfig(BaseSettings):
     """Optional TLS termination at the gateway itself.
 
@@ -2137,6 +2154,8 @@ class GatewayConfig(BaseSettings):
     agents_defaults: AgentDefaults = Field(default_factory=AgentDefaults)
     subagents: SubagentsGatewayConfig = Field(default_factory=SubagentsGatewayConfig)
     meta_skill: MetaSkillConfig = Field(default_factory=MetaSkillConfig)
+    # AIQ market-data contrib bridge (docs/features/aiq-agent.md).
+    aiq: AiqBridgeConfig = Field(default_factory=AiqBridgeConfig)
 
     # Component enable flags
     control_ui: ControlUiConfig = Field(default_factory=ControlUiConfig)

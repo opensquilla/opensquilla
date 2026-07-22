@@ -2489,8 +2489,23 @@ class GatewayConfig(BaseSettings):
         if isinstance(llm, dict):
             if not llm.get("api_key_env"):
                 llm.pop("api_key_env", None)
-            elif not llm.get("api_key"):
+            if not llm.get("api_key"):
                 llm.pop("api_key", None)
+        llm_profiles = data.get("llm_profiles")
+        if isinstance(llm_profiles, dict):
+            # Empty credential fields are absence, not a stored credential.
+            # Keeping them out of the canonical dump also lets the sparse
+            # persister delete a previously populated field when an explicit
+            # credential-clear mutation sets it back to empty.
+            for profile in llm_profiles.values():
+                if not isinstance(profile, dict):
+                    continue
+                if not profile.get("api_key"):
+                    profile.pop("api_key", None)
+                if not profile.get("api_key_env"):
+                    profile.pop("api_key_env", None)
+                if not profile.get("api_key_env_pool"):
+                    profile.pop("api_key_env_pool", None)
         if not data.get("search_api_key_env"):
             data.pop("search_api_key_env", None)
         elif not data.get("search_api_key"):

@@ -271,6 +271,7 @@ METHOD_SCOPES: dict[str, str] = {
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
     "diagnostics.set": ADMIN_SCOPE,
     "onboarding.provider.credential.reveal": ADMIN_SCOPE,
+    "onboarding.provider.credential.clear": ADMIN_SCOPE,
     "cron.add": ADMIN_SCOPE,
     "cron.create": ADMIN_SCOPE,  # OpenSquilla-only alias for cron.add.
     "cron.update": ADMIN_SCOPE,
@@ -294,6 +295,7 @@ METHOD_SCOPES: dict[str, str] = {
     # The probe persists nothing but carries candidate credentials.
     "onboarding.provider.probe": ADMIN_SCOPE,
     "onboarding.llmProfile.upsert": ADMIN_SCOPE,
+    "onboarding.llmProfile.credential.clear": ADMIN_SCOPE,
     "onboarding.llmProfile.remove": ADMIN_SCOPE,
     "onboarding.llmProfile.activate": ADMIN_SCOPE,
     "onboarding.llmProfile.probe": ADMIN_SCOPE,

@@ -392,6 +392,18 @@ class ProfileCredentialPools:
                 return self._pooled_locked(provider_id, cred)
             raise NoCredentialsAvailable("all credentials in cooldown")
 
+    def discard_provider(self, provider_id: str) -> None:
+        """Forget one profile's resolved secrets, cooldowns and session pins."""
+        provider = (provider_id or "").strip().lower()
+        if not provider:
+            return
+        with self._lock:
+            self._pools.pop(provider, None)
+            self._pool_fingerprints.pop(provider, None)
+            self._creds_by_id.pop(provider, None)
+            self._key_ids.pop(provider, None)
+            self._pins.pop(provider, None)
+
     def _pooled_locked(self, provider_id: str, cred: Credential) -> PooledCredential:
         return PooledCredential(
             provider_id=provider_id,
@@ -469,6 +481,11 @@ def reset_profile_credential_pools(
         return _profile_pools
 
 
+def discard_profile_credential_pool(provider_id: str) -> None:
+    """Purge one profile's process-local resolved credential state."""
+    profile_credential_pools().discard_provider(provider_id)
+
+
 __all__ = [
     "INSUFFICIENT_CREDITS_COOLDOWN_SECONDS",
     "OPENROUTER_DEFAULT_PROVIDER_ROUTING",
@@ -477,6 +494,7 @@ __all__ = [
     "NoCredentialsAvailable",
     "PooledCredential",
     "ProfileCredentialPools",
+    "discard_profile_credential_pool",
     "masked_key_id",
     "profile_credential_pools",
     "provider_base_url_env_name",

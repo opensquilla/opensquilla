@@ -776,6 +776,63 @@ def upsert_llm_provider(
     )
 
 
+def clear_llm_provider_credentials(
+    config: GatewayConfig,
+    *,
+    provider_id: str,
+) -> MutationResult:
+    """Remove every stored credential source from the active LLM provider.
+
+    This is deliberately separate from :func:`upsert_llm_provider`: blank
+    credential fields on that compatibility surface retain their historical
+    keep-current behavior for providers that require a key.  Clearing a
+    credential must therefore be an explicit operation that cannot be
+    confused with an omitted password field.
+
+    Provider identity, model, endpoint, proxy, request tuning, Router and
+    Ensemble configuration are copied verbatim.  The caller remains
+    responsible for persisting the returned candidate before hot-applying it.
+    """
+    provider = str(provider_id or "").strip().lower()
+    active_provider = str(config.llm.provider or "").strip().lower()
+    if not provider:
+        raise ValueError("providerId is required")
+    if provider != active_provider:
+        raise ValueError(
+            f"credential clear only supports the active provider {active_provider!r}"
+        )
+
+    new_cfg = _clone(config)
+    old_api_key = str(getattr(new_cfg.llm, "api_key", "") or "")
+    old_api_key_env = str(getattr(new_cfg.llm, "api_key_env", "") or "")
+    runtime_secret_paths: set[str] = getattr(new_cfg, "_runtime_secret_paths", set())
+    explicit_secret_paths: set[str] = getattr(new_cfg, "_explicit_secret_paths", set())
+    had_provenance = (
+        "llm.api_key" in runtime_secret_paths
+        or "llm.api_key" in explicit_secret_paths
+    )
+    new_cfg.llm.api_key = ""
+    new_cfg.llm.api_key_env = ""
+    # A runtime-resolved value can still be materialized in llm.api_key even
+    # though it was never persisted.  Clearing removes both that cached value
+    # and its provenance.  If the provider's default environment variable is
+    # still exported, runtime resolution may use it again; the RPC response
+    # reports that external source explicitly.
+    new_cfg._runtime_secret_paths.discard("llm.api_key")
+    new_cfg._explicit_secret_paths.discard("llm.api_key")
+
+    return MutationResult(
+        config=new_cfg,
+        changed=bool(old_api_key or old_api_key_env or had_provenance),
+        restart_required=False,
+        public_payload={
+            "provider": provider,
+            "active": True,
+            "storedCredentialsCleared": True,
+        },
+    )
+
+
 def upsert_router(
     config: GatewayConfig,
     *,
@@ -1729,6 +1786,65 @@ def upsert_llm_profile(
         changed=new_cfg.llm_profiles != config.llm_profiles,
         restart_required=False,
         public_payload=redact_provider_payload(public_payload),
+    )
+
+
+def clear_llm_profile_credentials(
+    config: GatewayConfig,
+    *,
+    provider_id: str,
+) -> MutationResult:
+    """Remove stored credential sources while keeping a provider profile.
+
+    All case variants of the requested profile key are cleared so a malformed
+    historical config cannot retain a duplicate secret.  Model and transport
+    settings stay unchanged, as do every Router and Ensemble reference.
+    """
+    provider = str(provider_id or "").strip().lower()
+    active_provider = str(config.llm.provider or "").strip().lower()
+    if not provider:
+        raise ValueError("providerId is required")
+    if provider == active_provider:
+        raise ValueError("active provider credentials use the provider clear operation")
+    profile_keys = _llm_profile_storage_keys(config, provider)
+    if not profile_keys:
+        raise KeyError(f"LLM profile {provider!r} does not exist")
+
+    new_cfg = _clone(config)
+    new_cfg.llm_profiles = dict(new_cfg.llm_profiles)
+    changed = False
+    for key in profile_keys:
+        profile = new_cfg.llm_profiles[key]
+        payload = profile.model_dump(mode="python")
+        changed = changed or bool(
+            payload.get("api_key")
+            or payload.get("api_key_env")
+            or payload.get("api_key_env_pool")
+        )
+        payload.update(api_key="", api_key_env="", api_key_env_pool=[])
+        new_cfg.llm_profiles[key] = LlmProviderProfile(**payload)
+
+    provenance_paths = {
+        f"llm_profiles.{key}.api_key"
+        for key in profile_keys
+    }
+    for path in provenance_paths:
+        if path in getattr(new_cfg, "_runtime_secret_paths", set()) or path in getattr(
+            new_cfg, "_explicit_secret_paths", set()
+        ):
+            changed = True
+        new_cfg._runtime_secret_paths.discard(path)
+        new_cfg._explicit_secret_paths.discard(path)
+
+    return MutationResult(
+        config=new_cfg,
+        changed=changed,
+        restart_required=False,
+        public_payload={
+            "provider": provider,
+            "active": False,
+            "storedCredentialsCleared": True,
+        },
     )
 
 

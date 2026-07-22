@@ -3764,6 +3764,9 @@ def test_replayed_savings_done_restores_reply_without_replaying_popup_in_real_br
     assert payload["pageErrors"] == [], payload
 
 
+@pytest.mark.skip(
+    reason="Legacy Control UI retired; covered by opensquilla-webui/e2e/fork.spec.ts"
+)
 def test_webui_edit_middle_message_forks_without_history_leak(tmp_path: Path) -> None:
     if os.environ.get("OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E") != "1":
         pytest.skip("set OPENSQUILLA_WEBUI_BROWSER_CHAT_E2E=1 to run chat browser e2e")
@@ -4713,6 +4716,9 @@ def test_meta_skill_ribbon_renders_and_progresses_in_real_browser(tmp_path: Path
         assert "succeeded" in cls, f"chip class did not reach succeeded: {cls}"
 
 
+@pytest.mark.skip(
+    reason="Legacy Control UI retired; covered by Vue task-event guard unit tests"
+)
 def test_issue344_stale_task_events_do_not_leak_into_active_turn_in_real_browser(
     tmp_path: Path,
 ) -> None:

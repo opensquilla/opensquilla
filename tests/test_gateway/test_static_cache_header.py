@@ -8,6 +8,7 @@ shows up immediately.
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -165,26 +166,43 @@ def test_missing_vue_asset_recovery_is_in_troubleshooting_guide() -> None:
     assert "official release wheel" in normalized
 
 
-def test_control_ui_legacy_frontend_uses_static_bootstrap() -> None:
-    config = GatewayConfig()
-    config.control_ui.enabled = True
-    config.control_ui.frontend = "legacy"
+def test_control_ui_legacy_frontend_compat_input_serves_vue(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>'
+        '<link rel="stylesheet" crossorigin href="./assets/index.css">',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+    with pytest.warns(DeprecationWarning, match="Vue is always served"):
+        control_config = ControlUiConfig(frontend="legacy")
+    config = GatewayConfig(control_ui=control_config)
     app = Starlette(routes=create_control_ui_routes(config))
     client = TestClient(app)
 
     response = client.get("/control/")
 
     assert response.status_code == 200
-    assert '/control/static/js/app.js' in response.text
-    assert '/control/static/dist/assets/' not in response.text
+    assert control_config.frontend == "vue"
+    assert '/control/static/dist/assets/index.js' in response.text
+    assert '/control/static/js/' not in response.text
 
 
-def test_control_ui_frontend_reads_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_control_ui_frontend_reads_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     monkeypatch.setenv("OPENSQUILLA_CONTROL_UI_FRONTEND", "legacy")
 
-    config = GatewayConfig()
+    with caplog.at_level(logging.WARNING, logger="opensquilla.gateway.config"):
+        with pytest.warns(DeprecationWarning, match="no longer selects"):
+            config = GatewayConfig()
 
-    assert config.control_ui.frontend == "legacy"
+    assert config.control_ui.frontend == "vue"
+    assert "Vue is always served" in caplog.text
+    assert "Remove this setting or set it to 'vue'" in caplog.text
 
 
 def test_control_ui_frontend_reads_toml_config(tmp_path) -> None:
@@ -194,9 +212,15 @@ def test_control_ui_frontend_reads_toml_config(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    config = GatewayConfig.load_from_toml(config_path)
+    with pytest.warns(DeprecationWarning, match="Remove this setting"):
+        config = GatewayConfig.load_from_toml(config_path)
 
-    assert config.control_ui.frontend == "legacy"
+    assert config.control_ui.frontend == "vue"
+
+
+@pytest.mark.parametrize("value", ["vue", " VUE "])
+def test_control_ui_frontend_accepts_vue(value: str) -> None:
+    assert ControlUiConfig(frontend=value).frontend == "vue"
 
 
 def test_control_ui_frontend_rejects_invalid_value() -> None:
@@ -204,19 +228,27 @@ def test_control_ui_frontend_rejects_invalid_value() -> None:
         ControlUiConfig(frontend="retro")
 
 
-def test_control_ui_legacy_frontend_uses_configured_base_path() -> None:
-    config = GatewayConfig()
-    config.control_ui.enabled = True
-    config.control_ui.base_path = "/ops"
-    config.control_ui.frontend = "legacy"
+def test_control_ui_legacy_frontend_compat_uses_configured_base_path(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "index.html").write_text(
+        '<script type="module" crossorigin src="./assets/index.js"></script>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path)
+    with pytest.warns(DeprecationWarning, match="Vue is always served"):
+        control_config = ControlUiConfig(base_path="/ops", frontend="legacy")
+    config = GatewayConfig(control_ui=control_config)
     app = Starlette(routes=create_control_ui_routes(config))
     client = TestClient(app)
 
     response = client.get("/ops/")
 
     assert response.status_code == 200
-    assert '/ops/static/js/app.js' in response.text
-    assert '/control/static/js/app.js' not in response.text
+    assert '/ops/static/dist/assets/index.js' in response.text
+    assert '/control/static/dist/assets/index.js' not in response.text
+    assert '/ops/static/js/' not in response.text
 
 
 def test_control_ui_bootstrap_ws_url_uses_client_reachable_wildcard_host() -> None:

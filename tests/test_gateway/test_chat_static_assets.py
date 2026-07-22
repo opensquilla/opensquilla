@@ -593,3 +593,5 @@ def test_control_index_loads_vue_entrypoint() -> None:
     assert 'id="opensquilla-data"' in index
     assert "vite_css_urls" in index
     assert "vite_js_url" in index
+    assert "Prism" not in index
+    assert "/static/vendor/" not in index

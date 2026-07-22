@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import threading
 import warnings
@@ -42,6 +43,14 @@ from opensquilla.session.compaction_lifecycle import (
     DEFAULT_FLUSH_TRIGGERS,
     FlushTrigger,
     normalize_flush_triggers_strict,
+)
+
+logger = logging.getLogger(__name__)
+
+_LEGACY_CONTROL_UI_FRONTEND_WARNING = (
+    "control_ui.frontend='legacy' is deprecated and no longer selects the "
+    "retired vanilla-JS UI; Vue is always served. Remove this setting or set "
+    "it to 'vue'."
 )
 
 
@@ -129,7 +138,11 @@ class ControlUiConfig(BaseSettings):
 
     enabled: bool = True
     base_path: str = "/control"
-    frontend: Literal["vue", "legacy"] = "vue"
+    # Retained temporarily so existing TOML files and environment overrides do
+    # not fail gateway validation after the vanilla-JS client is retired. Vue
+    # is the only runtime value; the validator below maps the historical
+    # ``legacy`` spelling to it with a deprecation warning.
+    frontend: Literal["vue"] = "vue"
     # Default UI locale served on first paint when the browser has no saved
     # preference. The client (localStorage) and a manual switch always override
     # it. Anything zh* clamps to zh-Hans; anything else to en.
@@ -145,7 +158,16 @@ class ControlUiConfig(BaseSettings):
     @classmethod
     def _normalize_frontend(cls, v: object) -> object:
         if isinstance(v, str):
-            return v.strip().lower()
+            normalized = v.strip().lower()
+            if normalized == "legacy":
+                warnings.warn(
+                    _LEGACY_CONTROL_UI_FRONTEND_WARNING,
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                logger.warning(_LEGACY_CONTROL_UI_FRONTEND_WARNING)
+                return "vue"
+            return normalized
         return v
 
     @field_validator("default_locale", mode="before")

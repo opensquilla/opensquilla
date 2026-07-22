@@ -5,9 +5,10 @@ approvals, channels, logs, agents, usage, and operational status. It is the
 best surface when you want browser-based chat, visible tool activity, durable
 approvals, and a quick view of runtime health.
 
-The default Control UI in the 0.4 release line is the Vue product UI served by the gateway.
-The legacy frontend is kept only as a maintainer rollback fallback, not as the
-normal user path.
+The Control UI is the Vue product UI served by the gateway. The historical
+`control_ui.frontend = "legacy"` setting is accepted temporarily so existing
+profiles still start, but it is deprecated, normalized to `"vue"`, and no
+longer activates the vanilla-JS client.
 
 ## Start the Web UI
 

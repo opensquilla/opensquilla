@@ -58,10 +58,10 @@
 # diagnostics_enabled = false
 
 [control_ui]
-# Vue is the product UI. Use "legacy" only as a maintainer rollback fallback
-# for the frozen vanilla-JS frontend; changing this requires a gateway restart.
-# Env override: OPENSQUILLA_CONTROL_UI_FRONTEND=vue|legacy
-frontend = "vue"
+# Vue is the only Control UI. The optional frontend key is retained temporarily
+# for config compatibility; historical "legacy" values are deprecated and are
+# treated as "vue" rather than selecting the retired vanilla-JS client.
+# frontend = "vue"
 
 # Web search settings
 # Use DuckDuckGo for the no-key path, or configure Bocha, Brave, IQS, Tavily, or Exa.

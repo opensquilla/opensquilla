@@ -207,8 +207,6 @@ export function useChatFeatureToggles(options: UseChatFeatureTogglesOptions) {
   function setRouterVisualEffectsEnabled(enabled: boolean) {
     routerVisualEffectsEnabled.value = Boolean(enabled)
     saveRouterVisualEffectsPreference()
-    const savingsFx = (window as unknown as { SavingsFX?: { setEnabled?: (enabled: boolean) => void } }).SavingsFX
-    savingsFx?.setEnabled?.(routerVisualEffectsEnabled.value)
   }
 
   async function setRouterEnabled(enabled: boolean) {

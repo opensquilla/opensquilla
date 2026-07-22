@@ -118,6 +118,15 @@ export function deliveryCount(ch: Channel, section: string, state: string): numb
   return Number(record(record(delivery(ch)[section])[state]).count || 0)
 }
 
+/** Total inbound rows across ALL ledger states. The ingress lifecycle is
+ *  accepted → processing → completed, and completed rows persist — so "has
+ *  this channel EVER received an event" must sum every state, not sample the
+ *  transient in-flight ones. */
+export function ingressTotal(ch: Channel): number {
+  return Object.values(record(delivery(ch).ingress))
+    .reduce<number>((total, row) => total + Number(record(row).count || 0), 0)
+}
+
 export function lastError(ch: Channel): string {
   const value = diagnostics(ch).last_error
   if (!value || typeof value !== 'object') return ''

@@ -382,6 +382,21 @@ def test_remove_channel():
     assert res2.restart_required is True
 
 
+def test_remove_channel_withdraws_admin_grants():
+    # A dormant channel_admin_senders entry would silently re-arm for any
+    # future channel created under the same name; removal must drop it while
+    # leaving other channels' grants untouched.
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
+    )
+    res1.config.channel_admin_senders = {"w": ["U-1"], "other": ["Z-9"]}
+    res2 = remove_channel(res1.config, name="w")
+    assert list_channel_entries(res2.config) == []
+    assert res2.config.channel_admin_senders == {"other": ["Z-9"]}
+
+
 def test_remove_missing_channel_raises():
     cfg = GatewayConfig()
     with pytest.raises(KeyError, match="w"):
@@ -1849,12 +1864,11 @@ def test_upsert_channel_blank_secret_keeps_stored_value():
         assert raw.default_chat_id == "42"
 
 
-def test_upsert_channel_persists_literal_redaction_placeholder():
-    # Tripwire, not desired behavior: '***' is NOT a keep-current sentinel
-    # server-side — it is persisted verbatim as the credential. The Web UI
-    # therefore structurally strips the placeholder before upsert. If this
-    # assertion ever fails, the backend semantics changed and the client
-    # scrub plus this test must be revisited together.
+def test_upsert_channel_redaction_placeholder_keeps_stored_value():
+    # '***' is what channels.get / probe echo for a stored secret; a client
+    # round-tripping that payload means "keep the current value". Enforced
+    # server-side so every RPC/CLI client gets the same trust boundary (the
+    # Web UI scrub is defense in depth only).
     cfg = GatewayConfig()
     res1 = upsert_channel(
         cfg,
@@ -1865,7 +1879,22 @@ def test_upsert_channel_persists_literal_redaction_placeholder():
         entry_payload={"type": "telegram", "name": "tg", "token": REDACTED_PLACEHOLDER},
     )
     # Raw config access: the redacted *listing* would mask a real value too.
-    assert res2.config.channels.channels[0].token == REDACTED_PLACEHOLDER
+    assert res2.config.channels.channels[0].token == "tok-real"
+
+
+def test_upsert_channel_redaction_placeholder_without_stored_value_rejected():
+    # With no stored credential to keep, persisting the literal sentinel
+    # would overwrite the channel's token with asterisks — reject instead.
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="looks redacted"):
+        upsert_channel(
+            cfg,
+            entry_payload={
+                "type": "telegram",
+                "name": "tg",
+                "token": REDACTED_PLACEHOLDER,
+            },
+        )
 
 
 def test_upsert_channel_same_name_different_type_replaces_without_secret_merge():

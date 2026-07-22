@@ -10,7 +10,8 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ChannelBrandMark from '@/components/setup/ChannelBrandMark.vue'
 import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
-import type { ChannelEditorSpec } from '@/composables/channels/useChannelEditor'
+import { orderChannelSpecs } from '@/composables/setup/channelPlatformOrder'
+import type { ChannelEditorFieldSpec, ChannelEditorSpec } from '@/composables/channels/useChannelEditor'
 
 const props = defineProps<{
   channels: ChannelEditorSpec[]
@@ -26,30 +27,30 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const { localizeFieldLabel, localizeLabel } = useChannelCatalogI18n()
 
-const ZH_ORDER = ['feishu', 'wecom', 'dingtalk', 'qq', 'slack', 'telegram', 'discord', 'matrix']
-const DEFAULT_ORDER = ['slack', 'telegram', 'discord', 'matrix', 'feishu', 'wecom', 'dingtalk', 'qq']
-
 function displayLabel(spec: ChannelEditorSpec): string {
   return localizeLabel(spec.type, spec.label)
 }
 
-const sorted = computed(() => {
-  const order = String(locale.value).toLowerCase().startsWith('zh') ? ZH_ORDER : DEFAULT_ORDER
-  const rank = new Map(order.map((type, index) => [type, index]))
-  return [...props.channels].sort((a, b) => {
-    const rankA = rank.get(a.type) ?? order.length
-    const rankB = rank.get(b.type) ?? order.length
-    return rankA - rankB || displayLabel(a).localeCompare(displayLabel(b))
-  })
-})
+const sorted = computed(() =>
+  orderChannelSpecs(props.channels, String(locale.value), displayLabel))
 
 // The one-line footnote: localized labels of the required credential/secret
-// fields ("App ID · App Secret", "Bot token"). Platforms without dedicated
-// credential fields (Matrix authenticates with homeserver + user id) fall
-// back to their required fields, so no card ships blank. Derived from the
-// catalog spec, never invented here.
+// fields ("App ID · App Secret", "Bot token"), restricted to the fields
+// VISIBLE under the spec's default values — a field gated behind a
+// non-default mode (showWhen pointing at a value the defaults don't select)
+// belongs to an alternative setup path and would otherwise advertise a
+// credential mix no single connection mode requires. Platforms without
+// dedicated credential fields (Matrix authenticates with homeserver + user
+// id) fall back to their required fields, so no card ships blank. Derived
+// from the catalog spec, never invented here.
 function credentialSummary(spec: ChannelEditorSpec): string {
-  const required = (spec.fields || []).filter(field => field.required === true)
+  const fields = spec.fields || []
+  const defaults: Record<string, unknown> = {}
+  for (const field of fields) defaults[field.name] = field.default
+  const visibleByDefault = (field: ChannelEditorFieldSpec): boolean =>
+    !field.showWhen || Object.entries(field.showWhen).every(
+      ([key, value]) => String(defaults[key] ?? '') === String(value))
+  const required = fields.filter(field => field.required === true && visibleByDefault(field))
   const credentials = required.filter(
     field => field.secret === true || field.group === 'credentials',
   )

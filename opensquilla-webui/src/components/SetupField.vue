@@ -85,15 +85,11 @@ const inputType = computed(() => {
   return 'text'
 })
 const { t } = useI18n()
-// Channel secrets in the compose form have nothing stored yet, so the
-// keep-current hint would be a lie there; edit mode renders its own masked
-// rows. Other scopes keep the blank-keeps-current contract, translated.
+// Secrets keep the blank-keeps-current contract, translated.
 const placeholder = computed(() => {
   if (props.field.placeholder) return props.field.placeholder
   if (!isSecret.value) return ''
-  return props.scope === 'channel'
-    ? t('setup.field.secretComposePlaceholder')
-    : t('setup.field.keepCurrentPlaceholder')
+  return t('setup.field.keepCurrentPlaceholder')
 })
 const showWhenAttr = computed(() => {
   if (!props.field.showWhen || Object.keys(props.field.showWhen).length === 0) return ''

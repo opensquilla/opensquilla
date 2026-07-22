@@ -116,8 +116,8 @@ function buttonWithText(root: ParentNode, label: string): HTMLButtonElement {
 }
 
 function channelCard(root: ParentNode, name: string): HTMLElement {
-  const card = Array.from(root.querySelectorAll<HTMLElement>('.chb-card'))
-    .find(candidate => candidate.querySelector('.chb-card__name')?.textContent === name)
+  const card = Array.from(root.querySelectorAll<HTMLElement>('.chb-story'))
+    .find(candidate => candidate.querySelector('.chb-story__name')?.textContent === name)
   if (!card) throw new Error(`channel card not found: ${name}`)
   return card
 }
@@ -129,10 +129,18 @@ async function mountChannelsView(options: {
   initialPairings?: Array<Record<string, unknown>>
   /** When set, config.get rejects (admin counts become unknown). */
   configGetError?: boolean
+  /** When set, approve commits but the asAdmin grant fails non-fatally. */
+  adminGrantFails?: boolean
   /** When set, onboarding.channel.probe rejects with this message. */
   draftProbeError?: { message: string }
   /** Initial route query (deep-link scenarios). */
   routeQuery?: Record<string, string>
+  /** Override the configured channel rows (drives the home mode: 0 → inline
+   *  gallery, >=1 → fleet front page + enroll strip). Defaults to the shared
+   *  fixture. */
+  channelRows?: Array<Record<string, unknown>>
+  /** Override the channels.get response (drill configuration seeding). */
+  channelsGet?: (params?: Record<string, unknown>) => unknown
   locale?: string
 } = {}) {
   vi.resetModules()
@@ -190,8 +198,9 @@ async function mountChannelsView(options: {
     },
   ]
   const adminSendersMap: Record<string, string[]> = { ...(options.adminSenders || {}) }
-  const execute = vi.fn(async () => ({ channels: channelRows }))
-  const refresh = vi.fn(async () => ({ channels: channelRows }))
+  const rows = options.channelRows ?? channelRows
+  const execute = vi.fn(async () => ({ channels: rows }))
+  const refresh = vi.fn(async () => ({ channels: rows }))
   // Catalog slice mirroring the backend field-spec shape (groups, secrets,
   // show_when, advanced) for the in-place configuration editor.
   const slackSpec = {
@@ -264,6 +273,7 @@ async function mountChannelsView(options: {
       return { status: 'restarted', channel: params?.name }
     }
     if (method === 'channels.get') {
+      if (options.channelsGet) return options.channelsGet(params)
       return {
         entry: {
           name: 'ops-slack',
@@ -290,6 +300,11 @@ async function mountChannelsView(options: {
       pairings = pairings.map(pairing => pairing.pairingId === params?.pairingId
         ? { ...pairing, status: 'approved', approvedAt: '2026-07-13T10:00:00Z' }
         : pairing)
+      // Mirrors the backend contract: the approval COMMITS even when the
+      // admin grant fails, reported non-fatally via adminGranted + warnings.
+      if (params?.asAdmin && options.adminGrantFails) {
+        return { status: 'approved', adminGranted: false, warnings: ['admin grant failed'] }
+      }
       if (params?.asAdmin) {
         const target = pairings.find(pairing => pairing.pairingId === params?.pairingId)
         if (target) {
@@ -334,7 +349,7 @@ async function mountChannelsView(options: {
   const replace = vi.fn(async (_to: { query?: Record<string, unknown> }) => {})
   // Mutable status snapshot: tests drive the 30s-poll divergence path by
   // swapping this ref's value.
-  const channelsData = ref<{ channels: Array<Record<string, unknown>> }>({ channels: channelRows })
+  const channelsData = ref<{ channels: Array<Record<string, unknown>> }>({ channels: rows })
   vi.doMock('vue-router', () => ({
     useRouter: () => ({ push, replace }),
     useRoute: () => ({ path: '/channels', query: { ...(options.routeQuery || {}) }, hash: '' }),
@@ -434,13 +449,15 @@ describe('ChannelsView dashboard home', () => {
         expect(rpcCall).toHaveBeenCalledWith('channels.pairings', { channelName: name })
       }
       expect(rpcCall).toHaveBeenCalledWith('config.get', { path: 'channel_admin_senders' })
-      const factValues = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
-      expect(factValues).toHaveLength(3)
+      const factValues = Array.from(ops.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
+      // Ledger figures: Uptime, Members, Admins, then the Awaiting figure that
+      // joins the row only because ops-slack has a pending pairing.
+      expect(factValues).toHaveLength(4)
       expect(factValues[1]).toBe('1') // approved members
       expect(factValues[2]).toBe('1') // channel admins
 
-      // The pending request surfaces on the card: badge + inline banner.
-      expect(ops.querySelector('.chb-card__pending')?.textContent).toContain('1')
+      // The pending request surfaces on the card: alert figure + inline banner.
+      expect(ops.querySelector('.chb-figure--alert dd')?.textContent).toContain('1')
       expect(ops.textContent).toContain('Pending User')
       expect(ops.textContent).toContain('AB12CD34')
 
@@ -448,10 +465,10 @@ describe('ChannelsView dashboard home', () => {
       // rows must not leak onto other cards as members or pending banners.
       for (const name of ['alerts-telegram', 'dead-telegram', 'off-discord']) {
         const other = channelCard(el, name)
-        const values = Array.from(other.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+        const values = Array.from(other.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
         expect(values[1]).toBe('0')
         expect(other.textContent).not.toContain('Pending User')
-        expect(other.querySelector('.chb-card__pending')).toBeNull()
+        expect(other.querySelector('.chb-figure--alert')).toBeNull()
         expect(other.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
       }
 
@@ -461,8 +478,10 @@ describe('ChannelsView dashboard home', () => {
       expect(ghost.classList.contains('is-static')).toBe(true)
       expect(ghost.textContent).toContain('Running but not in config')
 
-      // The dashed add card sits at the end of the grid.
-      expect(el.querySelector('.chb-card--add')).toBeTruthy()
+      // The enroll strip is the single add entry closing the ledger; there is
+      // never an add-card row.
+      expect(el.querySelector('.chb-enroll__title')).toBeTruthy()
+      expect(el.querySelector('.chb-card--add')).toBeNull()
     } finally {
       app.unmount()
     }
@@ -496,6 +515,10 @@ describe('ChannelsView dashboard home', () => {
       const checkbox = ops.querySelector<HTMLInputElement>(
         '[aria-label="Approve Pending User as a channel admin"]')!
       expect(checkbox.checked).toBe(false)
+      // The plain label, not the first-pairing bootstrap wording.
+      const label = ops.querySelector<HTMLElement>('.chal__asadmin span')!
+      expect(label.textContent).toContain('as admin')
+      expect(label.textContent).not.toContain('This is me')
 
       ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
       await flush()
@@ -552,6 +575,9 @@ describe('ChannelsView dashboard home', () => {
       const checkbox = ops.querySelector<HTMLInputElement>(
         '[aria-label="Approve First User as a channel admin"]')!
       expect(checkbox.checked).toBe(true)
+      // First pairing on an empty channel: the label says who the grant is for.
+      expect(ops.querySelector('.chal__asadmin span')?.textContent)
+        .toContain('This is me — make channel admin')
       ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for First User"]')!.click()
       await flush()
       expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
@@ -643,12 +669,12 @@ describe('ChannelsView dashboard home', () => {
     try {
       await flush()
       const ops = channelCard(el, 'ops-slack')
-      const values = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      const values = Array.from(ops.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
       // Unknown member data reads as —, never as a hard zero; the admin
       // count still renders because config.get succeeded.
       expect(values[1]).toBe('—')
       expect(values[2]).toBe('1')
-      expect(ops.querySelector('.chb-card__pending')).toBeNull()
+      expect(ops.querySelector('.chb-figure--alert')).toBeNull()
 
       // channels.status still reports a pending count → the badge falls back
       // to it instead of hiding the requests.
@@ -658,7 +684,7 @@ describe('ChannelsView dashboard home', () => {
       }
       await flush()
       await flush()
-      expect(channelCard(el, 'ops-slack').querySelector('.chb-card__pending')?.textContent)
+      expect(channelCard(el, 'ops-slack').querySelector('.chb-figure--alert dd')?.textContent)
         .toContain('3')
     } finally {
       app.unmount()
@@ -679,7 +705,7 @@ describe('ChannelsView dashboard home', () => {
     try {
       await flush()
       const ops = channelCard(el, 'ops-slack')
-      const values = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      const values = Array.from(ops.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
       expect(values[2]).toBe('—')
       // No approved members, but the admin list is UNKNOWN — the bootstrap
       // default must not arm the grant on a failed read.
@@ -711,7 +737,7 @@ describe('ChannelsView dashboard home', () => {
       // the badge immediately.
       expect(callsFor('ops-slack')).toBeGreaterThan(opsBefore)
       expect(callsFor('alerts-telegram')).toBe(telegramBefore)
-      expect(channelCard(el, 'ops-slack').querySelector('.chb-card__pending')?.textContent)
+      expect(channelCard(el, 'ops-slack').querySelector('.chb-figure--alert dd')?.textContent)
         .toContain('2')
     } finally {
       app.unmount()
@@ -748,6 +774,77 @@ describe('ChannelsView dashboard home', () => {
       const betaBox = el.querySelector<HTMLInputElement>(
         '[aria-label="Approve Beta as a channel admin"]')!
       expect(betaBox.checked).toBe(false)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('keeps the last-good pending banner and override across a transient facts failure', async () => {
+    let fail = false
+    const loadPairings = vi.fn(async () => {
+      if (fail) throw new Error('store offline')
+      return {
+        pairings: [
+          { pairingId: 'pair-pending', pairingCode: 'AB12CD34', channelName: 'ops-slack', senderId: 'U-PENDING', senderName: 'Pending User', status: 'pending' },
+          { pairingId: 'pair-approved', channelName: 'ops-slack', senderId: 'U-APPROVED', senderName: 'Approved User', status: 'approved' },
+        ],
+      }
+    })
+    const { app, el, flush, nextTick } = await mountChannelsView({ loadPairings })
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      const box = ops.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+
+      // One failed poll must NOT blip the banner out (which would wipe the
+      // operator's explicit as-admin choice): last-good facts stand in.
+      fail = true
+      buttonWithText(el, 'Refresh').click()
+      await flush()
+      await flush()
+      const after = channelCard(el, 'ops-slack')
+      expect(after.textContent).toContain('Pending User')
+      const values = Array.from(after.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
+      expect(values[1]).toBe('1')
+      expect(after.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!.checked).toBe(true)
+
+      // The next healthy poll re-resolves the SAME request — still overridden.
+      fail = false
+      buttonWithText(el, 'Refresh').click()
+      await flush()
+      await flush()
+      expect(channelCard(el, 'ops-slack').querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!.checked).toBe(true)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('surfaces a failed admin grant after an as-admin card approve', async () => {
+    const { app, el, flush, nextTick, pushToast } = await mountChannelsView({ adminGrantFails: true })
+    try {
+      await flush()
+      const ops = channelCard(el, 'ops-slack')
+      const box = ops.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      ops.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      // The approval committed but the grant failed: plain approve success
+      // plus an actionable warning — never a false admin-success toast.
+      expect(pushToast).toHaveBeenCalledWith('Approved pairing access for Pending User', { tone: 'ok' })
+      expect(pushToast).toHaveBeenCalledWith(
+        'Approved Pending User, but the admin grant failed — retry from the members list.',
+        { tone: 'danger' },
+      )
+      expect(pushToast).not.toHaveBeenCalledWith('Approved Pending User as a channel admin', { tone: 'ok' })
     } finally {
       app.unmount()
     }
@@ -798,6 +895,91 @@ describe('ChannelsView drill-in page', () => {
     }
   })
 
+  it('omits the restarts fact when there have been no restart attempts', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, channelsData } = ctx
+    try {
+      await flush()
+      channelsData.value = {
+        channels: [{ ...channelRows[0], restart_attempts: 0 }, ...channelRows.slice(1)],
+      }
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const facts = page.querySelector<HTMLElement>('.chd__factsline')!
+      expect(facts.textContent).not.toMatch(/restart/i)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('middle-truncates a long bot id in the header and copies the full id', async () => {
+    const writeText = vi.fn(async () => undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const ctx = await mountChannelsView()
+    const { app, flush, pushToast, channelsData } = ctx
+    try {
+      await flush()
+      channelsData.value = {
+        channels: [{ ...channelRows[0], bot_user_id: 'U-BOT-FEED-0123456789' }, ...channelRows.slice(1)],
+      }
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const botButton = page.querySelector<HTMLButtonElement>('.chd__botid')!
+      // 7-char prefix … 4-char suffix, never the raw 21-char id.
+      expect(botButton.textContent).toContain('Bot U-BOT-F…6789')
+      expect(botButton.textContent).not.toContain('U-BOT-FEED-0123456789')
+
+      botButton.click()
+      await flush()
+      // The clipboard always receives the FULL id, not the display form.
+      expect(writeText).toHaveBeenCalledWith('U-BOT-FEED-0123456789')
+      expect(pushToast).toHaveBeenCalledWith('Bot ID copied', { tone: 'ok' })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('holds the scrollspy during a section jump and re-arms after the window', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, nextTick } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      await flush()
+      const activeNav = () =>
+        page.querySelector<HTMLElement>('.chd__nav button.is-active')?.textContent || ''
+      // Fake only Date: the spy hold compares Date.now(), while flush() keeps
+      // relying on real setTimeout.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        const navButtons = Array.from(page.querySelectorAll<HTMLButtonElement>('.chd__nav button'))
+        navButtons.find(button => button.textContent?.includes('Configuration'))!.click()
+        await nextTick()
+        expect(activeNav()).toContain('Configuration')
+
+        // A scroll inside the 800ms hold must not move the highlight off the
+        // clicked section (happy-dom rects all sit above the fold line, so a
+        // live spy would immediately jump to the last section).
+        window.dispatchEvent(new Event('scroll'))
+        await nextTick()
+        expect(activeNav()).toContain('Configuration')
+
+        // Past the hold the spy re-arms and tracks the viewport again.
+        vi.advanceTimersByTime(801)
+        window.dispatchEvent(new Event('scroll'))
+        await nextTick()
+        expect(activeNav()).toContain('Diagnostics')
+      } finally {
+        vi.useRealTimers()
+      }
+    } finally {
+      app.unmount()
+    }
+  })
+
   it('returns home through the breadcrumb', async () => {
     const ctx = await mountChannelsView()
     const { app, el, flush, replace } = ctx
@@ -807,7 +989,7 @@ describe('ChannelsView drill-in page', () => {
       page.querySelector<HTMLButtonElement>('.chd__back')!.click()
       await flush()
       expect(el.querySelector('.chd')).toBeNull()
-      expect(el.querySelector('.chb__grid')).toBeTruthy()
+      expect(el.querySelector('.chb-ledger')).toBeTruthy()
       const lastQuery = replace.mock.calls[replace.mock.calls.length - 1]?.[0]?.query
       expect(lastQuery?.channel).toBeUndefined()
     } finally {
@@ -1054,6 +1236,10 @@ describe('ChannelsView members section', () => {
         '[aria-label="Approve Pending User as a channel admin"]')!
       // There is already an approved member, so the bootstrap default is off.
       expect(checkbox.checked).toBe(false)
+      // And the label keeps the plain wording, not the bootstrap string.
+      const label = panel.querySelector<HTMLElement>('.ch-pairing-asadmin span')!
+      expect(label.textContent).toContain('as admin')
+      expect(label.textContent).not.toContain('This is me')
       checkbox.checked = true
       checkbox.dispatchEvent(new Event('change', { bubbles: true }))
       await nextTick()
@@ -1065,6 +1251,94 @@ describe('ChannelsView members section', () => {
         pairingId: 'pair-pending',
         asAdmin: true,
       })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('single-sources the as-admin override between the drill banner and the members row', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, nextTick } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const banner = page.querySelector<HTMLElement>('.chal--pending')!
+      const panel = membersPanel(page)
+      const bannerBox = banner.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      const rowBox = panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      expect(bannerBox.checked).toBe(false)
+      expect(rowBox.checked).toBe(false)
+
+      // Tick the members row: the banner reads the same store-backed value.
+      rowBox.checked = true
+      rowBox.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      expect(bannerBox.checked).toBe(true)
+
+      // Untick on the banner: the row follows — ONE override, two surfaces.
+      bannerBox.checked = false
+      bannerBox.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      expect(rowBox.checked).toBe(false)
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('routes the drill banner approve through the members confirmation gate', async () => {
+    const ctx = await mountChannelsView()
+    const { app, flush, nextTick, rpcCall, confirm, pushToast } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const banner = page.querySelector<HTMLElement>('.chal--pending')!
+      const box = banner.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+
+      banner.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      // Same gate as the Members row (the admin-aware confirm) — the drill
+      // page never offers two different risk gates for the same grant. Only
+      // the dashboard card quick-approve stays confirmation-free.
+      expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Approve pairing request?',
+        body: expect.stringContaining('admin access'),
+      }))
+      expect(rpcCall).toHaveBeenCalledWith('channels.pairing.approve', {
+        channelName: 'ops-slack',
+        pairingId: 'pair-pending',
+        asAdmin: true,
+      })
+      expect(pushToast).toHaveBeenCalledWith('Approved Pending User as a channel admin', { tone: 'ok' })
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('surfaces a failed admin grant after an as-admin approve from the panel', async () => {
+    const ctx = await mountChannelsView({ adminGrantFails: true })
+    const { app, flush, nextTick, pushToast } = ctx
+    try {
+      await flush()
+      const page = await openDrill(ctx, 'ops-slack')
+      const panel = membersPanel(page)
+      const box = panel.querySelector<HTMLInputElement>(
+        '[aria-label="Approve Pending User as a channel admin"]')!
+      box.checked = true
+      box.dispatchEvent(new Event('change', { bubbles: true }))
+      await nextTick()
+      panel.querySelector<HTMLButtonElement>('[aria-label="Approve access for Pending User"]')!.click()
+      await flush()
+      expect(pushToast).toHaveBeenCalledWith('Approved pairing access for Pending User', { tone: 'ok' })
+      expect(pushToast).toHaveBeenCalledWith(
+        'Approved Pending User, but the admin grant failed — retry from the members list.',
+        { tone: 'danger' },
+      )
+      // The members list still reloads: the approval itself committed.
+      expect(panel.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
     } finally {
       app.unmount()
     }
@@ -1135,9 +1409,10 @@ describe('ChannelsView in-place configuration editor', () => {
     try {
       const page = await openConfiguration(ctx)
       const readFields = fieldNames(page)
-      // Spec-driven read rows: same set the edit form will own, secrets masked.
+      // Spec-driven read rows: same set the edit form will own, secrets
+      // masked, with the credentials group leading the rail.
       expect(readFields).toEqual(
-        ['name', 'connection_mode', 'slack_channel_id', 'token', 'signing_secret', 'reply_in_thread'])
+        ['token', 'signing_secret', 'name', 'connection_mode', 'slack_channel_id', 'reply_in_thread'])
       expect(page.querySelectorAll('.cfge input')).toHaveLength(0)
 
       await enterEditMode(ctx, page)
@@ -1315,7 +1590,7 @@ describe('ChannelsView in-place configuration editor', () => {
       buttonWithText(bar(el), 'Discard').click()
       await flush()
       expect(el.querySelector('.chd')).toBeNull()
-      expect(el.querySelector('.chb__grid')).toBeTruthy()
+      expect(el.querySelector('.chb-ledger')).toBeTruthy()
       expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(false)
     } finally {
       ctx.app.unmount()
@@ -1366,9 +1641,114 @@ describe('ChannelsView in-place configuration editor', () => {
   })
 })
 
+describe('ChannelsView add entry', () => {
+  const twoChannels = [
+    { name: 'ops-slack', type: 'slack', status: 'connected', connected: true, enabled: true, configured: true, diagnostics: { network_probe: 'not_run' } },
+    { name: 'alerts-telegram', type: 'telegram', status: 'stopped', connected: false, enabled: true, configured: true, diagnostics: { network_probe: 'not_run' } },
+  ]
+
+  // The header toolbar now carries ONLY the Refresh ghost button — there is no
+  // primary "Add channel" entry at any fleet count. The single add affordance
+  // is the enroll strip's title button.
+  function headerPrimaryButtons(root: ParentNode): HTMLButtonElement[] {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('.ch-stage__actions .btn--primary'))
+  }
+
+  it('0 channels: the inline platform gallery is the page, no ledger or enroll strip', async () => {
+    const { app, el, flush } = await mountChannelsView({ channelRows: [] })
+    try {
+      await flush()
+      await flush()
+      // The catalog gallery renders inline (same specs the compose gallery uses).
+      expect(el.querySelector('.ctg__grid')).toBeTruthy()
+      expect(el.querySelector('[data-channel-type="slack"]')).toBeTruthy()
+      expect(el.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
+      // The gallery IS the single entry: no header add button, and neither the
+      // fleet ledger nor the enroll strip (both belong to the fleet page only).
+      expect(headerPrimaryButtons(el)).toHaveLength(0)
+      expect(el.querySelector('.chb-ledger')).toBeNull()
+      expect(el.querySelector('.chb-enroll')).toBeNull()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('0 channels: a gallery tile enters compose pre-picked (?compose=1&type=)', async () => {
+    const ctx = await mountChannelsView({ channelRows: [] })
+    const { app, el, flush, push } = ctx
+    try {
+      await flush()
+      await flush()
+      el.querySelector<HTMLButtonElement>('[data-channel-type="slack"]')!.click()
+      await flush()
+      // One history PUSH carries compose=1 AND the picked type in a single write.
+      expect(push).toHaveBeenCalledWith(expect.objectContaining({
+        query: expect.objectContaining({ compose: '1', type: 'slack' }),
+      }))
+      expect(el.querySelector('.chc')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('fleet (1..3 channels): the enroll strip is the add entry and skips used platforms', async () => {
+    const { app, el, flush } = await mountChannelsView({ channelRows: twoChannels })
+    try {
+      await flush()
+      await flush()
+      // The ledger keeps the channel stories; there is never a trailing add-card.
+      expect(channelCard(el, 'ops-slack')).toBeTruthy()
+      expect(channelCard(el, 'alerts-telegram')).toBeTruthy()
+      expect(el.querySelector('.chb-card--add')).toBeNull()
+      // No header add button — the enroll strip is the single entry.
+      expect(headerPrimaryButtons(el)).toHaveLength(0)
+      const enroll = el.querySelector<HTMLElement>('.chb-enroll')
+      expect(enroll).toBeTruthy()
+      expect(enroll!.querySelector('.chb-enroll__title')).toBeTruthy()
+      // Chips only for UNCONFIGURED platform types: slack (used) is skipped;
+      // feishu/matrix (catalog, unused) surface.
+      expect(enroll!.querySelector('[data-channel-type="slack"]')).toBeNull()
+      expect(enroll!.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
+      expect(enroll!.querySelector('[data-channel-type="matrix"]')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('fleet: an enroll chip enters compose pre-picked', async () => {
+    const ctx = await mountChannelsView({ channelRows: twoChannels })
+    const { app, el, flush, push } = ctx
+    try {
+      await flush()
+      await flush()
+      el.querySelector<HTMLButtonElement>('.chb-enroll [data-channel-type="feishu"]')!.click()
+      await flush()
+      expect(push).toHaveBeenCalledWith(expect.objectContaining({
+        query: expect.objectContaining({ compose: '1', type: 'feishu' }),
+      }))
+      expect(el.querySelector('.chc')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('fleet (>=4 channels): the enroll strip stays the add entry, never an add-card', async () => {
+    // The shared fixture carries five configured channels.
+    const { app, el, flush } = await mountChannelsView()
+    try {
+      await flush()
+      expect(el.querySelector('.chb-enroll__title')).toBeTruthy()
+      expect(el.querySelector('.chb-card--add')).toBeNull()
+      expect(headerPrimaryButtons(el)).toHaveLength(0)
+    } finally {
+      app.unmount()
+    }
+  })
+})
+
 describe('ChannelsView compose takeover', () => {
   async function enterCompose(ctx: Ctx): Promise<HTMLElement> {
-    buttonWithText(ctx.el, 'Add channel').click()
+    ctx.el.querySelector<HTMLButtonElement>('.chb-enroll__title')!.click()
     await ctx.flush()
     const surface = ctx.el.querySelector<HTMLElement>('.chc')
     if (!surface) throw new Error('compose surface not found')
@@ -1424,6 +1804,29 @@ describe('ChannelsView compose takeover', () => {
     }
   })
 
+  it('moves focus into the takeover on open and returns it to the invoker on exit', async () => {
+    const ctx = await mountChannelsView()
+    const { el, flush } = ctx
+    try {
+      await flush()
+      const addButton = el.querySelector<HTMLButtonElement>('.chb-enroll__title')!
+      addButton.focus()
+      addButton.click()
+      await flush()
+      // aria-modal demands managed focus: the surface takes it on open…
+      const surface = el.querySelector<HTMLElement>('.chc__surface')!
+      expect(document.activeElement).toBe(surface)
+
+      // …and the invoker gets it back when the takeover dismisses.
+      surface.querySelector<HTMLButtonElement>('.chc__back')!.click()
+      await flush()
+      expect(el.querySelector('.chc')).toBeNull()
+      expect(document.activeElement).toBe(addButton)
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
   it('renders a recognition-first gallery: brand-mark cards with credential footnotes', async () => {
     const ctx = await mountChannelsView()
     try {
@@ -1437,7 +1840,10 @@ describe('ChannelsView compose takeover', () => {
 
       const slackCard = surface.querySelector<HTMLElement>('[data-channel-type="slack"]')!
       expect(slackCard.querySelector('.brand-mark')).toBeTruthy()
-      expect(slackCard.querySelector('.ctg__cred')?.textContent).toBe('Bot token · Signing secret')
+      // The footnote honors show_when against the spec defaults: the
+      // webhook-only signing secret is not part of the default (socket)
+      // setup path, so it must not join the credential mix.
+      expect(slackCard.querySelector('.ctg__cred')?.textContent).toBe('Bot token')
       // Matrix has no dedicated credential fields — the footnote derives from
       // its required fields instead of rendering blank.
       const matrixCard = surface.querySelector<HTMLElement>('[data-channel-type="matrix"]')!
@@ -1458,7 +1864,7 @@ describe('ChannelsView compose takeover', () => {
     const ctx = await mountChannelsView({ locale: 'zh-Hans' })
     try {
       await ctx.flush()
-      buttonWithText(ctx.el, '添加渠道').click()
+      ctx.el.querySelector<HTMLButtonElement>('.chb-enroll__title')!.click()
       await ctx.flush()
       const surface = ctx.el.querySelector<HTMLElement>('.chc')!
       const types = Array.from(surface.querySelectorAll('[data-channel-type]'))
@@ -1612,8 +2018,127 @@ describe('ChannelsView compose takeover', () => {
       expect(surface.querySelector('[data-field="app_id"] input')).toBeTruthy()
       const appSecret = surface.querySelector<HTMLInputElement>('[data-field="app_secret"] input')!
       expect(appSecret.type).toBe('password')
+      // API credentials, not login passwords: opted out of password managers
+      // so autofill prompts never claim an app secret.
+      expect(appSecret.getAttribute('autocomplete')).toBe('off')
+      expect(appSecret.hasAttribute('data-1p-ignore')).toBe(true)
+      expect(appSecret.getAttribute('data-lpignore')).toBe('true')
       expect(appSecret.value).toBe('')
       expect(surface.textContent).toContain('Feishu console shortcuts')
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+})
+
+describe('feishu final-step callout', () => {
+  const FEISHU_ROW = {
+    name: 'fs-main',
+    type: 'feishu',
+    status: 'connected',
+    connected: true,
+    enabled: true,
+    configured: true,
+    connected_since: '2026-07-13T08:00:00Z',
+    diagnostics: { delivery: { ingress: {}, outbox: {}, leases: [] } },
+  }
+
+  function feishuGet(connectionMode: string) {
+    return () => ({
+      entry: {
+        name: 'fs-main',
+        type: 'feishu',
+        app_id: 'cli_dummy',
+        app_secret: '***',
+        connection_mode: connectionMode,
+        domain: 'feishu',
+      },
+      secretFields: ['app_secret'],
+    })
+  }
+
+  it('shows on a connected websocket channel with no inbound events yet', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [FEISHU_ROW],
+      channelsGet: feishuGet('websocket'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      const step = page.querySelector<HTMLElement>('.ch-alert--step')
+      expect(step).toBeTruthy()
+      expect(step!.textContent).toContain('Final step in the Feishu console')
+      // The retuned ws_order_note is the body: post-save console guidance.
+      expect(step!.textContent).toContain('事件与回调')
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('self-resolves durably: completed ingress rows (the steady state) count', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [{
+        ...FEISHU_ROW,
+        // The ledger lifecycle is accepted → processing → completed and
+        // completed rows persist — a healthy channel with its backlog drained
+        // reports ONLY completed counts, and must stay resolved.
+        diagnostics: { delivery: { ingress: { completed: { count: 2 } }, outbox: {}, leases: [] } },
+      }],
+      channelsGet: feishuGet('websocket'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('stays resolved while an event is still in flight', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [{
+        ...FEISHU_ROW,
+        diagnostics: { delivery: { ingress: { accepted: { count: 2 } }, outbox: {}, leases: [] } },
+      }],
+      channelsGet: feishuGet('websocket'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('never shows for a webhook-mode channel', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [FEISHU_ROW],
+      channelsGet: feishuGet('webhook'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('fails closed when the channel config cannot be loaded', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [FEISHU_ROW],
+      channelsGet: () => {
+        throw new Error('config read failed')
+      },
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      // Mode unknown → no websocket guidance rather than guessing: a webhook
+      // channel must never see the long-connection final-step callout.
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
     } finally {
       ctx.app.unmount()
     }

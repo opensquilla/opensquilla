@@ -53,18 +53,6 @@ export const CHANNEL_STATUS_ORDER: readonly ChannelStatusKey[] = [
   'unknown',
 ]
 
-/** Tone per presentation key — used where a chip is built from a key alone. */
-export const CHANNEL_STATUS_TONES: Record<ChannelStatusKey, ChannelStatusTone> = {
-  connected: 'ok',
-  pendingRestart: 'info',
-  notRunning: 'muted',
-  disabled: 'muted',
-  restarting: 'info',
-  failed: 'danger',
-  exhausted: 'danger',
-  unknown: 'muted',
-}
-
 // The delivery-journal error taxonomy (channels/contract.py). Unknown classes
 // simply get no cause line.
 const ERROR_CLASSES = new Set([

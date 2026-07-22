@@ -57,11 +57,22 @@ export function useChannelCatalogI18n() {
     return tr(`setup.channelCatalog.groups.${group}`, fallback)
   }
 
+  // Select-choice display labels: the backend ships raw enum values
+  // ("feishu", "lark"); an overlay key names them for humans (飞书（中国）
+  // / Lark（国际）). Per-type key wins, then the shared key, else the raw
+  // choice value unchanged — the submitted value is always the raw choice.
+  function localizeFieldChoice(type: string, name: string, choice: string, fallback: string): string {
+    const typed = `setup.channelCatalog.${type}.fields.${name}.choices.${choice}`
+    if (te(typed)) return t(typed)
+    return tr(`setup.channelCatalog.fields.${name}.choices.${choice}`, fallback)
+  }
+
   return {
     localizeDescription,
     localizeLabel,
     localizeNeeds,
     localizeFieldLabel,
+    localizeFieldChoice,
     localizeFieldDescription,
     localizeGroupLabel,
   }

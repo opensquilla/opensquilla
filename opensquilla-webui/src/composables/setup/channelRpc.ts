@@ -1,9 +1,9 @@
 // Shared channel-entry RPC edge: the ONE place that talks to
 // onboarding.channel.probe / onboarding.channel.upsert and interprets their
-// restart flags. Both the Settings channel form (useSetupCatalog) and the
-// /channels in-place editor (useChannelEditor) import these wrappers, so the
-// two surfaces cannot drift apart on sentinel handling or restart semantics
-// while both exist.
+// restart flags. The /channels in-place editor (useChannelEditor) calls the
+// wrappers, and the draft form (useSetupChannelsForm) scrubs its payloads
+// through stripRedactionSentinels, so the two layers cannot drift apart on
+// sentinel handling or restart semantics.
 
 /** The redaction placeholder channels.get uses for stored secrets. */
 export const REDACTED_SENTINEL = '***'

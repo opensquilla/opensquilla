@@ -693,54 +693,21 @@
     },
     "channels": {
       "title": "Canaux",
-      "configuredCount": "{count} configuré(s)",
-      "channelType": "Type de canal",
-      "needs": "Le canal a besoin de",
       "save": "Enregistrer le canal",
-      "runtimeStatus": "État d'exécution",
-      "none": "Aucun canal configuré.",
-      "enable": "Activer",
-      "disable": "Désactiver",
       "remove": "Supprimer",
       "removeConfirmTitle": "Supprimer ce canal ?",
       "removeConfirmBody": "{name} sera supprimé de la configuration. Redémarrage requis pour prendre effet.",
       "removeConfirmPrimary": "Supprimer",
       "testConnection": "Tester la connexion",
       "testing": "Test en cours…",
-      "testVerified": "Vérifié — fournisseur joignable en {ms} ms",
-      "testFailed": "Échec du test de connexion : {detail}",
-      "testUnsupported": "Ce type de canal n'a pas de sonde en direct sûre — enregistrez puis surveillez son état d'exécution",
-      "testError": "Le test n'a pas pu s'exécuter : {error}",
-      "testNoDetail": "aucun détail supplémentaire",
-      "editTitle": "Modifier le canal : {name}",
-      "addNewInstead": "ajouter un nouveau canal",
       "nameLocked": "Le renommage n'est pas pris en charge — utilisez « Dupliquer comme nouveau »",
-      "editForbidden": "La modification de la configuration d'un canal nécessite un accès administrateur.",
-      "editGone": "Le canal {name} n'existe plus.",
-      "editLoadFailed": "Impossible de charger la configuration de ce canal.",
-      "editRetry": "Réessayer",
-      "editSetUpNew": "Configurer un nouveau canal",
-      "editBack": "Retour au formulaire",
-      "editUnknownType": "Type de canal inconnu : {type}",
-      "duplicateWarn": "Un canal nommé {name} existe déjà ({type}) — l'enregistrement le remplacera.",
-      "editInstead": "Le modifier plutôt",
-      "duplicateAsNew": "Dupliquer comme nouveau…",
       "saveChanges": "Enregistrer les modifications",
-      "secretStored": "Enregistré ••••••••",
       "secretReplace": "Remplacer",
       "secretReplacePlaceholder": "Collez la nouvelle valeur",
       "secretKeepStored": "Conserver la valeur enregistrée",
-      "edit": "Modifier",
-      "openRuntime": "Ouvrir l'état d'exécution →",
-      "details": "Détails →",
-      "galleryPick": "Choisissez une plateforme à connecter",
-      "changeType": "Changer de type",
-      "openDocs": "Ouvrir la console du fournisseur ↗",
-      "needsPublicUrl": "URL publique requise",
-      "advancedGroup": "Avancé : accès et comportement",
+      "advancedGroup": "Avancé",
       "fieldRequired": "Ce champ est obligatoire",
       "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
-      "pairingExplainer": "Avec l'appairage, la première personne qui écrit à votre bot reçoit un code à 8 caractères — approuvez-le dans Canaux → Appairages. Le bot lui indique ensuite qu'elle peut commencer (désactivable ci-dessous).",
       "jump": {
         "description": "Les canaux se configurent dans l'espace de travail des canaux : choisissez une plateforme, remplissez le formulaire et testez la connexion là où le canal s'exécute.",
         "open": "Ouvrir l'espace des canaux",
@@ -756,7 +723,7 @@
         "credentials_link": "Ouvrir la page des identifiants (App id / App secret)",
         "quick_apply_link": "Pré-remplir la demande de toutes les permissions requises",
         "needAppId": "renseignez d'abord l'App id",
-        "ws_order_note": "Ordre pour la connexion longue : enregistrez d'abord ce canal pour établir la connexion, puis basculez la console sur « recevoir les événements par connexion longue » — ce choix ne s'enregistre que pendant qu'une connexion est active."
+        "ws_order_note": "Connexion établie — il reste une étape dans la console Feishu : ouvrez 事件与回调 et basculez la réception des événements sur 使用长连接接收事件. La console n'enregistre ce choix que pendant qu'un client est connecté, d'où cette étape après l'enregistrement. Cet avis disparaît au premier événement reçu."
       }
     },
     "search": {
@@ -1148,29 +1115,90 @@
     },
     "channelCatalog": {
       "fields": {
-        "group_session_scope": { "label": "Portée de session de groupe" },
-        "busy_input_mode": { "label": "Saisie pendant l'exécution" },
-        "dm_access": { "label": "Accès aux messages privés" },
-        "pairing_approved_notice": { "label": "Prévenir l'expéditeur après approbation" },
-        "allowed_senders": { "label": "Ids d'expéditeurs autorisés" },
-        "status_reactions_enabled": { "label": "Réactions d'état des messages" },
-        "api_base": { "label": "Base d'API" },
-        "name": { "label": "Nom du canal", "description": "Identifiant unique de cette entrée de canal." },
-        "agent_id": { "label": "Id d'agent" },
-        "enabled": { "label": "Activé" },
-        "default_chat_id": { "label": "Id de discussion par défaut" },
-        "connection_mode": { "label": "Mode de connexion" },
-        "app_id": { "label": "App id" },
-        "app_secret": { "label": "App secret" },
-        "signing_secret": { "label": "Secret de signature" },
-        "client_id": { "label": "ID client" },
-        "client_secret": { "label": "Secret client" },
-        "bot_id": { "label": "ID du bot" },
-        "bot_secret": { "label": "Secret du bot" },
-        "corp_secret": { "label": "Secret d'entreprise" },
-        "homeserver_url": { "label": "URL du homeserver" },
-        "user_id": { "label": "ID utilisateur ({'@'}user:server)" },
-        "debounce_window_s": { "label": "Fenêtre de regroupement (s)" }
+        "group_session_scope": {
+          "label": "Portée de session de groupe",
+          "choices": {
+            "per_sender": "Par expéditeur",
+            "shared_room": "Salon partagé"
+          }
+        },
+        "busy_input_mode": {
+          "label": "Saisie pendant l'exécution"
+        },
+        "dm_access": {
+          "label": "Accès aux messages privés"
+        },
+        "pairing_approved_notice": {
+          "label": "Prévenir l'expéditeur après approbation"
+        },
+        "allowed_senders": {
+          "label": "Ids d'expéditeurs autorisés"
+        },
+        "status_reactions_enabled": {
+          "label": "Réactions d'état des messages"
+        },
+        "api_base": {
+          "label": "Base d'API"
+        },
+        "name": {
+          "label": "Nom du canal",
+          "description": "Identifiant unique de cette entrée de canal."
+        },
+        "agent_id": {
+          "label": "Id d'agent"
+        },
+        "enabled": {
+          "label": "Activé"
+        },
+        "default_chat_id": {
+          "label": "Id de discussion par défaut"
+        },
+        "connection_mode": {
+          "label": "Mode de connexion",
+          "choices": {
+            "webhook": "Webhook (rappel)",
+            "websocket": "WebSocket (connexion longue)"
+          }
+        },
+        "app_id": {
+          "label": "App id"
+        },
+        "app_secret": {
+          "label": "App secret"
+        },
+        "signing_secret": {
+          "label": "Secret de signature"
+        },
+        "client_id": {
+          "label": "ID client"
+        },
+        "client_secret": {
+          "label": "Secret client"
+        },
+        "bot_id": {
+          "label": "ID du bot"
+        },
+        "bot_secret": {
+          "label": "Secret du bot"
+        },
+        "corp_secret": {
+          "label": "Secret d'entreprise"
+        },
+        "homeserver_url": {
+          "label": "URL du homeserver"
+        },
+        "user_id": {
+          "label": "ID utilisateur ({'@'}user:server)"
+        },
+        "debounce_window_s": {
+          "label": "Fenêtre de regroupement (s)"
+        },
+        "transport_name": {
+          "choices": {
+            "polling": "Interrogation (polling)",
+            "webhook": "Webhook"
+          }
+        }
       },
       "groups": {
         "basic": "Général",
@@ -1189,7 +1217,11 @@
         ]
       },
       "discord": {
-        "fields": { "token": { "label": "Jeton du bot" } },
+        "fields": {
+          "token": {
+            "label": "Jeton du bot"
+          }
+        },
         "description": "Bot Discord utilisant le websocket gateway.",
         "needs": [
           "Jeton du bot."
@@ -1199,7 +1231,12 @@
         "label": "Feishu / Lark",
         "fields": {
           "domain": {
-            "label": "Domaine"
+            "label": "Région",
+            "description": "Choisissez la console qui a émis cet App ID.",
+            "choices": {
+              "feishu": "Feishu (Chine)",
+              "lark": "Lark (international)"
+            }
           }
         },
         "description": "Bot Feishu (ou Lark) — connexion webhook ou websocket.",
@@ -1225,7 +1262,17 @@
         ]
       },
       "slack": {
-        "fields": { "token": { "label": "Jeton du bot" } },
+        "fields": {
+          "token": {
+            "label": "Jeton du bot"
+          },
+          "connection_mode": {
+            "choices": {
+              "socket": "Socket Mode",
+              "webhook": "Webhook (rappel)"
+            }
+          }
+        },
         "description": "Bot d'espace Slack — mode Socket (websocket) ou webhook Events API.",
         "needs": [
           "Jeton du bot (xoxb-…).",
@@ -1233,7 +1280,11 @@
         ]
       },
       "telegram": {
-        "fields": { "token": { "label": "Jeton du bot" } },
+        "fields": {
+          "token": {
+            "label": "Jeton du bot"
+          }
+        },
         "description": "API Bot Telegram — transport polling ou webhook.",
         "needs": [
           "Jeton du bot."
@@ -1584,44 +1635,14 @@
     },
     "channels": {
       "title": "Canaux",
-      "subtitle": "État d'exécution des canaux configurés. Ajoutez ou modifiez la configuration des canaux dans les Paramètres ou la CLI.",
-      "settingsHint": "La configuration des canaux se trouve dans les Paramètres",
-      "openSettings": "Ouvrir les paramètres",
-      "totalChannels": "Total des canaux",
-      "typeCount": "{n} types",
-      "live": "en direct",
-      "unhealthy": "{n} en mauvaise santé",
-      "allIdle": "tous inactifs",
-      "needAttention": "{n} nécessitent votre attention",
-      "restartAttempts": "Tentatives de redémarrage",
-      "sinceGatewayStart": "depuis le démarrage de la passerelle",
+      "subtitle": "État d'exécution des canaux configurés. Ajoutez, modifiez et associez des canaux directement ici, ou utilisez la CLI.",
       "configuredChannels": "Canaux configurés",
       "unknown": "Inconnu",
-      "adapterConfig": "Configuration de l'adaptateur",
       "emptyTitle": "Aucun canal configuré.",
       "emptyMsg": "Aucun canal pour l'instant. Connectez Slack, Telegram, Discord et plus encore pour que votre agent discute là où travaille votre équipe.",
-      "openSettingsBtn": "Ouvrir les paramètres",
       "loadFailed": "Échec du chargement des canaux",
-      "noInactive": "aucun canal inactif",
-      "disabledCount": "{n} désactivé(s)",
-      "configuredButIdle": "configuré mais inactif",
       "addChannel": "Ajouter un canal",
       "addFirstChannel": "Ajouter votre premier canal",
-      "summaryLabel": "Résumé de l'état des canaux",
-      "filtersLabel": "Filtres des canaux",
-      "searchLabel": "Rechercher des canaux",
-      "searchPlaceholder": "Rechercher des canaux…",
-      "providerFilter": "Filtrer par type",
-      "allProviders": "Tous les types",
-      "filteredCount": "{count} affiché(s)",
-      "provider": "Fournisseur",
-      "channel": "Canal",
-      "transport": "Transport",
-      "status": "État",
-      "maturity": "Maturité",
-      "connectedSince": "Connecté depuis",
-      "actions": "Actions",
-      "noMatches": "Aucun canal ne correspond à ces filtres.",
       "detailLabel": "Détails du canal {name}",
       "detailSections": "Sections des détails du canal",
       "testConnection": "Tester",
@@ -1657,7 +1678,9 @@
         "otherSettings": "Autres réglages",
         "unknownType": "Aucun formulaire d'édition pour ce type de canal ({type}) ; modifiez l'entrée dans le fichier de configuration.",
         "entryMissing": "Canal {name} introuvable dans la configuration.",
-        "editIntro": "Les modifications s'appliquent à l'enregistrement. Un champ secret vide conserve la valeur stockée."
+        "editIntro": "Les modifications s'appliquent à l'enregistrement. Un champ secret vide conserve la valeur stockée.",
+        "boolOn": "Activé",
+        "boolOff": "Désactivé"
       },
       "compose": {
         "back": "Canaux",
@@ -1671,20 +1694,6 @@
       "probeUnsupported": "Test de connexion en direct indisponible",
       "probeLatency": "Fournisseur vérifié en {ms} ms.",
       "probeNoDetail": "Le fournisseur n'a renvoyé aucun détail supplémentaire.",
-      "healthChecks": "Contrôles d'état",
-      "authentication": "Authentification",
-      "authDescription": "Identifiants du fournisseur et identité authentifiée",
-      "passed": "Réussi",
-      "notVerified": "Non vérifié",
-      "healthy": "Sain",
-      "transportDescription": "État de la connexion {transport}",
-      "durableDelivery": "Livraison durable",
-      "durableDescription": "Journal des entrées, accusé de réception des sorties et protection contre la répétition",
-      "active": "Actif",
-      "runtime": "Exécution",
-      "botIdentity": "Identité du bot",
-      "capabilityEvidence": "Preuves des fonctionnalités",
-      "capabilityEvidenceHint": "Les fonctionnalités sont affichées séparément de la maturité. Les méthodes prouvent l'implémentation ; une validation en conditions réelles par le fournisseur reste nécessaire pour promouvoir une version.",
       "implemented": "Implémenté",
       "declaredOnly": "Déclaré uniquement",
       "methodEvidence": "Pris en charge par : {methods}",
@@ -1692,23 +1701,11 @@
       "declarationEvidence": "Déclaré par l'adaptateur ; validation en conditions réelles en attente",
       "noCapabilityEvidence": "Cet adaptateur n'a publié aucune preuve de fonctionnalité.",
       "lastError": "Dernière erreur",
-      "deliveryJournal": "Journal de livraison",
       "acceptedIngress": "Entrées acceptées",
       "processingIngress": "Entrées en cours de traitement",
       "confirmedOutbound": "Sorties confirmées",
-      "unknownOutbound": "Résultat inconnu",
-      "transportLease": "Propriété du transport",
-      "leaseState": "Bail du compte",
-      "leaseHeld": "Détenu par cette passerelle",
-      "leaseExpired": "Expiré",
-      "noActiveLease": "Aucun bail actif",
-      "networkProbe": "Test réseau",
       "savedConfiguration": "Configuration enregistrée",
-      "editInSettings": "Modifier dans les Paramètres",
       "secretRedactionHint": "Les secrets stockés ne sont jamais affichés. Utilisez Modifier puis Remplacer pour saisir une nouvelle valeur.",
-      "secretStored": "Stocké de manière sécurisée",
-      "selectConfigurationHint": "Ouvrez cet onglet pour charger la configuration expurgée.",
-      "configurationUnavailable": "Configuration indisponible : {error}",
       "toastProbePassed": "{name} vérifié en {ms} ms",
       "toastProbeUnsupported": "{name} ne prend pas en charge les tests en direct sécurisés",
       "toastProbeFailed": "Impossible de tester {name} : {error}",
@@ -1718,15 +1715,15 @@
       "toastDisabled": "{name} désactivé ; redémarrez la passerelle pour appliquer la modification",
       "toastToggleFailed": "Impossible de mettre à jour {name} : {error}",
       "pairings": {
-        "title": "Accès associé",
+        "title": "Membres",
         "description": "Vérifiez qui peut démarrer des conversations sur ce canal. Les approbations ne s’appliquent qu’à ce canal.",
         "refresh": "Actualiser",
-        "summaryLabel": "Résumé des accès associés",
+        "summaryLabel": "Résumé des membres",
         "pending": "En attente",
         "approved": "Approuvé",
-        "loading": "Chargement des accès associés…",
+        "loading": "Chargement des membres…",
         "tryAgain": "Réessayer",
-        "emptyTitle": "Aucun accès associé",
+        "emptyTitle": "Aucun membre pour l'instant",
         "emptyDescription": "Les nouvelles demandes et les expéditeurs approuvés apparaîtront ici.",
         "pendingRequests": "Demandes en attente",
         "approvedAccess": "Accès approuvé",
@@ -1768,6 +1765,7 @@
         "adminOnlyHint": "Admin ajouté directement",
         "membersHint": "Les membres peuvent discuter et utiliser les outils sûrs. Les admins disposent de tous les outils, avec une confirmation par commande pour les actions privilégiées.",
         "approveAdminSuccess": "{sender} approuvé comme admin du canal",
+        "adminGrantFailedAfterApprove": "{sender} a été approuvé, mais l'attribution admin a échoué — réessayez depuis la liste des membres.",
         "approveAdminConfirmBody": "Accorder à {sender} un accès admin à {channel} ? Il obtient tous les outils et le bot l'informera qu'il peut commencer à discuter.",
         "setAsAdminConfirmTitle": "Faire de ce membre un admin ?",
         "setAsAdminConfirmBody": "Donner à {sender} tous les outils sur {channel} ? Les actions privilégiées demandent toujours une confirmation par commande.",
@@ -1775,7 +1773,8 @@
         "removeAdminConfirmBody": "Ramener {sender} à un accès membre sur {channel} ? Il peut toujours discuter et utiliser les outils sûrs.",
         "adminGrantedSuccess": "{sender} est désormais admin du canal",
         "adminRemovedSuccess": "Droits d'admin retirés à {sender}",
-        "adminUpdateFailed": "Impossible de mettre à jour l'accès admin pour {sender} : {error}"
+        "adminUpdateFailed": "Impossible de mettre à jour l'accès admin pour {sender} : {error}",
+        "asAdminBootstrap": "C'est moi — définir comme admin"
       },
       "probeFailed": "Échec du test de connexion",
       "editCredentials": "Modifier les identifiants",
@@ -1784,17 +1783,9 @@
       "removeChannel": "Supprimer",
       "queryNotFound": "Canal {name} introuvable — il a peut-être été supprimé.",
       "queryNotFoundDismiss": "Fermer",
-      "connection": "Connexion",
-      "connectionDescription": "Identifiants du fournisseur et identité authentifiée",
-      "connectedShort": "Connecté",
-      "verifyCredentials": "Vérifier les identifiants",
-      "durableReviewHint": "Certaines livraisons nécessitent une vérification — réessayer pourrait les dupliquer",
-      "needsReviewCount": "{count} à vérifier",
       "needsReview": "À vérifier",
-      "worksTitle": "Ce que fait ce canal",
       "worksHint": "Fonctionnalités de la plateforme prises en charge, à configurer ou impossibles pour ce type de canal.",
       "maturityHint": "Niveau de complétude de cet adaptateur par rapport à l'API complète du fournisseur",
-      "technicalDetails": "Détails techniques",
       "supported": "Pris en charge",
       "notSupported": "Non pris en charge",
       "needsConfig": "À configurer",
@@ -1818,7 +1809,6 @@
         "scopes": "Portées"
       },
       "staleData": "Le statut peut être obsolète — dernière mise à jour {time}.",
-      "clearFilters": "Effacer les filtres",
       "unconfiguredTitle": "En cours d'exécution mais absent de la configuration",
       "unconfiguredHint": "Ces canaux s'exécutent dans cette passerelle mais ne figurent pas dans la configuration enregistrée.",
       "maturityValue": {
@@ -1828,10 +1818,7 @@
         "unrated": "Non évalué"
       },
       "opsActionsLabel": "Actions d'exécution",
-      "configActionsLabel": "Actions de configuration",
       "configActionHint": "Écrit la configuration — prend effet après un redémarrage de la passerelle",
-      "editActionHint": "Ouvre l'éditeur dans Config. des canaux",
-      "pendingApproval": "En attente d'approbation",
       "home": {
         "connectedFor": "Durée active",
         "membersFact": "Membres",
@@ -1843,13 +1830,29 @@
         "rejectLabel": "Refuser la demande d'appairage de {sender}",
         "rejectSuccess": "Demande d'appairage de {sender} refusée",
         "rejectFailed": "Impossible de refuser {sender} : {error}",
-        "fixCredentials": "Corriger les identifiants"
+        "fixCredentials": "Corriger les identifiants",
+        "galleryLead": "Choisissez une plateforme pour commencer",
+        "awaitingFact": "En attente",
+        "folio": {
+          "allConnected": "Tous connectés",
+          "connectedRatio": "{ratio} connectés",
+          "down": "{count} en panne",
+          "updated": "Mis à jour {time}",
+          "rosterLabel": "Plateformes en service : {names}"
+        },
+        "enroll": {
+          "title": "Connecter une plateforme",
+          "chip": "Ajouter {platform}"
+        }
       },
       "detail": {
         "bot": "Bot {id}",
-        "connectedFor": "Connecté depuis {duration}",
+        "connectedFor": "Durée active {duration}",
         "restarts": "{count} redémarrage | {count} redémarrages",
-        "capabilityReference": "Référence des capacités"
+        "capabilityReference": "Référence des capacités",
+        "copyBotId": "Copier l'ID du bot : {id}",
+        "botIdCopied": "ID du bot copié",
+        "finalStepTitle": "Dernière étape dans la console Feishu"
       }
     },
     "overview": {

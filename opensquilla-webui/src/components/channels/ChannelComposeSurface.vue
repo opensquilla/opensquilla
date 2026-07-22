@@ -5,7 +5,7 @@
 // motion tokens; reduced motion collapses it to instant. All draft state
 // lives in the view-owned compose editor instance — this component is
 // presentation and event wiring only.
-import { computed, nextTick, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
 import ChannelTypeGallery from '@/components/channels/ChannelTypeGallery.vue'
@@ -45,24 +45,88 @@ const transportLabel = computed(() => {
 })
 const testing = computed(() => props.editor.probe.value.phase === 'running')
 
-// Autofocus the Name field once the picked type's form is live.
+// Autofocus the first field the user must actually fill once the picked
+// type's form is live: the first visible required field whose value is empty
+// (the lead credential — the suggested name arrives prefilled), falling back
+// to the name field when everything required is already seeded.
+function firstActionableFieldName(): string {
+  const rows = props.editor.panel.value.channelFields
+  const target = rows.find(row =>
+    row.field.required === true
+    && row.field.advanced !== true
+    && !String(row.value ?? '').trim())
+  return target?.field.name || 'name'
+}
+
 watch(
   () => [props.pickedType, props.editor.phase.value] as const,
   ([type, phase], previous) => {
     const [oldType, oldPhase] = previous ?? ['', 'idle']
     if (type && phase === 'active' && (type !== oldType || oldPhase !== 'active')) {
       void nextTick(() => {
-        document.querySelector<HTMLElement>('.chc [data-field="name"] input')?.focus()
+        // The deep-link late-seed re-runs startCompose (phase bounces
+        // loading → active); if the user already put focus somewhere in the
+        // form, the reseed must not yank it away.
+        const active = document.activeElement
+        if (active instanceof HTMLElement && active.closest('.chc__editor')) return
+        const name = firstActionableFieldName()
+        document.querySelector<HTMLElement>(
+          `.chc [data-field="${name}"] input, .chc [data-field="${name}"] select`,
+        )?.focus()
       })
     }
   },
 )
+
+/* ── Dialog a11y: initial focus, Tab trap, focus return ────────────────── */
+
+const surfaceRef = ref<HTMLElement | null>(null)
+let invokerEl: HTMLElement | null = null
+
+// Escape stays with the host view's two-stage document handler; this listener
+// only keeps Tab cycling inside the aria-modal surface.
+function trapFocus(event: KeyboardEvent): void {
+  if (event.key !== 'Tab') return
+  const rootEl = surfaceRef.value
+  if (!rootEl) return
+  const focusables = Array.from(rootEl.querySelectorAll<HTMLElement>(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+    + 'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])'))
+  if (focusables.length === 0) return
+  const first = focusables[0]
+  const last = focusables[focusables.length - 1]
+  const activeEl = document.activeElement as HTMLElement | null
+  const inside = !!activeEl && rootEl.contains(activeEl)
+  if (event.shiftKey && (!inside || activeEl === first)) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && (!inside || activeEl === last)) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+onMounted(() => {
+  // Remember the invoker (the Add-channel button) so dismissing the takeover
+  // hands focus back instead of dropping it on <body>.
+  invokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  document.addEventListener('keydown', trapFocus)
+  // Move focus INTO the dialog on open; the post-pick watch above then moves
+  // it to the Name field once the form is live.
+  void nextTick(() => surfaceRef.value?.focus())
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', trapFocus)
+  if (invokerEl?.isConnected) invokerEl.focus()
+  invokerEl = null
+})
 </script>
 
 <template>
   <div class="chc" role="dialog" aria-modal="true" :aria-label="t('console.channels.addChannel')">
     <div class="chc__scrim" @click="emit('exit')"></div>
-    <div class="chc__surface">
+    <div ref="surfaceRef" class="chc__surface" tabindex="-1">
       <header class="chc__head">
         <button type="button" class="chc__back" @click="emit('exit')">
           <span aria-hidden="true">‹</span>
@@ -149,6 +213,7 @@ watch(
   left: 50%;
   max-height: calc(100vh - 96px);
   max-width: 720px;
+  outline: 0;
   overflow: hidden;
   position: fixed;
   top: 64px;

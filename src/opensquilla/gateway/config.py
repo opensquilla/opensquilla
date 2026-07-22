@@ -1512,8 +1512,20 @@ class FeishuChannelEntry(ConfiguredChannelEntry):
 
     @model_validator(mode="after")
     def _validate_webhook_verification(self) -> FeishuChannelEntry:
-        if self.connection_mode == "webhook" and not self.verification_token.strip():
-            raise ValueError("feishu webhook channels require verification_token")
+        # Webhook ingress authenticates via the encrypt_key HMAC signature
+        # and/or the verification token — either one is a real credential
+        # (configs from earlier releases commonly carry encrypt_key alone).
+        # Disabled entries stay loadable so config migration can park an
+        # unverifiable legacy entry instead of failing the whole boot.
+        if (
+            self.enabled
+            and self.connection_mode == "webhook"
+            and not self.verification_token.strip()
+            and not self.encrypt_key.strip()
+        ):
+            raise ValueError(
+                "feishu webhook channels require verification_token or encrypt_key"
+            )
         return self
 
 

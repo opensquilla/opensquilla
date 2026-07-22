@@ -6,10 +6,6 @@
         <p class="ch-stage__subtitle control-stage__subtitle">{{ t('console.channels.subtitle') }}</p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
-        <button class="btn btn--primary" type="button" @click="openChannelCompose">
-          <Icon name="plus" :size="16" aria-hidden="true" />
-          <span>{{ t('console.channels.addChannel') }}</span>
-        </button>
         <button class="btn btn--ghost" type="button" :title="t('console.common.refresh')" :disabled="loading || refreshing" @click="manualRefresh">
           <Icon name="refresh" :size="16" aria-hidden="true" :class="{ 'is-spinning': refreshing }" />
           <span>{{ refreshing ? t('console.common.refreshing') : t('console.common.refresh') }}</span>
@@ -33,14 +29,17 @@
       <LoadingSpinner />
     </div>
 
-    <section v-else-if="channels.length === 0 && unconfiguredChannels.length === 0" class="control-empty ch-empty">
-      <div class="ch-empty__icon" aria-hidden="true"><Icon name="channels" :size="34" /></div>
-      <div class="control-empty__title">{{ t('console.channels.emptyTitle') }}</div>
-      <p class="control-empty__hint">{{ t('console.channels.emptyMsg') }}</p>
-      <button class="btn btn--primary" type="button" @click="openChannelCompose">
-        <Icon name="plus" :size="16" aria-hidden="true" />
-        <span>{{ t('console.channels.addFirstChannel') }}</span>
-      </button>
+    <!-- ===== Tier 1 (0 configured channels): the inline platform gallery IS
+         the page content and the single add entry — no top-right button. ===== -->
+    <section v-else-if="addTier === 'gallery'" class="ch-gallery-home" :aria-label="t('console.channels.home.galleryLead')">
+      <p class="ch-gallery-home__lead">{{ t('console.channels.home.galleryLead') }}</p>
+      <ChannelTypeGallery
+        :channels="composeEditor.catalog.value"
+        :pending="composeEditor.catalogPending.value"
+        :error="composeEditor.catalogError.value"
+        @pick="openComposeWithType"
+        @retry="composeEditor.loadCatalog"
+      />
     </section>
 
     <!-- ================= Drill-in: one channel as a full page ============= -->
@@ -77,11 +76,17 @@
               show-cause
             />
             <span class="chd__fact">{{ transportLabel(selectedChannel, t('console.channels.notReported')) }}</span>
-            <span v-if="selectedChannel.bot_user_id" class="chd__fact chd__fact--mono">{{ t('console.channels.detail.bot', { id: selectedChannel.bot_user_id }) }}</span>
+            <button
+              v-if="selectedChannel.bot_user_id"
+              type="button"
+              class="chd__fact chd__fact--mono chd__botid"
+              :title="t('console.channels.detail.copyBotId', { id: selectedChannel.bot_user_id })"
+              @click="copyBotId(selectedChannel.bot_user_id)"
+            >{{ t('console.channels.detail.bot', { id: truncateId(selectedChannel.bot_user_id) }) }}</button>
             <span v-if="selectedChannel.connected_since" class="chd__fact" :title="formatSince(selectedChannel.connected_since, locale)">
               {{ t('console.channels.detail.connectedFor', { duration: formatConnectedDuration(selectedChannel.connected_since) }) }}
             </span>
-            <span class="chd__fact">{{ restartsLabel(selectedChannel) }}</span>
+            <span v-if="(selectedChannel.restart_attempts ?? 0) > 0" class="chd__fact">{{ restartsLabel(selectedChannel) }}</span>
           </p>
         </div>
         <!-- Runtime ops first, then configuration writes, destructive Remove
@@ -123,19 +128,37 @@
       </div>
 
       <!-- The same alert strip the dashboard card renders, so the two
-           surfaces cannot drift. -->
+           surfaces cannot drift. The as-admin checkbox is controlled by the
+           members store here: the banner and the Members row for the same
+           pairing share ONE override, and the approve runs through the same
+           confirmed members flow as the row. -->
       <ChannelAlerts
         :pending-pairing="drillPending"
         :pending-overflow="Math.max(0, drillPendingCount - 1)"
         :default-as-admin="drillDefaultAsAdmin"
+        :as-admin-checked="drillAsAdminChecked"
         :error-text="drillErrorText"
         :show-fix-credentials="!editMode"
-        :busy="pairingBusy(selectedName)"
-        @approve="asAdmin => approvePairing(selectedName, drillPending, asAdmin)"
+        :busy="drillPairingBusy"
+        @approve="approveDrillPending"
+        @set-as-admin="setDrillAsAdmin"
         @reject="rejectPairing(selectedName, drillPending)"
         @restart="restartChannel(selectedChannel)"
         @fix-credentials="enterEdit"
       />
+
+      <!-- Fresh feishu websocket channel: the Feishu console only persists the
+           long-connection event subscription while a client is connected, so
+           the final step happens THERE, after this save. Persistent (not a
+           toast) until the first inbound event proves the subscription works;
+           webhook-mode channels never see it. -->
+      <section v-if="feishuFinalStepVisible" class="ch-alert ch-alert--step" role="status">
+        <Icon name="info" :size="18" aria-hidden="true" />
+        <div>
+          <strong>{{ t('console.channels.detail.finalStepTitle') }}</strong>
+          <p>{{ t('setup.channels.aids.ws_order_note') }}</p>
+        </div>
+      </section>
 
       <div class="chd__cols">
         <nav class="chd__nav" :aria-label="t('console.channels.detailSections')">
@@ -223,18 +246,47 @@
       </div>
     </section>
 
-    <!-- ================= Home: dashboard of channel cards ================= -->
+    <!-- ============ Home: the fleet front page (folio + ledger) ========== -->
     <section v-else class="chb" :aria-label="t('console.channels.configuredChannels')">
       <p v-if="queryMissing" class="ch-query-missing" role="status">
         <span>{{ t('console.channels.queryNotFound', { name: selectedName }) }}</span>
         <button type="button" class="btn btn--ghost" @click="leaveDetail">{{ t('console.channels.queryNotFoundDismiss') }}</button>
       </p>
-      <div class="chb__grid">
+
+      <!-- Folio (masthead dateline): a roster of the platforms in service, a
+           ratio-led health reading, and the as-of time — all left-ragging under
+           one full-width rule that carries the horizontal, so nothing is pinned
+           to the edges and a lone channel can never open a middle void. -->
+      <header v-if="channels.length > 0" class="chb-folio">
+        <span
+          class="chb-folio__roster"
+          role="img"
+          :aria-label="t('console.channels.home.folio.rosterLabel', { names: platformNames })"
+        >
+          <ChannelBrandMark
+            v-for="type in fleetPlatformTypes"
+            :key="type"
+            :type="type"
+            :label="providerLabel(type, t('console.channels.unknown'))"
+          />
+        </span>
+        <strong class="chb-folio__lede">{{ fleetAllConnected
+          ? t('console.channels.home.folio.allConnected')
+          : t('console.channels.home.folio.connectedRatio', { ratio: `${fleetConnected} / ${channels.length}` }) }}</strong>
+        <span v-if="fleetDown > 0" class="chb-folio__flag is-down">{{ t('console.channels.home.folio.down', { count: fleetDown }) }}</span>
+        <span v-if="fleetPending > 0" class="chb-folio__flag is-pending">{{ t('console.channels.home.pendingCount', { count: fleetPending }) }}</span>
+        <time class="chb-folio__asof">{{ t('console.channels.home.folio.updated', { time: lastUpdatedLabel }) }}</time>
+      </header>
+
+      <!-- Ledger of full-width channel "stories". channels[0] is the severity
+           sorted lead (rendered larger); the rest are hairline-separated briefs.
+           Every row spans the full measure, so no card can float at half width. -->
+      <div class="chb-ledger">
         <article
-          v-for="ch in channels"
+          v-for="(ch, i) in channels"
           :key="channelKey(ch)"
-          class="chb-card"
-          :class="{ 'is-muted': ch.enabled === false }"
+          class="chb-story"
+          :class="{ 'is-lead': i === 0, 'is-down': presentationFor(ch).tone === 'danger', 'is-muted': ch.enabled === false }"
           role="button"
           tabindex="0"
           :aria-label="t('console.channels.detailLabel', { name: channelKey(ch) })"
@@ -242,93 +294,132 @@
           @keydown.enter.self="openChannel(ch)"
           @keydown.space.self.prevent="openChannel(ch)"
         >
-          <div class="chb-card__top">
-            <ChannelBrandMark :type="String(ch.type || '')" :label="providerLabel(ch.type, t('console.channels.unknown'))" />
-            <div class="chb-card__id">
-              <strong class="chb-card__name">{{ channelKey(ch) }}</strong>
-              <span class="chb-card__sub">{{ cardSubline(ch) }}</span>
+          <ChannelBrandMark
+            class="chb-story__mark"
+            :type="String(ch.type || '')"
+            :label="providerLabel(ch.type, t('console.channels.unknown'))"
+          />
+          <div class="chb-story__head">
+            <div class="chb-story__id">
+              <strong class="chb-story__name">{{ channelKey(ch) }}</strong>
+              <p class="chb-story__deck">
+                <ChannelStatusPill
+                  :status="ch.status"
+                  :enabled="ch.enabled"
+                  :pending-restart="pendingRestart.isPending(channelKey(ch))"
+                  :error-class="lastErrorClass(ch.diagnostics)"
+                  :startup-failed="startupFailure(ch.diagnostics)"
+                />
+                <span class="chb-story__sub">{{ cardSubline(ch) }}</span>
+              </p>
             </div>
-            <ChannelStatusPill
-              class="chb-card__status"
-              :status="ch.status"
-              :enabled="ch.enabled"
-              :pending-restart="pendingRestart.isPending(channelKey(ch))"
-              :error-class="lastErrorClass(ch.diagnostics)"
-              :startup-failed="startupFailure(ch.diagnostics)"
-            />
+            <div class="chb-story__actions">
+              <button
+                v-if="ch.enabled === false"
+                class="btn btn--ghost"
+                type="button"
+                :disabled="actionPending(ch, 'toggle')"
+                @click.stop="toggleChannel(ch)"
+              >{{ t('console.channels.enable') }}</button>
+              <template v-else>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  :disabled="actionPending(ch, 'probe')"
+                  @click.stop="probeChannel(ch)"
+                >{{ actionPending(ch, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</button>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  :disabled="actionPending(ch, 'restart') || !adapterLoaded(ch)"
+                  :title="!adapterLoaded(ch) ? t('console.channels.restartNotLoaded') : undefined"
+                  @click.stop="restartChannel(ch)"
+                >{{ t('console.channels.restart') }}</button>
+              </template>
+              <span class="chb-story__go" aria-hidden="true">{{ t('console.channels.home.details') }} →</span>
+            </div>
           </div>
-          <div class="chb-card__facts">
-            <div class="chb-fact"><span class="chb-fact__k">{{ t('console.channels.home.connectedFor') }}</span><span class="chb-fact__v">{{ connectedDuration(ch) }}</span></div>
-            <div class="chb-fact"><span class="chb-fact__k">{{ t('console.channels.home.membersFact') }}</span><span class="chb-fact__v">{{ factValue(ch, 'members') }}</span></div>
-            <div class="chb-fact"><span class="chb-fact__k">{{ t('console.channels.home.adminsFact') }}</span><span class="chb-fact__v">{{ factValue(ch, 'admins') }}</span></div>
-            <span
-              v-if="cardPendingCount(ch) > 0"
-              class="chb-card__pending"
-              :title="t('console.channels.pairings.pendingBadge', { count: cardPendingCount(ch) })"
-            >{{ t('console.channels.home.pendingCount', { count: cardPendingCount(ch) }) }}</span>
-          </div>
+          <dl class="chb-story__ledger">
+            <div class="chb-figure">
+              <dt>{{ t('console.channels.home.connectedFor') }}</dt>
+              <dd :class="{ 'is-null': connectedDuration(ch) === '—' }">{{ connectedDuration(ch) }}</dd>
+            </div>
+            <div class="chb-figure">
+              <dt>{{ t('console.channels.home.membersFact') }}</dt>
+              <dd :class="{ 'is-null': factValue(ch, 'members') === '—' }">{{ factValue(ch, 'members') }}</dd>
+            </div>
+            <div class="chb-figure">
+              <dt>{{ t('console.channels.home.adminsFact') }}</dt>
+              <dd :class="{ 'is-null': factValue(ch, 'admins') === '—' }">{{ factValue(ch, 'admins') }}</dd>
+            </div>
+            <div v-if="cardPendingCount(ch) > 0" class="chb-figure chb-figure--alert">
+              <dt>{{ t('console.channels.home.awaitingFact') }}</dt>
+              <dd>{{ cardPendingCount(ch) }}</dd>
+            </div>
+          </dl>
           <ChannelAlerts
+            class="chb-story__alerts"
             :pending-pairing="cardPending(ch)"
             :pending-overflow="Math.max(0, cardPendingCount(ch) - 1)"
             :default-as-admin="cardDefaultAsAdmin(ch)"
             :error-text="cardErrorText(ch)"
             show-fix-credentials
             :busy="pairingBusy(channelKey(ch))"
+            @click.stop
             @approve="asAdmin => approvePairing(channelKey(ch), cardPending(ch), asAdmin)"
             @reject="rejectPairing(channelKey(ch), cardPending(ch))"
             @restart="restartChannel(ch)"
             @fix-credentials="fixCredentials(ch)"
           />
-          <div class="chb-card__foot">
-            <button
-              v-if="ch.enabled === false"
-              class="btn btn--ghost"
-              type="button"
-              :disabled="actionPending(ch, 'toggle')"
-              @click.stop="toggleChannel(ch)"
-            >{{ t('console.channels.enable') }}</button>
-            <template v-else>
-              <button
-                class="btn btn--ghost"
-                type="button"
-                :disabled="actionPending(ch, 'probe')"
-                @click.stop="probeChannel(ch)"
-              >{{ actionPending(ch, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</button>
-              <button
-                class="btn btn--ghost"
-                type="button"
-                :disabled="actionPending(ch, 'restart') || !adapterLoaded(ch)"
-                :title="!adapterLoaded(ch) ? t('console.channels.restartNotLoaded') : undefined"
-                @click.stop="restartChannel(ch)"
-              >{{ t('console.channels.restart') }}</button>
-            </template>
-            <span class="chb-card__go" aria-hidden="true">{{ t('console.channels.home.details') }} →</span>
-          </div>
         </article>
 
         <!-- Channels running in this gateway process but absent from config —
-             surfaced so an operator can see an orphaned runtime channel. -->
+             full-width rows too, never a lead and never in channels[]. -->
         <article
           v-for="ch in unconfiguredChannels"
           :key="`unconfigured-${channelKey(ch)}`"
-          class="chb-card is-muted is-static"
+          class="chb-story is-muted is-static"
         >
-          <div class="chb-card__top">
-            <ChannelBrandMark :type="String(ch.type || '')" :label="providerLabel(ch.type, t('console.channels.unknown'))" />
-            <div class="chb-card__id">
-              <strong class="chb-card__name">{{ channelKey(ch) }}</strong>
-              <span class="chb-card__sub">{{ t('console.channels.unconfiguredTitle') }}</span>
+          <ChannelBrandMark
+            class="chb-story__mark"
+            :type="String(ch.type || '')"
+            :label="providerLabel(ch.type, t('console.channels.unknown'))"
+          />
+          <div class="chb-story__head">
+            <div class="chb-story__id">
+              <strong class="chb-story__name">{{ channelKey(ch) }}</strong>
+              <p class="chb-story__deck">
+                <ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :error-class="lastErrorClass(ch.diagnostics)" />
+                <span class="chb-story__sub">{{ t('console.channels.unconfiguredTitle') }}</span>
+              </p>
             </div>
-            <ChannelStatusPill class="chb-card__status" :status="ch.status" :enabled="ch.enabled" :error-class="lastErrorClass(ch.diagnostics)" />
           </div>
-          <p class="chb-card__hint">{{ t('console.channels.unconfiguredHint') }}</p>
+          <p class="chb-story__hint">{{ t('console.channels.unconfiguredHint') }}</p>
         </article>
-
-        <button type="button" class="chb-card chb-card--add" @click="openChannelCompose">
-          <span aria-hidden="true">＋</span>
-          <span>{{ t('console.channels.addChannel') }}</span>
-        </button>
       </div>
+
+      <!-- Enroll strip: the single, always-available add entry. The title button
+           opens the full compose gallery (unconditional — never gated on the
+           async catalog, and the path for a second channel of a configured
+           platform); the chips are shortcuts to a pre-picked platform. -->
+      <footer class="chb-enroll">
+        <button type="button" class="chb-enroll__title" @click="openChannelCompose">
+          <span class="chb-enroll__glyph" aria-hidden="true">＋</span>
+          <span>{{ t('console.channels.home.enroll.title') }}</span>
+        </button>
+        <button
+          v-for="spec in availablePlatforms"
+          :key="spec.type"
+          type="button"
+          class="chb-enroll__chip"
+          :data-channel-type="spec.type"
+          :title="t('console.channels.home.enroll.chip', { platform: enrollLabel(spec) })"
+          @click="openComposeWithType(spec.type)"
+        >
+          <ChannelBrandMark :type="spec.type" :label="enrollLabel(spec)" />
+          <span>{{ enrollLabel(spec) }}</span>
+        </button>
+      </footer>
     </section>
 
     <!-- Floating dirty bar: the page scrolls as a whole now, so the unsaved
@@ -382,6 +473,7 @@ import ChannelBrandMark from '@/components/setup/ChannelBrandMark.vue'
 import ChannelComposeSurface from '@/components/channels/ChannelComposeSurface.vue'
 import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
 import ChannelEditorActionBar from '@/components/channels/ChannelEditorActionBar.vue'
+import ChannelTypeGallery from '@/components/channels/ChannelTypeGallery.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
 import PendingRestartBanner from '@/components/PendingRestartBanner.vue'
@@ -389,9 +481,11 @@ import { useRequest } from '@/composables/useRequest'
 import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
-import { useChannelEditor } from '@/composables/channels/useChannelEditor'
-import { useChannelMembers, type ChannelPairing } from '@/composables/channels/useChannelMembers'
+import { useChannelEditor, type ChannelEditorSpec } from '@/composables/channels/useChannelEditor'
+import { bootstrapAsAdminDefault, useChannelMembers, type ChannelPairing } from '@/composables/channels/useChannelMembers'
+import { approvePairingParams, errorMessage, withPendingKey } from '@/composables/channels/shared'
 import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
+import { orderChannelSpecs } from '@/composables/setup/channelPlatformOrder'
 import ChannelMembersPanel from '@/components/channels/ChannelMembersPanel.vue'
 import {
   capabilityRows,
@@ -399,6 +493,7 @@ import {
   deliveryCount,
   delivery,
   diagnostics,
+  ingressTotal,
   formatConnectedDuration,
   formatSince,
   humanize,
@@ -431,8 +526,14 @@ const STATUS_SEVERITY = Object.fromEntries(
 ) as Record<ChannelStatusKey, number>
 const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'configuration', 'diagnostics']
 const SECTIONS: SectionId[] = ['pairings', 'configuration', 'diagnostics']
-
+// The home has EXACTLY ONE "add" affordance on screen at any time: 0 channels →
+// the inline platform gallery IS the page; ≥1 channel → the enroll strip closes
+// the fleet front page. No per-count add-card or header button.
 const { t, locale } = useI18n()
+const { localizeLabel } = useChannelCatalogI18n()
+function enrollLabel(spec: ChannelEditorSpec): string {
+  return localizeLabel(spec.type, spec.label)
+}
 const rpc = useRpcStore()
 const router = useRouter()
 const route = useRoute()
@@ -450,15 +551,20 @@ const probeResults = ref<Record<string, ProbeResult>>({})
 const editor = useChannelEditor()
 const editMode = ref(false)
 const editorSaving = ref(false)
+/** Discard-guard verdict: true = discard the draft and proceed, false = the
+ *  operator chose "keep editing" (restore the URL), 'superseded' = a NEWER
+ *  guarded action took this question over — the stale handler must neither
+ *  restore the URL nor cancel the newer flow. */
+type DiscardVerdict = boolean | 'superseded'
 // Pending inline discard confirmation (the centralized guard's UI state).
-const discardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
+const discardRequest = ref<{ resolve: (verdict: DiscardVerdict) => void } | null>(null)
 // Compose takeover: a SECOND editor instance so an add-channel draft can
 // never cross-contaminate the selected channel's edit draft.
 const composeEditor = useChannelEditor()
 const composeMode = ref(false)
 const composeType = ref('')
 const composeSaving = ref(false)
-const composeDiscardRequest = ref<{ resolve: (ok: boolean) => void } | null>(null)
+const composeDiscardRequest = ref<{ resolve: (verdict: DiscardVerdict) => void } | null>(null)
 // Members (pairings + channel admins) for the drilled-in channel — state owned
 // here so it survives section scrolling; ChannelMembersPanel renders it.
 const members = useChannelMembers()
@@ -479,6 +585,73 @@ const unconfiguredChannels = computed<Channel[]>(() =>
 const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) === selectedName.value) || null)
 const selectedProbe = computed(() =>
   selectedChannel.value ? probeResults.value[channelKey(selectedChannel.value)] : undefined)
+
+// Fresh feishu websocket channel awaiting its console-side final step: the
+// Feishu console only saves the long-connection event subscription while a
+// client is connected, so it must be flipped AFTER the first save. Resolution
+// is ANY inbound row in the delivery ledger — the lifecycle is accepted →
+// processing → completed and completed rows persist, so a channel that ever
+// received an event stays resolved. The mode check reads the LOADED entry
+// only (never the live draft, never a default while config is in flight or
+// failed), so a webhook channel can never see websocket guidance.
+const feishuFinalStepVisible = computed(() => {
+  const ch = selectedChannel.value
+  if (!ch || String(ch.type || '') !== 'feishu') return false
+  if (presentationFor(ch).key !== 'connected') return false
+  if (ingressTotal(ch) > 0) return false
+  if (editor.phase.value !== 'active' || editor.loadedName.value !== channelKey(ch)) return false
+  const entry = editor.loadedEntry.value
+  return String(entry?.connection_mode || 'websocket') !== 'webhook'
+})
+
+// Home mode — 'gallery' when nothing is configured yet (the inline platform
+// gallery IS the page and the add entry), 'fleet' once ≥1 channel exists (the
+// folio + ledger front page, whose enroll strip is the single add entry).
+// Orphan runtime channels don't count toward the mode.
+const addTier = computed<'gallery' | 'fleet'>(() =>
+  channels.value.length === 0 ? 'gallery' : 'fleet')
+
+// Fleet folio figures (home front page): every figure is derived from real
+// status/facts. "down" and "pending" surface only when non-zero, and pending
+// sums cardPendingCount (which is 0, never null, for an unknown facts fetch) so
+// an unknown state is omitted rather than shown as a fake zero.
+const fleetConnected = computed(
+  () => channels.value.filter(ch => presentationFor(ch).key === 'connected').length,
+)
+const fleetDown = computed(
+  () => channels.value.filter(ch => presentationFor(ch).tone === 'danger').length,
+)
+const fleetPlatformTypes = computed(() => {
+  const seen: string[] = []
+  for (const ch of channels.value) {
+    const type = String(ch.type || 'unknown')
+    if (!seen.includes(type)) seen.push(type)
+  }
+  return seen
+})
+const fleetPending = computed(
+  () => channels.value.reduce((total, ch) => total + cardPendingCount(ch), 0),
+)
+const fleetAllConnected = computed(() =>
+  channels.value.length > 0 && fleetDown.value === 0 && fleetConnected.value === channels.value.length)
+// Comma-joined platform names for the roster's aria label only (visual roster
+// is brand marks, so no number ever sits next to a pluralizable noun).
+const platformNames = computed(() =>
+  fleetPlatformTypes.value.map(type => providerLabel(type, t('console.channels.unknown'))).join(', '))
+// Enroll chips: catalog platforms not yet configured, locale-ordered like the
+// compose gallery. A shortcut only — the enroll title button (unconditional)
+// remains the real add entry, so an empty/failed catalog never strands the add.
+const availablePlatforms = computed(() => {
+  const configured = new Set(channels.value.map(ch => String(ch.type || '')).filter(Boolean))
+  const unused = composeEditor.catalog.value.filter(
+    spec => spec.type && !configured.has(String(spec.type)))
+  return orderChannelSpecs(unused, String(locale.value), enrollLabel)
+})
+
+// The home surface renders the platform catalog (gallery tiles or enroll chips)
+// WITHOUT entering the compose takeover, so warm the compose editor's catalog as
+// soon as the home lands in either mode (loadCatalog is idempotent).
+watch(addTier, () => { void composeEditor.loadCatalog() }, { immediate: true })
 
 const loadData = refresh
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -573,8 +746,8 @@ onUnmounted(teardownLive)
 // The guard only answers the confirm — the actual draft teardown happens in
 // onDeactivated, after the navigation has finalized (see above).
 onBeforeRouteLeave(async () => {
-  if (draftDirty.value && !(await confirmDiscardDraft())) return false
-  if (composeDirty.value && !(await confirmDiscardCompose())) return false
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return false
+  if (composeDirty.value && (await confirmDiscardCompose()) !== true) return false
   return true
 })
 
@@ -584,13 +757,30 @@ onBeforeRouteLeave(async () => {
  */
 async function openChannelCompose(): Promise<void> {
   if (composeMode.value) return
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   if (editMode.value) discardDraftAndExitEdit()
   if (selectedName.value) forceCloseDetail()
   composeMode.value = true
   composeType.value = ''
   composeEditor.reset()
   void composeEditor.loadCatalog()
+  syncQuery('push')
+}
+
+/**
+ * Enter the compose takeover ALREADY pre-picked on a platform — the Tier-1
+ * gallery tile and the Tier-2 platform chip both land straight on the picked
+ * form, skipping the in-takeover gallery step. Same guards as
+ * openChannelCompose; one history PUSH carries ?compose=1&type=<t>.
+ */
+async function openComposeWithType(type: string): Promise<void> {
+  if (composeMode.value) { pickComposeType(type); return }
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
+  if (editMode.value) discardDraftAndExitEdit()
+  if (selectedName.value) forceCloseDetail()
+  composeMode.value = true
+  composeEditor.reset()
+  pickComposeType(type)
   syncQuery('push')
 }
 
@@ -675,10 +865,21 @@ async function loadHomeFacts(only?: string[]): Promise<void> {
     const next: Record<string, HomeFacts> = { ...homeFacts.value }
     for (const [name, rows] of pairingsByName) {
       const adminList = adminsMap ? adminsMap[name] : null
+      // A transient per-channel failure keeps the LAST-GOOD facts instead of
+      // overwriting them with unknown: the pending banner must not blip out
+      // (wiping the operator's as-admin choice) on one failed poll, and a
+      // channel never fetched still degrades to unknown (—), never to zeros.
+      const previous = homeFacts.value[name]
       next[name] = {
-        members: rows ? rows.filter(pairing => pairing.status === 'approved').length : null,
-        admins: adminsMap ? (Array.isArray(adminList) ? adminList.length : 0) : null,
-        pending: rows ? rows.filter(pairing => pairing.status === 'pending') : null,
+        members: rows
+          ? rows.filter(pairing => pairing.status === 'approved').length
+          : previous?.members ?? null,
+        admins: adminsMap
+          ? (Array.isArray(adminList) ? adminList.length : 0)
+          : previous?.admins ?? null,
+        pending: rows
+          ? rows.filter(pairing => pairing.status === 'pending')
+          : previous?.pending ?? null,
       }
     }
     homeFacts.value = next
@@ -710,12 +911,8 @@ function connectedDuration(ch: Channel): string {
 function cardSubline(ch: Channel): string {
   const parts = [transportLabel(ch, t('console.channels.notReported'))]
   const botId = String(ch.bot_user_id || '')
-  if (botId) parts.push(t('console.channels.detail.bot', { id: shortId(botId) }))
+  if (botId) parts.push(t('console.channels.detail.bot', { id: truncateId(botId) }))
   return parts.join(' · ')
-}
-
-function shortId(id: string): string {
-  return id.length > 14 ? `${id.slice(0, 12)}…` : id
 }
 
 function cardPending(ch: Channel): ChannelPairing | null {
@@ -734,7 +931,7 @@ function cardPendingCount(ch: Channel): number {
 // unknown state (either fetch failed) must never default the grant on.
 function cardDefaultAsAdmin(ch: Channel): boolean {
   const facts = cardFacts(ch)
-  return Boolean(facts && facts.members === 0 && facts.admins === 0)
+  return bootstrapAsAdminDefault(facts?.members ?? null, facts?.admins ?? null)
 }
 
 function cardErrorText(ch: Channel): string {
@@ -754,30 +951,25 @@ function pairingBusy(name: string): boolean {
   return pendingActions.value.has(`${name}:pairing`)
 }
 
-async function withPendingKey(key: string, run: () => Promise<void>): Promise<void> {
-  if (pendingActions.value.has(key)) return
-  pendingActions.value = new Set(pendingActions.value).add(key)
-  try { await run() } finally {
-    const next = new Set(pendingActions.value)
-    next.delete(key)
-    pendingActions.value = next
-  }
-}
-
 async function approvePairing(name: string, pairing: ChannelPairing | null, asAdmin: boolean): Promise<void> {
   if (!pairing) return
   const sender = pairing.senderName || pairing.senderId
-  await withPendingKey(`${name}:pairing`, async () => {
+  await withPendingKey(pendingActions, `${name}:pairing`, async () => {
     try {
-      // Only include asAdmin when set: a plain approval keeps its minimal
-      // payload and never touches channel_admin_senders.
-      const params: Record<string, unknown> = { channelName: name, pairingId: pairing.pairingId }
-      if (asAdmin) params.asAdmin = true
-      await rpc.call('channels.pairing.approve', params)
-      pushToast(
-        t(asAdmin ? 'console.channels.pairings.approveAdminSuccess' : 'console.channels.pairings.approveSuccess', { sender }),
-        { tone: 'ok' },
-      )
+      const res = await rpc.call<{ adminGranted?: boolean; warnings?: string[] }>(
+        'channels.pairing.approve', approvePairingParams(name, pairing.pairingId, asAdmin))
+      // The backend commits the approval even when the admin grant fails
+      // (adminGranted:false + warnings) — surface that instead of falsely
+      // toasting an admin success.
+      if (asAdmin && res?.adminGranted === false) {
+        pushToast(t('console.channels.pairings.approveSuccess', { sender }), { tone: 'ok' })
+        pushToast(t('console.channels.pairings.adminGrantFailedAfterApprove', { sender }), { tone: 'danger' })
+      } else {
+        pushToast(
+          t(asAdmin ? 'console.channels.pairings.approveAdminSuccess' : 'console.channels.pairings.approveSuccess', { sender }),
+          { tone: 'ok' },
+        )
+      }
     } catch (err) {
       pushToast(t('console.channels.pairings.approveFailed', { sender, error: errorMessage(err) }), { tone: 'danger' })
     }
@@ -788,7 +980,7 @@ async function approvePairing(name: string, pairing: ChannelPairing | null, asAd
 async function rejectPairing(name: string, pairing: ChannelPairing | null): Promise<void> {
   if (!pairing) return
   const sender = pairing.senderName || pairing.senderId
-  await withPendingKey(`${name}:pairing`, async () => {
+  await withPendingKey(pendingActions, `${name}:pairing`, async () => {
     try {
       await rpc.call('channels.pairing.revoke', { channelName: name, pairingId: pairing.pairingId })
       pushToast(t('console.channels.home.rejectSuccess', { sender }), { tone: 'ok' })
@@ -840,11 +1032,13 @@ const editorBarVisible = computed(() =>
  * short-circuit at each call site); a dirty one raises the inline
  * destructive-ghost pair in the floating bar and resolves with the verdict.
  */
-function confirmDiscardDraft(): Promise<boolean> {
+function confirmDiscardDraft(): Promise<DiscardVerdict> {
   if (!draftDirty.value) return Promise.resolve(true)
-  // A newer guarded action supersedes a pending one, which resolves as "keep".
-  if (discardRequest.value) discardRequest.value.resolve(false)
-  return new Promise<boolean>(resolve => {
+  // A newer guarded action supersedes a pending one. The distinct verdict
+  // (not `false`) lets the stale handler skip its keep-editing URL restore,
+  // which would otherwise cancel the newer action's in-flight navigation.
+  if (discardRequest.value) discardRequest.value.resolve('superseded')
+  return new Promise<DiscardVerdict>(resolve => {
     discardRequest.value = { resolve }
   })
 }
@@ -873,7 +1067,7 @@ function enterEdit(): void {
 }
 
 async function requestExitEdit(): Promise<void> {
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   discardDraftAndExitEdit()
 }
 
@@ -947,10 +1141,10 @@ const composeDirty = computed(() => composeEditor.form.isDirty.value)
 
 /** Compose twin of confirmDiscardDraft(): the inline destructive-ghost pair
  *  renders in the takeover footer, never a modal. */
-function confirmDiscardCompose(): Promise<boolean> {
+function confirmDiscardCompose(): Promise<DiscardVerdict> {
   if (!composeDirty.value) return Promise.resolve(true)
-  if (composeDiscardRequest.value) composeDiscardRequest.value.resolve(false)
-  return new Promise<boolean>(resolve => {
+  if (composeDiscardRequest.value) composeDiscardRequest.value.resolve('superseded')
+  return new Promise<DiscardVerdict>(resolve => {
     composeDiscardRequest.value = { resolve }
   })
 }
@@ -964,23 +1158,46 @@ function exitCompose(): void {
   composeMode.value = false
   composeType.value = ''
   composeSaving.value = false
-  resolveComposeDiscard(false)
+  // Compose is closing: a still-pending discard question is moot, and its
+  // handler must not fire the keep-editing URL restore.
+  composeDiscardRequest.value?.resolve('superseded')
+  composeDiscardRequest.value = null
   composeEditor.reset()
 }
 
 async function requestExitCompose(): Promise<void> {
-  if (composeDirty.value && !(await confirmDiscardCompose())) return
+  if (composeDirty.value && (await confirmDiscardCompose()) !== true) return
   exitCompose()
+}
+
+/** All known channel names (configured + orphan runtime) for the compose name
+ *  suggestion — undefined while channels.status has not answered yet, so the
+ *  editor skips seeding rather than suggesting against a blind list. */
+function existingChannelNames(): string[] | undefined {
+  const rows = channelsData.value?.channels
+  if (!rows) return undefined
+  return rows.filter(Boolean).map(ch => channelKey(ch))
 }
 
 function pickComposeType(type: string): void {
   composeType.value = type
-  void composeEditor.startCompose(type)
+  void composeEditor.startCompose(type, { existingNames: existingChannelNames() })
 }
+
+// Deep-linked compose (?compose=1&type=…) applies before channels.status has
+// answered, so the name suggestion is skipped rather than guessed blind. When
+// the FIRST snapshot lands and the draft is still pristine, reseed it once so
+// the deep-link path matches the click path; any typed edit wins.
+watch(channelsData, (data, old) => {
+  if (old || !data) return
+  if (composeMode.value && composeType.value && !composeEditor.form.isDirty.value) {
+    void composeEditor.startCompose(composeType.value, { existingNames: existingChannelNames() })
+  }
+})
 
 /** [Change] on the receipt chip: back to the gallery, guarded when dirty. */
 async function requestComposeRepick(): Promise<void> {
-  if (composeDirty.value && !(await confirmDiscardCompose())) return
+  if (composeDirty.value && (await confirmDiscardCompose()) !== true) return
   composeType.value = ''
   composeEditor.reset()
   void composeEditor.loadCatalog()
@@ -1047,7 +1264,7 @@ async function handleComposeSaveResult(result: Awaited<ReturnType<typeof compose
 async function openChannel(ch: Channel): Promise<void> {
   // The dirty short-circuit keeps the clean path synchronous (no microtask
   // gap between click and drill) while every dirty exit hits the guard.
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   applySelection(channelKey(ch))
   // Entering drill-in is a history PUSH: Back returns to the dashboard.
   syncQuery('push')
@@ -1066,7 +1283,7 @@ function applySelection(name: string): void {
 
 /** Guarded exit used by the breadcrumb (‹ Channels). */
 async function requestLeaveDetail(): Promise<void> {
-  if (draftDirty.value && !(await confirmDiscardDraft())) return
+  if (draftDirty.value && (await confirmDiscardDraft()) !== true) return
   leaveDetail()
 }
 
@@ -1103,6 +1320,7 @@ watch(selectedName, name => {
 const activeSection = ref<SectionId>('pairings')
 const pendingScrollTab = ref<DetailTab | null>(null)
 let spyTarget: HTMLElement | Window | null = null
+let spyHoldUntil = 0
 
 const memberCount = computed(() =>
   members.pairings.value.filter(pairing => pairing.status === 'approved').length)
@@ -1112,12 +1330,35 @@ const drillPendingList = computed(() =>
   members.pairings.value.filter(pairing => pairing.status === 'pending'))
 const drillPending = computed(() => drillPendingList.value[0] || null)
 const drillPendingCount = computed(() => drillPendingList.value.length)
-const drillDefaultAsAdmin = computed(() =>
-  members.adminsKnown.value &&
-  !members.pairings.value.some(pairing => pairing.status === 'approved') &&
-  members.adminSenders.value.length === 0)
+const drillDefaultAsAdmin = computed(() => members.noApprovedOrAdmins.value)
 const drillErrorText = computed(() =>
   selectedChannel.value ? cardErrorText(selectedChannel.value) : '')
+
+// The drill banner's "as admin" checkbox is CONTROLLED by the members store:
+// the store's per-pairing override map is the single source of truth, so the
+// banner and the Members row for the same request always read (and write)
+// one value.
+const drillAsAdminChecked = computed(() =>
+  drillPending.value ? members.asAdminChecked(drillPending.value) : false)
+
+function setDrillAsAdmin(value: boolean): void {
+  if (drillPending.value) members.setAsAdminChecked(drillPending.value, value)
+}
+
+const drillPairingBusy = computed(() =>
+  pairingBusy(selectedName.value) ||
+  (drillPending.value ? members.actionPending(drillPending.value, 'approve') : false))
+
+// The drill page hosts BOTH the banner and the Members rows: the banner
+// approve reuses the members flow (same confirmation gate, admin-aware), so
+// one page never has two different risk gates for the same grant. The
+// dashboard card quick-approve stays confirmation-free (see approvePairing).
+async function approveDrillPending(asAdmin: boolean): Promise<void> {
+  const pairing = drillPending.value
+  if (!pairing) return
+  await members.approve(pairing, asAdmin)
+  await Promise.all([loadHomeFacts(), refresh()])
+}
 
 function sectionEl(section: SectionId): HTMLElement | null {
   return pageRef.value?.querySelector<HTMLElement>(`#chd-section-${section}`) ?? null
@@ -1143,6 +1384,7 @@ function scrollToSection(tab: DetailTab, behaviorOverride?: ScrollBehavior): voi
     return
   }
   activeSection.value = tab
+  spyHoldUntil = Date.now() + 800
   sectionEl(tab)?.scrollIntoView?.({ behavior, block: 'start' })
 }
 
@@ -1153,6 +1395,7 @@ function goToSection(section: SectionId): void {
 
 function onSpyScroll(): void {
   if (!pageRef.value) return
+  if (Date.now() < spyHoldUntil) return
   let current: SectionId = SECTIONS[0]
   for (const section of SECTIONS) {
     const el = sectionEl(section)
@@ -1278,6 +1521,26 @@ function syncQuery(mode: 'push' | 'replace'): void {
   void router[mode]({ query })
 }
 
+/** "Keep editing" after the drill URL was left behind. Drill-in is a history
+ *  PUSH, so when browser Back raised the guard the drill entry still sits
+ *  FORWARD in history — going forward restores it WITHOUT rewriting the
+ *  dashboard entry underneath (a replace here would erase it, breaking a
+ *  later Back). A bare /channels reached any other way (no matching forward
+ *  entry) restores the query in place instead. */
+function restoreDrillUrl(): void {
+  const state = router.options.history.state as Record<string, unknown> | null | undefined
+  const forward = typeof state?.forward === 'string' ? state.forward : ''
+  const queryIndex = forward.indexOf('?')
+  const forwardChannel = queryIndex >= 0
+    ? new URLSearchParams(forward.slice(queryIndex + 1)).get('channel')
+    : null
+  if (forwardChannel && forwardChannel === selectedName.value) {
+    router.go(1)
+    return
+  }
+  syncQuery('replace')
+}
+
 // Legacy tab values keep resolving: capabilities folded into diagnostics.
 function normalizeTab(tab: string): DetailTab | '' {
   if (tab === 'capabilities') return 'diagnostics'
@@ -1295,7 +1558,7 @@ function applyComposeQuery(type: string): void {
   composeMode.value = true
   composeType.value = type
   composeEditor.reset()
-  if (type) void composeEditor.startCompose(type)
+  if (type) void composeEditor.startCompose(type, { existingNames: existingChannelNames() })
   else void composeEditor.loadCatalog()
 }
 
@@ -1316,7 +1579,9 @@ function applyChannelQuery(name: string, tab: DetailTab | '', edit: boolean): vo
 // guards as its button-driven twin: compose enter/repick and channel switch
 // confirm a dirty edit/compose draft, compose exit confirms a dirty compose
 // draft, and leaving drill-in confirms a dirty edit draft. "Keep editing"
-// restores the previous URL with a replace.
+// restores the previous URL (via the still-intact forward history entry when
+// browser Back raised the guard); a superseded confirm does neither — the
+// newer guarded action owns the flow.
 function applyDetailQuery(): void {
   if (route.path !== '/channels') return
   lastSyncedQuery = serializeOwned(ownedQueryOf(route.query))
@@ -1326,9 +1591,9 @@ function applyDetailQuery(): void {
     const dirty = composeMode.value ? composeDirty.value : draftDirty.value
     if (dirty) {
       const confirmDiscard = composeMode.value ? confirmDiscardCompose : confirmDiscardDraft
-      void confirmDiscard().then(ok => {
-        if (ok) applyComposeQuery(type)
-        else syncQuery('replace')
+      void confirmDiscard().then(verdict => {
+        if (verdict === true) applyComposeQuery(type)
+        else if (verdict === false) syncQuery('replace')
       })
       return
     }
@@ -1338,11 +1603,11 @@ function applyDetailQuery(): void {
   if (composeMode.value) {
     // Back (or a bare /channels URL) exits compose — guarded when dirty.
     if (composeDirty.value) {
-      void confirmDiscardCompose().then(ok => {
-        if (ok) {
+      void confirmDiscardCompose().then(verdict => {
+        if (verdict === true) {
           exitCompose()
           applyDetailQuery()
-        } else {
+        } else if (verdict === false) {
           syncQuery('replace')
         }
       })
@@ -1358,9 +1623,9 @@ function applyDetailQuery(): void {
     // Browser Back (or a hand-edited URL) leaving the drill-in page runs the
     // same discard guard the breadcrumb does; "keep editing" restores the URL.
     if (draftDirty.value) {
-      void confirmDiscardDraft().then(ok => {
-        if (ok) leaveDetail()
-        else syncQuery('replace')
+      void confirmDiscardDraft().then(verdict => {
+        if (verdict === true) leaveDetail()
+        else if (verdict === false) restoreDrillUrl()
       })
       return
     }
@@ -1369,9 +1634,9 @@ function applyDetailQuery(): void {
   }
   if (name !== selectedName.value) {
     if (selectedName.value && draftDirty.value) {
-      void confirmDiscardDraft().then(ok => {
-        if (ok) applyChannelQuery(name, tab, edit)
-        else syncQuery('replace')
+      void confirmDiscardDraft().then(verdict => {
+        if (verdict === true) applyChannelQuery(name, tab, edit)
+        else if (verdict === false) syncQuery('replace')
       })
       return
     }
@@ -1402,7 +1667,7 @@ watch(() => route.query, () => {
 })
 
 async function withAction(ch: Channel, action: string, run: () => Promise<void>): Promise<void> {
-  await withPendingKey(`${channelKey(ch)}:${action}`, run)
+  await withPendingKey(pendingActions, `${channelKey(ch)}:${action}`, run)
 }
 
 function actionPending(ch: Channel, action: string): boolean { return pendingActions.value.has(`${channelKey(ch)}:${action}`) }
@@ -1469,7 +1734,20 @@ async function toggleChannel(ch: Channel): Promise<void> {
   })
 }
 
-function errorMessage(err: unknown): string { return err instanceof Error ? err.message : String(err) }
+// Middle-truncate a long bot id (7-char prefix … 4-char suffix) for the card
+// subline and the drill header; the copy button always carries the full id.
+function truncateId(id: string): string {
+  return id.length > 14 ? `${id.slice(0, 7)}…${id.slice(-4)}` : id
+}
+
+async function copyBotId(id: string) {
+  try {
+    await navigator.clipboard.writeText(id)
+    pushToast(t('console.channels.detail.botIdCopied'), { tone: 'ok' })
+  } catch {
+    /* clipboard unavailable: the title still exposes the full id */
+  }
+}
 
 // Pluralized restart count for the header facts line ("1 restart").
 function restartsLabel(ch: Channel): string {
@@ -1518,64 +1796,205 @@ function probeResultDetail(ch: Channel): string {
 .ch-stale { align-items: center; background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface)); border: 1px solid color-mix(in srgb, var(--warn) 38%, var(--border)); border-radius: var(--radius-md); color: var(--text-muted); display: flex; font-size: var(--fs-sm); gap: var(--sp-2); margin: 0; padding: 7px 12px; }
 .ch-stale > svg { color: var(--warn); flex: 0 0 auto; }
 .ch-stale > span { flex: 1; }
-.ch-empty { background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius-lg); gap: var(--sp-3); }
-.ch-empty__icon { align-items: center; background: color-mix(in srgb, var(--accent) 12%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border)); border-radius: 50%; color: var(--accent); display: flex; height: 72px; justify-content: center; width: 72px; }
+/* Tier 1 (0 configured channels): the inline platform gallery IS the page. */
+.ch-gallery-home { display: flex; flex-direction: column; gap: var(--sp-3); }
+.ch-gallery-home__lead { color: var(--text-dim); font-size: var(--fs-sm); margin: 0; }
 .is-spinning { animation: ch-spin 0.9s linear infinite; }
 @keyframes ch-spin { to { transform: rotate(360deg); } }
 
-/* ===== home: dashboard card grid ===== */
-.chb__grid { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
-.chb-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
+/* ===== home: the fleet front page (folio + ledger + enroll) ===== */
+/* The section is the query container, so the ledger reflows to CONTENT width
+   (which the collapsible nav changes) rather than to the viewport. */
+.chb { container: chb-home / inline-size; display: flex; flex-direction: column; }
+
+/* Folio — a masthead dateline. A single full-width --border-strong rule carries
+   the horizontal; the roster, health reading and as-of time rag left under it,
+   so a lone channel never opens a middle void and nothing is pinned far-right. */
+.chb-folio {
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-strong);
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  min-width: 0;
-  padding: var(--sp-4) var(--sp-4) var(--sp-3);
-  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  padding-bottom: var(--sp-3);
 }
-.chb-card:hover, .chb-card:focus-visible { border-color: var(--border-strong, var(--border)); box-shadow: var(--elev-1); transform: translateY(-2px); }
-.chb-card:focus-visible { box-shadow: var(--focus-ring); outline: 0; }
-.chb-card.is-muted { background: var(--bg); }
-.chb-card.is-muted .chb-card__name, .chb-card.is-muted .chb-fact__v { color: var(--text-muted); }
-.chb-card.is-static { cursor: default; }
-.chb-card.is-static:hover { border-color: var(--border); box-shadow: none; transform: none; }
-@media (prefers-reduced-motion: reduce) {
-  .chb-card { transition: none; }
-  .chb-card:hover, .chb-card:focus-visible { transform: none; }
+.chb-folio__roster { align-items: center; align-self: center; display: inline-flex; gap: var(--sp-1); }
+.chb-folio__roster :deep(.brand-mark) { font-size: var(--fs-xs); height: 22px; width: 22px; }
+.chb-folio__lede {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
-.chb-card__top { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }
-.chb-card__id { display: grid; gap: 2px; min-width: 0; }
-.chb-card__name { color: var(--text); font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chb-card__sub { color: var(--text-dim); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chb-card__status { flex: none; font-size: var(--fs-xs); margin-left: auto; }
-.chb-card__facts { align-items: center; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-5); padding-top: var(--sp-3); }
-.chb-fact { display: grid; gap: 1px; }
-.chb-fact__k { color: var(--text-dim); font-size: 11px; }
-.chb-fact__v { color: var(--text); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; font-weight: 600; }
-.chb-card__pending { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: var(--radius-full); color: var(--warn); font-size: 11px; font-weight: 700; margin-left: auto; padding: 2px 9px; white-space: nowrap; }
-.chb-card__hint { color: var(--text-dim); font-size: var(--fs-xs); line-height: 1.5; margin: 0; }
-.chb-card__foot { align-items: center; display: flex; gap: var(--sp-2); margin-top: auto; }
-.chb-card__foot .btn { min-height: 28px; padding: 3px 11px; font-size: var(--fs-xs); }
-.chb-card__go { color: var(--text-dim); font-size: var(--fs-xs); margin-left: auto; white-space: nowrap; }
-.chb-card:hover .chb-card__go { color: var(--text); }
-.chb-card--add {
+.chb-folio__flag { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; font-weight: 500; }
+.chb-folio__flag::before { color: var(--text-dim); content: '·'; margin-inline-end: var(--sp-2); }
+.chb-folio__flag.is-down { color: var(--danger); }
+.chb-folio__flag.is-pending { color: var(--warn); }
+.chb-folio__asof {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Ledger of full-width stories — a row cannot half-collapse, so no float. */
+.chb-ledger { display: flex; flex-direction: column; }
+.chb-story {
+  border-top: 1px solid var(--border);
+  column-gap: var(--sp-4);
+  cursor: pointer;
+  display: grid;
+  grid-template-areas: "mark head" "led led" "alerts alerts";
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: var(--sp-4) 0;
+  row-gap: var(--sp-3);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.chb-story:first-child { border-top: 0; }  /* the folio rule caps the lead */
+.chb-story:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.chb-story:focus-visible { border-radius: var(--radius-sm); box-shadow: var(--focus-ring); outline: 0; }
+.chb-story.is-lead { padding-top: var(--sp-5); }
+.chb-story.is-down { border-inline-start: 2px solid var(--danger); padding-inline-start: var(--sp-4); }
+.chb-story.is-muted { opacity: 0.62; }
+.chb-story.is-static { cursor: default; }
+.chb-story.is-static:hover { background: transparent; }
+@media (prefers-reduced-motion: reduce) { .chb-story { transition: none; } }
+.chb-story__mark { grid-area: mark; }
+.chb-story__mark :deep(.brand-mark) { font-size: var(--fs-sm); height: 34px; width: 34px; }
+.chb-story.is-lead .chb-story__mark :deep(.brand-mark) { font-size: var(--fs-lg); height: 48px; width: 48px; }
+.chb-story__head {
   align-items: center;
-  background: transparent;
-  border-style: dashed;
+  column-gap: var(--sp-4);
+  display: grid;
+  grid-area: head;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.chb-story__id { min-width: 0; }
+.chb-story__name {
+  color: var(--text);
+  display: block;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chb-story.is-lead .chb-story__name { font-size: var(--fs-xl); letter-spacing: -0.01em; }
+.chb-story__deck {
+  align-items: center;
   color: var(--text-muted);
   display: flex;
-  flex-direction: row;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: var(--sp-1) var(--sp-2);
+  margin: var(--sp-1) 0 0;
+}
+.chb-story__sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chb-story__actions { align-items: center; display: flex; flex: none; gap: var(--sp-2); }
+.chb-story__actions .btn { font-size: var(--fs-xs); min-height: 28px; padding: 3px 11px; }
+.chb-story__go { color: var(--text-dim); font-size: var(--fs-xs); white-space: nowrap; }
+.chb-story:hover .chb-story__go { color: var(--text); }
+.chb-story__hint { color: var(--text-dim); font-size: var(--fs-xs); grid-area: led; line-height: 1.5; margin: 0; }
+
+/* The anti-void primitive: N equal columns always span the full measure. */
+.chb-story__ledger {
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-area: led;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  margin: 0;
+}
+.chb-figure {
+  border-inline-start: 1px solid var(--border);
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+}
+.chb-figure:first-child { border-inline-start: 0; padding-inline-start: 0; }
+.chb-figure dt { color: var(--text-dim); font-size: var(--fs-xs); font-weight: 500; }
+.chb-figure dd {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.1;
+  margin: 0;
+}
+.chb-story.is-lead .chb-figure dd { font-size: var(--fs-xl); }
+.chb-figure dd.is-null { color: var(--text-dim); font-weight: 500; }
+.chb-figure--alert dd { color: var(--warn); }
+.chb-story__alerts { grid-area: alerts; }
+
+/* Enroll strip — the single, always-available add entry. */
+.chb-enroll {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-4);
+}
+.chb-enroll__title {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  gap: var(--sp-2);
+  margin-inline-end: var(--sp-1);
+  padding: 0;
+}
+.chb-enroll__title:hover { color: var(--text); }
+.chb-enroll__title:focus-visible { border-radius: var(--radius-sm); box-shadow: var(--focus-ring); outline: 0; }
+.chb-enroll__glyph {
+  align-items: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.chb-enroll__chip {
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
   font: inherit;
   font-size: var(--fs-sm);
   gap: var(--sp-2);
-  justify-content: center;
-  min-height: 150px;
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-1);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
-.chb-card--add:hover, .chb-card--add:focus-visible { color: var(--text); }
+.chb-enroll__chip:hover { border-color: var(--border-strong); box-shadow: var(--elev-1); }
+.chb-enroll__chip:focus-visible { box-shadow: var(--focus-ring); outline: 0; }
+.chb-enroll__chip :deep(.brand-mark) { font-size: var(--fs-xs); height: 22px; width: 22px; }
+@media (prefers-reduced-motion: reduce) { .chb-enroll__chip { transition: none; } }
+
+/* Reflow keyed to CONTENT width (container query), not viewport. */
+@container chb-home (max-width: 640px) {
+  .chb-story__head { grid-template-columns: minmax(0, 1fr); }
+  .chb-story__actions { flex-wrap: wrap; grid-row: 2; margin-top: var(--sp-2); }
+  .chb-story__ledger { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chb-figure { border-inline-start: 0; border-top: 1px solid var(--border); padding-block: var(--sp-2); padding-inline: 0; }
+  .chb-figure:first-child { border-top: 0; }
+}
+@container chb-home (max-width: 460px) {
+  .chb-story__ledger { grid-template-columns: minmax(0, 1fr); }
+  .chb-story.is-lead .chb-story__name { font-size: var(--fs-lg); }
+  .chb-folio__lede { font-size: var(--fs-md); }
+}
 
 /* ===== drill-in: full-page detail ===== */
 .chd { display: flex; flex-direction: column; gap: var(--sp-3); }
@@ -1592,18 +2011,37 @@ function probeResultDetail(ch: Channel): string {
 .chd__fact { min-width: 0; overflow-wrap: anywhere; }
 .chd__fact::before { color: var(--text-dim); content: '·'; margin-right: var(--sp-2); }
 .chd__fact--mono { font-family: var(--font-mono); font-size: var(--fs-xs); }
+.chd__botid { background: transparent; border: 0; color: inherit; cursor: copy; padding: 0; }
+.chd__botid:hover { color: var(--text); }
 .chd__actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-left: auto; }
 .chd__actions .btn { min-height: 32px; padding: 5px 10px; }
 .chd__remove { color: var(--danger); }
-.chd__cols { align-items: start; display: grid; gap: var(--sp-5); grid-template-columns: 190px minmax(0, 1fr); }
+.chd__cols { align-items: start; display: grid; gap: var(--sp-5); grid-template-columns: 172px minmax(0, 1fr); max-width: 1460px; }
 .chd__nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 56px; }
-.chd__nav button { align-items: center; background: transparent; border: 1px solid transparent; border-radius: var(--radius-sm); color: var(--text-muted); cursor: pointer; display: flex; font: inherit; font-size: var(--fs-sm); gap: 7px; padding: 8px 12px; text-align: left; }
+.chd__nav button { align-items: center; background: transparent; border: 0; border-left: 2px solid transparent; color: var(--text-muted); cursor: pointer; display: flex; font: inherit; font-size: var(--fs-sm); gap: 7px; line-height: 1.4; padding: 7px 10px; text-align: left; }
 .chd__nav button:hover { color: var(--text); }
-.chd__nav button.is-active { background: var(--bg-surface); border-color: var(--border); color: var(--text); font-weight: 600; }
+.chd__nav button:focus-visible { border-radius: var(--radius-sm); box-shadow: var(--focus-ring); outline: 0; }
+.chd__nav button.is-active { border-left-color: var(--text); color: var(--text); font-weight: 550; }
 .chd__nav-count { color: var(--text-dim); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; margin-left: auto; }
-.chd__main { display: grid; gap: var(--sp-3); min-width: 0; }
+.chd__main { display: grid; gap: 24px; max-width: 1280px; min-width: 0; }
 .chd__section { display: grid; gap: var(--sp-3); scroll-margin-top: 64px; }
-.chd__no-evidence { font-size: var(--fs-sm); padding: 0 14px 12px; }
+.chd__no-evidence { font-size: var(--fs-sm); padding: 0 0 12px; }
+/* One-document skeleton: drill sections read as titled groups, not widgets. */
+.chd__main :deep(.ch-panel) { background: transparent; border: 0; border-radius: 0; overflow: visible; }
+.chd__main :deep(.ch-panel > h3), .chd__main :deep(.ch-panel__heading) { border-bottom: 1px solid var(--border); padding: 0 0 8px; }
+.chd__main :deep(.ch-panel__heading p) { margin: 2px 0 0; }
+.chd__main :deep(.ch-panel__intro) { padding: 10px 0 0; }
+.chd__main :deep(.ch-pairing-summary) { border-bottom: 0; padding: 8px 0 0; }
+.chd__main :deep(.ch-pairing-summary .is-zero), .chd__main :deep(.ch-pairing-summary .is-zero strong) { color: var(--text-dim); font-weight: 400; }
+.chd__main :deep(.ch-pairing-search) { margin: 8px 0 0; }
+.chd__main :deep(.ch-pairing-state) { flex-direction: row; gap: 10px; justify-content: flex-start; min-height: 0; padding: 16px 0; text-align: left; }
+.chd__main :deep(.ch-pairing-state strong) { font-weight: 550; }
+.chd__main :deep(.ch-pairing-groups h4) { padding: 12px 0 6px; }
+.chd__main :deep(.ch-pairing-row) { padding-left: 0; padding-right: 0; }
+.chd__main :deep(.ch-metrics) { gap: 0 var(--sp-5); grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); max-width: 760px; }
+.chd__main :deep(.ch-metrics > div) { border-right: 0; padding: 12px 0; }
+.chd__main :deep(.ch-facts dl > div) { padding: 10px 0; }
+.chd__main :deep(.cfge) { padding-left: 0; padding-right: 0; }
 
 /* Unsaved-draft dot on the Configuration sidenav item: typographic, not
    chromatic. */
@@ -1623,6 +2061,9 @@ function probeResultDetail(ch: Channel): string {
 .ch-probe-result p, .ch-alert p { color: var(--text-muted); font-size: var(--fs-sm); margin: 3px 0 0; }
 .ch-probe-result > div, .ch-alert > div { min-width: 0; overflow-wrap: anywhere; }
 .ch-alert.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); color: var(--danger); }
+/* Console-side final-step guidance: action still owed, so warn-toned. */
+.ch-alert--step { background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface)); border-color: color-mix(in srgb, var(--warn) 38%, var(--border)); }
+.ch-alert--step > svg { color: var(--warn); flex: none; }
 .ch-facts dl { margin: 0; }
 .ch-facts dl > div { align-items: baseline; border-top: 1px solid var(--border); display: flex; gap: var(--sp-3); justify-content: space-between; padding: 11px 14px; }
 .ch-facts dl > div:first-child { border-top: 0; }
@@ -1677,9 +2118,8 @@ function probeResultDetail(ch: Channel): string {
   .ch-stage__header { align-items: stretch; flex-direction: column; }
   .ch-stage__actions { justify-content: stretch; }
   .ch-stage__actions .btn { flex: 1; }
-  .chb__grid { grid-template-columns: minmax(0, 1fr); }
   /* Touch-target floor for the compact controls this view introduces. */
-  .chb-card__foot .btn { min-height: 40px; }
+  .chb-story__actions .btn { min-height: 40px; }
   .chd__nav button { min-height: 44px; }
 }
 </style>

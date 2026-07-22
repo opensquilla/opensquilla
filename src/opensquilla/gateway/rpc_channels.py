@@ -667,25 +667,40 @@ async def _handle_channels_pairing_approve(
         # would suppress the notice forever, because a retry would see the
         # pairing as already approved.
         sender_id = str(getattr(record, "sender_id", "") or "")
-        try:
-            admins = _set_channel_admin_sender(
-                ctx,
-                channel_name=channel_name,
-                sender_id=sender_id,
-                admin=True,
-            )
-            payload["adminGranted"] = sender_id.strip() in admins
-        except Exception as exc:  # noqa: BLE001 - the approval already committed
+        if _channel_entry(ctx, channel_name) is None:
+            # Same guard channels.admin.set applies to grants: a pairing can
+            # outlive its channel (removal never prunes the pairing store), and
+            # granting here would persist a dormant admin entry that silently
+            # re-arms for any future channel created under the same name.
             log.warning(
-                "channel.pairing_admin_grant_failed",
+                "channel.pairing_admin_grant_skipped_unknown_channel",
                 channel=channel_name,
-                error_type=type(exc).__name__,
             )
             payload["adminGranted"] = False
             payload["warnings"] = [
-                "The pairing was approved, but granting channel-admin standing "
-                f"failed ({type(exc).__name__}). Retry from the members view."
+                "The pairing was approved, but the channel is no longer "
+                "configured, so the admin grant was skipped."
             ]
+        else:
+            try:
+                admins = _set_channel_admin_sender(
+                    ctx,
+                    channel_name=channel_name,
+                    sender_id=sender_id,
+                    admin=True,
+                )
+                payload["adminGranted"] = sender_id.strip() in admins
+            except Exception as exc:  # noqa: BLE001 - the approval already committed
+                log.warning(
+                    "channel.pairing_admin_grant_failed",
+                    channel=channel_name,
+                    error_type=type(exc).__name__,
+                )
+                payload["adminGranted"] = False
+                payload["warnings"] = [
+                    "The pairing was approved, but granting channel-admin standing "
+                    f"failed ({type(exc).__name__}). Retry from the members view."
+                ]
     if not was_approved:
         await _send_pairing_approved_notice(ctx, record)
     return payload

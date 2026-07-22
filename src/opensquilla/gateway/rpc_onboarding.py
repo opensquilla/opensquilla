@@ -245,10 +245,11 @@ def _provider_backup_credential_redaction(
 def _status_payload(ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.legacy_data import legacy_data_payload
     from opensquilla.onboarding.next_steps import env_recovery_commands
+    from opensquilla.onboarding.probe_history import load_probe_history
     from opensquilla.onboarding.status import get_onboarding_status
 
     cfg = _active_config(ctx)
-    s = get_onboarding_status(cfg)
+    s = get_onboarding_status(cfg, probe_history=load_probe_history(cfg))
     llm_credential_status = dict(s.llm_credential_status)
     llm_credential_status["revealAllowed"] = bool(
         ctx.principal.is_owner
@@ -859,6 +860,9 @@ async def _llm_profile_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
                 session_key,
                 result.failure_kind,
             )
+    from opensquilla.onboarding.probe_history import record_probe
+
+    record_probe(cfg, deployment.provider, ok=result.ok, failure_kind=result.failure_kind)
     return result.to_payload()
 
 
@@ -973,6 +977,12 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
     api_key_env = str(p.get("apiKeyEnv", "") or "")
     base_url = str(p.get("baseUrl", "") or "")
     proxy = str(p.get("proxy", "") or "")
+    # Draft probes carry explicit fields; only a bare providerId(+model)
+    # request verifies the saved deployment and may update probe history.
+    request_overrides = any(
+        str(p.get(field, "") or "").strip()
+        for field in ("apiKey", "apiKeyEnv", "baseUrl", "proxy")
+    )
     # A provider id is not an endpoint identity for configurable providers.
     # Stored credentials may follow an omitted URL or a same-origin path
     # change, but never a scheme/host/effective-port change.
@@ -1002,6 +1012,21 @@ async def _provider_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
             allow_default_api_key_env=(
                 not same_provider or reuse_stored_credentials
             ),
+        )
+    saved_model = str(getattr(cfg.llm, "model", "") or "").strip()
+    if (
+        same_provider
+        and reuse_stored_credentials
+        and not request_overrides
+        and (not model.strip() or model.strip() == saved_model)
+    ):
+        from opensquilla.onboarding.probe_history import record_probe
+
+        record_probe(
+            cfg,
+            str(provider_id),
+            ok=bool(getattr(result, "ok", False)),
+            failure_kind=str(getattr(result, "failure_kind", "") or ""),
         )
     return result.to_payload()
 

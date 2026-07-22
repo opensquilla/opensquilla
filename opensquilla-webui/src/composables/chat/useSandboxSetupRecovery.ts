@@ -75,13 +75,25 @@ export function useSandboxSetupRecovery(options: UseSandboxSetupRecoveryOptions)
     clearPoll()
     try {
       const payload = normalizeStatus(await options.rpc.call('sandbox.setup.status'))
-      if (generation !== requestGeneration || !payload) return
+      if (generation !== requestGeneration) return
+      if (!payload) {
+        // Keep following an already-authoritative setting_up state when a
+        // transient/malformed response cannot advance it. schedulePoll remains
+        // a no-op for old Gateways that never established a setup status.
+        schedulePoll()
+        return
+      }
+      // Any authoritative status supersedes a prior transport failure,
+      // including a terminal failed payload with its own server-side state.
+      error.value = ''
       applyStatus(payload)
     } catch (cause) {
       if (generation !== requestGeneration) return
       // Old/unavailable Gateways do not get guessed into a setup state. With no
-      // authoritative payload the recovery surface stays hidden.
+      // authoritative payload the recovery surface stays hidden and
+      // schedulePoll remains a no-op; an established setting_up state retries.
       error.value = cause instanceof Error ? cause.message : String(cause)
+      schedulePoll()
     } finally {
       if (generation === requestGeneration) loading.value = false
     }

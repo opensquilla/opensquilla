@@ -169,9 +169,7 @@ async def test_auto_review_promotion_pushes_one_human_approval_request() -> None
 
         assert len(scheduled) == 1
         await scheduled.pop()
-        assert [name for name, _payload in approvals_conn.events] == [
-            "exec.approval.requested"
-        ]
+        assert [name for name, _payload in approvals_conn.events] == ["exec.approval.requested"]
         assert approvals_conn.events[0][1]["approval_id"] == approval_id
 
         queue.update_params(
@@ -388,6 +386,131 @@ def test_generic_and_plugin_display_args_are_secret_redacted() -> None:
     )
     assert "argv" not in split_snapshot
     assert "hidden-credential" not in json.dumps(split_snapshot)
+
+
+def test_generic_display_projection_redacts_browser_sensitive_values_without_losing_shape() -> None:
+    info = {
+        "id": "generic-browser-secrets-123",
+        "namespace": "exec",
+        "params": {
+            "toolName": "http_request",
+            "args": {
+                "url": "https://example.test/resource",
+                "headers": {
+                    "Cookie": "session=browser-cookie-secret",
+                    "Set-Cookie": "refresh=browser-set-cookie-secret; HttpOnly",
+                    "X-Auth-Token": "unknown-auth-header-secret",
+                    "X-Trace-Id": "trace-visible",
+                },
+                "private_key": "private-key-secret",
+                "SSHPrivateKey": "ssh-private-key-secret",
+                "AUTH": "uppercase-auth-secret",
+                "AUTH_TOKEN": "uppercase-auth-token-secret",
+                "HTTP_AUTH": "uppercase-http-auth-secret",
+                "SSH_PRIVATE_KEY": "uppercase-private-key-secret",
+                "requestCookies": ["request-cookie-secret"],
+                "header_lines": [
+                    "Cookie: header-line-cookie-secret",
+                    "Set-Cookie: header-line-set-cookie-secret; Secure",
+                    "X-Trace-Id: trace-visible",
+                ],
+                "tls_material": (
+                    "-----BEGIN PRIVATE KEY-----\n"
+                    "private-key-block-secret\n"
+                    "-----END PRIVATE KEY-----"
+                ),
+                "cookies_enabled": True,
+                "cookie_policy": "same-site",
+                "authentication_mode": "delegated",
+            },
+            "command": ("curl -H 'Cookie: command-cookie-secret' https://example.test/resource"),
+        },
+    }
+
+    push = build_approval_event_payload(info)
+    snapshot = build_approval_snapshot_item(info, default_mode="prompt")
+
+    expected_args = {
+        "url": "https://example.test/resource",
+        "headers": {
+            "Cookie": "[REDACTED]",
+            "Set-Cookie": "[REDACTED]",
+            "X-Auth-Token": "[REDACTED]",
+            "X-Trace-Id": "trace-visible",
+        },
+        "private_key": "[REDACTED]",
+        "SSHPrivateKey": "[REDACTED]",
+        "AUTH": "[REDACTED]",
+        "AUTH_TOKEN": "[REDACTED]",
+        "HTTP_AUTH": "[REDACTED]",
+        "SSH_PRIVATE_KEY": "[REDACTED]",
+        "requestCookies": "[REDACTED]",
+        "header_lines": [
+            "Cookie: [REDACTED]",
+            "Set-Cookie: [REDACTED]",
+            "X-Trace-Id: trace-visible",
+        ],
+        "tls_material": "[REDACTED]",
+        "cookies_enabled": True,
+        "cookie_policy": "same-site",
+        "authentication_mode": "delegated",
+    }
+    assert push["args"] == expected_args
+    assert snapshot["args"] == expected_args
+    expected_command = "curl -H 'Cookie: [REDACTED]' https://example.test/resource"
+    assert push["command"] == expected_command
+    assert snapshot["command"] == expected_command
+    encoded = json.dumps({"push": push, "snapshot": snapshot})
+    assert "browser-cookie-secret" not in encoded
+    assert "browser-set-cookie-secret" not in encoded
+    assert "private-key-secret" not in encoded
+    assert "ssh-private-key-secret" not in encoded
+    assert "request-cookie-secret" not in encoded
+    assert "header-line-cookie-secret" not in encoded
+    assert "header-line-set-cookie-secret" not in encoded
+    assert "private-key-block-secret" not in encoded
+    assert "unknown-auth-header-secret" not in encoded
+    assert "command-cookie-secret" not in encoded
+    assert "uppercase-auth-secret" not in encoded
+    assert "uppercase-auth-token-secret" not in encoded
+    assert "uppercase-http-auth-secret" not in encoded
+    assert "uppercase-private-key-secret" not in encoded
+
+    escaped_command = build_approval_event_payload(
+        {
+            "id": "escaped-cookie-command-123",
+            "namespace": "exec",
+            "params": {
+                "command": (
+                    'curl -H "Cookie: sid=before\\"escaped-cookie-secret" '
+                    "https://example.test/resource"
+                ),
+            },
+        }
+    )["command"]
+    assert escaped_command == ('curl -H "Cookie: [REDACTED]" https://example.test/resource')
+    assert "escaped-cookie-secret" not in escaped_command
+
+
+def test_unknown_sandbox_display_projection_never_exposes_generic_args() -> None:
+    info = {
+        "id": "sandbox-future-123",
+        "namespace": "exec",
+        "params": {
+            "approvalKind": "sandbox_future",
+            "args": {
+                "action": {"credential": "sandbox-policy-secret"},
+                "cookie_policy": "same-site",
+            },
+        },
+    }
+
+    push = build_approval_event_payload(info)
+    snapshot = build_approval_snapshot_item(info, default_mode="prompt")
+
+    assert push["args"] is None
+    assert snapshot["args"] is None
+    assert "sandbox-policy-secret" not in json.dumps({"push": push, "snapshot": snapshot})
 
 
 def test_approvals_http_snapshot_uses_safe_display_projection(

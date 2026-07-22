@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Literal, cast, get_args
 
 from pydantic import ValidationError
@@ -299,32 +300,31 @@ def _validate_router_tiers(tiers: dict[str, Any], default_tier: str) -> None:
             raise ValueError(f"router tier {tier_name!r} requires model")
 
 
-def _tier_provider_credentials_resolvable(
+def _tier_provider_deployment_unready_reason(
     provider_id: str,
     llm_profiles: dict[str, Any] | None,
-) -> bool:
-    from opensquilla.provider.registry import UnknownProviderError, get_provider_spec
+) -> str | None:
+    """Save-time readiness mirror of the runtime deployment resolver.
 
-    try:
-        spec = get_provider_spec(provider_id)
-    except UnknownProviderError:
-        return False
-    if not spec.runtime_supported:
-        return False
-    profile = (llm_profiles or {}).get(provider_id)
-    if str(getattr(profile, "api_key", "") or "").strip():
-        return True
-    if not spec.requires_api_key():
-        return True
-    # A rotation pool resolves when any of its named env vars is set —
-    # mirror the runtime path so pool-only profiles are not flagged as
-    # credential-less.
-    for pool_env_name in getattr(profile, "api_key_env_pool", None) or []:
-        pool_env_name = str(pool_env_name or "").strip()
-        if pool_env_name and pool_env_name != "OAuth" and os.environ.get(pool_env_name):
-            return True
-    env_name = str(getattr(profile, "api_key_env", "") or "").strip() or spec.env_key
-    return bool(env_name and env_name != "OAuth" and os.environ.get(env_name))
+    Returns ``None`` when a routed tier for ``provider_id`` would resolve at
+    turn time, else the resolver's failure reason. Delegating to
+    ``resolve_provider_deployment`` (side-effect free without a pool
+    acquirer) keeps config-time warnings from drifting against what routed
+    turns actually resolve — including case-variant ``llm_profiles`` keys
+    and the endpoint-origin gates on env-provided keys.
+    """
+    from opensquilla.provider.deployment import resolve_provider_deployment
+
+    resolution = resolve_provider_deployment(
+        SimpleNamespace(llm_profiles=dict(llm_profiles or {}), llm=None),
+        provider_id,
+        # Readiness only: any non-empty model id exercises the credential
+        # and endpoint resolution paths.
+        "credential-readiness-probe",
+    )
+    if resolution.ready:
+        return None
+    return resolution.reason or "deployment_unresolved"
 
 
 def _cross_provider_tier_warnings(
@@ -370,13 +370,23 @@ def _cross_provider_tier_warnings(
                     f"not enabled (squilla_router.cross_provider_tiers), so this tier's "
                     f"model will be requested from '{active_provider}'."
                 )
-        elif not _tier_provider_credentials_resolvable(tier_provider, llm_profiles):
-            warnings.append(
-                f"Router tier '{tier_name}' routes to provider '{tier_provider}' but no "
-                f"credentials resolve for it. Add [llm_profiles.{tier_provider}] with "
-                f"api_key or api_key_env, or export the provider's default env key; "
-                f"until then the tier falls back to '{active_provider}'."
+        elif cross_provider_enabled:
+            unready_reason = _tier_provider_deployment_unready_reason(
+                tier_provider, llm_profiles
             )
+            if unready_reason == "missing_base_url":
+                warnings.append(
+                    f"Router tier '{tier_name}' routes to provider '{tier_provider}' but no "
+                    f"endpoint resolves for it. Add [llm_profiles.{tier_provider}] with "
+                    f"base_url; until then the tier falls back to '{active_provider}'."
+                )
+            elif unready_reason is not None:
+                warnings.append(
+                    f"Router tier '{tier_name}' routes to provider '{tier_provider}' but no "
+                    f"credentials resolve for it. Add [llm_profiles.{tier_provider}] with "
+                    f"api_key or api_key_env, or export the provider's default env key; "
+                    f"until then the tier falls back to '{active_provider}'."
+                )
     return warnings
 
 

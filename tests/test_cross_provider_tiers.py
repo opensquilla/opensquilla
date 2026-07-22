@@ -212,6 +212,39 @@ def test_inherited_primary_credentials_remain_authoritative_on_custom_origin(
     assert resolution.provider_config.base_url == "https://primary-proxy.example/v1"
 
 
+def test_registry_env_follows_operator_owned_endpoint(monkeypatch) -> None:
+    """A provider spec without a default base URL (azure-style) binds its
+    registry env key to the operator-supplied endpoint, so the env fallback
+    must follow the profile base_url instead of being origin-vetoed."""
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure-env")
+    cfg = _config_with_flag(
+        azure=LlmProviderProfile(base_url="https://acct.azure-endpoint.example/v1")
+    )
+
+    resolution = resolve_provider_deployment(cfg, "azure", "gpt-test")
+
+    assert resolution.ready is True
+    assert resolution.credential_source == "registry_env"
+    assert resolution.credential_env == "AZURE_OPENAI_API_KEY"
+    assert resolution.endpoint_source == "profile"
+    assert resolution.provider_config is not None
+    assert resolution.provider_config.api_key == "sk-azure-env"
+    assert (
+        resolution.provider_config.base_url
+        == "https://acct.azure-endpoint.example/v1"
+    )
+
+
+def test_operator_owned_endpoint_still_requires_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure-env")
+    cfg = _config_with_flag()
+
+    resolution = resolve_provider_deployment(cfg, "azure", "gpt-test")
+
+    assert resolution.ready is False
+    assert resolution.reason == "missing_base_url"
+
+
 def test_member_endpoint_override_cannot_reuse_inherited_primary_credential() -> None:
     inherited = ProviderConfig(
         provider="openai",

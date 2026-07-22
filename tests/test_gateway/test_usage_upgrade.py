@@ -26,6 +26,7 @@ from opensquilla.gateway.websocket import _build_features
 from opensquilla.persistence.migrator import apply_pending
 from opensquilla.session.storage import _CREATE_SESSIONS, SessionStorage
 from opensquilla.tools.registry import ToolRegistry
+from opensquilla.usage_reasons import normalize_usage_unknown_reason
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
@@ -265,6 +266,21 @@ def test_usage_query_is_advertised_without_protocol_or_legacy_rpc_breakage() -> 
         entry = dispatcher.get_entry(method)
         assert entry is not None
         assert entry.required_scope == "operator.read"
+
+
+def test_boot_recovery_reason_stays_inside_the_closed_usage_taxonomy() -> None:
+    """Restart-orphaned reservations must keep a restart-specific reason.
+
+    ``normalize_usage_unknown_reason`` collapses any string outside the closed
+    taxonomy to the generic ``usage_unknown``, which would make restart orphans
+    indistinguishable from providers that returned no usage receipt.
+    """
+    build_source = inspect.getsource(boot.build_services)
+    match = re.search(r'await recover_started\(reason="(?P<reason>[^"]+)"\)', build_source)
+    assert match is not None, "boot must pass an explicit recovery reason"
+    reason = match.group("reason")
+    assert normalize_usage_unknown_reason(reason) == reason
+    assert reason == "process_restarted"
 
 
 def test_usage_ledger_boot_order_is_cutover_then_ready_then_backfill() -> None:

@@ -2315,7 +2315,7 @@ async def build_services(
         await session_storage.initialize_usage_ledger()
         recover_started = getattr(session_storage, "recover_started_usage_events", None)
         if callable(recover_started):
-            await recover_started(reason="gateway_restart_without_usage_receipt")
+            await recover_started(reason="process_restarted")
         usage_event_sink = SessionUsageEventSink(session_storage)
         log.info("build_services.usage_ledger_ready")
 

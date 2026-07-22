@@ -2122,6 +2122,215 @@ async def test_aggregator_build_failure_uses_fallback_and_preserves_proposer_usa
     assert "could not be initialized" in done.ensemble_trace["fallback_reason"]
 
 
+def _flaky_aggregator_harness(
+    monkeypatch: pytest.MonkeyPatch,
+    aggregator_events_by_call: list[list[StreamEvent]],
+) -> tuple[_FakeRegistry, list[int]]:
+    """Wire p1 + an aggregator whose stream plan changes per call."""
+
+    registry = _FakeRegistry(
+        {"p1": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="p1")])}
+    )
+    call_count = [0]
+
+    class _FlakyAggregator:
+        provider_name = "fake"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                index = min(call_count[0], len(aggregator_events_by_call) - 1)
+                call_count[0] += 1
+                for event in aggregator_events_by_call[index]:
+                    yield event
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    def build_provider(cfg: ProviderConfig) -> Any:
+        if cfg.model == "agg":
+            return _FlakyAggregator()
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_AGGREGATOR_RETRY_BACKOFF_SECONDS",
+        (0.0,),
+    )
+    return registry, call_count
+
+
+def _retry_test_provider() -> EnsembleProvider:
+    return EnsembleProvider(
+        profile_name="default",
+        proposers=[_member("p1")],
+        aggregator=_member("agg"),
+        min_successful_proposers=1,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        shuffle_candidates=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_aggregator_transient_error_is_retried_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, call_count = _flaky_aggregator_harness(
+        monkeypatch,
+        [
+            [ErrorEvent(message="upstream rate limit", code="429")],
+            [
+                TextDeltaEvent(text="final"),
+                DoneEvent(input_tokens=2, output_tokens=3, model="agg"),
+            ],
+        ],
+    )
+
+    events = await _collect(_retry_test_provider())
+
+    assert call_count[0] == 2
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    retry_beats = [
+        event
+        for event in events
+        if isinstance(event, ProviderHeartbeatEvent)
+        and event.phase == "ensemble_aggregator_retry"
+    ]
+    assert len(retry_beats) == 1
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.model_usage_breakdown[-1]["role"] == "aggregator"
+    # The failed first attempt started a request that produced no receipt.
+    assert done.usage_missing_count == 1
+    assert done.ensemble_trace is not None
+    assert done.ensemble_trace["final_request"]["retry_count"] == 1
+    # p1, the failed aggregator attempt, and the successful retry.
+    assert done.ensemble_trace["llm_request_count"] == 3
+    finishes = [
+        event
+        for event in events
+        if isinstance(event, EnsembleProgressEvent)
+        and event.event_type == "aggregator_finish"
+    ]
+    assert len(finishes) == 1
+    assert not finishes[0].error
+
+
+@pytest.mark.asyncio
+async def test_aggregator_transient_exception_is_retried_in_place(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {"p1": _FakePlan([TextDeltaEvent(text="draft"), DoneEvent(model="p1")])}
+    )
+    call_count = [0]
+
+    class _FlakyTransportAggregator:
+        provider_name = "fake"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise RuntimeError("connect timeout while contacting upstream")
+                yield TextDeltaEvent(text="final")
+                yield DoneEvent(model="agg")
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    def build_provider(cfg: ProviderConfig) -> Any:
+        if cfg.model == "agg":
+            return _FlakyTransportAggregator()
+        return registry.provider_for(cfg)
+
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", build_provider)
+    monkeypatch.setattr(
+        "opensquilla.provider.ensemble._ENSEMBLE_AGGREGATOR_RETRY_BACKOFF_SECONDS",
+        (0.0,),
+    )
+
+    events = await _collect(_retry_test_provider())
+
+    assert call_count[0] == 2
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    assert any(isinstance(event, DoneEvent) for event in events)
+
+
+@pytest.mark.asyncio
+async def test_aggregator_non_transient_error_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, call_count = _flaky_aggregator_harness(
+        monkeypatch,
+        [
+            [ErrorEvent(message="invalid request payload", code="agg_rejected")],
+            [TextDeltaEvent(text="never"), DoneEvent(model="agg")],
+        ],
+    )
+
+    events = await _collect(_retry_test_provider())
+
+    assert call_count[0] == 1
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "agg_rejected"
+    assert error.usage_missing_count == 1
+
+
+@pytest.mark.asyncio
+async def test_aggregator_transient_error_after_content_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, call_count = _flaky_aggregator_harness(
+        monkeypatch,
+        [
+            [
+                TextDeltaEvent(text="partial answer"),
+                ErrorEvent(message="upstream rate limit", code="429"),
+            ],
+            [TextDeltaEvent(text="never"), DoneEvent(model="agg")],
+        ],
+    )
+
+    events = await _collect(_retry_test_provider())
+
+    # Replaying after user-visible content would duplicate output downstream.
+    assert call_count[0] == 1
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "429"
+
+
+@pytest.mark.asyncio
+async def test_aggregator_retry_budget_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, call_count = _flaky_aggregator_harness(
+        monkeypatch,
+        [[ErrorEvent(message="upstream rate limit", code="429")]],
+    )
+
+    events = await _collect(_retry_test_provider())
+
+    assert call_count[0] == 3  # initial attempt + two bounded retries
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "429"
+    # p1 receipt exists; three aggregator attempts started with no receipt.
+    assert error.usage_missing_count == 3
+
+
 @pytest.mark.asyncio
 async def test_ensemble_redacts_member_key_from_proposer_error_progress_and_trace(
     monkeypatch: pytest.MonkeyPatch,

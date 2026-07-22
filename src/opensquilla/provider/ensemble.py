@@ -54,6 +54,19 @@ from .types import (
 TRACE_CONTENT_MAX_CHARS = 8_000
 _ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS = 5.0
+# The aggregator leg is retried in-place on transient upstream errors: the
+# proposer drafts are already collected and reusable, and the composite call
+# is never replayed by the agent (retry_failed_call_safe=False), so without
+# this a single 429/5xx blip would discard the whole billed proposer round.
+_ENSEMBLE_AGGREGATOR_MAX_RETRIES = 2
+_ENSEMBLE_AGGREGATOR_RETRY_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 4.0)
+_AGGREGATOR_RETRYABLE_FAILURE_KINDS = frozenset(
+    {
+        ProviderFailureKind.RATE_LIMITED,
+        ProviderFailureKind.PROVIDER_OVERLOADED,
+        ProviderFailureKind.TRANSPORT_TRANSIENT,
+    }
+)
 ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE = "ensemble_multimodal_unsupported"
 ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE = (
     "Ensemble does not support image input yet. "
@@ -64,6 +77,16 @@ log = structlog.get_logger(__name__)
 
 def _ensemble_heartbeat_interval() -> float:
     return max(0.001, float(_ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS))
+
+
+def _aggregator_retry_backoff_seconds(attempt: int) -> float:
+    """Backoff before aggregator retry ``attempt`` (1-indexed)."""
+
+    delays = _ENSEMBLE_AGGREGATOR_RETRY_BACKOFF_SECONDS
+    if not delays:
+        return 0.0
+    index = min(max(attempt - 1, 0), len(delays) - 1)
+    return max(0.0, float(delays[index]))
 
 
 def _consume_task_result(task: asyncio.Future[Any]) -> None:
@@ -759,6 +782,18 @@ class EnsembleProvider:
         member: EnsembleMemberConfig,
     ) -> _MemberRequestBudgetBinding | None:
         return self._member_request_budget_bindings.get(_member_budget_key(member))
+
+    def _aggregator_error_is_retryable(self, *, message: str, code: str) -> bool:
+        """True when the aggregator failure is a transient upstream condition."""
+
+        raw_code = str(code or "")
+        kind = classify_provider_error(
+            provider_name=self.aggregator.provider_config.provider,
+            status_code=int(raw_code) if raw_code.isdigit() else None,
+            raw_code=raw_code,
+            message=message,
+        )
+        return kind in _AGGREGATOR_RETRYABLE_FAILURE_KINDS
 
     def provider_metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
@@ -1532,7 +1567,9 @@ class EnsembleProvider:
                 cost_source=_rollup_cost_source(rows),
                 model_usage_breakdown=rows,
                 ensemble_trace=trace,
-                usage_missing_count=prior_missing_count,
+                # Each retried aggregator attempt started a request that never
+                # produced a usage receipt.
+                usage_missing_count=prior_missing_count + attempt,
                 billing_receipt=None,
             )
 
@@ -1540,106 +1577,172 @@ class EnsembleProvider:
             return replace(
                 event,
                 model_usage_breakdown=list(prior_rows),
-                usage_missing_count=prior_missing_count + 1,
+                usage_missing_count=prior_missing_count + attempt + 1,
             )
 
         yield aggregator_progress("aggregator_start")
-        try:
-            _mark_final_request_started(trace)
-            stream = provider.chat(messages, tools=tools, config=config)
-            timeout_seconds = (
-                self.aggregator_timeout_seconds
-                if self.aggregator_timeout_seconds > 0
-                else None
-            )
-            async for event in _stream_with_heartbeats(
-                stream,
-                phase="ensemble_aggregator_wait",
-                message="Still waiting for ensemble aggregator response",
-                timeout_seconds=timeout_seconds,
-            ):
-                if isinstance(event, DoneEvent):
-                    aggregator_elapsed_ms = int(
-                        (time.monotonic() - aggregator_started) * 1000
+        attempt = 0
+        while True:
+            content_streamed = False
+            retry_error: ErrorEvent | None = None
+            heartbeat_stream: AsyncIterator[StreamEvent] | None = None
+            try:
+                _mark_final_request_started(trace)
+                stream = provider.chat(messages, tools=tools, config=config)
+                timeout_seconds = (
+                    self.aggregator_timeout_seconds
+                    if self.aggregator_timeout_seconds > 0
+                    else None
+                )
+                heartbeat_stream = _stream_with_heartbeats(
+                    stream,
+                    phase="ensemble_aggregator_wait",
+                    message="Still waiting for ensemble aggregator response",
+                    timeout_seconds=timeout_seconds,
+                )
+                async for event in heartbeat_stream:
+                    if isinstance(event, DoneEvent):
+                        aggregator_elapsed_ms = int(
+                            (time.monotonic() - aggregator_started) * 1000
+                        )
+                        done_event = ensemble_done(
+                            event,
+                            aggregator_elapsed_ms=aggregator_elapsed_ms,
+                        )
+                        usage_rows = done_event.model_usage_breakdown or []
+                        aggregator_usage = next(
+                            (
+                                row
+                                for row in reversed(usage_rows)
+                                if isinstance(row, Mapping)
+                                and row.get("role") == "aggregator"
+                            ),
+                            {},
+                        )
+                        yield aggregator_progress(
+                            "aggregator_finish",
+                            usage=aggregator_usage,
+                        )
+                        yield done_event
+                        return
+                    elif isinstance(event, ErrorEvent):
+                        safe_event = replace(
+                            event,
+                            message=redact_upstream_error_text(
+                                event.message,
+                                api_key=self.aggregator.provider_config.api_key,
+                                max_len=2000,
+                            ),
+                            code=redact_upstream_error_code(
+                                event.code,
+                                api_key=self.aggregator.provider_config.api_key,
+                            ),
+                        )
+                        self._report_member_credential_failure(
+                            self.aggregator,
+                            message=safe_event.message,
+                            code=safe_event.code,
+                        )
+                        if (
+                            not content_streamed
+                            and attempt < _ENSEMBLE_AGGREGATOR_MAX_RETRIES
+                            and self._aggregator_error_is_retryable(
+                                message=safe_event.message,
+                                code=safe_event.code,
+                            )
+                        ):
+                            retry_error = safe_event
+                            break
+                        yield aggregator_progress(
+                            "aggregator_finish",
+                            error=safe_event.message,
+                        )
+                        yield partial_error(safe_event)
+                        return
+                    elif isinstance(event, TextDeltaEvent):
+                        content_streamed = True
+                        final_text_parts.append(event.text)
+                        yield event
+                    elif isinstance(event, ProviderHeartbeatEvent):
+                        yield event
+                    else:
+                        # Reasoning/tool-use deltas are user-visible; replaying
+                        # the aggregator after emitting them would duplicate
+                        # output downstream, so they pin this attempt.
+                        content_streamed = True
+                        yield event
+            except TimeoutError:
+                error = ErrorEvent(
+                    message=(
+                        "ensemble aggregator timed out after "
+                        f"{self.aggregator_timeout_seconds:g}s"
+                    ),
+                    code="ensemble_aggregator_timeout",
+                )
+                yield aggregator_progress("aggregator_finish", error=error.message)
+                yield partial_error(error)
+                return
+            except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
+                safe_message = redact_upstream_error_text(
+                    f"ensemble aggregator failed: {exc}",
+                    api_key=self.aggregator.provider_config.api_key,
+                    max_len=2000,
+                )
+                if (
+                    not content_streamed
+                    and attempt < _ENSEMBLE_AGGREGATOR_MAX_RETRIES
+                    and self._aggregator_error_is_retryable(
+                        message=safe_message,
+                        code=type(exc).__name__,
                     )
-                    done_event = ensemble_done(
-                        event,
-                        aggregator_elapsed_ms=aggregator_elapsed_ms,
+                ):
+                    retry_error = ErrorEvent(
+                        message=safe_message,
+                        code="ensemble_aggregator_error",
                     )
-                    usage_rows = done_event.model_usage_breakdown or []
-                    aggregator_usage = next(
-                        (
-                            row
-                            for row in reversed(usage_rows)
-                            if isinstance(row, Mapping) and row.get("role") == "aggregator"
-                        ),
-                        {},
-                    )
-                    yield aggregator_progress(
-                        "aggregator_finish",
-                        usage=aggregator_usage,
-                    )
-                    yield done_event
-                    return
-                elif isinstance(event, ErrorEvent):
-                    safe_event = replace(
-                        event,
-                        message=redact_upstream_error_text(
-                            event.message,
-                            api_key=self.aggregator.provider_config.api_key,
-                            max_len=2000,
-                        ),
-                        code=redact_upstream_error_code(
-                            event.code,
-                            api_key=self.aggregator.provider_config.api_key,
-                        ),
-                    )
-                    self._report_member_credential_failure(
-                        self.aggregator,
-                        message=safe_event.message,
-                        code=safe_event.code,
-                    )
-                    yield aggregator_progress(
-                        "aggregator_finish",
-                        error=safe_event.message,
-                    )
-                    yield partial_error(safe_event)
-                    return
-                elif isinstance(event, TextDeltaEvent):
-                    final_text_parts.append(event.text)
-                    yield event
                 else:
-                    yield event
-        except TimeoutError:
-            error = ErrorEvent(
+                    error = ErrorEvent(
+                        message=safe_message,
+                        code="ensemble_aggregator_error",
+                    )
+                    yield aggregator_progress("aggregator_finish", error=error.message)
+                    yield partial_error(error)
+                    return
+            if retry_error is None:
+                error = ErrorEvent(
+                    message="ensemble aggregator stream ended before DoneEvent",
+                    code="ensemble_aggregator_incomplete",
+                )
+                yield aggregator_progress("aggregator_finish", error=error.message)
+                yield partial_error(error)
+                return
+            close_stream = getattr(heartbeat_stream, "aclose", None)
+            if callable(close_stream):
+                with contextlib.suppress(Exception):
+                    await close_stream()
+            attempt += 1
+            final_request = trace.get("final_request")
+            if isinstance(final_request, dict):
+                final_request["retry_count"] = attempt
+            # The retried attempt is one more real upstream request.
+            trace["llm_request_count"] = int(trace.get("llm_request_count") or 0) + 1
+            log.warning(
+                "ensemble.aggregator_retry",
+                attempt=attempt,
+                max_retries=_ENSEMBLE_AGGREGATOR_MAX_RETRIES,
+                code=retry_error.code,
+                provider=self.aggregator.provider_config.provider,
+            )
+            yield ProviderHeartbeatEvent(
+                phase="ensemble_aggregator_retry",
                 message=(
-                    "ensemble aggregator timed out after "
-                    f"{self.aggregator_timeout_seconds:g}s"
+                    "Ensemble aggregator hit a transient error; retrying "
+                    f"({attempt}/{_ENSEMBLE_AGGREGATOR_MAX_RETRIES})"
                 ),
-                code="ensemble_aggregator_timeout",
             )
-            yield aggregator_progress("aggregator_finish", error=error.message)
-            yield partial_error(error)
-            return
-        except Exception as exc:  # noqa: BLE001 - provider boundary returns ErrorEvent
-            safe_message = redact_upstream_error_text(
-                f"ensemble aggregator failed: {exc}",
-                api_key=self.aggregator.provider_config.api_key,
-                max_len=2000,
-            )
-            error = ErrorEvent(
-                message=safe_message,
-                code="ensemble_aggregator_error",
-            )
-            yield aggregator_progress("aggregator_finish", error=error.message)
-            yield partial_error(error)
-            return
-        error = ErrorEvent(
-            message="ensemble aggregator stream ended before DoneEvent",
-            code="ensemble_aggregator_incomplete",
-        )
-        yield aggregator_progress("aggregator_finish", error=error.message)
-        yield partial_error(error)
+            delay = _aggregator_retry_backoff_seconds(attempt)
+            if delay > 0:
+                await asyncio.sleep(delay)
 
     async def _fallback_or_error(
         self,

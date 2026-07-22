@@ -125,7 +125,7 @@ def test_live_smoke_env_maps_cover_openai_zhipu_kimi_and_minimax() -> None:
     assert smoke._DEFAULT_MODELS["tokenrhythm"] == "deepseek-v4-flash"
     # Reasoning tokens bill against max_tokens: the default 64 budget would
     # return empty content with finish_reason "length".
-    assert smoke._MIN_MAX_TOKENS["tokenrhythm"] >= 512
+    assert smoke._MIN_MAX_TOKENS["tokenrhythm"] == 1024
     assert smoke._MIN_MAX_TOKENS["minimax"] == 64
 
 
@@ -176,6 +176,50 @@ def test_live_smoke_uses_moonshot_temperature_required_by_kimi_k2_6() -> None:
         smoke._direct_openai_token_limit_field("openai", "gpt-5.4-mini") == "max_completion_tokens"
     )
     assert smoke._direct_openai_token_limit_field("openai", "gpt-4.1") == "max_tokens"
+
+
+def test_cost_estimate_is_provider_aware_cache_aware_and_preserves_real_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.engine.pricing import PriceEntry
+
+    resolved_calls: list[tuple[str, str]] = []
+
+    def fake_resolve(model: str, provider: str) -> SimpleNamespace:
+        resolved_calls.append((model, provider))
+        return SimpleNamespace(
+            entry=PriceEntry(
+                input_per_m=10.0,
+                output_per_m=20.0,
+                cache_read_per_m=1.0,
+                cache_write_per_m=2.0,
+            ),
+            source="catalog",
+        )
+
+    monkeypatch.setattr(smoke, "resolve_model_price", fake_resolve)
+    cost = smoke._cost_estimate(
+        "tokenrhythm",
+        "deepseek-v4-flash",
+        {
+            "direct": {"prompt_tokens": 100, "completion_tokens": 10},
+            "stream": {
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "cached_tokens": 40,
+                "cache_write_tokens": 10,
+                "billed_cost": 0.0,
+                "cost_source": "provider_billed",
+            },
+        },
+    )
+
+    # 50 fresh*10 + 40 read*1 + 10 write*2 + 10 output*20, per million.
+    assert cost["opensquilla_estimated_cost_usd"] == pytest.approx(760 / 1_000_000)
+    assert cost["estimate_basis"] == "cache_aware"
+    assert cost["provider_billed_cost_usd"] == 0.0
+    assert cost["cost_source"] == "provider_billed"
+    assert resolved_calls == [("deepseek-v4-flash", "tokenrhythm")]
 
 
 @pytest.mark.parametrize(

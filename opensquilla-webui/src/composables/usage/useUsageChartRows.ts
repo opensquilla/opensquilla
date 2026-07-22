@@ -9,7 +9,10 @@ export function useUsageChartRows(options: {
   serverDays?: ComputedRef<UsageDay[] | null>
   chartMode: Ref<'tokens' | 'cost'>
   rowVal: (row: Record<string, unknown>, ...keys: string[]) => unknown
-  fmtCost: (usd: number | null | undefined, opts?: { decimals?: number }) => string
+  fmtCost: (
+    usd: number | null | undefined,
+    opts?: { decimals?: number; source?: object },
+  ) => string
   fmtNum: (value: number | null | undefined) => string
 }) {
   const chartCaption = computed(() => {
@@ -53,7 +56,7 @@ export function useUsageChartRows(options: {
             inputPct: percent,
             outputPct: 0,
             totalPct: percent,
-            valueLabel: options.fmtCost(day.totals.cost),
+            valueLabel: options.fmtCost(day.totals.cost, { source: day.totals }),
           }
         }
         const inputPct = (day.totals.input / maxValue) * 100
@@ -105,7 +108,7 @@ export function useUsageChartRows(options: {
           inputPct: pct,
           outputPct: 0,
           totalPct: pct,
-          valueLabel: options.fmtCost(cost),
+          valueLabel: options.fmtCost(cost, { source: row }),
         }
       }
 

@@ -43,6 +43,10 @@ def test_wheel_contains_migrations_and_webui_artifact(
     assert any(
         n.endswith("opensquilla/_migrations/V023__router_deployment_telemetry.py") for n in names
     ), f"V023 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
+    assert any(
+        n.endswith("opensquilla/_migrations/V024__usage_native_billing_receipts.py")
+        for n in names
+    ), f"V024 missing from wheel; found: {[n for n in names if '_migrations' in n]}"
     assert "opensquilla/gateway/static/dist/index.html" in names
     assert f"opensquilla/gateway/static/dist/{MANIFEST_NAME}" in names
     assert packaged_probe == SYNTHETIC_JS
@@ -121,6 +125,8 @@ def test_installed_wheel_resolves_migrations(
                 "        f'V022 missing in {d}';"
                 " assert (d / 'V023__router_deployment_telemetry.py').exists(),"
                 "        f'V023 missing in {d}';"
+                " assert (d / 'V024__usage_native_billing_receipts.py').exists(),"
+                "        f'V024 missing in {d}';"
                 " print('OK', d)"
             ),
         ],
@@ -143,7 +149,7 @@ def test_installed_wheel_resolves_migrations(
     reason="docker smoke is opt-in; it pulls external images",
 )
 def test_docker_image_resolves_migrations() -> None:
-    """`docker build` + `docker run` resolves _migrations through V023.
+    """`docker build` + `docker run` resolves _migrations through V024.
 
     Verifies (C1 v2): .dockerignore no longer excludes migrations/.
     """
@@ -173,6 +179,7 @@ def test_docker_image_resolves_migrations() -> None:
                 " assert (d / 'V021__usage_ledger.py').exists();"
                 " assert (d / 'V022__telemetry_daily_usage.py').exists();"
                 " assert (d / 'V023__router_deployment_telemetry.py').exists();"
+                " assert (d / 'V024__usage_native_billing_receipts.py').exists();"
                 " print('OK', d)"
             ),
         ],

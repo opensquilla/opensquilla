@@ -10,6 +10,8 @@ import { useUsageTotals } from '@/composables/usage/useUsageTotals'
 import { useUsageChartRows } from '@/composables/usage/useUsageChartRows'
 import { useUsageModelCards } from '@/composables/usage/useUsageModelCards'
 import { useUsageSessionRows } from '@/composables/usage/useUsageSessionRows'
+import { formatUsageCost } from '@/composables/usage/nativeBilling'
+import { buildUsageCsv } from '@/composables/usage/usageCsv'
 import { useRpcStore } from '@/stores/rpc'
 import { downloadText } from '@/utils/browser'
 import i18n from '@/i18n'
@@ -31,6 +33,11 @@ const t = i18n.global.t
 // ---------------------------------------------------------------------------
 
 const CNY_RATE = 7.25
+
+type CostFormatOptions = {
+  decimals?: number
+  source?: object
+}
 
 // Column labels are resolved through i18n in the `tableColumns` computed so they
 // react to locale changes; this maps each column key to its message key.
@@ -131,6 +138,16 @@ const rangeHiddenHint = computed(() => {
   }
   if (snapshot.totals.missingCostEntries > 0) {
     notices.push(t('usageLogs.coverage.unpriced', { count: snapshot.totals.missingCostEntries }))
+  }
+  if (snapshot.coverage.nativeBilling.pendingReceiptCount > 0) {
+    notices.push(t('usageLogs.coverage.pendingBilling', {
+      count: snapshot.coverage.nativeBilling.pendingReceiptCount,
+    }))
+  }
+  if (snapshot.coverage.nativeBilling.missingConfirmedReceiptCount > 0) {
+    notices.push(t('usageLogs.coverage.nativeBillingMissing', {
+      count: snapshot.coverage.nativeBilling.missingConfirmedReceiptCount,
+    }))
   }
   return notices.join(' · ')
 })
@@ -289,79 +306,8 @@ function setRange(nextRange: string) {
 }
 
 function exportCsv() {
-  const headers = [
-    'row_type',
-    'aggregation_mode',
-    'coverage_status',
-    'range_preset',
-    'range_from_ms',
-    'range_to_ms',
-    'timezone',
-    'session',
-    'input_tokens',
-    'output_tokens',
-    'cache_read_tokens',
-    'cache_write_tokens',
-    'cost_usd',
-    'cost_cny',
-    'billed_cost_usd',
-    'estimated_cost_usd',
-    'estimated_event_count',
-    'cost_source',
-    'missing_cost_entries',
-    'cost_ephemeral',
-    'model',
-  ]
   const snapshot = usageSnapshot.value
-  const common = [
-    snapshot?.mode || 'session_approximation',
-    snapshot?.coverage.status || 'approximate',
-    snapshot?.range.preset || '',
-    snapshot?.range.fromMs ?? '',
-    snapshot?.range.toMs ?? '',
-    snapshot?.timezone || '',
-  ]
-  const totals = snapshot?.totals
-  const summary = [
-    'summary',
-    ...common,
-    '',
-    totals?.input ?? '',
-    totals?.output ?? '',
-    totals?.cacheRead ?? '',
-    totals?.cacheWrite ?? '',
-    totals?.cost != null ? totals.cost.toFixed(9) : '',
-    totals?.cost != null ? (totals.cost * CNY_RATE).toFixed(9) : '',
-    totals?.billedCost != null ? totals.billedCost.toFixed(9) : '',
-    totals?.estimatedCost != null ? totals.estimatedCost.toFixed(9) : '',
-    totals?.estimatedEventCount ?? '',
-    totals?.costSource || '',
-    totals?.missingCostEntries ?? '',
-    'false',
-    '',
-  ]
-  const visibleRows = visibleSessions.value
-  const rows = visibleRows.map(row => [
-    'session',
-    ...common,
-    rowVal(row, 'session', 'sessionKey', 'key') || '',
-    rowVal(row, 'input_tokens', 'inputTokens') ?? '',
-    rowVal(row, 'output_tokens', 'outputTokens') ?? '',
-    rowVal(row, 'cache_read_tokens', 'cacheReadTokens') ?? '',
-    rowVal(row, 'cache_write_tokens', 'cacheWriteTokens') ?? '',
-    rowVal(row, 'cost_usd', 'costUsd') != null ? Number(rowVal(row, 'cost_usd', 'costUsd')).toFixed(6) : '',
-    rowVal(row, 'cost_usd', 'costUsd') != null ? (Number(rowVal(row, 'cost_usd', 'costUsd')) * CNY_RATE).toFixed(6) : '',
-    rowVal(row, 'billed_cost_usd', 'billedCostUsd') != null ? Number(rowVal(row, 'billed_cost_usd', 'billedCostUsd')).toFixed(6) : '',
-    rowVal(row, 'estimated_cost_usd', 'estimatedCostUsd') != null ? Number(rowVal(row, 'estimated_cost_usd', 'estimatedCostUsd')).toFixed(6) : '',
-    rowVal(row, 'estimated_event_count', 'estimatedEventCount') ?? '',
-    costSource(row),
-    rowVal(row, 'missing_cost_entries', 'missingCostEntries') ?? '',
-    rowVal(row, 'cost_ephemeral', 'costEphemeral') ? 'true' : 'false',
-    row.model || '',
-  ])
-  const csv = [headers, summary, ...rows]
-    .map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(','))
-    .join('\n')
+  const csv = buildUsageCsv(snapshot, visibleSessions.value, CNY_RATE)
   const suffix = range.value === 'all' ? 'all' : `${range.value}d`
   const coverageSuffix = snapshot?.mode === 'session_approximation'
     ? '-approximate'
@@ -377,14 +323,15 @@ function rangeCutoffMs(r: string): number | null {
   return naturalRangeStartMs(r as UsageRangeSelection)
 }
 
-function fmtCost(usd: number | null | undefined, opts?: { decimals?: number }): string {
-  if (usd == null) return '—'
-  const n = Number(usd)
+function fmtCost(usd: number | null | undefined, opts?: CostFormatOptions): string {
   const decimals = (opts && opts.decimals != null) ? opts.decimals : 4
-  if (currency.value === 'CNY') {
-    return '¥' + (n * CNY_RATE).toFixed(decimals)
-  }
-  return '$' + n.toFixed(decimals)
+  return formatUsageCost(
+    usd,
+    currency.value,
+    CNY_RATE,
+    decimals,
+    opts?.source as Record<string, unknown> | undefined,
+  )
 }
 
 function fmtNum(n: number | null | undefined): string {
@@ -545,7 +492,22 @@ function rowBreakdown(row: SessionRow): BreakdownRow[] {
     const share = totalCost > 0 ? (cost / totalCost) * 100 : 0
     const provider = (m.model || '').split('/')[0] || ''
     const name = (m.model || '').split('/').slice(1).join('/') || m.model || 'unknown'
-    return { model: m.model || '', provider, name, tokens, cost, share }
+    return {
+      model: m.model || '',
+      provider,
+      name,
+      tokens,
+      cost,
+      share,
+      costSource: m.costSource,
+      cost_source: m.cost_source,
+      costSourceCounts: m.costSourceCounts,
+      nativeBilledByCurrency: m.nativeBilledByCurrency,
+      pendingBillingReceiptCount: m.pendingBillingReceiptCount,
+      nativeBillingExpectedReceiptCount: m.nativeBillingExpectedReceiptCount,
+      nativeBillingMissingConfirmedReceiptCount:
+        m.nativeBillingMissingConfirmedReceiptCount,
+    }
   })
 }
 

@@ -37,6 +37,7 @@ def test_gateway_e2e_defaults_cover_all_router_profiles() -> None:
         "openai",
         "zhipu",
         "moonshot",
+        "tokenrhythm",
     ]
 
 
@@ -118,6 +119,65 @@ def test_live_gateway_inline_nonlegacy_profile_can_force_thinking_off(
     assert data["llm"]["thinking"] == "off"
     assert "tier_profile" not in data["squilla_router"]
     assert data["squilla_router"]["tiers"]["c1"]["thinking_level"] == "off"
+
+
+def test_tokenrhythm_uses_curated_inline_tiers_and_never_persists_profile(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "gateway.toml"
+    tiers = e2e._profile_tiers("tokenrhythm")
+
+    e2e._write_config(
+        config_path,
+        "tokenrhythm",
+        "https://tokenrhythm.studio/v1",
+        tiers["c1"]["model"],
+        max_tokens=1024,
+        tier_overrides=tiers,
+    )
+
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert "tier_profile" not in data["squilla_router"]
+    assert data["squilla_router"]["tiers"] == tiers
+
+
+def test_tokenrhythm_run_uses_inline_preset_and_1024_output_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_batch(**kwargs):
+        captured.update(kwargs)
+        tiers = kwargs["tiers"]
+        return {
+            "ok": True,
+            "health": {},
+            "cases": [
+                {
+                    "ok": True,
+                    "case_mode": "natural_router",
+                    "actual_slot_covered": slot,
+                    "actual_request_model": tiers[slot]["model"],
+                    "assistant_excerpt": "ok",
+                    "failure_kind": None,
+                }
+                for slot in e2e.TEXT_PROFILE_SLOTS
+            ],
+            "usage_from_turn_logs": {},
+            "error": None,
+        }
+
+    monkeypatch.setenv("TOKENRHYTHM_API_KEY", "synthetic-rotated-key")
+    monkeypatch.delenv("TOKENRHYTHM_BASE_URL", raising=False)
+    monkeypatch.setattr(e2e, "_run_gateway_case_batch", fake_batch)
+
+    result = e2e._run_provider("tokenrhythm", max_tokens=64, timeout_seconds=1.0)
+
+    tiers = e2e._profile_tiers("tokenrhythm")
+    assert captured["max_tokens"] == 1024
+    assert captured["tier_overrides"] == tiers
+    assert result["tier_profile"] is None
+    assert result["tier_mode"] == "inline_preset"
 
 
 def test_profile_slot_targets_cover_slots_not_unique_models() -> None:
@@ -203,7 +263,12 @@ def test_cost_summary_never_promotes_gateway_placeholder_to_provider_bill() -> N
 def test_openrouter_nonzero_billed_cost_is_recorded_as_provider_bill() -> None:
     cost = e2e._estimate_cost(
         "z-ai/glm-5.1",
-        {"input_tokens": 1000, "output_tokens": 2000, "billed_cost": 0.0123},
+        {
+            "input_tokens": 1000,
+            "output_tokens": 2000,
+            "billed_cost": 0.0123,
+            "cost_source": "provider_billed",
+        },
         provider="openrouter",
     )
 
@@ -212,6 +277,48 @@ def test_openrouter_nonzero_billed_cost_is_recorded_as_provider_bill() -> None:
     assert cost["cost_source"] == "provider_billed"
     assert cost["billing_scope"] == "provider_response"
     assert cost["opensquilla_estimated_cost_usd"] > 0
+
+
+def test_confirmed_zero_billed_cost_is_not_demoted_to_estimate() -> None:
+    cost = e2e._estimate_cost(
+        "deepseek-v4-flash",
+        {
+            "input_tokens": 1000,
+            "output_tokens": 20,
+            "billed_cost": 0.0,
+            "cost_source": "provider_billed",
+        },
+        provider="tokenrhythm",
+    )
+
+    assert cost["provider_billed_cost_usd"] == 0.0
+    assert cost["cost_source"] == "provider_billed"
+    assert cost["billing_scope"] == "provider_response"
+
+
+def test_gateway_usage_projection_keeps_source_and_all_four_token_buckets() -> None:
+    usage = e2e._accounting_usage_fields(
+        {
+            "input_tokens": 100,
+            "output_tokens": 10,
+            "reasoning_tokens": 7,
+            "cached_tokens": 40,
+            "cache_write_tokens": 5,
+            "billed_cost": 0.0,
+            "cost_source": "provider_billed",
+            "response_text": "must not enter report",
+        }
+    )
+
+    assert usage == {
+        "input_tokens": 100,
+        "output_tokens": 10,
+        "reasoning_tokens": 7,
+        "cached_tokens": 40,
+        "cache_write_tokens": 5,
+        "billed_cost": 0.0,
+        "cost_source": "provider_billed",
+    }
 
 
 def test_router_step_is_extracted_from_decision_log() -> None:

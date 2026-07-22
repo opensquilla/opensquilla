@@ -339,7 +339,15 @@ def _tracker_rows(ctx: RpcContext, *, now_ms: int) -> list[dict[str, Any]]:
         usage_cost_source = str(
             getattr(usage, "cost_source", "opensquilla_estimate") or "opensquilla_estimate"
         )
-        if usage_billed > 0:
+        provider_billed_entries = max(
+            0,
+            int(getattr(usage, "provider_billed_entries", 0) or 0),
+        )
+        has_billed_receipt = (
+            provider_billed_entries > 0
+            or usage_cost_source in {"provider_billed", "mixed"}
+        )
+        if has_billed_receipt:
             # Real billed available — surface the mixed total (billed +
             # estimate-fallback for any unbilled model) as the row's
             # canonical cost so it matches the breakdown sum exactly.

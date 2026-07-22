@@ -2455,6 +2455,9 @@
       "cacheWrite": "Cache W"
     },
     "costHintTitle": "CNY values use baked-in rate {rate}. Verify against current FX for accounting use.",
+    "nativeCostHintTitle": "The original provider bill is in CNY; USD uses the fixed normalization rate recorded on the receipt.",
+    "nativeMixedCostHintTitle": "Mixed-currency or pending billing stays in canonical USD; original confirmed receipts are shown separately.",
+    "nativeBillingSubtotals": "Original receipts: {amounts}",
     "rangeHiddenHint": "{count} undated legacy sessions hidden",
     "coverage": {
       "approximate": "Older Gateway: date ranges use approximate session-lifetime totals.",
@@ -2462,7 +2465,9 @@
       "timezoneFallback": "Timezone {requested} is invalid; dates are grouped in {effective}.",
       "legacyIncluded": "Pre-ledger usage is included in the total but cannot be assigned to a date.",
       "estimated": "Includes {count} estimated calls.",
-      "unpriced": "Known cost shown; {count} calls are unpriced, so cost is incomplete."
+      "unpriced": "Known cost shown; {count} calls are unpriced, so cost is incomplete.",
+      "pendingBilling": "{count} provider billing receipts are pending settlement.",
+      "nativeBillingMissing": "{count} billed calls are missing native receipts."
     },
     "chart": {
       "metric": "Chart metric",

@@ -27,6 +27,8 @@ TABLES = (
     "session_summaries",
     "usage_events",
     "usage_event_items",
+    "usage_item_billing_receipts",
+    "usage_billing_receipt_state",
     "usage_ledger_state",
     "usage_legacy_baselines",
 )

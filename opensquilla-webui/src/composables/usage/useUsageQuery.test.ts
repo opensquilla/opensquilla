@@ -95,6 +95,92 @@ describe('usage.query compatibility client', () => {
     })
   })
 
+  it('normalizes additive native billing fields at every aggregation level', () => {
+    const cny = {
+      amount_nanos: '9007199254740993123',
+      amount: '6.975',
+      usd_equivalent_nanos: '1000000000',
+      receipt_count: '2',
+      normalization_rates_native_per_usd: ['6.975'],
+    }
+    const nativeTotals = {
+      cost_nanos: '1000000000',
+      cost_source: 'provider_billed',
+      cost_source_counts: { provider_billed: '2' },
+      native_billed_by_currency: { cny },
+      pending_billing_receipt_count: '0',
+      native_billing_expected_receipt_count: '2',
+      native_billing_missing_confirmed_receipt_count: '0',
+    }
+    const result = normalizeUsageQueryResponse({
+      schemaVersion: 1,
+      totals: nativeTotals,
+      sessions: [{
+        session_key: 'native-session',
+        totals: nativeTotals,
+        model_breakdown: [{ model: 'tokenrhythm/model', totals: nativeTotals }],
+      }],
+      models: [{ provider: 'tokenrhythm', model: 'model', totals: nativeTotals }],
+      days: [{ date: '2026-07-22', totals: nativeTotals }],
+      coverage: {
+        status: 'complete',
+        native_billing: {
+          status: 'partial',
+          exact_from_ms: '456',
+          reason_codes: ['native_billing_cutover'],
+          missing_confirmed_receipt_count: '3',
+          pending_receipt_count: '4',
+        },
+      },
+    })
+
+    const expected = {
+      amountNanos: '9007199254740993123',
+      amount: '6.975',
+      usdEquivalentNanos: '1000000000',
+      receiptCount: 2,
+      normalizationRatesNativePerUsd: ['6.975'],
+    }
+    expect(result.totals.nativeBilledByCurrency?.CNY).toEqual(expected)
+    expect(result.totals.nativeBillingExpectedReceiptCount).toBe(2)
+    expect(result.totals.nativeBillingMissingConfirmedReceiptCount).toBe(0)
+    expect(result.sessions[0].nativeBilledByCurrency?.CNY).toEqual(expected)
+    expect(result.sessions[0].nativeBillingExpectedReceiptCount).toBe(2)
+    expect(result.sessions[0].costSourceCounts).toEqual({ provider_billed: 2 })
+    expect(result.sessions[0].modelBreakdown?.[0].nativeBilledByCurrency?.CNY).toEqual(expected)
+    expect(result.sessions[0].modelBreakdown?.[0].costSourceCounts).toEqual({
+      provider_billed: 2,
+    })
+    expect(result.models[0].nativeBilledByCurrency?.CNY).toEqual(expected)
+    expect(result.models[0].costSourceCounts).toEqual({ provider_billed: 2 })
+    expect(result.days[0].totals.nativeBilledByCurrency?.CNY).toEqual(expected)
+    expect(result.coverage.nativeBilling).toEqual({
+      status: 'partial',
+      exactFromMs: 456,
+      reasonCodes: ['native_billing_cutover'],
+      missingConfirmedReceiptCount: 3,
+      pendingReceiptCount: 4,
+    })
+  })
+
+  it('keeps native billing unavailable for legacy responses', () => {
+    const result = normalizeUsageQueryResponse({
+      schemaVersion: 1,
+      totals: { costNanos: 1 },
+      coverage: { status: 'complete' },
+    })
+
+    expect(result.totals.nativeBilledByCurrency).toEqual({})
+    expect(result.totals.pendingBillingReceiptCount).toBe(0)
+    expect(result.coverage.nativeBilling).toEqual({
+      status: 'unavailable',
+      exactFromMs: null,
+      reasonCodes: [],
+      missingConfirmedReceiptCount: 0,
+      pendingReceiptCount: 0,
+    })
+  })
+
   it('does not turn a deleted session id into a clickable session key', () => {
     const result = normalizeUsageQueryResponse({
       schemaVersion: 1,

@@ -244,6 +244,7 @@
                 v-if="liveTimelineItems.length"
                 class="work-card__timeline"
                 variant="checklist"
+                :state-scope="liveToolStateScope"
                 :items="liveTimelineItems"
                 :is-tool-group-open="isToolGroupOpen"
                 :is-tool-item-open="isToolItemOpen"
@@ -1386,17 +1387,18 @@ const {
 // live-turn shadow parity: in DEV/SHADOW, re-check the fold against the legacy
 // live surface whenever a frame lands (the fold and legacy refs are tracked by
 // assertLiveParity). Injects the thinking text owned by the event handlers.
-// No-op in prod/OFF; render stays legacy unless the fold is authoritative (ON).
+// In production ON mode this is a no-op; DEV/SHADOW performs the parity check,
+// while explicit OFF keeps the compatibility renderer without fold assertions.
 watchEffect(() => assertLiveParity(streamThinkingText))
 
-// flag-selected live render source. Only when the fold is
-// authoritative (useReducer === true, opt-in via opensquilla.chat.foldLiveTurn=1)
-// does the work-card body render from the fold; OFF and SHADOW return the
-// IDENTICAL legacy refs, so with the flag off the render is byte-identical.
+// Flag-selected live render source. In production the fold is authoritative by
+// default; only opensquilla.chat.foldLiveTurn=0 restores legacy. SHADOW and OFF
+// return the IDENTICAL legacy refs, so with the flag off the render is byte-identical.
 // The work-card head (phase/elapsed/step) stays on the legacy activity refs.
 const liveTimelineItems = computed(() =>
   foldLiveTurnMode.value === true ? foldedTurn.value.timelineItems : streamTimelineItems.value,
 )
+const liveToolStateScope = computed(() => JSON.stringify([sessionKey.value || '', 'stream']))
 const liveArtifacts = computed(() =>
   foldLiveTurnMode.value === true ? foldedTurn.value.artifacts : streamArtifacts.value,
 )

@@ -155,6 +155,7 @@
             v-if="lineSteps.length"
             :steps="lineSteps"
             :summary="lineSummary"
+            :state-scope="detailStateScope"
             :is-tool-group-open="rt.isToolGroupOpen"
             :is-tool-item-open="rt.isToolItemOpen"
             @toggle-group="rt.toggleGroup"
@@ -261,9 +262,11 @@ const displayRef = ref<HTMLElement | null>(null)
 // only flipping this localStorage flag makes log lines interactive.
 const runTraceEnabled = ref(localStorage.getItem('opensquilla.logs.runTrace') === '1')
 const selectedLine = ref<LogLine | null>(null)
+const detailStateScope = ref('')
 const detailRef = ref<HTMLElement | null>(null)
 const detailCloseBtn = ref<HTMLButtonElement | null>(null)
 const rt = useRunTrace()
+let detailScopeSequence = 0
 let detailInvokerEl: HTMLElement | null = null
 
 let pollInterval: ReturnType<typeof setInterval> | null = null
@@ -527,6 +530,7 @@ function toggleLevel(level: string) {
 function openDetail(line: LogLine) {
   if (!runTraceEnabled.value) return
   detailInvokerEl = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  detailStateScope.value = `log-line-${detailScopeSequence++}`
   selectedLine.value = line
   document.addEventListener('keydown', onDetailKeydown)
   nextTick(() => detailCloseBtn.value?.focus())

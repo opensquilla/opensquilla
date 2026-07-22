@@ -92,6 +92,7 @@
             <RunTrace
               v-if="row.steps.length"
               :steps="row.steps"
+              :state-scope="transcriptToolStateScope(row.id)"
               :is-tool-group-open="rt.isToolGroupOpen"
               :is-tool-item-open="rt.isToolItemOpen"
               @toggle-group="rt.toggleGroup"
@@ -205,6 +206,10 @@ const { renderMarkdown, stripDirectiveTags, stripTimePrefix } = useChatTextRende
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
 const rt = useRunTrace()
+
+function transcriptToolStateScope(rowId: string): string {
+  return JSON.stringify([props.item?.key || '', rowId])
+}
 
 const drawerRef = ref<HTMLElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)

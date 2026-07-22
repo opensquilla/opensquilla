@@ -16,7 +16,7 @@ const CONTROL_URL = '/control/'
 const LIVE = process.env.OPENSQUILLA_E2E_LIVE === '1'
 const FOLD_FLAG_KEY = 'opensquilla.chat.foldLiveTurn'
 
-// Set the opt-in flag before any page script runs so useChatTurnLog resolves
+// Pin the ON flag before any page script runs so useChatTurnLog resolves
 // useReducer === true at composable init (the fold becomes authoritative).
 async function forceFoldAuthoritative(page: Page) {
   await page.addInitScript(([key]) => {

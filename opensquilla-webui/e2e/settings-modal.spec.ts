@@ -516,6 +516,29 @@ test.describe('Settings modal', () => {
     await expect(dialog(page).locator('.settings-dirtybar')).toBeHidden()
   })
 
+  test('Appearance persists the tool-detail default without a save step', async ({ page }) => {
+    await openFromSidebar(page)
+    await dialog(page).getByRole('tab', { name: 'Appearance' }).click()
+
+    const auto = dialog(page).getByRole('radio', { name: 'Auto', exact: true })
+    const compact = dialog(page).getByRole('radio', { name: 'Compact', exact: true })
+    await expect(auto).toBeChecked()
+
+    await compact.click()
+    await expect(compact).toBeChecked()
+    await expect(dialog(page).locator('.settings-dirtybar')).toBeHidden()
+    expect(await page.evaluate(() => (
+      localStorage.getItem('opensquilla.appearance.toolDetails.v1')
+    ))).toBe('compact')
+
+    await page.reload()
+    await page.waitForSelector('.conn-pill', { timeout: 10000 })
+    await expect(dialog(page)).toBeVisible()
+    await expect(dialog(page).getByRole('radio', { name: 'Compact', exact: true })).toBeChecked()
+
+    await dialog(page).getByRole('radio', { name: 'Auto', exact: true }).click()
+  })
+
   test('Advanced section surfaces homeless flags, applies instantly without a dirty bar', async ({ page }) => {
     await openFromSidebar(page)
     const advTab = dialog(page).getByRole('tab', { name: 'Advanced' })

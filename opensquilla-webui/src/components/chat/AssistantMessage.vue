@@ -28,6 +28,7 @@
       <ToolCallTimeline
         v-if="message.timelineItems?.length"
         :items="message.timelineItems"
+        :state-scope="toolStateScope"
         :is-tool-group-open="isToolGroupOpen"
         :is-tool-item-open="isToolItemOpen"
         :tool-group-status-text="toolGroupStatusText"
@@ -44,6 +45,7 @@
       <ToolCallTimeline
         v-if="!message.timelineItems?.length && message.toolCalls?.length"
         :items="legacyTimelineItems"
+        :state-scope="toolStateScope"
         :is-tool-group-open="isToolGroupOpen"
         :is-tool-item-open="isToolItemOpen"
         :tool-group-status-text="toolGroupStatusText"
@@ -440,14 +442,24 @@ onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
 })
 
+const toolMessageIdentity = computed(() => (
+  props.message.messageId
+  || props.message.id
+  || `${props.message.role}-${props.message.sourceIndex ?? props.index}`
+))
+
+const toolStateScope = computed(() => JSON.stringify([
+  props.sessionKey || '',
+  toolMessageIdentity.value,
+]))
+
 const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   const calls = props.message.toolCalls || []
   // message.id is always set ("${role}-${sourceIndex}") and equals the
   // composable's ownerKey when messageId is absent, so tool renderKeys match the
   // keys toParts folds. The final term only types the fallback and reconstructs
   // the same owner the composable used; it is unreachable while id is set.
-  const baseKey = props.message.messageId || props.message.id || `${props.message.role}-${props.message.sourceIndex}`
-  return props.toolCallGroups(calls, baseKey).map(group => ({
+  return props.toolCallGroups(calls, toolMessageIdentity.value).map(group => ({
     type: 'tool-group',
     key: group.groupId,
     group,

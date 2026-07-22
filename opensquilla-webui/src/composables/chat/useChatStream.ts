@@ -172,10 +172,10 @@ export function useChatStream(options: UseChatStreamOptions) {
     return segmentsToTimelineItems(streamSegments.value, streamToolCalls.value, 'stream')
   })
 
-  // append-only turn log. In OFF mode (prod default) nothing below ever
-  // appends, so the live turn is byte-identical to legacy; in SHADOW (DEV) the
-  // mutators also append frames and the fold is parity-checked against the
-  // legacy refs. The fold never drives render in this PR (still 100% legacy).
+  // Append-only turn log. ON is the production default and drives the live
+  // work-card; SHADOW is the development default and parity-checks the fold
+  // while legacy refs render; only the explicit OFF kill switch skips frames
+  // and restores the legacy render path.
   const turnLog = useChatTurnLog({
     renderMarkdown: options.renderMarkdown,
     toolCallGroups,

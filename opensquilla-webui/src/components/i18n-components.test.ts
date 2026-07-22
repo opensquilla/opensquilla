@@ -6,6 +6,10 @@ import i18n from '@/i18n'
 import { useAppStore } from '@/stores/app'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
 import LanguageSwitcher from '@/components/LanguageSwitcher.vue'
+import {
+  TOOL_DETAIL_DISPLAY_STORAGE_KEY,
+  useToolDetailPreference,
+} from '@/composables/useToolDetailPreference'
 
 // Mount a component with the real i18n + a fresh pinia into a happy-dom node, so
 // the switcher surfaces can be exercised without the SettingsDialog `loaded`
@@ -26,8 +30,33 @@ async function mount(Comp: Component) {
 
 beforeEach(() => {
   i18n.global.locale.value = 'en'
+  useToolDetailPreference().setMode('auto')
   localStorage.clear()
   document.documentElement.removeAttribute('lang')
+})
+
+describe('SettingsAppearancePanel — Tool details row', () => {
+  it('offers all three defaults and persists the selection immediately', async () => {
+    const { el } = await mount(SettingsAppearancePanel)
+    const group = el.querySelector('[data-testid="settings-tool-details-group"]')
+    const auto = el.querySelector('[data-testid="settings-tool-details-auto"]') as HTMLInputElement
+    const compact = el.querySelector('[data-testid="settings-tool-details-compact"]') as HTMLInputElement
+    const expanded = el.querySelector('[data-testid="settings-tool-details-expanded"]') as HTMLInputElement
+
+    expect(group?.textContent).toContain('Auto')
+    expect(group?.textContent).toContain('Compact')
+    expect(group?.textContent).toContain('Expanded')
+    expect(auto.checked).toBe(true)
+
+    compact.checked = true
+    compact.dispatchEvent(new Event('change', { bubbles: true }))
+    await nextTick()
+
+    expect(compact.checked).toBe(true)
+    expect(expanded.checked).toBe(false)
+    expect(useToolDetailPreference().mode.value).toBe('compact')
+    expect(localStorage.getItem(TOOL_DETAIL_DISPLAY_STORAGE_KEY)).toBe('compact')
+  })
 })
 
 describe('SettingsAppearancePanel — Language row', () => {

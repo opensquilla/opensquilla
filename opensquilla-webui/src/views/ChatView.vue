@@ -535,7 +535,10 @@ import { useChatFeatureToggles } from '@/composables/chat/useChatFeatureToggles'
 import { useChatHistory } from '@/composables/chat/useChatHistory'
 import { useChatMarkdownExport } from '@/composables/chat/useChatMarkdownExport'
 import { useChatMessageActions } from '@/composables/chat/useChatMessageActions'
-import { useChatPendingQueue } from '@/composables/chat/useChatPendingQueue'
+import {
+  useChatPendingQueue,
+  type PendingQueueOwnerContext,
+} from '@/composables/chat/useChatPendingQueue'
 import { useChatShareExport } from '@/composables/chat/useChatShareExport'
 import type { ShareExportTheme } from '@/composables/chat/useChatShareExport'
 import { useMediaQuery } from '@/composables/chat/useMediaQuery'
@@ -581,7 +584,11 @@ import type { SandboxRunMode } from '@/types/sandbox'
 import type { InterruptViewState } from '@/types/parts'
 import { artifactDownloadUrl } from '@/utils/chat/artifacts'
 import { createHistoryNavigationScrollLock } from '@/utils/chat/historyNavigationScrollLock'
-import { isCurrentSessionPayload as payloadIsCurrentSession } from '@/utils/chat/streamEvents'
+import {
+  PENDING_STREAM_TASK_ID,
+  STOPPED_STREAM_TASK_ID,
+  isCurrentSessionPayload as payloadIsCurrentSession,
+} from '@/utils/chat/streamEvents'
 import { copyTextWithFallback, copyImageToClipboard, downloadBlob, shareCopyImageSupported } from '@/utils/browser'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
@@ -799,12 +806,18 @@ let sendCurrentInput: () => void = () => {}
 let dispatchHiddenForMeta: (providerText: string, displayText: string) => void = () => {}
 let isCompactInFlightForCurrentSession: () => boolean = () => false
 let dispatchHiddenControl: (providerText: string, displayText: string) => void = () => {}
+const pendingQueueOwnerContext = ref<PendingQueueOwnerContext | null>(null)
 const chatPendingQueue = useChatPendingQueue({
+  sessionKey,
+  ownerContext: pendingQueueOwnerContext,
   inputText,
   pendingAttachments,
   pendingSessionIntent,
   isStreaming,
-  isBlocked: () => isCompactInFlightForCurrentSession(),
+  isBlocked: () => (
+    isCompactInFlightForCurrentSession()
+    || pendingQueueOwnerContext.value?.sessionKey === sessionKey.value
+  ),
   autoResizeTextarea,
   sendCurrentInput: () => sendCurrentInput(),
   resetInputHistory: () => resetComposerInputHistory(),
@@ -820,9 +833,12 @@ const {
   enqueueHiddenControl,
   removePendingChip,
   clearPendingQueue,
+  switchPendingQueue,
+  adoptPendingQueue,
   popPendingTail,
   popAllPendingIntoComposer,
   schedulePendingDrainAfterTerminal,
+  flushDeferredPendingDrain,
   cleanup: cleanupPendingQueue,
 } = chatPendingQueue
 
@@ -1105,6 +1121,16 @@ const chatSessionSubscription = useChatSessionSubscription({
   loadHistory,
   resetStreamIdleTimer,
   resetStreamLiveTurnState,
+  onAuthoritativeIdle: () => {
+    const taskId = activeStreamTaskId.value
+    if (
+      taskId
+      && taskId !== PENDING_STREAM_TASK_ID
+      && taskId !== STOPPED_STREAM_TASK_ID
+    ) {
+      schedulePendingDrainAfterTerminal()
+    }
+  },
 })
 const {
   isHydrating: isSessionHydrating,
@@ -1116,6 +1142,7 @@ const canStop = computed(() => !isSessionHydrating.value && (
   isStreaming.value
   || activeTaskGroups.value.size > 0
   || ['queued', 'running', 'approval_pending'].includes(runStatus.value.status)
+  || pendingQueueOwnerContext.value?.sessionKey === sessionKey.value
 ))
 
 const chatSessionRuntime = useChatSessionRuntime({
@@ -1141,6 +1168,8 @@ const chatSessionRuntime = useChatSessionRuntime({
   setCompactInFlight,
   hideCompactStatus,
   clearPendingQueue,
+  switchPendingQueue,
+  adoptPendingQueue,
   resetSavingsPopupCooldown,
   restoreWidgetState,
   resetStreamLiveTurnState,
@@ -1149,6 +1178,7 @@ const {
   resetCurrentSessionAfterSlash,
   startDraftSession,
   switchToSession,
+  adoptResponseSession,
 } = chatSessionRuntime
 
 const chatSlashCommands = useChatSlashCommands({
@@ -1204,6 +1234,7 @@ const chatSend = useChatSend({
   inputText,
   messages,
   sessionKey,
+  pendingQueueOwnerContext,
   busySendMode,
   elevatedMode,
   runMode,
@@ -1217,8 +1248,10 @@ const chatSend = useChatSend({
   stream: chatStream,
   canStop: () => canStop.value,
   normalizeElevatedMode,
-  persistSession,
+  adoptResponseSession,
   scheduleHistorySync,
+  schedulePendingDrainAfterTerminal,
+  flushDeferredPendingDrain,
   bindActiveStreamTask: taskId => bindActiveStreamTask(taskId),
   isCompactInFlightForCurrentSession,
   hasPendingAttachmentWork,

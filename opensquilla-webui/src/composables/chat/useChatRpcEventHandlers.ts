@@ -487,6 +487,9 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       run_status: terminalStatus === 'failed' ? 'failed' : 'idle',
       last_task: { ...(payload || {}), status: terminalStatus },
     })
+    if (!stream.isStreaming.value) {
+      options.schedulePendingDrainAfterTerminal()
+    }
   }
 
   function sessionChangeIsTerminal(payload: SessionEventPayload): boolean {

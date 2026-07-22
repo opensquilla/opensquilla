@@ -95,6 +95,48 @@ describe('useChatMessageActions branching edits', () => {
     expect(options.inputText.value).toBe('B')
     expect(options.sendCurrentInput).toHaveBeenCalledOnce()
   })
+
+  it('keeps an optimistic user row intact until its durable fork id arrives', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'still saving', ts: null, clientId: 'client-only' },
+    ]
+    const { api, options, pendingForkBeforeMessageId } = makeOptions(messages)
+
+    api.editMessage(renderedMessage({
+      role: 'user',
+      displayRole: 'user',
+      sourceIndex: 0,
+      clientId: 'client-only',
+      text: 'still saving',
+    }))
+
+    expect(options.messages.value).toEqual(messages)
+    expect(options.inputText.value).toBe('')
+    expect(pendingForkBeforeMessageId.value).toBeNull()
+    expect(options.focusComposer).not.toHaveBeenCalled()
+  })
+
+  it('does not regenerate as a parent send when the durable fork id is missing', async () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', text: 'still saving', ts: null, clientId: 'client-only' },
+      { role: 'assistant', text: 'partial answer', ts: null, messageId: 'assistant-local' },
+    ]
+    const { api, options, pendingForkBeforeMessageId } = makeOptions(messages)
+
+    api.regenerateMessage(renderedMessage({
+      role: 'assistant',
+      displayRole: 'assistant',
+      sourceIndex: 1,
+      messageId: 'assistant-local',
+      text: 'partial answer',
+    }))
+    await nextTick()
+
+    expect(options.messages.value).toEqual(messages)
+    expect(options.inputText.value).toBe('')
+    expect(pendingForkBeforeMessageId.value).toBeNull()
+    expect(options.sendCurrentInput).not.toHaveBeenCalled()
+  })
 })
 
 describe('useChatMessageActions protocol-shaped copy text', () => {

@@ -33,6 +33,10 @@ export interface ChatPendingItem {
   text: string
   attachments: Attachment[]
   intent: string | null
+  /** Session that owned this item when it entered the in-memory queue. */
+  ownerSessionKey?: string
+  /** chat.send request whose canonical response may carry this item to a child. */
+  ownerRequestId?: string
   // Hidden control sends (e.g. meta-preflight confirmation) carry the provider
   // text in `text`, the visible bubble in `displayTextOverride`, and skip the
   // normal user-bubble push / composer consumption on drain.

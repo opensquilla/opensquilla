@@ -679,6 +679,223 @@ async def test_gateway_runtime_projects_external_turn_and_converges_approval(
 
 
 @pytest.mark.asyncio
+async def test_local_dispatch_parked_behind_external_turn_notifies_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import gateway_runtime
+
+    class _Subscription:
+        def __init__(self) -> None:
+            self.queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+            self.closed = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self) -> dict[str, Any]:
+            item = await self.queue.get()
+            if item is None:
+                raise StopAsyncIteration
+            return item
+
+        async def close(self) -> None:
+            self.closed = True
+            self.queue.put_nowait(None)
+
+    class _Output:
+        async def send_message(self, kind: str, payload: dict[str, object]) -> None:
+            return None
+
+    class _Client:
+        instances: list[_Client] = []
+
+        def __init__(self) -> None:
+            self.surface_id = "tui:local"
+            self.session_events = _Subscription()
+            self.turn_events: list[_Subscription] = []
+            _Client.instances.append(self)
+
+        async def connect(self, url: str, *, token: str | None = None) -> None:
+            return None
+
+        async def create_session(self, model: str | None = None) -> str:
+            return "agent:main:shared"
+
+        async def bootstrap_session(self, key: str, *, limit: int = 200) -> dict[str, Any]:
+            return {
+                "session": {"session_key": key, "model": "gateway/model"},
+                "history": {
+                    "messages": [
+                        {
+                            "message_id": "durable-message-web",
+                            "role": "user",
+                            "text": "hello from web",
+                        }
+                    ],
+                    "history_scope": "complete",
+                    "loaded_count": 1,
+                },
+                "stream_cursor": 7,
+            }
+
+        async def subscribe_session_events(
+            self,
+            key: str,
+            *,
+            since_stream_seq: int | None = None,
+        ) -> _Subscription:
+            assert key == "agent:main:shared"
+            if not self.turn_events and since_stream_seq == 7:
+                return self.session_events
+            turn_events = _Subscription()
+            self.turn_events.append(turn_events)
+            return turn_events
+
+        async def resolve_session(self, key: str) -> dict[str, str]:
+            return {"session_key": key, "model": "gateway/model"}
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _Client)
+
+    external_started = asyncio.Event()
+    release_external = asyncio.Event()
+    streamed: list[str] = []
+    notices: list[gateway_runtime.GatewayRuntimeNotice] = []
+
+    async def stream_response(
+        client: object,
+        session_key: str,
+        message: str,
+        elevated_state: dict[str, str | None] | None = None,
+        attachments: list[dict] | None = None,
+        *,
+        tui_output: object | None = None,
+    ) -> TurnResult:
+        streamed.append(message)
+        if message == "hello from web":
+            external_started.set()
+            await release_external.wait()
+            return TurnResult(text="web answer", model_after="gateway/model")
+        return TurnResult(text="local answer", model_after="gateway/model")
+
+    async def input_loop(*, scope, dispatch, abort_active_turn=None) -> None:
+        client = _Client.instances[-1]
+        await client.session_events.queue.put(
+            {
+                "event": "session.event.text_delta",
+                "payload": {
+                    "session_key": "agent:main:shared",
+                    "turn_id": "turn-web",
+                    "client_message_id": "client-message-web",
+                    "user_message_id": "durable-message-web",
+                    "surface_id": "web:browser",
+                    "text": "web answer",
+                },
+            }
+        )
+        await asyncio.wait_for(external_started.wait(), timeout=2.0)
+
+        dispatch_task = asyncio.create_task(dispatch("typed locally"))
+
+        async def _queued_notice_seen() -> None:
+            while not any(
+                notice.kind == "queued_behind_external" for notice in notices
+            ):
+                await asyncio.sleep(0)
+
+        await asyncio.wait_for(_queued_notice_seen(), timeout=2.0)
+        # The park is announced while the send is still held back: the local
+        # message must not stream before the mirrored external turn finishes.
+        assert not dispatch_task.done()
+        assert streamed == ["hello from web"]
+
+        release_external.set()
+        assert await asyncio.wait_for(dispatch_task, timeout=2.0) is True
+        assert streamed == ["hello from web", "typed locally"]
+
+    deps = gateway_runtime.GatewayRuntimeDependencies(
+        stream_response=stream_response,
+        handle_slash_command=cast(Any, None),
+        run_input_loop=input_loop,
+        get_tui_output=lambda _scope: cast(Any, _Output()),
+        is_exit_command=lambda _value: False,
+        notify=notices.append,
+    )
+
+    await gateway_runtime.run_gateway_chat(model=None, session_id=None, deps=deps)
+
+    queued = [notice for notice in notices if notice.kind == "queued_behind_external"]
+    assert len(queued) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_dispatch_with_idle_external_turns_emits_no_queued_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from opensquilla.cli.repl import gateway_runtime
+
+    class _Client:
+        instances: list[_Client] = []
+
+        def __init__(self) -> None:
+            self.surface_id = "tui:local"
+            _Client.instances.append(self)
+
+        async def connect(self, url: str, *, token: str | None = None) -> None:
+            return None
+
+        async def create_session(self, model: str | None = None) -> str:
+            return "agent:main:new"
+
+        async def bootstrap_session(self, key: str, *, limit: int = 200) -> dict[str, Any]:
+            return {
+                "session": {"session_key": key, "model": "gateway/model"},
+                "history": {
+                    "messages": [],
+                    "history_scope": "complete",
+                    "loaded_count": 0,
+                },
+            }
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr("opensquilla.cli.gateway_client.GatewayClient", _Client)
+    notices: list[gateway_runtime.GatewayRuntimeNotice] = []
+
+    async def stream_response(
+        client: object,
+        session_key: str,
+        message: str,
+        elevated_state: dict[str, str | None] | None = None,
+        attachments: list[dict] | None = None,
+        *,
+        tui_output: object | None = None,
+    ) -> TurnResult:
+        return TurnResult(text="local answer", model_after="gateway/model")
+
+    async def input_loop(*, scope, dispatch, abort_active_turn=None) -> None:
+        assert await dispatch("typed locally") is True
+
+    await gateway_runtime.run_gateway_chat(
+        model=None,
+        session_id=None,
+        deps=gateway_runtime.GatewayRuntimeDependencies(
+            stream_response=stream_response,
+            handle_slash_command=cast(Any, None),
+            run_input_loop=input_loop,
+            get_tui_output=lambda _scope: None,
+            is_exit_command=lambda _value: False,
+            notify=notices.append,
+        ),
+    )
+
+    assert not any(notice.kind == "queued_behind_external" for notice in notices)
+
+
+@pytest.mark.asyncio
 async def test_external_projection_cancellation_never_aborts_originating_turn() -> None:
     from opensquilla.cli.repl import gateway_runtime
 

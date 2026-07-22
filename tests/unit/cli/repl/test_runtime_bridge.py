@@ -112,6 +112,7 @@ def test_gateway_runtime_notifier_maps_all_notice_kinds() -> None:
         gateway_runtime.GatewayRuntimeNotice(kind="welcome"),
         gateway_runtime.GatewayRuntimeNotice(kind="goodbye"),
         gateway_runtime.GatewayRuntimeNotice(kind="unknown_command"),
+        gateway_runtime.GatewayRuntimeNotice(kind="queued_behind_external"),
         gateway_runtime.GatewayRuntimeNotice(kind="error", message="boom"),
     ):
         notify(notice)
@@ -128,7 +129,11 @@ def test_gateway_runtime_notifier_maps_all_notice_kinds() -> None:
     assert isinstance(output_console.printed[4], Panel)
     assert output_console.printed[5] == "[yellow]Goodbye.[/yellow]"
     assert output_console.printed[6] == "[red]Unknown command.[/red] [dim]Use /help.[/dim]"
-    assert isinstance(output_console.printed[7], Panel)
+    assert output_console.printed[7] == (
+        "[dim]Queued behind a turn running from another client;"
+        " your message sends when it finishes.[/dim]"
+    )
+    assert isinstance(output_console.printed[8], Panel)
 
 
 def test_gateway_exit_receipt_is_plain_and_resumable(

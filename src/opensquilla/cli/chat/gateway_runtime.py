@@ -34,6 +34,7 @@ GatewayRuntimeNoticeKind = Literal[
     "welcome",
     "goodbye",
     "unknown_command",
+    "queued_behind_external",
     "error",
 ]
 
@@ -836,6 +837,12 @@ async def run_gateway_chat(
 
             turn_session_key = session_context.session_key
             active_turn_session_key = turn_session_key
+            if not external_turn_idle.is_set():
+                # A mirrored turn from another surface (e.g. the Web UI) is
+                # still streaming into this session. The submitted prompt was
+                # already echoed, so without feedback the parked send is
+                # indistinguishable from a hang.
+                deps.notify(GatewayRuntimeNotice(kind="queued_behind_external"))
             await external_turn_idle.wait()
             local_turn_idle.clear()
             try:

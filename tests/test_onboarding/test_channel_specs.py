@@ -108,6 +108,48 @@ def test_safe_defaulted_identity_fields_fold_into_advanced(type_name: str):
     assert fields["name"].advanced is False
 
 
+# Per-channel default-view posture: safe-defaulted optional fields fold into
+# Advanced; the fields that stay front are the credentials plus the genuine
+# decisions (transports, region). Positive pins per channel so a spec edit
+# that re-expands the default view fails loudly.
+ADVANCED_FOLDED_FIELDS = {
+    "discord": {"application_id", "default_channel_id", "gateway_url", "intents"},
+    "feishu": {"default_chat_id"},
+    "matrix": {"device_id", "encryption"},
+    "slack": {"slack_channel_id", "reply_in_thread"},
+    "telegram": {
+        "default_chat_id",
+        "api_base",
+        "drop_pending_updates",
+        "poll_timeout_s",
+        "poll_limit",
+        "poll_idle_sleep_s",
+    },
+    "wecom": {"webhook_path"},
+}
+
+
+@pytest.mark.parametrize("type_name", sorted(ADVANCED_FOLDED_FIELDS))
+def test_safe_defaulted_channel_fields_fold_into_advanced(type_name: str):
+    fields = {field.name: field for field in get_channel_setup_spec(type_name).fields}
+    for name in ADVANCED_FOLDED_FIELDS[type_name]:
+        assert fields[name].advanced is True, f"{type_name}.{name} should fold into Advanced"
+        assert fields[name].required is False
+        assert fields[name].default is not None
+
+
+def test_required_fields_never_fold_into_advanced():
+    """A required field hidden in the Advanced fold blocks Save with no
+    visible blank to fill (the historical slack signing_secret bug: required
+    whenever connection_mode=webhook — the default — yet folded away)."""
+    for spec in list_channel_setup_specs():
+        for field in spec.fields:
+            if field.required:
+                assert field.advanced is False, (
+                    f"{spec.type}.{field.name} is required but folded into Advanced"
+                )
+
+
 @pytest.mark.parametrize("type_name", sorted(ALL_TYPES))
 def test_spec_fields_align_with_pydantic_model(type_name: str):
     spec = get_channel_setup_spec(type_name)

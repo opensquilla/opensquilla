@@ -362,6 +362,14 @@ def test_windows_uninstall_preserves_app_data() -> None:
     assert package_json["build"]["nsis"]["deleteAppDataOnUninstall"] is False
 
 
+def test_desktop_local_web_build_installs_locked_dependencies_first() -> None:
+    package_json = json.loads(_read("desktop/electron/package.json"))
+
+    assert package_json["scripts"]["build:web"] == (
+        "cd ../../opensquilla-webui && npm ci && npm run build"
+    )
+
+
 def test_desktop_onboarding_is_owned_modal_child_of_main_window() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     onboarding = _section(

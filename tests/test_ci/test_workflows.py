@@ -242,7 +242,15 @@ def test_ci_rejects_tracked_frontend_dist_and_builds_a_verified_artifact() -> No
     assert "git ls-files 'src/opensquilla/gateway/static/dist/**'" in text
     assert "generated Web UI dist must not be committed" in text
     assert "Build verified frontend artifact" in text
+    assert "> public/.DS_Store" in text
+    assert "Finder metadata survived WebUI artifact normalization" in text
     assert "npm run verify:release-dist" in text
+    assert "Verify sdist-to-wheel frontend artifact round trip" in text
+    assert "uv build --sdist" in text
+    assert 'printf \'CI-only Finder metadata\\n\' > "${junk}"' in text
+    assert "tar -tzf" in text
+    assert "ignored Finder metadata leaked into the sdist" in text
+    assert 'uv build --wheel --out-dir "${wheel_dir}" "${sdists[0]}"' in text
     assert "python scripts/verify_webui_artifact.py" in text
     assert "--forbid-personal-bgm" in text
     assert '--wheel "${wheels[0]}"' in text
@@ -261,10 +269,44 @@ def test_ci_rejects_tracked_frontend_dist_and_builds_a_verified_artifact() -> No
     wheel = next(
         step
         for step in workflow["jobs"]["frontend-check"]["steps"]
-        if step.get("name") == "Verify wheel contains the exact frontend artifact"
+        if step.get("name") == "Verify sdist-to-wheel frontend artifact round trip"
     )
     assert "build_wheel_required == 'true'" in wheel["if"]
     assert "full_required == 'true'" in wheel["if"]
+
+
+def test_webui_text_and_docker_context_contracts_are_enforced_in_ci() -> None:
+    attributes = Path(".gitattributes").read_text(encoding="utf-8").splitlines()
+    assert "opensquilla-webui/** text=auto eol=lf" in attributes
+
+    workflow = _workflow("ci.yml")
+    ubuntu = workflow["jobs"]["ubuntu-quality"]
+    assert ubuntu["env"]["OPENSQUILLA_DOCKERIGNORE_E2E"] == "1"
+    docker_step = next(
+        step
+        for step in ubuntu["steps"]
+        if step.get("name") == "Test Docker build-context exclusions in full CI"
+    )
+    assert docker_step["if"] == (
+        "${{ needs.classify-changes.outputs.full_required == 'true' }}"
+    )
+    assert "tests/test_ci/test_dockerignore_context.py" in docker_step["run"]
+
+
+def test_readme_contract_check_uses_the_pinned_node_version() -> None:
+    workflow = _workflow("ci.yml")
+    job = workflow["jobs"]["readme-locale-check"]
+    setup_node = next(
+        step for step in job["steps"] if step.get("name") == "Set up Node.js"
+    )
+    check = next(
+        step for step in job["steps"] if step.get("name") == "Check README locale parity"
+    )
+
+    assert setup_node["with"] == {
+        "node-version-file": "opensquilla-webui/.node-version"
+    }
+    assert check["run"] == "node scripts/check-readme-locales.mjs"
 
 
 def test_desktop_ci_runs_profile_substrate_unit_tests() -> None:
@@ -1004,6 +1046,7 @@ def test_ci_result_gate_covers_every_conditional_job_and_classifier_flag() -> No
 
 def test_desktop_recovery_e2e_runs_compiled_flows_on_all_release_platforms() -> None:
     job = _workflow("ci.yml")["jobs"]["desktop-recovery-e2e"]
+    steps = job["steps"]
 
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["matrix"]["os"] == [
@@ -1011,14 +1054,29 @@ def test_desktop_recovery_e2e_runs_compiled_flows_on_all_release_platforms() -> 
         "macos-latest",
         "windows-latest",
     ]
-    build = next(step for step in job["steps"] if step.get("name") == "Build Desktop TypeScript")
+    download = next(
+        step for step in steps if step.get("name") == "Download verified frontend artifact"
+    )
+    setup_node = next(step for step in steps if step.get("name") == "Set up Node.js")
+    verify_frontend = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify downloaded frontend artifact on consumer OS"
+    )
+    build = next(step for step in steps if step.get("name") == "Build Desktop TypeScript")
     run = next(
-        step for step in job["steps"] if step.get("name") == "Run compiled Desktop recovery flows"
+        step for step in steps if step.get("name") == "Run compiled Desktop recovery flows"
     )
     upload = next(
-        step for step in job["steps"] if step.get("name") == "Upload Desktop recovery report"
+        step for step in steps if step.get("name") == "Upload Desktop recovery report"
     )
 
+    assert steps.index(download) < steps.index(setup_node) < steps.index(verify_frontend)
+    assert verify_frontend["shell"] == "bash"
+    assert verify_frontend["run"] == (
+        "node opensquilla-webui/scripts/verify-dist.mjs "
+        "src/opensquilla/gateway/static/dist"
+    )
     assert build["run"] == "npm run build"
     assert "xvfb-run -a node" in run["run"]
     assert "test-profile-recovery-flow.mjs" in run["run"]

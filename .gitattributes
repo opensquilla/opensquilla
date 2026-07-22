@@ -1,4 +1,5 @@
 *.sh text eol=lf
+opensquilla-webui/** text=auto eol=lf
 opensquilla-webui/.node-version text eol=lf
 tests/test_provider/golden/requests/**/*.json text eol=lf
 

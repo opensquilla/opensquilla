@@ -11,7 +11,8 @@ TEMPLATE = ROOT / "src" / "opensquilla" / "gateway" / "templates" / "index.html"
 APPROVAL_MONITOR_JS = STATIC / "js" / "approval_monitor.js"
 CHAT_JS = STATIC / "js" / "views" / "chat.js"
 CHAT_CSS = STATIC / "css" / "views" / "chat.css"
-WEBUI_LOCALES = ROOT / "opensquilla-webui" / "src" / "locales"
+WEBUI_SOURCE = ROOT / "opensquilla-webui" / "src"
+WEBUI_LOCALES = WEBUI_SOURCE / "locales"
 SANDBOX_JS = STATIC / "js" / "views" / "sandbox.js"
 SANDBOX_CSS = STATIC / "css" / "views" / "sandbox.css"
 APPROVALS_JS = STATIC / "js" / "views" / "approvals.js"
@@ -78,8 +79,36 @@ def test_webui_run_mode_locale_source_matches_managed_execution() -> None:
 
     assert english["chat"]["composer"]["runModeTrusted"] == "Managed Execution"
     assert chinese["chat"]["composer"]["runModeTrusted"] == "托管执行"
-    assert "Trusted-Sandbox" not in english_source
-    assert "可信沙箱" not in chinese_source
+
+
+def test_removed_trusted_sandbox_term_is_absent_from_all_webui_sources() -> None:
+    text_suffixes = {
+        ".css",
+        ".html",
+        ".js",
+        ".json",
+        ".jsx",
+        ".md",
+        ".mjs",
+        ".svg",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".vue",
+        ".yaml",
+        ".yml",
+    }
+    source_files = sorted(
+        path
+        for path in WEBUI_SOURCE.rglob("*")
+        if path.is_file() and path.suffix in text_suffixes
+    )
+
+    assert source_files
+    for path in source_files:
+        source = _read(path)
+        assert "Trusted-Sandbox" not in source, path.relative_to(ROOT)
+        assert "可信沙箱" not in source, path.relative_to(ROOT)
 
 
 def test_static_rpc_caches_hello_for_late_chat_mounts() -> None:

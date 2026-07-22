@@ -4,6 +4,7 @@ import {
   lstatSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   statSync,
   writeFileSync,
 } from 'node:fs'
@@ -20,6 +21,10 @@ const defaultDistDir = resolve(
 )
 const sourceInputRoots = [
   '.node-version',
+  '.env',
+  '.env.local',
+  '.env.production',
+  '.env.production.local',
   'index.html',
   'package.json',
   'package-lock.json',
@@ -43,7 +48,16 @@ const normalizedTextSuffixes = new Set([
   '.tsx',
   '.txt',
   '.vue',
+  '.webmanifest',
+  '.yaml',
+  '.yml',
 ])
+// Keep this platform-independent and mirrored in the Python verifier.
+// Canonical build normalization removes this OS metadata before manifest
+// generation, and source distributions omit it inside canonical source roots.
+const ignoredSourceFileNames = new Set(['.DS_Store'])
+const forbiddenArtifactFileNames = new Set(['.ds_store', '.npmrc'])
+const forbiddenArtifactSuffixes = new Set(['.key', '.pem'])
 const officialMusicFiles = new Set(['music/README.md', 'music/playlist.json'])
 
 function sha256(path) {
@@ -92,6 +106,19 @@ function recordsFor(root) {
     .sort((a, b) => compareUtf8(a.path, b.path))
 }
 
+function isForbiddenArtifactPath(path) {
+  const name = path.split('/').at(-1)
+  const lowered = name.toLowerCase()
+  const dot = lowered.lastIndexOf('.')
+  const suffix = dot >= 0 ? lowered.slice(dot) : ''
+  return (
+    forbiddenArtifactFileNames.has(lowered) ||
+    lowered === '.env' ||
+    lowered.startsWith('.env.') ||
+    forbiddenArtifactSuffixes.has(suffix)
+  )
+}
+
 function sourceFiles(rootDirectory = webuiRoot) {
   const sourceRoot = resolve(rootDirectory)
   const files = []
@@ -105,7 +132,11 @@ function sourceFiles(rootDirectory = webuiRoot) {
     if (stat.isFile()) {
       files.push(root)
     } else if (stat.isDirectory()) {
-      files.push(...listFiles(root))
+      files.push(
+        ...listFiles(root).filter(
+          (path) => !ignoredSourceFileNames.has(path.split(sep).at(-1)),
+        ),
+      )
     }
   }
   return [...new Set(files)].sort((a, b) =>
@@ -120,7 +151,11 @@ export function sourceFingerprint(rootDirectory = webuiRoot) {
     const relativePath = toPosixPath(relative(sourceRoot, path))
     const suffix = relativePath.slice(relativePath.lastIndexOf('.')).toLowerCase()
     let content = readFileSync(path)
-    if (relativePath === '.node-version' || normalizedTextSuffixes.has(suffix)) {
+    if (
+      relativePath === '.node-version' ||
+      relativePath.startsWith('.env') ||
+      normalizedTextSuffixes.has(suffix)
+    ) {
       content = Buffer.from(content.toString('utf8').replace(/\r\n/g, '\n').replace(/\r/g, '\n'))
     }
     hash.update(relativePath)
@@ -200,6 +235,14 @@ export function verifyDist(
 
   const expected = JSON.stringify(manifest.files)
   const actualRecords = recordsFor(root)
+  const forbidden = actualRecords
+    .map((record) => record.path)
+    .filter(isForbiddenArtifactPath)
+  if (forbidden.length > 0) {
+    throw new Error(
+      `Web UI artifact contains forbidden metadata or sensitive files: ${forbidden.join(', ')}`,
+    )
+  }
   const actual = JSON.stringify(actualRecords)
   if (actual !== expected) {
     throw new Error(
@@ -278,7 +321,11 @@ function main(argv) {
   )
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (
+  process.argv[1] &&
+  existsSync(process.argv[1]) &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
+) {
   try {
     main(process.argv.slice(2))
   } catch (error) {

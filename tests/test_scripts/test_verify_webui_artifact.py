@@ -35,6 +35,26 @@ def _record(root: Path, relative: str) -> dict[str, object]:
     }
 
 
+def _write_manifest(webui: Path, dist: Path) -> None:
+    relatives = sorted(
+        (
+            path.relative_to(dist).as_posix()
+            for path in dist.rglob("*")
+            if path.is_file() and path.name != MANIFEST_NAME
+        ),
+        key=_utf8_key,
+    )
+    manifest = {
+        "schemaVersion": 1,
+        "sourceFingerprint": source_fingerprint(webui),
+        "files": [_record(dist, relative) for relative in relatives],
+    }
+    (dist / MANIFEST_NAME).write_text(
+        f"{json.dumps(manifest, indent=2)}\n",
+        encoding="utf-8",
+    )
+
+
 def _artifact(
     tmp_path: Path,
     *,
@@ -82,19 +102,7 @@ def _artifact(
             f"{json.dumps(tracked_playlist)}\n",
             encoding="utf-8",
         )
-    relatives = sorted(
-        (path.relative_to(dist).as_posix() for path in dist.rglob("*") if path.is_file()),
-        key=_utf8_key,
-    )
-    manifest = {
-        "schemaVersion": 1,
-        "sourceFingerprint": source_fingerprint(webui),
-        "files": [_record(dist, relative) for relative in relatives],
-    }
-    (dist / MANIFEST_NAME).write_text(
-        f"{json.dumps(manifest, indent=2)}\n",
-        encoding="utf-8",
-    )
+    _write_manifest(webui, dist)
     return webui, dist
 
 
@@ -119,11 +127,61 @@ def test_verify_dist_rejects_artifact_after_source_changes(tmp_path: Path) -> No
         verify_dist(dist, webui_root=webui)
 
 
+def test_source_fingerprint_ignores_ds_store_but_tracks_personal_bgm(
+    tmp_path: Path,
+) -> None:
+    webui, _ = _artifact(tmp_path)
+    baseline = source_fingerprint(webui)
+
+    (webui / "src/.DS_Store").write_bytes(b"Finder metadata")
+    (webui / "public").mkdir()
+    (webui / "public/.DS_Store").write_bytes(b"more Finder metadata")
+    assert source_fingerprint(webui) == baseline
+
+    env_file = webui / ".env.production"
+    env_file.write_bytes(b"VITE_FLAG=enabled\r\n")
+    env_fingerprint = source_fingerprint(webui)
+    env_file.write_bytes(b"VITE_FLAG=enabled\n")
+    assert source_fingerprint(webui) == env_fingerprint
+    assert env_fingerprint != baseline
+    env_file.unlink()
+
+    music = webui / "public/music"
+    music.mkdir()
+    (music / "private.mp3").write_bytes(b"private audio")
+    assert source_fingerprint(webui) != baseline
+
+
 def test_verify_dist_rejects_tampered_generated_file(tmp_path: Path) -> None:
     webui, dist = _artifact(tmp_path)
     (dist / "assets/app.js").write_text("console.log('tampered')\n")
 
     with pytest.raises(ArtifactError, match="do not match the generated manifest"):
+        verify_dist(dist, webui_root=webui)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        ".DS_Store",
+        ".env",
+        "config/.env.production",
+        "config/.npmrc",
+        "config/client.pem",
+        "config/private.key",
+    ),
+)
+def test_verify_dist_rejects_metadata_and_sensitive_files(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    webui, dist = _artifact(tmp_path)
+    target = dist / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("secret or metadata\n", encoding="utf-8")
+    _write_manifest(webui, dist)
+
+    with pytest.raises(ArtifactError, match="forbidden metadata or sensitive files"):
         verify_dist(dist, webui_root=webui)
 
 
@@ -191,10 +249,7 @@ def test_invalid_manifest_and_entrypoint_return_actionable_artifact_errors(
     webui, dist = _artifact(tmp_path / "invalid-index")
     (dist / "index.html").write_bytes(b"\xff\xfe")
     manifest = json.loads((dist / MANIFEST_NAME).read_text(encoding="utf-8"))
-    manifest["files"] = [
-        _record(dist, record["path"])
-        for record in manifest["files"]
-    ]
+    manifest["files"] = [_record(dist, record["path"]) for record in manifest["files"]]
     (dist / MANIFEST_NAME).write_text(f"{json.dumps(manifest, indent=2)}\n", encoding="utf-8")
     with pytest.raises(ArtifactError, match="index.html is not valid UTF-8"):
         verify_dist(dist, webui_root=webui)
@@ -217,15 +272,24 @@ def test_verify_wheel_requires_byte_identical_artifact(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
-def test_node_and_python_source_fingerprints_share_utf8_filename_order(
+def test_node_and_python_source_fingerprints_share_order_and_line_endings(
     tmp_path: Path,
 ) -> None:
     webui = tmp_path / "opensquilla-webui"
     source = webui / "src"
+    public = webui / "public"
     source.mkdir(parents=True)
+    public.mkdir()
     (webui / ".node-version").write_text("22.12.0\n", encoding="utf-8")
     (source / "😀.vue").write_text("<template>emoji</template>\n", encoding="utf-8")
     (source / "Ａ.vue").write_text("<template>full width</template>\n", encoding="utf-8")
+    (public / "site.webmanifest").write_text('{"name":"OpenSquilla"}\n', encoding="utf-8")
+    baseline = source_fingerprint(webui)
+
+    (webui / ".node-version").write_bytes(b"22.12.0\r\n")
+    (source / "😀.vue").write_bytes(b"<template>emoji</template>\r\n")
+    (public / "site.webmanifest").write_bytes(b'{"name":"OpenSquilla"}\r\n')
+    (source / ".DS_Store").write_bytes(b"ignored metadata")
 
     script = (
         f"import {{ sourceFingerprint }} from {json.dumps(NODE_VERIFIER.as_uri())};"
@@ -239,7 +303,58 @@ def test_node_and_python_source_fingerprints_share_utf8_filename_order(
         timeout=30,
     )
 
-    assert result.stdout.strip() == source_fingerprint(webui)
+    assert source_fingerprint(webui) == baseline
+    assert result.stdout.strip() == baseline
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_node_verifier_runs_when_invoked_through_symlink(tmp_path: Path) -> None:
+    symlink = tmp_path / "verify-dist-link.mjs"
+    try:
+        symlink.symlink_to(NODE_VERIFIER)
+    except OSError as exc:
+        pytest.skip(f"symlinks are unavailable: {exc}")
+
+    result = subprocess.run(
+        ["node", str(symlink), "--definitely-invalid-option"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "verify-dist:" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")
+def test_node_verifier_rejects_sensitive_artifact_files(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "assets/app.js").write_text("console.log('hello')\n", encoding="utf-8")
+    (dist / "assets/app.css").write_text("body{}\n", encoding="utf-8")
+    (dist / "index.html").write_text(
+        '<script type="module" src="assets/app.js"></script>'
+        '<link rel="stylesheet" href="assets/app.css">',
+        encoding="utf-8",
+    )
+    (dist / ".env.production").write_text(
+        "VITE_PRIVATE_TOKEN=must-not-ship\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        ["node", str(NODE_VERIFIER), "--write", str(dist)],
+        cwd=REPO_ROOT / "opensquilla-webui",
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode != 0
+    assert "forbidden metadata or sensitive files" in result.stderr
+    assert ".env.production" in result.stderr
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not on PATH")

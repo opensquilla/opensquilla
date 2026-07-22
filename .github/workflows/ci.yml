@@ -133,10 +133,17 @@ jobs:
           FRONTEND_CHANGED: ${{ needs.classify-changes.outputs.frontend_changed }}
           FULL_REQUIRED: ${{ needs.classify-changes.outputs.full_required }}
         run: |
+          # Vite copies public/ verbatim. Prove the canonical normalization
+          # strips harmless Finder metadata before the manifest is written.
+          printf 'CI-only Finder metadata\n' > public/.DS_Store
           if [[ "${FRONTEND_CHANGED}" == "true" || "${FULL_REQUIRED}" == "true" ]]; then
             npm run build
           else
             npm run build:artifact
+          fi
+          if [[ -e ../src/opensquilla/gateway/static/dist/.DS_Store ]]; then
+            echo "ERROR: Finder metadata survived WebUI artifact normalization" >&2
+            exit 1
           fi
           npm run verify:release-dist
 
@@ -152,13 +159,34 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Verify wheel contains the exact frontend artifact
+      - name: Verify sdist-to-wheel frontend artifact round trip
         if: ${{ needs.classify-changes.outputs.build_wheel_required == 'true' || needs.classify-changes.outputs.full_required == 'true' }}
         shell: bash
         run: |
+          package_dir="${RUNNER_TEMP}/webui-package"
           wheel_dir="${RUNNER_TEMP}/webui-wheel"
-          mkdir -p "${wheel_dir}"
-          uv build --wheel --out-dir "${wheel_dir}"
+          mkdir -p "${package_dir}" "${wheel_dir}"
+
+          # Finder metadata is ignored by Git and must not affect the canonical
+          # source fingerprint or enter a source distribution.
+          junk="opensquilla-webui/src/.DS_Store"
+          trap 'rm -f "${junk}"' EXIT
+          printf 'CI-only Finder metadata\n' > "${junk}"
+
+          uv build --sdist --out-dir "${package_dir}"
+          sdists=("${package_dir}"/opensquilla-*.tar.gz)
+          if [[ "${#sdists[@]}" -ne 1 || ! -f "${sdists[0]}" ]]; then
+            echo "ERROR: expected exactly one OpenSquilla sdist" >&2
+            exit 1
+          fi
+          tar_listing="${package_dir}/sdist-files.txt"
+          tar -tzf "${sdists[0]}" > "${tar_listing}"
+          if grep -qE '(^|/)\.DS_Store$' "${tar_listing}"; then
+            echo "ERROR: ignored Finder metadata leaked into the sdist" >&2
+            exit 1
+          fi
+
+          uv build --wheel --out-dir "${wheel_dir}" "${sdists[0]}"
           wheels=("${wheel_dir}"/opensquilla-*.whl)
           if [[ "${#wheels[@]}" -ne 1 || ! -f "${wheels[0]}" ]]; then
             echo "ERROR: expected exactly one OpenSquilla wheel" >&2
@@ -194,7 +222,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.12.0'
+          node-version-file: opensquilla-webui/.node-version
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -269,6 +297,7 @@ jobs:
       UV_PYTHON: "3.12"
       PYTHONPATH: ${{ github.workspace }}
       OPENSQUILLA_TURN_CALL_LOG: "0"
+      OPENSQUILLA_DOCKERIGNORE_E2E: "1"
 
     steps:
       - name: Check out repository
@@ -322,6 +351,11 @@ jobs:
             tests/test_engine/test_stream_wrappers.py \
             tests/test_tools/test_shell_process_isolation.py \
             -q -m "${markers}" --durations=50
+
+      - name: Test Docker build-context exclusions in full CI
+        if: ${{ needs.classify-changes.outputs.full_required == 'true' }}
+        shell: bash
+        run: uv run pytest tests/test_ci/test_dockerignore_context.py -q
 
       - name: Verify metric counter names unchanged
         shell: bash
@@ -816,6 +850,10 @@ jobs:
           cache: 'npm'
           cache-dependency-path: desktop/electron/package-lock.json
 
+      - name: Verify downloaded frontend artifact on consumer OS
+        shell: bash
+        run: node opensquilla-webui/scripts/verify-dist.mjs src/opensquilla/gateway/static/dist
+
       - name: Install Python dependencies
         shell: bash
         run: uv sync --extra dev --extra recommended --extra mcp --frozen
@@ -939,7 +977,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22.12.0'
+          node-version-file: opensquilla-webui/.node-version
 
       - name: Check README locale parity
         working-directory: opensquilla-webui

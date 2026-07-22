@@ -173,7 +173,10 @@ def test_homebrew_head_install_builds_the_generated_webui_before_python() -> Non
     formula = FORMULA.read_text(encoding="utf-8")
 
     assert 'depends_on "node" => :build' in formula
-    npm_ci = formula.index('system "npm", "ci"')
+    assert 'require "language/node"' in formula
+    npm_ci = formula.index(
+        'system "npm", "ci", "--#{Language::Node.npm_cache_config}"'
+    )
     npm_build = formula.index('system "npm", "run", "build"')
     pip_install = formula.index("venv.pip_install_and_link buildpath")
     assert npm_ci < npm_build < pip_install

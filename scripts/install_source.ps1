@@ -25,6 +25,13 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+# PowerShell 7 can promote a non-zero native exit to a terminating error
+# before $LASTEXITCODE is inspected. This installer checks native commands
+# explicitly so npm and the selected Python installer keep their original
+# exit codes on every supported PowerShell host.
+if ($null -ne (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue)) {
+    Set-Variable -Name PSNativeCommandUseErrorActionPreference -Value $false
+}
 
 # --- prefix resolution ------------------------------------------------------
 
@@ -218,13 +225,13 @@ function Build-WebUI {
         & $npmCommand.Source ci
         $npmExitCode = $LASTEXITCODE
         if ($npmExitCode -ne 0) {
-            Write-Error "install_source.ps1: npm ci failed with exit code $npmExitCode."
+            [Console]::Error.WriteLine("install_source.ps1: npm ci failed with exit code $npmExitCode.")
             exit $npmExitCode
         }
         & $npmCommand.Source run build
         $npmExitCode = $LASTEXITCODE
         if ($npmExitCode -ne 0) {
-            Write-Error "install_source.ps1: npm run build failed with exit code $npmExitCode."
+            [Console]::Error.WriteLine("install_source.ps1: npm run build failed with exit code $npmExitCode.")
             exit $npmExitCode
         }
     } finally {
@@ -458,10 +465,11 @@ if ($installer -eq 'uv') {
 } else {
     & python @installArgs
 }
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "install_source.ps1: install command failed with exit code $LASTEXITCODE."
-    Write-Error 'install_source.ps1: Close any running OpenSquilla gateway or shell using the existing tool environment, then retry.'
-    exit $LASTEXITCODE
+$installExitCode = $LASTEXITCODE
+if ($installExitCode -ne 0) {
+    [Console]::Error.WriteLine("install_source.ps1: install command failed with exit code $installExitCode.")
+    [Console]::Error.WriteLine('install_source.ps1: Close any running OpenSquilla gateway or shell using the existing tool environment, then retry.')
+    exit $installExitCode
 }
 
 # Write an install receipt to aid `opensquilla uninstall`. Best-effort.

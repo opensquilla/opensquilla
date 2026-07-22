@@ -27,7 +27,10 @@ class CustomBuildHook(BuildHookInterface):
         root = Path(self.root).resolve()
         sys.path.insert(0, str(root))
         try:
-            from scripts.verify_webui_artifact import verify_dist
+            from scripts.verify_webui_artifact import (
+                verify_dist,
+                verify_sdist_source_inventory,
+            )
 
             verify_dist(
                 root / "src/opensquilla/gateway/static/dist",
@@ -38,6 +41,8 @@ class CustomBuildHook(BuildHookInterface):
                 # an explicitly customized artifact.
                 forbid_personal_bgm=self.target_name == "sdist",
             )
+            if self.target_name == "sdist":
+                verify_sdist_source_inventory(root / "opensquilla-webui")
         except (ImportError, OSError, RuntimeError) as exc:
             privacy_note = (
                 " Standard sdists intentionally reject personal BGM; build a "
@@ -47,7 +52,12 @@ class CustomBuildHook(BuildHookInterface):
             )
             raise RuntimeError(
                 "A verified WebUI artifact is required for standard wheel/sdist builds. "
-                "Run `cd opensquilla-webui && npm ci && npm run build`, then retry. "
+                "From a repository checkout, run "
+                "`cd opensquilla-webui && npm ci && npm run build`, then retry. "
+                "VCS URL installs cannot build the untracked generated artifact; use "
+                "an official release wheel, or clone the repository and run "
+                "`bash scripts/install_source.sh` (`powershell -ExecutionPolicy "
+                "Bypass -File ./scripts/install_source.ps1` on Windows). "
                 f"Validation failed: {exc}{privacy_note}"
             ) from exc
         finally:

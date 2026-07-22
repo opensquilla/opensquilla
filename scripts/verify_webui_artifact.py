@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -18,6 +19,10 @@ DEFAULT_WEBUI_ROOT = REPOSITORY_ROOT / "opensquilla-webui"
 DEFAULT_DIST_DIR = REPOSITORY_ROOT / "src/opensquilla/gateway/static/dist"
 SOURCE_INPUT_ROOTS = (
     ".node-version",
+    ".env",
+    ".env.local",
+    ".env.production",
+    ".env.production.local",
     "index.html",
     "package.json",
     "package-lock.json",
@@ -41,7 +46,16 @@ NORMALIZED_TEXT_SUFFIXES = {
     ".tsx",
     ".txt",
     ".vue",
+    ".webmanifest",
+    ".yaml",
+    ".yml",
 }
+# Keep this platform-independent and mirrored in verify-dist.mjs. Canonical
+# build normalization removes this OS metadata before manifest generation, and
+# source distributions omit it even inside an otherwise canonical source root.
+IGNORED_SOURCE_FILE_NAMES = frozenset({".DS_Store"})
+FORBIDDEN_ARTIFACT_FILE_NAMES = frozenset({".ds_store", ".npmrc"})
+FORBIDDEN_ARTIFACT_SUFFIXES = frozenset({".key", ".pem"})
 OFFICIAL_MUSIC_FILES = {"music/README.md", "music/playlist.json"}
 
 
@@ -94,6 +108,21 @@ def _files(dist_dir: Path) -> dict[str, bytes]:
     return files
 
 
+def _forbidden_artifact_paths(files: dict[str, bytes]) -> list[str]:
+    forbidden: list[str] = []
+    for relative in files:
+        name = PurePosixPath(relative).name
+        lowered = name.lower()
+        if (
+            lowered in FORBIDDEN_ARTIFACT_FILE_NAMES
+            or lowered == ".env"
+            or lowered.startswith(".env.")
+            or PurePosixPath(lowered).suffix in FORBIDDEN_ARTIFACT_SUFFIXES
+        ):
+            forbidden.append(relative)
+    return sorted(forbidden, key=lambda path: path.encode("utf-8"))
+
+
 def _source_files(webui_root: Path) -> list[Path]:
     if not webui_root.is_dir():
         raise ArtifactError(f"WebUI source directory is missing: {webui_root}")
@@ -111,6 +140,8 @@ def _source_files(webui_root: Path) -> list[Path]:
                 raise ArtifactError(f"WebUI build input must not be a symlink: {path}")
             if not path.is_file():
                 continue
+            if path.name in IGNORED_SOURCE_FILE_NAMES:
+                continue
             files.add(path)
     return sorted(
         files,
@@ -126,7 +157,11 @@ def source_fingerprint(webui_root: Path = DEFAULT_WEBUI_ROOT) -> str:
     for path in _source_files(webui_root):
         relative = path.relative_to(webui_root).as_posix()
         content = path.read_bytes()
-        if relative == ".node-version" or path.suffix.lower() in NORMALIZED_TEXT_SUFFIXES:
+        if (
+            relative == ".node-version"
+            or relative.startswith(".env")
+            or path.suffix.lower() in NORMALIZED_TEXT_SUFFIXES
+        ):
             text = content.decode("utf-8", errors="replace")
             content = text.replace("\r\n", "\n").replace("\r", "\n").encode()
         digest.update(relative.encode())
@@ -134,6 +169,61 @@ def source_fingerprint(webui_root: Path = DEFAULT_WEBUI_ROOT) -> str:
         digest.update(content)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def verify_sdist_source_inventory(webui_root: Path = DEFAULT_WEBUI_ROOT) -> None:
+    """Reject local frontend inputs that Hatch's Git-backed sdist will omit.
+
+    A direct local wheel may intentionally contain private customizations. A
+    standard sdist cannot: downstream wheel builds only see tracked sources,
+    so accepting an untracked input would create a tarball whose embedded
+    artifact can never validate against its extracted source tree.
+    """
+
+    webui_root = webui_root.resolve()
+    repository_root = webui_root.parent
+    if not (repository_root / ".git").exists():
+        # An extracted sdist has no VCS metadata. Its source inventory was
+        # already constrained when the archive was produced.
+        return
+
+    relative_webui = webui_root.relative_to(repository_root).as_posix()
+    pathspecs = [f"{relative_webui}/{root}" for root in SOURCE_INPUT_ROOTS]
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--others", "-z", "--", *pathspecs],
+            cwd=repository_root,
+            check=False,
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise ArtifactError(
+            "cannot inspect untracked frontend inputs for the standard sdist"
+        ) from exc
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ArtifactError(
+            "cannot inspect untracked frontend inputs for the standard sdist"
+            + (f": {stderr}" if stderr else "")
+        )
+
+    untracked = []
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = raw_path.decode("utf-8", errors="surrogateescape")
+        if PurePosixPath(relative).name in IGNORED_SOURCE_FILE_NAMES:
+            continue
+        untracked.append(relative)
+    if untracked:
+        joined = ", ".join(
+            sorted(untracked, key=lambda path: path.encode("utf-8", errors="surrogateescape"))
+        )
+        raise ArtifactError(
+            "standard sdists forbid untracked frontend build inputs because Hatch "
+            f"will omit them: {joined}. Track or remove these files, or build a "
+            "direct local wheel for a private customization"
+        )
 
 
 def verify_dist(
@@ -146,6 +236,11 @@ def verify_dist(
 
     dist_dir = dist_dir.resolve()
     files = _files(dist_dir)
+    forbidden = _forbidden_artifact_paths(files)
+    if forbidden:
+        raise ArtifactError(
+            f"WebUI artifact contains forbidden metadata or sensitive files: {forbidden}"
+        )
     index = files.get("index.html")
     manifest_bytes = files.get(MANIFEST_NAME)
     if not index:
@@ -159,8 +254,7 @@ def verify_dist(
         raise ArtifactError(f"WebUI artifact manifest is invalid: {exc}") from exc
     if (
         not isinstance(manifest, dict)
-        or
-        manifest.get("schemaVersion") != 1
+        or manifest.get("schemaVersion") != 1
         or not isinstance(manifest.get("sourceFingerprint"), str)
         or not isinstance(manifest.get("files"), list)
     ):

@@ -3,7 +3,6 @@
 
 # --- VCS + editor + hidden local state -------------------------------------
 .*
-!opensquilla-webui/.node-version
 .vscode
 .idea
 .DS_Store
@@ -49,10 +48,14 @@ install.sh
 install.ps1
 
 # --- Secrets + local config (never shipped) --------------------------------
-.env
-.env.*
+.env*
+**/.env*
+.npmrc
+**/.npmrc
 *.pem
+**/*.pem
 *.key
+**/*.key
 
 # --- Build artefacts --------------------------------------------------------
 dist
@@ -60,6 +63,10 @@ build
 *.egg-info
 **/node_modules
 opensquilla-webui/test-results
+
+# The WebUI bundle is rebuilt in the builder stage. Never merge a local,
+# potentially stale bundle into the generated artifact copied from that stage.
+src/opensquilla/gateway/static/dist
 
 # --- CI / local tooling -----------------------------------------------------
 uv.lock

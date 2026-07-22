@@ -2,7 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { createApp, defineComponent, h, nextTick, ref } from 'vue'
 
-import { useDialogA11y } from './useDialogA11y'
+import { hasOpenDialogLayer, useDialogA11y, useDialogLayer } from './useDialogA11y'
 
 describe('useDialogA11y modal stack', () => {
   let app: ReturnType<typeof createApp> | null = null
@@ -89,5 +89,113 @@ describe('useDialogA11y modal stack', () => {
     await nextTick()
     expect(document.querySelector('[aria-label="Lower"]')).toBeNull()
     expect(document.activeElement).toBe(lowerTrigger)
+  })
+
+  it('shares ownership with components that implement their own dialog keyboard handling', async () => {
+    let customTopmost = false
+    const Host = defineComponent({
+      setup() {
+        const standardOpen = ref(true)
+        const customOpen = ref(false)
+        const standardRoot = ref<HTMLElement | null>(null)
+        useDialogA11y(standardRoot, standardOpen, () => { standardOpen.value = false })
+        const customIsTopmost = useDialogLayer(customOpen)
+        return () => {
+          customTopmost = customIsTopmost.value
+          return h('div', [
+            standardOpen.value ? h('section', { ref: standardRoot }, [h('button', 'standard')]) : null,
+            h('button', { id: 'open-custom', onClick: () => { customOpen.value = true } }, 'custom'),
+            customOpen.value ? h('section', { id: 'custom' }, 'custom layer') : null,
+          ])
+        }
+      },
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    app = createApp(Host)
+    app.mount(root)
+    await nextTick()
+    expect(hasOpenDialogLayer()).toBe(true)
+    document.querySelector<HTMLButtonElement>('#open-custom')!.click()
+    await nextTick()
+    expect(customTopmost).toBe(true)
+    expect(hasOpenDialogLayer()).toBe(true)
+
+    app.unmount()
+    app = null
+    expect(hasOpenDialogLayer()).toBe(false)
+  })
+
+  it('reactively transfers ownership between two custom layers after the lower value was cached', async () => {
+    let lowerTopmost = false
+    let upperTopmost = false
+    const Host = defineComponent({
+      setup() {
+        const lowerOpen = ref(true)
+        const upperOpen = ref(false)
+        const lower = useDialogLayer(lowerOpen)
+        const upper = useDialogLayer(upperOpen)
+        return () => {
+          lowerTopmost = lower.value
+          upperTopmost = upper.value
+          return h('div', [
+            h('button', { id: 'open-upper-custom', onClick: () => { upperOpen.value = true } }, 'open'),
+            h('button', { id: 'close-upper-custom', onClick: () => { upperOpen.value = false } }, 'close'),
+          ])
+        }
+      },
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    app = createApp(Host)
+    app.mount(root)
+    await nextTick()
+    expect(lowerTopmost).toBe(true)
+    expect(upperTopmost).toBe(false)
+
+    document.querySelector<HTMLButtonElement>('#open-upper-custom')!.click()
+    await nextTick()
+    expect(lowerTopmost).toBe(false)
+    expect(upperTopmost).toBe(true)
+
+    document.querySelector<HTMLButtonElement>('#close-upper-custom')!.click()
+    await nextTick()
+    expect(lowerTopmost).toBe(true)
+    expect(upperTopmost).toBe(false)
+  })
+
+  it('invalidates a cached custom layer when a standard dialog opens above it', async () => {
+    let customTopmost = false
+    const Host = defineComponent({
+      setup() {
+        const customOpen = ref(true)
+        const standardOpen = ref(false)
+        const standardRoot = ref<HTMLElement | null>(null)
+        const custom = useDialogLayer(customOpen)
+        useDialogA11y(standardRoot, standardOpen, () => { standardOpen.value = false })
+        return () => {
+          customTopmost = custom.value
+          return h('div', [
+            h('button', { id: 'open-standard', onClick: () => { standardOpen.value = true } }, 'open'),
+            standardOpen.value
+              ? h('section', { ref: standardRoot }, [h('button', 'standard')])
+              : null,
+          ])
+        }
+      },
+    })
+
+    const root = document.createElement('div')
+    document.body.appendChild(root)
+    app = createApp(Host)
+    app.mount(root)
+    await nextTick()
+    expect(customTopmost).toBe(true)
+    document.querySelector<HTMLButtonElement>('#open-standard')!.click()
+    await nextTick()
+    await nextTick()
+    expect(customTopmost).toBe(false)
   })
 })

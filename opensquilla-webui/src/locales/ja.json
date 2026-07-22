@@ -81,7 +81,14 @@
     "logs": "ログ",
     "settings": "設定",
     "groupBuild": "構築",
-    "groupMonitor": "モニター"
+    "groupMonitor": "モニター",
+    "not-found": "見つかりません"
+  },
+  "notFound": {
+    "title": "ページが見つかりません",
+    "body": "このアドレスに対応する OpenSquilla のページはありません。",
+    "goToChat": "チャットへ",
+    "sessions": "セッション"
   },
   "chrome": {
     "settings": "設定",
@@ -1092,6 +1099,7 @@
     "refreshing": "更新中…",
     "loading": "セッションを読み込み中…",
     "unknownAgent": "不明なエージェント",
+    "deletedAgent": "削除済みエージェント · {id}",
     "msgCount": "{count} 件",
     "error": {
       "load": "セッションを読み込めませんでした。"
@@ -1788,7 +1796,13 @@
     },
     "skillCard": {
       "subSkillsTitle": "このメタスキルが使用するサブスキル",
-      "uses": "使用"
+      "uses": "使用",
+      "dependencies": "宣言済み依存関係",
+      "pythonCount": "Python パッケージ: {count}",
+      "binaryCount": "バイナリ: {count}",
+      "envCount": "環境変数: {count}",
+      "missingCount": "不足している依存関係: {count}",
+      "advisoryCount": "注意事項: {count}"
     },
     "skillDetail": {
       "triggers": "トリガー",
@@ -1803,7 +1817,26 @@
       "loadingContent": "SKILL.md を読み込み中...",
       "emptyContent": "利用できる SKILL.md コンテンツはありません。",
       "removing": "削除中...",
-      "remove": "削除"
+      "remove": "削除",
+      "declaredDependencies": "宣言済み依存関係",
+      "pythonPackages": "Python パッケージ",
+      "binaries": "バイナリ",
+      "environment": "環境変数",
+      "pythonPackage": "Python パッケージ",
+      "binaryAny": "いずれかのバイナリ",
+      "envAny": "いずれかの環境変数",
+      "noDeclaredDependencies": "宣言された依存関係はありません。",
+      "advisories": "注意事項",
+      "notReadiness": "推測項目は参考情報であり、準備完了の判定には影響しません。",
+      "inferredPython": "{source} から推測",
+      "inferredEnv": "推測された環境変数",
+      "scanAdvisory": "依存関係スキャンの注意事項",
+      "subSkillRollup": "メタスキル依存関係の集約",
+      "subSkillStatus": "不足 {missing} 件 · 注意 {advisory} 件",
+      "missingSubSkill": "参照先のサブスキルを利用できません",
+      "installUnavailable": "現在不足している依存関係に一致するインストーラーはありません。",
+      "installIncomplete": "{count} 件の依存関係に対応が必要です。",
+      "installComplete": "依存関係の準備が整いました。"
     },
     "registry": {
       "searchPlaceholder": "コミュニティスキルを検索...",
@@ -2151,6 +2184,9 @@
     "open": "開く",
     "downloadTitle": "{title} をダウンロード",
     "download": "ダウンロード",
+    "playAudio": "音声を再生",
+    "audioLoadFailed": "音声を読み込めませんでした。",
+    "audioUnsupported": "このブラウザではこの音声形式を再生できません。代わりにファイルをダウンロードしてください。",
     "previewOf": "プレビュー: {title}",
     "closePreview": "プレビューを閉じる",
     "previousImage": "前の画像",
@@ -2184,6 +2220,27 @@
     "sandboxPausedResume": "実行を再開",
     "sandboxResumed": "自律実行を再開しました。続行するにはリクエストを再送信してください。",
     "sandboxResumeFailed": "実行を再開できませんでした:{error}",
+    "warning": {
+      "default": "エージェントから警告が報告されました。"
+    },
+    "provenance": {
+      "cron": "Cron",
+      "scheduled": "スケジュール実行",
+      "cronSource": "{tool} によるスケジュール実行"
+    },
+    "sandboxSetup": {
+      "settingUp": "設定中…",
+      "settingUpTitle": "Windows Sandbox を設定中",
+      "failedTitle": "Windows Sandbox の設定に失敗しました",
+      "unavailableTitle": "サンドボックスの設定を利用できません",
+      "requiredTitle": "Windows Sandbox の設定が必要です",
+      "settingUpBody": "OpenSquilla が隔離環境を準備しています。しばらくお待ちください。",
+      "failedBody": "隔離環境を準備できませんでした。もう一度お試しください。",
+      "unavailableBody": "このシステムではサンドボックスを設定できません。実行モードは変更されていません。",
+      "requiredBody": "この実行モードを使用する前に Windows Sandbox を設定してください。",
+      "retry": "再試行",
+      "setup": "設定"
+    },
     "usageDetails": "使用量の詳細",
     "regenerate": "再生成",
     "forkConversation": "会話をフォーク",
@@ -2261,7 +2318,11 @@
       "expiresIn": "{time} で期限切れ",
       "outcomeExpired": "期限切れ — 未実行",
       "outcomeDenied": "拒否済み",
-      "outcomeApproved": "承認済み · 実行を再開"
+      "outcomeApproved": "承認済み · 実行を再開",
+      "target": "対象",
+      "access": "アクセス",
+      "workspace": "ワークスペース",
+      "outcomeUnavailable": "この承認は利用できなくなりました"
     },
     "clarify": {
       "needsInput": "エージェントが入力を必要としています",

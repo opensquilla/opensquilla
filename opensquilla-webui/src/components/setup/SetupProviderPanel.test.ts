@@ -872,10 +872,15 @@ describe('SetupProviderPanel — configured provider management', () => {
     expect(options).toHaveLength(3)
     expect(options.every(option => option.tabIndex === -1)).toBe(true)
     const search = el.querySelector<HTMLInputElement>('input[name="setup_provider_search"]')!
+    // Wait for the catalog's scheduled focus before driving ArrowDown. Under a
+    // loaded full-suite worker, dispatching first lets the delayed focus handler
+    // reset activeIndex back to zero after the key event.
+    await vi.waitFor(() => expect(document.activeElement).toBe(search))
     search.focus()
     search.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-    await nextTick()
-    expect(search.getAttribute('aria-activedescendant')).toBe('setup-provider-catalog-option-1')
+    await vi.waitFor(() => {
+      expect(search.getAttribute('aria-activedescendant')).toBe('setup-provider-catalog-option-1')
+    })
     search.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     expect(onAddProvider).toHaveBeenCalledWith('deepseek')
 

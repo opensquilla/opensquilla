@@ -61,6 +61,7 @@ RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_gateway/test_api_chat.py",
     "tests/test_gateway/test_channel_turn_ingress.py",
     "tests/test_gateway/test_config_profile_paths.py",
+    "tests/test_gateway/test_cron_result_payload.py",
     "tests/test_gateway/test_memory_repair_storage_gate.py",
     "tests/test_gateway/test_rpc_llm_profiles.py",
     "tests/test_gateway/test_rpc_storage_busy.py",

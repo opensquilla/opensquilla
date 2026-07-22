@@ -9,7 +9,7 @@ import {
 import type { Attachment } from '@/types/chat'
 
 describe('attachment display normalization', () => {
-  it('renders inline HTML history attachments as file chips without data payloads', () => {
+  it('renders inline HTML history attachments as downloadable file chips without DOM data', () => {
     const attachment = normalizeDisplayAttachment(
       { type: 'text/html', name: 'preview.html', data: 'PGh0bWw+' },
       { messageId: 'm1', index: 0 },
@@ -24,6 +24,7 @@ describe('attachment display normalization', () => {
     })
     expect(attachment.data).toBeUndefined()
     expect(attachment.dataUrl).toBeUndefined()
+    expect(attachment.downloadData).toBe('PGh0bWw+')
     expect(isImageDisplayAttachment(attachment)).toBe(false)
   })
 
@@ -92,8 +93,31 @@ describe('attachment display normalization', () => {
     expect(nonImage.mime).toBe('application/pdf')
     expect(nonImage.data).toBeUndefined()
     expect(nonImage.dataUrl).toBeUndefined()
+    expect(nonImage.downloadData).toBe('payload')
     expect(image.data).toBe('payload')
     expect(image.dataUrl).toBe('data:image/webp;base64,payload')
+  })
+
+  it('rejects an active or mismatched media type hidden behind an image declaration', () => {
+    const svgAsPng = normalizeDisplayAttachment({
+      mime: 'image/png',
+      name: 'disguised.png',
+      data_url: 'data:image/svg+xml;base64,PHN2Zz4=',
+    })
+    const htmlAsPng = normalizeDisplayAttachment({
+      mime: 'image/png',
+      name: 'disguised.png',
+      data_url: 'data:text/html;base64,PGh0bWw+',
+    })
+    const nonBase64 = normalizeDisplayAttachment({
+      mime: 'image/png',
+      name: 'disguised.png',
+      data_url: 'data:image/png,<svg onload=alert(1)>',
+    })
+
+    expect(svgAsPng.dataUrl).toBeUndefined()
+    expect(htmlAsPng.dataUrl).toBeUndefined()
+    expect(nonBase64.dataUrl).toBeUndefined()
   })
 
   it('normalizes batches with stable index-based keys for duplicate filenames', () => {
@@ -129,7 +153,7 @@ describe('attachment send display serialization', () => {
     expect(JSON.stringify(display)).not.toContain('local_id')
   })
 
-  it('strips non-image inline optimistic data but keeps image data', () => {
+  it('keeps non-image optimistic bytes download-only and image bytes previewable', () => {
     const text: Attachment & { kind: 'inline'; data: string } = {
       kind: 'inline',
       local_id: 1,
@@ -149,7 +173,39 @@ describe('attachment send display serialization', () => {
 
     expect(serializeDisplayAttachment(text).data).toBeUndefined()
     expect(serializeDisplayAttachment(text).dataUrl).toBeUndefined()
+    expect(serializeDisplayAttachment(text).downloadData).toBe('PGh0bWw+')
     expect(serializeDisplayAttachment(image).data).toBe('aW1hZ2U=')
     expect(serializeDisplayAttachment(image).dataUrl).toBe('data:image/png;base64,aW1hZ2U=')
+  })
+
+  it('retains the original local file without exposing upload credentials', () => {
+    const localFile = new File(['bytes'], 'ready.pdf', { type: 'application/pdf' })
+    const staged: Attachment & { kind: 'staged'; file_uuid: string } = {
+      kind: 'staged',
+      local_id: 9,
+      name: 'ready.pdf',
+      mime: 'application/pdf',
+      file_uuid: 'u-secret',
+      file: localFile,
+    }
+
+    const display = serializeDisplayAttachment(staged)
+
+    expect(display.localFile).toBe(localFile)
+    expect(JSON.stringify(display)).not.toContain('u-secret')
+  })
+
+  it('keeps SVG attachment markup download-only', () => {
+    const attachment = normalizeDisplayAttachment({
+      type: 'image/svg+xml; charset=utf-8',
+      name: 'drawing.svg',
+      data: 'PHN2Zz4=',
+      data_url: 'data:image/svg+xml;base64,PHN2Zz4=',
+    })
+
+    expect(isImageDisplayAttachment(attachment)).toBe(false)
+    expect(attachment.dataUrl).toBeUndefined()
+    expect(attachment.data).toBeUndefined()
+    expect(attachment.downloadData).toBe('PHN2Zz4=')
   })
 })

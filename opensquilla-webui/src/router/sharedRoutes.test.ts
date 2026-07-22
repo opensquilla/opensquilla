@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { LAST_ROUTE_KEY } from './lastRoute'
 import { defaultRootRedirect } from './sharedRoutes'
+import { routes } from './index'
 
 beforeEach(() => {
   localStorage.clear()
@@ -30,5 +31,12 @@ describe('defaultRootRedirect', () => {
     localStorage.setItem(LAST_ROUTE_KEY, '/overview')
 
     expect(defaultRootRedirect()).toBe('/overview')
+  })
+})
+
+describe('route fallback', () => {
+  it('keeps the Not Found catch-all after every platform route', () => {
+    expect(routes[routes.length - 1]?.path).toBe('/:pathMatch(.*)*')
+    expect(routes[routes.length - 1]?.name).toBe('not-found')
   })
 })

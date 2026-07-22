@@ -156,7 +156,7 @@ export function useChatAttachments() {
         const b64 = dataUrl?.split(',')[1] || ''
         const idx = pendingAttachments.value.findIndex(a => a.local_id === localId)
         if (idx >= 0) {
-          pendingAttachments.value[idx] = { kind: 'inline', local_id: localId, name: fileName, mime, size: file.size, data: b64, dataUrl }
+          pendingAttachments.value[idx] = { kind: 'inline', local_id: localId, name: fileName, mime, size: file.size, data: b64, dataUrl, file }
         }
       }
       reader.onerror = () => {

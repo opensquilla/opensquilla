@@ -81,7 +81,14 @@
     "logs": "Logs",
     "settings": "Settings",
     "groupBuild": "Build",
-    "groupMonitor": "Monitor"
+    "groupMonitor": "Monitor",
+    "not-found": "Not found"
+  },
+  "notFound": {
+    "title": "Page not found",
+    "body": "This address doesn't match an OpenSquilla page.",
+    "goToChat": "Go to Chat",
+    "sessions": "Sessions"
   },
   "chrome": {
     "settings": "Settings",
@@ -1092,6 +1099,7 @@
     "refreshing": "Refreshing…",
     "loading": "Loading sessions…",
     "unknownAgent": "Unknown agent",
+    "deletedAgent": "Deleted agent · {id}",
     "msgCount": "{count} msg",
     "error": {
       "load": "Could not load sessions."
@@ -1788,7 +1796,13 @@
     },
     "skillCard": {
       "subSkillsTitle": "Sub-skills used by this meta-skill",
-      "uses": "uses"
+      "uses": "uses",
+      "dependencies": "Declared dependencies",
+      "pythonCount": "Python packages: {count}",
+      "binaryCount": "Binaries: {count}",
+      "envCount": "Environment variables: {count}",
+      "missingCount": "Missing dependencies: {count}",
+      "advisoryCount": "Advisories: {count}"
     },
     "skillDetail": {
       "triggers": "Triggers",
@@ -1803,7 +1817,26 @@
       "loadingContent": "Loading SKILL.md...",
       "emptyContent": "No SKILL.md content available.",
       "removing": "Removing...",
-      "remove": "Remove"
+      "remove": "Remove",
+      "declaredDependencies": "Declared dependencies",
+      "pythonPackages": "Python packages",
+      "binaries": "Binaries",
+      "environment": "Environment",
+      "pythonPackage": "Python package",
+      "binaryAny": "Any one binary",
+      "envAny": "Any one environment variable",
+      "noDeclaredDependencies": "No dependencies declared.",
+      "advisories": "Advisories",
+      "notReadiness": "Inferred items are advisory and do not affect readiness.",
+      "inferredPython": "Inferred from {source}",
+      "inferredEnv": "Inferred environment variable",
+      "scanAdvisory": "Dependency scan advisory",
+      "subSkillRollup": "Meta-skill dependency rollup",
+      "subSkillStatus": "{missing} missing · {advisory} advisory",
+      "missingSubSkill": "Referenced sub-skill is unavailable",
+      "installUnavailable": "No installer matches the current missing dependencies.",
+      "installIncomplete": "{count} dependencies still need attention.",
+      "installComplete": "Dependencies are ready."
     },
     "registry": {
       "searchPlaceholder": "Search community skills...",
@@ -2151,6 +2184,9 @@
     "open": "Open",
     "downloadTitle": "Download {title}",
     "download": "Download",
+    "playAudio": "Play audio",
+    "audioLoadFailed": "Audio could not be loaded.",
+    "audioUnsupported": "This browser cannot play this audio format. Download the file instead.",
     "previewOf": "Preview: {title}",
     "closePreview": "Close preview",
     "previousImage": "Previous image",
@@ -2184,6 +2220,27 @@
     "sandboxPausedResume": "Resume execution",
     "sandboxResumed": "Autonomous execution resumed. Resend your request to continue.",
     "sandboxResumeFailed": "Could not resume execution: {error}",
+    "warning": {
+      "default": "The agent reported a warning."
+    },
+    "provenance": {
+      "cron": "Cron",
+      "scheduled": "Scheduled",
+      "cronSource": "Scheduled by {tool}"
+    },
+    "sandboxSetup": {
+      "settingUp": "Setting up…",
+      "settingUpTitle": "Setting up Windows Sandbox",
+      "failedTitle": "Windows Sandbox setup failed",
+      "unavailableTitle": "Sandbox setup unavailable",
+      "requiredTitle": "Windows Sandbox setup required",
+      "settingUpBody": "OpenSquilla is preparing the isolated environment. This may take a moment.",
+      "failedBody": "The isolated environment could not be prepared. Try again when ready.",
+      "unavailableBody": "Sandbox setup is unavailable on this system. Your execution mode was not changed.",
+      "requiredBody": "Set up Windows Sandbox before using this execution mode.",
+      "retry": "Retry",
+      "setup": "Set up"
+    },
     "usageDetails": "Usage details",
     "regenerate": "Regenerate",
     "forkConversation": "Fork conversation",
@@ -2261,7 +2318,11 @@
       "expiresIn": "Expires in {time}",
       "outcomeExpired": "Expired — not run",
       "outcomeDenied": "Denied",
-      "outcomeApproved": "Approved · run resumed"
+      "outcomeApproved": "Approved · run resumed",
+      "target": "Target",
+      "access": "Access",
+      "workspace": "Workspace",
+      "outcomeUnavailable": "Approval no longer available"
     },
     "clarify": {
       "needsInput": "The agent needs input",

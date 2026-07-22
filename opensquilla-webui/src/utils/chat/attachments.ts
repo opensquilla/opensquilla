@@ -27,11 +27,26 @@ export function displayAttachmentMime(attachment: Record<string, unknown>): stri
 }
 
 export function isImageAttachmentMime(mime: unknown): boolean {
-  return normalizeAttachmentMimeValue(mime, '').startsWith('image/')
+  const normalized = normalizeAttachmentMimeValue(mime, '')
+  const essence = normalized.split(';', 1)[0].trim()
+  // SVG is an active document format. Keep it download-only even though its
+  // media type starts with image/ so user-provided markup never enters the DOM.
+  return essence.startsWith('image/') && essence !== 'image/svg+xml'
 }
 
 export function isImageDisplayAttachment(attachment: Pick<DisplayAttachment, 'mime'> | Pick<Attachment, 'mime'>): boolean {
   return isImageAttachmentMime(attachment.mime)
+}
+
+function safeImageDataUrl(value: unknown, declaredMime: string): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const match = value.match(/^data:([^;,]+)(?:;[^,]*)?;base64,[a-z0-9+/=\s]*$/i)
+  if (!match) return undefined
+  const embeddedMime = normalizeAttachmentMimeValue(match[1], '')
+  const declaredEssence = normalizeAttachmentMimeValue(declaredMime, '').split(';', 1)[0].trim()
+  return isImageAttachmentMime(embeddedMime) && embeddedMime === declaredEssence
+    ? value
+    : undefined
 }
 
 export function isSendableAttachment(attachment: Attachment): attachment is SendableAttachment {
@@ -67,7 +82,7 @@ export function serializeDisplayAttachment(attachment: SendableAttachment): Disp
     size: attachment.size,
   }
   if (attachment.kind === 'staged') {
-    return { ...base, kind: 'staged' }
+    return { ...base, kind: 'staged', localFile: attachment.file }
   }
   const isImage = isImageDisplayAttachment(attachment)
   return {
@@ -75,6 +90,8 @@ export function serializeDisplayAttachment(attachment: SendableAttachment): Disp
     kind: 'inline',
     data: isImage ? attachment.data : undefined,
     dataUrl: isImage ? attachment.dataUrl : undefined,
+    downloadData: isImage ? undefined : attachment.data,
+    localFile: attachment.file,
   }
 }
 
@@ -108,11 +125,15 @@ export function normalizeDisplayAttachment(
       ? Number(record.size)
       : undefined
   const data = typeof record.data === 'string' ? record.data : undefined
-  const dataUrl = typeof record.dataUrl === 'string'
-    ? record.dataUrl
-    : typeof record.data_url === 'string'
-      ? record.data_url
-      : undefined
+  const downloadData = typeof record.downloadData === 'string'
+    ? record.downloadData
+    : image
+      ? undefined
+      : data
+  const dataUrl = safeImageDataUrl(
+    typeof record.dataUrl === 'string' ? record.dataUrl : record.data_url,
+    mime,
+  )
   const rawKind = typeof record.kind === 'string' ? record.kind : ''
   const kind: DisplayAttachment['kind'] = rawKind === 'staged' || sha
     ? 'staged'
@@ -131,6 +152,12 @@ export function normalizeDisplayAttachment(
     size,
     data: image ? data : undefined,
     dataUrl: image ? dataUrl : undefined,
+    downloadData,
+    localFile: typeof File !== 'undefined' && record.localFile instanceof File
+      ? record.localFile
+      : typeof File !== 'undefined' && record.file instanceof File
+        ? record.file
+        : undefined,
     download_url: typeof record.download_url === 'string' ? record.download_url : undefined,
     sha256_ref: sha || undefined,
   }

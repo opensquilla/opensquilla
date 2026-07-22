@@ -81,7 +81,14 @@
     "logs": "Protokolle",
     "settings": "Einstellungen",
     "groupBuild": "Erstellen",
-    "groupMonitor": "Überwachen"
+    "groupMonitor": "Überwachen",
+    "not-found": "Nicht gefunden"
+  },
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "body": "Diese Adresse gehört zu keiner OpenSquilla-Seite.",
+    "goToChat": "Zum Chat",
+    "sessions": "Sitzungen"
   },
   "chrome": {
     "settings": "Einstellungen",
@@ -1092,6 +1099,7 @@
     "refreshing": "Wird aktualisiert…",
     "loading": "Sitzungen werden geladen…",
     "unknownAgent": "Unbekannter Agent",
+    "deletedAgent": "Gelöschter Agent · {id}",
     "msgCount": "{count} Nachr.",
     "error": {
       "load": "Sitzungen konnten nicht geladen werden."
@@ -1788,7 +1796,13 @@
     },
     "skillCard": {
       "subSkillsTitle": "Von dieser Meta-Fähigkeit verwendete Unterfähigkeiten",
-      "uses": "verwendet"
+      "uses": "verwendet",
+      "dependencies": "Deklarierte Abhängigkeiten",
+      "pythonCount": "Python-Pakete: {count}",
+      "binaryCount": "Binärdateien: {count}",
+      "envCount": "Umgebungsvariablen: {count}",
+      "missingCount": "Fehlende Abhängigkeiten: {count}",
+      "advisoryCount": "Hinweise: {count}"
     },
     "skillDetail": {
       "triggers": "Auslöser",
@@ -1803,7 +1817,26 @@
       "loadingContent": "SKILL.md wird geladen...",
       "emptyContent": "Kein SKILL.md-Inhalt verfügbar.",
       "removing": "Wird entfernt...",
-      "remove": "Entfernen"
+      "remove": "Entfernen",
+      "declaredDependencies": "Deklarierte Abhängigkeiten",
+      "pythonPackages": "Python-Pakete",
+      "binaries": "Binärdateien",
+      "environment": "Umgebung",
+      "pythonPackage": "Python-Paket",
+      "binaryAny": "Eine beliebige Binärdatei",
+      "envAny": "Eine beliebige Umgebungsvariable",
+      "noDeclaredDependencies": "Keine Abhängigkeiten deklariert.",
+      "advisories": "Hinweise",
+      "notReadiness": "Abgeleitete Einträge sind nur Hinweise und beeinflussen die Bereitschaft nicht.",
+      "inferredPython": "Abgeleitet aus {source}",
+      "inferredEnv": "Abgeleitete Umgebungsvariable",
+      "scanAdvisory": "Hinweis aus dem Abhängigkeitsscan",
+      "subSkillRollup": "Meta-Skill-Abhängigkeiten",
+      "subSkillStatus": "{missing} fehlen · {advisory} Hinweise",
+      "missingSubSkill": "Referenzierter Sub-Skill ist nicht verfügbar",
+      "installUnavailable": "Kein Installationsweg passt zu den aktuell fehlenden Abhängigkeiten.",
+      "installIncomplete": "Für {count} Abhängigkeiten ist noch eine Aktion erforderlich.",
+      "installComplete": "Die Abhängigkeiten sind bereit."
     },
     "registry": {
       "searchPlaceholder": "Community-Fähigkeiten durchsuchen...",
@@ -2151,6 +2184,9 @@
     "open": "Öffnen",
     "downloadTitle": "{title} herunterladen",
     "download": "Herunterladen",
+    "playAudio": "Audio abspielen",
+    "audioLoadFailed": "Audio konnte nicht geladen werden.",
+    "audioUnsupported": "Dieser Browser kann dieses Audioformat nicht abspielen. Laden Sie die Datei stattdessen herunter.",
     "previewOf": "Vorschau: {title}",
     "closePreview": "Vorschau schließen",
     "previousImage": "Vorheriges Bild",
@@ -2184,6 +2220,27 @@
     "sandboxPausedResume": "Ausführung fortsetzen",
     "sandboxResumed": "Autonome Ausführung fortgesetzt. Senden Sie Ihre Anfrage zur Fortsetzung erneut.",
     "sandboxResumeFailed": "Ausführung konnte nicht fortgesetzt werden: {error}",
+    "warning": {
+      "default": "Der Agent hat eine Warnung gemeldet."
+    },
+    "provenance": {
+      "cron": "Cron",
+      "scheduled": "Geplant",
+      "cronSource": "Geplant von {tool}"
+    },
+    "sandboxSetup": {
+      "settingUp": "Einrichtung läuft…",
+      "settingUpTitle": "Windows Sandbox wird eingerichtet",
+      "failedTitle": "Einrichtung von Windows Sandbox fehlgeschlagen",
+      "unavailableTitle": "Sandbox-Einrichtung nicht verfügbar",
+      "requiredTitle": "Einrichtung von Windows Sandbox erforderlich",
+      "settingUpBody": "OpenSquilla bereitet die isolierte Umgebung vor. Dies kann einen Moment dauern.",
+      "failedBody": "Die isolierte Umgebung konnte nicht vorbereitet werden. Versuchen Sie es erneut.",
+      "unavailableBody": "Die Sandbox-Einrichtung ist auf diesem System nicht verfügbar. Der Ausführungsmodus wurde nicht geändert.",
+      "requiredBody": "Richten Sie Windows Sandbox ein, bevor Sie diesen Ausführungsmodus verwenden.",
+      "retry": "Erneut versuchen",
+      "setup": "Einrichten"
+    },
     "usageDetails": "Nutzungsdetails",
     "regenerate": "Neu generieren",
     "forkConversation": "Unterhaltung verzweigen",
@@ -2261,7 +2318,11 @@
       "expiresIn": "Läuft ab in {time}",
       "outcomeExpired": "Abgelaufen — nicht ausgeführt",
       "outcomeDenied": "Abgelehnt",
-      "outcomeApproved": "Genehmigt · Lauf fortgesetzt"
+      "outcomeApproved": "Genehmigt · Lauf fortgesetzt",
+      "target": "Ziel",
+      "access": "Zugriff",
+      "workspace": "Arbeitsbereich",
+      "outcomeUnavailable": "Genehmigung nicht mehr verfügbar"
     },
     "clarify": {
       "needsInput": "Der Agent benötigt eine Eingabe",

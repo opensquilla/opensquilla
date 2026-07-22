@@ -25,6 +25,10 @@ export interface DisplayAttachment {
   size?: number
   data?: string
   dataUrl?: string
+  /** Base64 bytes retained in memory for downloads; never rendered into the DOM. */
+  downloadData?: string
+  /** Original optimistic upload retained in memory so a sent file stays downloadable. */
+  localFile?: File
   download_url?: string
   sha256_ref?: string
 }
@@ -368,6 +372,8 @@ export interface ChatRenderedMessage {
   reasoning?: ChatReasoning
   interrupted?: boolean
   provenanceKind?: string
+  provenanceSourceSessionKey?: string
+  provenanceSourceTool?: string
   daySeparator?: boolean
   dayLabel?: string
   isRouterStrip?: boolean

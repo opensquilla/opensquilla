@@ -15,11 +15,13 @@ const basePath = (() => {
 })()
 
 const platform = getPlatform()
+const NotFoundView = () => import('@/views/NotFoundView.vue')
 
 export const routes: RouteRecordRaw[] = [
   ...sharedRoutes,
   ...(platform.capabilities.hasWebConfig ? webRoutes : []),
   ...(platform.capabilities.hasDesktopOnboarding ? desktopRoutes : []),
+  { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView, meta: { title: 'Not Found', platforms: ['web', 'desktop'] } },
 ]
 
 export const router = createRouter({

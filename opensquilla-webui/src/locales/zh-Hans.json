@@ -81,7 +81,14 @@
     "logs": "日志",
     "settings": "设置",
     "groupBuild": "构建",
-    "groupMonitor": "监控"
+    "groupMonitor": "监控",
+    "not-found": "未找到"
+  },
+  "notFound": {
+    "title": "页面未找到",
+    "body": "此地址不对应任何 OpenSquilla 页面。",
+    "goToChat": "前往对话",
+    "sessions": "会话"
   },
   "chrome": {
     "settings": "设置",
@@ -1092,6 +1099,7 @@
     "refreshing": "正在刷新…",
     "loading": "正在加载会话…",
     "unknownAgent": "未知智能体",
+    "deletedAgent": "已删除的智能体 · {id}",
     "msgCount": "{count} 条消息",
     "error": {
       "load": "无法加载会话。"
@@ -1788,7 +1796,13 @@
     },
     "skillCard": {
       "subSkillsTitle": "此元技能使用的子技能",
-      "uses": "使用"
+      "uses": "使用",
+      "dependencies": "已声明依赖",
+      "pythonCount": "Python 包：{count}",
+      "binaryCount": "二进制依赖：{count}",
+      "envCount": "环境变量：{count}",
+      "missingCount": "缺失依赖：{count}",
+      "advisoryCount": "提示项：{count}"
     },
     "skillDetail": {
       "triggers": "触发条件",
@@ -1803,7 +1817,26 @@
       "loadingContent": "正在加载 SKILL.md...",
       "emptyContent": "没有可用的 SKILL.md 内容。",
       "removing": "移除中...",
-      "remove": "移除"
+      "remove": "移除",
+      "declaredDependencies": "已声明依赖",
+      "pythonPackages": "Python 包",
+      "binaries": "二进制依赖",
+      "environment": "环境变量",
+      "pythonPackage": "Python 包",
+      "binaryAny": "任一二进制依赖",
+      "envAny": "任一环境变量",
+      "noDeclaredDependencies": "未声明依赖。",
+      "advisories": "提示项",
+      "notReadiness": "推断项仅供参考，不参与就绪状态判断。",
+      "inferredPython": "根据 {source} 推断",
+      "inferredEnv": "推断的环境变量",
+      "scanAdvisory": "依赖扫描提示",
+      "subSkillRollup": "元技能依赖汇总",
+      "subSkillStatus": "缺失 {missing} 项 · 提示 {advisory} 项",
+      "missingSubSkill": "引用的子技能不可用",
+      "installUnavailable": "没有与当前缺失依赖匹配的安装方式。",
+      "installIncomplete": "仍有 {count} 项依赖需要处理。",
+      "installComplete": "依赖已就绪。"
     },
     "registry": {
       "searchPlaceholder": "搜索社区技能...",
@@ -2151,6 +2184,9 @@
     "open": "打开",
     "downloadTitle": "下载 {title}",
     "download": "下载",
+    "playAudio": "播放音频",
+    "audioLoadFailed": "无法加载音频。",
+    "audioUnsupported": "此浏览器无法播放这种音频格式，请改为下载文件。",
     "previewOf": "预览：{title}",
     "closePreview": "关闭预览",
     "previousImage": "上一张图片",
@@ -2184,6 +2220,27 @@
     "sandboxPausedResume": "恢复执行",
     "sandboxResumed": "已恢复自动执行。请重新发送你的请求以继续。",
     "sandboxResumeFailed": "无法恢复执行:{error}",
+    "warning": {
+      "default": "智能体报告了一条警告。"
+    },
+    "provenance": {
+      "cron": "定时",
+      "scheduled": "定时任务",
+      "cronSource": "由 {tool} 定时触发"
+    },
+    "sandboxSetup": {
+      "settingUp": "正在设置…",
+      "settingUpTitle": "正在设置 Windows 沙盒",
+      "failedTitle": "Windows 沙盒设置失败",
+      "unavailableTitle": "沙盒设置不可用",
+      "requiredTitle": "需要设置 Windows 沙盒",
+      "settingUpBody": "OpenSquilla 正在准备隔离环境，请稍候。",
+      "failedBody": "无法准备隔离环境，请重试。",
+      "unavailableBody": "当前系统无法设置沙盒，执行模式未发生变化。",
+      "requiredBody": "使用此执行模式前，请先设置 Windows 沙盒。",
+      "retry": "重试",
+      "setup": "设置"
+    },
     "usageDetails": "用量详情",
     "regenerate": "重新生成",
     "forkConversation": "复刻对话",
@@ -2261,7 +2318,11 @@
       "expiresIn": "{time} 后过期",
       "outcomeExpired": "已过期 — 未运行",
       "outcomeDenied": "已拒绝",
-      "outcomeApproved": "已批准 · 已恢复运行"
+      "outcomeApproved": "已批准 · 已恢复运行",
+      "target": "目标",
+      "access": "访问权限",
+      "workspace": "工作区",
+      "outcomeUnavailable": "该审批已不可用"
     },
     "clarify": {
       "needsInput": "智能体需要输入",

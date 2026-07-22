@@ -81,7 +81,14 @@
     "logs": "Journaux",
     "settings": "Paramètres",
     "groupBuild": "Construire",
-    "groupMonitor": "Surveiller"
+    "groupMonitor": "Surveiller",
+    "not-found": "Introuvable"
+  },
+  "notFound": {
+    "title": "Page introuvable",
+    "body": "Cette adresse ne correspond à aucune page OpenSquilla.",
+    "goToChat": "Aller au chat",
+    "sessions": "Sessions"
   },
   "chrome": {
     "settings": "Paramètres",
@@ -1092,6 +1099,7 @@
     "refreshing": "Actualisation…",
     "loading": "Chargement des sessions…",
     "unknownAgent": "Agent inconnu",
+    "deletedAgent": "Agent supprimé · {id}",
     "msgCount": "{count} msg",
     "error": {
       "load": "Impossible de charger les sessions."
@@ -1788,7 +1796,13 @@
     },
     "skillCard": {
       "subSkillsTitle": "Sous-compétences utilisées par cette méta-compétence",
-      "uses": "utilise"
+      "uses": "utilise",
+      "dependencies": "Dépendances déclarées",
+      "pythonCount": "Paquets Python : {count}",
+      "binaryCount": "Binaires : {count}",
+      "envCount": "Variables d’environnement : {count}",
+      "missingCount": "Dépendances manquantes : {count}",
+      "advisoryCount": "Avis : {count}"
     },
     "skillDetail": {
       "triggers": "Déclencheurs",
@@ -1803,7 +1817,26 @@
       "loadingContent": "Chargement de SKILL.md...",
       "emptyContent": "Aucun contenu SKILL.md disponible.",
       "removing": "Suppression...",
-      "remove": "Supprimer"
+      "remove": "Supprimer",
+      "declaredDependencies": "Dépendances déclarées",
+      "pythonPackages": "Paquets Python",
+      "binaries": "Binaires",
+      "environment": "Environnement",
+      "pythonPackage": "Paquet Python",
+      "binaryAny": "Un binaire au choix",
+      "envAny": "Une variable d’environnement au choix",
+      "noDeclaredDependencies": "Aucune dépendance déclarée.",
+      "advisories": "Avis",
+      "notReadiness": "Les éléments déduits sont indicatifs et n’affectent pas l’état de préparation.",
+      "inferredPython": "Déduit de {source}",
+      "inferredEnv": "Variable d’environnement déduite",
+      "scanAdvisory": "Avis de l’analyse des dépendances",
+      "subSkillRollup": "Synthèse des dépendances de méta-compétence",
+      "subSkillStatus": "{missing} manquantes · {advisory} avis",
+      "missingSubSkill": "La sous-compétence référencée est indisponible",
+      "installUnavailable": "Aucun programme d’installation ne correspond aux dépendances manquantes.",
+      "installIncomplete": "{count} dépendances nécessitent encore votre attention.",
+      "installComplete": "Les dépendances sont prêtes."
     },
     "registry": {
       "searchPlaceholder": "Rechercher des compétences communautaires...",
@@ -2151,6 +2184,9 @@
     "open": "Ouvrir",
     "downloadTitle": "Télécharger {title}",
     "download": "Télécharger",
+    "playAudio": "Lire l’audio",
+    "audioLoadFailed": "Impossible de charger l’audio.",
+    "audioUnsupported": "Ce navigateur ne peut pas lire ce format audio. Téléchargez plutôt le fichier.",
     "previewOf": "Aperçu : {title}",
     "closePreview": "Fermer l'aperçu",
     "previousImage": "Image précédente",
@@ -2184,6 +2220,27 @@
     "sandboxPausedResume": "Reprendre l'exécution",
     "sandboxResumed": "Exécution autonome reprise. Renvoyez votre demande pour continuer.",
     "sandboxResumeFailed": "Impossible de reprendre l'exécution : {error}",
+    "warning": {
+      "default": "L’agent a signalé un avertissement."
+    },
+    "provenance": {
+      "cron": "Cron",
+      "scheduled": "Planifié",
+      "cronSource": "Planifié par {tool}"
+    },
+    "sandboxSetup": {
+      "settingUp": "Configuration en cours…",
+      "settingUpTitle": "Configuration de Windows Sandbox",
+      "failedTitle": "Échec de la configuration de Windows Sandbox",
+      "unavailableTitle": "Configuration de la sandbox indisponible",
+      "requiredTitle": "Configuration de Windows Sandbox requise",
+      "settingUpBody": "OpenSquilla prépare l’environnement isolé. Cela peut prendre un moment.",
+      "failedBody": "L’environnement isolé n’a pas pu être préparé. Réessayez lorsque vous êtes prêt.",
+      "unavailableBody": "La configuration de la sandbox est indisponible sur ce système. Votre mode d’exécution n’a pas été modifié.",
+      "requiredBody": "Configurez Windows Sandbox avant d’utiliser ce mode d’exécution.",
+      "retry": "Réessayer",
+      "setup": "Configurer"
+    },
     "usageDetails": "Détails d'utilisation",
     "regenerate": "Régénérer",
     "forkConversation": "Bifurquer la conversation",
@@ -2261,7 +2318,11 @@
       "expiresIn": "Expire dans {time}",
       "outcomeExpired": "Expiré — non exécuté",
       "outcomeDenied": "Refusé",
-      "outcomeApproved": "Approuvé · exécution reprise"
+      "outcomeApproved": "Approuvé · exécution reprise",
+      "target": "Cible",
+      "access": "Accès",
+      "workspace": "Espace de travail",
+      "outcomeUnavailable": "Approbation désormais indisponible"
     },
     "clarify": {
       "needsInput": "L'agent a besoin d'une saisie",

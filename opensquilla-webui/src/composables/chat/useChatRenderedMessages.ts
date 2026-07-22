@@ -259,6 +259,8 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         reasoning: msg.role === 'assistant' ? msg.reasoning : undefined,
         interrupted: msg.interrupted,
         provenanceKind: msg.provenanceKind,
+        provenanceSourceSessionKey: msg.provenanceSourceSessionKey,
+        provenanceSourceTool: msg.provenanceSourceTool,
         stopNotice: msg.stopNotice,
         errorCode: msg.errorCode,
       }

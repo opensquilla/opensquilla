@@ -50,9 +50,10 @@ describe('useChatSessionSubscription', () => {
   it('still clears a stale replay bubble when no interrupt is active', async () => {
     const { api, resetStreamLiveTurnState } = createSubscription(false)
 
-    await api.subscribeSession()
+    const outcome = await api.subscribeSession()
 
     expect(resetStreamLiveTurnState).toHaveBeenCalledOnce()
+    expect(outcome).toEqual({ authoritative: true, live: false, backgroundOnly: false })
   })
 })
 
@@ -64,10 +65,11 @@ describe('useChatSessionSubscription', () => {
       waitForConnection: vi.fn(async () => {}),
       call: <T = unknown>() => snapshot as Promise<T>,
     }
+    const lastStreamSeq = ref(0)
     const subscription = useChatSessionSubscription({
       rpc,
       sessionKey: ref('agent:main:webchat:test'),
-      lastStreamSeq: ref(0),
+      lastStreamSeq,
       runStatus: ref<ChatRunStatus>({ status: 'idle', label: '', task: null }),
       isStreaming: ref(false),
       hasActiveInterrupt: ref(false),
@@ -137,11 +139,96 @@ describe('useChatSessionSubscription', () => {
       resetStreamLiveTurnState: vi.fn(),
     })
 
-    await subscription.subscribeSession()
+    const outcome = await subscription.subscribeSession()
 
     expect(runStatus.value.status).toBe('running')
     expect(startStreaming).toHaveBeenCalledOnce()
     expect(activeStreamTaskId.value).toBe('task-live')
+    expect(outcome).toEqual({ authoritative: true, live: true, backgroundOnly: false })
+  })
+
+  it('reports a failed subscription as non-authoritative', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rpc = {
+      waitForConnection: vi.fn(async () => {}),
+      call: vi.fn().mockRejectedValue(new Error('socket closed')),
+    }
+    const subscription = useChatSessionSubscription({
+      rpc,
+      sessionKey: ref('agent:main:webchat:test'),
+      lastStreamSeq: ref(0),
+      runStatus: ref<ChatRunStatus>({ status: 'idle', label: '', task: null }),
+      isStreaming: ref(false),
+      hasActiveInterrupt: ref(false),
+      activeStreamTaskId: ref(''),
+      activeTaskGroups: ref(new Set<string>()),
+      sessionRunStatus: () => ({ status: 'idle', label: '', task: null }),
+      startStreaming: vi.fn(),
+      loadHistory: vi.fn(),
+      resetStreamIdleTimer: vi.fn(),
+      resetStreamLiveTurnState: vi.fn(),
+    })
+
+    const outcome = await subscription.subscribeSession()
+
+    expect(outcome).toEqual({ authoritative: false, live: false, backgroundOnly: false })
+    warn.mockRestore()
+  })
+
+  it('does not let an older same-session snapshot claim authoritative idle', async () => {
+    const pendingSnapshots: Array<(value: unknown) => void> = []
+    const rpc = {
+      waitForConnection: vi.fn(async () => {}),
+      call: <T = unknown>() => new Promise<T>((resolve) => {
+        pendingSnapshots.push(resolve as (value: unknown) => void)
+      }),
+    }
+    const runStatus = ref<ChatRunStatus>({ status: 'idle', label: '', task: null })
+    const lastStreamSeq = ref(0)
+    const subscription = useChatSessionSubscription({
+      rpc,
+      sessionKey: ref('agent:main:webchat:test'),
+      lastStreamSeq,
+      runStatus,
+      isStreaming: ref(false),
+      hasActiveInterrupt: ref(false),
+      activeStreamTaskId: ref(''),
+      activeTaskGroups: ref(new Set<string>()),
+      sessionRunStatus: source => ({
+        status: String(source?.run_status || 'idle') as ChatRunStatusState,
+        label: '',
+        task: source?.active_task || null,
+      }),
+      startStreaming: vi.fn(),
+      loadHistory: vi.fn(),
+      resetStreamIdleTimer: vi.fn(),
+      resetStreamLiveTurnState: vi.fn(),
+    })
+
+    const older = subscription.subscribeSession()
+    await vi.waitFor(() => expect(pendingSnapshots).toHaveLength(1))
+    lastStreamSeq.value = 1
+    const newer = subscription.subscribeSession()
+    await vi.waitFor(() => expect(pendingSnapshots).toHaveLength(2))
+
+    pendingSnapshots[1]?.({
+      subscribed: true,
+      run_status: 'running',
+      active_task: { task_id: 'task-newer', status: 'running' },
+    })
+    await expect(newer).resolves.toEqual({
+      authoritative: true,
+      live: true,
+      backgroundOnly: false,
+    })
+    pendingSnapshots[0]?.({ subscribed: true, run_status: 'idle' })
+
+    await expect(older).resolves.toEqual({
+      authoritative: false,
+      live: false,
+      backgroundOnly: false,
+    })
+    expect(runStatus.value.status).toBe('running')
   })
 
   it('reconciles stale replayed task groups with an empty authoritative snapshot', async () => {
@@ -218,9 +305,44 @@ describe('useChatSessionSubscription', () => {
       resetStreamLiveTurnState: vi.fn(),
     })
 
-    await subscription.subscribeSession()
+    const outcome = await subscription.subscribeSession()
 
     expect([...activeTaskGroups.value]).toEqual(['group-live'])
     expect(runStatus.value.status).toBe('running')
+    expect(outcome).toEqual({ authoritative: true, live: true, backgroundOnly: true })
+  })
+
+  it('releases pending work when a reconnect later proves the session idle', async () => {
+    const onAuthoritativeIdle = vi.fn()
+    const rpc = {
+      waitForConnection: vi.fn(async () => {}),
+      call: vi.fn()
+        .mockRejectedValueOnce(new Error('socket closed'))
+        .mockResolvedValueOnce({ subscribed: true, run_status: 'idle' }),
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const subscription = useChatSessionSubscription({
+      rpc,
+      sessionKey: ref('agent:main:webchat:test'),
+      lastStreamSeq: ref(0),
+      runStatus: ref<ChatRunStatus>({ status: 'idle', label: '', task: null }),
+      isStreaming: ref(false),
+      hasActiveInterrupt: ref(false),
+      activeStreamTaskId: ref(''),
+      activeTaskGroups: ref(new Set<string>()),
+      sessionRunStatus: () => ({ status: 'idle', label: '', task: null }),
+      startStreaming: vi.fn(),
+      loadHistory: vi.fn(),
+      resetStreamIdleTimer: vi.fn(),
+      resetStreamLiveTurnState: vi.fn(),
+      onAuthoritativeIdle,
+    })
+
+    await subscription.subscribeSession()
+    expect(onAuthoritativeIdle).not.toHaveBeenCalled()
+    await subscription.subscribeSession()
+
+    expect(onAuthoritativeIdle).toHaveBeenCalledOnce()
+    warn.mockRestore()
   })
 })

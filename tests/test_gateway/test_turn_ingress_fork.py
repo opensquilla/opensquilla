@@ -131,18 +131,24 @@ def _table_counts(db_path: Path) -> dict[str, int]:
         connection.close()
 
 
-def _fork_params(fork_before_message_id: str) -> dict[str, str]:
+def _fork_params(
+    fork_before_message_id: str,
+    *,
+    fork_param_name: str = "forkBeforeMessageId",
+) -> dict[str, str]:
     return {
         "sessionKey": PARENT_KEY,
         "message": "B edited",
-        "forkBeforeMessageId": fork_before_message_id,
+        fork_param_name: fork_before_message_id,
         "clientRequestId": CLIENT_REQUEST_ID,
     }
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fork_param_name", ["forkBeforeMessageId", "fork_before_message_id"])
 async def test_chat_send_fork_atomically_accepts_child_prefix_message_task_and_receipt(
     tmp_path: Path,
+    fork_param_name: str,
 ) -> None:
     async with _open_fork_stack(tmp_path / "sessions.db") as stack:
         fork_before_message_id = await _seed_parent(stack)
@@ -150,7 +156,7 @@ async def test_chat_send_fork_atomically_accepts_child_prefix_message_task_and_r
         response = await get_dispatcher().dispatch(
             "rpc-fork-success",
             "chat.send",
-            _fork_params(fork_before_message_id),
+            _fork_params(fork_before_message_id, fork_param_name=fork_param_name),
             stack.context,
         )
         await stack.wait_until_running()
@@ -190,6 +196,7 @@ async def test_chat_send_fork_atomically_accepts_child_prefix_message_task_and_r
             "revision": 1,
         }
         assert child_entries[-1].message_id == response.payload["message_id"]
+        assert response.payload["user_message_id"] == response.payload["message_id"]
         assert response.payload["turn_id"] == response.payload["task_id"]
         assert isinstance(response.payload["client_message_id"], str)
         assert response.payload["client_message_id"]

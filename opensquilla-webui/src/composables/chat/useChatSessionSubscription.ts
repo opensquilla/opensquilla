@@ -27,26 +27,66 @@ export interface UseChatSessionSubscriptionOptions {
   loadHistory: () => void | Promise<void>
   resetStreamIdleTimer: () => void
   resetStreamLiveTurnState: () => void
+  onAuthoritativeIdle?: () => void
 }
 
 const LIVE_RUN_STATES = ['queued', 'running', 'approval_pending']
 
+export interface SessionSubscriptionOutcome {
+  authoritative: boolean
+  live: boolean
+  backgroundOnly: boolean
+}
+
+const UNAVAILABLE_SUBSCRIPTION: SessionSubscriptionOutcome = {
+  authoritative: false,
+  live: false,
+  backgroundOnly: false,
+}
+
 export function useChatSessionSubscription(options: UseChatSessionSubscriptionOptions) {
   const isHydrating = ref(false)
   let subscriptionAttempt = 0
+  let activeSubscription: {
+    key: string
+    sinceStreamSeq: number
+    token: symbol
+    outcome: Promise<SessionSubscriptionOutcome>
+  } | null = null
 
-  async function subscribeSession() {
-    if (!options.sessionKey.value) return
+  function subscribeSession(): Promise<SessionSubscriptionOutcome> {
+    if (!options.sessionKey.value) return Promise.resolve(UNAVAILABLE_SUBSCRIPTION)
     const key = options.sessionKey.value
     const sinceStreamSeq = options.lastStreamSeq.value
+    if (
+      activeSubscription?.key === key
+      && activeSubscription.sinceStreamSeq === sinceStreamSeq
+    ) {
+      return activeSubscription.outcome
+    }
+    const token = Symbol('session-subscription')
+    const outcome = runSubscription(key, sinceStreamSeq, token)
+    activeSubscription = { key, sinceStreamSeq, token, outcome }
+    return outcome
+  }
+
+  async function runSubscription(
+    key: string,
+    sinceStreamSeq: number,
+    token: symbol,
+  ): Promise<SessionSubscriptionOutcome> {
     const attempt = ++subscriptionAttempt
     if (sinceStreamSeq === 0) isHydrating.value = true
     try {
       await options.rpc.waitForConnection()
-      if (key !== options.sessionKey.value) return
+      if (attempt !== subscriptionAttempt || key !== options.sessionKey.value) {
+        return UNAVAILABLE_SUBSCRIPTION
+      }
       const params: SessionMessagesSubscribeParams = { key, since_stream_seq: sinceStreamSeq }
       const res = await options.rpc.call<SessionMessagesSubscribeResponse>('sessions.messages.subscribe', params)
-      if (key !== options.sessionKey.value) return
+      if (attempt !== subscriptionAttempt || key !== options.sessionKey.value) {
+        return UNAVAILABLE_SUBSCRIPTION
+      }
       if (res && res.subscribed === false) throw new Error('No subscription manager available')
       applySessionRunState(res)
       // A pending inline interrupt is newer, stronger evidence than an idle
@@ -94,10 +134,21 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
         options.lastStreamSeq.value = Math.max(options.lastStreamSeq.value, res.current_stream_seq)
       }
       if (options.isStreaming.value) options.resetStreamIdleTimer()
+      const taskOrInterruptLive = liveTaskSnapshot || options.hasActiveInterrupt.value
+      const groupLive = options.activeTaskGroups.value.size > 0
+      const outcome = {
+        authoritative: true,
+        live: taskOrInterruptLive || groupLive,
+        backgroundOnly: groupLive && !taskOrInterruptLive,
+      }
+      if (!outcome.live) options.onAuthoritativeIdle?.()
+      return outcome
     } catch (err: unknown) {
       console.warn('Session stream subscription failed:', err instanceof Error ? err.message : err)
+      return UNAVAILABLE_SUBSCRIPTION
     } finally {
       if (attempt === subscriptionAttempt) isHydrating.value = false
+      if (activeSubscription?.token === token) activeSubscription = null
     }
   }
 

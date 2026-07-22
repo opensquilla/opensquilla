@@ -33,6 +33,7 @@ function createHarness(options: {
     useReducer: ref(false),
   }
   const markEnsembleHandoff = vi.fn()
+  const schedulePendingDrainAfterTerminal = vi.fn()
   const scope = effectScope()
   const api = scope.run(() => useChatRpcEventHandlers({
     sessionKey: ref('agent:main:test'),
@@ -65,7 +66,7 @@ function createHarness(options: {
     handleRouterControlReplay: vi.fn(),
     showCompactionToast: vi.fn(),
     scheduleHistorySync: vi.fn(),
-    schedulePendingDrainAfterTerminal: vi.fn(),
+    schedulePendingDrainAfterTerminal,
     popAllPendingIntoComposer: vi.fn(() => false),
     saveWidgetState: vi.fn(),
     subscribeSession: vi.fn(),
@@ -79,6 +80,7 @@ function createHarness(options: {
     activeTaskGroups,
     applySessionRunState,
     markEnsembleHandoff,
+    schedulePendingDrainAfterTerminal,
     stop: () => scope.stop(),
   }
 }
@@ -133,6 +135,35 @@ describe('useChatRpcEventHandlers task group lifecycle', () => {
 
       expect(activeTaskGroups.value.size).toBe(0)
       expect(stream.endStreaming).toHaveBeenCalled()
+    } finally {
+      stop()
+    }
+  })
+
+  it('releases pending work when the last background-only task group finishes', () => {
+    const {
+      api,
+      activeTaskGroups,
+      stream,
+      schedulePendingDrainAfterTerminal,
+      stop,
+    } = createHarness()
+    stream.isStreaming.value = false
+
+    try {
+      api.handlers.onTaskGroupWaiting({
+        session_key: 'agent:main:test',
+        stream_seq: 1,
+        group_id: 'group-live',
+      })
+      api.handlers.onTaskGroupDone({
+        session_key: 'agent:main:test',
+        stream_seq: 2,
+        group_id: 'group-live',
+      })
+
+      expect(activeTaskGroups.value.size).toBe(0)
+      expect(schedulePendingDrainAfterTerminal).toHaveBeenCalledOnce()
     } finally {
       stop()
     }

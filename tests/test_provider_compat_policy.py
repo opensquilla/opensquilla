@@ -42,7 +42,7 @@ def test_registry_attaches_kind_policy() -> None:
     assert specs["openrouter"].compat.display_name == "OpenRouter"
     assert specs["openrouter"].compat.allow_post_terminal_noop_choice is True
     assert specs["openrouter"].compat.post_terminal_metadata_keys == frozenset(
-        {"provider"}
+        {"openrouter_metadata", "provider"}
     )
     assert specs["volcengine"].compat.tool_schema_unsupported_keywords
     assert specs["vllm"].compat.display_name == "OpenAI"  # kind-aliased to openai

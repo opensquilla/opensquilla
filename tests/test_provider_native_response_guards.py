@@ -259,6 +259,10 @@ def test_openrouter_accepts_structurally_empty_choice_usage_epilogue(
                 "provider": "synthetic-provider",
                 "choices": [terminal_choice],
                 "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                "openrouter_metadata": {
+                    "is_byok": False,
+                    "provider_name": "DeepSeek",
+                },
             },
         ),
     )
@@ -277,6 +281,48 @@ def test_openrouter_accepts_structurally_empty_choice_usage_epilogue(
     assert done[0].stop_reason == "stop"
     assert done[0].input_tokens == 3
     assert done[0].output_tokens == 2
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [None, [], "invalid"],
+    ids=["null", "list", "string"],
+)
+def test_openrouter_rejects_non_object_post_terminal_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: Any,
+) -> None:
+    terminal_choice = {
+        "index": 0,
+        "delta": {"content": "", "role": "assistant"},
+        "finish_reason": "stop",
+        "native_finish_reason": "stop",
+    }
+    _patch_body(
+        monkeypatch,
+        _sse(
+            {
+                "provider": "synthetic-provider",
+                "choices": [terminal_choice],
+            },
+            {
+                "provider": "synthetic-provider",
+                "choices": [terminal_choice],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                "openrouter_metadata": metadata,
+            },
+        ),
+    )
+
+    events = _collect(
+        OpenAIProvider(
+            api_key="test",
+            model="openai/gpt-test",
+            provider_kind="openrouter",
+        )
+    )
+
+    _assert_not_committed(events, "invalid_stream_order")
 
 
 @pytest.mark.parametrize(

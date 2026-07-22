@@ -221,7 +221,9 @@ _POLICIES_BY_KIND: dict[str, OpenAICompatPolicy] = {
         replay_reasoning_format="openrouter",
         disable_reasoning_by_default_models=_OPENROUTER_DISABLE_REASONING_MODELS,
         allow_post_terminal_noop_choice=True,
-        post_terminal_metadata_keys=frozenset({"provider"}),
+        post_terminal_metadata_keys=frozenset(
+            {"openrouter_metadata", "provider"}
+        ),
     ),
     "azure": OpenAICompatPolicy(display_name="Azure OpenAI"),
     "deepseek": OpenAICompatPolicy(

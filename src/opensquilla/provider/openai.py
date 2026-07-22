@@ -182,6 +182,13 @@ def _is_inert_post_terminal_stream_frame(
     if has_usage and not isinstance(chunk["usage"], Mapping):
         return False
 
+    # OpenRouter attaches routing/billing evidence to its final usage trailer.
+    if (
+        "openrouter_metadata" in chunk
+        and not isinstance(chunk["openrouter_metadata"], Mapping)
+    ):
+        return False
+
     if not raw_choices:
         return has_usage
     if not policy.allow_post_terminal_noop_choice or len(raw_choices) != 1:

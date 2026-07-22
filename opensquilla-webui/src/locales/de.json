@@ -165,6 +165,42 @@
       "sidebarWidthCompactStatus": "Das kompakte Layout verwendet {current}px. Deine Desktop-Einstellung von {saved}px bleibt erhalten.",
       "sidebarWidthDrawerStatus": "Das Schubladenlayout verwendet {current}px. Deine Desktop-Einstellung von {saved}px bleibt erhalten."
     },
+    "dataMigration": {
+      "title": "Daten & Sicherungen",
+      "desc": "Daten aus einer anderen OpenSquilla-Installation suchen und prüfen. Erst beim Öffnen dieser Seite wird gescannt; ohne Bestätigung wird nichts geändert.",
+      "refresh": "Erneut suchen",
+      "scanning": "Importierbare OpenSquilla-Daten werden gesucht…",
+      "unsupportedTitle": "OpenSquilla aktualisieren, um Importe zu prüfen",
+      "unsupportedDesc": "Dieses Gateway oder die Desktop-Shell unterstützt die sichere Vorschau-API noch nicht. Aktualisieren Sie den Host und kehren Sie zurück.",
+      "invalidResponse": "Das Gateway hat eine nicht unterstützte Migrationsvorschau geliefert.",
+      "compatibilityTitle": "Speicherort älterer Agent-Daten",
+      "compatibilityDesc": "OpenSquilla verwendet einen kompatiblen älteren Agent-Datenspeicherort. Eine Änderung wechselt Identität und Gedächtnisquelle, verschiebt, vereint oder löscht aber keine Daten.",
+      "chooseLegacyAgentData": "Agent-Datenspeicherort wählen",
+      "recoveryTitle": "Import ist in einem Wiederherstellungsprofil nicht verfügbar",
+      "loadFailed": "OpenSquilla konnte Importquellen nicht prüfen.",
+      "emptyTitle": "Keine weiteren OpenSquilla-Daten gefunden",
+      "emptyDesc": "Sie können später erneut suchen. Desktop kann auch manuell einen Datenordner auswählen.",
+      "chooseSourceDesc": "Prüfen Sie eine Quelle vor dem Import. Quellen bleiben unverändert und werden nie mit aktuellen Daten vereint.",
+      "previewSource": "Daten aus {source} prüfen",
+      "webReadOnly": "Diese Web-Verbindung kann den Import nur prüfen. Schließen Sie ihn in Desktop oder auf dem Gateway-Host ab.",
+      "hostCliHint": "Führen Sie das Migrationswerkzeug auf dem Gateway-Host aus. In diesem Browser wird kein Serverpfad angezeigt.",
+      "blockers": {
+        "source_in_use": "Die Quelle wird derzeit verwendet.",
+        "source_schema_newer": "Die Quelle wurde mit einer neueren OpenSquilla-Version erstellt.",
+        "source_database_invalid": "Die Quelldatenbank konnte nicht geprüft werden.",
+        "source_config_invalid": "Die Quellkonfiguration konnte nicht geprüft werden.",
+        "source_unreadable": "Die Quelle konnte nicht sicher gelesen werden.",
+        "insufficient_disk": "Es ist nicht genügend Speicherplatz verfügbar.",
+        "target_recovery_required": "Die aktuellen Daten müssen vor dem Import wiederhergestellt werden.",
+        "target_not_replaceable": "Die aktuellen Daten können nicht sicher ersetzt werden.",
+        "preview_unavailable": "Für diese Quelle ist keine sichere Vorschau verfügbar."
+      },
+      "notices": {
+        "whole_profile_replacement": "Das aktuelle Profil wird vollständig gesichert und ersetzt; Daten werden nicht vereint.",
+        "previously_imported": "Diese Quelle wurde bereits importiert und kann weiterhin geprüft werden.",
+        "scheduled_jobs_will_be_paused": "Importierte geplante Aufgaben bleiben bis zur Prüfung pausiert."
+      }
+    },
     "dialog": {
       "title": "Einstellungen",
       "actionNeeded": "Aktion erforderlich ({count})",
@@ -1016,6 +1052,10 @@
       "agentConfigLabel": "Agent-Konfiguration (erweitert)",
       "agentConfigDesc": "Vorhandene Agent-Konfigurationen verwalten. Dieser Bereich wird bei einer künftigen Multi-Agent-Überarbeitung angepasst.",
       "agentConfigAction": "Öffnen",
+      "dataMaintenanceLabel": "Datenpflege",
+      "dataMaintenanceDesc": "Importe und Sicherungen prüfen. Auf dem Desktop können lokale Profildaten auch zurückgesetzt oder gelöscht werden.",
+      "dataMaintenanceAction": "Verwalten",
+      "dataMaintenanceAria": "Datenpflege öffnen",
       "runTraceLabel": "Run-Trace-Schublade in Protokollen",
       "runTraceDesc": "Macht Protokollzeilen interaktiv und öffnet eine zeilenweise Detailschublade für Knotenschritte in der Protokollansicht.",
       "runTraceAria": "Run-Trace-Schublade in Protokollen (wird nach dem Neuladen wirksam)"
@@ -2985,14 +3025,6 @@
       "hint": "Das Gateway ist noch nicht einsatzbereit.",
       "finishSetup": "Einrichtung abschließen",
       "viewReadiness": "Bereitschaft anzeigen"
-    },
-    "legacyDataBanner": {
-      "ariaLabel": "Eine weitere OpenSquilla-Installation wurde gefunden",
-      "title": "Eine weitere OpenSquilla-Installation wurde gefunden",
-      "dismiss": "Nicht jetzt",
-      "dismissNotice": "Hinweis zur Datenübertragung schließen",
-      "hintWeb": "Ihre aktuellen Daten werden bereits verwendet; es ist keine Aktion nötig. Zum Ersetzen durch die andere Installation stoppen Sie das Gateway und führen Sie aus:",
-      "copyCommand": "Befehl zur Datenübertragung kopieren"
     },
     "shortcuts": {
       "toggleSidebar": {

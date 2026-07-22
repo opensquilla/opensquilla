@@ -1543,7 +1543,12 @@ def test_desktop_native_artifact_open_allows_active_documents_with_file_extensio
 
 def test_desktop_cleanup_does_not_claim_os_app_uninstall() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
-    panel_vue = _read("opensquilla-webui/src/components/settings/DesktopRuntimePanel.vue")
+    runtime_panel_vue = _read(
+        "opensquilla-webui/src/components/settings/DesktopRuntimePanel.vue"
+    )
+    maintenance_panel_vue = _read(
+        "opensquilla-webui/src/components/settings/DataMigrationPanel.vue"
+    )
     en_locale = json.loads(_read("opensquilla-webui/src/locales/en.json"))
     zh_locale = json.loads(_read("opensquilla-webui/src/locales/zh-Hans.json"))
 
@@ -1564,7 +1569,8 @@ def test_desktop_cleanup_does_not_claim_os_app_uninstall() -> None:
     assert "OPENSQUILLA_INSTALL_METHOD: 'desktop'" in child_environment
     assert "OPENSQUILLA_STATE_DIR: profile.home" in child_environment
     assert "installed app itself will remain" in main_ts
-    assert "setup.runtime.cleanup.label" in panel_vue
+    assert "setup.runtime.cleanup.label" not in runtime_panel_vue
+    assert "setup.runtime.cleanup.label" in maintenance_panel_vue
 
     en_runtime = en_locale["setup"]["runtime"]
     zh_runtime = zh_locale["setup"]["runtime"]
@@ -1961,47 +1967,36 @@ def test_python_recovery_engine_replaces_typescript_layout_relocation() -> None:
     assert "inspection.outcome !== 'recovery_required'" in inspect
 
 
-def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config() -> None:
+def test_attention_is_settings_only_without_native_prompt_or_acknowledgement_consumption() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
-    browse = _section(
+    context_ts = _read("desktop/electron/src/desktop-profile-context.ts")
+    inspect = _section(
         main_ts,
-        "ipcMain.handle('desktop:onboarding:migrate:browse'",
-        "ipcMain.handle('desktop:onboarding:migrate:select'",
+        "async function inspectActiveProfileBeforeStartup",
+        "async function openOrResumeDesktopApp",
     )
-    preview = _section(
-        main_ts,
-        "ipcMain.handle('desktop:onboarding:migrate:preview'",
-        "ipcMain.handle('desktop:onboarding:migrate:apply'",
-    )
-    apply_handler = _section(
-        main_ts,
-        "ipcMain.handle('desktop:onboarding:migrate:apply'",
-        "// Keep the normal app-quit gateway drain single-flight.",
-    )
+    resume = _section(main_ts, "async function openOrResumeDesktopApp", "function stopGateway")
 
-    # Same trust boundary as desktop:onboarding:save: the preload bridge is also
-    # attached to the Control UI window, so both handlers must refuse outside an
-    # awaiting onboarding flow, and must take source path/kind from the main
-    # process's own detection rather than the renderer payload.
-    for handler in (preview, apply_handler):
-        assert "!resolveOnboarding || !trustedOnboardingIpc(event)" in handler
-        assert "onboardingPortableTransferError()" in handler
-        assert "onboardingMigrationCandidate" in handler
-        assert "candidate.kind !== 'windows-portable'" in handler
-        assert "'--source', candidate.path, '--kind', candidate.kind" in handler
-        assert "migrateSummaryJson([" in handler
-    assert "'--apply'" not in preview
-    assert "'--apply'," in apply_handler
-    assert "'--replace-target'" not in apply_handler
-    assert "'--confirm-replace-target'" not in apply_handler
-    assert "findAppliedReceiptForIntent(" in apply_handler
-    assert "migrationProviderPrefill(intent)" in apply_handler
-    assert "prepareImportedCredentialBackup(intent)" in apply_handler
-    assert "prefill" in apply_handler
+    assert "showAttentionPrompt" not in main_ts
+    assert "attentionPromptInFlight" not in main_ts
+    assert "attentionAcknowledgementFor" not in main_ts
+    assert "persistAttentionAcknowledgement" not in main_ts
+    assert "provenLegacyAttention" not in inspect
+    assert "inspection.outcome !== 'recovery_required'" in inspect
+    assert "recoveryInspection?.outcome === 'attention'" not in resume
+    assert "parseAttentionAcknowledgement(parsed.attention_acknowledgement)" in context_ts
+    assert "current.persisted.attention_acknowledgement" in main_ts
 
-    # First-run detection is a Windows Portable-only upgrade path. CLI and other
-    # Desktop homes remain explicit Settings actions.
+
+def test_profile_import_is_settings_only_and_windows_portable_remains_discoverable() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
     onboarding = _section(main_ts, "async function runOnboarding", "async function pathExists")
+    onboarding_html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
+    settings_summary = _section(
+        main_ts,
+        "ipcMain.handle('desktop:migration:summary'",
+        "ipcMain.handle('desktop:migration:run'",
+    )
     portable_detection = _section(
         main_ts,
         "function detectWindowsPortableImportCandidates",
@@ -2023,18 +2018,12 @@ def test_onboarding_migration_ipc_is_guarded_and_prefills_from_imported_config()
     assert "'windows-portable'" in portable_detection
     assert "homedir()" not in portable_detection
     assert "manuallyApprovedMigrationCandidates" not in portable_detection
-    assert "legacyImportCandidate('windows-portable', path)" in browse
-    assert "parseMigrationSourceKind" not in browse
-    assert "manuallyApprovedMigrationCandidates" not in browse
-    assert "isProvenFreshPrimaryDesktopProfile(onboardingDataInput)" in onboarding
-    assert "classifyDesktopOnboardingDataFlow" in onboarding
-    assert "onboardingDataFlow === 'portable-transfer'" in onboarding
-    assert "enrichLegacyImportCandidates(detectWindowsPortableImportCandidates())" in onboarding
-    assert "candidateKinds: detectedCandidates.map((candidate) => candidate.kind)" in onboarding
-    assert onboarding.index("detectWindowsPortableImportCandidates()") < onboarding.index(
-        "new BrowserWindow"
-    )
-    assert "onboardingDataFlow === 'portable-transfer'," in onboarding
+    assert "detectLegacyImportCandidates()" in settings_summary
+    assert "detectWindowsPortableImportCandidates()" not in onboarding
+    assert "desktop:onboarding:migrate:" not in main_ts
+    assert "migrationStepEnabled" not in onboarding_html
+    assert 'data-screen="5"' not in onboarding_html
+    assert "portable-transfer" not in main_ts
 
 
 def test_run_migrate_cli_targets_desktop_home_via_bundled_cli() -> None:
@@ -2227,19 +2216,12 @@ def test_complete_profile_import_holds_exclusive_writer_admission_through_reconc
         "ipcMain.handle('desktop:migration:run'",
         "ipcMain.handle('desktop:migration:last-result'",
     )
-    onboarding_run = _section(
-        main_ts,
-        "ipcMain.handle('desktop:onboarding:migrate:apply'",
-        "// Keep the normal app-quit gateway drain single-flight.",
-    )
-
-    for handler in (settings_run, onboarding_run):
-        assert "desktopWriters.tryBeginExclusive" in handler
-        assert "await waitForDesktopWriterOperations(1)" in handler
-        assert "exclusive.finish()" in handler
-        assert "desktopWriters.reopen(exclusive.admissionToken)" in handler
-        assert handler.index("tryBeginExclusive") < handler.index("'--apply'")
-        assert handler.index("'--apply'") < handler.index("exclusive.finish()")
+    assert "desktopWriters.tryBeginExclusive" in settings_run
+    assert "await waitForDesktopWriterOperations(1)" in settings_run
+    assert "exclusive.finish()" in settings_run
+    assert "desktopWriters.reopen(exclusive.admissionToken)" in settings_run
+    assert settings_run.index("tryBeginExclusive") < settings_run.index("'--apply'")
+    assert settings_run.index("'--apply'") < settings_run.index("exclusive.finish()")
 
     assert "reconcileImportedDesktopCredential(intent, true)" in settings_run
     save_credential = _section(
@@ -2258,21 +2240,11 @@ def test_desktop_migration_writes_reconciliation_intent_before_apply() -> None:
         "ipcMain.handle('desktop:migration:run'",
         "ipcMain.handle('desktop:migration:last-result'",
     )
-    onboarding_apply = _section(
-        main_ts,
-        "ipcMain.handle('desktop:onboarding:migrate:apply'",
-        "// Keep the normal app-quit gateway drain single-flight.",
+    assert "beginMigrationReconciliationIntent(candidate)" in run
+    assert run.index("beginMigrationReconciliationIntent(candidate)") < run.index(
+        "await runMigrateCli(["
     )
-
-    for handler, invocation in (
-        (run, "await runMigrateCli(["),
-        (onboarding_apply, "migrateSummaryJson(["),
-    ):
-        assert "beginMigrationReconciliationIntent(candidate)" in handler
-        assert handler.index("beginMigrationReconciliationIntent(candidate)") < handler.index(
-            invocation
-        )
-        assert "findAppliedReceiptForIntent(" in handler
+    assert "findAppliedReceiptForIntent(" in run
 
 
 def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
@@ -2297,8 +2269,8 @@ def test_settings_import_reconciles_or_prompts_for_imported_provider() -> None:
     assert "readImportedProviderKey" not in main_ts
     assert "apiKey: ''" in main_ts
     assert "onboardingHtml(" in onboarding
-    assert "onboardingMigrationCandidates," in onboarding
     assert "pendingProviderSetup," in onboarding
+    assert "onboardingMigrationCandidates" not in onboarding
     assert "desktopSecretStoragePolicyBackend() === 'safeStorage'" in onboarding
 
     reconcile = _section(
@@ -2367,48 +2339,14 @@ def test_invalid_desktop_credential_fails_closed_instead_of_reonboarding() -> No
     assert "catch {\n    return null" not in load
 
 
-def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
+def test_settings_migration_confirmation_keys_exist_without_onboarding_or_attention_copy() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     desktop_catalog = _section(
         main_ts,
         "const DESKTOP_MESSAGES: Record<DesktopLocale, Record<string, string>> = {",
         "// Runtime string bag",
     )
-    script_catalog = _section(
-        main_ts,
-        "const ONBOARDING_SCRIPT_MESSAGES",
-        "function desktopT",
-    )
-
     desktop_keys = [
-        "attention.title",
-        "attention.message",
-        "attention.detail",
-        "attention.currentWorkspace",
-        "attention.otherWorkspace",
-        "attention.later",
-        "attention.keepCurrent",
-        "attention.chooseWorkspace",
-        "migration.nav.title",
-        "migration.nav.sub",
-        "migration.step.badge",
-        "migration.step.heading",
-        "migration.step.subtitle",
-        "migration.step.assurance",
-        "migration.step.sourceLabel",
-        "migration.step.selectionHint",
-        "migration.step.candidateVersion",
-        "migration.step.candidateSessions",
-        "migration.step.candidateActivity",
-        "migration.step.manualTypeLabel",
-        "migration.step.manualTypePlaceholder",
-        "migration.source.cli",
-        "migration.source.desktop",
-        "migration.source.portable",
-        "migration.step.browse",
-        "migration.step.preview",
-        "migration.step.import",
-        "migration.step.skip",
         "migration.overwriteTitle",
         "migration.overwriteMessage",
         "migration.overwriteDetail",
@@ -2420,55 +2358,25 @@ def test_migration_locale_keys_exist_in_all_six_locale_blocks() -> None:
     ]
     for key in desktop_keys:
         assert desktop_catalog.count(f"'{key}':") == 6, key
-
-    script_keys = [
-        "migrationPreviewRunning",
-        "migrationApplyRunning",
-        "migrationReady",
-        "migrationSkippedDetails",
-        "migrationTechnicalDetails",
-        "migrationPausedJobs",
-        "migrationDisk",
-        "migrationNotesLabel",
-        "migrationPreviewFailed",
-        "migrationApplyFailed",
-        "migrationDone",
-    ]
-    for key in script_keys:
-        assert script_catalog.count(f"{key}:") == 6, key
+    assert "'attention." not in desktop_catalog
+    assert "'migration.nav." not in desktop_catalog
+    assert "'migration.step." not in desktop_catalog
+    assert "migrationPreviewRunning:" not in main_ts
 
 
-def test_onboarding_route_prepends_portable_copy_only_when_policy_allows() -> None:
+def test_onboarding_route_never_contains_profile_migration() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
     html = _section(main_ts, "function onboardingHtml", "async function runOnboarding")
     route = _section(html, "function routeSteps()", "function routePosition")
 
-    # Only policy-approved Portable candidates are JSON-injected; the optional
-    # copy step (screen 5) leads the route only then.
-    assert "detections: LegacyImportCandidate[] = []" in html
-    assert "portableTransferEnabled = false" in html
-    assert "detections.every((candidate) => candidate.kind === 'windows-portable')" in html
-    assert "const migrationCandidates = ${inlineScriptJson(detections)};" in html
     assert "const initialProviderPrefill = ${inlineScriptJson(pendingProviderSetup)};" in html
-    assert "let migrationCandidate = null;" in html
-    assert 'id="migrationCandidateList"' in html
-    assert 'id="migrationSelectionHint"' in html
-    assert 'id="migrationSource" type="hidden"' in html
-    assert 'id="migrationSourceKind"' not in html
-    assert "browseOnboardingMigration();" in html
-    assert "candidate.session_count !== null" in html
-    assert "candidate.session_count !== undefined" in html
-    assert "const hasDiskEstimate = Number.isFinite(diskRequired) && diskRequired >= 0" in html
-    assert "...(hasDiskEstimate ? [fmt('migrationDisk'" in html
-    assert "migration.source.cli" not in _section(
-        html,
-        '${migrationStepEnabled ? `<section class="setup-card active" data-screen="5">',
-        "<section class=\"setup-card${migrationStepEnabled ? '' : ' active'}\" data-screen=\"0\">",
-    )
-    assert "return migrationStepEnabled ? [5, ...base] : base;" in route
-    assert 'data-screen="5"' in html
-    assert 'data-step-label="5"' in html
-    assert "let step = ${migrationStepEnabled ? 5 : 0};" in html
+    assert "let step = 0;" in html
+    assert "return isSimpleSetup()" in route
+    assert "migrationStepEnabled" not in html
+    assert "migrationCandidates" not in html
+    assert "OnboardingMigration" not in html
+    assert 'data-screen="5"' not in html
+    assert 'data-step-label="5"' not in html
 
 
 def test_onboarding_inline_json_escapes_script_terminators_and_line_separators() -> None:
@@ -2490,8 +2398,6 @@ def test_onboarding_inline_json_escapes_script_terminators_and_line_separators()
         "SEARCH_PROVIDER_CATALOG",
         "ROUTER_PROFILES",
         "TEXT_ROUTER_TIERS",
-        "detections",
-        "migrationStepEnabled",
         "pendingProviderSetup",
     ):
         assert f"${{inlineScriptJson({value})}}" in html
@@ -2510,10 +2416,9 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
     assert "'desktop:migration:peek-last-result'" in preload
     assert "'desktop:migration:dismiss-last-result'" in preload
     assert "'desktop:migration:browse-source'" in preload
-    assert "'desktop:onboarding:migrate:select'" in preload
-    assert "'desktop:onboarding:migrate:browse'" in preload
-    assert "'desktop:onboarding:migrate:preview'" in preload
-    assert "'desktop:onboarding:migrate:apply'" in preload
+    assert "'desktop:onboarding:migrate:" not in preload
+    assert "chooseLegacyAgentDataLocation" in preload
+    assert "'desktop:recovery:choose-legacy-agent-data'" in preload
     assert "onMigrationProgress" in preload
     assert "'desktop:migration:progress'" in preload
 
@@ -2528,6 +2433,18 @@ def test_migration_preload_bridge_and_progress_channel() -> None:
     assert "source_snapshot_unreadable" in main_ts
     assert "gateway_restart_failed" in main_ts
     assert "result.stderr || result.stdout" not in main_ts
+
+    legacy_choice = _section(
+        main_ts,
+        "ipcMain.handle('desktop:recovery:choose-legacy-agent-data'",
+        "ipcMain.handle('desktop:recovery:recover-transaction'",
+    )
+    assert "trustedControlUiIpc(event)" in legacy_choice
+    assert "activeDesktopProfile().kind !== 'primary'" in legacy_choice
+    assert "inspection?.outcome !== 'attention'" in legacy_choice
+    assert "workspace_conflict" in legacy_choice
+    assert "choosePrimaryWorkspace(" in legacy_choice
+    assert "'legacy-agent-data'" in legacy_choice
 
 
 def test_compiled_electron_flows_preserve_xvfb_display_authority() -> None:

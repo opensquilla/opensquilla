@@ -110,77 +110,23 @@ describe('DesktopRuntimePanel runtime restart', () => {
     app.unmount()
   })
 
-  it('keeps a migration restart failure visible when the desktop retry is rejected', async () => {
-    const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
-    const retryStartup = vi.fn(async () => ({
+  it('does not read or render migration state in the runtime panel', async () => {
+    const migrationPeekLastResult = vi.fn(async () => ({
       ok: false,
-      error: 'The previous gateway is still shutting down.',
+      migrationApplied: true,
+      restartOk: false,
+      failureCode: 'gateway_restart_failed',
+      failureStage: 'restart',
     }))
     const { app, el } = await mountPanel(desktopApi({
-      getDesktopProfileKind: async () => 'primary',
-      retryStartup,
-      migrationPeekLastResult: async () => ({
-        ok: false,
-        migrationApplied: true,
-        restartOk: false,
-        failureCode: 'gateway_restart_failed',
-        failureStage: 'restart',
-      }),
-      migrationDismissLastResult,
+      migrationPeekLastResult,
       migrationSummary: async () => ({ ok: true }),
       migrationRun: async () => ({ ok: true }),
     }))
 
-    const restart = el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-restart"]')
-    expect(restart).toBeTruthy()
-    restart!.click()
-    await settle()
-
-    expect(retryStartup).toHaveBeenCalledTimes(1)
-    expect(migrationDismissLastResult).not.toHaveBeenCalled()
-    expect(el.querySelector('[data-testid="runtime-migration-applied-restart-failed"]'))
-      .toBeTruthy()
-    app.unmount()
-  })
-
-  it('keeps a migration restart failure visible when refreshed status cannot be read', async () => {
-    const migrationDismissLastResult = vi.fn(async () => ({ ok: true }))
-    const retryStartup = vi.fn(async () => ({ ok: true }))
-    const getGatewayStatus = vi.fn()
-      .mockResolvedValueOnce({
-        url: 'http://127.0.0.1:1',
-        port: 1,
-        owned: true,
-        status: 'ready' as const,
-        logPath: '',
-      })
-      .mockRejectedValueOnce(new Error('status unavailable'))
-    const { app, el } = await mountPanel(desktopApi({
-      getGatewayStatus,
-      getDesktopProfileKind: async () => 'primary',
-      retryStartup,
-      migrationPeekLastResult: async () => ({
-        ok: false,
-        migrationApplied: true,
-        restartOk: false,
-        failureCode: 'gateway_restart_failed',
-        failureStage: 'restart',
-      }),
-      migrationDismissLastResult,
-      migrationSummary: async () => ({ ok: true }),
-      migrationRun: async () => ({ ok: true }),
-    }))
-
-    const restart = el.querySelector<HTMLButtonElement>('[data-testid="runtime-migration-restart"]')
-    expect(restart).toBeTruthy()
-    restart!.click()
-    await settle()
-
-    expect(retryStartup).toHaveBeenCalledTimes(1)
-    expect(getGatewayStatus).toHaveBeenCalledTimes(2)
-    expect(migrationDismissLastResult).not.toHaveBeenCalled()
-    expect(el.querySelector('[data-testid="runtime-migration-applied-restart-failed"]'))
-      .toBeTruthy()
+    expect(migrationPeekLastResult).not.toHaveBeenCalled()
+    expect(el.querySelector('[data-testid="runtime-migration-restart"]')).toBeNull()
+    expect(el.textContent).not.toContain('Data transfer')
     app.unmount()
   })
 })

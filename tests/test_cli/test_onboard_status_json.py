@@ -134,6 +134,7 @@ def test_status_json_new_keys_carry_the_expected_values(tmp_path, monkeypatch):
     assert payload["channelsConfigured"] is False
     assert isinstance(payload["ensembleCredentialStatus"], list)
     assert isinstance(payload["warnings"], list)
+    assert payload["legacyData"] is None
 
 
 def test_status_json_command_field_is_bare_on_posix(tmp_path, monkeypatch):

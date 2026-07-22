@@ -45,6 +45,64 @@ export interface DiagnosticReportLike {
   findings?: DiagnosticFindingLike[]
 }
 
+const LEGACY_MIGRATION_FINDING_ID = 'migration.legacy_home_detected'
+
+/**
+ * New gateways no longer publish optional legacy-home discovery through
+ * Doctor. Filter the old finding client-side as well so a new UI connected to
+ * an older gateway keeps migration strictly inside Data & backups.
+ */
+export function withoutLegacyMigrationFinding<T extends DiagnosticReportLike>(report: T): T {
+  const findings = Array.isArray(report.findings) ? report.findings : []
+  const removed = findings.filter(finding => finding?.id === LEGACY_MIGRATION_FINDING_ID)
+  if (removed.length === 0) return report
+
+  const filtered = findings.filter(finding => finding?.id !== LEGACY_MIGRATION_FINDING_ID)
+  const counts: Record<string, number> = { error: 0, warn: 0, info: 0, ok: 0 }
+  const impactCounts: Record<string, number> = {
+    blocks_ready: 0,
+    degrades: 0,
+    optional: 0,
+    none: 0,
+  }
+  const defaultImpact: Record<string, string> = {
+    error: 'blocks_ready',
+    warn: 'degrades',
+    info: 'optional',
+    ok: 'none',
+  }
+  for (const finding of filtered) {
+    const severity = String(finding.severity || '')
+    const impact = String(finding.readinessImpact || defaultImpact[severity] || '')
+    if (severity in counts) counts[severity] += 1
+    if (impact in impactCounts) impactCounts[impact] += 1
+  }
+  const blocks = impactCounts.blocks_ready
+  const degrades = impactCounts.degrades
+  const optional = impactCounts.optional
+  const status = blocks > 0 ? 'action_required' : degrades > 0 ? 'degraded' : 'ready'
+  const summaryParts: string[] = []
+  if (blocks > 0) summaryParts.push(`${blocks} ${blocks === 1 ? 'action' : 'actions'} required`)
+  if (degrades > 0) {
+    const degraded = `${degrades} degraded ${degrades === 1 ? 'check' : 'checks'}`
+    summaryParts.push(blocks > 0 ? degraded : `Ready, ${degraded}`)
+  }
+  const summary = summaryParts.length > 0
+    ? summaryParts.join(', ')
+    : optional > 0
+      ? `Ready, ${optional} optional setup ${optional === 1 ? 'item' : 'items'}`
+      : 'Ready'
+  return {
+    ...report,
+    status,
+    ready: blocks === 0,
+    summary,
+    findings: filtered,
+    counts,
+    impactCounts,
+  }
+}
+
 // A home directory embedded in serialized diagnostics leaks the local account
 // name. Collapse `/Users/<name>/` (macOS) and `/home/<name>/` (Linux) to `~/`.
 // The username segment excludes `/`, `"` and `\` so the match never crosses a
@@ -83,7 +141,7 @@ const PROVIDER_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 // settings section get a deep link; everything else renders no link at all.
 export function settingsLinkForFinding(
   finding: DiagnosticFindingLike | undefined | null,
-  context?: FindingSettingsContext,
+  _context?: FindingSettingsContext,
 ): FindingSettingsLink | null {
   const surface = String(finding?.surface || '')
   if (surface === 'provider') {
@@ -112,13 +170,6 @@ export function settingsLinkForFinding(
   }
   if (surface === 'image_generation' || surface === 'search' || surface === 'memory_embedding') {
     return { path: '/settings/capabilities' }
-  }
-  if (
-    surface === 'migration'
-    && context?.isDesktop
-    && context.ownsGatewayConnection
-  ) {
-    return { path: '/settings/runtime' }
   }
   return null
 }
@@ -159,12 +210,13 @@ export function buildAgentDiagnosisHandoff(
   report: DiagnosticReportLike,
   input: AgentDiagnosisContextInput,
 ) {
+  const visibleReport = withoutLegacyMigrationFinding(report)
   const ownsCurrentGateway = input.ownsGateway && input.ownsGatewayConnection
   const settingsContext: FindingSettingsContext = {
     isDesktop: input.platform === 'desktop',
     ownsGatewayConnection: ownsCurrentGateway,
   }
-  const settingsRemediations = (report.findings || []).flatMap((finding) => {
+  const settingsRemediations = (visibleReport.findings || []).flatMap((finding) => {
     const link = settingsLinkForFinding(finding, settingsContext)
     if (!link) return []
     return [{
@@ -200,8 +252,8 @@ export function buildAgentDiagnosisHandoff(
       },
     },
     report: input.hasTerminalWorkflow
-      ? report
-      : stripCommandFields(report) as DiagnosticReportLike,
+      ? visibleReport
+      : stripCommandFields(visibleReport) as DiagnosticReportLike,
   }
 }
 

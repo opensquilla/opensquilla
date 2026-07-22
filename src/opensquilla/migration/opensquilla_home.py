@@ -2429,8 +2429,13 @@ def enumerate_portable_homes(
     return candidates
 
 
-def detect_desktop_home() -> Path | None:
-    """Return the platform Electron userData home for OpenSquilla, if distinct."""
+def detect_desktop_home(target: Path | None = None) -> Path | None:
+    """Return the platform Electron home when distinct from ``target``.
+
+    ``target`` defaults to the ambient active home for legacy CLI callers.
+    Gateway discovery supplies its config-derived profile home explicitly so a
+    shell environment cannot hide or misclassify the Desktop source.
+    """
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support" / "OpenSquilla"
     elif sys.platform == "win32":  # pragma: no cover - Windows-only path
@@ -2444,7 +2449,8 @@ def detect_desktop_home() -> Path | None:
     candidate = base / "opensquilla"
     if not is_valid_opensquilla_home(candidate):
         return None
-    if _same_path(candidate, default_opensquilla_home()):
+    comparison_target = target or default_opensquilla_home()
+    if _same_path(candidate, comparison_target):
         return None
     return candidate
 
@@ -3053,6 +3059,9 @@ class OpenSquillaMigrationOptions:
     overwrite: bool = False
     #: Test override for the target home; defaults to the active home.
     target: Path | str | None = None
+    #: Internal settings-preview capability. It permits a dry-run to inspect
+    #: the active target while its gateway is running; apply must never use it.
+    allow_running_target_preview: bool = False
 
 
 class OpenSquillaHomeMigrator:
@@ -3122,7 +3131,23 @@ class OpenSquillaHomeMigrator:
     # Entry point
     # ------------------------------------------------------------------
 
+    @property
+    def target_had_real_data(self) -> bool:
+        """Whether pre-flight classified the target as an established profile."""
+
+        return self._target_had_real_data
+
     def migrate(self) -> dict[str, Any]:
+        if self.options.apply and self.options.allow_running_target_preview:
+            self._record(
+                "options",
+                None,
+                self.target,
+                "error",
+                "allow_running_target_preview is valid for dry-run only",
+            )
+            self._blocked = True
+            return self._report()
         if self.kind not in OPENSQUILLA_SOURCE_KINDS:
             self._record(
                 "options",
@@ -3686,7 +3711,7 @@ class OpenSquillaHomeMigrator:
                 "a gateway is running on the source home; stop it and re-run",
             )
             self._blocked = True
-        if target_running:
+        if target_running and not self.options.allow_running_target_preview:
             self._record(
                 "preflight/gateway",
                 self.target,
@@ -3695,7 +3720,15 @@ class OpenSquillaHomeMigrator:
                 "a gateway is running on the target home; stop it and re-run",
             )
             self._blocked = True
-        if not source_running and not target_running:
+        if target_running and self.options.allow_running_target_preview:
+            self._record(
+                "preflight/gateway",
+                self.target,
+                self.target,
+                "skipped",
+                "the active target gateway is allowed for this read-only preview",
+            )
+        elif not source_running and not target_running:
             self._record(
                 "preflight/gateway",
                 source,

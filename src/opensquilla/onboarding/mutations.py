@@ -1082,7 +1082,10 @@ def upsert_llm_ensemble(
     new_cfg = _clone(config)
     new_cfg.llm_ensemble = new_ensemble
     routing_changes: dict[str, Any] = {}
-    if enabled is not None:
+    enabled_changed = enabled is not None and bool(enabled) != bool(
+        current.get("enabled", False)
+    )
+    if enabled_changed:
         routing_changes = apply_model_routing_mode(
             new_cfg,
             "ensemble" if new_ensemble.enabled else "direct",
@@ -1095,6 +1098,10 @@ def upsert_llm_ensemble(
             new_cfg,
             {"llm_ensemble.selection_mode"},
         )
+    # A value-identical ``enabled`` re-assertion (e.g. `configure ensemble
+    # --disabled` run twice, or a settings form that always sends the flag)
+    # is not a mode selection: reapplying the mode patch would disable an
+    # active Router and reset an advanced rollout_phase to its derived value.
     if enabled is not None:
         # An explicit enabled/disabled decision must be visible in the file
         # even when it equals the model default — otherwise a headless

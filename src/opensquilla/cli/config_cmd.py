@@ -80,7 +80,7 @@ def config_set(
             reconcile_model_routing_write,
         )
 
-        reconcile_model_routing_write(updated, {key})
+        reconcile_model_routing_write(updated, {key}, previous=cfg)
         persist = persist_config(updated, path=config_path, restart_required=True)
         console.print(f"[{ACCENT_MARKUP}]Config:[/] {persist.path}")
         if persist.backup_path:

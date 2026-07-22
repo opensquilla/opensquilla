@@ -699,7 +699,9 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
-    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    routing_changes = reconcile_model_routing_write(
+        new_config, explicit_paths, previous=ctx.config
+    )
     if routing_changes:
         routing_paths = set(routing_changes)
         explicit_paths.update(routing_paths)
@@ -825,7 +827,9 @@ async def _handle_config_patch(
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
-    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    routing_changes = reconcile_model_routing_write(
+        new_config, explicit_paths, previous=ctx.config
+    )
     if routing_changes:
         routing_paths = set(routing_changes)
         explicit_paths.update(routing_paths)

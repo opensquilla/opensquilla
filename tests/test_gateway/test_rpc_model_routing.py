@@ -466,6 +466,126 @@ async def test_legacy_safe_patch_ensemble_enable_repairs_router_dependency_once(
     assert reloaded.squilla_router.rollout_phase == "full"
 
 
+async def test_reasserting_ensemble_disabled_preserves_active_router(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A value-identical ``llm_ensemble.enabled=false`` re-save (a settings
+    form that always sends its fields, a repeated CLI disable) must not
+    silently drop an active Router back to direct mode."""
+    config = GatewayConfig(
+        config_path=str(tmp_path / "reassert-ensemble-off.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "full"},
+    )
+    ctx, events = _routing_event_ctx(config, monkeypatch)
+
+    await _handle_config_set({"path": "llm_ensemble.enabled", "value": False}, ctx)
+
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "full"
+    assert model_routing_snapshot(config)["mode"] == "router"
+    assert events == []
+
+
+async def test_reasserting_ensemble_disabled_preserves_prompt_only_router(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "reassert-prompt-only.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "prompt_only"},
+    )
+
+    await _handle_config_patch_safe(
+        {"patches": {"llm_ensemble.enabled": False}},
+        _ctx(config),
+    )
+
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "prompt_only"
+
+
+async def test_reasserting_router_enabled_preserves_observe_phase(tmp_path) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "reassert-router-on.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "observe"},
+    )
+
+    await _handle_config_set({"path": "squilla_router.enabled", "value": True}, _ctx(config))
+
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "observe"
+
+
+async def test_onboarding_ensemble_disable_reassert_preserves_active_router(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "onboard-ensemble-reassert.toml"),
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "full"},
+    )
+
+    await _ensemble_configure({"enabled": False}, _ctx(config))
+
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.rollout_phase == "full"
+    assert model_routing_snapshot(config)["mode"] == "router"
+
+
+async def test_genuine_ensemble_disable_still_reconciles_to_direct(tmp_path) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "genuine-ensemble-off.toml"),
+        llm_ensemble={"enabled": True, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": True, "rollout_phase": "full"},
+    )
+
+    await _handle_config_set({"path": "llm_ensemble.enabled", "value": False}, _ctx(config))
+
+    assert config.llm_ensemble.enabled is False
+    assert config.squilla_router.enabled is False
+    assert config.squilla_router.rollout_phase == "observe"
+    assert model_routing_snapshot(config)["mode"] == "direct"
+
+
+def test_unchanged_boolean_writes_select_no_mode_with_previous_snapshot() -> None:
+    previous = GatewayConfig(
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "observe"},
+    )
+    config = GatewayConfig(
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "observe"},
+    )
+
+    assert (
+        model_routing_mode_for_write(
+            config, {"llm_ensemble.enabled"}, previous=previous
+        )
+        is None
+    )
+    assert (
+        model_routing_mode_for_write(
+            config,
+            {"llm_ensemble.enabled", "squilla_router.enabled"},
+            previous=previous,
+        )
+        is None
+    )
+    # A genuine toggle in a pair write still resolves from final values.
+    config.llm_ensemble.enabled = True
+    assert (
+        model_routing_mode_for_write(
+            config,
+            {"llm_ensemble.enabled", "squilla_router.enabled"},
+            previous=previous,
+        )
+        == "ensemble"
+    )
+
+
 def test_legacy_single_boolean_writes_select_one_canonical_mode() -> None:
     config = GatewayConfig(
         llm_ensemble={"enabled": False, "selection_mode": "router_dynamic"},

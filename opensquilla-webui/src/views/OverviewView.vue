@@ -146,7 +146,6 @@
                 >
                   {{ findingBadgeText(finding) }}
                 </span>
-                <span v-if="finding.restartRequired" class="health-chip">{{ t('sessions.overview.recoveryRestart') }}</span>
                 <button
                   v-if="findingSettingsLink(finding)"
                   type="button"
@@ -166,7 +165,7 @@
                 </span>
               </div>
               <AdvancedCliSteps
-                v-if="(finding.fixSteps || []).length"
+                v-if="normalizedFixSteps(finding).length"
                 :steps="normalizedFixSteps(finding)"
                 :heading="stepsHeading(findingGroupKind(finding))"
               />
@@ -750,7 +749,15 @@ function clearCopiedCommandTimer() {
 }
 
 function normalizedFixSteps(finding: Finding): Array<{ label: string; command?: string; detail?: string }> {
-  return (finding.fixSteps || []).map(step => ({
+  const targetFresh = finding.evidence?.target_fresh ?? finding.evidence?.targetFresh
+  const hideMigrationApply = finding.id === 'migration.legacy_home_detected'
+    && targetFresh === false
+
+  return (finding.fixSteps || []).filter((step) => {
+    if (!hideMigrationApply) return true
+    const command = String(step.command || '')
+    return !/(?:^|\s)--apply(?:\s|$)/.test(command)
+  }).map(step => ({
     label: step.label || t('sessions.overview.step'),
     command: step.command,
     detail: step.detail,

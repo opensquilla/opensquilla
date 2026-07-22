@@ -242,6 +242,46 @@ async def test_onboarding_router_configure_broadcasts_one_canonical_change(
     ]
 
 
+async def test_router_configure_ladder_maintenance_preserves_observe_rollout(
+    tmp_path,
+) -> None:
+    """A tier/default-tier save on an already-enabled router is maintenance,
+    not a strategy switch: it must not escalate an operator's shadow
+    ``rollout_phase='observe'`` to live ``'full'`` routing."""
+    path = tmp_path / "router-maintenance.toml"
+    config = GatewayConfig(
+        config_path=str(path),
+        llm={"provider": "deepseek", "model": "deepseek-chat"},
+        llm_ensemble={"enabled": False},
+        squilla_router={"enabled": True, "rollout_phase": "observe"},
+    )
+
+    await _router_configure({"mode": "recommended", "defaultTier": "c2"}, _ctx(config))
+
+    assert config.squilla_router.enabled is True
+    assert config.squilla_router.default_tier == "c2"
+    assert config.squilla_router.rollout_phase == "observe"
+    reloaded = GatewayConfig.load(str(path))
+    assert reloaded.squilla_router.rollout_phase == "observe"
+
+
+async def test_router_configure_ladder_maintenance_keeps_live_ensemble(
+    tmp_path,
+) -> None:
+    config = GatewayConfig(
+        config_path=str(tmp_path / "router-ensemble-keep.toml"),
+        llm={"provider": "deepseek", "model": "deepseek-chat"},
+        llm_ensemble={"enabled": True, "selection_mode": "router_dynamic"},
+        squilla_router={"enabled": True, "rollout_phase": "full"},
+    )
+
+    await _router_configure({"mode": "recommended", "defaultTier": "c1"}, _ctx(config))
+
+    assert config.llm_ensemble.enabled is True
+    assert config.squilla_router.enabled is True
+    assert model_routing_snapshot(config)["mode"] == "ensemble"
+
+
 async def test_onboarding_ensemble_configure_broadcasts_one_canonical_change(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

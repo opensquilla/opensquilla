@@ -974,10 +974,17 @@ def upsert_router(
 
     new_cfg = _clone(config)
     new_cfg.squilla_router = SquillaRouterConfig(**router_payload)
-    apply_model_routing_mode(
-        new_cfg,
-        "direct" if router_mode == "disabled" else "router",
-    )
+    if router_mode == "disabled":
+        apply_model_routing_mode(new_cfg, "direct")
+    elif not bool(getattr(config.squilla_router, "enabled", False)):
+        # A genuine enable is a strategy switch: route through the canonical
+        # mode patch (ensemble off, rollout_phase full, force-persisted).
+        apply_model_routing_mode(new_cfg, "router")
+    # Otherwise this is ladder/settings maintenance on an already-enabled
+    # router (the common Web UI tier-table save and CLI default-tier path).
+    # Applying the mode patch here would silently escalate an operator's
+    # rollout_phase='observe'/'prompt_only' to live 'full' routing and turn
+    # off a running ensemble, so the stored strategy fields are preserved.
     public_payload["default_tier"] = new_cfg.squilla_router.default_tier
     public_payload["tiers"] = redact_router_tiers_payload(new_cfg.squilla_router.tiers)
     public_payload["cross_provider_tiers"] = bool(new_cfg.squilla_router.cross_provider_tiers)

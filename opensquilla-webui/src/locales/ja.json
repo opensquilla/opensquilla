@@ -1871,6 +1871,34 @@
       "awaitingReview": "レビュー待ち"
     }
   },
+  "monitorSupport": {
+    "title": "サポートと診断",
+    "menuLabel": "サポートと診断の操作",
+    "copyReport": "現在の準備状況レポートをコピー",
+    "copyReportDescription": "現在の接続、設定、実行状態を共有します",
+    "copySuccess": "準備状況レポートをコピーしました",
+    "copyFailed": "準備状況レポートをコピーできませんでした：{error}",
+    "downloadBundle": "機密情報を除去したサポートバンドルをダウンロード",
+    "downloadBundleDescription": "ログ、設定の要約、診断結果が含まれます",
+    "privacySummary": "会話内容はデフォルトで除外され、既知の認証情報は除去されます",
+    "bundleTitle": "機密情報を除去したサポートバンドルをダウンロード",
+    "bundleSubtitle": "OpenSquilla サポートと共有するための ZIP ファイルを作成します。",
+    "bundleDefaultIncludes": "デフォルトで含まれるもの",
+    "bundleReadiness": "準備状況と診断のスナップショット",
+    "bundleConfig": "機密情報を除去した設定の要約",
+    "bundleLogs": "エラー、ログ、トレース情報",
+    "bundlePlatform": "バージョンとプラットフォーム情報",
+    "bundleScopeTitle": "最近の診断記録（最大 1 日）",
+    "bundleScopeBody": "エラーとトレースの記録は最大 1 日分です。実行ログはローカルのローテーションに従うため、実際の対象期間は異なる場合があります。",
+    "bundleIncludeContentTitle": "会話内容を含める",
+    "bundleIncludeContentBody": "サポートから明示的に依頼された場合のみ有効にしてください。機密性の高い業務情報が含まれる可能性があります。",
+    "bundleCredentialsTitle": "既知の認証情報フィールドは除去されます",
+    "bundleCredentialsBody": "API キー、トークン、その他の認識された機密情報の値は、パッケージ化の前にマスキングされます。",
+    "bundleConfirm": "生成してダウンロード",
+    "bundleCancel": "キャンセル",
+    "bundleFailed": "サポートバンドルをダウンロードできませんでした",
+    "bundleReady": "サポートバンドルをダウンロードしました"
+  },
   "usageLogs": {
     "usage": {
       "title": "使用量",

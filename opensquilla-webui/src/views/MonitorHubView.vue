@@ -3,27 +3,30 @@
     <!-- One Monitor destination, four sections. Each former page keeps its full
          UI and its canonical URL: the tabs ARE the routes, so /usage and /logs
          deep links stay valid and the palette can target a specific section. -->
-    <nav class="monitor-hub__tabs" role="tablist" :aria-label="t('nav.groupMonitor')">
-      <router-link
-        v-for="tab in TABS"
-        :key="tab.path"
-        :to="tab.path"
-        custom
-        v-slot="{ navigate }"
-      >
-        <button
-          role="tab"
-          class="monitor-hub__tab"
-          :class="{ 'is-active': isActive(tab.path) }"
-          :aria-selected="isActive(tab.path)"
-          aria-controls="monitor-hub-panel"
-          @click="navigate"
+    <div class="monitor-hub__bar">
+      <nav class="monitor-hub__tabs" role="tablist" :aria-label="t('nav.groupMonitor')">
+        <router-link
+          v-for="tab in TABS"
+          :key="tab.path"
+          :to="tab.path"
+          custom
+          v-slot="{ navigate }"
         >
-          <Icon :name="tab.icon" :size="14" />
-          <span>{{ t(tab.label) }}</span>
-        </button>
-      </router-link>
-    </nav>
+          <button
+            role="tab"
+            class="monitor-hub__tab"
+            :class="{ 'is-active': isActive(tab.path) }"
+            :aria-selected="isActive(tab.path)"
+            aria-controls="monitor-hub-panel"
+            @click="navigate"
+          >
+            <Icon :name="tab.icon" :size="14" />
+            <span>{{ t(tab.label) }}</span>
+          </button>
+        </router-link>
+      </nav>
+      <SupportDiagnosticsMenu />
+    </div>
     <div id="monitor-hub-panel" role="tabpanel" class="monitor-hub__panel">
       <KeepAlive :max="4">
         <component :is="activeComponent" />
@@ -37,6 +40,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
+import SupportDiagnosticsMenu from '@/components/SupportDiagnosticsMenu.vue'
 import type { IconName } from '@/utils/icons'
 import OverviewView from '@/views/OverviewView.vue'
 import ChannelsView from '@/views/ChannelsView.vue'
@@ -70,10 +74,19 @@ const activeComponent = computed(() => {
   gap: var(--sp-4);
 }
 
+.monitor-hub__bar {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  min-width: 0;
+}
+
 .monitor-hub__tabs {
   display: flex;
   gap: 2px;
-  align-self: flex-start;
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 100%;
   padding: 3px;
   background: var(--bg-surface-2);
@@ -137,5 +150,11 @@ const activeComponent = computed(() => {
 }
 .monitor-hub :deep(.control-stage__header) {
   justify-content: flex-end;
+}
+
+@media (max-width: 600px) {
+  .monitor-hub__bar {
+    align-items: center;
+  }
 }
 </style>

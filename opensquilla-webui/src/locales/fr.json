@@ -1871,6 +1871,34 @@
       "awaitingReview": "en attente d'examen"
     }
   },
+  "monitorSupport": {
+    "title": "Assistance et diagnostic",
+    "menuLabel": "Actions d’assistance et de diagnostic",
+    "copyReport": "Copier le rapport d’état actuel",
+    "copyReportDescription": "Partager l’état actuel de la connexion, de la configuration et de l’exécution",
+    "copySuccess": "Rapport d’état copié",
+    "copyFailed": "Impossible de copier le rapport d’état : {error}",
+    "downloadBundle": "Télécharger le paquet d’assistance expurgé",
+    "downloadBundleDescription": "Inclut les journaux, un résumé de la configuration et les résultats du diagnostic",
+    "privacySummary": "Le contenu des conversations est exclu par défaut et les identifiants connus sont masqués",
+    "bundleTitle": "Télécharger le paquet d’assistance expurgé",
+    "bundleSubtitle": "Créez un fichier ZIP à partager avec l’assistance OpenSquilla.",
+    "bundleDefaultIncludes": "Inclus par défaut",
+    "bundleReadiness": "Instantané de l’état de préparation et du diagnostic",
+    "bundleConfig": "Résumé expurgé de la configuration",
+    "bundleLogs": "Erreurs, journaux et informations de trace",
+    "bundlePlatform": "Informations de version et de plateforme",
+    "bundleScopeTitle": "Enregistrements de diagnostic récents (1 jour maximum)",
+    "bundleScopeBody": "Les erreurs et les traces couvrent au maximum un jour ; les journaux d’exécution suivent la rotation locale, la période réelle peut donc différer.",
+    "bundleIncludeContentTitle": "Inclure le contenu des conversations",
+    "bundleIncludeContentBody": "Activez cette option uniquement à la demande explicite de l’assistance ; elle peut inclure des informations professionnelles sensibles.",
+    "bundleCredentialsTitle": "Les champs d’identifiants connus sont masqués",
+    "bundleCredentialsBody": "Les clés API, les jetons et les autres valeurs secrètes reconnues sont masqués avant la création du paquet.",
+    "bundleConfirm": "Générer et télécharger",
+    "bundleCancel": "Annuler",
+    "bundleFailed": "Échec du téléchargement du paquet d’assistance",
+    "bundleReady": "Paquet d’assistance téléchargé"
+  },
   "usageLogs": {
     "usage": {
       "title": "Utilisation",

@@ -1871,6 +1871,34 @@
       "awaitingReview": "等待审阅"
     }
   },
+  "monitorSupport": {
+    "title": "支持与诊断",
+    "menuLabel": "支持与诊断操作",
+    "copyReport": "复制当前就绪报告",
+    "copyReportDescription": "用于快速排查当前连接、配置与运行状态",
+    "copySuccess": "当前就绪报告已复制",
+    "copyFailed": "复制就绪报告失败：{error}",
+    "downloadBundle": "下载脱敏支持包",
+    "downloadBundleDescription": "包含日志、配置摘要与诊断结果，可提交给支持人员",
+    "privacySummary": "默认不包含会话正文，已知凭据字段会脱敏",
+    "bundleTitle": "下载脱敏支持包",
+    "bundleSubtitle": "创建可与 OpenSquilla 支持人员分享的 ZIP 文件。",
+    "bundleDefaultIncludes": "默认包含",
+    "bundleReadiness": "就绪与诊断快照",
+    "bundleConfig": "脱敏后的配置摘要",
+    "bundleLogs": "错误、日志与 trace 信息",
+    "bundlePlatform": "版本与平台信息",
+    "bundleScopeTitle": "近期诊断记录（最多 1 天）",
+    "bundleScopeBody": "错误与追踪记录最多包含 1 天；运行日志按本地轮转收集，实际覆盖时间可能不同。",
+    "bundleIncludeContentTitle": "包含会话正文",
+    "bundleIncludeContentBody": "仅在支持人员明确要求时开启；可能含有敏感业务信息。",
+    "bundleCredentialsTitle": "已知凭据字段会脱敏",
+    "bundleCredentialsBody": "API 密钥、令牌和其他已识别的密钥值会在打包前脱敏。",
+    "bundleConfirm": "生成并下载",
+    "bundleCancel": "取消",
+    "bundleFailed": "支持包下载失败",
+    "bundleReady": "支持包已下载"
+  },
   "usageLogs": {
     "usage": {
       "title": "用量",

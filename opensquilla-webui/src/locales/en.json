@@ -1871,6 +1871,34 @@
       "awaitingReview": "awaiting review"
     }
   },
+  "monitorSupport": {
+    "title": "Support & diagnostics",
+    "menuLabel": "Support and diagnostics actions",
+    "copyReport": "Copy current readiness report",
+    "copyReportDescription": "Share the current connection, configuration, and runtime status",
+    "copySuccess": "Readiness report copied",
+    "copyFailed": "Could not copy readiness report: {error}",
+    "downloadBundle": "Download redacted support bundle",
+    "downloadBundleDescription": "Includes logs, a configuration summary, and diagnostic results",
+    "privacySummary": "Conversation content is excluded by default and known credentials are redacted",
+    "bundleTitle": "Download redacted support bundle",
+    "bundleSubtitle": "Create a ZIP to share with OpenSquilla support.",
+    "bundleDefaultIncludes": "Included by default",
+    "bundleReadiness": "Readiness and diagnostics snapshot",
+    "bundleConfig": "Redacted configuration summary",
+    "bundleLogs": "Errors, logs, and trace information",
+    "bundlePlatform": "Version and platform information",
+    "bundleScopeTitle": "Recent diagnostic records (up to 1 day)",
+    "bundleScopeBody": "Error and trace records cover no more than one day; runtime logs follow local rotation, so actual coverage may differ.",
+    "bundleIncludeContentTitle": "Include conversation content",
+    "bundleIncludeContentBody": "Enable only when support explicitly asks; this may contain sensitive business information.",
+    "bundleCredentialsTitle": "Known credential fields are redacted",
+    "bundleCredentialsBody": "API keys, tokens, and other recognized secret values are redacted before packaging.",
+    "bundleConfirm": "Generate and download",
+    "bundleCancel": "Cancel",
+    "bundleFailed": "Support bundle download failed",
+    "bundleReady": "Support bundle downloaded"
+  },
   "usageLogs": {
     "usage": {
       "title": "Usage",

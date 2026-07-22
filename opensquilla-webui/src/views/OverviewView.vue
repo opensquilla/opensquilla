@@ -39,16 +39,6 @@
           <Icon name="refresh" :size="16" />
           <span>{{ refreshing ? t('sessions.refreshing') : t('sessions.refresh') }}</span>
         </button>
-        <button
-          class="btn btn--ghost"
-          type="button"
-          :title="t('sessions.overview.copyDiagnostics')"
-          :disabled="healthLoading || !healthReport"
-          @click="copyDiagnostics"
-        >
-          <Icon :name="copiedCommandKey === DIAGNOSTICS_COPY_KEY ? 'check' : 'copy'" :size="16" />
-          <span>{{ t('sessions.overview.copyDiagnostics') }}</span>
-        </button>
         <button class="btn btn--primary" :title="t('sessions.overview.openChat')" @click="router.push('/chat')">
           <Icon name="chat" :size="16" />
           <span>{{ t('sessions.overview.openChat') }}</span>
@@ -764,7 +754,7 @@ function normalizedFixSteps(finding: Finding): Array<{ label: string; command?: 
   }))
 }
 
-// Shared check-icon swap (1600ms) for the command and diagnostics copies.
+// Shared check-icon swap (1600ms) for copyable environment commands.
 function markCopied(key: string) {
   copiedCommandKey.value = key
   clearCopiedCommandTimer()
@@ -780,31 +770,6 @@ async function copyCommand(command: string, key: string) {
     await copyTextWithFallback(command)
     markCopied(key)
     pushToast(t('setup.toast.copiedCommand'), { tone: 'ok' })
-  } catch (err) {
-    clearCopiedCommandTimer()
-    copiedCommandKey.value = ''
-    const error = err instanceof Error ? err.message : String(err)
-    pushToast(t('setup.toast.copyFailed', { error }), { tone: 'danger' })
-  }
-}
-
-const DIAGNOSTICS_COPY_KEY = 'diagnostics-json'
-
-// Full doctor report as pretty JSON for bug reports, with the gateway URL and
-// a copy timestamp attached and local home directories collapsed to `~/`.
-async function copyDiagnostics() {
-  // No live report (doctor failed or still loading) means nothing worth
-  // pasting into a bug report; the button is disabled in that state too.
-  if (!healthReport.value) return
-  const report = {
-    ...healthReport.value,
-    gatewayUrl: healthReport.value.gatewayUrl || gatewayContextUrl(),
-    copiedAt: new Date().toISOString(),
-  }
-  try {
-    await copyTextWithFallback(normalizeHomePaths(JSON.stringify(report, null, 2)))
-    markCopied(DIAGNOSTICS_COPY_KEY)
-    pushToast(t('sessions.overview.copiedDiagnostics'), { tone: 'ok' })
   } catch (err) {
     clearCopiedCommandTimer()
     copiedCommandKey.value = ''

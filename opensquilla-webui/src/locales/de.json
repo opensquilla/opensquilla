@@ -1871,6 +1871,34 @@
       "awaitingReview": "wartet auf Überprüfung"
     }
   },
+  "monitorSupport": {
+    "title": "Support und Diagnose",
+    "menuLabel": "Support- und Diagnoseaktionen",
+    "copyReport": "Aktuellen Bereitschaftsbericht kopieren",
+    "copyReportDescription": "Aktuellen Verbindungs-, Konfigurations- und Laufzeitstatus teilen",
+    "copySuccess": "Bereitschaftsbericht kopiert",
+    "copyFailed": "Bereitschaftsbericht konnte nicht kopiert werden: {error}",
+    "downloadBundle": "Bereinigtes Support-Paket herunterladen",
+    "downloadBundleDescription": "Enthält Protokolle, eine Konfigurationsübersicht und Diagnoseergebnisse",
+    "privacySummary": "Unterhaltungsinhalte sind standardmäßig ausgeschlossen und bekannte Zugangsdaten werden geschwärzt",
+    "bundleTitle": "Bereinigtes Support-Paket herunterladen",
+    "bundleSubtitle": "Erstellen Sie eine ZIP-Datei zum Teilen mit dem OpenSquilla-Support.",
+    "bundleDefaultIncludes": "Standardmäßig enthalten",
+    "bundleReadiness": "Momentaufnahme von Bereitschaft und Diagnose",
+    "bundleConfig": "Bereinigte Konfigurationsübersicht",
+    "bundleLogs": "Fehler, Protokolle und Trace-Informationen",
+    "bundlePlatform": "Versions- und Plattforminformationen",
+    "bundleScopeTitle": "Aktuelle Diagnosedaten (maximal 1 Tag)",
+    "bundleScopeBody": "Fehler- und Trace-Daten umfassen höchstens einen Tag; Laufzeitprotokolle folgen der lokalen Rotation, daher kann der tatsächliche Zeitraum abweichen.",
+    "bundleIncludeContentTitle": "Unterhaltungsinhalte einbeziehen",
+    "bundleIncludeContentBody": "Nur aktivieren, wenn der Support ausdrücklich darum bittet; dies kann vertrauliche Geschäftsinformationen enthalten.",
+    "bundleCredentialsTitle": "Bekannte Zugangsdatenfelder werden geschwärzt",
+    "bundleCredentialsBody": "API-Schlüssel, Token und andere erkannte geheime Werte werden vor dem Verpacken geschwärzt.",
+    "bundleConfirm": "Erstellen und herunterladen",
+    "bundleCancel": "Abbrechen",
+    "bundleFailed": "Support-Paket konnte nicht heruntergeladen werden",
+    "bundleReady": "Support-Paket heruntergeladen"
+  },
   "usageLogs": {
     "usage": {
       "title": "Nutzung",

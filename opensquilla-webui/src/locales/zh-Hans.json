@@ -1660,8 +1660,18 @@
         "rejectFailed": "无法拒绝 {sender}：{error}",
         "fixCredentials": "修复凭证",
         "galleryLead": "选择一个平台开始",
-        "platformBarLabel": "添加渠道 · 直接选一个平台",
-        "platformBarMore": "+{count} 更多"
+        "awaitingFact": "待处理",
+        "folio": {
+          "allConnected": "全部已连接",
+          "connectedRatio": "{ratio} 已连接",
+          "down": "{count} 个故障",
+          "updated": "更新于 {time}",
+          "rosterLabel": "已接入平台:{names}"
+        },
+        "enroll": {
+          "title": "接入一个平台",
+          "chip": "添加 {platform}"
+        }
       },
       "detail": {
         "bot": "机器人 {id}",

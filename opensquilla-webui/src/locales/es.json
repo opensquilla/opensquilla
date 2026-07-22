@@ -1660,8 +1660,18 @@
         "rejectFailed": "No se pudo rechazar a {sender}: {error}",
         "fixCredentials": "Corregir credenciales",
         "galleryLead": "Elige una plataforma para empezar",
-        "platformBarLabel": "Añadir un canal · elige una plataforma",
-        "platformBarMore": "+{count} más"
+        "awaitingFact": "En espera",
+        "folio": {
+          "allConnected": "Todos conectados",
+          "connectedRatio": "{ratio} conectados",
+          "down": "{count} sin conexión",
+          "updated": "Actualizado {time}",
+          "rosterLabel": "Plataformas en servicio: {names}"
+        },
+        "enroll": {
+          "title": "Conectar una plataforma",
+          "chip": "Añadir {platform}"
+        }
       },
       "detail": {
         "bot": "Bot {id}",

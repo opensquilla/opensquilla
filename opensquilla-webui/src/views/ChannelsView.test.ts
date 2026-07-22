@@ -116,8 +116,8 @@ function buttonWithText(root: ParentNode, label: string): HTMLButtonElement {
 }
 
 function channelCard(root: ParentNode, name: string): HTMLElement {
-  const card = Array.from(root.querySelectorAll<HTMLElement>('.chb-card'))
-    .find(candidate => candidate.querySelector('.chb-card__name')?.textContent === name)
+  const card = Array.from(root.querySelectorAll<HTMLElement>('.chb-story'))
+    .find(candidate => candidate.querySelector('.chb-story__name')?.textContent === name)
   if (!card) throw new Error(`channel card not found: ${name}`)
   return card
 }
@@ -135,8 +135,9 @@ async function mountChannelsView(options: {
   draftProbeError?: { message: string }
   /** Initial route query (deep-link scenarios). */
   routeQuery?: Record<string, string>
-  /** Override the configured channel rows (drives the add-tier: 0 → gallery,
-   *  1..3 → platform bar, >=4 → add-card). Defaults to the shared fixture. */
+  /** Override the configured channel rows (drives the home mode: 0 → inline
+   *  gallery, >=1 → fleet front page + enroll strip). Defaults to the shared
+   *  fixture. */
   channelRows?: Array<Record<string, unknown>>
   locale?: string
 } = {}) {
@@ -445,13 +446,15 @@ describe('ChannelsView dashboard home', () => {
         expect(rpcCall).toHaveBeenCalledWith('channels.pairings', { channelName: name })
       }
       expect(rpcCall).toHaveBeenCalledWith('config.get', { path: 'channel_admin_senders' })
-      const factValues = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
-      expect(factValues).toHaveLength(3)
+      const factValues = Array.from(ops.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
+      // Ledger figures: Uptime, Members, Admins, then the Awaiting figure that
+      // joins the row only because ops-slack has a pending pairing.
+      expect(factValues).toHaveLength(4)
       expect(factValues[1]).toBe('1') // approved members
       expect(factValues[2]).toBe('1') // channel admins
 
-      // The pending request surfaces on the card: badge + inline banner.
-      expect(ops.querySelector('.chb-card__pending')?.textContent).toContain('1')
+      // The pending request surfaces on the card: alert figure + inline banner.
+      expect(ops.querySelector('.chb-figure--alert dd')?.textContent).toContain('1')
       expect(ops.textContent).toContain('Pending User')
       expect(ops.textContent).toContain('AB12CD34')
 
@@ -459,10 +462,10 @@ describe('ChannelsView dashboard home', () => {
       // rows must not leak onto other cards as members or pending banners.
       for (const name of ['alerts-telegram', 'dead-telegram', 'off-discord']) {
         const other = channelCard(el, name)
-        const values = Array.from(other.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+        const values = Array.from(other.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
         expect(values[1]).toBe('0')
         expect(other.textContent).not.toContain('Pending User')
-        expect(other.querySelector('.chb-card__pending')).toBeNull()
+        expect(other.querySelector('.chb-figure--alert')).toBeNull()
         expect(other.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
       }
 
@@ -472,8 +475,10 @@ describe('ChannelsView dashboard home', () => {
       expect(ghost.classList.contains('is-static')).toBe(true)
       expect(ghost.textContent).toContain('Running but not in config')
 
-      // The dashed add card sits at the end of the grid.
-      expect(el.querySelector('.chb-card--add')).toBeTruthy()
+      // The enroll strip is the single add entry closing the ledger; there is
+      // never an add-card row.
+      expect(el.querySelector('.chb-enroll__title')).toBeTruthy()
+      expect(el.querySelector('.chb-card--add')).toBeNull()
     } finally {
       app.unmount()
     }
@@ -661,12 +666,12 @@ describe('ChannelsView dashboard home', () => {
     try {
       await flush()
       const ops = channelCard(el, 'ops-slack')
-      const values = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      const values = Array.from(ops.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
       // Unknown member data reads as —, never as a hard zero; the admin
       // count still renders because config.get succeeded.
       expect(values[1]).toBe('—')
       expect(values[2]).toBe('1')
-      expect(ops.querySelector('.chb-card__pending')).toBeNull()
+      expect(ops.querySelector('.chb-figure--alert')).toBeNull()
 
       // channels.status still reports a pending count → the badge falls back
       // to it instead of hiding the requests.
@@ -676,7 +681,7 @@ describe('ChannelsView dashboard home', () => {
       }
       await flush()
       await flush()
-      expect(channelCard(el, 'ops-slack').querySelector('.chb-card__pending')?.textContent)
+      expect(channelCard(el, 'ops-slack').querySelector('.chb-figure--alert dd')?.textContent)
         .toContain('3')
     } finally {
       app.unmount()
@@ -697,7 +702,7 @@ describe('ChannelsView dashboard home', () => {
     try {
       await flush()
       const ops = channelCard(el, 'ops-slack')
-      const values = Array.from(ops.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      const values = Array.from(ops.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
       expect(values[2]).toBe('—')
       // No approved members, but the admin list is UNKNOWN — the bootstrap
       // default must not arm the grant on a failed read.
@@ -729,7 +734,7 @@ describe('ChannelsView dashboard home', () => {
       // the badge immediately.
       expect(callsFor('ops-slack')).toBeGreaterThan(opsBefore)
       expect(callsFor('alerts-telegram')).toBe(telegramBefore)
-      expect(channelCard(el, 'ops-slack').querySelector('.chb-card__pending')?.textContent)
+      expect(channelCard(el, 'ops-slack').querySelector('.chb-figure--alert dd')?.textContent)
         .toContain('2')
     } finally {
       app.unmount()
@@ -800,7 +805,7 @@ describe('ChannelsView dashboard home', () => {
       await flush()
       const after = channelCard(el, 'ops-slack')
       expect(after.textContent).toContain('Pending User')
-      const values = Array.from(after.querySelectorAll('.chb-fact__v')).map(node => node.textContent)
+      const values = Array.from(after.querySelectorAll('.chb-figure dd')).map(node => node.textContent)
       expect(values[1]).toBe('1')
       expect(after.querySelector<HTMLInputElement>(
         '[aria-label="Approve Pending User as a channel admin"]')!.checked).toBe(true)
@@ -981,7 +986,7 @@ describe('ChannelsView drill-in page', () => {
       page.querySelector<HTMLButtonElement>('.chd__back')!.click()
       await flush()
       expect(el.querySelector('.chd')).toBeNull()
-      expect(el.querySelector('.chb__grid')).toBeTruthy()
+      expect(el.querySelector('.chb-ledger')).toBeTruthy()
       const lastQuery = replace.mock.calls[replace.mock.calls.length - 1]?.[0]?.query
       expect(lastQuery?.channel).toBeUndefined()
     } finally {
@@ -1581,7 +1586,7 @@ describe('ChannelsView in-place configuration editor', () => {
       buttonWithText(bar(el), 'Discard').click()
       await flush()
       expect(el.querySelector('.chd')).toBeNull()
-      expect(el.querySelector('.chb__grid')).toBeTruthy()
+      expect(el.querySelector('.chb-ledger')).toBeTruthy()
       expect(rpcCall.mock.calls.some(([method]) => method === 'onboarding.channel.upsert')).toBe(false)
     } finally {
       ctx.app.unmount()
@@ -1632,20 +1637,20 @@ describe('ChannelsView in-place configuration editor', () => {
   })
 })
 
-describe('ChannelsView add-tier', () => {
+describe('ChannelsView add entry', () => {
   const twoChannels = [
     { name: 'ops-slack', type: 'slack', status: 'connected', connected: true, enabled: true, configured: true, diagnostics: { network_probe: 'not_run' } },
     { name: 'alerts-telegram', type: 'telegram', status: 'stopped', connected: false, enabled: true, configured: true, diagnostics: { network_probe: 'not_run' } },
   ]
 
-  // The single "Add channel" affordance is the top-right header button; the
-  // add-card ("＋Add channel") and platform-bar label are deliberately not it.
-  function headerAddButtons(root: ParentNode): HTMLButtonElement[] {
-    return Array.from(root.querySelectorAll<HTMLButtonElement>('button'))
-      .filter(button => button.textContent?.trim() === 'Add channel')
+  // The header toolbar now carries ONLY the Refresh ghost button — there is no
+  // primary "Add channel" entry at any fleet count. The single add affordance
+  // is the enroll strip's title button.
+  function headerPrimaryButtons(root: ParentNode): HTMLButtonElement[] {
+    return Array.from(root.querySelectorAll<HTMLButtonElement>('.ch-stage__actions .btn--primary'))
   }
 
-  it('Tier 1 (0 channels): the inline platform gallery is the page, no header add button', async () => {
+  it('0 channels: the inline platform gallery is the page, no ledger or enroll strip', async () => {
     const { app, el, flush } = await mountChannelsView({ channelRows: [] })
     try {
       await flush()
@@ -1654,16 +1659,17 @@ describe('ChannelsView add-tier', () => {
       expect(el.querySelector('.ctg__grid')).toBeTruthy()
       expect(el.querySelector('[data-channel-type="slack"]')).toBeTruthy()
       expect(el.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
-      // The gallery IS the single entry: no header button, no dashboard grid/bar.
-      expect(headerAddButtons(el)).toHaveLength(0)
-      expect(el.querySelector('.chb__grid')).toBeNull()
-      expect(el.querySelector('.ch-platbar')).toBeNull()
+      // The gallery IS the single entry: no header add button, and neither the
+      // fleet ledger nor the enroll strip (both belong to the fleet page only).
+      expect(headerPrimaryButtons(el)).toHaveLength(0)
+      expect(el.querySelector('.chb-ledger')).toBeNull()
+      expect(el.querySelector('.chb-enroll')).toBeNull()
     } finally {
       app.unmount()
     }
   })
 
-  it('Tier 1: a gallery tile enters compose pre-picked (?compose=1&type=)', async () => {
+  it('0 channels: a gallery tile enters compose pre-picked (?compose=1&type=)', async () => {
     const ctx = await mountChannelsView({ channelRows: [] })
     const { app, el, flush, push } = ctx
     try {
@@ -1681,36 +1687,37 @@ describe('ChannelsView add-tier', () => {
     }
   })
 
-  it('Tier 2 (1..3 channels): platform bar replaces the add-card and skips used platforms', async () => {
+  it('fleet (1..3 channels): the enroll strip is the add entry and skips used platforms', async () => {
     const { app, el, flush } = await mountChannelsView({ channelRows: twoChannels })
     try {
       await flush()
       await flush()
-      // The grid keeps the channel cards but drops the trailing add-card.
+      // The ledger keeps the channel stories; there is never a trailing add-card.
       expect(channelCard(el, 'ops-slack')).toBeTruthy()
       expect(channelCard(el, 'alerts-telegram')).toBeTruthy()
       expect(el.querySelector('.chb-card--add')).toBeNull()
-      // No header button — the bar is the single entry.
-      expect(headerAddButtons(el)).toHaveLength(0)
-      const bar = el.querySelector<HTMLElement>('.ch-platbar')
-      expect(bar).toBeTruthy()
+      // No header add button — the enroll strip is the single entry.
+      expect(headerPrimaryButtons(el)).toHaveLength(0)
+      const enroll = el.querySelector<HTMLElement>('.chb-enroll')
+      expect(enroll).toBeTruthy()
+      expect(enroll!.querySelector('.chb-enroll__title')).toBeTruthy()
       // Chips only for UNCONFIGURED platform types: slack (used) is skipped;
       // feishu/matrix (catalog, unused) surface.
-      expect(bar!.querySelector('[data-channel-type="slack"]')).toBeNull()
-      expect(bar!.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
-      expect(bar!.querySelector('[data-channel-type="matrix"]')).toBeTruthy()
+      expect(enroll!.querySelector('[data-channel-type="slack"]')).toBeNull()
+      expect(enroll!.querySelector('[data-channel-type="feishu"]')).toBeTruthy()
+      expect(enroll!.querySelector('[data-channel-type="matrix"]')).toBeTruthy()
     } finally {
       app.unmount()
     }
   })
 
-  it('Tier 2: a platform chip enters compose pre-picked', async () => {
+  it('fleet: an enroll chip enters compose pre-picked', async () => {
     const ctx = await mountChannelsView({ channelRows: twoChannels })
     const { app, el, flush, push } = ctx
     try {
       await flush()
       await flush()
-      el.querySelector<HTMLButtonElement>('.ch-platbar [data-channel-type="feishu"]')!.click()
+      el.querySelector<HTMLButtonElement>('.chb-enroll [data-channel-type="feishu"]')!.click()
       await flush()
       expect(push).toHaveBeenCalledWith(expect.objectContaining({
         query: expect.objectContaining({ compose: '1', type: 'feishu' }),
@@ -1721,14 +1728,14 @@ describe('ChannelsView add-tier', () => {
     }
   })
 
-  it('Tier 3 (>=4 channels): the add-card and header button return, no platform bar', async () => {
+  it('fleet (>=4 channels): the enroll strip stays the add entry, never an add-card', async () => {
     // The shared fixture carries five configured channels.
     const { app, el, flush } = await mountChannelsView()
     try {
       await flush()
-      expect(el.querySelector('.chb-card--add')).toBeTruthy()
-      expect(headerAddButtons(el).length).toBeGreaterThan(0)
-      expect(el.querySelector('.ch-platbar')).toBeNull()
+      expect(el.querySelector('.chb-enroll__title')).toBeTruthy()
+      expect(el.querySelector('.chb-card--add')).toBeNull()
+      expect(headerPrimaryButtons(el)).toHaveLength(0)
     } finally {
       app.unmount()
     }
@@ -1737,7 +1744,7 @@ describe('ChannelsView add-tier', () => {
 
 describe('ChannelsView compose takeover', () => {
   async function enterCompose(ctx: Ctx): Promise<HTMLElement> {
-    buttonWithText(ctx.el, 'Add channel').click()
+    ctx.el.querySelector<HTMLButtonElement>('.chb-enroll__title')!.click()
     await ctx.flush()
     const surface = ctx.el.querySelector<HTMLElement>('.chc')
     if (!surface) throw new Error('compose surface not found')
@@ -1798,7 +1805,7 @@ describe('ChannelsView compose takeover', () => {
     const { el, flush } = ctx
     try {
       await flush()
-      const addButton = buttonWithText(el, 'Add channel')
+      const addButton = el.querySelector<HTMLButtonElement>('.chb-enroll__title')!
       addButton.focus()
       addButton.click()
       await flush()
@@ -1853,7 +1860,7 @@ describe('ChannelsView compose takeover', () => {
     const ctx = await mountChannelsView({ locale: 'zh-Hans' })
     try {
       await ctx.flush()
-      buttonWithText(ctx.el, '添加渠道').click()
+      ctx.el.querySelector<HTMLButtonElement>('.chb-enroll__title')!.click()
       await ctx.flush()
       const surface = ctx.el.querySelector<HTMLElement>('.chc')!
       const types = Array.from(surface.querySelectorAll('[data-channel-type]'))

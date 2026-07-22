@@ -1660,8 +1660,18 @@
         "rejectFailed": "{sender} を拒否できませんでした: {error}",
         "fixCredentials": "認証情報を修正",
         "galleryLead": "プラットフォームを選んで始めましょう",
-        "platformBarLabel": "チャンネルを追加 · プラットフォームを選択",
-        "platformBarMore": "他 {count} 件"
+        "awaitingFact": "保留中",
+        "folio": {
+          "allConnected": "すべて接続済み",
+          "connectedRatio": "{ratio} 接続済み",
+          "down": "{count} 件停止",
+          "updated": "更新 {time}",
+          "rosterLabel": "稼働中のプラットフォーム: {names}"
+        },
+        "enroll": {
+          "title": "プラットフォームを接続",
+          "chip": "{platform} を追加"
+        }
       },
       "detail": {
         "bot": "ボット {id}",

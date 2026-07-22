@@ -90,7 +90,7 @@ test.describe.serial('channel workspace compose + edit', () => {
         .getByRole('dialog', { name: 'Remove this channel?' })
         .getByRole('button', { name: 'Remove' })
         .click()
-      await expect(page.locator('.chb__grid').getByText(NAME)).toHaveCount(0, { timeout: 15000 })
+      await expect(page.locator('.chb-ledger').getByText(NAME)).toHaveCount(0, { timeout: 15000 })
     }
   })
 })

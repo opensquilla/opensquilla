@@ -6,10 +6,6 @@
         <p class="ch-stage__subtitle control-stage__subtitle">{{ t('console.channels.subtitle') }}</p>
       </div>
       <div class="ch-stage__actions control-stage__actions">
-        <button v-if="addTier === 'card'" class="btn btn--primary" type="button" @click="openChannelCompose">
-          <Icon name="plus" :size="16" aria-hidden="true" />
-          <span>{{ t('console.channels.addChannel') }}</span>
-        </button>
         <button class="btn btn--ghost" type="button" :title="t('console.common.refresh')" :disabled="loading || refreshing" @click="manualRefresh">
           <Icon name="refresh" :size="16" aria-hidden="true" :class="{ 'is-spinning': refreshing }" />
           <span>{{ refreshing ? t('console.common.refreshing') : t('console.common.refresh') }}</span>
@@ -237,18 +233,47 @@
       </div>
     </section>
 
-    <!-- ================= Home: dashboard of channel cards ================= -->
+    <!-- ============ Home: the fleet front page (folio + ledger) ========== -->
     <section v-else class="chb" :aria-label="t('console.channels.configuredChannels')">
       <p v-if="queryMissing" class="ch-query-missing" role="status">
         <span>{{ t('console.channels.queryNotFound', { name: selectedName }) }}</span>
         <button type="button" class="btn btn--ghost" @click="leaveDetail">{{ t('console.channels.queryNotFoundDismiss') }}</button>
       </p>
-      <div class="chb__grid">
+
+      <!-- Folio (masthead dateline): a roster of the platforms in service, a
+           ratio-led health reading, and the as-of time — all left-ragging under
+           one full-width rule that carries the horizontal, so nothing is pinned
+           to the edges and a lone channel can never open a middle void. -->
+      <header v-if="channels.length > 0" class="chb-folio">
+        <span
+          class="chb-folio__roster"
+          role="img"
+          :aria-label="t('console.channels.home.folio.rosterLabel', { names: platformNames })"
+        >
+          <ChannelBrandMark
+            v-for="type in fleetPlatformTypes"
+            :key="type"
+            :type="type"
+            :label="providerLabel(type, t('console.channels.unknown'))"
+          />
+        </span>
+        <strong class="chb-folio__lede">{{ fleetAllConnected
+          ? t('console.channels.home.folio.allConnected')
+          : t('console.channels.home.folio.connectedRatio', { ratio: `${fleetConnected} / ${channels.length}` }) }}</strong>
+        <span v-if="fleetDown > 0" class="chb-folio__flag is-down">{{ t('console.channels.home.folio.down', { count: fleetDown }) }}</span>
+        <span v-if="fleetPending > 0" class="chb-folio__flag is-pending">{{ t('console.channels.home.pendingCount', { count: fleetPending }) }}</span>
+        <time class="chb-folio__asof">{{ t('console.channels.home.folio.updated', { time: lastUpdatedLabel }) }}</time>
+      </header>
+
+      <!-- Ledger of full-width channel "stories". channels[0] is the severity
+           sorted lead (rendered larger); the rest are hairline-separated briefs.
+           Every row spans the full measure, so no card can float at half width. -->
+      <div class="chb-ledger">
         <article
-          v-for="ch in channels"
+          v-for="(ch, i) in channels"
           :key="channelKey(ch)"
-          class="chb-card"
-          :class="{ 'is-muted': ch.enabled === false }"
+          class="chb-story"
+          :class="{ 'is-lead': i === 0, 'is-down': presentationFor(ch).tone === 'danger', 'is-muted': ch.enabled === false }"
           role="button"
           tabindex="0"
           :aria-label="t('console.channels.detailLabel', { name: channelKey(ch) })"
@@ -256,105 +281,132 @@
           @keydown.enter.self="openChannel(ch)"
           @keydown.space.self.prevent="openChannel(ch)"
         >
-          <div class="chb-card__top">
-            <ChannelBrandMark :type="String(ch.type || '')" :label="providerLabel(ch.type, t('console.channels.unknown'))" />
-            <div class="chb-card__id">
-              <strong class="chb-card__name">{{ channelKey(ch) }}</strong>
-              <span class="chb-card__sub">{{ cardSubline(ch) }}</span>
+          <ChannelBrandMark
+            class="chb-story__mark"
+            :type="String(ch.type || '')"
+            :label="providerLabel(ch.type, t('console.channels.unknown'))"
+          />
+          <div class="chb-story__head">
+            <div class="chb-story__id">
+              <strong class="chb-story__name">{{ channelKey(ch) }}</strong>
+              <p class="chb-story__deck">
+                <ChannelStatusPill
+                  :status="ch.status"
+                  :enabled="ch.enabled"
+                  :pending-restart="pendingRestart.isPending(channelKey(ch))"
+                  :error-class="lastErrorClass(ch.diagnostics)"
+                  :startup-failed="startupFailure(ch.diagnostics)"
+                />
+                <span class="chb-story__sub">{{ cardSubline(ch) }}</span>
+              </p>
             </div>
-            <ChannelStatusPill
-              class="chb-card__status"
-              :status="ch.status"
-              :enabled="ch.enabled"
-              :pending-restart="pendingRestart.isPending(channelKey(ch))"
-              :error-class="lastErrorClass(ch.diagnostics)"
-              :startup-failed="startupFailure(ch.diagnostics)"
-            />
+            <div class="chb-story__actions">
+              <button
+                v-if="ch.enabled === false"
+                class="btn btn--ghost"
+                type="button"
+                :disabled="actionPending(ch, 'toggle')"
+                @click.stop="toggleChannel(ch)"
+              >{{ t('console.channels.enable') }}</button>
+              <template v-else>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  :disabled="actionPending(ch, 'probe')"
+                  @click.stop="probeChannel(ch)"
+                >{{ actionPending(ch, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</button>
+                <button
+                  class="btn btn--ghost"
+                  type="button"
+                  :disabled="actionPending(ch, 'restart') || !adapterLoaded(ch)"
+                  :title="!adapterLoaded(ch) ? t('console.channels.restartNotLoaded') : undefined"
+                  @click.stop="restartChannel(ch)"
+                >{{ t('console.channels.restart') }}</button>
+              </template>
+              <span class="chb-story__go" aria-hidden="true">{{ t('console.channels.home.details') }} →</span>
+            </div>
           </div>
-          <div class="chb-card__facts">
-            <div class="chb-fact"><span class="chb-fact__k">{{ t('console.channels.home.connectedFor') }}</span><span class="chb-fact__v">{{ connectedDuration(ch) }}</span></div>
-            <div class="chb-fact"><span class="chb-fact__k">{{ t('console.channels.home.membersFact') }}</span><span class="chb-fact__v">{{ factValue(ch, 'members') }}</span></div>
-            <div class="chb-fact"><span class="chb-fact__k">{{ t('console.channels.home.adminsFact') }}</span><span class="chb-fact__v">{{ factValue(ch, 'admins') }}</span></div>
-            <span
-              v-if="cardPendingCount(ch) > 0"
-              class="chb-card__pending"
-              :title="t('console.channels.pairings.pendingBadge', { count: cardPendingCount(ch) })"
-            >{{ t('console.channels.home.pendingCount', { count: cardPendingCount(ch) }) }}</span>
-          </div>
+          <dl class="chb-story__ledger">
+            <div class="chb-figure">
+              <dt>{{ t('console.channels.home.connectedFor') }}</dt>
+              <dd :class="{ 'is-null': connectedDuration(ch) === '—' }">{{ connectedDuration(ch) }}</dd>
+            </div>
+            <div class="chb-figure">
+              <dt>{{ t('console.channels.home.membersFact') }}</dt>
+              <dd :class="{ 'is-null': factValue(ch, 'members') === '—' }">{{ factValue(ch, 'members') }}</dd>
+            </div>
+            <div class="chb-figure">
+              <dt>{{ t('console.channels.home.adminsFact') }}</dt>
+              <dd :class="{ 'is-null': factValue(ch, 'admins') === '—' }">{{ factValue(ch, 'admins') }}</dd>
+            </div>
+            <div v-if="cardPendingCount(ch) > 0" class="chb-figure chb-figure--alert">
+              <dt>{{ t('console.channels.home.awaitingFact') }}</dt>
+              <dd>{{ cardPendingCount(ch) }}</dd>
+            </div>
+          </dl>
           <ChannelAlerts
+            class="chb-story__alerts"
             :pending-pairing="cardPending(ch)"
             :pending-overflow="Math.max(0, cardPendingCount(ch) - 1)"
             :default-as-admin="cardDefaultAsAdmin(ch)"
             :error-text="cardErrorText(ch)"
             show-fix-credentials
             :busy="pairingBusy(channelKey(ch))"
+            @click.stop
             @approve="asAdmin => approvePairing(channelKey(ch), cardPending(ch), asAdmin)"
             @reject="rejectPairing(channelKey(ch), cardPending(ch))"
             @restart="restartChannel(ch)"
             @fix-credentials="fixCredentials(ch)"
           />
-          <div class="chb-card__foot">
-            <button
-              v-if="ch.enabled === false"
-              class="btn btn--ghost"
-              type="button"
-              :disabled="actionPending(ch, 'toggle')"
-              @click.stop="toggleChannel(ch)"
-            >{{ t('console.channels.enable') }}</button>
-            <template v-else>
-              <button
-                class="btn btn--ghost"
-                type="button"
-                :disabled="actionPending(ch, 'probe')"
-                @click.stop="probeChannel(ch)"
-              >{{ actionPending(ch, 'probe') ? t('console.channels.testing') : t('console.channels.testConnection') }}</button>
-              <button
-                class="btn btn--ghost"
-                type="button"
-                :disabled="actionPending(ch, 'restart') || !adapterLoaded(ch)"
-                :title="!adapterLoaded(ch) ? t('console.channels.restartNotLoaded') : undefined"
-                @click.stop="restartChannel(ch)"
-              >{{ t('console.channels.restart') }}</button>
-            </template>
-            <span class="chb-card__go" aria-hidden="true">{{ t('console.channels.home.details') }} →</span>
-          </div>
         </article>
 
         <!-- Channels running in this gateway process but absent from config —
-             surfaced so an operator can see an orphaned runtime channel. -->
+             full-width rows too, never a lead and never in channels[]. -->
         <article
           v-for="ch in unconfiguredChannels"
           :key="`unconfigured-${channelKey(ch)}`"
-          class="chb-card is-muted is-static"
+          class="chb-story is-muted is-static"
         >
-          <div class="chb-card__top">
-            <ChannelBrandMark :type="String(ch.type || '')" :label="providerLabel(ch.type, t('console.channels.unknown'))" />
-            <div class="chb-card__id">
-              <strong class="chb-card__name">{{ channelKey(ch) }}</strong>
-              <span class="chb-card__sub">{{ t('console.channels.unconfiguredTitle') }}</span>
+          <ChannelBrandMark
+            class="chb-story__mark"
+            :type="String(ch.type || '')"
+            :label="providerLabel(ch.type, t('console.channels.unknown'))"
+          />
+          <div class="chb-story__head">
+            <div class="chb-story__id">
+              <strong class="chb-story__name">{{ channelKey(ch) }}</strong>
+              <p class="chb-story__deck">
+                <ChannelStatusPill :status="ch.status" :enabled="ch.enabled" :error-class="lastErrorClass(ch.diagnostics)" />
+                <span class="chb-story__sub">{{ t('console.channels.unconfiguredTitle') }}</span>
+              </p>
             </div>
-            <ChannelStatusPill class="chb-card__status" :status="ch.status" :enabled="ch.enabled" :error-class="lastErrorClass(ch.diagnostics)" />
           </div>
-          <p class="chb-card__hint">{{ t('console.channels.unconfiguredHint') }}</p>
+          <p class="chb-story__hint">{{ t('console.channels.unconfiguredHint') }}</p>
         </article>
-
-        <button v-if="addTier === 'card'" type="button" class="chb-card chb-card--add" @click="openChannelCompose">
-          <span aria-hidden="true">＋</span>
-          <span>{{ t('console.channels.addChannel') }}</span>
-        </button>
       </div>
 
-      <!-- ===== Tier 2 (1–3 configured channels): the platform bar is the single
-           add entry — no add-card, no top-right button. Picking a chip opens the
-           compose form pre-picked; "+N more" opens the full compose gallery. ===== -->
-      <ChannelPlatformBar
-        v-if="addTier === 'bar'"
-        :channels="composeEditor.catalog.value"
-        :used-types="channels.map(ch => String(ch.type))"
-        :pending="composeEditor.catalogPending.value"
-        @pick="openComposeWithType"
-        @more="openChannelCompose"
-      />
+      <!-- Enroll strip: the single, always-available add entry. The title button
+           opens the full compose gallery (unconditional — never gated on the
+           async catalog, and the path for a second channel of a configured
+           platform); the chips are shortcuts to a pre-picked platform. -->
+      <footer class="chb-enroll">
+        <button type="button" class="chb-enroll__title" @click="openChannelCompose">
+          <span class="chb-enroll__glyph" aria-hidden="true">＋</span>
+          <span>{{ t('console.channels.home.enroll.title') }}</span>
+        </button>
+        <button
+          v-for="spec in availablePlatforms"
+          :key="spec.type"
+          type="button"
+          class="chb-enroll__chip"
+          :data-channel-type="spec.type"
+          :title="t('console.channels.home.enroll.chip', { platform: enrollLabel(spec) })"
+          @click="openComposeWithType(spec.type)"
+        >
+          <ChannelBrandMark :type="spec.type" :label="enrollLabel(spec)" />
+          <span>{{ enrollLabel(spec) }}</span>
+        </button>
+      </footer>
     </section>
 
     <!-- Floating dirty bar: the page scrolls as a whole now, so the unsaved
@@ -408,7 +460,6 @@ import ChannelBrandMark from '@/components/setup/ChannelBrandMark.vue'
 import ChannelComposeSurface from '@/components/channels/ChannelComposeSurface.vue'
 import ChannelConfigEditor from '@/components/channels/ChannelConfigEditor.vue'
 import ChannelEditorActionBar from '@/components/channels/ChannelEditorActionBar.vue'
-import ChannelPlatformBar from '@/components/channels/ChannelPlatformBar.vue'
 import ChannelTypeGallery from '@/components/channels/ChannelTypeGallery.vue'
 import ErrorState from '@/components/ErrorState.vue'
 import LoadingSpinner from '@/components/LoadingSpinner.vue'
@@ -417,10 +468,11 @@ import { useRequest } from '@/composables/useRequest'
 import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
-import { useChannelEditor } from '@/composables/channels/useChannelEditor'
+import { useChannelEditor, type ChannelEditorSpec } from '@/composables/channels/useChannelEditor'
 import { bootstrapAsAdminDefault, useChannelMembers, type ChannelPairing } from '@/composables/channels/useChannelMembers'
 import { approvePairingParams, errorMessage, withPendingKey } from '@/composables/channels/shared'
 import { useChannelCatalogI18n } from '@/composables/setup/useChannelCatalogI18n'
+import { orderChannelSpecs } from '@/composables/setup/channelPlatformOrder'
 import ChannelMembersPanel from '@/components/channels/ChannelMembersPanel.vue'
 import {
   capabilityRows,
@@ -460,12 +512,14 @@ const STATUS_SEVERITY = Object.fromEntries(
 ) as Record<ChannelStatusKey, number>
 const DETAIL_TABS: DetailTab[] = ['overview', 'pairings', 'configuration', 'diagnostics']
 const SECTIONS: SectionId[] = ['pairings', 'configuration', 'diagnostics']
-// The add-region adapts to how many channels are configured, and there is
-// EXACTLY ONE "add" affordance on screen at any time: 0 → inline gallery,
-// 1..3 → platform bar below the grid, >=4 → trailing add-card + header button.
-const PLATFORM_BAR_MAX_CHANNELS = 3
-
+// The home has EXACTLY ONE "add" affordance on screen at any time: 0 channels →
+// the inline platform gallery IS the page; ≥1 channel → the enroll strip closes
+// the fleet front page. No per-count add-card or header button.
 const { t, locale } = useI18n()
+const { localizeLabel } = useChannelCatalogI18n()
+function enrollLabel(spec: ChannelEditorSpec): string {
+  return localizeLabel(spec.type, spec.label)
+}
 const rpc = useRpcStore()
 const router = useRouter()
 const route = useRoute()
@@ -518,24 +572,54 @@ const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) 
 const selectedProbe = computed(() =>
   selectedChannel.value ? probeResults.value[channelKey(selectedChannel.value)] : undefined)
 
-// Which add affordance the home shows — driven by the CONFIGURED channel count
-// only (orphan runtime channels don't count toward the tier). 'gallery' = the
-// inline platform gallery (0 channels), 'bar' = the platform bar under the grid
-// (1..3), 'card' = the trailing add-card + top-right button (>=4). Exactly one
-// of these is the add entry at any time.
-const addTier = computed<'gallery' | 'bar' | 'card'>(() => {
-  const count = channels.value.length
-  if (count === 0) return 'gallery'
-  return count <= PLATFORM_BAR_MAX_CHANNELS ? 'bar' : 'card'
+// Home mode — 'gallery' when nothing is configured yet (the inline platform
+// gallery IS the page and the add entry), 'fleet' once ≥1 channel exists (the
+// folio + ledger front page, whose enroll strip is the single add entry).
+// Orphan runtime channels don't count toward the mode.
+const addTier = computed<'gallery' | 'fleet'>(() =>
+  channels.value.length === 0 ? 'gallery' : 'fleet')
+
+// Fleet folio figures (home front page): every figure is derived from real
+// status/facts. "down" and "pending" surface only when non-zero, and pending
+// sums cardPendingCount (which is 0, never null, for an unknown facts fetch) so
+// an unknown state is omitted rather than shown as a fake zero.
+const fleetConnected = computed(
+  () => channels.value.filter(ch => presentationFor(ch).key === 'connected').length,
+)
+const fleetDown = computed(
+  () => channels.value.filter(ch => presentationFor(ch).tone === 'danger').length,
+)
+const fleetPlatformTypes = computed(() => {
+  const seen: string[] = []
+  for (const ch of channels.value) {
+    const type = String(ch.type || 'unknown')
+    if (!seen.includes(type)) seen.push(type)
+  }
+  return seen
+})
+const fleetPending = computed(
+  () => channels.value.reduce((total, ch) => total + cardPendingCount(ch), 0),
+)
+const fleetAllConnected = computed(() =>
+  channels.value.length > 0 && fleetDown.value === 0 && fleetConnected.value === channels.value.length)
+// Comma-joined platform names for the roster's aria label only (visual roster
+// is brand marks, so no number ever sits next to a pluralizable noun).
+const platformNames = computed(() =>
+  fleetPlatformTypes.value.map(type => providerLabel(type, t('console.channels.unknown'))).join(', '))
+// Enroll chips: catalog platforms not yet configured, locale-ordered like the
+// compose gallery. A shortcut only — the enroll title button (unconditional)
+// remains the real add entry, so an empty/failed catalog never strands the add.
+const availablePlatforms = computed(() => {
+  const configured = new Set(channels.value.map(ch => String(ch.type || '')).filter(Boolean))
+  const unused = composeEditor.catalog.value.filter(
+    spec => spec.type && !configured.has(String(spec.type)))
+  return orderChannelSpecs(unused, String(locale.value), enrollLabel)
 })
 
-// Tier 1 (inline gallery) and Tier 2 (platform bar) render the platform catalog
-// on the home surface WITHOUT ever entering the compose takeover — so the
-// compose editor's catalog must be warmed as soon as the home lands in either
-// tier (loadCatalog is idempotent and de-dups an in-flight fetch).
-watch(addTier, tier => {
-  if (tier === 'gallery' || tier === 'bar') void composeEditor.loadCatalog()
-}, { immediate: true })
+// The home surface renders the platform catalog (gallery tiles or enroll chips)
+// WITHOUT entering the compose takeover, so warm the compose editor's catalog as
+// soon as the home lands in either mode (loadCatalog is idempotent).
+watch(addTier, () => { void composeEditor.loadCatalog() }, { immediate: true })
 
 const loadData = refresh
 let pollTimer: ReturnType<typeof setInterval> | null = null
@@ -1666,59 +1750,199 @@ function probeResultDetail(ch: Channel): string {
 .is-spinning { animation: ch-spin 0.9s linear infinite; }
 @keyframes ch-spin { to { transform: rotate(360deg); } }
 
-/* ===== home: dashboard card grid ===== */
-.chb__grid { display: grid; gap: var(--sp-3); grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
-.chb-card {
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  cursor: pointer;
+/* ===== home: the fleet front page (folio + ledger + enroll) ===== */
+/* The section is the query container, so the ledger reflows to CONTENT width
+   (which the collapsible nav changes) rather than to the viewport. */
+.chb { container: chb-home / inline-size; display: flex; flex-direction: column; }
+
+/* Folio — a masthead dateline. A single full-width --border-strong rule carries
+   the horizontal; the roster, health reading and as-of time rag left under it,
+   so a lone channel never opens a middle void and nothing is pinned far-right. */
+.chb-folio {
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-strong);
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-  min-width: 0;
-  padding: var(--sp-4) var(--sp-4) var(--sp-3);
-  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  padding-bottom: var(--sp-3);
 }
-.chb-card:hover, .chb-card:focus-visible { border-color: var(--border-strong, var(--border)); box-shadow: var(--elev-1); transform: translateY(-2px); }
-.chb-card:focus-visible { box-shadow: var(--focus-ring); outline: 0; }
-.chb-card.is-muted { background: var(--bg); }
-.chb-card.is-muted .chb-card__name, .chb-card.is-muted .chb-fact__v { color: var(--text-muted); }
-.chb-card.is-static { cursor: default; }
-.chb-card.is-static:hover { border-color: var(--border); box-shadow: none; transform: none; }
-@media (prefers-reduced-motion: reduce) {
-  .chb-card { transition: none; }
-  .chb-card:hover, .chb-card:focus-visible { transform: none; }
+.chb-folio__roster { align-items: center; align-self: center; display: inline-flex; gap: var(--sp-1); }
+.chb-folio__roster :deep(.brand-mark) { font-size: var(--fs-xs); height: 22px; width: 22px; }
+.chb-folio__lede {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 }
-.chb-card__top { align-items: center; display: flex; gap: var(--sp-3); min-width: 0; }
-.chb-card__id { display: grid; gap: 2px; min-width: 0; }
-.chb-card__name { color: var(--text); font-size: var(--fs-md); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chb-card__sub { color: var(--text-dim); font-size: var(--fs-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chb-card__status { flex: none; font-size: var(--fs-xs); margin-left: auto; }
-.chb-card__facts { align-items: center; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-5); padding-top: var(--sp-3); }
-.chb-fact { display: grid; gap: 1px; }
-.chb-fact__k { color: var(--text-dim); font-size: 11px; }
-.chb-fact__v { color: var(--text); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; font-weight: 600; }
-.chb-card__pending { border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border)); border-radius: var(--radius-full); color: var(--warn); font-size: 11px; font-weight: 700; margin-left: auto; padding: 2px 9px; white-space: nowrap; }
-.chb-card__hint { color: var(--text-dim); font-size: var(--fs-xs); line-height: 1.5; margin: 0; }
-.chb-card__foot { align-items: center; display: flex; gap: var(--sp-2); margin-top: auto; }
-.chb-card__foot .btn { min-height: 28px; padding: 3px 11px; font-size: var(--fs-xs); }
-.chb-card__go { color: var(--text-dim); font-size: var(--fs-xs); margin-left: auto; white-space: nowrap; }
-.chb-card:hover .chb-card__go { color: var(--text); }
-.chb-card--add {
+.chb-folio__flag { font-size: var(--fs-sm); font-variant-numeric: tabular-nums; font-weight: 500; }
+.chb-folio__flag::before { color: var(--text-dim); content: '·'; margin-inline-end: var(--sp-2); }
+.chb-folio__flag.is-down { color: var(--danger); }
+.chb-folio__flag.is-pending { color: var(--warn); }
+.chb-folio__asof {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Ledger of full-width stories — a row cannot half-collapse, so no float. */
+.chb-ledger { display: flex; flex-direction: column; }
+.chb-story {
+  border-top: 1px solid var(--border);
+  column-gap: var(--sp-4);
+  cursor: pointer;
+  display: grid;
+  grid-template-areas: "mark head" "led led" "alerts alerts";
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: var(--sp-4) 0;
+  row-gap: var(--sp-3);
+  transition: background var(--dur-fast) var(--ease-out);
+}
+.chb-story:first-child { border-top: 0; }  /* the folio rule caps the lead */
+.chb-story:hover { background: color-mix(in srgb, var(--text) 3%, transparent); }
+.chb-story:focus-visible { border-radius: var(--radius-sm); box-shadow: var(--focus-ring); outline: 0; }
+.chb-story.is-lead { padding-top: var(--sp-5); }
+.chb-story.is-down { border-inline-start: 2px solid var(--danger); padding-inline-start: var(--sp-4); }
+.chb-story.is-muted { opacity: 0.62; }
+.chb-story.is-static { cursor: default; }
+.chb-story.is-static:hover { background: transparent; }
+@media (prefers-reduced-motion: reduce) { .chb-story { transition: none; } }
+.chb-story__mark { grid-area: mark; }
+.chb-story__mark :deep(.brand-mark) { font-size: var(--fs-sm); height: 34px; width: 34px; }
+.chb-story.is-lead .chb-story__mark :deep(.brand-mark) { font-size: var(--fs-lg); height: 48px; width: 48px; }
+.chb-story__head {
   align-items: center;
-  background: transparent;
-  border-style: dashed;
+  column-gap: var(--sp-4);
+  display: grid;
+  grid-area: head;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.chb-story__id { min-width: 0; }
+.chb-story__name {
+  color: var(--text);
+  display: block;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chb-story.is-lead .chb-story__name { font-size: var(--fs-xl); letter-spacing: -0.01em; }
+.chb-story__deck {
+  align-items: center;
   color: var(--text-muted);
   display: flex;
-  flex-direction: row;
+  flex-wrap: wrap;
+  font-size: var(--fs-sm);
+  gap: var(--sp-1) var(--sp-2);
+  margin: var(--sp-1) 0 0;
+}
+.chb-story__sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chb-story__actions { align-items: center; display: flex; flex: none; gap: var(--sp-2); }
+.chb-story__actions .btn { font-size: var(--fs-xs); min-height: 28px; padding: 3px 11px; }
+.chb-story__go { color: var(--text-dim); font-size: var(--fs-xs); white-space: nowrap; }
+.chb-story:hover .chb-story__go { color: var(--text); }
+.chb-story__hint { color: var(--text-dim); font-size: var(--fs-xs); grid-area: led; line-height: 1.5; margin: 0; }
+
+/* The anti-void primitive: N equal columns always span the full measure. */
+.chb-story__ledger {
+  border-top: 1px solid var(--border);
+  display: grid;
+  grid-area: led;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  margin: 0;
+}
+.chb-figure {
+  border-inline-start: 1px solid var(--border);
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-4);
+}
+.chb-figure:first-child { border-inline-start: 0; padding-inline-start: 0; }
+.chb-figure dt { color: var(--text-dim); font-size: var(--fs-xs); font-weight: 500; }
+.chb-figure dd {
+  color: var(--text);
+  font-size: var(--fs-lg);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1.1;
+  margin: 0;
+}
+.chb-story.is-lead .chb-figure dd { font-size: var(--fs-xl); }
+.chb-figure dd.is-null { color: var(--text-dim); font-weight: 500; }
+.chb-figure--alert dd { color: var(--warn); }
+.chb-story__alerts { grid-area: alerts; }
+
+/* Enroll strip — the single, always-available add entry. */
+.chb-enroll {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-2);
+  padding-top: var(--sp-4);
+}
+.chb-enroll__title {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  gap: var(--sp-2);
+  margin-inline-end: var(--sp-1);
+  padding: 0;
+}
+.chb-enroll__title:hover { color: var(--text); }
+.chb-enroll__title:focus-visible { border-radius: var(--radius-sm); box-shadow: var(--focus-ring); outline: 0; }
+.chb-enroll__glyph {
+  align-items: center;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+.chb-enroll__chip {
+  align-items: center;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
   font: inherit;
   font-size: var(--fs-sm);
   gap: var(--sp-2);
-  justify-content: center;
-  min-height: 150px;
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-1);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
-.chb-card--add:hover, .chb-card--add:focus-visible { color: var(--text); }
+.chb-enroll__chip:hover { border-color: var(--border-strong); box-shadow: var(--elev-1); }
+.chb-enroll__chip:focus-visible { box-shadow: var(--focus-ring); outline: 0; }
+.chb-enroll__chip :deep(.brand-mark) { font-size: var(--fs-xs); height: 22px; width: 22px; }
+@media (prefers-reduced-motion: reduce) { .chb-enroll__chip { transition: none; } }
+
+/* Reflow keyed to CONTENT width (container query), not viewport. */
+@container chb-home (max-width: 640px) {
+  .chb-story__head { grid-template-columns: minmax(0, 1fr); }
+  .chb-story__actions { flex-wrap: wrap; grid-row: 2; margin-top: var(--sp-2); }
+  .chb-story__ledger { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .chb-figure { border-inline-start: 0; border-top: 1px solid var(--border); padding-block: var(--sp-2); padding-inline: 0; }
+  .chb-figure:first-child { border-top: 0; }
+}
+@container chb-home (max-width: 460px) {
+  .chb-story__ledger { grid-template-columns: minmax(0, 1fr); }
+  .chb-story.is-lead .chb-story__name { font-size: var(--fs-lg); }
+  .chb-folio__lede { font-size: var(--fs-md); }
+}
 
 /* ===== drill-in: full-page detail ===== */
 .chd { display: flex; flex-direction: column; gap: var(--sp-3); }
@@ -1839,9 +2063,8 @@ function probeResultDetail(ch: Channel): string {
   .ch-stage__header { align-items: stretch; flex-direction: column; }
   .ch-stage__actions { justify-content: stretch; }
   .ch-stage__actions .btn { flex: 1; }
-  .chb__grid { grid-template-columns: minmax(0, 1fr); }
   /* Touch-target floor for the compact controls this view introduces. */
-  .chb-card__foot .btn { min-height: 40px; }
+  .chb-story__actions .btn { min-height: 40px; }
   .chd__nav button { min-height: 44px; }
 }
 </style>

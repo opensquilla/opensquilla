@@ -28,9 +28,8 @@ const channelRows = [
     capability_profile: { transports: ['polling'], maturity: 'YELLOW-experimental', evidence: {} },
     diagnostics: { network_probe: 'not_run' },
   },
-  // Four configured channels keeps the home in the add-card tier, so the
-  // top-right "Add channel" button (the compose entry these routing tests
-  // exercise) is present.
+  // Four configured channels put the home into fleet mode, so the enroll strip
+  // (the compose entry these routing tests exercise) is present.
   {
     name: 'wecom-hr',
     type: 'wecom',
@@ -59,8 +58,8 @@ function buttonWithText(root: ParentNode, label: string): HTMLButtonElement {
 }
 
 function channelCard(root: ParentNode, name: string): HTMLElement {
-  const card = Array.from(root.querySelectorAll<HTMLElement>('.chb-card'))
-    .find(candidate => candidate.querySelector('.chb-card__name')?.textContent === name)
+  const card = Array.from(root.querySelectorAll<HTMLElement>('.chb-story'))
+    .find(candidate => candidate.querySelector('.chb-story__name')?.textContent === name)
   if (!card) throw new Error(`channel card not found: ${name}`)
   return card
 }
@@ -235,7 +234,7 @@ describe('ChannelsView with a real router', () => {
       expect(router.currentRoute.value.path).toBe('/channels')
       expect(router.currentRoute.value.query.channel).toBeUndefined()
       expect(el.querySelector('.chd')).toBeNull()
-      expect(el.querySelector('.chb__grid')).toBeTruthy()
+      expect(el.querySelector('.chb-ledger')).toBeTruthy()
     } finally {
       app.unmount()
     }
@@ -247,7 +246,7 @@ describe('ChannelsView with a real router', () => {
     try {
       await flush()
       const baseline = historyPush.mock.calls.length
-      buttonWithText(el, 'Add channel').click()
+      el.querySelector<HTMLButtonElement>('.chb-enroll__title')!.click()
       await flush()
       const pushed = historyPush.mock.calls.slice(baseline).map(call => String(call[0]))
       expect(pushed.some(location => location.includes('compose=1'))).toBe(true)
@@ -286,7 +285,7 @@ describe('ChannelsView with a real router', () => {
     const { app, el, flush, router } = ctx
     try {
       await flush()
-      buttonWithText(el, 'Add channel').click()
+      el.querySelector<HTMLButtonElement>('.chb-enroll__title')!.click()
       await flush()
       const surface = el.querySelector<HTMLElement>('.chc')!
       surface.querySelector<HTMLButtonElement>('[data-channel-type="slack"]')!.click()

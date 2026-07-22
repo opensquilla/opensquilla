@@ -23,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   console and require no Node.js at install time. Source installs and wheelhouse
   builds now require Node.js 22.12+ with npm and build the console from the
   locked frontend dependencies before packaging.
+- Optional profile migration is now available only from **Settings → Advanced
+  → Data maintenance**. Startup, onboarding, the sidebar, Doctor, and native
+  upgrade prompts stay silent; Desktop can still preview and apply a guarded
+  whole-profile replacement, while Web administrators receive a path-free,
+  read-only preview.
 
 ### Fixed
 

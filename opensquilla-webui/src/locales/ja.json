@@ -164,6 +164,42 @@
       "sidebarWidthCompactStatus": "コンパクト表示では {current}px を使用します。デスクトップ設定の {saved}px は保持されます。",
       "sidebarWidthDrawerStatus": "ドロワー表示では {current}px を使用します。デスクトップ設定の {saved}px は保持されます。"
     },
+    "dataMigration": {
+      "title": "データとバックアップ",
+      "desc": "別の OpenSquilla インストールのデータを検索して確認します。このページを開くまでスキャンせず、確認なしにデータを変更しません。",
+      "refresh": "再スキャン",
+      "scanning": "インポート可能な OpenSquilla データを検索中…",
+      "unsupportedTitle": "OpenSquilla を更新してインポートを確認",
+      "unsupportedDesc": "このゲートウェイまたは Desktop シェルは安全なプレビュー API に未対応です。ホストを更新してから戻ってください。",
+      "invalidResponse": "ゲートウェイから未対応の移行プレビューが返されました。",
+      "compatibilityTitle": "従来の Agent データ保存先",
+      "compatibilityDesc": "互換性のある従来の Agent データ保存先を使用しています。変更すると ID とメモリーの参照元が切り替わりますが、データの移動、統合、削除は行いません。",
+      "chooseLegacyAgentData": "Agent データ保存先を選択",
+      "recoveryTitle": "リカバリープロファイルではインポートできません",
+      "loadFailed": "インポート元を確認できませんでした。",
+      "emptyTitle": "他の OpenSquilla データは見つかりませんでした",
+      "emptyDesc": "後でもう一度スキャンできます。Desktop ではデータフォルダーを手動選択できます。",
+      "chooseSourceDesc": "インポート前に移行元を確認してください。移行元は変更されず、現在のデータと統合されません。",
+      "previewSource": "{source}のデータを確認",
+      "webReadOnly": "この Web 接続ではプレビューのみ可能です。Desktop またはゲートウェイホストで完了してください。",
+      "hostCliHint": "ターミナルから完了するには、ゲートウェイホストで移行ツールを実行してください。サーバーパスはブラウザーに表示されません。",
+      "blockers": {
+        "source_in_use": "移行元は現在使用中です。",
+        "source_schema_newer": "移行元は新しい OpenSquilla で作成されています。",
+        "source_database_invalid": "移行元データベースを検証できません。",
+        "source_config_invalid": "移行元設定を検証できません。",
+        "source_unreadable": "移行元を安全に読み取れません。",
+        "insufficient_disk": "空きディスク容量が不足しています。",
+        "target_recovery_required": "インポート前に現在のデータを復旧する必要があります。",
+        "target_not_replaceable": "現在のデータを安全に置き換えられません。",
+        "preview_unavailable": "この移行元の安全なプレビューは利用できません。"
+      },
+      "notices": {
+        "whole_profile_replacement": "現在のプロファイルを完全にバックアップして置き換えます。データは統合されません。",
+        "previously_imported": "この移行元は以前インポート済みですが、再確認できます。",
+        "scheduled_jobs_will_be_paused": "インポートしたスケジュールジョブは確認まで一時停止されます。"
+      }
+    },
     "dialog": {
       "title": "設定",
       "actionNeeded": "対応が必要 ({count})",
@@ -996,6 +1032,10 @@
       "agentConfigLabel": "エージェント設定（詳細）",
       "agentConfigDesc": "既存のエージェント設定を管理します。この領域は今後のマルチエージェント再設計で変更されます。",
       "agentConfigAction": "開く",
+      "dataMaintenanceLabel": "データメンテナンス",
+      "dataMaintenanceDesc": "データのインポートとバックアップを管理します。デスクトップ版ではローカルプロファイルのリセットや削除もできます。",
+      "dataMaintenanceAction": "管理",
+      "dataMaintenanceAria": "データメンテナンスを開く",
       "runTraceLabel": "ログの実行トレースドロワー",
       "runTraceDesc": "ログ行を操作可能にし、ログビューで行ごとのノードステップ詳細ドロワーを開きます。",
       "runTraceAria": "ログの実行トレースドロワー（再読み込み後に有効）"
@@ -2569,14 +2609,6 @@
       "hint": "ゲートウェイはまだ実行する準備ができていません。",
       "finishSetup": "セットアップを完了",
       "viewReadiness": "準備状況を表示"
-    },
-    "legacyDataBanner": {
-      "ariaLabel": "別の OpenSquilla インストールが見つかりました",
-      "title": "別の OpenSquilla インストールが見つかりました",
-      "dismiss": "今はしない",
-      "dismissNotice": "データ転送の通知を閉じる",
-      "hintWeb": "現在のデータはすでに使用中で、操作は不要です。別のインストールで置き換える場合のみ、ゲートウェイを停止して次を実行してください：",
-      "copyCommand": "データ転送コマンドをコピー"
     },
     "shortcuts": {
       "toggleSidebar": {

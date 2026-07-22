@@ -291,6 +291,10 @@ METHOD_SCOPES: dict[str, str] = {
     "memory.repair.list": ADMIN_SCOPE,
     "memory.repair.run": ADMIN_SCOPE,
     "memory.repair.show": ADMIN_SCOPE,
+    # Settings-only profile import discovery. These methods expose no paths
+    # and never apply an import, but host-level inventory remains admin-only.
+    "migration.sources.list": ADMIN_SCOPE,
+    "migration.sources.preview": ADMIN_SCOPE,
     # OpenSquilla-only — onboarding mutations require admin scope.
     "onboarding.provider.configure": ADMIN_SCOPE,
     # The probe persists nothing but carries candidate credentials.

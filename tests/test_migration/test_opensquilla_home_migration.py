@@ -1011,6 +1011,56 @@ def test_live_source_gateway_refused(tmp_path: Path) -> None:
     assert not target.exists()
 
 
+def test_read_only_preview_allows_the_active_target_gateway(tmp_path: Path) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+    (target / "state").mkdir(parents=True)
+    (target / "config.toml").write_text("port = 18791\n", encoding="utf-8")
+    (target / "state" / "gateway.pid").write_text(
+        json.dumps({"pid": os.getpid(), "start_ts": "2026-01-01T00:00:00+00:00"}),
+        encoding="utf-8",
+    )
+    before = _file_bytes(target)
+
+    report = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=source,
+            target=target,
+            apply=False,
+            replace_target=True,
+            allow_running_target_preview=True,
+        )
+    ).migrate()
+
+    assert report["apply"] is False
+    assert report["preflight"]["target_gateway_running"] is True
+    assert not _errors(report)
+    assert _file_bytes(target) == before
+
+
+def test_running_target_preview_escape_hatch_is_rejected_for_apply(
+    tmp_path: Path,
+) -> None:
+    source = _build_source_home(tmp_path / "source-root")
+    target = tmp_path / "target-home"
+
+    report = OpenSquillaHomeMigrator(
+        OpenSquillaMigrationOptions(
+            source=source,
+            target=target,
+            apply=True,
+            allow_running_target_preview=True,
+        )
+    ).migrate()
+
+    assert any(
+        item["kind"] == "options"
+        and "valid for dry-run only" in item["reason"]
+        for item in _errors(report)
+    )
+    assert not target.exists()
+
+
 def test_schema_ahead_source_refused(tmp_path: Path) -> None:
     source = _build_source_home(
         tmp_path, applied_ids=("V001__initial_schema", "V999__future_thing")

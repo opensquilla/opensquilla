@@ -234,6 +234,7 @@ class _CollectedPrimaryInput:
     """One durable prompt coalesced into an already queued collect turn."""
 
     persisted_user_message_id: str | None
+    client_request_id: str | None
     client_message_id: str | None
     surface_id: str | None
     intent: str = "send"
@@ -1700,18 +1701,22 @@ class TaskRuntime:
                 except (TypeError, ValueError):
                     revision = 2
                 try:
+                    context: dict[str, Any] = {
+                        "turn_id": handle.task_id,
+                        "client_message_id": metadata.get("client_message_id"),
+                        "surface_id": metadata.get("surface_id"),
+                        "intent": metadata.get("turn_context_intent", "send"),
+                        "disposition": "queued",
+                        "target_turn_id": handle.task_id,
+                        "revision": revision,
+                    }
+                    client_request_id = metadata.get("client_request_id")
+                    if isinstance(client_request_id, str) and client_request_id:
+                        context["client_request_id"] = client_request_id
                     identity_rebound = await self._update_transcript_turn_context(
                         envelope.session_key,
                         persisted_user_message_id,
-                        {
-                            "turn_id": handle.task_id,
-                            "client_message_id": metadata.get("client_message_id"),
-                            "surface_id": metadata.get("surface_id"),
-                            "intent": metadata.get("turn_context_intent", "send"),
-                            "disposition": "queued",
-                            "target_turn_id": handle.task_id,
-                            "revision": revision,
-                        },
+                        context,
                     )
                 except Exception as exc:
                     log.warning(
@@ -1890,6 +1895,9 @@ class TaskRuntime:
                 metadata = envelope.metadata
                 collected_identity: _CollectedPrimaryInput | None = None
                 if persisted_user_message_id or metadata.get("client_message_id"):
+                    client_request_id = metadata.get("client_request_id")
+                    if not isinstance(client_request_id, str) or not client_request_id:
+                        client_request_id = None
                     try:
                         revision = max(
                             2,
@@ -1899,6 +1907,7 @@ class TaskRuntime:
                         revision = 2
                     collected_identity = _CollectedPrimaryInput(
                         persisted_user_message_id=persisted_user_message_id,
+                        client_request_id=client_request_id,
                         client_message_id=metadata.get("client_message_id"),
                         surface_id=metadata.get("surface_id"),
                         intent=metadata.get("turn_context_intent", "send"),
@@ -2829,6 +2838,9 @@ class TaskRuntime:
             "disposition": disposition,
             "revision": max(2, base_revision + 1),
         }
+        client_request_id = metadata.get("client_request_id")
+        if isinstance(client_request_id, str) and client_request_id:
+            context["client_request_id"] = client_request_id
         meta_control = metadata.get("meta_control")
         if isinstance(meta_control, dict):
             context["meta_control"] = dict(meta_control)
@@ -2913,6 +2925,8 @@ class TaskRuntime:
             "target_turn_id": task.task_id,
             "revision": item.revision,
         }
+        if item.client_request_id is not None:
+            context["client_request_id"] = item.client_request_id
         try:
             updated = await self._update_transcript_turn_context(
                 task.envelope.session_key,

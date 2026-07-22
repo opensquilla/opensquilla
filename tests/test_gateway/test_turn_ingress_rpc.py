@@ -564,7 +564,7 @@ async def test_queued_meta_control_reopens_and_reactivates_exactly_once(
 
 
 @pytest.mark.asyncio
-async def test_meta_control_recovery_drains_small_batches_past_pending_cap() -> None:
+async def test_meta_control_recovery_is_nonblocking_and_fair_to_other_sessions() -> None:
     session_key = "agent:main:webchat:recovery-batches"
     records: dict[str, AgentTaskRecord] = {}
     claims: list[Any] = []
@@ -622,6 +622,9 @@ async def test_meta_control_recovery_drains_small_batches_past_pending_cap() -> 
         for field, value in fields.items():
             setattr(record, field, value)
 
+    async def _create(record: AgentTaskRecord) -> None:
+        records[record.task_id] = record
+
     async def _get(task_id: str) -> AgentTaskRecord | None:
         return records.get(task_id)
 
@@ -630,14 +633,20 @@ async def test_meta_control_recovery_drains_small_batches_past_pending_cap() -> 
 
     storage = SimpleNamespace(
         claim_recoverable_meta_control_tasks=_claim,
+        create_agent_task=_create,
         update_agent_task=_update,
         get_agent_task=_get,
         update_transcript_turn_context=_update_context,
     )
+    first_recovery_started = asyncio.Event()
+    release_first_recovery = asyncio.Event()
     seen: list[tuple[str, str]] = []
 
     async def _handler(run: Any) -> None:
         seen.append((run.task_id, run.queue_mode))
+        if run.task_id == "recovery-task-0":
+            first_recovery_started.set()
+            await release_first_recovery.wait()
 
     runtime = TaskRuntime(
         storage=storage,
@@ -646,15 +655,35 @@ async def test_meta_control_recovery_drains_small_batches_past_pending_cap() -> 
         max_pending_per_session=1,
         running_heartbeat_interval_s=None,
     )
-    assert await runtime.recover_durable_meta_controls(limit=1) == 3
+    recovery = asyncio.create_task(runtime.recover_durable_meta_controls(limit=1))
+    await asyncio.wait_for(first_recovery_started.wait(), timeout=2.0)
+    assert await asyncio.wait_for(recovery, timeout=2.0) == 3
+
+    await runtime.enqueue(
+        RouteEnvelope(
+            source_kind=SourceKind.WEB,
+            source_name="RPC",
+            agent_id="main",
+            session_key="agent:main:webchat:ordinary-during-recovery",
+            session_id="ordinary-session-id",
+            input_provenance={},
+            metadata={},
+        ),
+        "ordinary input",
+        task_id="ordinary-task",
+    )
+    release_first_recovery.set()
     for task_id in records:
         assert (await runtime.wait(task_id, timeout=2.0)).status == "succeeded"
     assert claim_calls == 4
     assert sorted(seen) == [
+        ("ordinary-task", "followup"),
         ("recovery-task-0", "followup"),
         ("recovery-task-1", "followup"),
         ("recovery-task-2", "followup"),
     ]
+    started_task_ids = [task_id for task_id, _mode in seen]
+    assert started_task_ids.index("ordinary-task") < started_task_ids.index("recovery-task-2")
 
 
 @pytest.mark.asyncio

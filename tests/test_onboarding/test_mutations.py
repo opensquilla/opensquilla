@@ -196,6 +196,71 @@ def test_upsert_memory_embedding_remote_env_reference_dropped_on_changed_origin(
     assert same_origin.config.memory.embedding.remote.api_key_env == "MEM_ORIGIN_A_KEY"
 
 
+def test_upsert_memory_embedding_resubmitted_env_reference_never_crosses_origin():
+    # Clients hydrate and re-send the stored env-var name in plaintext: a
+    # resave that re-submits the stored reference while changing the endpoint
+    # origin is "keep current" and must not rebind the secret to the new
+    # origin. A genuinely new env name for the new endpoint is honored.
+    cfg = _remote_embedding_config(
+        api_key_env="MEM_ORIGIN_A_KEY", base_url="https://a.example.test/v1"
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key or api_key_env"):
+        upsert_memory_embedding(
+            cfg,
+            provider="openai",
+            api_key_env="MEM_ORIGIN_A_KEY",
+            base_url="https://b.example.test/v1",
+        )
+
+    fresh_env = upsert_memory_embedding(
+        cfg,
+        provider="openai",
+        api_key_env="MEM_ORIGIN_B_KEY",
+        base_url="https://b.example.test/v1",
+    )
+    assert fresh_env.config.memory.embedding.remote.api_key_env == "MEM_ORIGIN_B_KEY"
+
+    same_origin = upsert_memory_embedding(
+        cfg,
+        provider="openai",
+        api_key_env="MEM_ORIGIN_A_KEY",
+        base_url="https://a.example.test/v2",
+    )
+    assert same_origin.config.memory.embedding.remote.api_key_env == "MEM_ORIGIN_A_KEY"
+
+
+def test_upsert_memory_embedding_auto_resubmitted_env_reference_never_crosses_origin():
+    cfg = GatewayConfig(
+        memory={
+            "embedding": {
+                "provider": "auto",
+                "remote": {
+                    "api_key_env": "MEM_ORIGIN_A_KEY",
+                    "base_url": "https://a.example.test/v1",
+                    "model": "embed-model",
+                },
+            }
+        }
+    )
+
+    res = upsert_memory_embedding(
+        cfg,
+        provider="auto",
+        api_key_env="MEM_ORIGIN_A_KEY",
+        base_url="https://b.example.test/v1",
+    )
+    assert not res.config.memory.embedding.remote.api_key_env
+
+    same_origin = upsert_memory_embedding(
+        cfg,
+        provider="auto",
+        api_key_env="MEM_ORIGIN_A_KEY",
+        base_url="https://a.example.test/v2",
+    )
+    assert same_origin.config.memory.embedding.remote.api_key_env == "MEM_ORIGIN_A_KEY"
+
+
 def test_upsert_memory_embedding_remote_explicit_key_always_used_across_origin():
     # A freshly supplied key is operator-authored for the new endpoint and is
     # always honored, even when the origin changes.
@@ -648,6 +713,48 @@ def test_upsert_llm_provider_required_env_reference_dropped_on_changed_origin():
         cfg,
         provider_id="openai",
         model="model-b",
+        base_url="https://a.example.test/v2",
+    )
+    assert same_origin.config.llm.api_key_env == "OPENAI_ORIGIN_A_KEY"
+
+
+def test_upsert_llm_provider_resubmitted_env_reference_never_crosses_origin():
+    # Clients hydrate and re-send the stored env-var name in plaintext: a
+    # resave that re-submits the stored reference while changing the endpoint
+    # origin is "keep current" and must not rebind the secret to the new
+    # origin. A genuinely new env name for the new endpoint is honored.
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openai",
+            "model": "model-a",
+            "api_key_env": "OPENAI_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_llm_provider(
+            cfg,
+            provider_id="openai",
+            model="model-b",
+            api_key_env="OPENAI_ORIGIN_A_KEY",
+            base_url="https://b.example.test/v1",
+        )
+
+    fresh_env = upsert_llm_provider(
+        cfg,
+        provider_id="openai",
+        model="model-b",
+        api_key_env="OPENAI_ORIGIN_B_KEY",
+        base_url="https://b.example.test/v1",
+    )
+    assert fresh_env.config.llm.api_key_env == "OPENAI_ORIGIN_B_KEY"
+
+    same_origin = upsert_llm_provider(
+        cfg,
+        provider_id="openai",
+        model="model-b",
+        api_key_env="OPENAI_ORIGIN_A_KEY",
         base_url="https://a.example.test/v2",
     )
     assert same_origin.config.llm.api_key_env == "OPENAI_ORIGIN_A_KEY"
@@ -1721,8 +1828,104 @@ def test_upsert_image_generation_provider_keeps_stored_key_on_same_origin(monkey
     assert same.config.image_generation.providers.openai.api_key == "sk-image-origin-a"
 
 
+def test_upsert_image_generation_default_env_key_never_crosses_origin(monkeypatch):
+    # The well-known default env var resolves the same shared real secret,
+    # so a cross-origin resave must not keep resolving it for the new
+    # endpoint: the enabled resave fails closed and the disabled resave
+    # persists no env reference.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shared-image-env")
+    first = upsert_image_generation_provider(
+        GatewayConfig(),
+        provider_id="openai",
+        api_key="sk-image-origin-a",
+        base_url="https://api.openai.com/v1",
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_image_generation_provider(
+            first.config,
+            provider_id="openai",
+            api_key="***",
+            base_url="https://attacker.example/v1",
+        )
+
+    changed = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        api_key="***",
+        base_url="https://attacker.example/v1",
+        enabled=False,
+    )
+    provider_cfg = changed.config.image_generation.providers.openai
+    assert provider_cfg.api_key == ""
+    assert provider_cfg.api_key_env != "OPENAI_API_KEY"
+    assert changed.public_payload["api_key_source"] != "env"
+
+
+def test_upsert_image_generation_fresh_default_origin_uses_default_env_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shared-image-env")
+    res = upsert_image_generation_provider(GatewayConfig(), provider_id="openai")
+    assert res.config.image_generation.providers.openai.api_key_env == "OPENAI_API_KEY"
+    assert res.public_payload["api_key_source"] == "env"
+
+
+def test_upsert_image_generation_same_origin_path_change_keeps_default_env_key(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-shared-image-env")
+    first = upsert_image_generation_provider(GatewayConfig(), provider_id="openai")
+
+    same = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        base_url="https://api.openai.com/v2",
+    )
+
+    assert same.config.image_generation.providers.openai.api_key_env == "OPENAI_API_KEY"
+    assert same.public_payload["api_key_source"] == "env"
+
+
+def test_upsert_image_generation_resubmitted_env_reference_never_crosses_origin(monkeypatch):
+    # Clients hydrate and re-send the stored env-var name in plaintext: a
+    # resave that re-submits the stored reference while changing the endpoint
+    # origin is "keep current" and must not rebind the secret to the new
+    # origin.
+    monkeypatch.setenv("MY_IMG_KEY", "sk-image-env-origin-a")
+    first = upsert_image_generation_provider(
+        GatewayConfig(),
+        provider_id="openai",
+        api_key_env="MY_IMG_KEY",
+        base_url="https://a.example.test/v1",
+    )
+    assert first.config.image_generation.providers.openai.api_key_env == "MY_IMG_KEY"
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_image_generation_provider(
+            first.config,
+            provider_id="openai",
+            api_key_env="MY_IMG_KEY",
+            base_url="https://b.example.test/v1",
+        )
+
+    changed = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        api_key_env="MY_IMG_KEY",
+        base_url="https://b.example.test/v1",
+        enabled=False,
+    )
+    assert changed.config.image_generation.providers.openai.api_key_env == ""
+
+    same_origin = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        api_key_env="MY_IMG_KEY",
+        base_url="https://a.example.test/v2",
+    )
+    assert same_origin.config.image_generation.providers.openai.api_key_env == "MY_IMG_KEY"
+
+
 def test_upsert_audio_provider_drops_stored_key_on_changed_origin(monkeypatch):
-    # A stored explicit audio key must not follow a changed endpoint origin.
+    # A stored explicit audio key must not follow a changed endpoint origin;
+    # with every credential source dropped the enabled resave fails closed.
     monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
     first = upsert_audio_provider(
         GatewayConfig(),
@@ -1731,16 +1934,99 @@ def test_upsert_audio_provider_drops_stored_key_on_changed_origin(monkeypatch):
         base_url="https://a.example.test/v1",
     )
 
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_audio_provider(
+            first.config,
+            provider_id="elevenlabs",
+            api_key="",
+            base_url="https://b.example.test/v1",
+        )
+
     changed = upsert_audio_provider(
         first.config,
         provider_id="elevenlabs",
         api_key="",
         base_url="https://b.example.test/v1",
+        enabled=False,
     )
 
     provider_cfg = changed.config.audio.providers.elevenlabs
     assert provider_cfg.api_key == ""
+    assert provider_cfg.api_key_env == ""
     assert provider_cfg.base_url == "https://b.example.test/v1"
+
+
+def test_upsert_audio_provider_default_env_key_never_crosses_origin(monkeypatch):
+    # The well-known default env var resolves the same shared real secret,
+    # so a cross-origin resave must not keep resolving it for the new
+    # endpoint.
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "sk-shared-audio-env")
+    first = upsert_audio_provider(
+        GatewayConfig(),
+        provider_id="elevenlabs",
+        api_key="sk-audio-origin-a",
+        base_url="https://a.example.test/v1",
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_audio_provider(
+            first.config,
+            provider_id="elevenlabs",
+            api_key="***",
+            base_url="https://b.example.test/v1",
+        )
+
+    changed = upsert_audio_provider(
+        first.config,
+        provider_id="elevenlabs",
+        api_key="***",
+        base_url="https://b.example.test/v1",
+        enabled=False,
+    )
+    provider_cfg = changed.config.audio.providers.elevenlabs
+    assert provider_cfg.api_key == ""
+    assert provider_cfg.api_key_env != "ELEVENLABS_API_KEY"
+    assert changed.public_payload["api_key_source"] != "env"
+
+
+def test_upsert_audio_provider_resubmitted_env_reference_never_crosses_origin(monkeypatch):
+    # Clients hydrate and re-send the stored env-var name in plaintext: a
+    # resave that re-submits the stored reference while changing the endpoint
+    # origin is "keep current" and must not rebind the secret to the new
+    # origin.
+    monkeypatch.setenv("MY_AUDIO_KEY", "sk-audio-env-origin-a")
+    first = upsert_audio_provider(
+        GatewayConfig(),
+        provider_id="elevenlabs",
+        api_key_env="MY_AUDIO_KEY",
+        base_url="https://a.example.test/v1",
+    )
+    assert first.config.audio.providers.elevenlabs.api_key_env == "MY_AUDIO_KEY"
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_audio_provider(
+            first.config,
+            provider_id="elevenlabs",
+            api_key_env="MY_AUDIO_KEY",
+            base_url="https://b.example.test/v1",
+        )
+
+    changed = upsert_audio_provider(
+        first.config,
+        provider_id="elevenlabs",
+        api_key_env="MY_AUDIO_KEY",
+        base_url="https://b.example.test/v1",
+        enabled=False,
+    )
+    assert changed.config.audio.providers.elevenlabs.api_key_env == ""
+
+    same_origin = upsert_audio_provider(
+        first.config,
+        provider_id="elevenlabs",
+        api_key_env="MY_AUDIO_KEY",
+        base_url="https://a.example.test/v2",
+    )
+    assert same_origin.config.audio.providers.elevenlabs.api_key_env == "MY_AUDIO_KEY"
 
 
 def test_upsert_audio_provider_keeps_stored_key_on_same_origin(monkeypatch):

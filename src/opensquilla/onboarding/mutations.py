@@ -702,6 +702,17 @@ def upsert_llm_provider(
         raise ValueError("configure either api_key or api_key_env, not both")
     effective_api_key_env = "" if api_key else api_key_env.strip()
     if (
+        effective_api_key_env
+        and same_provider
+        and not stored_credentials_match_endpoint
+        and effective_api_key_env == getattr(config.llm, "api_key_env", "").strip()
+    ):
+        # Clients hydrate and re-send the stored env-var name verbatim: a
+        # re-submitted value equal to the stored reference means "keep the
+        # current credential", not a credential authored for the changed
+        # endpoint origin, so it is gated like every stored source.
+        effective_api_key_env = ""
+    if (
         not api_key
         and not effective_api_key_env
         and same_provider
@@ -1353,10 +1364,10 @@ def upsert_image_generation_provider(
     stored_base_url = str(getattr(current_provider_cfg, "base_url", "") or "")
     effective_base_url = base_url or stored_base_url or spec.default_base_url
     # A stored credential must not follow a changed endpoint origin: on a
-    # scheme/host/effective-port change every reusable secret source is
-    # dropped fail-closed so the operator re-enters it for the new endpoint,
-    # falling back only to the well-known registry default env var (which
-    # applies to a fresh config too). This mirrors the profile-save boundary.
+    # scheme/host/effective-port change every reusable secret source —
+    # including the well-known registry default env var — is dropped
+    # fail-closed so the operator re-enters it for the new endpoint. This
+    # mirrors the profile-save boundary.
     endpoint_allows_reuse = base_url_allows_credential_reuse(
         stored_base_url or spec.default_base_url,
         effective_base_url,
@@ -1370,15 +1381,22 @@ def upsert_image_generation_provider(
         api_key or stored_api_key,
         label="Image API key",
     )
-    current_env_key = (
-        (getattr(current_provider_cfg, "api_key_env", spec.env_key) or "")
-        if endpoint_allows_reuse
-        else ""
-    )
+    stored_env_key = str(getattr(current_provider_cfg, "api_key_env", spec.env_key) or "")
+    if not endpoint_allows_reuse and explicit_env_key == stored_env_key:
+        # Clients hydrate and re-send the stored env-var name verbatim: a
+        # re-submitted value equal to the stored reference means "keep the
+        # current credential", not a credential authored for the changed
+        # endpoint origin, so it is gated like every stored source.
+        explicit_env_key = ""
+    current_env_key = stored_env_key if endpoint_allows_reuse else ""
+    # The well-known registry default env var resolves the same shared
+    # secret, so it must not bind to a changed origin either; it still
+    # applies to a fresh or same-origin config.
+    default_env_key = spec.env_key if endpoint_allows_reuse else ""
     if api_key:
         env_key = ""
     else:
-        env_key = explicit_env_key or current_env_key or spec.env_key
+        env_key = explicit_env_key or current_env_key or default_env_key
     has_saved_env_reference = bool(
         explicit_env_key or (current_env_key and current_env_key != spec.env_key)
     )
@@ -1511,10 +1529,10 @@ def upsert_audio_provider(
     stored_base_url = str(getattr(current_provider_cfg, "base_url", "") or "")
     effective_base_url = base_url or stored_base_url or spec.default_base_url
     # A stored credential must not follow a changed endpoint origin: on a
-    # scheme/host/effective-port change every reusable secret source is
-    # dropped fail-closed so the operator re-enters it for the new endpoint,
-    # falling back only to the well-known registry default env var (which
-    # applies to a fresh config too). This mirrors the profile-save boundary.
+    # scheme/host/effective-port change every reusable secret source —
+    # including the well-known registry default env var — is dropped
+    # fail-closed so the operator re-enters it for the new endpoint. This
+    # mirrors the profile-save boundary.
     endpoint_allows_reuse = base_url_allows_credential_reuse(
         stored_base_url or spec.default_base_url,
         effective_base_url,
@@ -1528,12 +1546,19 @@ def upsert_audio_provider(
         api_key or stored_api_key,
         label="Audio API key",
     )
-    current_env_key = (
-        (getattr(current_provider_cfg, "api_key_env", spec.env_key) or "")
-        if endpoint_allows_reuse
-        else ""
-    )
-    env_key = "" if api_key else (explicit_env_key or current_env_key or spec.env_key)
+    stored_env_key = str(getattr(current_provider_cfg, "api_key_env", spec.env_key) or "")
+    if not endpoint_allows_reuse and explicit_env_key == stored_env_key:
+        # Clients hydrate and re-send the stored env-var name verbatim: a
+        # re-submitted value equal to the stored reference means "keep the
+        # current credential", not a credential authored for the changed
+        # endpoint origin, so it is gated like every stored source.
+        explicit_env_key = ""
+    current_env_key = stored_env_key if endpoint_allows_reuse else ""
+    # The well-known registry default env var resolves the same shared
+    # secret, so it must not bind to a changed origin either; it still
+    # applies to a fresh or same-origin config.
+    default_env_key = spec.env_key if endpoint_allows_reuse else ""
+    env_key = "" if api_key else (explicit_env_key or current_env_key or default_env_key)
     api_key_source = _audio_api_key_source(
         api_key=effective_api_key,
         env_key=env_key,
@@ -1630,8 +1655,14 @@ def upsert_memory_embedding(
             if endpoint_allows_reuse
             else ""
         )
+        submitted_env_key = api_key_env_value
+        if not endpoint_allows_reuse and submitted_env_key == current_api_key_env:
+            # Clients hydrate and re-send the stored env-var name verbatim:
+            # a re-submitted value equal to the stored reference means "keep
+            # the current credential" and must not follow the changed origin.
+            submitted_env_key = ""
         effective_api_key_env = "" if api_key_value else (
-            api_key_env_value or reusable_stored_env or ""
+            submitted_env_key or reusable_stored_env or ""
         )
         effective_api_key = (
             api_key_value
@@ -1668,8 +1699,14 @@ def upsert_memory_embedding(
             if endpoint_allows_reuse
             else ""
         )
+        submitted_env_key = api_key_env_value
+        if not endpoint_allows_reuse and submitted_env_key == current_api_key_env:
+            # Clients hydrate and re-send the stored env-var name verbatim:
+            # a re-submitted value equal to the stored reference means "keep
+            # the current credential" and must not follow the changed origin.
+            submitted_env_key = ""
         effective_api_key_env = "" if api_key_value else (
-            api_key_env_value or reusable_stored_env or ""
+            submitted_env_key or reusable_stored_env or ""
         )
         effective_api_key = (
             api_key_value

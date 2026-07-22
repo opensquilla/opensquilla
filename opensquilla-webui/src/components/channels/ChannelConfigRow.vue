@@ -20,6 +20,8 @@ export interface ConfigRowModel {
   edited: boolean
   hasStored?: boolean
   replacing?: boolean
+  /** Select fields: localized display label per raw choice value. */
+  choiceLabels?: Record<string, string>
 }
 
 const props = defineProps<{
@@ -52,7 +54,23 @@ const placeholder = computed(() => {
   if (props.row.field.placeholder) return props.row.field.placeholder
   return isSecretInput.value ? t('setup.field.secretComposePlaceholder') : ''
 })
-const displayValue = computed(() => (props.row.value === '' ? '—' : props.row.value))
+const displayValue = computed(() => {
+  if (props.row.value === '') return '—'
+  return props.row.choiceLabels?.[props.row.value] ?? props.row.value
+})
+const isEmptyValue = computed(() => props.row.value === '')
+
+// A two-option select renders as a segmented binary — the choice reads at a
+// glance (both options visible) instead of hiding behind a dropdown. Longer
+// choice lists keep the native select.
+const segmentedChoices = computed(() => {
+  const choices = props.row.field.choices || []
+  return fieldType.value === 'select' && choices.length === 2 ? choices : null
+})
+
+function choiceLabel(choice: string): string {
+  return props.row.choiceLabels?.[choice] ?? choice
+}
 
 function onInput(event: Event) {
   emit('update', props.row.field.name, (event.target as HTMLInputElement | HTMLSelectElement).value)
@@ -62,8 +80,11 @@ function onInput(event: Event) {
 <template>
   <div class="cfge__row" :data-field="row.field.name">
     <div class="cfge__rail">
-      <label class="cfge__label" :for="inputId">
-        {{ row.label }}<span v-if="row.field.required" aria-hidden="true"> *</span>
+      <!-- A segmented group has no single labelable control; its buttons carry
+           the row label via the group's aria-label instead, so `for` must not
+           dangle (a label click would otherwise activate the first option). -->
+      <label class="cfge__label" :for="edit && segmentedChoices ? undefined : inputId">
+        {{ row.label }}<span v-if="edit && row.field.required" aria-hidden="true"> *</span>
       </label>
       <span
         v-if="edit && row.edited"
@@ -125,7 +146,10 @@ function onInput(event: Event) {
       </template>
 
       <template v-else-if="fieldType === 'bool'">
-        <span v-if="!edit" class="cfge__value">{{ displayValue }}</span>
+        <span v-if="!edit" class="cfge__value cfge__value--bool" :class="row.value === 'true' ? 'is-on' : 'is-off'">
+          <span class="cfge__booldot" aria-hidden="true"></span>
+          {{ row.value === 'true' ? t('console.channels.editor.boolOn') : t('console.channels.editor.boolOff') }}
+        </span>
         <span v-else class="cfge__switchline">
           <ControlSwitch
             :id="inputId"
@@ -139,6 +163,22 @@ function onInput(event: Event) {
 
       <template v-else-if="fieldType === 'select'">
         <span v-if="!edit" class="cfge__value">{{ displayValue }}</span>
+        <span
+          v-else-if="segmentedChoices"
+          class="cfge__seg"
+          role="group"
+          :aria-label="row.label"
+        >
+          <button
+            v-for="choice in segmentedChoices"
+            :key="choice"
+            type="button"
+            class="cfge__seg-opt"
+            :class="{ 'is-on': row.value === choice }"
+            :aria-pressed="row.value === choice"
+            @click="emit('update', row.field.name, choice)"
+          >{{ choiceLabel(choice) }}</button>
+        </span>
         <select
           v-else
           :id="inputId"
@@ -147,12 +187,12 @@ function onInput(event: Event) {
           :value="row.value"
           @change="onInput"
         >
-          <option v-for="choice in row.field.choices || []" :key="choice" :value="choice">{{ choice }}</option>
+          <option v-for="choice in row.field.choices || []" :key="choice" :value="choice">{{ choiceLabel(choice) }}</option>
         </select>
       </template>
 
       <template v-else>
-        <span v-if="!edit" class="cfge__value">{{ displayValue }}</span>
+        <span v-if="!edit" class="cfge__value" :class="{ 'cfge__value--empty': isEmptyValue }">{{ displayValue }}</span>
         <input
           v-else
           :id="inputId"
@@ -167,7 +207,7 @@ function onInput(event: Event) {
         />
       </template>
 
-      <span v-if="row.description" class="cfge__desc">{{ row.description }}</span>
+      <span v-if="edit && row.description" class="cfge__desc">{{ row.description }}</span>
       <p v-if="edit && error" class="cfge__field-error" role="alert">{{ error }}</p>
     </div>
   </div>

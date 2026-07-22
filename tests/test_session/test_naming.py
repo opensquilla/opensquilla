@@ -542,3 +542,50 @@ async def test_should_auto_title_rejects_ineligible_surface(storage, mgr):
     await storage.upsert_session(node)
     ctx = SimpleNamespace(config=GatewayConfig(), session_manager=mgr)
     assert await _should_auto_title(ctx, storage, node, key, "sid-cron") is False
+
+
+@pytest.mark.asyncio
+async def test_should_auto_title_custom_named_channel_matches_type_named(storage, mgr):
+    from opensquilla.gateway.rpc_sessions import _should_auto_title
+
+    # A channel named after its type is naming-eligible; a custom-named
+    # channel must classify identically through the configured name->type
+    # map — and degrade to ineligible when no mapping exists.
+    channels_cfg = {
+        "channels": [
+            {
+                "type": "feishu",
+                "name": "飞书",
+                "app_id": "cli_dummy",
+                "app_secret": "dummy",
+            }
+        ]
+    }
+    mapped_ctx = SimpleNamespace(
+        config=GatewayConfig(channels=channels_cfg), session_manager=mgr
+    )
+    unmapped_ctx = SimpleNamespace(config=GatewayConfig(), session_manager=mgr)
+
+    type_named_key = "agent:main:feishu:direct:ou_x"
+    type_named = SessionNode(
+        session_key=type_named_key, session_id="sid-tn", last_channel="feishu"
+    )
+    await storage.upsert_session(type_named)
+
+    custom_key = "agent:main:飞书:direct:ou_x"
+    custom = SessionNode(session_key=custom_key, session_id="sid-cn", last_channel="飞书")
+    await storage.upsert_session(custom)
+
+    type_named_eligible = await _should_auto_title(
+        mapped_ctx, storage, type_named, type_named_key, "sid-tn"
+    )
+    custom_eligible = await _should_auto_title(
+        mapped_ctx, storage, custom, custom_key, "sid-cn"
+    )
+    assert type_named_eligible is True
+    assert custom_eligible is type_named_eligible
+
+    # Without the mapping the custom name is unclassifiable -> ineligible.
+    assert (
+        await _should_auto_title(unmapped_ctx, storage, custom, custom_key, "sid-cn")
+    ) is False

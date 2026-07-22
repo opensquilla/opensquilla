@@ -550,54 +550,21 @@
     },
     "channels": {
       "title": "Channels",
-      "configuredCount": "{count} configured",
-      "channelType": "Channel type",
-      "needs": "Channel needs",
       "save": "Save Channel",
-      "runtimeStatus": "Runtime status",
-      "none": "No channels configured.",
-      "enable": "Enable",
-      "disable": "Disable",
       "remove": "Remove",
       "removeConfirmTitle": "Remove this channel?",
       "removeConfirmBody": "{name} will be removed from the configuration. Restart required to take effect.",
       "removeConfirmPrimary": "Remove",
       "testConnection": "Test connection",
       "testing": "Testing…",
-      "testVerified": "Verified — provider reachable in {ms} ms",
-      "testFailed": "Connection test failed: {detail}",
-      "testUnsupported": "This channel type has no safe live probe — save, then watch its runtime status",
-      "testError": "Test could not run: {error}",
-      "testNoDetail": "no further detail",
-      "editTitle": "Edit channel: {name}",
-      "addNewInstead": "add a new channel instead",
       "nameLocked": "Renaming isn't supported — use Duplicate as new",
-      "editForbidden": "Editing channel configuration requires admin access.",
-      "editGone": "Channel {name} no longer exists.",
-      "editLoadFailed": "Couldn't load this channel's configuration.",
-      "editRetry": "Retry",
-      "editSetUpNew": "Set up a new channel",
-      "editBack": "Back to the form",
-      "editUnknownType": "Unknown channel type: {type}",
-      "duplicateWarn": "A channel named {name} already exists ({type}) — Save will replace it.",
-      "editInstead": "Edit it instead",
-      "duplicateAsNew": "Duplicate as new…",
       "saveChanges": "Save changes",
-      "secretStored": "Stored ••••••••",
       "secretReplace": "Replace",
       "secretReplacePlaceholder": "Paste the new value",
       "secretKeepStored": "Keep stored value",
-      "edit": "Edit",
-      "openRuntime": "Open runtime status →",
-      "details": "Details →",
-      "galleryPick": "Choose a platform to connect",
-      "changeType": "Change type",
-      "openDocs": "Open provider console ↗",
-      "needsPublicUrl": "Needs a public URL",
-      "advancedGroup": "Advanced: access & behavior",
+      "advancedGroup": "Advanced",
       "fieldRequired": "This field is required",
       "fixRequired": "Fill the highlighted required fields first",
-      "pairingExplainer": "With pairing, the first person to message your bot receives an 8-character code — approve it under Channels → Pairings. The bot then tells them they can start (you can turn that off below).",
       "jump": {
         "description": "Channels are set up on the channel workspace: pick a platform, fill the form, and test the connection right where the channel runs.",
         "open": "Open channel workspace",
@@ -613,7 +580,7 @@
         "credentials_link": "Open credentials page (App id / App secret)",
         "quick_apply_link": "Pre-fill the permission request for all required scopes",
         "needAppId": "fill in App id first",
-        "ws_order_note": "Long-connection order: save this channel FIRST so the connection is live, then flip 事件与回调 to 使用长连接接收事件 — the console only saves that choice while a client is connected."
+        "ws_order_note": "You're connected — one step left in the Feishu console: open 事件与回调 and switch event delivery to 使用长连接接收事件. The console only saves that choice while a client is connected, which is why it comes after this save. This notice clears once the first event arrives."
       }
     },
     "search": {
@@ -1001,29 +968,90 @@
     },
     "channelCatalog": {
       "fields": {
-        "group_session_scope": { "label": "Group session scope" },
-        "busy_input_mode": { "label": "Input while busy" },
-        "dm_access": { "label": "Direct-message access" },
-        "pairing_approved_notice": { "label": "Tell senders when approved" },
-        "allowed_senders": { "label": "Allowed sender ids" },
-        "status_reactions_enabled": { "label": "Message status reactions" },
-        "api_base": { "label": "API base" },
-        "name": { "label": "Channel name", "description": "Unique identifier for this channel entry." },
-        "agent_id": { "label": "Agent id" },
-        "enabled": { "label": "Enabled" },
-        "default_chat_id": { "label": "Default chat id" },
-        "connection_mode": { "label": "Connection mode" },
-        "app_id": { "label": "App id" },
-        "app_secret": { "label": "App secret" },
-        "signing_secret": { "label": "Signing secret" },
-        "client_id": { "label": "Client id" },
-        "client_secret": { "label": "Client secret" },
-        "bot_id": { "label": "Bot ID" },
-        "bot_secret": { "label": "Bot secret" },
-        "corp_secret": { "label": "Corp secret" },
-        "homeserver_url": { "label": "Homeserver URL" },
-        "user_id": { "label": "User id ({'@'}user:server)" },
-        "debounce_window_s": { "label": "Debounce window (s)" }
+        "group_session_scope": {
+          "label": "Group session scope",
+          "choices": {
+            "per_sender": "Per sender",
+            "shared_room": "Shared room"
+          }
+        },
+        "busy_input_mode": {
+          "label": "Input while busy"
+        },
+        "dm_access": {
+          "label": "Direct-message access"
+        },
+        "pairing_approved_notice": {
+          "label": "Tell senders when approved"
+        },
+        "allowed_senders": {
+          "label": "Allowed sender ids"
+        },
+        "status_reactions_enabled": {
+          "label": "Message status reactions"
+        },
+        "api_base": {
+          "label": "API base"
+        },
+        "name": {
+          "label": "Channel name",
+          "description": "Unique identifier for this channel entry."
+        },
+        "agent_id": {
+          "label": "Agent id"
+        },
+        "enabled": {
+          "label": "Enabled"
+        },
+        "default_chat_id": {
+          "label": "Default chat id"
+        },
+        "connection_mode": {
+          "label": "Connection mode",
+          "choices": {
+            "webhook": "Webhook (callback)",
+            "websocket": "WebSocket (long connection)"
+          }
+        },
+        "app_id": {
+          "label": "App id"
+        },
+        "app_secret": {
+          "label": "App secret"
+        },
+        "signing_secret": {
+          "label": "Signing secret"
+        },
+        "client_id": {
+          "label": "Client id"
+        },
+        "client_secret": {
+          "label": "Client secret"
+        },
+        "bot_id": {
+          "label": "Bot ID"
+        },
+        "bot_secret": {
+          "label": "Bot secret"
+        },
+        "corp_secret": {
+          "label": "Corp secret"
+        },
+        "homeserver_url": {
+          "label": "Homeserver URL"
+        },
+        "user_id": {
+          "label": "User id ({'@'}user:server)"
+        },
+        "debounce_window_s": {
+          "label": "Debounce window (s)"
+        },
+        "transport_name": {
+          "choices": {
+            "polling": "Polling",
+            "webhook": "Webhook"
+          }
+        }
       },
       "groups": {
         "basic": "Basic",
@@ -1042,7 +1070,11 @@
         ]
       },
       "discord": {
-        "fields": { "token": { "label": "Bot token" } },
+        "fields": {
+          "token": {
+            "label": "Bot token"
+          }
+        },
         "description": "Discord bot using gateway websocket.",
         "needs": [
           "Bot token."
@@ -1052,7 +1084,12 @@
         "label": "Feishu / Lark",
         "fields": {
           "domain": {
-            "label": "Domain"
+            "label": "Region",
+            "description": "Pick the console that issued this App ID.",
+            "choices": {
+              "feishu": "Feishu (China)",
+              "lark": "Lark (international)"
+            }
           }
         },
         "description": "Feishu (or Lark) bot — webhook or websocket connection.",
@@ -1078,7 +1115,17 @@
         ]
       },
       "slack": {
-        "fields": { "token": { "label": "Bot token" } },
+        "fields": {
+          "token": {
+            "label": "Bot token"
+          },
+          "connection_mode": {
+            "choices": {
+              "socket": "Socket Mode",
+              "webhook": "Webhook (callback)"
+            }
+          }
+        },
         "description": "Slack workspace bot — Socket Mode (websocket) or Events API webhook.",
         "needs": [
           "Bot token (xoxb-…).",
@@ -1086,7 +1133,11 @@
         ]
       },
       "telegram": {
-        "fields": { "token": { "label": "Bot token" } },
+        "fields": {
+          "token": {
+            "label": "Bot token"
+          }
+        },
         "description": "Telegram Bot API — polling or webhook transport.",
         "needs": [
           "Bot token."
@@ -1437,44 +1488,14 @@
     },
     "channels": {
       "title": "Channels",
-      "subtitle": "Runtime status for configured channels. Add or change channel configuration in Settings or the CLI.",
-      "settingsHint": "Channel configuration lives in Settings",
-      "openSettings": "Open settings",
-      "totalChannels": "Total channels",
-      "typeCount": "{n} types",
-      "live": "live",
-      "unhealthy": "{n} unhealthy",
-      "allIdle": "all idle",
-      "needAttention": "{n} need attention",
-      "restartAttempts": "Restart attempts",
-      "sinceGatewayStart": "since gateway start",
+      "subtitle": "Runtime status for configured channels. Add, edit, and pair channels right here, or use the CLI.",
       "configuredChannels": "Configured channels",
       "unknown": "Unknown",
-      "adapterConfig": "Adapter config",
       "emptyTitle": "No configured channels.",
       "emptyMsg": "No channels yet. Connect Slack, Telegram, Discord and more so your agent can chat where your team does.",
-      "openSettingsBtn": "Open settings",
       "loadFailed": "Failed to load channels",
-      "noInactive": "no inactive channels",
-      "disabledCount": "{n} disabled",
-      "configuredButIdle": "configured but idle",
       "addChannel": "Add channel",
       "addFirstChannel": "Add your first channel",
-      "summaryLabel": "Channel health summary",
-      "filtersLabel": "Channel filters",
-      "searchLabel": "Search channels",
-      "searchPlaceholder": "Search channels…",
-      "providerFilter": "Filter by type",
-      "allProviders": "All types",
-      "filteredCount": "{count} shown",
-      "provider": "Provider",
-      "channel": "Channel",
-      "transport": "Transport",
-      "status": "Status",
-      "maturity": "Maturity",
-      "connectedSince": "Connected since",
-      "actions": "Actions",
-      "noMatches": "No channels match these filters.",
       "detailLabel": "Channel details for {name}",
       "detailSections": "Channel detail sections",
       "testConnection": "Test",
@@ -1510,7 +1531,9 @@
         "otherSettings": "Other settings",
         "unknownType": "No editor form is available for this channel type ({type}); edit the entry in the configuration file.",
         "entryMissing": "Channel {name} was not found in the configuration.",
-        "editIntro": "Changes apply on Save. Blank secret fields keep their stored values."
+        "editIntro": "Changes apply on Save. Blank secret fields keep their stored values.",
+        "boolOn": "On",
+        "boolOff": "Off"
       },
       "compose": {
         "back": "Channels",
@@ -1524,20 +1547,6 @@
       "probeUnsupported": "Live probe unavailable",
       "probeLatency": "Provider verified in {ms} ms.",
       "probeNoDetail": "The provider returned no additional detail.",
-      "healthChecks": "Health checks",
-      "authentication": "Authentication",
-      "authDescription": "Provider credentials and authenticated identity",
-      "passed": "Passed",
-      "notVerified": "Not verified",
-      "healthy": "Healthy",
-      "transportDescription": "{transport} connection state",
-      "durableDelivery": "Durable delivery",
-      "durableDescription": "Inbound journal, outbox receipt, and replay protection",
-      "active": "Active",
-      "runtime": "Runtime",
-      "botIdentity": "Bot identity",
-      "capabilityEvidence": "Capability evidence",
-      "capabilityEvidenceHint": "Capabilities are shown separately from maturity. Method evidence proves implementation; live-provider proof is still required for release promotion.",
       "implemented": "Implemented",
       "declaredOnly": "Declared only",
       "methodEvidence": "Backed by: {methods}",
@@ -1545,23 +1554,11 @@
       "declarationEvidence": "Declared by adapter; live proof pending",
       "noCapabilityEvidence": "This adapter has not published capability evidence.",
       "lastError": "Last error",
-      "deliveryJournal": "Delivery journal",
       "acceptedIngress": "Accepted inbound",
       "processingIngress": "Processing inbound",
       "confirmedOutbound": "Confirmed outbound",
-      "unknownOutbound": "Unknown outcome",
-      "transportLease": "Transport ownership",
-      "leaseState": "Account lease",
-      "leaseHeld": "Held by this gateway",
-      "leaseExpired": "Expired",
-      "noActiveLease": "No active lease",
-      "networkProbe": "Network probe",
       "savedConfiguration": "Saved configuration",
-      "editInSettings": "Edit in Settings",
       "secretRedactionHint": "Stored secrets are never shown. Press Edit and use Replace to enter a new value.",
-      "secretStored": "Stored securely",
-      "selectConfigurationHint": "Open this tab to load the redacted configuration.",
-      "configurationUnavailable": "Configuration unavailable: {error}",
       "toastProbePassed": "{name} verified in {ms} ms",
       "toastProbeUnsupported": "{name} does not support a safe live probe",
       "toastProbeFailed": "Could not test {name}: {error}",
@@ -1571,15 +1568,15 @@
       "toastDisabled": "Disabled {name}; restart the gateway to apply",
       "toastToggleFailed": "Could not update {name}: {error}",
       "pairings": {
-        "title": "Pairing access",
+        "title": "Members",
         "description": "Review who can start conversations with this channel. Approvals apply only to this channel.",
         "refresh": "Refresh",
-        "summaryLabel": "Pairing access summary",
+        "summaryLabel": "Members summary",
         "pending": "Pending",
         "approved": "Approved",
-        "loading": "Loading pairing access…",
+        "loading": "Loading members…",
         "tryAgain": "Try again",
-        "emptyTitle": "No pairing access yet",
+        "emptyTitle": "No members yet",
         "emptyDescription": "New requests and approved senders will appear here.",
         "pendingRequests": "Pending requests",
         "approvedAccess": "Approved access",
@@ -1621,6 +1618,7 @@
         "adminOnlyHint": "Admin added directly",
         "membersHint": "Members can chat and use safe tools. Admins get the full tool surface, with per-command confirmation for privileged actions.",
         "approveAdminSuccess": "Approved {sender} as a channel admin",
+        "adminGrantFailedAfterApprove": "Approved {sender}, but the admin grant failed — retry from the members list.",
         "approveAdminConfirmBody": "Grant {sender} admin access to {channel}? They get the full tool surface, and the bot will let them know they can start chatting.",
         "setAsAdminConfirmTitle": "Make this member an admin?",
         "setAsAdminConfirmBody": "Give {sender} the full tool surface on {channel}? Privileged actions still ask for per-command confirmation.",
@@ -1628,7 +1626,8 @@
         "removeAdminConfirmBody": "Return {sender} to member access on {channel}? They can still chat and use safe tools.",
         "adminGrantedSuccess": "Made {sender} a channel admin",
         "adminRemovedSuccess": "Removed admin from {sender}",
-        "adminUpdateFailed": "Could not update admin access for {sender}: {error}"
+        "adminUpdateFailed": "Could not update admin access for {sender}: {error}",
+        "asAdminBootstrap": "This is me — make channel admin"
       },
       "probeFailed": "Connection test failed",
       "editCredentials": "Edit credentials",
@@ -1637,17 +1636,9 @@
       "removeChannel": "Remove",
       "queryNotFound": "Channel {name} was not found — it may have been removed.",
       "queryNotFoundDismiss": "Dismiss",
-      "connection": "Connection",
-      "connectionDescription": "Provider credentials and authenticated identity",
-      "connectedShort": "Connected",
-      "verifyCredentials": "Verify credentials",
-      "durableReviewHint": "Some deliveries need review — retrying could duplicate them",
-      "needsReviewCount": "{count} need review",
       "needsReview": "Need review",
-      "worksTitle": "What works on this channel",
       "worksHint": "Platform features this channel type supports, needs configuration for, or cannot do.",
       "maturityHint": "How complete this adapter is relative to the provider's full API",
-      "technicalDetails": "Technical details",
       "supported": "Supported",
       "notSupported": "Not supported",
       "needsConfig": "Needs configuration",
@@ -1671,7 +1662,6 @@
         "scopes": "Scopes"
       },
       "staleData": "Status may be stale — last updated {time}.",
-      "clearFilters": "Clear filters",
       "unconfiguredTitle": "Running but not in config",
       "unconfiguredHint": "These channels are running in this gateway process but are not in the saved configuration.",
       "maturityValue": {
@@ -1681,10 +1671,7 @@
         "unrated": "Unrated"
       },
       "opsActionsLabel": "Runtime actions",
-      "configActionsLabel": "Configuration actions",
       "configActionHint": "Writes configuration — takes effect after a gateway restart",
-      "editActionHint": "Opens the editor in Channel setup",
-      "pendingApproval": "Pending approval",
       "home": {
         "connectedFor": "Uptime",
         "membersFact": "Members",
@@ -1696,13 +1683,29 @@
         "rejectLabel": "Reject the pairing request from {sender}",
         "rejectSuccess": "Rejected the pairing request from {sender}",
         "rejectFailed": "Could not reject {sender}: {error}",
-        "fixCredentials": "Fix credentials"
+        "fixCredentials": "Fix credentials",
+        "galleryLead": "Choose a platform to get started",
+        "awaitingFact": "Awaiting",
+        "folio": {
+          "allConnected": "All connected",
+          "connectedRatio": "{ratio} connected",
+          "down": "{count} down",
+          "updated": "Updated {time}",
+          "rosterLabel": "Platforms in service: {names}"
+        },
+        "enroll": {
+          "title": "Connect a platform",
+          "chip": "Add {platform}"
+        }
       },
       "detail": {
         "bot": "Bot {id}",
-        "connectedFor": "Connected {duration}",
+        "connectedFor": "Uptime {duration}",
         "restarts": "{count} restart | {count} restarts",
-        "capabilityReference": "Capability reference"
+        "capabilityReference": "Capability reference",
+        "copyBotId": "Copy bot ID: {id}",
+        "botIdCopied": "Bot ID copied",
+        "finalStepTitle": "Final step in the Feishu console"
       }
     },
     "overview": {

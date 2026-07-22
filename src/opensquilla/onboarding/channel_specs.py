@@ -65,11 +65,17 @@ def _common_fields() -> tuple[ChannelSetupField, ...]:
             "name", "Channel name", "text", required=True,
             description="Unique identifier for this channel entry.",
         ),
+        # Safe-defaulted identity plumbing: folded into the Advanced
+        # disclosure on every channel form so a first-time add is credentials
+        # plus a name, nothing else. Routing to a non-default agent and
+        # creating a channel disabled are deliberate, rare actions.
         ChannelSetupField(
             "agent_id", "Agent id", "text", required=False, default="main",
+            advanced=True,
         ),
         ChannelSetupField(
             "enabled", "Enabled", "bool", required=False, default=True,
+            advanced=True,
         ),
         ChannelSetupField(
             "group_session_scope",
@@ -173,15 +179,17 @@ def _slack_spec() -> ChannelSetupSpec:
                               placeholder="xapp-...",
                               show_when={"connection_mode": "socket"}),
             ChannelSetupField("slack_channel_id", "Default channel id", "text",
-                              required=False, default="",
+                              required=False, default="", advanced=True,
                               description="Optional; replies auto-target the incoming "
                               "conversation when unset."),
+            # Required whenever connection_mode=webhook (the default), so it
+            # must NOT fold into Advanced — a hidden required field blocks
+            # Save with no visible blank to fill.
             ChannelSetupField("signing_secret", "Signing secret", "password",
                               required=True, secret=True, group="credentials",
-                              advanced=True,
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("reply_in_thread", "Reply in thread", "bool",
-                              required=False, default=False),
+                              required=False, default=False, advanced=True),
             ChannelSetupField("connection_mode", "Connection mode", "select",
                               required=False, default="webhook",
                               choices=("webhook", "socket")),
@@ -245,7 +253,10 @@ def _feishu_spec() -> ChannelSetupSpec:
         docs_hint="https://open.feishu.cn/document/",
         help=(
             "Default websocket mode only needs App id and App secret. "
-            "Webhook verification fields are only needed when connection_mode=webhook."
+            "Webhook verification fields are only needed when connection_mode=webhook. "
+            "Websocket order: save the channel first so the connection is live, then "
+            "enable long-connection event delivery in the Feishu console — it only "
+            "persists that choice while a client is connected."
         ),
         fields=(
             *_common_fields(),
@@ -254,6 +265,16 @@ def _feishu_spec() -> ChannelSetupSpec:
             ChannelSetupField("app_secret", "App secret", "password",
                               required=True, secret=True, group="credentials",
                               placeholder="app secret"),
+            # Folded: websocket is the default and right for almost everyone;
+            # switching to webhook happens inside Advanced, where the mode
+            # select is declared FIRST so the webhook fields it reveals appear
+            # below it. The websocket save-order guidance lives post-save (the
+            # channel page's final-step callout) plus the spec help above for
+            # headless clients.
+            ChannelSetupField("connection_mode", "Connection mode", "select",
+                              required=False, default="websocket",
+                              choices=("webhook", "websocket"),
+                              advanced=True),
             ChannelSetupField("encrypt_key", "Encrypt key", "password",
                               required=False, secret=True, default="",
                               group="webhook", advanced=True,
@@ -262,8 +283,12 @@ def _feishu_spec() -> ChannelSetupSpec:
                               required=False, secret=True, default="",
                               group="webhook", advanced=True,
                               show_when={"connection_mode": "webhook"}),
+            ChannelSetupField("webhook_path", "Webhook path", "text",
+                              required=False, default="/feishu/events",
+                              group="webhook", advanced=True,
+                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("default_chat_id", "Default chat id", "text",
-                              required=False, default=""),
+                              required=False, default="", advanced=True),
             ChannelSetupField(
                 "status_reactions_enabled",
                 "Message status reactions",
@@ -273,20 +298,18 @@ def _feishu_spec() -> ChannelSetupSpec:
                 advanced=True,
                 help="Adds short-lived Feishu reactions while a message is received and processed.",
             ),
-            ChannelSetupField("webhook_path", "Webhook path", "text",
-                              required=False, default="/feishu/events",
-                              group="webhook",
-                              show_when={"connection_mode": "webhook"}),
             ChannelSetupField("api_base", "API base", "text",
                               required=False,
                               default="https://open.feishu.cn/open-apis",
                               advanced=True),
-            ChannelSetupField("connection_mode", "Connection mode", "select",
-                              required=False, default="websocket",
-                              choices=("webhook", "websocket")),
+            # The one genuine decision besides credentials: which console
+            # issued the app. Stays front — a Lark operator on the feishu
+            # endpoint gets a broken connection with no signal.
             ChannelSetupField("domain", "Domain", "select",
                               required=False, default="feishu",
-                              choices=("feishu", "lark")),
+                              choices=("feishu", "lark"),
+                              description="feishu = China mainland · "
+                                          "lark = Lark / international"),
         ),
     )
 
@@ -306,14 +329,14 @@ def _discord_spec() -> ChannelSetupSpec:
             ChannelSetupField("token", "Bot token", "password",
                               required=True, secret=True),
             ChannelSetupField("application_id", "Application id", "text",
-                              required=False, default=""),
+                              required=False, default="", advanced=True),
             ChannelSetupField("default_channel_id", "Default channel id", "text",
-                              required=False, default=""),
+                              required=False, default="", advanced=True),
             ChannelSetupField("gateway_url", "Gateway URL", "text",
-                              required=False,
+                              required=False, advanced=True,
                               default="wss://gateway.discord.gg/?v=10&encoding=json"),
             ChannelSetupField("intents", "Intents bitmask", "int",
-                              required=False, default=46593),
+                              required=False, default=46593, advanced=True),
         ),
     )
 
@@ -330,9 +353,10 @@ def _dingtalk_spec() -> ChannelSetupSpec:
         docs_hint="https://open.dingtalk.com/document/",
         fields=(
             *_common_fields(),
-            ChannelSetupField("client_id", "Client id", "text", required=True),
+            ChannelSetupField("client_id", "Client id", "text", required=True,
+                              group="credentials"),
             ChannelSetupField("client_secret", "Client secret", "password",
-                              required=True, secret=True),
+                              required=True, secret=True, group="credentials"),
         ),
     )
 
@@ -387,6 +411,7 @@ def _wecom_spec() -> ChannelSetupSpec:
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("webhook_path", "Webhook path", "text",
                               required=False, default="/wecom/events",
+                              advanced=True,
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("api_base", "API base", "text",
                               required=False,
@@ -411,9 +436,10 @@ def _qq_spec() -> ChannelSetupSpec:
         can_probe=False,
         fields=(
             *_common_fields(),
-            ChannelSetupField("app_id", "App id", "text", required=True),
+            ChannelSetupField("app_id", "App id", "text", required=True,
+                              group="credentials"),
             ChannelSetupField("app_secret", "App secret", "password",
-                              required=True, secret=True),
+                              required=True, secret=True, group="credentials"),
         ),
     )
 
@@ -463,10 +489,11 @@ def _matrix_spec() -> ChannelSetupSpec:
             ChannelSetupField("access_token", "Access token", "password",
                               required=False, secret=True, default=""),
             ChannelSetupField("device_id", "Device id", "text",
-                              required=False, default=""),
+                              required=False, default="", advanced=True),
             ChannelSetupField("encryption", "Encryption", "select",
                               required=False, default="off",
-                              choices=("off", "required", "best_effort")),
+                              choices=("off", "required", "best_effort"),
+                              advanced=True),
         ),
     )
 
@@ -487,9 +514,10 @@ def _telegram_spec() -> ChannelSetupSpec:
                               required=True, secret=True, group="credentials",
                               placeholder="123456:ABC..."),
             ChannelSetupField("default_chat_id", "Default chat id", "text",
-                              required=False, default=""),
+                              required=False, default="", advanced=True),
             ChannelSetupField("api_base", "API base", "text",
-                              required=False, default="https://api.telegram.org"),
+                              required=False, default="https://api.telegram.org",
+                              advanced=True),
             ChannelSetupField("transport_name", "Transport", "select",
                               required=False, default="polling",
                               choices=("polling", "webhook")),
@@ -506,15 +534,18 @@ def _telegram_spec() -> ChannelSetupSpec:
                               group="webhook",
                               show_when={"transport_name": "webhook"}),
             ChannelSetupField("drop_pending_updates", "Drop pending updates",
-                              "bool", required=False, default=False),
+                              "bool", required=False, default=False, advanced=True),
             ChannelSetupField("poll_timeout_s", "Polling timeout (s)", "int",
                               required=False, default=30, group="polling",
+                              advanced=True,
                               show_when={"transport_name": "polling"}),
             ChannelSetupField("poll_limit", "Poll limit", "int",
                               required=False, default=100, group="polling",
+                              advanced=True,
                               show_when={"transport_name": "polling"}),
             ChannelSetupField("poll_idle_sleep_s", "Poll idle sleep (s)", "float",
                               required=False, default=0.1, group="polling",
+                              advanced=True,
                               show_when={"transport_name": "polling"}),
         ),
     )

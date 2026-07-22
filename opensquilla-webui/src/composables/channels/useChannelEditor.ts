@@ -1,6 +1,7 @@
 import { computed, ref } from 'vue'
 import i18n from '@/i18n'
 import { useRpcStore } from '@/stores/rpc'
+import { errorMessage } from '@/composables/channels/shared'
 import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import {
   REDACTED_SENTINEL,
@@ -110,8 +111,21 @@ export function _resetChannelCatalogForTests(): void {
   catalogInflight = null
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+/**
+ * First free name for a new channel of `type`: the bare type, then type-2,
+ * type-3, … . Compared case-insensitively against ALL existing channel names
+ * (any type — the name is the global identity key, and upsert by a colliding
+ * name would overwrite that entry).
+ */
+export function suggestChannelName(type: string, existingNames: string[]): string {
+  const taken = new Set(existingNames.map(name => name.trim().toLowerCase()).filter(Boolean))
+  const base = type.trim() || 'channel'
+  if (!taken.has(base.toLowerCase())) return base
+  for (let n = 2; n < 100; n += 1) {
+    const candidate = `${base}-${n}`
+    if (!taken.has(candidate.toLowerCase())) return candidate
+  }
+  return `${base}-${existingNames.length + 1}`
 }
 
 export function useChannelEditor() {
@@ -140,12 +154,7 @@ export function useChannelEditor() {
   const specFields = computed<ChannelEditorFieldSpec[]>(() => spec.value?.fields ?? [])
   const canEdit = computed(() => phase.value === 'active' && spec.value !== null)
 
-  const panel = form.createPanel({
-    channelRuntimeRows: computed(() => []),
-    catalogChannels: computed(() => catalog.value),
-    channelSpec: spec,
-    channelSpecFields: specFields,
-  })
+  const panel = form.createPanel(specFields)
 
   async function ensureCatalog(refresh = false): Promise<ChannelEditorSpec[]> {
     // Cold-load guard: panels can mount before the WS handshake completes;
@@ -243,9 +252,16 @@ export function useChannelEditor() {
    * Seed a fresh compose draft for a picked platform type: spec defaults,
    * everything editable (secrets as plain password inputs — nothing stored
    * yet). Drafts are deliberately not persisted; re-running this after a
-   * refresh yields the same empty draft.
+   * refresh yields the same empty draft. When the caller knows the existing
+   * channel names it passes them so the required name field seeds with a
+   * unique suggestion instead of blocking Save while blank; with no list
+   * (status still loading) the name stays blank rather than risking a
+   * collision-turned-overwrite on upsert.
    */
-  async function startCompose(type: string): Promise<void> {
+  async function startCompose(
+    type: string,
+    opts: { existingNames?: string[] } = {},
+  ): Promise<void> {
     phase.value = 'loading'
     loadError.value = ''
     fieldErrors.value = {}
@@ -258,8 +274,11 @@ export function useChannelEditor() {
       entryType.value = type
       const found = channels.find(s => s.type === type) || null
       form.selectChannelType(type)
-      form.resetForSpec(found)
-      captureBaseline(found?.fields ?? [], {})
+      const seed = opts.existingNames
+        ? { name: suggestChannelName(type, opts.existingNames) }
+        : undefined
+      form.resetForSpec(found, seed)
+      captureBaseline(found?.fields ?? [], seed ?? {})
       phase.value = 'active'
     } catch (err) {
       phase.value = 'error'
@@ -318,11 +337,6 @@ export function useChannelEditor() {
       if ((row.replacing || !row.hasStored) && row.value !== '') changed.add(row.field.name)
     }
     return specFields.value.map(f => f.name).filter(name => changed.has(name))
-  })
-
-  const editedFieldLabels = computed<string[]>(() => {
-    const labels = new Map(specFields.value.map(f => [f.name, f.label]))
-    return editedFields.value.map(name => labels.get(name) || name)
   })
 
   // Saved-entry keys outside the spec (hand-edited extras) — shown read-only;
@@ -440,11 +454,11 @@ export function useChannelEditor() {
     phase,
     canEdit,
     loadedName,
+    loadedEntry,
     loadError,
     entryType,
     extraRows,
     editedFields,
-    editedFieldLabels,
     fieldErrors,
     probe,
     saving,

@@ -53,8 +53,8 @@ function formatSince(since?: string | number | null): string {
     </div>
 
     <div class="ch-pairing-summary" :aria-label="t('console.channels.pairings.summaryLabel')">
-      <span><strong>{{ members.pendingPairings.value.length }}</strong> {{ t('console.channels.pairings.pending') }}</span>
-      <span><strong>{{ members.approvedPairings.value.length }}</strong> {{ t('console.channels.pairings.approved') }}</span>
+      <span :class="{ 'is-zero': members.pendingPairings.value.length === 0 }"><strong>{{ members.pendingPairings.value.length }}</strong> {{ t('console.channels.pairings.pending') }}</span>
+      <span :class="{ 'is-zero': members.approvedPairings.value.length === 0 }"><strong>{{ members.approvedPairings.value.length }}</strong> {{ t('console.channels.pairings.approved') }}</span>
       <span v-if="members.revokedPairings.value.length"><strong>{{ members.revokedPairings.value.length }}</strong> {{ t('console.channels.pairings.revoked') }}</span>
     </div>
     <label v-if="members.pairings.value.length > 0" class="ch-pairing-search">
@@ -75,9 +75,8 @@ function formatSince(since?: string | number | null): string {
       </button>
     </div>
     <div v-else-if="members.pairings.value.length === 0 && members.adminOnlySenders.value.length === 0" class="ch-pairing-state">
-      <Icon name="shield" :size="20" aria-hidden="true" />
-      <strong>{{ t('console.channels.pairings.emptyTitle') }}</strong>
-      <span>{{ t('console.channels.pairings.emptyDescription') }}</span>
+      <Icon name="shield" :size="15" aria-hidden="true" />
+      <span><strong>{{ t('console.channels.pairings.emptyTitle') }}</strong> — {{ t('console.channels.pairings.emptyDescription') }}</span>
     </div>
     <div v-else class="ch-pairing-groups">
       <section v-if="members.pendingPairings.value.length" :aria-label="t('console.channels.pairings.pendingRequests')">
@@ -99,7 +98,7 @@ function formatSince(since?: string | number | null): string {
                 :aria-label="t('console.channels.pairings.asAdminCheckboxLabel', { sender: pairing.senderName || pairing.senderId })"
                 @change="members.setAsAdminChecked(pairing, ($event.target as HTMLInputElement).checked)"
               />
-              <span>{{ t('console.channels.pairings.asAdmin') }}</span>
+              <span>{{ t(members.isBootstrapPairing(pairing) ? 'console.channels.pairings.asAdminBootstrap' : 'console.channels.pairings.asAdmin') }}</span>
             </label>
             <button
               class="btn btn--primary"

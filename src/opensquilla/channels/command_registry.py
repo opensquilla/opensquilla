@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opensquilla.channels._util import sender_is_channel_admin
 from opensquilla.channels.types import OutgoingMessage
 from opensquilla.engine.commands import DEFAULT_REGISTRY, ExecutionKind, ParamsFactory, Surface
 from opensquilla.gateway.auth import Principal
@@ -258,7 +259,7 @@ def build_channel_rpc_context(
 ) -> RpcContext:
     admin_senders = getattr(gateway_config, "channel_admin_senders", {})
     sender_id = envelope.sender_id
-    is_operator = _sender_is_channel_admin(
+    is_operator = sender_is_channel_admin(
         sender_id,
         configured=admin_senders.get(envelope.source_name, []),
     )
@@ -275,16 +276,6 @@ def build_channel_rpc_context(
         originating_envelope=envelope,
         **handles,
     )
-
-
-def _sender_is_channel_admin(sender_id: str | None, *, configured: Any) -> bool:
-    if not isinstance(sender_id, str) or not sender_id:
-        return False
-    if isinstance(configured, str):
-        return sender_id == configured
-    if not isinstance(configured, list | tuple | set | frozenset):
-        return False
-    return sender_id in {str(item) for item in configured}
 
 
 def _build_default_command_table() -> dict[str, tuple[str, ParamsFactory]]:

@@ -117,7 +117,13 @@ def redact_channel_entry(type_name: str, payload: dict[str, Any]) -> dict[str, A
     try:
         spec = get_channel_setup_spec(type_name)
     except KeyError:
-        return dict(payload)
+        # Fail closed for types without a setup spec (entry-point plugin
+        # adapters): without declared secret fields, redact anything
+        # secret-shaped rather than returning credentials verbatim.
+        return {
+            key: (REDACTED_PLACEHOLDER if _is_secret_like_tier_key(key) and value else value)
+            for key, value in payload.items()
+        }
     secret_names = {f.name for f in spec.fields if f.secret}
     out = dict(payload)
     for key in secret_names:

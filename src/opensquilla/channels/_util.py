@@ -57,6 +57,24 @@ class ChannelAccessPolicy:
     allowlist: frozenset[str] = field(default_factory=frozenset)
 
 
+def sender_is_channel_admin(sender_id: str | None, *, configured: Any) -> bool:
+    """True when ``sender_id`` matches a ``channel_admin_senders`` entry.
+
+    ``configured`` is the raw configured value for one channel: a single
+    string or a collection of ids; anything else fails closed. This is the
+    single matcher shared by operator RPC standing (command registry) and
+    chat-side approval powers (gateway dispatch) so both surfaces always
+    agree on who is a channel admin.
+    """
+    if not isinstance(sender_id, str) or not sender_id:
+        return False
+    if isinstance(configured, str):
+        return sender_id == configured
+    if not isinstance(configured, list | tuple | set | frozenset):
+        return False
+    return sender_id in {str(item) for item in configured}
+
+
 @dataclass(frozen=True, slots=True)
 class AccessDecision:
     """Result of ``evaluate_policy`` — paired with a stable reason code."""

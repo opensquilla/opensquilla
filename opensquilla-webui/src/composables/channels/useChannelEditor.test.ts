@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   _resetChannelCatalogForTests,
   ensureChannelCatalog,
+  suggestChannelName,
   useChannelEditor,
 } from './useChannelEditor'
 
@@ -102,7 +103,6 @@ describe('useChannelEditor', () => {
     editor.updateField('slack_channel_id', 'C42')
     editor.updateField('connection_mode', 'socket')
     expect(editor.editedFields.value).toEqual(['connection_mode', 'slack_channel_id'])
-    expect(editor.editedFieldLabels.value).toEqual(['Connection mode', 'Default channel id'])
     editor.discard()
     expect(editor.form.isDirty.value).toBe(false)
     expect(editor.editedFields.value).toEqual([])
@@ -210,6 +210,32 @@ describe('useChannelEditor', () => {
     expect(rpcCall.mock.calls.some(([method]) => method === 'channels.get')).toBe(false)
   })
 
+  it('startCompose seeds a unique suggested name that does not read dirty', async () => {
+    const editor = useChannelEditor()
+    await editor.startCompose('slack', { existingNames: ['feishu', 'ops-bot'] })
+    const nameRow = editor.panel.value.channelFields.find(row => row.field.name === 'name')
+    expect(nameRow?.value).toBe('slack')
+    // The prefill is part of the pristine draft: no dirty flag, no edited tick.
+    expect(editor.form.isDirty.value).toBe(false)
+    expect(editor.editedFields.value).toEqual([])
+  })
+
+  it('startCompose increments the suggestion past existing names of ANY type', async () => {
+    const editor = useChannelEditor()
+    // A non-slack channel literally named "slack" still collides — the name
+    // is the global identity key and upsert would overwrite it.
+    await editor.startCompose('slack', { existingNames: ['Slack', 'slack-2', 'feishu'] })
+    const nameRow = editor.panel.value.channelFields.find(row => row.field.name === 'name')
+    expect(nameRow?.value).toBe('slack-3')
+  })
+
+  it('startCompose leaves the name blank when the caller has no name list yet', async () => {
+    const editor = useChannelEditor()
+    await editor.startCompose('slack')
+    const nameRow = editor.panel.value.channelFields.find(row => row.field.name === 'name')
+    expect(nameRow?.value).toBe('')
+  })
+
   it('loadCatalog tracks a failure and recovers on retry', async () => {
     mockRpc({
       'onboarding.catalog': () => {
@@ -258,5 +284,23 @@ describe('useChannelEditor', () => {
     mockRpc()
     await editor.open('team-slack')
     expect(editor.phase.value).toBe('active')
+  })
+})
+
+describe('suggestChannelName', () => {
+  it('returns the bare type when free', () => {
+    expect(suggestChannelName('feishu', [])).toBe('feishu')
+    expect(suggestChannelName('feishu', ['slack', 'tg-alerts'])).toBe('feishu')
+  })
+
+  it('increments until free, case-insensitively', () => {
+    expect(suggestChannelName('feishu', ['feishu'])).toBe('feishu-2')
+    expect(suggestChannelName('feishu', ['Feishu', 'FEISHU-2'])).toBe('feishu-3')
+  })
+
+  it('never suggests a taken name even against a dense list', () => {
+    const taken = ['qq', ...Array.from({ length: 40 }, (_, i) => `qq-${i + 2}`)]
+    const suggestion = suggestChannelName('qq', taken)
+    expect(taken).not.toContain(suggestion)
   })
 })

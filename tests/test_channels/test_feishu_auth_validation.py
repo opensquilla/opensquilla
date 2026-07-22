@@ -287,17 +287,18 @@ async def test_feishu_webhook_without_verification_material_fails_closed() -> No
 
 
 @pytest.mark.anyio
-async def test_feishu_webhook_start_requires_verification_token() -> None:
+async def test_feishu_webhook_start_requires_verification_material() -> None:
+    # encrypt_key alone still authenticates (HMAC signature verification), so
+    # start only fails closed when NEITHER credential is configured.
     channel = FeishuChannel(
         FeishuChannelConfig(
             app_id="cli_test",
             app_secret="secret",
-            encrypt_key="encrypt-key",
             connection_mode="webhook",
         )
     )
 
-    with pytest.raises(FeishuAuthError, match="verification_token"):
+    with pytest.raises(FeishuAuthError, match="verification_token or encrypt_key"):
         await channel.start()
 
 

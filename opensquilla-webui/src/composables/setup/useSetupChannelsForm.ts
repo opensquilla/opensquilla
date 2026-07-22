@@ -21,31 +21,12 @@ interface ChannelFieldRow {
   value: string
 }
 
-export interface ChannelSecretRow {
+interface ChannelSecretRow {
   field: ChannelFieldSpec
   hasStored: boolean
   replacing: boolean
   value: string
 }
-
-interface ChannelRuntimeRow {
-  name: string
-  type?: string
-  connected?: boolean
-  status?: string
-}
-
-interface ChannelsPanelContext {
-  channelRuntimeRows: ComputedRef<ChannelRuntimeRow[]>
-  catalogChannels: ComputedRef<ChannelSpec[]>
-  channelSpec: ComputedRef<ChannelSpec | null>
-  channelSpecFields: ComputedRef<ChannelFieldSpec[]>
-}
-
-// Sentinel handling lives in the shared channel RPC module so this form and
-// the RPC wrappers can never disagree about redaction; re-exported here for
-// the existing consumers of this module's contract.
-export { REDACTED_SENTINEL } from '@/composables/setup/channelRpc'
 
 export function buildChannelEntry(type: string, values: Record<string, unknown>): Record<string, unknown> {
   const entry: Record<string, unknown> = { type }
@@ -61,7 +42,6 @@ export function useSetupChannelsForm() {
   // Fields of the currently-selected channel spec — kept so payload() can drop
   // values of fields that show_when has hidden.
   const activeFields = ref<ChannelFieldSpec[]>([])
-  const selectedChannelType = computed(() => channelType.value)
 
   // Edit mode. Secrets NEVER enter channelFieldValues while editing — the
   // redacted '***' from channels.get has no path into an outbound value.
@@ -74,8 +54,6 @@ export function useSetupChannelsForm() {
   const passthrough = ref<Record<string, unknown>>({})
 
   const isEditing = computed(() => mode.value === 'edit')
-  const editingName = computed(() => editName.value)
-  const nameValue = computed(() => String(channelFieldValues.value.name ?? '').trim())
 
   function isSecretField(name: string): boolean {
     return activeFields.value.some(f => f.name === name && f.secret === true)
@@ -95,16 +73,11 @@ export function useSetupChannelsForm() {
   const baseline = ref(serialized.value)
   const isDirty = computed(() => serialized.value !== baseline.value)
 
-  // The channels form is an entry composer: every (re)load resets the draft
-  // to the selected type's defaults, so Discard and post-save reloads clear it.
-  function initFromCatalog(channels: ChannelSpec[]) {
-    // Nothing is preselected: the compose form starts at the type gallery.
-    // A reload keeps the current selection (if any) but resets the draft.
-    resetForSpec(channels.find(c => c.type === channelType.value))
-  }
-
-  // Switching channel type resets the entry form; type choice alone is not an unsaved edit.
-  function resetForSpec(spec: ChannelSpec | null | undefined) {
+  // Switching channel type resets the entry form; type choice alone is not an
+  // unsaved edit. `seed` overlays spec defaults BEFORE the baseline capture,
+  // so a caller-provided prefill (e.g. the suggested channel name) is part of
+  // the pristine form, never a dirty edit.
+  function resetForSpec(spec: ChannelSpec | null | undefined, seed?: Record<string, unknown>) {
     mode.value = 'compose'
     editName.value = ''
     secretStates.value = {}
@@ -112,7 +85,7 @@ export function useSetupChannelsForm() {
     activeFields.value = (spec?.fields ?? []) as ChannelFieldSpec[]
     channelFieldValues.value = {}
     spec?.fields?.forEach(field => {
-      channelFieldValues.value[field.name] = field.default ?? ''
+      channelFieldValues.value[field.name] = seed?.[field.name] ?? field.default ?? ''
     })
     baseline.value = serialized.value
   }
@@ -158,27 +131,6 @@ export function useSetupChannelsForm() {
     const state = secretStates.value[name]
     if (!state || !state.hasStored) return
     secretStates.value = { ...secretStates.value, [name]: { ...state, replacing: false, value: '' } }
-  }
-
-  /**
-   * Fork the current edit into a fresh compose draft: keep type and
-   * non-secret values, blank every secret (they are not client-readable),
-   * suggest a free name. Baseline stays at spec defaults so the duplicated
-   * content counts as dirty and the close guard protects it.
-   */
-  function duplicateAsNew(spec: ChannelSpec, existingNames: string[]) {
-    const source = { ...channelFieldValues.value }
-    const base = editName.value || nameValue.value || spec.type
-    let candidate = `${base}-copy`
-    let n = 2
-    while (existingNames.includes(candidate)) candidate = `${base}-copy-${n++}`
-
-    resetForSpec(spec) // compose-mode baseline = spec defaults
-    for (const field of activeFields.value) {
-      if (field.secret === true || field.name === 'name') continue
-      if (source[field.name] !== undefined) channelFieldValues.value[field.name] = source[field.name]
-    }
-    channelFieldValues.value.name = candidate
   }
 
   function updateField(name: string, value: unknown) {
@@ -283,33 +235,22 @@ export function useSetupChannelsForm() {
       })
   }
 
-  function createPanel(context: ChannelsPanelContext) {
+  function createPanel(specFields: ComputedRef<ChannelFieldSpec[]>) {
     return computed(() => ({
-      channelRuntimeRows: context.channelRuntimeRows.value,
-      channelType: channelType.value,
-      catalogChannels: context.catalogChannels.value,
-      channelSpec: context.channelSpec.value,
       // In edit mode secrets render via secretRows, not as plain fields.
-      channelFields: channelFieldRows(context.channelSpecFields.value)
+      channelFields: channelFieldRows(specFields.value)
         .filter(row => mode.value !== 'edit' || row.field.secret !== true),
-      secretRows: channelSecretRows(context.channelSpecFields.value),
-      mode: mode.value,
-      editName: editName.value,
+      secretRows: channelSecretRows(specFields.value),
     }))
   }
 
   return {
-    selectedChannelType,
     isDirty,
     isEditing,
-    editingName,
-    nameValue,
-    initFromCatalog,
     initFromEntry,
     resetForSpec,
     replaceSecret,
     cancelSecretReplace,
-    duplicateAsNew,
     selectChannelType,
     updateField,
     payload,

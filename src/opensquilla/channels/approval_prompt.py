@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from typing import Any
 
 # Crockford-style base32 alphabet minus easily-confused glyphs (I, L, O, U).
-# 4 chars over a 28-symbol alphabet => 614 656 combinations, ample for the
+# 4 chars over a 32-symbol alphabet => 1 048 576 combinations, ample for the
 # handful of approvals a single session has outstanding at once.
 _CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 _CODE_LENGTH = 4
@@ -41,6 +41,11 @@ _TEXT_COMMAND_RE = re.compile(
     r"^\s*/(approve|deny)\b\s*([0-9A-Za-z]{2,12})?(?:\s+(always))?\s*$",
     re.IGNORECASE,
 )
+
+# Mention-gated groups REQUIRE addressing the bot, and some adapters (Slack,
+# Discord) keep the raw mention markup in ``content`` — "<@U123> /approve AB12"
+# must still resolve. Strip one leading mention-shaped token before matching.
+_LEADING_MENTION_RE = re.compile(r"^\s*<@!?[A-Za-z0-9|]+>\s*")
 
 # Decisions returned by :func:`parse_approval_action`. "always" maps to the
 # approval's ``allow_same_type`` choice at the resolution site; the prompt only
@@ -60,6 +65,13 @@ class ApprovalPromptRequest:
     when the underlying approval carries an ``allow_same_type`` choice, i.e.
     approving "always" has real durable-grant semantics rather than being a
     placebo.
+
+    ``summary_label`` names what ``command_or_tool`` describes ("Command",
+    "Network host", "Path", …) so sandbox approvals render their identifying
+    fact instead of "(unknown command)". The ``origin_*`` fields carry the
+    originating chat's context; interactive cards embed them in the action
+    value (mirroring the clarify-card contract) so a card tap can rebuild the
+    exact originating session key.
     """
 
     approval_id: str
@@ -69,6 +81,11 @@ class ApprovalPromptRequest:
     agent: str
     short_code: str
     offer_always: bool = False
+    summary_label: str = "Command"
+    origin_channel_id: str = ""
+    origin_is_group: bool | None = None
+    origin_chat_type: str = ""
+    origin_thread_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -167,6 +184,7 @@ def _adapter_supports_interactive_cards(profile: Any) -> bool:
 
 def _prompt_text(request: ApprovalPromptRequest) -> str:
     command = request.command_or_tool or "(unknown command)"
+    label = request.summary_label or "Command"
     always_line = (
         f"/approve {request.short_code} always to stop asking for this kind, or "
         if request.offer_always
@@ -174,7 +192,7 @@ def _prompt_text(request: ApprovalPromptRequest) -> str:
     )
     return (
         "Approval needed to run a privileged command.\n"
-        f"Command: {command}\n"
+        f"{label}: {command}\n"
         f"Code: {request.short_code}\n"
         f"Reply /approve {request.short_code} to allow, {always_line}"
         f"/deny {request.short_code} to refuse."
@@ -186,16 +204,30 @@ def _interactive_card(request: ApprovalPromptRequest) -> dict[str, Any]:
 
     The action ``value`` carries the short code (not the raw approval id) plus
     the ``opensquilla_action`` discriminator that :func:`parse_approval_action`
-    keys on, paralleling the existing clarify-card contract.
+    keys on, paralleling the existing clarify-card contract. The originating
+    chat context (``channel_id``/``is_group``/``chat_type``/``thread_id``)
+    rides along, again like the clarify card, so the adapter can rebuild the
+    exact originating session key from a card tap — a group-origin approval
+    must not be misclassified as a DM at resolution time.
     """
     command = request.command_or_tool or "(unknown command)"
+    label = request.summary_label or "Command"
 
-    def _action_value(decision: str) -> dict[str, str]:
-        return {
+    def _action_value(decision: str) -> dict[str, Any]:
+        value: dict[str, Any] = {
             "opensquilla_action": "approval_resolve",
             "code": request.short_code,
             "decision": decision,
         }
+        if request.origin_channel_id:
+            value["channel_id"] = request.origin_channel_id
+        if request.origin_is_group is not None:
+            value["is_group"] = request.origin_is_group
+        if request.origin_chat_type:
+            value["chat_type"] = request.origin_chat_type
+        if request.origin_thread_id:
+            value["thread_id"] = request.origin_thread_id
+        return value
 
     actions: list[dict[str, Any]] = [
         {
@@ -240,7 +272,7 @@ def _interactive_card(request: ApprovalPromptRequest) -> dict[str, Any]:
                 "text": {
                     "tag": "lark_md",
                     "content": (
-                        f"Run a privileged command?\n**Command:** `{command}`\n"
+                        f"Run a privileged command?\n**{label}:** `{command}`\n"
                         f"**Code:** `{request.short_code}`"
                     ),
                 },
@@ -302,6 +334,7 @@ def parse_approval_action(inbound: Any) -> tuple[str, str] | None:
     text = _inbound_text(inbound)
     if text is None:
         return None
+    text = _LEADING_MENTION_RE.sub("", text, count=1)
     match = _TEXT_COMMAND_RE.match(text)
     if match is None:
         return None

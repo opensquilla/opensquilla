@@ -50,7 +50,7 @@ def test_saved_route_run_mode_wins_over_later_global_full_default() -> None:
     assert ctx.elevated is None
 
 
-def test_channel_route_defaults_to_trusted_even_for_owner_full_default() -> None:
+def test_channel_route_upgrades_owner_default_to_full_but_keeps_members_trusted() -> None:
     envelope = build_channel_route_envelope(
         IncomingMessage(sender_id="u1", channel_id="c1", content="hello"),
         session_key="agent:main:feishu:u1",
@@ -65,10 +65,56 @@ def test_channel_route_defaults_to_trusted_even_for_owner_full_default() -> None
         default_elevated="full",
     )
 
+    # Members stay in Managed Execution (sandboxed); only admins get host access.
     assert user_ctx.run_mode == "trusted"
     assert user_ctx.elevated is None
+    # Channel admins default to Full Host Access (host execution, no approval
+    # cards). Admin = deliberate full trust; members stay sandboxed.
+    assert admin_ctx.run_mode == "full"
+    assert admin_ctx.elevated == "full"
+
+
+def test_channel_route_explicit_trusted_choice_is_not_upgraded_for_owner() -> None:
+    envelope = build_channel_route_envelope(
+        IncomingMessage(sender_id="u1", channel_id="c1", content="hello"),
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    # A saved per-session /sandbox trusted choice is surfaced by
+    # _apply_run_context_route_metadata as run_mode_explicit.
+    _apply_run_context_route_metadata(
+        envelope,
+        RunContext(run_mode=RunMode.TRUSTED, source="saved"),
+        principal_is_owner=True,
+    )
+
+    admin_ctx = tool_context_from_envelope(envelope, is_owner=True)
+
+    assert envelope.metadata["run_mode_explicit"] is True
     assert admin_ctx.run_mode == "trusted"
     assert admin_ctx.elevated is None
+
+
+def test_channel_route_default_run_context_still_upgrades_owner() -> None:
+    envelope = build_channel_route_envelope(
+        IncomingMessage(sender_id="u1", channel_id="c1", content="hello"),
+        session_key="agent:main:feishu:u1",
+        session_prefix="feishu",
+        agent_id="main",
+    )
+    # A default (unsaved) run context must not count as an explicit choice.
+    _apply_run_context_route_metadata(
+        envelope,
+        RunContext(run_mode=RunMode.TRUSTED, source="default"),
+        principal_is_owner=True,
+    )
+
+    admin_ctx = tool_context_from_envelope(envelope, is_owner=True)
+
+    assert envelope.metadata["run_mode_explicit"] is False
+    assert admin_ctx.run_mode == "full"
+    assert admin_ctx.elevated == "full"
 
 
 def test_channel_owner_can_use_explicit_full_route_metadata() -> None:

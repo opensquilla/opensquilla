@@ -420,6 +420,19 @@ def delivery_fields_from_envelope(envelope: RouteEnvelope) -> dict[str, Any]:
     }
 
 
+def _channel_run_mode_explicitly_chosen(envelope: RouteEnvelope) -> bool:
+    """True when a channel turn carries an explicit per-session run-mode choice.
+
+    Every channel envelope carries a ``run_mode`` in metadata —
+    ``build_channel_route_envelope`` seeds the Managed-Execution default — so the
+    raw string cannot distinguish "defaulted trusted" from an explicit
+    ``/sandbox trusted``. ``_apply_run_context_route_metadata`` marks a genuine
+    per-session sandbox choice with ``run_mode_explicit``; only that overrides
+    the channel-admin host-access default.
+    """
+    return bool(envelope.metadata.get("run_mode_explicit"))
+
+
 def _filtered_legacy_sandbox_mounts(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -477,6 +490,20 @@ def tool_context_from_envelope(
         run_mode = RunMode.FULL
     else:
         run_mode = None
+    if (
+        caller_kind is CallerKind.CHANNEL
+        and is_owner
+        and run_mode == RunMode.TRUSTED
+        and not _channel_run_mode_explicitly_chosen(envelope)
+    ):
+        # Channel admins get Full Host Access by default: host execution with
+        # no approval cards, identical to an explicit /sandbox full. This is a
+        # deliberate trust grant — a channel admin can run arbitrary host
+        # commands and read or write any path, so mark only trusted senders as
+        # channel admins. A per-session /sandbox choice (surfaced as
+        # run_mode_explicit) still wins; only the default Managed-Execution run
+        # mode is upgraded. Non-admin channel callers stay in the sandbox.
+        run_mode = RunMode.FULL
     if run_mode == RunMode.FULL and is_owner:
         elevated = "full"
     elif legacy_elevated in ("on", "bypass") and is_owner:

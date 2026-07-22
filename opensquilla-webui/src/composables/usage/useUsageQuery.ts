@@ -377,6 +377,18 @@ function normalizeCoverage(wire: UsageQueryResponse['coverage']): UsageCoverage 
   }
 }
 
+function normalizeFxRates(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const normalized: Record<string, string> = {}
+  Object.entries(value as Record<string, unknown>).forEach(([currency, rate]) => {
+    if (rate == null) return
+    const parsed = Number(rate)
+    if (!Number.isFinite(parsed) || parsed <= 0) return
+    normalized[currency.toUpperCase()] = String(rate)
+  })
+  return normalized
+}
+
 export function normalizeUsageQueryResponse(response: UsageQueryResponse): UsageSnapshot {
   const sessions = Array.isArray(response.sessions)
     ? response.sessions.map(normalizeQuerySession)
@@ -400,6 +412,13 @@ export function normalizeUsageQueryResponse(response: UsageQueryResponse): Usage
     models: Array.isArray(response.models) ? normalizeQueryModels(response.models) : [],
     days: Array.isArray(response.days) ? normalizeDays(response.days) : [],
     coverage,
+    fxRatesNativePerUsd: normalizeFxRates(
+      rawValue(
+        response as Record<string, unknown>,
+        'fxRatesNativePerUsd',
+        'fx_rates_native_per_usd',
+      ),
+    ),
   }
 }
 

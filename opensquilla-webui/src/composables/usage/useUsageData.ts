@@ -10,7 +10,7 @@ import { useUsageTotals } from '@/composables/usage/useUsageTotals'
 import { useUsageChartRows } from '@/composables/usage/useUsageChartRows'
 import { useUsageModelCards } from '@/composables/usage/useUsageModelCards'
 import { useUsageSessionRows } from '@/composables/usage/useUsageSessionRows'
-import { formatUsageCost } from '@/composables/usage/nativeBilling'
+import { formatUsageCost, effectiveCnyPerUsd } from '@/composables/usage/nativeBilling'
 import { buildUsageCsv } from '@/composables/usage/usageCsv'
 import { useRpcStore } from '@/stores/rpc'
 import { downloadText } from '@/utils/browser'
@@ -32,7 +32,9 @@ const t = i18n.global.t
 // Constants
 // ---------------------------------------------------------------------------
 
-const CNY_RATE = 7.25
+// Display fallback only — used when neither the gateway nor the snapshot's
+// receipts provide the canonical CNY-per-USD rate (see `cnyRate` below).
+const FALLBACK_CNY_RATE = 7.25
 
 type CostFormatOptions = {
   decimals?: number
@@ -95,6 +97,11 @@ const lastStatus = computed<UsageStatusData | null>(() => {
 
 let autoRefreshId: ReturnType<typeof setInterval> | null = null
 let loadGeneration = 0
+
+// The rate the ledger normalized CNY receipts with, so every derived CNY
+// figure (totals hint, CSV export, per-row conversions) agrees with
+// receipt-exact amounts instead of drifting on a hardcoded display rate.
+const cnyRate = computed(() => effectiveCnyPerUsd(usageSnapshot.value) ?? FALLBACK_CNY_RATE)
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -171,7 +178,7 @@ const {
   visibleSessions,
   serverTotals,
   currency,
-  cnyRate: CNY_RATE,
+  cnyRate,
   rowVal,
   fmtCost,
   sourceCompositionHint,
@@ -307,12 +314,13 @@ function setRange(nextRange: string) {
 
 function exportCsv() {
   const snapshot = usageSnapshot.value
-  const csv = buildUsageCsv(snapshot, visibleSessions.value, CNY_RATE)
+  const rate = cnyRate.value
+  const csv = buildUsageCsv(snapshot, visibleSessions.value, rate)
   const suffix = range.value === 'all' ? 'all' : `${range.value}d`
   const coverageSuffix = snapshot?.mode === 'session_approximation'
     ? '-approximate'
     : snapshot?.mode === 'ledger_partial' ? '-partial' : ''
-  download(`opensquilla-usage-${suffix}${coverageSuffix}-cny${CNY_RATE}.csv`, 'text/csv', csv)
+  download(`opensquilla-usage-${suffix}${coverageSuffix}-cny${rate}.csv`, 'text/csv', csv)
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +336,7 @@ function fmtCost(usd: number | null | undefined, opts?: CostFormatOptions): stri
   return formatUsageCost(
     usd,
     currency.value,
-    CNY_RATE,
+    cnyRate.value,
     decimals,
     opts?.source as Record<string, unknown> | undefined,
   )
@@ -554,6 +562,7 @@ function download(filename: string, mime: string, content: string) {
 
   return {
     currency,
+    cnyRate,
     sessions,
     sortCol,
     sortAsc,

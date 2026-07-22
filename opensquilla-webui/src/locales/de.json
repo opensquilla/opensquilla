@@ -2455,6 +2455,9 @@
       "cacheWrite": "Cache S"
     },
     "costHintTitle": "CNY-Werte verwenden den festen Kurs {rate}. Für buchhalterische Zwecke mit dem aktuellen Wechselkurs abgleichen.",
+    "nativeCostHintTitle": "Die ursprüngliche Anbieterrechnung ist in CNY; USD verwendet den auf dem Beleg gespeicherten festen Normierungskurs.",
+    "nativeMixedCostHintTitle": "Gemischte Währungen oder ausstehende Abrechnungen bleiben in kanonischen USD; bestätigte Originalbelege werden separat angezeigt.",
+    "nativeBillingSubtotals": "Originalbelege: {amounts}",
     "rangeHiddenHint": "{count} undatierte Legacy-Sitzungen ausgeblendet",
     "coverage": {
       "approximate": "Älteres Gateway: Datumsbereiche sind Näherungen aus Sitzungs-Gesamtwerten.",
@@ -2462,7 +2465,9 @@
       "timezoneFallback": "Die Zeitzone {requested} ist ungültig; Datumswerte werden nach {effective} gruppiert.",
       "legacyIncluded": "Nutzung vor dem Buch wird eingerechnet, kann aber keinem Datum zugeordnet werden.",
       "estimated": "Enthält {count} geschätzte Aufrufe.",
-      "unpriced": "Bekannte Kosten werden angezeigt; für {count} Aufrufe fehlt ein Preis, daher sind die Kosten unvollständig."
+      "unpriced": "Bekannte Kosten werden angezeigt; für {count} Aufrufe fehlt ein Preis, daher sind die Kosten unvollständig.",
+      "pendingBilling": "{count} Anbieterbelege warten auf Abrechnung.",
+      "nativeBillingMissing": "Bei {count} abgerechneten Aufrufen fehlt der Beleg in Originalwährung."
     },
     "chart": {
       "metric": "Diagrammkennzahl",

@@ -2,9 +2,10 @@
 """Run live gateway E2E checks for direct provider tier profiles.
 
 The check starts a temporary OpenSquilla gateway per provider, enables the
-matching ``squilla_router.tier_profile``, sends one turn for each text tier,
-and records routed model, response usage, and local cost estimates. Secrets are
-kept in environment variables and are not written to the output artifact.
+matching legacy ``squilla_router.tier_profile`` or curated inline tier map,
+sends one turn for each text tier, and records routed model, response usage,
+and local cost estimates. Secrets are kept in environment variables and are
+not written to the output artifact.
 """
 
 from __future__ import annotations
@@ -26,9 +27,12 @@ if str(REPO_ROOT) not in sys.path:
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from opensquilla.engine.pricing import lookup_price  # noqa: E402
+from opensquilla.engine.pricing import estimate_cost, resolve_model_price  # noqa: E402
 from opensquilla.gateway.config import GatewayConfig  # noqa: E402
-from opensquilla.provider.preset_registry import LEGACY_PROVIDER_PRESET_IDS  # noqa: E402
+from opensquilla.provider.preset_registry import (  # noqa: E402
+    LEGACY_PROVIDER_PRESET_IDS,
+    get_preset,
+)
 from opensquilla.provider.registry import get_provider_spec  # noqa: E402
 from scripts.live_harness_security import (  # noqa: E402
     child_environment,
@@ -63,6 +67,7 @@ DEFAULT_PROVIDERS = [
     "openai",
     "zhipu",
     "moonshot",
+    "tokenrhythm",
 ]
 BASE_ENV = {
     "openrouter": "OPENROUTER_BASE_URL",
@@ -74,6 +79,7 @@ BASE_ENV = {
     "byteplus": "BYTEPLUS_BASE_URL",
     "moonshot": "MOONSHOT_BASE_URL",
     "zhipu": "ZAI_BASE_URL",
+    "tokenrhythm": "TOKENRHYTHM_BASE_URL",
 }
 TEXT_PROFILE_SLOTS = ("c0", "c1", "c2", "c3")
 LIVE_AGENT_MAX_ITERATIONS = 6
@@ -154,6 +160,15 @@ def _load_env_quietly(path: Path = REPO_ROOT / ".env") -> None:
 
 
 def _profile_tiers(provider: str) -> dict[str, dict[str, Any]]:
+    if provider not in LEGACY_PROVIDER_PRESET_IDS:
+        preset = get_preset(provider)
+        if preset is None:
+            raise ValueError(f"no provider preset for {provider!r}")
+        return {
+            name: dict(tier)
+            for name, tier in preset.tier_defaults().items()
+            if isinstance(tier, dict) and not tier.get("image_only")
+        }
     cfg = GatewayConfig.model_validate(
         {
             "llm": {"provider": provider},
@@ -362,18 +377,28 @@ def _estimate_cost(
 ) -> dict[str, Any]:
     input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
-    price = lookup_price(model)
-    estimate = (
-        input_tokens * price.input_per_m + output_tokens * price.output_per_m
-    ) / 1_000_000
+    cache_read_tokens = int(
+        usage.get("cache_read_tokens") or usage.get("cached_tokens") or 0
+    )
+    cache_write_tokens = int(usage.get("cache_write_tokens") or 0)
+    resolved = resolve_model_price(model, provider or "")
+    estimate_result = estimate_cost(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        price=resolved.entry,
+    )
+    estimate = estimate_result.cost_usd
     raw_billed_cost = usage.get("billed_cost")
     provider_billed_cost = None
     cost_source = "opensquilla_static_estimate"
     billing_scope = "static_estimate"
     if (
-        provider == "openrouter"
-        and isinstance(raw_billed_cost, int | float)
-        and raw_billed_cost > 0
+        isinstance(raw_billed_cost, int | float)
+        and not isinstance(raw_billed_cost, bool)
+        and raw_billed_cost >= 0
+        and str(usage.get("cost_source") or "") == "provider_billed"
     ):
         provider_billed_cost = float(raw_billed_cost)
         cost_source = "provider_billed"
@@ -386,9 +411,29 @@ def _estimate_cost(
         "raw_gateway_usage_billed_cost_usd": usage.get("billed_cost"),
         "provider_billed": provider_billed_cost,
         "opensquilla_estimate": estimate,
-        "input_per_m": price.input_per_m,
-        "output_per_m": price.output_per_m,
+        "input_per_m": resolved.entry.input_per_m,
+        "output_per_m": resolved.entry.output_per_m,
+        "cache_read_per_m": resolved.entry.cache_read_per_m,
+        "cache_write_per_m": resolved.entry.cache_write_per_m,
+        "price_source": resolved.source,
+        "estimate_basis": estimate_result.basis,
         "source": cost_source,
+    }
+
+
+def _accounting_usage_fields(usage: dict[str, Any]) -> dict[str, Any]:
+    """Project only the token/cost fields needed by the public live report."""
+
+    return {
+        "input_tokens": usage.get("input_tokens"),
+        "output_tokens": usage.get("output_tokens"),
+        "reasoning_tokens": usage.get("reasoning_tokens"),
+        "cached_tokens": usage.get("cached_tokens"),
+        "cache_write_tokens": usage.get("cache_write_tokens"),
+        "billed_cost": usage.get("billed_cost"),
+        # Required to distinguish a real zero-cost receipt from the legacy
+        # zero placeholder carried by responses without provider billing.
+        "cost_source": usage.get("cost_source"),
     }
 
 
@@ -614,13 +659,7 @@ def _run_gateway_case_batch_in_temp(
                 "latency_ms": int(response_payload.get("duration_ms") or 0),
                 "request_thinking": request_config.get("thinking"),
                 "request_thinking_level": request_config.get("thinking_level"),
-                "usage": {
-                    "input_tokens": usage.get("input_tokens"),
-                    "output_tokens": usage.get("output_tokens"),
-                    "reasoning_tokens": usage.get("reasoning_tokens"),
-                    "cached_tokens": usage.get("cached_tokens"),
-                    "billed_cost": usage.get("billed_cost"),
-                },
+                "usage": _accounting_usage_fields(usage),
                 "cost": _estimate_cost(
                     actual_model or row["expected_model"],
                     usage,
@@ -685,6 +724,7 @@ def _run_provider(provider: str, *, max_tokens: int, timeout_seconds: float) -> 
     requested_base_url = os.environ.get(BASE_ENV.get(provider, ""), "").strip()
     base_url = registry_endpoint(provider, requested_base_url or None)
     tiers = _profile_tiers(provider)
+    max_tokens = max(max_tokens, 1024) if provider == "tokenrhythm" else max_tokens
     slot_targets = _profile_slot_targets(tiers)
     if not api_key:
         return {
@@ -696,7 +736,14 @@ def _run_provider(provider: str, *, max_tokens: int, timeout_seconds: float) -> 
             "env_key": spec.env_key,
             "base_url": base_url,
             "key_present": False,
-            "tier_profile": provider,
+            "tier_profile": (
+                provider if provider in LEGACY_PROVIDER_PRESET_IDS else None
+            ),
+            "tier_mode": (
+                "legacy_profile"
+                if provider in LEGACY_PROVIDER_PRESET_IDS
+                else "inline_preset"
+            ),
             "tier_models": {slot: cfg.get("model") for slot, cfg in slot_targets.items()},
             "profile_slots_covered": [],
             "profile_slots_missing": list(slot_targets),
@@ -713,6 +760,9 @@ def _run_provider(provider: str, *, max_tokens: int, timeout_seconds: float) -> 
         max_tokens=max_tokens,
         timeout_seconds=timeout_seconds,
         case_mode="natural_router",
+        tier_overrides=(
+            tiers if provider not in LEGACY_PROVIDER_PRESET_IDS else None
+        ),
     )
     all_cases = list(natural.get("cases") or [])
     coverage_batches: list[dict[str, Any]] = []
@@ -767,7 +817,12 @@ def _run_provider(provider: str, *, max_tokens: int, timeout_seconds: float) -> 
         "env_key": spec.env_key,
         "base_url": base_url,
         "key_present": bool(api_key),
-        "tier_profile": provider,
+        "tier_profile": provider if provider in LEGACY_PROVIDER_PRESET_IDS else None,
+        "tier_mode": (
+            "legacy_profile"
+            if provider in LEGACY_PROVIDER_PRESET_IDS
+            else "inline_preset"
+        ),
         "tier_models": {slot: cfg.get("model") for slot, cfg in slot_targets.items()},
         "profile_slots_covered": covered_slots,
         "profile_slots_missing": missing_slots,

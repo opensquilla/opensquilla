@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -11,6 +11,9 @@ from opensquilla.gateway.rpc.registry import RpcContext
 from opensquilla.gateway.rpc_usage import _handle_usage_query
 from opensquilla.gateway.usage_query import (
     UsageQueryValidationError,
+    _finish_totals,
+    _nanos_decimal,
+    _new_totals,
     query_usage_ledger,
     resolve_usage_range,
 )
@@ -29,12 +32,33 @@ def _ms(value: str, timezone: str = "UTC") -> int:
     return int(parsed.timestamp() * 1000)
 
 
+def test_native_nanos_decimal_preserves_integer_trailing_zeroes() -> None:
+    assert _nanos_decimal(10_000_000_000) == "10"
+    assert _nanos_decimal(10_500_000_000) == "10.5"
+    assert _nanos_decimal(0) == "0"
+
+
+def test_totals_keep_mixed_source_for_confirmed_zero_plus_estimate() -> None:
+    totals = _new_totals()
+    totals["costNanos"] = 1_000
+    totals["estimatedCostNanos"] = 1_000
+    totals["costSourceCounts"]["mixed"] = 1
+
+    finished = _finish_totals(totals)
+
+    assert finished["billedCostNanos"] == 0
+    assert finished["estimatedCostNanos"] == 1_000
+    assert finished["costSource"] == "mixed"
+
+
 @dataclass
 class _FakeStorage:
     state: object
     events: list[object]
     items: list[object]
     baselines: list[object]
+    receipts: list[object] = field(default_factory=list)
+    receipt_state: object | None = None
 
     async def get_usage_ledger_state(self):
         return self.state
@@ -59,6 +83,13 @@ class _FakeStorage:
     async def query_usage_event_items(self, event_ids):
         selected = set(event_ids)
         return [item for item in self.items if item.event_id in selected]
+
+    async def query_usage_item_billing_receipts(self, event_ids):
+        selected = set(event_ids)
+        return [receipt for receipt in self.receipts if receipt.event_id in selected]
+
+    async def get_usage_billing_receipt_state(self):
+        return self.receipt_state
 
     async def list_usage_legacy_baselines(self):
         return self.baselines
@@ -126,12 +157,14 @@ def _item(
     event_id: str,
     cost_nanos: int,
     *,
+    ordinal: int = 0,
     input_tokens: int = 100,
     output_tokens: int = 10,
     cache_read_tokens: int = 5,
 ):
     return SimpleNamespace(
         event_id=event_id,
+        ordinal=ordinal,
         provider="test",
         model="model-a",
         input_tokens=input_tokens,
@@ -143,6 +176,50 @@ def _item(
         billed_cost_nanos=0,
         estimated_cost_nanos=cost_nanos,
         cost_source="opensquilla_estimate",
+    )
+
+
+def _provider_billed_event_and_item(
+    event_id: str,
+    occurred_at_ms: int,
+    *,
+    billed_cost_nanos: int,
+    session_id: str = "s1",
+) -> tuple[object, object]:
+    event = _event(
+        event_id,
+        occurred_at_ms,
+        cost_nanos=billed_cost_nanos,
+        session_id=session_id,
+    )
+    event.provider = "tokenrhythm"
+    event.billed_cost_nanos = billed_cost_nanos
+    event.estimated_cost_nanos = 0
+    event.cost_source = "provider_billed"
+    item = _item(event_id, billed_cost_nanos)
+    item.provider = "tokenrhythm"
+    item.billed_cost_nanos = billed_cost_nanos
+    item.estimated_cost_nanos = 0
+    item.cost_source = "provider_billed"
+    return event, item
+
+
+def _billing_receipt(
+    event_id: str,
+    *,
+    status: str,
+    amount_nanos: int | None,
+    usd_equivalent_nanos: int | None,
+) -> object:
+    return SimpleNamespace(
+        event_id=event_id,
+        ordinal=0,
+        currency="CNY",
+        status=status,
+        amount_nanos=amount_nanos,
+        usd_equivalent_nanos=usd_equivalent_nanos,
+        fx_native_per_usd_nanos=6_975_000_000,
+        schema_version=1,
     )
 
 
@@ -219,6 +296,361 @@ async def test_finite_window_aggregates_only_timestamped_events() -> None:
     assert payload["days"][0]["date"] == "2026-07-20"
     assert payload["models"][0]["totals"]["costNanos"] == 9_200_000
     assert payload["sessions"][0]["totals"]["costNanos"] == 9_200_000
+
+
+@pytest.mark.asyncio
+async def test_confirmed_cny_receipts_include_real_zero_in_every_totals_dimension() -> None:
+    cutover = _ms("2026-07-20T00:00:00")
+    nonzero_event, nonzero_item = _provider_billed_event_and_item(
+        "cny-nonzero",
+        _ms("2026-07-20T10:00:00"),
+        billed_cost_nanos=2_000_000,
+    )
+    zero_event, zero_item = _provider_billed_event_and_item(
+        "cny-zero",
+        _ms("2026-07-20T11:00:00"),
+        billed_cost_nanos=0,
+    )
+    storage = _FakeStorage(
+        state=SimpleNamespace(
+            ledger_started_at_ms=cutover,
+            backfill_status="complete",
+            anomaly_count=0,
+        ),
+        events=[nonzero_event, zero_event],
+        items=[nonzero_item, zero_item],
+        baselines=[],
+        receipts=[
+            _billing_receipt(
+                "cny-nonzero",
+                status="confirmed",
+                amount_nanos=13_950_000,
+                usd_equivalent_nanos=2_000_000,
+            ),
+            _billing_receipt(
+                "cny-zero",
+                status="confirmed",
+                amount_nanos=0,
+                usd_equivalent_nanos=0,
+            ),
+        ],
+        receipt_state=SimpleNamespace(
+            tracking_started_at_ms=cutover,
+            schema_version=1,
+        ),
+    )
+
+    payload = await query_usage_ledger(
+        storage,
+        {
+            "range": {
+                "fromMs": cutover,
+                "toMs": _ms("2026-07-21T00:00:00"),
+            },
+            "timezone": "UTC",
+        },
+        now_ms=_ms("2026-07-22T00:00:00"),
+    )
+
+    expected_native = {
+        "CNY": {
+            "amountNanos": "13950000",
+            "amount": "0.01395",
+            "usdEquivalentNanos": "2000000",
+            "receiptCount": 2,
+            "normalizationRatesNativePerUsd": ["6.975"],
+        }
+    }
+    aggregate_totals = [
+        payload["totals"],
+        payload["attributedTotals"],
+        payload["days"][0]["totals"],
+        payload["models"][0]["totals"],
+        payload["sessions"][0]["totals"],
+        payload["sessions"][0]["modelBreakdown"][0]["totals"],
+    ]
+    for totals in aggregate_totals:
+        assert totals["nativeBilledByCurrency"] == expected_native
+        assert totals["pendingBillingReceiptCount"] == 0
+        assert totals["nativeBillingExpectedReceiptCount"] == 2
+        assert totals["nativeBillingMissingConfirmedReceiptCount"] == 0
+        assert totals["billedCostNanos"] == 2_000_000
+        assert totals["estimatedCostNanos"] == 0
+        assert totals["costSource"] == "provider_billed"
+        assert totals["costSourceCounts"]["provider_billed"] == 2
+
+    assert payload["coverage"]["nativeBilling"] == {
+        "status": "complete",
+        "exactFromMs": cutover,
+        "reasonCodes": [],
+        "missingConfirmedReceiptCount": 0,
+        "pendingReceiptCount": 0,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pending_receipt_is_estimated_and_disclosed_in_every_totals_dimension() -> None:
+    cutover = _ms("2026-07-20T00:00:00")
+    occurred_at = _ms("2026-07-20T10:00:00")
+    event = _event("pending", occurred_at, cost_nanos=3_000_000)
+    event.provider = "tokenrhythm"
+    item = _item("pending", 3_000_000)
+    item.provider = "tokenrhythm"
+    storage = _FakeStorage(
+        state=SimpleNamespace(
+            ledger_started_at_ms=cutover,
+            backfill_status="complete",
+            anomaly_count=0,
+        ),
+        events=[event],
+        items=[item],
+        baselines=[],
+        receipts=[
+            _billing_receipt(
+                "pending",
+                status="pending",
+                amount_nanos=None,
+                usd_equivalent_nanos=None,
+            )
+        ],
+        receipt_state=SimpleNamespace(
+            tracking_started_at_ms=cutover,
+            schema_version=1,
+        ),
+    )
+
+    payload = await query_usage_ledger(
+        storage,
+        {
+            "range": {"fromMs": cutover, "toMs": occurred_at + 1},
+            "timezone": "UTC",
+        },
+        now_ms=occurred_at + 2,
+    )
+
+    aggregate_totals = [
+        payload["totals"],
+        payload["attributedTotals"],
+        payload["days"][0]["totals"],
+        payload["models"][0]["totals"],
+        payload["sessions"][0]["totals"],
+        payload["sessions"][0]["modelBreakdown"][0]["totals"],
+    ]
+    for totals in aggregate_totals:
+        assert totals["nativeBilledByCurrency"] == {}
+        assert totals["pendingBillingReceiptCount"] == 1
+        assert totals["nativeBillingExpectedReceiptCount"] == 1
+        assert totals["nativeBillingMissingConfirmedReceiptCount"] == 0
+        assert totals["billedCostNanos"] == 0
+        assert totals["estimatedCostNanos"] == 3_000_000
+        assert totals["costSource"] == "opensquilla_estimate"
+
+    native_coverage = payload["coverage"]["nativeBilling"]
+    assert native_coverage["status"] == "partial"
+    assert native_coverage["reasonCodes"] == ["pending_billing_receipt"]
+    assert native_coverage["missingConfirmedReceiptCount"] == 0
+    assert native_coverage["pendingReceiptCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_b5_native_coverage_counts_physical_items_not_envelopes() -> None:
+    cutover = _ms("2026-07-20T00:00:00")
+    occurred_at = _ms("2026-07-20T10:00:00")
+    event, _ = _provider_billed_event_and_item(
+        "b5-zero",
+        occurred_at,
+        billed_cost_nanos=0,
+    )
+    items = []
+    for ordinal in range(5):
+        item = _item(
+            "b5-zero",
+            0,
+            ordinal=ordinal,
+            input_tokens=20,
+            output_tokens=2,
+            cache_read_tokens=1,
+        )
+        item.provider = "tokenrhythm"
+        item.billed_cost_nanos = 0
+        item.estimated_cost_nanos = 0
+        item.cost_source = "provider_billed"
+        items.append(item)
+    receipts = []
+    for ordinal in range(4):
+        receipt = _billing_receipt(
+            "b5-zero",
+            status="confirmed",
+            amount_nanos=0,
+            usd_equivalent_nanos=0,
+        )
+        receipt.ordinal = ordinal
+        receipts.append(receipt)
+    storage = _FakeStorage(
+        state=SimpleNamespace(
+            ledger_started_at_ms=cutover,
+            backfill_status="complete",
+            anomaly_count=0,
+        ),
+        events=[event],
+        items=items,
+        baselines=[],
+        receipts=receipts,
+        receipt_state=SimpleNamespace(
+            tracking_started_at_ms=cutover,
+            schema_version=1,
+        ),
+    )
+
+    payload = await query_usage_ledger(
+        storage,
+        {
+            "range": {"fromMs": cutover, "toMs": occurred_at + 1},
+            "timezone": "UTC",
+        },
+        now_ms=occurred_at + 2,
+    )
+
+    aggregate_totals = [
+        payload["totals"],
+        payload["days"][0]["totals"],
+        payload["models"][0]["totals"],
+        payload["sessions"][0]["totals"],
+        payload["sessions"][0]["modelBreakdown"][0]["totals"],
+    ]
+    for totals in aggregate_totals:
+        assert totals["nativeBilledByCurrency"]["CNY"]["receiptCount"] == 4
+        assert totals["nativeBillingExpectedReceiptCount"] == 5
+        assert totals["nativeBillingMissingConfirmedReceiptCount"] == 1
+    assert payload["coverage"]["nativeBilling"]["missingConfirmedReceiptCount"] == 1
+
+
+@pytest.mark.asyncio
+async def test_native_coverage_counts_only_post_cutover_missing_confirmed_receipts() -> None:
+    native_cutover = _ms("2026-07-20T12:00:00")
+    before_event = _event("before-native-cutover", native_cutover - 1, cost_nanos=1)
+    before_item = _item("before-native-cutover", 1)
+    estimated_event = _event("estimated-no-receipt", native_cutover + 1, cost_nanos=2)
+    estimated_item = _item("estimated-no-receipt", 2)
+    unavailable_event = _event("invalid-no-receipt", native_cutover + 2, cost_nanos=0)
+    unavailable_event.cost_source = "unavailable"
+    unavailable_event.missing_cost_entries = 1
+    unavailable_item = _item("invalid-no-receipt", 0)
+    unavailable_item.cost_source = "unavailable"
+    pending_event = _event("pending-not-missing", native_cutover + 3, cost_nanos=3)
+    pending_item = _item("pending-not-missing", 3)
+    unrelated_event, unrelated_item = _provider_billed_event_and_item(
+        "other-provider",
+        native_cutover + 4,
+        billed_cost_nanos=4,
+    )
+    unrelated_event.provider = "anthropic"
+    unrelated_item.provider = "anthropic"
+    openrouter_estimated_event = _event(
+        "openrouter-estimated",
+        native_cutover + 5,
+        cost_nanos=5,
+    )
+    openrouter_estimated_event.provider = "openrouter"
+    openrouter_estimated_item = _item("openrouter-estimated", 5)
+    openrouter_estimated_item.provider = "openrouter"
+    for event in (before_event, estimated_event, unavailable_event, pending_event):
+        event.provider = "tokenrhythm"
+    for item in (before_item, estimated_item, unavailable_item, pending_item):
+        item.provider = "tokenrhythm"
+    storage = _FakeStorage(
+        state=SimpleNamespace(
+            ledger_started_at_ms=_ms("2026-07-20T00:00:00"),
+            backfill_status="complete",
+            anomaly_count=0,
+        ),
+        events=[
+            before_event,
+            estimated_event,
+            unavailable_event,
+            pending_event,
+            unrelated_event,
+            openrouter_estimated_event,
+        ],
+        items=[
+            before_item,
+            estimated_item,
+            unavailable_item,
+            pending_item,
+            unrelated_item,
+            openrouter_estimated_item,
+        ],
+        baselines=[],
+        receipts=[
+            _billing_receipt(
+                "pending-not-missing",
+                status="pending",
+                amount_nanos=None,
+                usd_equivalent_nanos=None,
+            )
+        ],
+        receipt_state=SimpleNamespace(
+            tracking_started_at_ms=native_cutover,
+            schema_version=1,
+        ),
+    )
+
+    payload = await query_usage_ledger(
+        storage,
+        {
+            "range": {
+                "fromMs": _ms("2026-07-20T00:00:00"),
+                "toMs": _ms("2026-07-21T00:00:00"),
+            },
+            "timezone": "UTC",
+        },
+        now_ms=_ms("2026-07-22T00:00:00"),
+    )
+
+    native_coverage = payload["coverage"]["nativeBilling"]
+    assert native_coverage == {
+        "status": "partial",
+        "exactFromMs": native_cutover,
+        "reasonCodes": [
+            "window_before_native_billing_receipts",
+            "missing_confirmed_billing_receipt",
+            "pending_billing_receipt",
+        ],
+        "missingConfirmedReceiptCount": 2,
+        "pendingReceiptCount": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_native_coverage_marks_finalized_tokenrhythm_event_without_item_missing() -> None:
+    cutover = _ms("2026-07-20T00:00:00")
+    event = _event("missing-item", cutover + 1, cost_nanos=2)
+    event.provider = "tokenrhythm"
+    storage = _FakeStorage(
+        state=SimpleNamespace(
+            ledger_started_at_ms=cutover,
+            backfill_status="complete",
+            anomaly_count=0,
+        ),
+        events=[event],
+        items=[],
+        baselines=[],
+        receipt_state=SimpleNamespace(
+            tracking_started_at_ms=cutover,
+            schema_version=1,
+        ),
+    )
+
+    payload = await query_usage_ledger(
+        storage,
+        {"range": {"fromMs": cutover, "toMs": cutover + 2}, "timezone": "UTC"},
+        now_ms=cutover + 3,
+    )
+
+    assert payload["coverage"]["nativeBilling"]["missingConfirmedReceiptCount"] == 1
+    assert "missing_confirmed_billing_receipt" in payload["coverage"][
+        "nativeBilling"
+    ]["reasonCodes"]
 
 
 @pytest.mark.asyncio

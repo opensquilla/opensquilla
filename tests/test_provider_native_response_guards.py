@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any
 
 import httpx
 import pytest
 
+from opensquilla.provider.compat_policy import compat_policy_for_kind
 from opensquilla.provider.openai import OpenAIProvider
 from opensquilla.provider.types import (
     ChatConfig,
@@ -74,6 +76,72 @@ def _assert_not_committed(events: list[Any], code: str | None = None) -> None:
     assert errors
     if code is not None:
         assert errors[-1].code == code
+
+
+def test_tokenrhythm_nonstream_fallback_preserves_confirmed_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    response_payload = {
+        "id": "synthetic-response",
+        "model": "deepseek-v4-flash",
+        "choices": [
+            {
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "OK"},
+            }
+        ],
+        "usage": {
+            "prompt_tokens": 6,
+            "completion_tokens": 9,
+            "completion_tokens_details": {"reasoning_tokens": 6},
+            "prompt_tokens_details": {"cached_tokens": 4},
+        },
+        "billing_pending": False,
+        "cost_cny": 0.000021,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        request_payload = json.loads(request.content)
+        if request_payload.get("stream"):
+            raise httpx.ReadTimeout("force fallback", request=request)
+        return httpx.Response(200, json=response_payload)
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def patched_async_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "opensquilla.provider.openai.httpx.AsyncClient",
+        patched_async_client,
+    )
+    compat = replace(
+        compat_policy_for_kind("tokenrhythm"),
+        stream_timeout_fallback=True,
+    )
+    provider = OpenAIProvider(
+        api_key="test",
+        model="deepseek-v4-flash",
+        base_url="https://tokenrhythm.studio/v1",
+        provider_kind="tokenrhythm",
+        compat=compat,
+    )
+
+    events = _collect(provider)
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.input_tokens == 6
+    assert done.output_tokens == 9
+    assert done.reasoning_tokens == 6
+    assert done.cached_tokens == 4
+    assert done.billed_cost == 0.000003011
+    assert done.cost_source == "provider_billed"
+    assert done.billing_receipt is not None
+    assert done.billing_receipt.amount_nanos == 21_000
+    assert done.billing_receipt.usd_equivalent_nanos == 3_011
 
 
 def test_openai_stream_rejects_tool_mutation_after_finish_reason(
@@ -170,6 +238,7 @@ def test_tokenrhythm_accepts_only_inert_choice_usage_epilogue(
         OpenAIProvider(
             api_key="test",
             model="deepseek-v4-flash",
+            base_url="https://tokenrhythm.studio/v1",
             provider_kind="tokenrhythm",
         )
     )
@@ -180,6 +249,111 @@ def test_tokenrhythm_accepts_only_inert_choice_usage_epilogue(
     assert done[0].stop_reason == "stop"
     assert done[0].input_tokens == 3
     assert done[0].output_tokens == 2
+    assert done[0].cost_source == "provider_billed"
+    assert done[0].billing_receipt is not None
+    assert done[0].billing_receipt.amount_nanos == 1_000
+
+
+def test_tokenrhythm_billing_status_and_amount_can_arrive_on_separate_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_body(
+        monkeypatch,
+        _sse(
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {"index": 0, "delta": {"content": "OK"}, "finish_reason": None}
+                ],
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "billing_pending": False,
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "delta": {}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                "cost_cny": 0.000001,
+            },
+        ),
+    )
+
+    events = _collect(
+        OpenAIProvider(
+            api_key="test",
+            model="deepseek-v4-flash",
+            base_url="https://tokenrhythm.studio/v1",
+            provider_kind="tokenrhythm",
+        )
+    )
+
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = [event for event in events if isinstance(event, DoneEvent)]
+    assert len(done) == 1
+    assert done[0].cost_source == "provider_billed"
+    assert done[0].billing_receipt is not None
+    assert done[0].billing_receipt.amount_nanos == 1_000
+
+
+def test_tokenrhythm_ignores_post_terminal_null_usage_noop_before_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_body(
+        monkeypatch,
+        _sse(
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [
+                    {"index": 0, "delta": {"content": "OK"}, "finish_reason": None}
+                ],
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": None,
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [{"index": 0, "delta": {}}],
+                "usage": None,
+            },
+            {
+                "model": "deepseek-v4-flash",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "completion_tokens_details": {"reasoning_tokens": 1},
+                },
+                "billing_pending": False,
+                "cost_cny": 0.000001,
+                "reasoning_available": True,
+                "trace_id": "trace-synthetic-null-usage-noop",
+            },
+        ),
+    )
+
+    events = _collect(
+        OpenAIProvider(
+            api_key="test",
+            model="deepseek-v4-flash",
+            base_url="https://tokenrhythm.studio/v1",
+            provider_kind="tokenrhythm",
+        )
+    )
+
+    assert not any(isinstance(event, ErrorEvent) for event in events)
+    done = [event for event in events if isinstance(event, DoneEvent)]
+    assert len(done) == 1
+    assert done[0].stop_reason == "stop"
+    assert done[0].input_tokens == 3
+    assert done[0].output_tokens == 2
+    assert done[0].reasoning_tokens == 1
+    assert done[0].cost_source == "provider_billed"
+    assert done[0].billing_receipt is not None
+    assert done[0].billing_receipt.amount_nanos == 1_000
 
 
 def test_tokenrhythm_one_token_length_epilogue_accepts_billing_metadata(
@@ -227,6 +401,7 @@ def test_tokenrhythm_one_token_length_epilogue_accepts_billing_metadata(
         OpenAIProvider(
             api_key="test",
             model="deepseek-v4-flash",
+            base_url="https://tokenrhythm.studio/v1",
             provider_kind="tokenrhythm",
         )
     )
@@ -237,6 +412,10 @@ def test_tokenrhythm_one_token_length_epilogue_accepts_billing_metadata(
     assert done[0].stop_reason == "length"
     assert done[0].input_tokens == 1
     assert done[0].output_tokens == 1
+    assert done[0].billed_cost == 0.0
+    assert done[0].cost_source == "provider_billed"
+    assert done[0].billing_receipt is not None
+    assert done[0].billing_receipt.amount_nanos == 0
 
 
 def test_openrouter_accepts_structurally_empty_choice_usage_epilogue(
@@ -258,7 +437,11 @@ def test_openrouter_accepts_structurally_empty_choice_usage_epilogue(
             {
                 "provider": "synthetic-provider",
                 "choices": [terminal_choice],
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2},
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "cost": 0.012,
+                },
             },
         ),
     )
@@ -277,6 +460,10 @@ def test_openrouter_accepts_structurally_empty_choice_usage_epilogue(
     assert done[0].stop_reason == "stop"
     assert done[0].input_tokens == 3
     assert done[0].output_tokens == 2
+    assert done[0].billed_cost == 0.012
+    assert done[0].billing_receipt is not None
+    assert done[0].billing_receipt.currency == "USD"
+    assert done[0].billing_receipt.amount_nanos == 12_000_000
 
 
 @pytest.mark.parametrize(

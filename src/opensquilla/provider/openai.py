@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import sys
 from collections.abc import AsyncIterator, Iterator, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, cast
 from urllib.parse import urlparse
 from uuid import uuid4
@@ -67,6 +69,7 @@ from .types import (
     Message,
     ModelCapabilities,
     ModelInfo,
+    ProviderBillingReceipt,
     ProviderHeartbeatEvent,
     ProviderMessageCountProjection,
     ProviderMessageLimitProof,
@@ -176,8 +179,15 @@ def _is_inert_post_terminal_stream_frame(
     if set(chunk).difference(allowed_chunk_keys):
         return False
 
-    has_usage = "usage" in chunk
-    if has_usage and not isinstance(chunk["usage"], Mapping):
+    usage_present = "usage" in chunk
+    usage_payload = chunk.get("usage")
+    has_usage = usage_present and isinstance(usage_payload, Mapping)
+    has_null_usage_noop = (
+        usage_present
+        and usage_payload is None
+        and policy.allow_post_terminal_null_usage_noop_choice
+    )
+    if usage_present and not has_usage and not has_null_usage_noop:
         return False
 
     if not raw_choices:
@@ -224,9 +234,15 @@ def _is_inert_post_terminal_stream_frame(
     ):
         return False
 
-    # A choice with neither usage nor a repeated finish is not a meaningful
-    # terminal epilogue, even if its delta happens to be empty.
-    return has_usage or repeated_finish == terminal_finish_reason
+    # A choice with neither usage nor a repeated finish is normally not a
+    # meaningful terminal epilogue. TokenRhythm explicitly opts into its
+    # observed ``usage: null`` spacer, which is still subject to every no-op
+    # choice and top-level key validation above.
+    return (
+        has_usage
+        or repeated_finish == terminal_finish_reason
+        or has_null_usage_noop
+    )
 
 
 def _openai_tool_result_content(block: Any) -> str:
@@ -1058,80 +1074,354 @@ def _coerce_float(value: Any) -> float:
         return 0.0
 
 
-def _first_present(*sources: tuple[Mapping[str, Any], str]) -> int:
-    """Return the first source[key] that is actually present (key in dict).
+def _first_present_value(*sources: tuple[Mapping[str, Any], str]) -> tuple[bool, int]:
+    """Return whether a semantic field was present and its integer value.
 
-    Truthiness chains via ``or`` would skip an explicit ``0`` from the canonical
-    field and silently fall through to a less-canonical one — e.g. an
-    ``cache_creation_input_tokens=0`` getting overwritten by a non-zero
-    ``prompt_tokens_details.cache_write_tokens``. Use ``in`` instead so a real
-    zero wins.
+    Truthiness chains would skip an explicit zero and fall through to a stale,
+    lower-priority alias. Presence checks make zero a real replacement.
     """
+
     for src, key in sources:
         if isinstance(src, Mapping) and key in src:
-            return _coerce_int(src[key])
-    return 0
+            return True, _coerce_int(src[key])
+    return False, 0
+
+
+@dataclass
+class _UsageSnapshotAccumulator:
+    """Merge cumulative usage snapshots using latest-present semantics.
+
+    OpenAI-compatible usage trailers are cumulative snapshots, not deltas.
+    Some gateways split details and billing across multiple trailers. Each
+    logical field is therefore replaced only when the new snapshot actually
+    contains that field; an explicit zero is a real replacement.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_tokens: int = 0
+    cached_tokens: int = 0
+    cache_write_tokens: int = 0
+    raw_billed_cost: Any = None
+    billed_cost_present: bool = False
+
+    def update(self, usage: Mapping[str, Any]) -> None:
+        if "prompt_tokens" in usage:
+            self.input_tokens = _coerce_int(usage["prompt_tokens"])
+        if "completion_tokens" in usage:
+            self.output_tokens = _coerce_int(usage["completion_tokens"])
+
+        completion_details_raw = usage.get("completion_tokens_details")
+        completion_details = (
+            completion_details_raw
+            if isinstance(completion_details_raw, Mapping)
+            else {}
+        )
+        if "reasoning_tokens" in completion_details:
+            self.reasoning_tokens = _coerce_int(completion_details["reasoning_tokens"])
+
+        prompt_details_raw = usage.get("prompt_tokens_details")
+        prompt_details = (
+            prompt_details_raw if isinstance(prompt_details_raw, Mapping) else {}
+        )
+        top_cache_creation_raw = usage.get("cache_creation")
+        top_cache_creation = (
+            top_cache_creation_raw
+            if isinstance(top_cache_creation_raw, Mapping)
+            else {}
+        )
+        prompt_cache_creation_raw = prompt_details.get("cache_creation")
+        prompt_cache_creation = (
+            prompt_cache_creation_raw
+            if isinstance(prompt_cache_creation_raw, Mapping)
+            else {}
+        )
+
+        cached_present, cached_tokens = _first_present_value(
+            (prompt_details, "cached_tokens"),
+            (usage, "cached_tokens"),
+            (usage, "prompt_cache_hit_tokens"),
+        )
+        if cached_present:
+            self.cached_tokens = cached_tokens
+
+        cache_write_present, cache_write_tokens = _first_present_value(
+            (usage, "cache_creation_input_tokens"),
+            (prompt_details, "cache_write_tokens"),
+            (usage, "cache_write_tokens"),
+            (prompt_details, "cache_creation_input_tokens"),
+            (top_cache_creation, "ephemeral_5m_input_tokens"),
+            (prompt_cache_creation, "ephemeral_5m_input_tokens"),
+            (prompt_details, "cache_creation_tokens"),
+        )
+        if cache_write_present:
+            self.cache_write_tokens = cache_write_tokens
+
+        if "cost" in usage:
+            self.raw_billed_cost = usage["cost"]
+            self.billed_cost_present = True
+        elif "total_cost" in usage:
+            self.raw_billed_cost = usage["total_cost"]
+            self.billed_cost_present = True
+
+    def fields(self) -> tuple[int, int, int, int, int, float]:
+        raw_billed_cost = (
+            _coerce_float(self.raw_billed_cost) if self.billed_cost_present else 0.0
+        )
+        return (
+            self.input_tokens,
+            self.output_tokens,
+            self.reasoning_tokens,
+            self.cached_tokens,
+            self.cache_write_tokens,
+            raw_billed_cost,
+        )
 
 
 def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, int, float]:
     if not usage:
         return 0, 0, 0, 0, 0, 0.0
 
-    input_tokens = _coerce_int(usage.get("prompt_tokens"))
-    output_tokens = _coerce_int(usage.get("completion_tokens"))
-    completion_details_raw = usage.get("completion_tokens_details") or {}
-    completion_details = (
-        completion_details_raw if isinstance(completion_details_raw, Mapping) else {}
-    )
-    reasoning_tokens = _coerce_int(completion_details.get("reasoning_tokens"))
-    prompt_details_raw = usage.get("prompt_tokens_details") or {}
-    prompt_details = prompt_details_raw if isinstance(prompt_details_raw, Mapping) else {}
-    top_cache_creation = usage.get("cache_creation") or {}
-    prompt_cache_creation = prompt_details.get("cache_creation") or {}
+    accumulator = _UsageSnapshotAccumulator()
+    accumulator.update(usage)
+    return accumulator.fields()
 
-    # Cache reads: keys we accept, in priority order.
-    #   - prompt_tokens_details.cached_tokens  — OpenAI native + most OpenRouter
-    #     proxies.
-    #   - usage.cached_tokens                 — DashScope OpenAI-compatible alias.
-    #   - usage.prompt_cache_hit_tokens        — DeepSeek native shape.
-    cached_tokens = _first_present(
-        (prompt_details, "cached_tokens"),
-        (usage, "cached_tokens"),
-        (usage, "prompt_cache_hit_tokens"),
-    )
 
-    # Cache writes: keys we accept, in priority order.
-    #   - usage.cache_creation_input_tokens          — Anthropic-via-OpenRouter passthrough.
-    #   - prompt_tokens_details.cache_write_tokens          — OpenRouter documented field.
-    #   - usage.cache_write_tokens                          — top-level alias some proxies use.
-    #   - prompt_tokens_details.cache_creation_input_tokens — DashScope OpenAI-compatible.
-    #   - *.cache_creation.ephemeral_5m_input_tokens        — DashScope documented object shape.
-    #   - prompt_tokens_details.cache_creation_tokens — defensive fallback.
-    cache_write_tokens = _first_present(
-        (usage, "cache_creation_input_tokens"),
-        (prompt_details, "cache_write_tokens"),
-        (usage, "cache_write_tokens"),
-        (prompt_details, "cache_creation_input_tokens"),
-        (top_cache_creation, "ephemeral_5m_input_tokens"),
-        (prompt_cache_creation, "ephemeral_5m_input_tokens"),
-        (prompt_details, "cache_creation_tokens"),
-    )
+_MONEY_NANO_SCALE = 1_000_000_000
+_MAX_MONEY_NANOS = (1 << 63) - 1
+_TOKENRHYTHM_CNY_PER_USD = Decimal("6.975")
+_TOKENRHYTHM_FX_NANOS = 6_975_000_000
+_USD_FX_NANOS = _MONEY_NANO_SCALE
 
-    billed_cost = _coerce_float(usage.get("cost", usage.get("total_cost")))
+
+@dataclass
+class _ProviderBillingAccumulator:
+    """Accumulate provider billing metadata separately from token usage."""
+
+    tokenrhythm_cost_cny: Any = None
+    tokenrhythm_cost_present: bool = False
+    tokenrhythm_pending: Any = None
+    tokenrhythm_pending_present: bool = False
+
+    def update(self, provider_kind: str, chunk: Mapping[str, Any]) -> None:
+        if provider_kind != "tokenrhythm":
+            return
+        if "cost_cny" in chunk:
+            self.tokenrhythm_cost_cny = chunk["cost_cny"]
+            self.tokenrhythm_cost_present = True
+        if "billing_pending" in chunk:
+            self.tokenrhythm_pending = chunk["billing_pending"]
+            self.tokenrhythm_pending_present = True
+
+
+def _exact_provider_billing_payload(
+    provider_kind: str,
+    fallback: Mapping[str, Any],
+    raw_json: str,
+) -> Mapping[str, Any]:
+    """Reparse native money as Decimal without exposing it to binary float.
+
+    The ordinary response object intentionally keeps the adapter's historical
+    JSON number types. TokenRhythm's billing projection is parsed a second time
+    from the same wire text so sub-nano boundary rounding remains exact without
+    leaking Decimal objects into content/tool/trace parsing.
+    """
+
+    if provider_kind != "tokenrhythm" or not raw_json:
+        return fallback
+    try:
+        parsed = json.loads(raw_json, parse_float=Decimal)
+    except (json.JSONDecodeError, InvalidOperation, RecursionError, TypeError):
+        return fallback
+    return parsed if isinstance(parsed, Mapping) else fallback
+
+
+def _decimal_json_number(value: Any) -> Decimal | None:
+    """Parse a finite, non-negative JSON number without float arithmetic."""
+
+    if isinstance(value, bool) or not isinstance(value, int | float | Decimal):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
+
+
+def _decimal_compat_number(value: Any) -> Decimal | None:
+    """Parse legacy compatible usage.cost values, including numeric strings."""
+
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not parsed.is_finite() or parsed < 0:
+        return None
+    return parsed
+
+
+def _money_to_nanos(value: Decimal) -> int | None:
+    """Convert bounded money to ledger-safe nanos without raising."""
+
+    try:
+        rounded = (value * _MONEY_NANO_SCALE).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+        nanos = int(rounded)
+    except (InvalidOperation, OverflowError, ValueError):
+        return None
+    if nanos < 0 or nanos > _MAX_MONEY_NANOS:
+        return None
+    return nanos
+
+
+def _billing_result(
+    *,
+    provider_kind: str,
+    base_url: str,
+    usage: _UsageSnapshotAccumulator,
+    billing: _ProviderBillingAccumulator,
+    model: str,
+) -> tuple[float, str, ProviderBillingReceipt | None]:
+    """Resolve a trusted provider-native receipt and canonical USD cost."""
+
+    if compat_policy_for_kind(provider_kind).trust_billed_cost:
+        amount = (
+            _decimal_compat_number(usage.raw_billed_cost)
+            if usage.billed_cost_present
+            else None
+        )
+        # Keep OpenRouter's historical positive-only billed-cost contract.
+        if amount is not None and amount > 0:
+            amount_nanos = _money_to_nanos(amount)
+            if amount_nanos is None:
+                return 0.0, "none", None
+            receipt = ProviderBillingReceipt(
+                currency="USD",
+                status="confirmed",
+                amount_nanos=amount_nanos,
+                usd_equivalent_nanos=amount_nanos,
+                fx_native_per_usd_nanos=_USD_FX_NANOS,
+            )
+            return float(amount), "provider_billed", receipt
+        return 0.0, "none", None
+
+    if provider_kind != "tokenrhythm":
+        return 0.0, "none", None
+
+    if not is_provider_app_host(base_url, "tokenrhythm.studio"):
+        if billing.tokenrhythm_cost_present or billing.tokenrhythm_pending_present:
+            log.warning(
+                "provider.billing_receipt_rejected",
+                provider=provider_kind,
+                model=model,
+                reason="unofficial_host",
+            )
+        return 0.0, "none", None
+
+    if not billing.tokenrhythm_pending_present:
+        log.warning(
+            "provider.billing_receipt_rejected",
+            provider=provider_kind,
+            model=model,
+            reason="billing_status_missing",
+        )
+        return 0.0, "none", None
+    pending = billing.tokenrhythm_pending
+    if type(pending) is not bool:
+        log.warning(
+            "provider.billing_receipt_rejected",
+            provider=provider_kind,
+            model=model,
+            reason="billing_status_invalid",
+        )
+        return 0.0, "none", None
+
+    amount = (
+        _decimal_json_number(billing.tokenrhythm_cost_cny)
+        if billing.tokenrhythm_cost_present
+        else None
+    )
+    amount_nanos = _money_to_nanos(amount) if amount is not None else None
+    if pending:
+        if billing.tokenrhythm_cost_present and amount_nanos is None:
+            log.warning(
+                "provider.billing_receipt_deferred",
+                provider=provider_kind,
+                model=model,
+                reason="pending_amount_invalid",
+            )
+        return (
+            0.0,
+            "none",
+            ProviderBillingReceipt(
+                currency="CNY",
+                status="pending",
+                amount_nanos=amount_nanos,
+                usd_equivalent_nanos=None,
+                fx_native_per_usd_nanos=_TOKENRHYTHM_FX_NANOS,
+            ),
+        )
+
+    if amount is None or amount_nanos is None:
+        log.warning(
+            "provider.billing_receipt_rejected",
+            provider=provider_kind,
+            model=model,
+            reason=(
+                "billing_amount_invalid"
+                if amount is None and billing.tokenrhythm_cost_present
+                else "billing_amount_out_of_range"
+                if billing.tokenrhythm_cost_present
+                else "billing_amount_missing"
+            ),
+        )
+        return 0.0, "none", None
+
+    usd_equivalent_nanos = int(
+        (Decimal(amount_nanos) / _TOKENRHYTHM_CNY_PER_USD).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+    if usd_equivalent_nanos < 0 or usd_equivalent_nanos > _MAX_MONEY_NANOS:
+        log.warning(
+            "provider.billing_receipt_rejected",
+            provider=provider_kind,
+            model=model,
+            reason="billing_usd_equivalent_out_of_range",
+        )
+        return 0.0, "none", None
+    receipt = ProviderBillingReceipt(
+        currency="CNY",
+        status="confirmed",
+        amount_nanos=amount_nanos,
+        usd_equivalent_nanos=usd_equivalent_nanos,
+        fx_native_per_usd_nanos=_TOKENRHYTHM_FX_NANOS,
+    )
     return (
-        input_tokens,
-        output_tokens,
-        reasoning_tokens,
-        cached_tokens,
-        cache_write_tokens,
-        billed_cost,
+        float(Decimal(usd_equivalent_nanos) / _MONEY_NANO_SCALE),
+        "provider_billed",
+        receipt,
     )
 
 
 def _provider_billed_cost(provider_kind: str, raw_billed_cost: float) -> tuple[float, str]:
     """Return trusted provider-billed cost and its source marker."""
-    if compat_policy_for_kind(provider_kind).trust_billed_cost and raw_billed_cost > 0.0:
-        return raw_billed_cost, "provider_billed"
+    amount = _decimal_compat_number(raw_billed_cost)
+    if (
+        compat_policy_for_kind(provider_kind).trust_billed_cost
+        and amount is not None
+        and amount > 0
+    ):
+        return float(amount), "provider_billed"
     return 0.0, "none"
 
 
@@ -2595,6 +2885,9 @@ class OpenAIProvider:
         cache_write_tokens = 0
         billed_cost = 0.0
         cost_source = "none"
+        billing_receipt: ProviderBillingReceipt | None = None
+        usage_accumulator = _UsageSnapshotAccumulator()
+        billing_accumulator = _ProviderBillingAccumulator()
         actual_model = self._model
         stop_reason = "stop"
         emitted_stream_event = False
@@ -2867,6 +3160,11 @@ class OpenAIProvider:
                                 reason="json_frame_not_object",
                             )
                             continue
+                        billing_chunk = _exact_provider_billing_payload(
+                            self._provider_kind,
+                            chunk,
+                            data_str,
+                        )
 
                         if "error" in chunk and chunk["error"] is not None:
                             error_obj = chunk["error"]
@@ -2929,30 +3227,6 @@ class OpenAIProvider:
                         if chunk_model:
                             actual_model = chunk_model
 
-                        # Usage may appear in the final chunk
-                        if chunk.get("usage"):
-                            (
-                                input_tokens,
-                                output_tokens,
-                                reasoning_tokens,
-                                cached_tokens,
-                                cache_write_tokens,
-                                raw_billed_cost,
-                            ) = _usage_fields(chunk["usage"])
-                            billed_cost, cost_source = _provider_billed_cost(
-                                self._provider_kind,
-                                raw_billed_cost,
-                            )
-                            _log_provider_cache_usage(
-                                provider_kind=self._provider_kind,
-                                model=self._model,
-                                actual_model=actual_model,
-                                input_tokens=input_tokens,
-                                cached_tokens=cached_tokens,
-                                cache_write_tokens=cache_write_tokens,
-                                cache_shape=cache_shape,
-                            )
-
                         raw_choices = chunk.get("choices", [])
                         if not isinstance(raw_choices, list) or len(raw_choices) > 1:
                             trace.record_error(
@@ -2998,10 +3272,85 @@ class OpenAIProvider:
                                     code="invalid_stream_order",
                                 )
                                 return
+                            usage_payload = chunk.get("usage")
+                            billing_accumulator.update(
+                                self._provider_kind,
+                                billing_chunk,
+                            )
+                            if isinstance(usage_payload, Mapping):
+                                usage_accumulator.update(usage_payload)
+                                (
+                                    input_tokens,
+                                    output_tokens,
+                                    reasoning_tokens,
+                                    cached_tokens,
+                                    cache_write_tokens,
+                                    _,
+                                ) = usage_accumulator.fields()
+                                _log_provider_cache_usage(
+                                    provider_kind=self._provider_kind,
+                                    model=self._model,
+                                    actual_model=actual_model,
+                                    input_tokens=input_tokens,
+                                    cached_tokens=cached_tokens,
+                                    cache_write_tokens=cache_write_tokens,
+                                    cache_shape=cache_shape,
+                                )
                             # Usage was already accounted for above.  Do not let
                             # the duplicate choice re-enter the normal parser or
                             # append a second finish reason.
                             continue
+
+                        # Usage is a cumulative snapshot. Apply it only after
+                        # the frame's outer shape has passed validation; later
+                        # snapshots replace fields they contain and preserve
+                        # details they omit.
+                        usage_payload = chunk.get("usage")
+                        if usage_payload is not None and not isinstance(
+                            usage_payload,
+                            Mapping,
+                        ):
+                            trace.record_error(
+                                code="invalid_stream_frame",
+                                message="Provider stream returned malformed usage",
+                                metadata={"phase": "stream", "cache_shape": cache_shape},
+                            )
+                            yield ErrorEvent(
+                                message=(
+                                    f"{self._compat.display_name} stream returned "
+                                    "malformed usage"
+                                ),
+                                code="invalid_stream_frame",
+                            )
+                            return
+                        # Native billing fields are independent top-level
+                        # metadata. A terminal choice may carry settlement
+                        # status while a later usage trailer carries the
+                        # amount, so do not couple their accumulation to the
+                        # presence of ``usage`` on this frame.
+                        billing_accumulator.update(
+                            self._provider_kind,
+                            billing_chunk,
+                        )
+                        if isinstance(usage_payload, Mapping):
+                            usage_accumulator.update(usage_payload)
+                            (
+                                input_tokens,
+                                output_tokens,
+                                reasoning_tokens,
+                                cached_tokens,
+                                cache_write_tokens,
+                                _,
+                            ) = usage_accumulator.fields()
+                            _log_provider_cache_usage(
+                                provider_kind=self._provider_kind,
+                                model=self._model,
+                                actual_model=actual_model,
+                                input_tokens=input_tokens,
+                                cached_tokens=cached_tokens,
+                                cache_write_tokens=cache_write_tokens,
+                                cache_shape=cache_shape,
+                            )
 
                         for choice in raw_choices:
                             if not isinstance(choice, Mapping):
@@ -3740,6 +4089,14 @@ class OpenAIProvider:
                             yield fallback_event
                         return
 
+                    billed_cost, cost_source, billing_receipt = _billing_result(
+                        provider_kind=self._provider_kind,
+                        base_url=self._base_url,
+                        usage=usage_accumulator,
+                        billing=billing_accumulator,
+                        model=self._model,
+                    )
+
                     trace.record_response(
                         usage={
                             "input_tokens": input_tokens,
@@ -3771,6 +4128,7 @@ class OpenAIProvider:
                         model=actual_model,
                         cost_source=cost_source,
                         provider=self.provider_id,
+                        billing_receipt=billing_receipt,
                     )
 
         except httpx.TimeoutException as exc:
@@ -4164,15 +4522,34 @@ class OpenAIProvider:
             return
 
         actual_model = data.get("model") or self._model
+        usage_accumulator = _UsageSnapshotAccumulator()
+        usage_payload = data.get("usage")
+        if isinstance(usage_payload, Mapping):
+            usage_accumulator.update(usage_payload)
         (
             input_tokens,
             output_tokens,
             reasoning_tokens,
             cached_tokens,
             cache_write_tokens,
-            raw_billed_cost,
-        ) = _usage_fields(data.get("usage"))
-        billed_cost, cost_source = _provider_billed_cost(self._provider_kind, raw_billed_cost)
+            _,
+        ) = usage_accumulator.fields()
+        billing_accumulator = _ProviderBillingAccumulator()
+        billing_accumulator.update(
+            self._provider_kind,
+            _exact_provider_billing_payload(
+                self._provider_kind,
+                data,
+                str(getattr(response, "text", "") or ""),
+            ),
+        )
+        billed_cost, cost_source, billing_receipt = _billing_result(
+            provider_kind=self._provider_kind,
+            base_url=self._base_url,
+            usage=usage_accumulator,
+            billing=billing_accumulator,
+            model=self._model,
+        )
         _log_provider_cache_usage(
             provider_kind=self._provider_kind,
             model=self._model,
@@ -4518,6 +4895,7 @@ class OpenAIProvider:
             model=actual_model,
             cost_source=cost_source,
             provider=self.provider_id,
+            billing_receipt=billing_receipt,
         )
 
     async def list_models(self, *, raise_on_error: bool = False) -> list[ModelInfo]:

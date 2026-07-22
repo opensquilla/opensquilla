@@ -548,7 +548,14 @@ def _post_write_convergence_message(
     )
 
 
-def _cost_source_for_usage(cost_usd: float, billed_cost: float) -> str:
+def _cost_source_for_usage(
+    cost_usd: float,
+    billed_cost: float,
+    explicit_source: str | None = None,
+) -> str:
+    source = str(explicit_source or "").strip().lower()
+    if source in {"provider_billed", "mixed", "opensquilla_estimate", "unavailable"}:
+        return source
     if billed_cost > 0.0 and abs(cost_usd - billed_cost) <= 1e-9:
         return "provider_billed"
     if billed_cost > 0.0:
@@ -615,6 +622,14 @@ def _with_model_usage_cost_fields(rows: list[dict[str, Any]]) -> list[dict[str, 
                     # input while still labeling the estimate "cache_aware".
                     cache_read_tokens=_usage_int(cache_read or 0),
                     cache_write_tokens=_usage_int(item.get("cache_write_tokens") or 0),
+                    has_billed_receipt=(
+                        True
+                        if str(
+                            item.get("cost_source") or item.get("costSource") or ""
+                        ).strip().lower()
+                        in {"provider_billed", "openrouter_usage"}
+                        else None
+                    ),
                 )
             )
         enriched.append(item)
@@ -4311,6 +4326,8 @@ class Agent:
         total_cached_tokens = 0
         total_cache_write_tokens = 0
         total_billed_cost = 0.0
+        total_provider_billed_entries = 0
+        total_unbilled_entries = 0
         # Estimate-backed accumulator for max_turn_cost_usd: billed cost when a
         # call reported one, otherwise the layered-resolver estimate — unlike
         # total_billed_cost, this never sits at 0.0 for a cost-blind provider.
@@ -4347,8 +4364,14 @@ class Agent:
             total_cost_usd_accum += (
                 budget_usage.billed_cost_nanos + budget_usage.estimated_cost_nanos
             ) / 1_000_000_000
-            total_cost_usd_accum_has_billed |= budget_usage.billed_cost_nanos > 0
-            total_cost_usd_accum_has_estimate |= budget_usage.estimated_cost_nanos > 0
+            total_cost_usd_accum_has_billed |= budget_usage.cost_source in {
+                "provider_billed",
+                "mixed",
+            }
+            total_cost_usd_accum_has_estimate |= budget_usage.cost_source in {
+                "opensquilla_estimate",
+                "mixed",
+            }
 
         usage_turn_baseline = (
             self._usage_tracker.session_checkpoint(self._session_key)
@@ -5548,6 +5571,67 @@ class Agent:
                                     if isinstance(usage_breakdown, list)
                                     else []
                                 )
+                                usage_source_rows = (
+                                    valid_usage_breakdown
+                                    if valid_usage_breakdown
+                                    else [
+                                        {
+                                            "cost_source": getattr(
+                                                raw_ev,
+                                                "cost_source",
+                                                "none",
+                                            ),
+                                            "billed_cost": raw_ev.billed_cost,
+                                            "billing_receipt": getattr(
+                                                raw_ev,
+                                                "billing_receipt",
+                                                None,
+                                            ),
+                                        }
+                                    ]
+                                )
+                                for usage_source_row in usage_source_rows:
+                                    usage_source = str(
+                                        usage_source_row.get("cost_source")
+                                        or usage_source_row.get("costSource")
+                                        or "none"
+                                    ).strip().lower()
+                                    usage_receipt = usage_source_row.get(
+                                        "billing_receipt",
+                                        usage_source_row.get("billingReceipt"),
+                                    )
+                                    if isinstance(usage_receipt, dict):
+                                        receipt_status = str(
+                                            usage_receipt.get("status") or ""
+                                        ).strip().lower()
+                                    else:
+                                        receipt_status = str(
+                                            getattr(usage_receipt, "status", "") or ""
+                                        ).strip().lower()
+                                    legacy_billed_cost = _usage_float(
+                                        usage_source_row.get(
+                                            "billed_cost",
+                                            usage_source_row.get("billedCost", 0.0),
+                                        )
+                                    )
+                                    if usage_source == "mixed":
+                                        total_provider_billed_entries += 1
+                                        total_unbilled_entries += 1
+                                    elif (
+                                        usage_source in {
+                                            "provider_billed",
+                                            "openrouter_usage",
+                                        }
+                                        or receipt_status == "confirmed"
+                                        # Compatibility bridge for adapters and
+                                        # test doubles predating native receipts.
+                                        # Zero remains ambiguous and therefore
+                                        # requires an explicit source/receipt.
+                                        or legacy_billed_cost > 0.0
+                                    ):
+                                        total_provider_billed_entries += 1
+                                    else:
+                                        total_unbilled_entries += 1
                                 _accumulate_turn_cost(
                                     raw_ev,
                                     default_provider=executed_provider_id,
@@ -5603,6 +5687,11 @@ class Agent:
                                                     or physical_usage_provider
                                                     or executed_provider_id
                                                 ),
+                                                cost_source=str(
+                                                    usage_row.get("cost_source")
+                                                    or usage_row.get("costSource")
+                                                    or "none"
+                                                ),
                                             )
                                     else:
                                         self._usage_tracker.add(
@@ -5614,6 +5703,7 @@ class Agent:
                                             cache_write_tokens=raw_ev.cache_write_tokens,
                                             billed_cost=raw_ev.billed_cost,
                                             provider=executed_provider_id,
+                                            cost_source=getattr(raw_ev, "cost_source", "none"),
                                         )
                                 ensemble_trace = getattr(raw_ev, "ensemble_trace", None)
                                 if isinstance(ensemble_trace, dict):
@@ -8769,10 +8859,17 @@ class Agent:
         )
         estimated_cost = turn_estimate.cost_usd
         estimate_basis: str | None
-        if total_billed_cost > 0.0:
+        if total_provider_billed_entries and not total_unbilled_entries:
             done_cost = total_billed_cost
             cost_source = "provider_billed"
             estimate_basis = None
+        elif total_provider_billed_entries:
+            # The tracker/model breakdown below supplies the exact estimated
+            # component when available. Preserve the provider receipt source
+            # even when its confirmed amount is zero.
+            done_cost = total_billed_cost
+            cost_source = "mixed"
+            estimate_basis = turn_estimate.basis
         elif estimated_cost > 0.0:
             done_cost = estimated_cost
             cost_source = "opensquilla_static_estimate"
@@ -8817,7 +8914,11 @@ class Agent:
             done_cache_write_tokens = turn_usage_delta.cache_write_tokens
             done_cost = turn_usage_delta.cost_usd
             done_billed_cost = turn_usage_delta.billed_cost
-            cost_source = _cost_source_for_usage(done_cost, done_billed_cost)
+            cost_source = _cost_source_for_usage(
+                done_cost,
+                done_billed_cost,
+                turn_usage_delta.cost_source,
+            )
             if cost_source == "provider_billed":
                 estimate_basis = None
             elif cost_source in {"mixed", "opensquilla_estimate"}:
@@ -8835,6 +8936,7 @@ class Agent:
             or done_cached_tokens
             or done_cache_write_tokens
             or done_billed_cost
+            or total_provider_billed_entries
         )
         summarized_model_usage_breakdown = _summarize_model_usage_breakdown(
             turn_model_usage_breakdown

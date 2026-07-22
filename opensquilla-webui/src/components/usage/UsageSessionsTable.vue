@@ -50,7 +50,7 @@
               <td data-label="Output" class="usage-mono">{{ row.outputTokens != null ? row.outputTokens.toLocaleString() : '-' }}</td>
               <td data-label="Cache R" class="usage-mono usage-dim">{{ row.cacheReadTokens != null ? row.cacheReadTokens.toLocaleString() : '-' }}</td>
               <td data-label="Cache W" class="usage-mono usage-dim">{{ row.cacheWriteTokens != null ? row.cacheWriteTokens.toLocaleString() : '-' }}</td>
-              <td data-label="Cost" class="usage-mono usage-cost">{{ fmtCost(row.cost) }}</td>
+              <td data-label="Cost" class="usage-mono usage-cost">{{ fmtCost(row.cost, { source: row.raw }) }}</td>
               <td data-label="Source">
                 <span
                   class="usage-source"
@@ -76,6 +76,7 @@
                   :rows="rowBreakdown(row.raw)"
                   :total-tokens="rowBreakdownTotalTokens(row.raw)"
                   :total-cost="rowBreakdownTotalCost(row.raw)"
+                  :native-source="row.raw"
                   :any-prorated="rowBreakdownAnyProrated(row.raw)"
                   :fmt-cost="fmtCost"
                   :cost-source-classes="costSourceClassesForBreakdown"
@@ -107,7 +108,10 @@ defineProps<{
   sortedRows: SortedRow[]
   sessionsMeta: string
   expandedSessions: Set<string>
-  fmtCost: (cost: number | null | undefined, opts?: { decimals?: number }) => string
+  fmtCost: (
+    cost: number | null | undefined,
+    opts?: { decimals?: number; source?: object },
+  ) => string
   costSourceLabel: (row: SessionRow) => string
   costSourceTooltip: (row: SessionRow) => string
   costSourceClasses: (row: SessionRow) => Record<string, boolean>

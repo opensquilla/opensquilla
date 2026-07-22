@@ -187,6 +187,31 @@ def test_usage_status_tracker_row_source_matches_breakdown_when_billed() -> None
     assert breakdown_sum == row["costUsd"]
 
 
+def test_usage_status_tracker_row_preserves_confirmed_zero_receipt() -> None:
+    tracker = UsageTracker()
+    tracker.add(
+        "agent:webchat:confirmed-zero",
+        input_tokens=1_000,
+        output_tokens=50,
+        model_id="anthropic/claude-4.7-opus",
+        billed_cost=0.0,
+        cost_source="provider_billed",
+    )
+
+    payload = asyncio.run(
+        _handle_usage_status(
+            None,
+            _ctx(session_manager=None, usage_tracker=tracker),
+        )
+    )
+
+    [row] = payload["sessions"]
+    assert row["costUsd"] == 0.0
+    assert row["billedCostUsd"] == 0.0
+    assert row["estimatedCostUsd"] == 0.0
+    assert row["costSource"] == "provider_billed"
+
+
 def test_usage_status_tracker_row_estimated_is_the_unbilled_component() -> None:
     """estimatedCostUsd is the estimated component of the total, so a billed
     row keeps costUsd == billedCostUsd + estimatedCostUsd (matching the

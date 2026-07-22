@@ -27,6 +27,8 @@ from opensquilla.provider import ChatConfig, Message
 from opensquilla.provider import DoneEvent as ProviderDone
 from opensquilla.provider import ErrorEvent as ProviderError
 from opensquilla.provider import TextDeltaEvent as ProviderText
+from opensquilla.provider.preset_registry import get_preset
+from opensquilla.provider.types import ProviderBillingReceipt
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.storage import SessionStorage
 from opensquilla.skills.meta.orchestrator import make_llm_chat_from_provider
@@ -449,6 +451,110 @@ def test_ensemble_breakdown_is_one_envelope_with_items(monkeypatch: pytest.Monke
         sum(item.estimated_cost_nanos for item in result.items)
         == result.estimated_cost_nanos
     )
+
+
+def _tokenrhythm_receipt(*, usd_nanos: int) -> ProviderBillingReceipt:
+    """Build an exact receipt at TokenRhythm's fixed 6.975 CNY/USD rate."""
+
+    amount_numerator = usd_nanos * 279
+    assert amount_numerator % 40 == 0
+    return ProviderBillingReceipt(
+        currency="CNY",
+        status="confirmed",
+        amount_nanos=amount_numerator // 40,
+        usd_equivalent_nanos=usd_nanos,
+        fx_native_per_usd_nanos=6_975_000_000,
+    )
+
+
+def test_tokenrhythm_single_done_reconciles_native_receipt_and_all_token_buckets() -> None:
+    receipt = _tokenrhythm_receipt(usd_nanos=2_000)
+    event = ProviderDone(
+        input_tokens=101,
+        output_tokens=17,
+        reasoning_tokens=9,
+        cached_tokens=37,
+        cache_write_tokens=3,
+        billed_cost=0.000002,
+        cost_source="provider_billed",
+        provider="tokenrhythm",
+        model="deepseek-v4-pro",
+        billing_receipt=receipt,
+    )
+
+    result = normalize_provider_usage(
+        event,
+        default_provider="tokenrhythm",
+        default_model="deepseek-v4-pro",
+        completed_at_ms=1234,
+    )
+
+    assert len(result.items) == 1
+    [item] = result.items
+    assert (
+        item.input_tokens,
+        item.output_tokens,
+        item.reasoning_tokens,
+        item.cache_read_tokens,
+        item.cache_write_tokens,
+    ) == (101, 17, 9, 37, 3)
+    assert item.billing_receipt == receipt
+    assert item.billed_cost_nanos == receipt.usd_equivalent_nanos == 2_000
+    assert item.estimated_cost_nanos == 0
+    assert item.cost_source == result.cost_source == "provider_billed"
+    assert result.billed_cost_nanos == sum(row.billed_cost_nanos for row in result.items)
+
+
+def test_tokenrhythm_inline_router_c0_c3_reconciles_each_physical_request() -> None:
+    preset = get_preset("tokenrhythm")
+    assert preset is not None
+    tiers = preset.tier_defaults()
+    expected_models = {
+        "c0": "deepseek-v4-flash",
+        "c1": "deepseek-v4-pro",
+        "c2": "kimi-k2.7-code",
+        "c3": "glm-5.2",
+    }
+
+    results: list[UsageCallResult] = []
+    for index, (tier, expected_model) in enumerate(expected_models.items(), start=1):
+        assert tiers[tier]["provider"] == "tokenrhythm"
+        assert tiers[tier]["model"] == expected_model
+        usd_nanos = index * 4_000
+        receipt = _tokenrhythm_receipt(usd_nanos=usd_nanos)
+        event = ProviderDone(
+            input_tokens=index * 100,
+            output_tokens=index * 10,
+            reasoning_tokens=index * 3,
+            cached_tokens=index * 20,
+            cache_write_tokens=index,
+            billed_cost=usd_nanos / 1_000_000_000,
+            cost_source="provider_billed",
+            provider="tokenrhythm",
+            model=expected_model,
+            billing_receipt=receipt,
+        )
+        results.append(
+            normalize_provider_usage(
+                event,
+                default_provider=str(tiers[tier]["provider"]),
+                default_model=str(tiers[tier]["model"]),
+                completed_at_ms=1234 + index,
+            )
+        )
+
+    physical_items = [item for result in results for item in result.items]
+    assert [item.model for item in physical_items] == list(expected_models.values())
+    assert all(item.provider == "tokenrhythm" for item in physical_items)
+    assert all(item.cost_source == "provider_billed" for item in physical_items)
+    assert all(item.estimated_cost_nanos == 0 for item in physical_items)
+    assert sum(item.input_tokens for item in physical_items) == 1_000
+    assert sum(item.output_tokens for item in physical_items) == 100
+    assert sum(item.reasoning_tokens for item in physical_items) == 30
+    assert sum(item.cache_read_tokens for item in physical_items) == 200
+    assert sum(item.cache_write_tokens for item in physical_items) == 10
+    assert sum(item.billed_cost_nanos for item in physical_items) == 40_000
+    assert sum(result.billed_cost_nanos for result in results) == 40_000
 
 
 def test_incomplete_breakdown_falls_back_to_done_envelope() -> None:

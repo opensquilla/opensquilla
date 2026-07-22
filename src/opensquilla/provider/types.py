@@ -70,6 +70,24 @@ class ToolUseEndEvent:
     synthetic_from_text: bool = False
 
 
+@dataclass(frozen=True)
+class ProviderBillingReceipt:
+    """Provider-native billing receipt attached to one physical request.
+
+    Amounts use integer nanos so adapters can preserve an upstream bill without
+    routing it through binary floating-point arithmetic. ``billed_cost`` on the
+    enclosing :class:`DoneEvent` remains the canonical USD-compatible value for
+    existing callers.
+    """
+
+    currency: str
+    status: Literal["confirmed", "pending"]
+    amount_nanos: int | None
+    usd_equivalent_nanos: int | None
+    fx_native_per_usd_nanos: int
+    schema_version: int = 1
+
+
 @dataclass
 class DoneEvent:
     """Stream finished successfully."""
@@ -97,6 +115,9 @@ class DoneEvent:
     # positional-construction compatibility; generic adapters default it to
     # their family identity when constructed outside a selector.
     provider: str = ""
+    # Provider-native receipt for this physical request. Ensemble envelopes do
+    # not carry a synthetic receipt; their physical breakdown rows do.
+    billing_receipt: ProviderBillingReceipt | None = None
 
     @property
     def upstream_cost_usd(self) -> float:

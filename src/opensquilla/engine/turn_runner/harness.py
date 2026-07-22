@@ -1265,10 +1265,21 @@ class _TurnRunnerSessionTotalsAdapter(SessionTotalsPort):
             )
             if event_cost_source == "unavailable":
                 next_missing_entries += 1
+            current_cost_source = str(
+                getattr(current_session, "cost_source", "none") or "none"
+            ).strip().lower()
+            provider_billed_entries = int(
+                current_cost_source in {"provider_billed", "mixed"}
+            ) + int(event_cost_source in {"provider_billed", "mixed"})
+            estimated_cost_entries = int(
+                current_cost_source in {"opensquilla_estimate", "mixed"}
+            ) + int(event_cost_source in {"opensquilla_estimate", "mixed"})
             next_cost_source = rollup_cost_source(
                 billed_cost_usd=next_billed_cost,
                 estimated_cost_component_usd=next_estimated_component,
                 missing_cost_entries=next_missing_entries,
+                provider_billed_entries=provider_billed_entries,
+                estimated_cost_entries=estimated_cost_entries,
             )
             next_input_tokens = (
                 getattr(current_session, "input_tokens", 0) or 0

@@ -26,6 +26,11 @@ export interface SessionRow {
   costEphemeral?: boolean
   model?: string
   modelBreakdown?: ModelBreakdownItem[]
+  costSourceCounts?: Record<string, number>
+  nativeBilledByCurrency?: NativeBilledByCurrency
+  pendingBillingReceiptCount?: number
+  nativeBillingExpectedReceiptCount?: number
+  nativeBillingMissingConfirmedReceiptCount?: number
   [key: string]: unknown
 }
 
@@ -39,6 +44,11 @@ export interface ModelBreakdownItem {
   cost_usd?: number | string
   costSource?: string
   cost_source?: string
+  costSourceCounts?: Record<string, number>
+  nativeBilledByCurrency?: NativeBilledByCurrency
+  pendingBillingReceiptCount?: number
+  nativeBillingExpectedReceiptCount?: number
+  nativeBillingMissingConfirmedReceiptCount?: number
   costEphemeral?: boolean
   cost_ephemeral?: boolean
   [key: string]: unknown
@@ -94,7 +104,29 @@ export interface UsageQueryTotalsWire extends Record<string, unknown> {
   costSource?: string
   cost_source?: string
   costSourceCounts?: Record<string, number | string>
+  nativeBilledByCurrency?: Record<string, NativeBilledCurrencyWire>
+  pendingBillingReceiptCount?: number | string
+  nativeBillingExpectedReceiptCount?: number | string
+  nativeBillingMissingConfirmedReceiptCount?: number | string
 }
+
+export interface NativeBilledCurrencyWire extends Record<string, unknown> {
+  amountNanos?: string
+  amount?: string
+  usdEquivalentNanos?: string
+  receiptCount?: number | string
+  normalizationRatesNativePerUsd?: string[]
+}
+
+export interface NativeBilledCurrencyTotal {
+  amountNanos: string
+  amount: string
+  usdEquivalentNanos: string
+  receiptCount: number
+  normalizationRatesNativePerUsd: string[]
+}
+
+export type NativeBilledByCurrency = Record<string, NativeBilledCurrencyTotal>
 
 export interface UsageQuerySessionWire extends Record<string, unknown> {
   sessionId?: string
@@ -147,6 +179,14 @@ export interface UsageCoverageWire extends Record<string, unknown> {
     totals?: UsageQueryTotalsWire
     [key: string]: unknown
   }
+  nativeBilling?: {
+    status?: string
+    exactFromMs?: number | string | null
+    reasonCodes?: string[]
+    missingConfirmedReceiptCount?: number | string
+    pendingReceiptCount?: number | string
+    [key: string]: unknown
+  }
 }
 
 export interface UsageQueryResponse extends Record<string, unknown> {
@@ -186,6 +226,13 @@ export interface UsageCoverage {
   anomalyCount: number
   legacyIncludedInTotals: boolean
   legacyTotals: UsageTotals | null
+  nativeBilling: {
+    status: string
+    exactFromMs: number | null
+    reasonCodes: string[]
+    missingConfirmedReceiptCount: number
+    pendingReceiptCount: number
+  }
 }
 
 export interface UsageSnapshot {
@@ -237,7 +284,12 @@ export interface ModelCard {
   share: number
   totalTokens: number
   costSource: string
+  costSourceCounts?: Record<string, number>
   anyCacheBlind: boolean
+  nativeBilledByCurrency?: NativeBilledByCurrency
+  pendingBillingReceiptCount?: number
+  nativeBillingExpectedReceiptCount?: number
+  nativeBillingMissingConfirmedReceiptCount?: number
 }
 
 export interface BreakdownRow {
@@ -249,8 +301,13 @@ export interface BreakdownRow {
   share: number
   costSource?: string
   cost_source?: string
+  costSourceCounts?: Record<string, number>
   costEphemeral?: boolean
   cost_ephemeral?: boolean
+  nativeBilledByCurrency?: NativeBilledByCurrency
+  pendingBillingReceiptCount?: number
+  nativeBillingExpectedReceiptCount?: number
+  nativeBillingMissingConfirmedReceiptCount?: number
 }
 
 export interface UsageTotals {
@@ -268,6 +325,10 @@ export interface UsageTotals {
   eventCount: number
   costSource: string
   costSourceCounts: Record<string, number>
+  nativeBilledByCurrency?: NativeBilledByCurrency
+  pendingBillingReceiptCount?: number
+  nativeBillingExpectedReceiptCount?: number
+  nativeBillingMissingConfirmedReceiptCount?: number
 }
 
 export interface SortedRow {

@@ -93,6 +93,7 @@ class OpenAIImageGenerationProvider:
         usage = await reserve_direct_usage_call(
             provider=self.provider_id,
             model=request.model,
+            base_url=self._base_url,
         )
         try:
             async with httpx.AsyncClient(
@@ -106,7 +107,10 @@ class OpenAIImageGenerationProvider:
                 )
                 response.raise_for_status()
                 data = response.json()
-                await usage.finalize_openai_response(data)
+                await usage.finalize_openai_response(
+                    data,
+                    raw_json=str(getattr(response, "text", "") or ""),
+                )
         except asyncio.CancelledError:
             await usage.mark_unknown("cancelled")
             raise
@@ -186,6 +190,7 @@ class OpenRouterImageGenerationProvider:
         usage = await reserve_direct_usage_call(
             provider=self.provider_id,
             model=request.model,
+            base_url=self._base_url,
         )
         try:
             async with httpx.AsyncClient(
@@ -203,7 +208,10 @@ class OpenRouterImageGenerationProvider:
                 )
                 response.raise_for_status()
                 data = response.json()
-                await usage.finalize_openai_response(data)
+                await usage.finalize_openai_response(
+                    data,
+                    raw_json=str(getattr(response, "text", "") or ""),
+                )
         except asyncio.CancelledError:
             await usage.mark_unknown("cancelled")
             raise

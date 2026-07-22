@@ -9,11 +9,12 @@ from pathlib import Path
 import pytest
 
 from opensquilla.session.models import SessionNode
-from opensquilla.session.storage import SessionStorage
+from opensquilla.session.storage import SCHEMA_VERSION, SessionStorage
 from opensquilla.session.usage_ledger import (
     UsageEventCompletion,
     UsageEventItem,
     UsageEventStart,
+    UsageItemBillingReceipt,
     UsageLedgerConflictError,
     nanos_to_usd,
     usd_to_nanos,
@@ -86,6 +87,10 @@ def test_nano_usd_conversion_is_decimal_and_bounded() -> None:
         usd_to_nanos(float("nan"))
     with pytest.raises(OverflowError):
         usd_to_nanos("10000000000")
+
+
+def test_session_schema_version_includes_native_billing_receipts() -> None:
+    assert SCHEMA_VERSION == 11
 
 
 async def test_initialize_cutover_snapshots_legacy_totals_once(tmp_path: Path) -> None:
@@ -230,6 +235,173 @@ async def test_event_lifecycle_is_atomic_idempotent_and_half_open(tmp_path: Path
             await storage.finalize_usage_event(
                 "event-1", _completion(cost_nanos=1), items=()
             )
+    finally:
+        await storage.close()
+
+
+async def test_native_billing_receipts_are_atomic_idempotent_and_cascaded(
+    tmp_path: Path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        state = await storage.get_usage_billing_receipt_state()
+        assert state is not None
+        assert state.tracking_started_at_ms >= 0
+
+        await storage.start_usage_event(_start())
+        completion = replace(
+            _completion(cost_nanos=1_337),
+            billed_cost_nanos=1_337,
+            estimated_cost_nanos=0,
+            cost_source="provider_billed",
+        )
+        item = replace(
+            _item(),
+            cost_nanos=1_337,
+            billed_cost_nanos=1_337,
+            estimated_cost_nanos=0,
+            cost_source="provider_billed",
+        )
+        receipt = UsageItemBillingReceipt(
+            event_id="event-1",
+            ordinal=0,
+            currency="CNY",
+            status="confirmed",
+            amount_nanos=9_325,
+            usd_equivalent_nanos=1_337,
+            fx_native_per_usd_nanos=6_975_000_000,
+        )
+
+        finalized = await storage.finalize_usage_event(
+            "event-1",
+            completion,
+            items=(item,),
+            receipts=(receipt,),
+        )
+        assert await storage.finalize_usage_event(
+            "event-1",
+            completion,
+            items=(item,),
+            receipts=(receipt,),
+        ) == finalized
+        assert await storage.query_usage_item_billing_receipts(
+            ["event-1", "event-1"]
+        ) == [receipt]
+
+        with pytest.raises(UsageLedgerConflictError, match="billing receipts"):
+            await storage.finalize_usage_event(
+                "event-1",
+                completion,
+                items=(item,),
+                receipts=(replace(receipt, amount_nanos=9_326),),
+            )
+
+        await storage.conn.execute("DELETE FROM usage_events WHERE event_id = 'event-1'")
+        assert await storage.query_usage_event_items(["event-1"]) == []
+        assert await storage.query_usage_item_billing_receipts(["event-1"]) == []
+    finally:
+        await storage.close()
+
+
+async def test_billing_receipt_settlement_contracts_preserve_half_open_event(
+    tmp_path: Path,
+) -> None:
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    try:
+        await storage.start_usage_event(_start())
+        completion = _completion()
+        item = _item()
+        pending = UsageItemBillingReceipt(
+            event_id="event-1",
+            ordinal=0,
+            currency="CNY",
+            status="pending",
+            amount_nanos=None,
+            usd_equivalent_nanos=None,
+            fx_native_per_usd_nanos=6_975_000_000,
+        )
+
+        invalid_confirmed = replace(
+            pending,
+            status="confirmed",
+            amount_nanos=64_000_000,
+            usd_equivalent_nanos=1,
+        )
+        with pytest.raises(ValueError, match="must equal item billed cost"):
+            await storage.finalize_usage_event(
+                "event-1",
+                completion,
+                items=(item,),
+                receipts=(invalid_confirmed,),
+            )
+        billed_completion = replace(
+            completion,
+            billed_cost_nanos=1,
+            estimated_cost_nanos=completion.cost_nanos - 1,
+            cost_source="mixed",
+        )
+        billed_item = replace(
+            item,
+            billed_cost_nanos=1,
+            estimated_cost_nanos=item.cost_nanos - 1,
+            cost_source="mixed",
+        )
+        with pytest.raises(ValueError, match="pending.*billed cost must be zero"):
+            await storage.finalize_usage_event(
+                "event-1",
+                billed_completion,
+                items=(billed_item,),
+                receipts=(pending,),
+            )
+        assert [
+            event.status
+            for event in await storage.query_usage_events(None, None, statuses=("started",))
+        ] == ["started"]
+
+        await storage.finalize_usage_event(
+            "event-1",
+            completion,
+            items=(item,),
+            receipts=(pending,),
+        )
+        assert await storage.query_usage_item_billing_receipts(["event-1"]) == [pending]
+
+        await storage.start_usage_event(
+            _start(event_id="event-2", execution_id="execution-2")
+        )
+        zero_completion = replace(
+            completion,
+            cost_nanos=0,
+            billed_cost_nanos=0,
+            estimated_cost_nanos=0,
+            cost_source="provider_billed",
+        )
+        zero_item = replace(
+            item,
+            event_id="event-2",
+            cost_nanos=0,
+            billed_cost_nanos=0,
+            estimated_cost_nanos=0,
+            cost_source="provider_billed",
+        )
+        zero_receipt = UsageItemBillingReceipt(
+            event_id="event-2",
+            ordinal=0,
+            currency="USD",
+            status="confirmed",
+            amount_nanos=0,
+            usd_equivalent_nanos=0,
+            fx_native_per_usd_nanos=1_000_000_000,
+        )
+        await storage.finalize_usage_event(
+            "event-2",
+            zero_completion,
+            items=(zero_item,),
+            receipts=(zero_receipt,),
+        )
+        assert await storage.query_usage_item_billing_receipts(["event-2"]) == [
+            zero_receipt
+        ]
     finally:
         await storage.close()
 

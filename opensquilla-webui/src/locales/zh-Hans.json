@@ -2455,6 +2455,9 @@
       "cacheWrite": "缓存写"
     },
     "costHintTitle": "人民币金额使用内置汇率 {rate}。用于记账时请核对当前汇率。",
+    "nativeCostHintTitle": "原始服务商账单为人民币；美元金额按收据所载固定归一化汇率折算。",
+    "nativeMixedCostHintTitle": "混合币种或待结算账单继续使用规范化美元汇总，并单独展示已确认的原生币种收据。",
+    "nativeBillingSubtotals": "原始账单小计：{amounts}",
     "rangeHiddenHint": "已隐藏 {count} 个无日期的旧会话",
     "coverage": {
       "approximate": "当前连接的是旧版网关；日期范围按会话累计值近似统计。",
@@ -2462,7 +2465,9 @@
       "timezoneFallback": "时区 {requested} 无效；日期当前按 {effective} 分组。",
       "legacyIncluded": "账本启用前的用量已计入总数，但无法归入具体日期。",
       "estimated": "包含 {count} 次估算调用。",
-      "unpriced": "当前显示已知成本；另有 {count} 次调用缺少价格，成本不完整。"
+      "unpriced": "当前显示已知成本；另有 {count} 次调用缺少价格，成本不完整。",
+      "pendingBilling": "{count} 张服务商账单收据仍待结算。",
+      "nativeBillingMissing": "{count} 次已计费调用缺少原生币种收据。"
     },
     "chart": {
       "metric": "图表指标",

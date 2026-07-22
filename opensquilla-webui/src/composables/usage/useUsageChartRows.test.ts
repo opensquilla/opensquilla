@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { describe, expect, it } from 'vitest'
+import { formatUsageCost } from './nativeBilling'
 import { useUsageChartRows } from './useUsageChartRows'
 import type { UsageTotals } from '@/types/usage'
 
@@ -42,5 +43,39 @@ describe('usage ledger day chart', () => {
     expect(chartRows.value.every(row => row.sessionKey === null)).toBe(true)
     expect(chartRows.value[1].valueLabel).toBe('30')
     expect(chartRows.value[1].totalPct).toBeCloseTo(100)
+  })
+
+  it('uses native billing context for exact CNY daily costs', () => {
+    const chartMode = ref<'tokens' | 'cost'>('cost')
+    const day = totals(10, 5, 1)
+    day.nativeBilledByCurrency = {
+      CNY: {
+        amountNanos: '6975000000',
+        amount: '6.975',
+        usdEquivalentNanos: '1000000000',
+        receiptCount: 1,
+        normalizationRatesNativePerUsd: ['6.975'],
+      },
+    }
+    day.nativeBillingExpectedReceiptCount = 1
+    day.nativeBillingMissingConfirmedReceiptCount = 0
+    const { chartRows } = useUsageChartRows({
+      visibleSessions: computed(() => []),
+      serverDays: computed(() => [
+        { date: '2026-07-20', fromMs: 1, toMs: 2, totals: day },
+      ]),
+      chartMode,
+      rowVal: (row, ...keys) => keys.map(key => row[key]).find(value => value != null),
+      fmtCost: (value, options) => formatUsageCost(
+        value,
+        'CNY',
+        7.25,
+        4,
+        options?.source as Record<string, unknown> | undefined,
+      ),
+      fmtNum: value => String(value || 0),
+    })
+
+    expect(chartRows.value[0].valueLabel).toBe('¥6.9750')
   })
 })

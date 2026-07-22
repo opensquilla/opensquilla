@@ -275,6 +275,7 @@ async def call_naming_llm(
         provider=provider
         or ("openrouter" if "openrouter.ai" in url.lower() else "openai_compat"),
         model=model,
+        base_url=url,
     )
 
     try:
@@ -282,7 +283,10 @@ async def call_naming_llm(
             resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            await usage.finalize_openai_response(data)
+            await usage.finalize_openai_response(
+                data,
+                raw_json=str(getattr(resp, "text", "") or ""),
+            )
             raw = data["choices"][0]["message"]["content"]
     except asyncio.CancelledError:
         await usage.mark_unknown("cancelled")

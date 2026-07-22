@@ -139,6 +139,8 @@ async function mountChannelsView(options: {
    *  gallery, >=1 → fleet front page + enroll strip). Defaults to the shared
    *  fixture. */
   channelRows?: Array<Record<string, unknown>>
+  /** Override the channels.get response (drill configuration seeding). */
+  channelsGet?: (params?: Record<string, unknown>) => unknown
   locale?: string
 } = {}) {
   vi.resetModules()
@@ -271,6 +273,7 @@ async function mountChannelsView(options: {
       return { status: 'restarted', channel: params?.name }
     }
     if (method === 'channels.get') {
+      if (options.channelsGet) return options.channelsGet(params)
       return {
         entry: {
           name: 'ops-slack',
@@ -2017,6 +2020,82 @@ describe('ChannelsView compose takeover', () => {
       expect(appSecret.type).toBe('password')
       expect(appSecret.value).toBe('')
       expect(surface.textContent).toContain('Feishu console shortcuts')
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+})
+
+describe('feishu final-step callout', () => {
+  const FEISHU_ROW = {
+    name: 'fs-main',
+    type: 'feishu',
+    status: 'connected',
+    connected: true,
+    enabled: true,
+    configured: true,
+    connected_since: '2026-07-13T08:00:00Z',
+    diagnostics: { delivery: { ingress: {}, outbox: {}, leases: [] } },
+  }
+
+  function feishuGet(connectionMode: string) {
+    return () => ({
+      entry: {
+        name: 'fs-main',
+        type: 'feishu',
+        app_id: 'cli_dummy',
+        app_secret: '***',
+        connection_mode: connectionMode,
+        domain: 'feishu',
+      },
+      secretFields: ['app_secret'],
+    })
+  }
+
+  it('shows on a connected websocket channel with no inbound events yet', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [FEISHU_ROW],
+      channelsGet: feishuGet('websocket'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      const step = page.querySelector<HTMLElement>('.ch-alert--step')
+      expect(step).toBeTruthy()
+      expect(step!.textContent).toContain('Final step in the Feishu console')
+      // The retuned ws_order_note is the body: post-save console guidance.
+      expect(step!.textContent).toContain('事件与回调')
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('self-resolves once the first inbound event lands', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [{
+        ...FEISHU_ROW,
+        diagnostics: { delivery: { ingress: { accepted: { count: 2 } }, outbox: {}, leases: [] } },
+      }],
+      channelsGet: feishuGet('websocket'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
+    } finally {
+      ctx.app.unmount()
+    }
+  })
+
+  it('never shows for a webhook-mode channel', async () => {
+    const ctx = await mountChannelsView({
+      channelRows: [FEISHU_ROW],
+      channelsGet: feishuGet('webhook'),
+    })
+    try {
+      await ctx.flush()
+      const page = await openDrill(ctx, 'fs-main')
+      expect(page.querySelector('.ch-alert--step')).toBeNull()
     } finally {
       ctx.app.unmount()
     }

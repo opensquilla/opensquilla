@@ -580,7 +580,7 @@
         "credentials_link": "資格情報ページを開く(App id / App secret)",
         "quick_apply_link": "必要な全権限の申請を事前入力",
         "needAppId": "先に App id を入力してください",
-        "ws_order_note": "長接続の順序:まず本チャネルを保存して接続を確立し、その後コンソールのイベント設定で「長接続でイベントを受信」に切り替えてください——アクティブな接続がある間のみ保存できます。"
+        "ws_order_note": "接続済みです — 残るは飛書コンソールでの最後の 1 ステップ：「事件与回调」を開き、イベント配信を「使用长连接接收事件」に切り替えてください。この設定はクライアント接続中のみ保存できるため、チャネル保存後に行います。最初のイベントを受信するとこの通知は消えます。"
       }
     },
     "search": {
@@ -1070,7 +1070,12 @@
         "label": "Feishu / Lark",
         "fields": {
           "domain": {
-            "label": "ドメイン"
+            "label": "リージョン",
+            "description": "この App ID を発行したコンソールを選択します。",
+            "choices": {
+              "feishu": "飛書（中国）",
+              "lark": "Lark（国際）"
+            }
           }
         },
         "description": "Feishu（または Lark）ボット — webhook または websocket 接続。",
@@ -1679,7 +1684,8 @@
         "restarts": "再起動 {count} 回",
         "capabilityReference": "機能リファレンス",
         "copyBotId": "Bot ID をコピー: {id}",
-        "botIdCopied": "Bot ID をコピーしました"
+        "botIdCopied": "Bot ID をコピーしました",
+        "finalStepTitle": "飛書コンソールで最後のステップ"
       }
     },
     "overview": {

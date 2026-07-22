@@ -253,7 +253,10 @@ def _feishu_spec() -> ChannelSetupSpec:
         docs_hint="https://open.feishu.cn/document/",
         help=(
             "Default websocket mode only needs App id and App secret. "
-            "Webhook verification fields are only needed when connection_mode=webhook."
+            "Webhook verification fields are only needed when connection_mode=webhook. "
+            "Websocket order: save the channel first so the connection is live, then "
+            "enable long-connection event delivery in the Feishu console — it only "
+            "persists that choice while a client is connected."
         ),
         fields=(
             *_common_fields(),
@@ -283,18 +286,29 @@ def _feishu_spec() -> ChannelSetupSpec:
             ),
             ChannelSetupField("webhook_path", "Webhook path", "text",
                               required=False, default="/feishu/events",
-                              group="webhook",
+                              group="webhook", advanced=True,
                               show_when={"connection_mode": "webhook"}),
             ChannelSetupField("api_base", "API base", "text",
                               required=False,
                               default="https://open.feishu.cn/open-apis",
                               advanced=True),
+            # Folded: websocket is the default and right for almost everyone;
+            # switching to webhook happens inside Advanced, where all four
+            # webhook fields sit together. The websocket save-order guidance
+            # lives post-save (the channel page's final-step callout) plus the
+            # spec help above for headless clients.
             ChannelSetupField("connection_mode", "Connection mode", "select",
                               required=False, default="websocket",
-                              choices=("webhook", "websocket")),
+                              choices=("webhook", "websocket"),
+                              advanced=True),
+            # The one genuine decision besides credentials: which console
+            # issued the app. Stays front — a Lark operator on the feishu
+            # endpoint gets a broken connection with no signal.
             ChannelSetupField("domain", "Domain", "select",
                               required=False, default="feishu",
-                              choices=("feishu", "lark")),
+                              choices=("feishu", "lark"),
+                              description="feishu = China mainland · "
+                                          "lark = Lark / international"),
         ),
     )
 

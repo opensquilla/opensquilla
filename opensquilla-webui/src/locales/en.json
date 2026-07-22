@@ -580,7 +580,7 @@
         "credentials_link": "Open credentials page (App id / App secret)",
         "quick_apply_link": "Pre-fill the permission request for all required scopes",
         "needAppId": "fill in App id first",
-        "ws_order_note": "Long-connection order: save this channel FIRST so the connection is live, then flip 事件与回调 to 使用长连接接收事件 — the console only saves that choice while a client is connected."
+        "ws_order_note": "You're connected — one step left in the Feishu console: open 事件与回调 and switch event delivery to 使用长连接接收事件. The console only saves that choice while a client is connected, which is why it comes after this save. This notice clears once the first event arrives."
       }
     },
     "search": {
@@ -1070,7 +1070,12 @@
         "label": "Feishu / Lark",
         "fields": {
           "domain": {
-            "label": "Domain"
+            "label": "Region",
+            "description": "Pick the console that issued this App ID.",
+            "choices": {
+              "feishu": "Feishu (China)",
+              "lark": "Lark (international)"
+            }
           }
         },
         "description": "Feishu (or Lark) bot — webhook or websocket connection.",
@@ -1679,7 +1684,8 @@
         "restarts": "{count} restart | {count} restarts",
         "capabilityReference": "Capability reference",
         "copyBotId": "Copy bot ID: {id}",
-        "botIdCopied": "Bot ID copied"
+        "botIdCopied": "Bot ID copied",
+        "finalStepTitle": "Final step in the Feishu console"
       }
     },
     "overview": {

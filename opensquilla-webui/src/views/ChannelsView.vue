@@ -147,6 +147,19 @@
         @fix-credentials="enterEdit"
       />
 
+      <!-- Fresh feishu websocket channel: the Feishu console only persists the
+           long-connection event subscription while a client is connected, so
+           the final step happens THERE, after this save. Persistent (not a
+           toast) until the first inbound event proves the subscription works;
+           webhook-mode channels never see it. -->
+      <section v-if="feishuFinalStepVisible" class="ch-alert ch-alert--step" role="status">
+        <Icon name="info" :size="18" aria-hidden="true" />
+        <div>
+          <strong>{{ t('console.channels.detail.finalStepTitle') }}</strong>
+          <p>{{ t('setup.channels.aids.ws_order_note') }}</p>
+        </div>
+      </section>
+
       <div class="chd__cols">
         <nav class="chd__nav" :aria-label="t('console.channels.detailSections')">
           <button
@@ -571,6 +584,21 @@ const unconfiguredChannels = computed<Channel[]>(() =>
 const selectedChannel = computed(() => channels.value.find(ch => channelKey(ch) === selectedName.value) || null)
 const selectedProbe = computed(() =>
   selectedChannel.value ? probeResults.value[channelKey(selectedChannel.value)] : undefined)
+
+// Fresh feishu websocket channel awaiting its console-side final step: the
+// Feishu console only saves the long-connection event subscription while a
+// client is connected, so it must be flipped AFTER the first save. Self
+// resolves on the first inbound event; an entry without connection_mode is
+// websocket (the model default), and webhook channels never match.
+const feishuFinalStepVisible = computed(() => {
+  const ch = selectedChannel.value
+  if (!ch || String(ch.type || '') !== 'feishu') return false
+  if (presentationFor(ch).key !== 'connected') return false
+  if (deliveryCount(ch, 'ingress', 'accepted') > 0
+    || deliveryCount(ch, 'ingress', 'processing') > 0) return false
+  const mode = editor.panel.value.channelFields.find(row => row.field.name === 'connection_mode')
+  return String(mode?.value || 'websocket') !== 'webhook'
+})
 
 // Home mode — 'gallery' when nothing is configured yet (the inline platform
 // gallery IS the page and the add entry), 'fleet' once ≥1 channel exists (the
@@ -2029,6 +2057,9 @@ function probeResultDetail(ch: Channel): string {
 .ch-probe-result p, .ch-alert p { color: var(--text-muted); font-size: var(--fs-sm); margin: 3px 0 0; }
 .ch-probe-result > div, .ch-alert > div { min-width: 0; overflow-wrap: anywhere; }
 .ch-alert.is-danger { background: color-mix(in srgb, var(--danger) 8%, var(--bg)); border-color: color-mix(in srgb, var(--danger) 38%, var(--border)); color: var(--danger); }
+/* Console-side final-step guidance: action still owed, so warn-toned. */
+.ch-alert--step { background: color-mix(in srgb, var(--warn) 8%, var(--bg-surface)); border-color: color-mix(in srgb, var(--warn) 38%, var(--border)); }
+.ch-alert--step > svg { color: var(--warn); flex: none; }
 .ch-facts dl { margin: 0; }
 .ch-facts dl > div { align-items: baseline; border-top: 1px solid var(--border); display: flex; gap: var(--sp-3); justify-content: space-between; padding: 11px 14px; }
 .ch-facts dl > div:first-child { border-top: 0; }

@@ -114,7 +114,7 @@ def test_safe_defaulted_identity_fields_fold_into_advanced(type_name: str):
 # that re-expands the default view fails loudly.
 ADVANCED_FOLDED_FIELDS = {
     "discord": {"application_id", "default_channel_id", "gateway_url", "intents"},
-    "feishu": {"default_chat_id"},
+    "feishu": {"default_chat_id", "connection_mode", "webhook_path"},
     "matrix": {"device_id", "encryption"},
     "slack": {"slack_channel_id", "reply_in_thread"},
     "telegram": {

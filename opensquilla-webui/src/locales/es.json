@@ -580,7 +580,7 @@
         "credentials_link": "Abrir la página de credenciales (App id / App secret)",
         "quick_apply_link": "Prerrellenar la solicitud de todos los permisos necesarios",
         "needAppId": "primero introduce el App id",
-        "ws_order_note": "Orden para la conexión larga: guarda primero este canal para establecer la conexión y luego cambia la consola a «recibir eventos por conexión larga» — esa opción solo se guarda mientras hay una conexión activa."
+        "ws_order_note": "Conectado — queda un paso en la consola de Feishu: abre 事件与回调 y cambia la entrega de eventos a 使用长连接接收事件. La consola solo guarda esa opción mientras hay un cliente conectado, por eso este paso va después de guardar. Este aviso desaparece al llegar el primer evento."
       }
     },
     "search": {
@@ -1070,7 +1070,12 @@
         "label": "Feishu / Lark",
         "fields": {
           "domain": {
-            "label": "Dominio"
+            "label": "Región",
+            "description": "Elige la consola que emitió este App ID.",
+            "choices": {
+              "feishu": "Feishu (China)",
+              "lark": "Lark (internacional)"
+            }
           }
         },
         "description": "Bot de Feishu (o Lark): conexión webhook o websocket.",
@@ -1679,7 +1684,8 @@
         "restarts": "{count} reinicio | {count} reinicios",
         "capabilityReference": "Referencia de capacidades",
         "copyBotId": "Copiar ID del bot: {id}",
-        "botIdCopied": "ID del bot copiado"
+        "botIdCopied": "ID del bot copiado",
+        "finalStepTitle": "Último paso en la consola de Feishu"
       }
     },
     "overview": {

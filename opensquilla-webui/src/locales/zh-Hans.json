@@ -580,7 +580,7 @@
         "credentials_link": "打开凭证页(App id / App secret)",
         "quick_apply_link": "一键预填全部所需权限的申请",
         "needAppId": "先填写 App id",
-        "ws_order_note": "长连接顺序：先保存本渠道让长连接建立，再到「事件与回调」切换为「使用长连接接收事件」——控制台仅在有活跃连接时才能保存该选项。"
+        "ws_order_note": "已连接——还差飞书控制台里的最后一步：打开「事件与回调」，把事件订阅方式切换为「使用长连接接收事件」。该选项仅在有活跃连接时才能保存，所以要先保存渠道再去切换。收到第一条事件后本提示自动消失。"
       }
     },
     "search": {
@@ -1070,7 +1070,12 @@
         "label": "飞书（Lark）",
         "fields": {
           "domain": {
-            "label": "服务域名"
+            "label": "地区",
+            "description": "选择签发此 App ID 的开放平台。",
+            "choices": {
+              "feishu": "飞书（中国）",
+              "lark": "Lark（国际）"
+            }
           }
         },
         "description": "飞书（或 Lark）机器人——webhook 或 websocket 连接。",
@@ -1679,7 +1684,8 @@
         "restarts": "重启 {count} 次",
         "capabilityReference": "能力参考",
         "copyBotId": "复制 Bot ID：{id}",
-        "botIdCopied": "Bot ID 已复制"
+        "botIdCopied": "Bot ID 已复制",
+        "finalStepTitle": "去飞书控制台完成最后一步"
       }
     },
     "overview": {

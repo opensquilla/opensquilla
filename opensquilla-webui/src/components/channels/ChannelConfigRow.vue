@@ -20,6 +20,8 @@ export interface ConfigRowModel {
   edited: boolean
   hasStored?: boolean
   replacing?: boolean
+  /** Select fields: localized display label per raw choice value. */
+  choiceLabels?: Record<string, string>
 }
 
 const props = defineProps<{
@@ -52,8 +54,23 @@ const placeholder = computed(() => {
   if (props.row.field.placeholder) return props.row.field.placeholder
   return isSecretInput.value ? t('setup.field.secretComposePlaceholder') : ''
 })
-const displayValue = computed(() => (props.row.value === '' ? '—' : props.row.value))
+const displayValue = computed(() => {
+  if (props.row.value === '') return '—'
+  return props.row.choiceLabels?.[props.row.value] ?? props.row.value
+})
 const isEmptyValue = computed(() => props.row.value === '')
+
+// A two-option select renders as a segmented binary — the choice reads at a
+// glance (both options visible) instead of hiding behind a dropdown. Longer
+// choice lists keep the native select.
+const segmentedChoices = computed(() => {
+  const choices = props.row.field.choices || []
+  return fieldType.value === 'select' && choices.length === 2 ? choices : null
+})
+
+function choiceLabel(choice: string): string {
+  return props.row.choiceLabels?.[choice] ?? choice
+}
 
 function onInput(event: Event) {
   emit('update', props.row.field.name, (event.target as HTMLInputElement | HTMLSelectElement).value)
@@ -143,6 +160,22 @@ function onInput(event: Event) {
 
       <template v-else-if="fieldType === 'select'">
         <span v-if="!edit" class="cfge__value">{{ displayValue }}</span>
+        <span
+          v-else-if="segmentedChoices"
+          class="cfge__seg"
+          role="group"
+          :aria-label="row.label"
+        >
+          <button
+            v-for="choice in segmentedChoices"
+            :key="choice"
+            type="button"
+            class="cfge__seg-opt"
+            :class="{ 'is-on': row.value === choice }"
+            :aria-pressed="row.value === choice"
+            @click="emit('update', row.field.name, choice)"
+          >{{ choiceLabel(choice) }}</button>
+        </span>
         <select
           v-else
           :id="inputId"
@@ -151,7 +184,7 @@ function onInput(event: Event) {
           :value="row.value"
           @change="onInput"
         >
-          <option v-for="choice in row.field.choices || []" :key="choice" :value="choice">{{ choice }}</option>
+          <option v-for="choice in row.field.choices || []" :key="choice" :value="choice">{{ choiceLabel(choice) }}</option>
         </select>
       </template>
 

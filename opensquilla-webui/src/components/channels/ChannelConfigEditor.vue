@@ -23,7 +23,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const { localizeFieldDescription, localizeFieldLabel, localizeGroupLabel } = useChannelCatalogI18n()
+const {
+  localizeFieldChoice, localizeFieldDescription, localizeFieldLabel, localizeGroupLabel,
+} = useChannelCatalogI18n()
 
 // "editing" = any live-field mode (edit-in-place or compose); "edit" alone
 // still gates edit-only affordances like the locked name row.
@@ -39,6 +41,18 @@ const saving = computed(() => props.editor.saving.value)
 interface EditorGroup {
   name: string
   rows: ConfigRowModel[]
+}
+
+// Localized display labels for a select field's raw choice values (the row
+// still submits the raw value; this is presentation only).
+function choiceLabelsFor(
+  type: string,
+  field: { type?: string; name: string; choices?: string[] },
+): Record<string, string> | undefined {
+  if (field.type !== 'select' || !field.choices?.length) return undefined
+  return Object.fromEntries(
+    field.choices.map(choice => [choice, localizeFieldChoice(type, field.name, choice, choice)]),
+  )
 }
 
 // Merge the form's field rows and secret rows back into catalog order, then
@@ -60,6 +74,7 @@ const grouped = computed<{ main: EditorGroup[]; advanced: ConfigRowModel[] }>(()
       description: localizeFieldDescription(type, row.field.name, String(row.field.description || '')),
       value: String(row.value ?? ''),
       edited: edited.has(row.field.name),
+      choiceLabels: choiceLabelsFor(type, row.field),
     })
   }
   for (const row of view.secretRows) {
@@ -354,6 +369,33 @@ function onCancelReplace(name: string) {
 .cfge :deep(.cfge__secretline .cfge__input) { flex: 1 1 140px; width: auto; }
 .cfge :deep(.cfge__secretbtn) { flex: none; font-size: var(--fs-sm); padding: 3px 10px; white-space: nowrap; }
 .cfge :deep(.cfge__switchline) { align-items: center; display: flex; min-height: 32px; }
+/* Two-option segmented select: both choices visible, the active one inked. */
+.cfge :deep(.cfge__seg) {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+}
+.cfge :deep(.cfge__seg-opt) {
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-sm);
+  min-height: 26px;
+  padding: 2px 12px;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.cfge :deep(.cfge__seg-opt:hover) { color: var(--text); }
+.cfge :deep(.cfge__seg-opt.is-on) { background: var(--bg-elevated); color: var(--text); font-weight: 600; }
+.cfge :deep(.cfge__seg-opt:focus-visible) { box-shadow: var(--focus-ring); outline: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .cfge :deep(.cfge__seg-opt) { transition: none; }
+}
 .cfge :deep(.cfge__desc) { color: var(--text-dim); font-size: var(--fs-xs); line-height: 1.45; padding: 0 10px; }
 .cfge :deep(.cfge__field-error) { color: var(--danger); font-size: var(--fs-xs); margin: 0; padding: 0 10px; }
 .cfge :deep(.cfge__sr-only) { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }

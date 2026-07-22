@@ -68,6 +68,7 @@
     "tests/test_ci/test_bgm_asset_hygiene.py": 0.515,
     "tests/test_ci/test_ci_result_gate.py": 0.01,
     "tests/test_ci/test_decision_log_aggregate.py": 0.01,
+    "tests/test_ci/test_dockerignore_context.py": 0.01,
     "tests/test_ci/test_meta_skill_lint.py": 0.463,
     "tests/test_ci/test_migration_v010.py": 6.122,
     "tests/test_ci/test_migration_v011.py": 5.56,

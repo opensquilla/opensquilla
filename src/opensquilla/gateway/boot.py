@@ -946,6 +946,41 @@ def _warn_workspace_state_mismatch(config: GatewayConfig) -> None:
     )
 
 
+def _warn_legacy_home_detected(config: GatewayConfig) -> None:
+    """One advisory log line when a fresh home boots beside importable legacy data.
+
+    Fires only when this home holds no ``sessions.db`` yet (the same freshness
+    expression the schema-migration block uses), so established installs never
+    see it — and the detection import stays behind that check, keeping the
+    established-install boot path free of it. Detection is read-only and the
+    hint is log-only: migration itself stays behind ``opensquilla migrate
+    opensquilla`` and Settings → Advanced → Data maintenance, so headless
+    operators still learn their old profile exists without any prompt.
+    """
+    try:
+        if _state_path(config, "sessions.db").exists():
+            return
+    except OSError:  # pragma: no cover - unreadable state dir; stay silent.
+        return
+    import importlib
+
+    legacy_detect = importlib.import_module("opensquilla.migration.legacy_detect")
+
+    candidate = legacy_detect.detect_legacy_home(_gateway_home(config))
+    if candidate is None:
+        return
+    log.warning(
+        "build_services.legacy_home_detected",
+        legacy_home=str(candidate.path),
+        kind=candidate.kind,
+        detail=(
+            "This profile is empty but a previous OpenSquilla home with "
+            "importable data was found. Import it with `opensquilla migrate "
+            "opensquilla` or from Settings → Advanced → Data maintenance."
+        ),
+    )
+
+
 def _ensure_configured_agent_workspaces(
     config: GatewayConfig,
     *,
@@ -2193,6 +2228,7 @@ async def build_services(
     deferred_warmups: list[Callable[[], Any]] = []
     sandbox_setup_task: asyncio.Task[Any] | None = None
     _warn_workspace_state_mismatch(config)
+    _warn_legacy_home_detected(config)
 
     # Register session-material filesystem cleanup so deleting a session also
     # removes its transcript media + workspace attachment copies (they are

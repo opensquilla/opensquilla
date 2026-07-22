@@ -42,7 +42,80 @@ class LlmRuntimeConfig:
     proxy: str
     provider_routing: dict[str, str]
     api_key_from_env: bool = False
+    api_key_env_name: str = ""
     base_url_from_env: bool = False
+
+
+@dataclass(frozen=True)
+class ResolvedLlmCredential:
+    """One primary credential plus secret-free source provenance."""
+
+    api_key: str = field(default="", repr=False)
+    source: str = "none"
+    env_name: str = ""
+
+
+def resolve_llm_credential(
+    config: Any,
+    *,
+    registry_env_key: str = "",
+) -> ResolvedLlmCredential:
+    """Resolve the primary key exactly as a fresh settings load would.
+
+    ``LlmProviderConfig`` reads the two ``OPENSQUILLA_LLM_*`` settings
+    variables when it is constructed.  Hot config mutations do not reconstruct
+    that model, so consult those external inputs explicitly as well.  Stored
+    config still wins, followed by the configured/settings/registry env-name
+    chain and finally the generic settings key.
+    """
+
+    llm = getattr(config, "llm", None)
+    if llm is None:
+        return ResolvedLlmCredential()
+
+    runtime_secret_paths: set[str] = getattr(config, "_runtime_secret_paths", set())
+    stored_api_key = str(getattr(llm, "api_key", "") or "")
+    explicit_api_key = (
+        "" if "llm.api_key" in runtime_secret_paths else stored_api_key
+    )
+    configured_env_name = str(getattr(llm, "api_key_env", "") or "").strip()
+    settings_env_name = environment_value("OPENSQUILLA_LLM_API_KEY_ENV").strip()
+    env_name = configured_env_name or settings_env_name or str(registry_env_key or "").strip()
+
+    if explicit_api_key:
+        return ResolvedLlmCredential(
+            api_key=explicit_api_key,
+            source="explicit",
+            env_name=env_name,
+        )
+
+    named_env_key = environment_value(env_name) if env_name else ""
+    if named_env_key:
+        return ResolvedLlmCredential(
+            api_key=named_env_key,
+            source="env",
+            env_name=env_name,
+        )
+
+    settings_api_key = environment_value("OPENSQUILLA_LLM_API_KEY")
+    if settings_api_key:
+        return ResolvedLlmCredential(
+            api_key=settings_api_key,
+            source="env",
+            env_name="OPENSQUILLA_LLM_API_KEY",
+        )
+
+    # A value materialized from the environment earlier in this process may
+    # remain usable after the source variable is removed.  Keep its runtime
+    # provenance instead of misclassifying that cached secret as explicit.
+    if stored_api_key and "llm.api_key" in runtime_secret_paths:
+        return ResolvedLlmCredential(
+            api_key=stored_api_key,
+            source="env",
+            env_name=env_name,
+        )
+
+    return ResolvedLlmCredential(env_name=env_name)
 
 
 def provider_base_url_env_name(provider: str) -> str:
@@ -112,16 +185,11 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
     except UnknownProviderError as exc:
         log.warning("llm_runtime.unknown_provider", provider=provider, error=str(exc))
         spec = None
-    runtime_secret_paths: set[str] = getattr(config, "_runtime_secret_paths", set())
-    explicit_api_key = llm.api_key if "llm.api_key" not in runtime_secret_paths else ""
     spec_env_key = spec.env_key if spec is not None else ""
-    api_key_env_name = (
-        "" if explicit_api_key else (getattr(llm, "api_key_env", "") or spec_env_key)
-    )
+    credential = resolve_llm_credential(config, registry_env_key=spec_env_key)
     base_url_env_name = provider_base_url_env_name(provider) if spec is not None else ""
-    env_api_key = environment_value(api_key_env_name) if api_key_env_name else ""
     env_base_url = environment_value(base_url_env_name) if base_url_env_name else ""
-    api_key = explicit_api_key or env_api_key or llm.api_key
+    api_key = credential.api_key
     # Explicit config > derived env > spec default, mirroring the api_key
     # rule (#484): a base_url the operator chose must not be overridden by
     # OPENAI_BASE_URL-style vars on the next boot/reload. Derived stored
@@ -156,7 +224,7 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
     llm.api_key = api_key
     llm.base_url = base_url
     llm.proxy = proxy
-    if env_api_key and hasattr(config, "mark_runtime_secret"):
+    if credential.source == "env" and hasattr(config, "mark_runtime_secret"):
         config.mark_runtime_secret("llm.api_key")
 
     return LlmRuntimeConfig(
@@ -169,7 +237,8 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
             provider,
             getattr(llm, "provider_routing", {}),
         ),
-        api_key_from_env=bool(env_api_key),
+        api_key_from_env=credential.source == "env",
+        api_key_env_name=credential.env_name,
         base_url_from_env=base_url_from_env,
     )
 
@@ -494,10 +563,12 @@ __all__ = [
     "NoCredentialsAvailable",
     "PooledCredential",
     "ProfileCredentialPools",
+    "ResolvedLlmCredential",
     "discard_profile_credential_pool",
     "masked_key_id",
     "profile_credential_pools",
     "provider_base_url_env_name",
     "reset_profile_credential_pools",
+    "resolve_llm_credential",
     "resolve_llm_runtime_config",
 ]

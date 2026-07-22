@@ -1867,7 +1867,7 @@ class TlsConfig(BaseSettings):
     certfile: str = ""
 
 
-class LlmProviderProfile(BaseSettings):
+class LlmProviderProfile(BaseModel):
     """Named credential profile for a non-primary LLM provider.
 
     Written as ``[llm_profiles.<provider_id>]`` in the config TOML and
@@ -1877,7 +1877,12 @@ class LlmProviderProfile(BaseSettings):
     registry env key), then the registry default base URL.
     """
 
-    model_config = SettingsConfigDict(extra="ignore")
+    # Profiles are config records, not independent settings roots.  Reading
+    # process variables here would give every profile the same unscoped
+    # ``API_KEY`` / ``API_KEY_ENV`` values whenever a field is absent (for
+    # example after an explicit credential clear).  Named environment sources
+    # are resolved deliberately by provider.deployment instead.
+    model_config = ConfigDict(extra="ignore")
 
     # Remember the provider-scoped direct/fallback model while this deployment
     # is not primary.  Older configs omit it and continue to resolve the

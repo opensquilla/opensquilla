@@ -9,13 +9,15 @@ import pytest
 import opensquilla.gateway.rpc_onboarding  # noqa: F401 - register handlers
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import GatewayConfig
+from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
 from opensquilla.gateway.rpc import RpcContext, get_dispatcher
 from opensquilla.gateway.scopes import ADMIN_SCOPE, METHOD_SCOPES
-from opensquilla.onboarding.config_store import persist_config
+from opensquilla.onboarding.config_store import load_config, persist_config
 from opensquilla.onboarding.mutations import (
     clear_llm_profile_credentials,
     clear_llm_provider_credentials,
 )
+from opensquilla.onboarding.status import get_onboarding_status
 
 
 def _admin_ctx(config: GatewayConfig) -> RpcContext:
@@ -33,6 +35,14 @@ def _admin_ctx(config: GatewayConfig) -> RpcContext:
 
 @pytest.fixture(autouse=True)
 def _isolate_runtime_syncs(monkeypatch):
+    for name in (
+        "API_KEY",
+        "API_KEY_ENV",
+        "API_KEY_ENV_POOL",
+        "OPENSQUILLA_LLM_API_KEY",
+        "OPENSQUILLA_LLM_API_KEY_ENV",
+    ):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(
         "opensquilla.gateway.rpc_onboarding._sync_image_generation",
         lambda config: None,
@@ -103,7 +113,9 @@ async def test_active_credential_clear_removes_stored_sources_and_preserves_setu
     monkeypatch,
 ) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    config_path = tmp_path / "config.toml"
+    # Brackets are legal filename characters but have special meaning in glob
+    # patterns. Backup discovery must treat the configured filename literally.
+    config_path = tmp_path / "config[prod].toml"
     cfg = GatewayConfig(
         config_path=str(config_path),
         llm={
@@ -121,6 +133,46 @@ async def test_active_credential_clear_removes_stored_sources_and_preserves_setu
         llm_ensemble={"enabled": False, "selection_mode": "router_dynamic"},
     )
     persist_config(cfg, path=config_path, backup=False)
+    managed_backup = config_path.with_name(
+        "config[prod].toml.backup.synthetic-primary"
+    )
+    managed_backup.write_text(
+        """
+config_version = 1
+search_api_key = "synthetic-historical-primary-secret"
+
+[llm]
+model = "openai/gpt-old"
+api_key = "synthetic-historical-primary-secret"
+api_key_env = "HISTORICAL_PRIMARY_KEY"
+
+[llm_profiles.deepseek]
+api_key = "synthetic-historical-primary-secret"
+
+[llm_profiles.OpenRouter]
+api_key = "synthetic-historical-primary-secret"
+api_key_env = "HISTORICAL_OPENROUTER_PROFILE_KEY"
+api_key_env_pool = ["HISTORICAL_OPENROUTER_PROFILE_POOL_A"]
+
+[image_generation.providers.openrouter]
+api_key = "synthetic-historical-primary-secret"
+""".strip()
+        + "\n"
+    )
+    other_provider_backup = config_path.with_name(
+        "config[prod].toml.backup.synthetic-other-provider"
+    )
+    other_provider_backup.write_text(
+        """
+config_version = 1
+
+[llm]
+provider = "deepseek"
+api_key = "synthetic-historical-primary-secret"
+api_key_env = "HISTORICAL_DEEPSEEK_KEY"
+""".strip()
+        + "\n"
+    )
     router_before = cfg.squilla_router.model_dump(mode="python")
     ensemble_before = cfg.llm_ensemble.model_dump(mode="python")
 
@@ -163,6 +215,31 @@ async def test_active_credential_clear_removes_stored_sources_and_preserves_setu
     assert persisted["llm_profiles"]["deepseek"]["api_key"] == (
         "synthetic-profile-untouched"
     )
+    backups = sorted(
+        path
+        for path in config_path.parent.iterdir()
+        if path.name.startswith(f"{config_path.name}.backup.")
+    )
+    assert backups == sorted([managed_backup, other_provider_backup])
+    sanitized_backup = tomllib.loads(managed_backup.read_text())
+    assert "api_key" not in sanitized_backup["llm"]
+    assert "api_key_env" not in sanitized_backup["llm"]
+    assert sanitized_backup["search_api_key"] == "synthetic-historical-primary-secret"
+    assert sanitized_backup["llm_profiles"]["deepseek"]["api_key"] == (
+        "synthetic-historical-primary-secret"
+    )
+    historical_profile = sanitized_backup["llm_profiles"]["OpenRouter"]
+    assert "api_key" not in historical_profile
+    assert "api_key_env" not in historical_profile
+    assert "api_key_env_pool" not in historical_profile
+    assert sanitized_backup["image_generation"]["providers"]["openrouter"][
+        "api_key"
+    ] == "synthetic-historical-primary-secret"
+    untouched_backup = tomllib.loads(other_provider_backup.read_text())
+    assert untouched_backup["llm"]["api_key"] == (
+        "synthetic-historical-primary-secret"
+    )
+    assert untouched_backup["llm"]["api_key_env"] == "HISTORICAL_DEEPSEEK_KEY"
 
 
 @pytest.mark.asyncio
@@ -273,6 +350,48 @@ async def test_profile_credential_clear_removes_all_sources_without_removing_pro
         "model": "deepseek-chat",
     }
     persist_config(cfg, path=config_path, backup=False)
+    managed_backup = config_path.with_name("config.toml.backup.synthetic-profile")
+    managed_backup.write_text(
+        """
+config_version = 1
+search_api_key = "synthetic-historical-profile-secret"
+
+[llm]
+provider = "openrouter"
+api_key = "synthetic-historical-profile-secret"
+
+[llm_profiles.DeepSeek]
+model = "deepseek-chat"
+api_key = "synthetic-historical-profile-secret"
+api_key_env = "HISTORICAL_PROFILE_KEY"
+api_key_env_pool = ["HISTORICAL_PROFILE_POOL_A"]
+
+[llm_profiles.openai]
+api_key = "synthetic-historical-profile-secret"
+
+[image_generation.providers.deepseek]
+api_key = "synthetic-historical-profile-secret"
+""".strip()
+        + "\n"
+    )
+    active_history_backup = config_path.with_name(
+        "config.toml.backup.synthetic-profile-active-history"
+    )
+    active_history_backup.write_text(
+        """
+config_version = 1
+
+[llm]
+provider = "DeepSeek"
+model = "deepseek-chat"
+api_key = "synthetic-historical-profile-secret"
+api_key_env = "HISTORICAL_ACTIVE_DEEPSEEK_KEY"
+
+[llm_profiles.openai]
+api_key = "synthetic-historical-profile-secret"
+""".strip()
+        + "\n"
+    )
     router_before = cfg.squilla_router.model_dump(mode="python")
     ensemble_before = cfg.llm_ensemble.model_dump(mode="python")
     discarded: list[str] = []
@@ -318,6 +437,26 @@ async def test_profile_credential_clear_removes_all_sources_without_removing_pro
     assert "api_key_env_pool" not in stored_profile
     assert stored_profile["model"] == "deepseek-chat"
     assert stored_profile["base_url"] == "https://api.deepseek.com/v1"
+    backups = sorted(config_path.parent.glob("config.toml.backup.*"))
+    assert backups == sorted([managed_backup, active_history_backup])
+    sanitized_backup = tomllib.loads(managed_backup.read_text())
+    backup_profile = sanitized_backup["llm_profiles"]["DeepSeek"]
+    assert "api_key" not in backup_profile
+    assert "api_key_env" not in backup_profile
+    assert "api_key_env_pool" not in backup_profile
+    historical_secret = "synthetic-historical-profile-secret"
+    assert sanitized_backup["search_api_key"] == historical_secret
+    assert sanitized_backup["llm"]["api_key"] == historical_secret
+    assert sanitized_backup["llm_profiles"]["openai"]["api_key"] == historical_secret
+    assert sanitized_backup["image_generation"]["providers"]["deepseek"][
+        "api_key"
+    ] == historical_secret
+    sanitized_active_history = tomllib.loads(active_history_backup.read_text())
+    assert "api_key" not in sanitized_active_history["llm"]
+    assert "api_key_env" not in sanitized_active_history["llm"]
+    assert sanitized_active_history["llm_profiles"]["openai"]["api_key"] == (
+        historical_secret
+    )
 
 
 @pytest.mark.asyncio
@@ -354,6 +493,157 @@ async def test_profile_credential_clear_reports_registry_environment_still_activ
     assert response.payload["entry"]["credentialEnv"] == "DEEPSEEK_API_KEY"
     assert response.payload["entry"]["externalCredentialActive"] is True
     assert external_secret not in repr(response.payload)
+
+
+@pytest.mark.asyncio
+async def test_profile_credential_clear_stays_clear_across_reload_with_ambient_settings(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setenv("API_KEY", "synthetic-unscoped-ambient-key")
+    monkeypatch.setenv("API_KEY_ENV", "UNSCOPED_AMBIENT_KEY_ENV")
+    monkeypatch.setenv("API_KEY_ENV_POOL", '["UNSCOPED_POOL_A"]')
+    config_path = tmp_path / "config.toml"
+    cfg = GatewayConfig(
+        config_path=str(config_path),
+        llm_profiles={
+            "deepseek": {
+                "model": "deepseek-chat",
+                "api_key": "synthetic-profile-secret",
+                "api_key_env": "SAVED_PROFILE_KEY_ENV",
+                "api_key_env_pool": ["SAVED_POOL_A"],
+            }
+        },
+    )
+    persist_config(cfg, path=config_path, backup=False)
+
+    response = await get_dispatcher().dispatch(
+        "clear-profile-before-reload",
+        "onboarding.llmProfile.credential.clear",
+        {"providerId": "deepseek"},
+        _admin_ctx(cfg),
+    )
+
+    assert response.error is None, response.error
+    reloaded = load_config(config_path)
+    profile = reloaded.llm_profiles["deepseek"]
+    assert profile.api_key == ""
+    assert profile.api_key_env == ""
+    assert profile.api_key_env_pool == []
+
+
+@pytest.mark.asyncio
+async def test_active_clear_keeps_generic_settings_key_effective_and_reported(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    external_secret = "synthetic-settings-primary-secret"
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY_ENV", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", external_secret)
+    config_path = tmp_path / "config.toml"
+    cfg = GatewayConfig(
+        config_path=str(config_path),
+        llm={
+            "provider": "openrouter",
+            "model": "openai/gpt-test",
+            "api_key": "synthetic-stored-secret",
+        },
+    )
+    persist_config(cfg, path=config_path, backup=False)
+
+    class RecordingSelector:
+        def __init__(self) -> None:
+            self.synced = []
+
+        def sync_primary(self, provider_config) -> None:
+            self.synced.append(provider_config)
+
+    selector = RecordingSelector()
+    ctx = _admin_ctx(cfg)
+    ctx.provider_selector = selector
+    response = await get_dispatcher().dispatch(
+        "clear-primary-settings-key",
+        "onboarding.provider.credential.clear",
+        {"providerId": "openrouter"},
+        ctx,
+    )
+
+    assert response.error is None, response.error
+    assert response.payload["entry"]["externalCredentialActive"] is True
+    assert response.payload["entry"]["credentialSource"] == "env"
+    assert response.payload["entry"]["credentialEnv"] == "OPENSQUILLA_LLM_API_KEY"
+    assert external_secret not in repr(response.payload)
+    assert selector.synced[-1].api_key == external_secret
+    assert cfg.llm.api_key == ""
+    status = get_onboarding_status(cfg)
+    assert status.llm_credential_status["source"] == "env"
+    assert status.llm_credential_status["envKey"] == "OPENSQUILLA_LLM_API_KEY"
+
+    reloaded = load_config(config_path)
+    runtime = resolve_llm_runtime_config(reloaded)
+    assert runtime.api_key == external_secret
+    assert runtime.api_key_from_env is True
+    assert runtime.api_key_env_name == "OPENSQUILLA_LLM_API_KEY"
+
+
+@pytest.mark.asyncio
+async def test_active_clear_keeps_settings_env_reference_effective_and_reported(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    external_secret = "synthetic-settings-env-reference-secret"
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY_ENV", "CUSTOM_PRIMARY_KEY")
+    monkeypatch.setenv("CUSTOM_PRIMARY_KEY", external_secret)
+    config_path = tmp_path / "config.toml"
+    cfg = GatewayConfig(
+        config_path=str(config_path),
+        llm={
+            "provider": "openrouter",
+            "model": "openai/gpt-test",
+            "api_key": "synthetic-stored-secret",
+            "api_key_env": "SAVED_PRIMARY_KEY_ENV",
+        },
+    )
+    persist_config(cfg, path=config_path, backup=False)
+
+    class RecordingSelector:
+        def __init__(self) -> None:
+            self.synced = []
+
+        def sync_primary(self, provider_config) -> None:
+            self.synced.append(provider_config)
+
+    selector = RecordingSelector()
+    ctx = _admin_ctx(cfg)
+    ctx.provider_selector = selector
+    response = await get_dispatcher().dispatch(
+        "clear-primary-settings-env-reference",
+        "onboarding.provider.credential.clear",
+        {"providerId": "openrouter"},
+        ctx,
+    )
+
+    assert response.error is None, response.error
+    assert response.payload["entry"]["externalCredentialActive"] is True
+    assert response.payload["entry"]["credentialSource"] == "env"
+    assert response.payload["entry"]["credentialEnv"] == "CUSTOM_PRIMARY_KEY"
+    assert external_secret not in repr(response.payload)
+    assert selector.synced[-1].api_key == external_secret
+    assert cfg.llm.api_key == ""
+    assert cfg.llm.api_key_env == ""
+    status = get_onboarding_status(cfg)
+    assert status.llm_credential_status["source"] == "env"
+    assert status.llm_credential_status["envKey"] == "CUSTOM_PRIMARY_KEY"
+
+    reloaded = load_config(config_path)
+    runtime = resolve_llm_runtime_config(reloaded)
+    assert runtime.api_key == external_secret
+    assert runtime.api_key_from_env is True
+    assert runtime.api_key_env_name == "CUSTOM_PRIMARY_KEY"
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,6 @@ handler bodies.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -27,6 +26,7 @@ from opensquilla.gateway.rpc import RpcContext, RpcHandlerError, get_dispatcher
 from opensquilla.search.types import DEFAULT_SEARCH_MAX_RESULTS
 
 if TYPE_CHECKING:
+    from opensquilla.onboarding.config_store import CredentialBackupRedaction
     from opensquilla.onboarding.probe import ProviderProbeResult
 
 
@@ -176,7 +176,13 @@ def _sync_search_provider(config: Any) -> None:
     )
 
 
-def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
+def _persist(
+    ctx: RpcContext,
+    new_cfg: Any,
+    *,
+    restart_required: bool,
+    backup_credential_redaction: CredentialBackupRedaction | None = None,
+) -> str:
     from opensquilla.onboarding.config_store import persist_config
 
     # Mutation results are cloned from the active config and carry their own
@@ -186,7 +192,19 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     # back would silently omit the replacement from disk and keep exposing the
     # startup environment credential through the live settings UI.
     path = _config_path_for(ctx, new_cfg) or _config_path_for(ctx, ctx.config)
-    persist = persist_config(new_cfg, path=path, restart_required=restart_required)
+    if backup_credential_redaction is None:
+        persist = persist_config(
+            new_cfg,
+            path=path,
+            restart_required=restart_required,
+        )
+    else:
+        persist = persist_config(
+            new_cfg,
+            path=path,
+            restart_required=restart_required,
+            backup_credential_redaction=backup_credential_redaction,
+        )
     # Preserve the resolved path on the running config so subsequent saves
     # round-trip to the same file.
     if hasattr(new_cfg, "config_path") and not getattr(new_cfg, "config_path", None):
@@ -198,6 +216,18 @@ def _persist(ctx: RpcContext, new_cfg: Any, *, restart_required: bool) -> str:
     ):
         ctx.config.config_path = str(persist.path)
     return str(persist.path)
+
+
+def _provider_backup_credential_redaction(
+    provider_id: str,
+) -> CredentialBackupRedaction:
+    """Build a secret-safe backup scrub request for one provider."""
+
+    from opensquilla.onboarding.config_store import CredentialBackupRedaction
+
+    return CredentialBackupRedaction(
+        provider_id=str(provider_id or "").strip().lower(),
+    )
 
 
 def _status_payload(ctx: RpcContext) -> dict[str, Any]:
@@ -255,6 +285,7 @@ def _status_payload(ctx: RpcContext) -> dict[str, Any]:
 
 
 def _active_llm_credential_reveal_payload(ctx: RpcContext, provider_id: str) -> dict[str, Any]:
+    from opensquilla.gateway.llm_runtime import resolve_llm_credential
     from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 
     if not ctx.principal.is_owner:
@@ -280,34 +311,18 @@ def _active_llm_credential_reveal_payload(ctx: RpcContext, provider_id: str) -> 
             "onboarding.provider.credential.unsupported_provider",
             f"Unsupported active provider: {active_provider}",
         ) from exc
-    env_key = (
-        str(getattr(llm, "api_key_env", "") or "").strip()
-        or str(getattr(spec, "env_key", "") or "").strip()
+    credential = resolve_llm_credential(
+        cfg,
+        registry_env_key=str(getattr(spec, "env_key", "") or "").strip(),
     )
-    runtime_secret_paths: set[str] = getattr(cfg, "_runtime_secret_paths", set())
-    explicit_key = (
-        ""
-        if "llm.api_key" in runtime_secret_paths
-        else str(getattr(llm, "api_key", "") or "")
-    )
-    if explicit_key:
+    if credential.source in {"explicit", "env"} and credential.api_key:
         return {
             "ok": True,
             "provider": active_provider,
-            "source": "explicit",
-            "envKey": env_key,
-            "apiKey": explicit_key,
+            "source": credential.source,
+            "envKey": credential.env_name,
+            "apiKey": credential.api_key,
         }
-    if env_key:
-        env_value = str(os.environ.get(env_key) or "")
-        if env_value:
-            return {
-                "ok": True,
-                "provider": active_provider,
-                "source": "env",
-                "envKey": env_key,
-                "apiKey": env_value,
-            }
     raise RpcHandlerError(
         "onboarding.provider.credential.unavailable",
         "No revealable credential is available for the active provider.",
@@ -544,9 +559,15 @@ async def _llm_profile_credential_clear(params: Any, ctx: RpcContext) -> dict[st
 
     provider_id = str(_require(params, "providerId"))
     cfg = _active_config(ctx)
+    backup_redaction = _provider_backup_credential_redaction(provider_id)
     with _validation_error("onboarding.llmProfile.invalid"):
         res = clear_llm_profile_credentials(cfg, provider_id=provider_id)
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
+    config_path = _persist(
+        ctx,
+        res.config,
+        restart_required=res.restart_required,
+        backup_credential_redaction=backup_redaction,
+    )
     _apply_inplace(ctx, res.config)
     # A configured rotation pool holds resolved key values, cooldowns and
     # session pins in process memory. Purge that provider only after disk is
@@ -985,11 +1006,17 @@ async def _provider_credential_clear(params: Any, ctx: RpcContext) -> dict[str, 
 
     provider_id = str(_require(params, "providerId"))
     cfg = _active_config(ctx)
+    backup_redaction = _provider_backup_credential_redaction(provider_id)
     with _validation_error("onboarding.provider.invalid"):
         res = clear_llm_provider_credentials(cfg, provider_id=provider_id)
     # Keep the same transaction boundary as provider.configure: no runtime
     # consumer sees the cleared value until the durable write succeeds.
-    config_path = _persist(ctx, res.config, restart_required=res.restart_required)
+    config_path = _persist(
+        ctx,
+        res.config,
+        restart_required=res.restart_required,
+        backup_credential_redaction=backup_redaction,
+    )
     _apply_inplace(ctx, res.config)
     _sync_provider_selector(ctx, res.config.llm)
     live_config = ctx.config if ctx.config is not None else res.config

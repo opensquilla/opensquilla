@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+from opensquilla.subprocess_encoding import apply_utf8_child_env
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (
@@ -18,6 +21,7 @@ SCRIPT = (
     / "scripts"
     / "render.py"
 )
+SYNTHETIC_PDF_PATH = (ROOT / ".test-output" / "paper.pdf").resolve()
 
 
 def _payload(
@@ -45,7 +49,7 @@ def _payload(
         ),
         "language_instruction": instruction,
         "compile_pdf": (
-            "PDF_PATH: /workspace/paper/paper.pdf\n"
+            f"PDF_PATH: {SYNTHETIC_PDF_PATH}\n"
             f"PDF_PAGES: {pages}\n"
             f"PDF_TARGET_PAGES: {target}\n"
             "PDF_BYTES: 123456"
@@ -59,8 +63,10 @@ def _run(payload: dict[str, str]) -> subprocess.CompletedProcess[str]:
         [sys.executable, str(SCRIPT)],
         input=json.dumps(payload),
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
+        env=apply_utf8_child_env(dict(os.environ)),
     )
 
 
@@ -145,7 +151,7 @@ def test_delivery_summary_rejects_missing_or_malformed_citation_stats() -> None:
 
 def test_delivery_summary_rejects_missing_compile_stats() -> None:
     missing_pages_payload = _payload()
-    missing_pages_payload["compile_pdf"] = "PDF_PATH: /workspace/paper/paper.pdf"
+    missing_pages_payload["compile_pdf"] = f"PDF_PATH: {SYNTHETIC_PDF_PATH}"
     missing_pages = _run(missing_pages_payload)
 
     assert missing_pages.returncode != 0

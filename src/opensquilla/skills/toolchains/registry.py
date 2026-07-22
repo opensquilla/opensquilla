@@ -7,6 +7,7 @@ metadata from becoming an arbitrary download-and-execute surface.
 
 from __future__ import annotations
 
+import os
 import platform as platform_module
 import re
 import sys
@@ -120,6 +121,7 @@ _MARTIN_RIEDL_BUILD_SOURCE = (
     "bb1d6db29cee948f9685bcd69e6caf17d960662b"
 )
 _FFMPEG_812_SOURCE = "https://github.com/FFmpeg/FFmpeg/tree/n8.1.2"
+_host_platform_key_cache: tuple[int, str] | None = None
 
 
 def _ffmpeg_license_assets() -> tuple[AuxiliaryAssetDescriptor, ...]:
@@ -204,29 +206,31 @@ _COMPONENTS: dict[str, _Component] = {
                 archive_root="TinyTeX",
                 bin_relpaths=("TinyTeX/bin/universal-darwin",),
             ),
+            # Upstream Linux archives use the hidden .TinyTeX root; the macOS
+            # and Windows artifacts above and below use the visible spelling.
             "linux-arm64": _Artifact(
                 url=_release_url("TinyTeX-linux-arm64-v2026.05.tar.xz"),
                 sha256="2e728c28f3d5a767516a166d07efbd9e5950888deca868c539adbdf7887a711d",
                 size=152_627_036,
                 archive_type="tar.xz",
-                archive_root="TinyTeX",
-                bin_relpaths=("TinyTeX/bin/aarch64-linux",),
+                archive_root=".TinyTeX",
+                bin_relpaths=(".TinyTeX/bin/aarch64-linux",),
             ),
             "linux-x64": _Artifact(
                 url=_release_url("TinyTeX-linux-x86_64-v2026.05.tar.xz"),
                 sha256="2063e7614a3604cedb98713f57b5e8684eac50f73fe23437d48fe48fa9d6a65c",
                 size=150_260_820,
                 archive_type="tar.xz",
-                archive_root="TinyTeX",
-                bin_relpaths=("TinyTeX/bin/x86_64-linux",),
+                archive_root=".TinyTeX",
+                bin_relpaths=(".TinyTeX/bin/x86_64-linux",),
             ),
             "linux-musl-x64": _Artifact(
                 url=_release_url("TinyTeX-linuxmusl-x86_64-v2026.05.tar.xz"),
                 sha256="6fdb0c6203cd85af7cc951b7e6d0afbe2dd267173a085dc10fcb3d87b08828f4",
                 size=145_776_644,
                 archive_type="tar.xz",
-                archive_root="TinyTeX",
-                bin_relpaths=("TinyTeX/bin/x86_64-linuxmusl",),
+                archive_root=".TinyTeX",
+                bin_relpaths=(".TinyTeX/bin/x86_64-linuxmusl",),
             ),
             # Use the upstream ordinary ZIP rather than either Windows SFX asset.
             # It contains the same complete TinyTeX tree and can pass through the
@@ -399,16 +403,50 @@ def normalize_arch(value: str | None = None) -> str:
     return aliases.get(raw, raw)
 
 
-def _uses_musl(libc_name: str | None = None) -> bool:
-    if libc_name is None:
-        libc_name = platform_module.libc_ver()[0]
-    normalized = libc_name.strip().lower()
-    if normalized:
-        return "musl" in normalized
+def _process_uses_musl() -> bool:
+    """Detect the Linux loader mapped into this interpreter process."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        with Path("/proc/self/maps").open(encoding="utf-8", errors="ignore") as mappings:
+            return any(
+                "ld-musl-" in line.lower() or "libc.musl-" in line.lower()
+                for line in mappings
+            )
+    except OSError:
+        return False
 
-    # Some musl Python builds return an empty libc_ver().  The interpreter's
-    # platform string is a bounded local signal and contains no caller input.
-    return bool(re.search(r"(?:^|[-_.])musl(?:[-_.]|$)", sysconfig_platform()))
+
+def _sysconfig_platform_markers() -> tuple[str, ...]:
+    """Return bounded CPython build markers that may identify the target libc."""
+    import sysconfig
+
+    values: list[object] = [sysconfig.get_platform()]
+    values.extend(
+        sysconfig.get_config_var(name)
+        for name in ("HOST_GNU_TYPE", "BUILD_GNU_TYPE", "MULTIARCH", "SOABI")
+    )
+    return tuple(
+        value.strip().lower()
+        for value in values
+        if isinstance(value, str) and value.strip()
+    )
+
+
+def _uses_musl(libc_name: str | None = None) -> bool:
+    if libc_name is not None:
+        normalized = libc_name.strip().lower()
+        if normalized:
+            return "musl" in normalized
+        return any("musl" in marker for marker in _sysconfig_platform_markers())
+
+    normalized = platform_module.libc_ver()[0].strip().lower()
+    if "musl" in normalized or _process_uses_musl():
+        return True
+
+    # Official musl Python builds may expose an empty libc_ver() and a generic
+    # get_platform(), while their configure triplet still identifies musl.
+    return any("musl" in marker for marker in _sysconfig_platform_markers())
 
 
 def sysconfig_platform() -> str:
@@ -418,19 +456,49 @@ def sysconfig_platform() -> str:
     return sysconfig.get_platform().lower()
 
 
+def _uncached_platform_key(
+    platform_name: str | None = None,
+    arch: str | None = None,
+    libc_name: str | None = None,
+) -> str:
+    os_name = normalize_platform(platform_name)
+    cpu = normalize_arch(arch)
+    if os_name == "darwin" and cpu in {"x64", "arm64"}:
+        return "darwin-universal"
+    if os_name == "linux" and _uses_musl(libc_name):
+        return f"linux-musl-{cpu}"
+    return f"{os_name}-{cpu}"
+
+
+def _reset_host_platform_key_cache_after_fork() -> None:
+    global _host_platform_key_cache
+    _host_platform_key_cache = None
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_host_platform_key_cache_after_fork)
+
+
+def _cached_host_platform_key() -> str:
+    global _host_platform_key_cache
+    process_id = os.getpid()
+    cached = _host_platform_key_cache
+    if cached is not None and cached[0] == process_id:
+        return cached[1]
+    selected = _uncached_platform_key()
+    _host_platform_key_cache = (process_id, selected)
+    return selected
+
+
 def platform_key(
     platform_name: str | None = None,
     arch: str | None = None,
     libc_name: str | None = None,
 ) -> str:
     """Resolve a normalized catalog key for the current or supplied host."""
-    os_name = normalize_platform(platform_name)
-    cpu = normalize_arch(arch)
-    if os_name == "darwin" and cpu in {"x64", "arm64"}:
-        return "darwin-universal"
-    if os_name == "linux" and cpu == "x64" and _uses_musl(libc_name):
-        return "linux-musl-x64"
-    return f"{os_name}-{cpu}"
+    if platform_name is None and arch is None and libc_name is None:
+        return _cached_host_platform_key()
+    return _uncached_platform_key(platform_name, arch, libc_name)
 
 
 def describe_component(

@@ -6,10 +6,13 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
+import time
+from collections import OrderedDict
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 
 from opensquilla.skills.toolchains import registry
@@ -23,10 +26,16 @@ from opensquilla.skills.toolchains.manager import (
 MEDIA_FONTS_ENV = "OPENSQUILLA_MEDIA_FONTS_DIR"
 PAPER_FONTS_ENV = "OSFONTDIR"
 _PAYLOAD_VALIDATION_CACHE_LIMIT = 64
+_PAYLOAD_VALIDATION_CACHE_TTL_SECONDS = 30.0
 _SAFE_VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
-_payload_validation_cache: dict[tuple[object, ...], bool] = {}
+_monotonic = time.monotonic
+_payload_validation_cache: OrderedDict[
+    tuple[object, ...], _ValidatedActivationCacheEntry
+] = OrderedDict()
+_payload_validation_flights: dict[tuple[object, ...], _ValidationFlight] = {}
 _payload_validation_cache_lock = threading.Lock()
+_payload_validation_cache_pid = os.getpid()
 
 
 @dataclass(frozen=True)
@@ -51,6 +60,44 @@ class _ValidatedActivation:
     resources: Mapping[str, str]
 
 
+@dataclass(frozen=True)
+class _PathIdentity:
+    """Cheap mutation identity for one bounded activation sentinel."""
+
+    mode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+    inode: int
+    device: int
+
+
+@dataclass(frozen=True)
+class _SentinelIdentity:
+    """Directory-entry and followed-target identity for one sentinel path."""
+
+    entry: _PathIdentity
+    symlink_target: str | None
+    followed_target: _PathIdentity
+
+
+@dataclass(frozen=True)
+class _ValidatedActivationCacheEntry:
+    activation: _ValidatedActivation
+    validated_at: float
+    sentinels: tuple[tuple[Path, _SentinelIdentity], ...]
+
+
+@dataclass
+class _ValidationFlight:
+    """One transient validation shared only by callers already waiting on it."""
+
+    event: threading.Event = field(default_factory=threading.Event)
+    result: _ValidatedActivation | None = None
+    error: BaseException | None = None
+    invalidated: bool = False
+
+
 def _verified_brew_prefix(formula: str) -> Path | None:
     trusted_brew = registry.trusted_brew_executable()
     if trusted_brew is None:
@@ -72,121 +119,281 @@ def _verified_brew_prefix(formula: str) -> Path | None:
     return path if path is not None and path.is_absolute() and path.is_dir() else None
 
 
-def _active_bin_dirs(root: Path) -> tuple[Path, ...]:
-    directories: list[Path] = []
+def _active_activations(root: Path) -> tuple[_ValidatedActivation, ...]:
+    activations: list[_ValidatedActivation] = []
     for component_id in registry.component_ids():
+        if not (root / "active" / f"{component_id}.json").is_file():
+            continue
         descriptor = registry.describe_component(component_id)
-        validated = _validated_component_bin_dirs(root, descriptor)
-        if validated is not None:
-            directories.extend(path for path in validated if path not in directories)
+        activation = _validated_activation(root, descriptor, verify_payload=True)
+        if activation is not None:
+            activations.append(activation)
+    return tuple(activations)
+
+
+def _activation_bin_dirs(
+    activations: tuple[_ValidatedActivation, ...],
+) -> tuple[Path, ...]:
+    directories: list[Path] = []
+    for activation in activations:
+        directories.extend(path for path in activation.bin_dirs if path not in directories)
     return tuple(directories)
 
 
-def invalidate_payload_validation_cache() -> None:
-    """Clear cached managed payload hashes after activation changes."""
+def _reset_payload_validation_cache_after_fork() -> None:
+    """Drop inherited entries and locks in a forked child process."""
+
+    global _payload_validation_cache_lock
+    global _payload_validation_cache_pid
+    _payload_validation_cache.clear()
+    _payload_validation_flights.clear()
+    _payload_validation_cache_lock = threading.Lock()
+    _payload_validation_cache_pid = os.getpid()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_payload_validation_cache_after_fork)
+
+
+def _ensure_payload_validation_cache_process() -> None:
+    """Defend against PID changes in runtimes that bypass at-fork hooks."""
+
+    if os.getpid() != _payload_validation_cache_pid:
+        _reset_payload_validation_cache_after_fork()
+
+
+def invalidate_payload_validation_cache(
+    component_id: str | None = None,
+    *,
+    root: Path | None = None,
+) -> None:
+    """Clear successful activation validations after managed-state changes."""
+
+    _ensure_payload_validation_cache_process()
+    normalized_root = (
+        os.path.normcase(os.path.abspath(root)) if root is not None else None
+    )
+
+    def matches(candidate_root: object, candidate_component: object) -> bool:
+        return bool(
+            (normalized_root is None or candidate_root == normalized_root)
+            and (component_id is None or candidate_component == component_id)
+        )
 
     with _payload_validation_cache_lock:
-        _payload_validation_cache.clear()
+        for key in tuple(_payload_validation_cache):
+            if matches(key[0], key[1]):
+                _payload_validation_cache.pop(key, None)
+        for key, flight in tuple(_payload_validation_flights.items()):
+            if matches(key[0], key[1]):
+                flight.invalidated = True
+                _payload_validation_flights.pop(key, None)
 
 
-def _payload_metadata_signature(
-    package: Path,
+def _activation_cache_key(
+    root: Path,
     descriptor: registry.ToolchainDescriptor,
-) -> tuple[object, ...] | None:
-    marker_path = package / ".opensquilla-toolchain.json"
-    try:
-        marker_stat = marker_path.stat()
-        marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return None
-    manifest = marker.get("payload_manifest") if isinstance(marker, dict) else None
-    if not isinstance(manifest, dict):
-        return None
-    entries: list[tuple[object, ...]] = []
-    directories: set[Path] = set()
-    try:
-        relative_values = sorted(manifest)
-    except TypeError:
-        return None
-    for relative_value in relative_values:
-        if not isinstance(relative_value, str):
-            return None
-        try:
-            relative = Path(relative_value)
-            if relative.is_absolute() or ".." in relative.parts or "\\" in relative_value:
-                return None
-            candidate = package.joinpath(*relative.parts)
-            entry_stat = candidate.lstat()
-            symlink_target = os.readlink(candidate) if candidate.is_symlink() else ""
-            parent = candidate.parent
-            while parent != package:
-                directories.add(parent)
-                parent = parent.parent
-        except OSError:
-            return None
-        entries.append(
-            (
-                relative_value,
-                entry_stat.st_mode,
-                entry_stat.st_size,
-                entry_stat.st_mtime_ns,
-                entry_stat.st_ctime_ns,
-                entry_stat.st_ino,
-                symlink_target,
-            )
-        )
-    for directory in sorted(directories, key=lambda path: path.as_posix()):
-        try:
-            directory_stat = directory.lstat()
-            relative_directory = directory.relative_to(package).as_posix()
-        except (OSError, ValueError):
-            return None
-        entries.append(
-            (
-                f"{relative_directory}/",
-                directory_stat.st_mode,
-                directory_stat.st_size,
-                directory_stat.st_mtime_ns,
-                directory_stat.st_ctime_ns,
-                directory_stat.st_ino,
-                "",
-            )
-        )
+) -> tuple[object, ...]:
     return (
-        descriptor.sha256,
-        descriptor.install_backend,
-        marker_stat.st_size,
-        marker_stat.st_mtime_ns,
-        marker_stat.st_ctime_ns,
-        marker_stat.st_ino,
-        *entries,
+        os.path.normcase(os.path.abspath(root)),
+        descriptor.component_id,
+        descriptor,
     )
+
+
+def _stat_identity(value: os.stat_result) -> _PathIdentity:
+    return _PathIdentity(
+        mode=value.st_mode,
+        size=value.st_size,
+        mtime_ns=value.st_mtime_ns,
+        ctime_ns=value.st_ctime_ns,
+        inode=value.st_ino,
+        device=value.st_dev,
+    )
+
+
+def _path_identity(path: Path) -> _SentinelIdentity | None:
+    try:
+        entry = path.lstat()
+        symlink_target = os.readlink(path) if stat.S_ISLNK(entry.st_mode) else None
+        target = path.stat()
+    except OSError:
+        return None
+    return _SentinelIdentity(
+        entry=_stat_identity(entry),
+        symlink_target=symlink_target,
+        followed_target=_stat_identity(target),
+    )
+
+
+def _activation_sentinels(
+    root: Path,
+    activation: _ValidatedActivation,
+) -> tuple[tuple[Path, _SentinelIdentity], ...] | None:
+    paths = [
+        root / "active" / f"{activation.descriptor.component_id}.json",
+        activation.package / ".opensquilla-toolchain.json",
+        activation.package,
+        *activation.bin_dirs,
+    ]
+    probe_path = os.pathsep.join(str(path) for path in activation.bin_dirs)
+    for command in activation.descriptor.probe_commands:
+        if not command:
+            return None
+        resolved = shutil.which(command[0], path=probe_path)
+        if resolved is None:
+            return None
+        paths.append(Path(resolved))
+    for relative_resource in activation.resources.values():
+        try:
+            paths.append(_contained_path(activation.package, relative_resource))
+        except ToolchainError:
+            return None
+
+    sentinels: list[tuple[Path, _SentinelIdentity]] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = os.path.normcase(os.path.abspath(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        identity = _path_identity(path)
+        if identity is None:
+            return None
+        sentinels.append((path, identity))
+    return tuple(sentinels)
+
+
+def _sentinels_match(sentinels: tuple[tuple[Path, _SentinelIdentity], ...]) -> bool:
+    return all(_path_identity(path) == identity for path, identity in sentinels)
+
+
+def _fresh_cached_activation(
+    key: tuple[object, ...],
+    *,
+    now: float,
+) -> _ValidatedActivation | None:
+    with _payload_validation_cache_lock:
+        entry = _payload_validation_cache.get(key)
+    if entry is None:
+        return None
+    age = now - entry.validated_at
+    if not 0 <= age < _PAYLOAD_VALIDATION_CACHE_TTL_SECONDS:
+        with _payload_validation_cache_lock:
+            if _payload_validation_cache.get(key) is entry:
+                _payload_validation_cache.pop(key, None)
+        return None
+    if not _sentinels_match(entry.sentinels):
+        with _payload_validation_cache_lock:
+            if _payload_validation_cache.get(key) is entry:
+                _payload_validation_cache.pop(key, None)
+        return None
+    with _payload_validation_cache_lock:
+        if _payload_validation_cache.get(key) is not entry:
+            return None
+        _payload_validation_cache.move_to_end(key)
+    return entry.activation
+
+
+def _join_validation_flight(
+    key: tuple[object, ...],
+) -> tuple[_ValidationFlight | None, bool]:
+    """Join an active validation or become its leader.
+
+    ``None`` asks the caller to retry the success cache because another leader
+    populated it after the caller's first cache lookup.
+    """
+
+    with _payload_validation_cache_lock:
+        if key in _payload_validation_cache:
+            return None, False
+        flight = _payload_validation_flights.get(key)
+        if flight is not None:
+            return flight, False
+        flight = _ValidationFlight()
+        _payload_validation_flights[key] = flight
+        return flight, True
+
+
+def _wait_for_validation_flight(flight: _ValidationFlight) -> _ValidatedActivation | None:
+    flight.event.wait()
+    if flight.error is not None:
+        raise flight.error
+    return flight.result
+
+
+def _complete_validation_flight(
+    key: tuple[object, ...],
+    flight: _ValidationFlight,
+    activation: _ValidatedActivation | None,
+    sentinels: tuple[tuple[Path, _SentinelIdentity], ...] | None,
+    *,
+    error: BaseException | None = None,
+) -> _ValidatedActivation | None:
+    """Publish one flight and retain only successful activation state."""
+
+    with _payload_validation_cache_lock:
+        current = _payload_validation_flights.get(key)
+        publish = (
+            current is flight
+            and not flight.invalidated
+            and error is None
+            and activation is not None
+            and sentinels is not None
+        )
+        if publish:
+            assert activation is not None
+            assert sentinels is not None
+            _payload_validation_cache[key] = _ValidatedActivationCacheEntry(
+                activation=activation,
+                validated_at=_monotonic(),
+                sentinels=sentinels,
+            )
+            _payload_validation_cache.move_to_end(key)
+            while len(_payload_validation_cache) > _PAYLOAD_VALIDATION_CACHE_LIMIT:
+                _payload_validation_cache.popitem(last=False)
+        if current is flight:
+            _payload_validation_flights.pop(key, None)
+        flight.result = activation if publish else None
+        flight.error = error
+        flight.event.set()
+        return flight.result
 
 
 def _package_payload_matches_cached(
     package: Path,
     descriptor: registry.ToolchainDescriptor,
 ) -> bool:
-    signature = _payload_metadata_signature(package, descriptor)
-    if signature is None:
-        return False
-    key = (
-        str(package),
-        descriptor.component_id,
-        descriptor.version,
-        descriptor.platform_key,
-        signature,
+    return package_payload_matches(package, descriptor)
+
+
+def _fully_validated_activation(
+    root: Path,
+    current: registry.ToolchainDescriptor,
+    receipt: Mapping[str, object],
+) -> tuple[
+    _ValidatedActivation | None,
+    tuple[tuple[Path, _SentinelIdentity], ...] | None,
+]:
+    """Validate one activation while rejecting fixed-sentinel races."""
+
+    activation = _validated_activation_receipt(
+        root,
+        current,
+        receipt,
+        verify_payload=False,
     )
-    with _payload_validation_cache_lock:
-        if key in _payload_validation_cache:
-            return True
-    if not package_payload_matches(package, descriptor):
-        return False
-    with _payload_validation_cache_lock:
-        if len(_payload_validation_cache) >= _PAYLOAD_VALIDATION_CACHE_LIMIT:
-            _payload_validation_cache.clear()
-        _payload_validation_cache[key] = True
-    return True
+    if activation is None:
+        return None, None
+    before = _activation_sentinels(root, activation)
+    if before is None:
+        return None, None
+    if not _package_payload_matches_cached(activation.package, activation.descriptor):
+        return None, None
+    after = _activation_sentinels(root, activation)
+    if after is None or after != before:
+        return None, None
+    return activation, after
 
 
 def _passive_archive_bin_dirs(
@@ -484,6 +691,37 @@ def _validated_activation(
     *,
     verify_payload: bool,
 ) -> _ValidatedActivation | None:
+    if verify_payload:
+        _ensure_payload_validation_cache_process()
+        key = _activation_cache_key(root, current)
+        while True:
+            cached = _fresh_cached_activation(key, now=_monotonic())
+            if cached is not None:
+                return cached
+            flight, is_leader = _join_validation_flight(key)
+            if flight is None:
+                continue
+            if not is_leader:
+                return _wait_for_validation_flight(flight)
+            break
+
+        activation: _ValidatedActivation | None = None
+        sentinels: tuple[tuple[Path, _SentinelIdentity], ...] | None = None
+        try:
+            receipt = _read_mapping(root / "active" / f"{current.component_id}.json")
+            if receipt is not None:
+                activation, sentinels = _fully_validated_activation(root, current, receipt)
+        except BaseException as exc:
+            _complete_validation_flight(
+                key,
+                flight,
+                None,
+                None,
+                error=exc,
+            )
+            raise
+        return _complete_validation_flight(key, flight, activation, sentinels)
+
     receipt = _read_mapping(root / "active" / f"{current.component_id}.json")
     if receipt is None:
         return None
@@ -623,24 +861,28 @@ def resolve_managed_resource(
     for selected_component in component_ids:
         if selected_component not in registry.component_ids():
             return None
-        receipt = _read_mapping(state_root / "active" / f"{selected_component}.json")
-        raw_resources = receipt.get("resources") if receipt is not None else None
-        if not isinstance(raw_resources, dict) or asset_id not in raw_resources:
-            continue
         current = registry.describe_component(selected_component)
         activation = _validated_activation(state_root, current, verify_payload=True)
         if activation is None:
             continue
-        relative_resource = activation.resources.get(asset_id)
-        if relative_resource is None:
-            continue
-        try:
-            resource = _contained_path(activation.package, relative_resource)
-        except ToolchainError:
-            continue
-        if resource.is_file():
+        resource = _resource_from_activation(activation, asset_id)
+        if resource is not None:
             return resource
     return None
+
+
+def _resource_from_activation(
+    activation: _ValidatedActivation,
+    asset_id: str,
+) -> Path | None:
+    relative_resource = activation.resources.get(asset_id)
+    if relative_resource is None:
+        return None
+    try:
+        resource = _contained_path(activation.package, relative_resource)
+    except ToolchainError:
+        return None
+    return resource if resource.is_file() else None
 
 
 def managed_env(
@@ -650,9 +892,11 @@ def managed_env(
 ) -> dict[str, str]:
     """Return an environment with explicitly active managed bins before system PATH."""
     env = dict(os.environ if base_env is None else base_env)
+    state_root = toolchains_root(root)
+    activations = _active_activations(state_root)
     existing = env.get("PATH", "")
     segments = [segment for segment in existing.split(os.pathsep) if segment]
-    managed_segments = [str(path) for path in _active_bin_dirs(toolchains_root(root))]
+    managed_segments = [str(path) for path in _activation_bin_dirs(activations)]
     ordered = [*managed_segments, *segments]
     deduplicated: list[str] = []
     normalized: set[str] = set()
@@ -662,17 +906,22 @@ def managed_env(
             deduplicated.append(value)
             normalized.add(key)
     env["PATH"] = os.pathsep.join(deduplicated)
-    font = resolve_managed_resource(
-        "noto-cjk-font",
-        component_id="media-ffmpeg",
-        root=root,
+    by_component = {
+        activation.descriptor.component_id: activation for activation in activations
+    }
+    media_activation = by_component.get("media-ffmpeg")
+    font = (
+        _resource_from_activation(media_activation, "noto-cjk-font")
+        if media_activation is not None
+        else None
     )
-    if font is not None:
+    if font is not None and MEDIA_FONTS_ENV not in env:
         env[MEDIA_FONTS_ENV] = str(font.parent)
-    paper_font = resolve_managed_resource(
-        "noto-cjk-font",
-        component_id="paper-tex",
-        root=root,
+    paper_activation = by_component.get("paper-tex")
+    paper_font = (
+        _resource_from_activation(paper_activation, "noto-cjk-font")
+        if paper_activation is not None
+        else None
     )
     if paper_font is not None:
         existing_font_dirs = env.get(PAPER_FONTS_ENV, "")

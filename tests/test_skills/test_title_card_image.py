@@ -48,6 +48,14 @@ class _TofuFont:
         return _Mask(b"missing")
 
 
+class _AsciiOnlyFont:
+    def getmask(self, char: str, *, mode: str) -> _Mask:
+        assert mode == "L"
+        if char in {"\u0378", "\uffff", "\U0010ffff"} or ord(char) >= 128:
+            return _Mask(b"missing")
+        return _Mask(f"glyph:{char}".encode())
+
+
 def test_managed_cjk_font_directory_is_preferred(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -149,6 +157,71 @@ def test_missing_cjk_font_never_writes_tofu_card(
     assert module.main() == 1
     assert not output.exists()
     assert "CJK-capable font" in capsys.readouterr().err
+
+
+def test_ascii_card_uses_pillow_default_font_on_minimal_system(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_script()
+    output = tmp_path / "cover.png"
+    monkeypatch.setattr(module, "_iter_font_candidates", lambda explicit=None: iter(()))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(SCRIPT),
+            "--text",
+            "Release Ready",
+            "--subtitle",
+            "Build 42",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert module.main() == 0
+    assert output.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    assert str(output.resolve()) in capsys.readouterr().out
+
+
+def test_non_ascii_text_without_font_still_fails_actionably(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script()
+    monkeypatch.setattr(module, "_iter_font_candidates", lambda explicit=None: iter(()))
+
+    with pytest.raises(RuntimeError, match="compatible font"):
+        module._resolve_font_source("Caf\u00e9")
+
+
+def test_loadable_font_missing_non_ascii_glyph_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_script()
+    loaded: list[str] = []
+
+    import PIL.ImageFont
+
+    monkeypatch.setattr(
+        module,
+        "_iter_font_candidates",
+        lambda explicit=None: iter(("ascii-only.ttf",)),
+    )
+
+    def fake_truetype(candidate: str, size: int) -> _AsciiOnlyFont:
+        assert size == 48
+        loaded.append(candidate)
+        return _AsciiOnlyFont()
+
+    monkeypatch.setattr(PIL.ImageFont, "truetype", fake_truetype)
+
+    with pytest.raises(RuntimeError, match="compatible font") as caught:
+        module._resolve_font_source("Caf\u00e9")
+
+    assert loaded == ["ascii-only.ttf"]
+    assert "--font" in str(caught.value)
 
 
 def test_platform_fallbacks_cover_windows_macos_and_linux() -> None:

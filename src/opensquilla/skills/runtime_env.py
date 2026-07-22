@@ -19,15 +19,10 @@ from opensquilla.skills.toolchains import (
     ToolchainError,
     list_active_components,
     managed_env,
-    resolve_managed_resource,
 )
 from opensquilla.skills.toolchains.manager import toolchains_root
 
 MEDIA_FONTS_DIR_ENV = "OPENSQUILLA_MEDIA_FONTS_DIR"
-_MEDIA_COMPONENT_ID = "media-ffmpeg"
-_MEDIA_FONT_ASSET_ID = "noto-cjk-font"
-
-
 def managed_skill_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
     """Return a child environment with activated managed skill resources.
 
@@ -38,21 +33,9 @@ def managed_skill_env(base_env: Mapping[str, str] | None = None) -> dict[str, st
 
     original = dict(os.environ if base_env is None else base_env)
     try:
-        env = managed_env(original)
+        return managed_env(original)
     except (OSError, ValueError, ToolchainError):
         return original
-
-    if not env.get(MEDIA_FONTS_DIR_ENV):
-        try:
-            font = resolve_managed_resource(
-                _MEDIA_FONT_ASSET_ID,
-                component_id=_MEDIA_COMPONENT_ID,
-            )
-        except (OSError, ValueError, ToolchainError):
-            font = None
-        if font is not None and font.parent.is_dir():
-            env[MEDIA_FONTS_DIR_ENV] = str(font.parent)
-    return env
 
 
 def managed_toolchain_readonly_paths() -> tuple[Path, ...]:

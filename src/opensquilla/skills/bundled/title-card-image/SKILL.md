@@ -70,10 +70,12 @@ Resolution order is `--font`, the managed media directory from
 Microsoft YaHei / SimHei / DengXian on Windows; PingFang / Hiragino Sans GB /
 STHeiti / Songti on macOS; Noto CJK / Source Han / WenQuanYi on Linux. Font
 collection files (`.ttc`/`.otc`) are supported. Before drawing, the renderer
-compares requested CJK glyphs with the font's missing-glyph signature. A font
+compares requested non-ASCII glyphs with the font's missing-glyph signature. A font
 that would produce tofu is skipped. If no compatible scalable font exists, the
-step fails with an actionable `--font` / `OPENSQUILLA_MEDIA_FONTS_DIR` message;
-it never silently emits tiny bitmap squares.
+step fails with an actionable `--font` / `OPENSQUILLA_MEDIA_FONTS_DIR` message
+for CJK or other non-ASCII text; it never silently emits tiny bitmap squares.
+Pure ASCII cards remain available on minimal systems through Pillow's built-in
+font when no scalable font is installed.
 
 ## Limits
 

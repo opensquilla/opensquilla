@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+from opensquilla.subprocess_encoding import apply_utf8_child_env
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (
@@ -25,8 +28,10 @@ def _run(payload: dict[str, str]) -> subprocess.CompletedProcess[str]:
         [sys.executable, str(SCRIPT)],
         input=json.dumps(payload),
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
+        env=apply_utf8_child_env(dict(os.environ)),
     )
 
 

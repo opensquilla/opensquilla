@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ def _owner_context():
 def _managed_env(base: Any) -> dict[str, str]:
     return {
         **dict(base),
-        "PATH": "/managed:/system",
+        "PATH": os.pathsep.join(("/managed", "/system")),
         MEDIA_FONTS_DIR_ENV: "/managed/media-fonts",
         PAPER_FONTS_ENV: "/managed/paper-fonts",
     }
@@ -63,7 +64,7 @@ async def test_exec_command_passes_managed_environment_to_host_runner(
     assert result == "exit_code=0\nok\n"
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["PATH"] == "/managed:/system"
+    assert env["PATH"].split(os.pathsep)[:2] == ["/managed", "/system"]
     assert env[MEDIA_FONTS_DIR_ENV] == "/managed/media-fonts"
     assert env[PAPER_FONTS_ENV] == "/managed/paper-fonts"
 
@@ -90,7 +91,7 @@ async def test_full_host_exec_passes_managed_environment_to_runner(
     assert result == "exit_code=0\nok\n"
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["PATH"] == "/managed:/system"
+    assert env["PATH"].split(os.pathsep)[:2] == ["/managed", "/system"]
     assert env[MEDIA_FONTS_DIR_ENV] == "/managed/media-fonts"
     assert env[PAPER_FONTS_ENV] == "/managed/paper-fonts"
 
@@ -123,7 +124,7 @@ async def test_background_process_passes_managed_environment_to_child(
 
     monkeypatch.setattr(shell, "get_runtime", lambda: None)
     monkeypatch.setattr(shell, "managed_skill_env", _managed_env)
-    monkeypatch.setattr(shell.asyncio, "create_subprocess_shell", fake_spawn)
+    monkeypatch.setattr(shell, "_create_host_shell_subprocess", fake_spawn)
 
     result = await shell.background_process("echo ok", workdir=str(tmp_path))
     session_id = result.splitlines()[0].split("=", 1)[1]
@@ -133,7 +134,7 @@ async def test_background_process_passes_managed_environment_to_child(
 
     env = captured["env"]
     assert isinstance(env, dict)
-    assert env["PATH"] == "/managed:/system"
+    assert env["PATH"].split(os.pathsep)[:2] == ["/managed", "/system"]
     assert env[MEDIA_FONTS_DIR_ENV] == "/managed/media-fonts"
     assert env[PAPER_FONTS_ENV] == "/managed/paper-fonts"
     shell._bg_sessions.pop(session_id, None)

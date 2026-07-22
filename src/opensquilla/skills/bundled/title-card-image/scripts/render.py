@@ -149,8 +149,8 @@ def _glyph_signature(font, char: str) -> tuple[tuple[int, int], bytes]:
 
 
 def _font_supports_text(font, text: str) -> bool:
-    """Reject fonts that would render requested CJK glyphs as .notdef boxes."""
-    required = sorted({char for char in text if _is_cjk_character(char)})
+    """Reject fonts that render requested non-ASCII glyphs as .notdef boxes."""
+    required = sorted({char for char in text if ord(char) >= 128})
     if not required:
         return True
     try:
@@ -166,8 +166,8 @@ def _font_supports_text(font, text: str) -> bool:
         return False
 
 
-def _resolve_font_source(text: str, explicit: str | None = None) -> str:
-    """Select a scalable font with real glyph coverage or fail actionably."""
+def _resolve_font_source(text: str, explicit: str | None = None) -> str | None:
+    """Select a compatible scalable font, or the built-in font for ASCII."""
     from PIL import ImageFont  # type: ignore
 
     for candidate in _iter_font_candidates(explicit):
@@ -178,17 +178,26 @@ def _resolve_font_source(text: str, explicit: str | None = None) -> str:
         if _font_supports_text(font, text):
             return candidate
 
-    requirement = "CJK-capable font" if any(map(_is_cjk_character, text)) else "scalable font"
+    if all(ord(char) < 128 for char in text):
+        return None
+
+    requirement = "CJK-capable font" if any(map(_is_cjk_character, text)) else "compatible font"
     raise RuntimeError(
         f"No {requirement} could be loaded. Set {_MEDIA_FONTS_DIR_ENV} to a font "
         "directory or pass --font with a compatible .ttf/.otf/.ttc file."
     )
 
 
-def _load_font(source: str, size: int):
+def _load_font(source: str | None, size: int):
     from PIL import ImageFont  # type: ignore
 
-    return ImageFont.truetype(source, size)
+    if source is not None:
+        return ImageFont.truetype(source, size)
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        # Pillow before 10.1 has no scalable default-font size parameter.
+        return ImageFont.load_default()
 
 
 def _parse_color(spec: str) -> tuple[int, int, int]:

@@ -124,6 +124,31 @@ async def test_skill_exec_resolves_bare_python3_too(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_skill_exec_text_output_normalizes_newlines(tmp_path: Path) -> None:
+    """Text step outputs are stable across Windows and POSIX subprocesses."""
+
+    script = tmp_path / "mixed_newlines.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(b'first\\r\\nsecond\\rthird\\n')\n",
+        encoding="utf-8",
+    )
+    spec = _spec(tmp_path, f"python {script}")
+    step = MetaStep(id="newlines", kind="skill_exec", skill=spec.name)
+
+    out = await run_skill_exec_step(
+        step,
+        effective_skill=spec.name,
+        inputs={},
+        outputs={},
+        skill_loader=_Loader(spec),
+        workspace_dir=str(tmp_path),
+    )
+
+    assert out == "first\nsecond\nthird"
+
+
+@pytest.mark.asyncio
 async def test_skill_exec_does_not_rewrite_absolute_interpreter(
     tmp_path: Path,
 ) -> None:

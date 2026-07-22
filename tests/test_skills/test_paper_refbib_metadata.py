@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from opensquilla.subprocess_encoding import apply_utf8_child_env
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = (
@@ -19,6 +22,18 @@ SCRIPT = (
     / "scripts"
     / "json_to_bib.py"
 )
+
+
+def _run_refbib(payload: dict[str, object], out: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--out", str(out)],
+        input=json.dumps(payload),
+        text=True,
+        encoding="utf-8",
+        capture_output=True,
+        check=True,
+        env=apply_utf8_child_env(dict(os.environ)),
+    )
 
 
 def test_refbib_preserves_metadata_omits_unknown_year_and_deduplicates_doi(
@@ -52,13 +67,7 @@ def test_refbib_preserves_metadata_omits_unknown_year_and_deduplicates_doi(
         ],
     }
     out = tmp_path / "references.bib"
-    completed = subprocess.run(
-        [sys.executable, str(SCRIPT), "--out", str(out)],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+    completed = _run_refbib(payload, out)
 
     bib = out.read_text(encoding="utf-8")
     assert completed.stdout == bib
@@ -91,13 +100,7 @@ def test_refbib_uses_explicit_doi_when_url_is_missing_and_ignores_bad_year(
         ]
     }
     out = tmp_path / "references.bib"
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--out", str(out)],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+    _run_refbib(payload, out)
 
     bib = out.read_text(encoding="utf-8")
     assert "howpublished = {\\url{https://doi.org/10.9999/only.doi}}" in bib
@@ -130,13 +133,7 @@ def test_refbib_preserves_valid_locator_shapes_and_omits_empty_howpublished(
     }
     out = tmp_path / "references.bib"
 
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--out", str(out)],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+    _run_refbib(payload, out)
 
     bib = out.read_text(encoding="utf-8")
     assert "howpublished = {\\url{https://papers.example.test/item}}" in bib
@@ -172,13 +169,7 @@ def test_refbib_sanitizes_embedded_entries_unbalanced_braces_and_controls(
     }
     out = tmp_path / "references.bib"
 
-    completed = subprocess.run(
-        [sys.executable, str(SCRIPT), "--out", str(out)],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+    completed = _run_refbib(payload, out)
 
     bib = out.read_text(encoding="utf-8")
     assert completed.stdout == bib
@@ -211,13 +202,7 @@ def test_refbib_malicious_search_metadata_parses_with_real_bibtex(tmp_path: Path
         ]
     }
     references = tmp_path / "references.bib"
-    subprocess.run(
-        [sys.executable, str(SCRIPT), "--out", str(references)],
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        check=True,
-    )
+    _run_refbib(payload, references)
     (tmp_path / "paper.aux").write_text(
         "\\relax\n\\citation{ref1}\n\\bibstyle{plain}\n\\bibdata{references}\n",
         encoding="utf-8",

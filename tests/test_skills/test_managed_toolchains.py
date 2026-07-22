@@ -5,6 +5,7 @@ import io
 import json
 import multiprocessing
 import os
+import runpy
 import shutil
 import stat
 import subprocess
@@ -108,6 +109,59 @@ def _make_executable(path: Path, content: bytes = b"test") -> None:
     path.chmod(0o755)
 
 
+def _write_runtime_activation(
+    state_root: Path,
+    descriptor: ToolchainDescriptor,
+    *,
+    extra_files: int = 0,
+    resource_payloads: dict[str, bytes] | None = None,
+) -> tuple[Path, Path]:
+    package = (
+        state_root
+        / "packages"
+        / descriptor.component_id
+        / descriptor.version
+        / descriptor.platform_key
+    )
+    executable_name = descriptor.probe_commands[0][0] if descriptor.probe_commands else "paperbin"
+    executable = package / descriptor.bin_relpaths[0] / executable_name
+    _make_executable(executable, b"verified payload")
+    for index in range(extra_files):
+        payload = package / "Bundle" / "share" / f"payload-{index:04d}.txt"
+        payload.parent.mkdir(parents=True, exist_ok=True)
+        payload.write_bytes(f"payload-{index:04d}".encode())
+    resource_payloads = resource_payloads or {}
+    for asset in descriptor.auxiliary_assets:
+        resource = package.joinpath(*Path(asset.destination).parts)
+        resource.parent.mkdir(parents=True, exist_ok=True)
+        resource.write_bytes(resource_payloads.get(asset.asset_id, b"font"))
+    (package / ".opensquilla-toolchain.json").write_text(
+        json.dumps(manager._package_marker(descriptor, package)),
+        encoding="utf-8",
+    )
+    active = state_root / "active"
+    active.mkdir(parents=True, exist_ok=True)
+    (active / f"{descriptor.component_id}.json").write_text(
+        json.dumps(
+            {
+                "component_id": descriptor.component_id,
+                "version": descriptor.version,
+                "platform_key": descriptor.platform_key,
+                "sha256": descriptor.sha256,
+                "install_backend": descriptor.install_backend,
+                "package_relpath": package.relative_to(state_root).as_posix(),
+                "external_root": None,
+                "bin_relpaths": list(descriptor.bin_relpaths),
+                "resources": {
+                    asset.asset_id: asset.destination for asset in descriptor.auxiliary_assets
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    return package, executable
+
+
 def _hold_component_lock(root: str, ready: Any, release: Any) -> None:
     state_root = Path(root)
     manager._ensure_root(state_root)
@@ -124,9 +178,96 @@ def test_registry_is_code_owned_and_normalizes_supported_hosts() -> None:
     assert registry.normalize_arch("aarch64") == "arm64"
     assert registry.platform_key("Darwin", "arm64") == "darwin-universal"
     assert registry.platform_key("Linux", "AMD64", "musl") == "linux-musl-x64"
+    assert registry.platform_key("Linux", "aarch64", "musl") == "linux-musl-arm64"
+
+    unsupported_musl_arm = registry.describe_component(
+        "paper-tex",
+        platform_name="linux",
+        arch="aarch64",
+        libc_name="musl",
+    )
+    assert unsupported_musl_arm.supported is False
+    assert unsupported_musl_arm.platform_key == "linux-musl-arm64"
 
     with pytest.raises(UnknownComponentError, match="Unknown managed toolchain"):
         registry.describe_component("https://attacker.invalid/archive")
+
+
+def test_registry_detects_musl_from_the_running_loader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(registry.platform_module, "libc_ver", lambda: ("glibc", "2.40"))
+    monkeypatch.setattr(registry, "_process_uses_musl", lambda: True)
+
+    assert registry.platform_key("Linux", "AMD64") == "linux-musl-x64"
+    assert registry.platform_key("Linux", "AMD64", "glibc") == "linux-x64"
+
+
+def test_registry_detects_musl_from_cpython_build_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sysconfig
+
+    monkeypatch.setattr(registry.platform_module, "libc_ver", lambda: ("", ""))
+    monkeypatch.setattr(registry, "_process_uses_musl", lambda: False)
+    monkeypatch.setattr(sysconfig, "get_platform", lambda: "linux-x86_64")
+    monkeypatch.setattr(
+        sysconfig,
+        "get_config_var",
+        lambda name: "x86_64-alpine-linux-musl" if name == "BUILD_GNU_TYPE" else None,
+    )
+
+    assert registry.platform_key("Linux", "AMD64") == "linux-musl-x64"
+    assert registry.platform_key("Linux", "AMD64", "glibc") == "linux-x64"
+
+    monkeypatch.setattr(sysconfig, "get_config_var", lambda _name: "x86_64-pc-linux-gnu")
+    assert registry.platform_key("Linux", "AMD64") == "linux-x64"
+
+
+def test_registry_caches_default_host_platform_key_per_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry._reset_host_platform_key_cache_after_fork()
+    calls = {"system": 0, "machine": 0, "libc": 0, "loader": 0, "markers": 0}
+    process_id = [os.getpid() + 10_000]
+
+    def system() -> str:
+        calls["system"] += 1
+        return "Linux"
+
+    def machine() -> str:
+        calls["machine"] += 1
+        return "AMD64"
+
+    def libc_ver() -> tuple[str, str]:
+        calls["libc"] += 1
+        return "glibc", "2.40"
+
+    def process_uses_musl() -> bool:
+        calls["loader"] += 1
+        return False
+
+    def platform_markers() -> tuple[str, ...]:
+        calls["markers"] += 1
+        return ("linux-x86_64",)
+
+    monkeypatch.setattr(registry.os, "getpid", lambda: process_id[0])
+    monkeypatch.setattr(registry.platform_module, "system", system)
+    monkeypatch.setattr(registry.platform_module, "machine", machine)
+    monkeypatch.setattr(registry.platform_module, "libc_ver", libc_ver)
+    monkeypatch.setattr(registry, "_process_uses_musl", process_uses_musl)
+    monkeypatch.setattr(registry, "_sysconfig_platform_markers", platform_markers)
+
+    try:
+        assert registry.platform_key() == "linux-x64"
+        assert registry.platform_key() == "linux-x64"
+        assert calls == {"system": 1, "machine": 1, "libc": 1, "loader": 1, "markers": 1}
+
+        process_id[0] += 1
+        assert registry.platform_key() == "linux-x64"
+        assert calls == {"system": 2, "machine": 2, "libc": 2, "loader": 2, "markers": 2}
+    finally:
+        registry._reset_host_platform_key_cache_after_fork()
 
 
 def test_registry_pins_monthly_tinytex_full_archives_on_all_supported_hosts() -> None:
@@ -148,6 +289,23 @@ def test_registry_pins_monthly_tinytex_full_archives_on_all_supported_hosts() ->
         "noto-cjk-license",
     }
     assert "self-contained" in darwin.notes
+
+    linux_platforms = {
+        ("arm64", "glibc"): ("linux-arm64", ".TinyTeX/bin/aarch64-linux"),
+        ("x86_64", "glibc"): ("linux-x64", ".TinyTeX/bin/x86_64-linux"),
+        ("x86_64", "musl"): ("linux-musl-x64", ".TinyTeX/bin/x86_64-linuxmusl"),
+    }
+    for (arch, libc_name), (platform_key, bin_relpath) in linux_platforms.items():
+        linux = registry.describe_component(
+            "paper-tex",
+            platform_name="linux",
+            arch=arch,
+            libc_name=libc_name,
+        )
+        assert linux.supported is True
+        assert linux.platform_key == platform_key
+        assert linux.archive_root == ".TinyTeX"
+        assert linux.bin_relpaths == (bin_relpath,)
 
     windows = registry.describe_component("paper-tex", platform_name="windows", arch="x86_64")
     assert windows.supported is True
@@ -612,6 +770,39 @@ def test_repeated_install_reuses_verified_package_without_downloading(
     assert download_calls == 1
     assert repaired.receipt_id != first.receipt_id
     assert repaired.package_relpath == first.package_relpath
+
+
+def test_install_accepts_cataloged_hidden_archive_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper-hidden-root.tar.xz"
+    executable_relpath = f".TinyTeX/bin/test-platform/{executable_name}"
+    _write_tar_xz(
+        archive,
+        {executable_relpath: b"tool"},
+        executable={executable_relpath},
+    )
+    descriptor = replace(
+        _descriptor(size=archive.stat().st_size),
+        archive_root=".TinyTeX",
+        bin_relpaths=(".TinyTeX/bin/test-platform",),
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    monkeypatch.setattr(
+        manager,
+        "_download",
+        lambda _descriptor, destination, _progress, **_kwargs: shutil.copyfile(
+            archive, destination
+        ),
+    )
+
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("paper-tex", root=state_root)
+
+    assert receipt.package_relpath is not None
+    assert (state_root / receipt.package_relpath / executable_relpath).is_file()
 
 
 def test_non_bin_runtime_tamper_forces_fresh_archive_download(
@@ -1566,6 +1757,82 @@ def test_managed_env_exposes_pinned_paper_font_to_xetex(
     ]
 
 
+def test_managed_env_uses_one_activation_snapshot_and_preserves_font_overrides(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    media_descriptor = replace(_descriptor(), component_id="media-ffmpeg")
+    paper_descriptor = _descriptor()
+    media_package = tmp_path / "media"
+    paper_package = tmp_path / "paper"
+    media_bin = media_package / "bin"
+    paper_bin = paper_package / "bin"
+    media_font = media_package / "fonts/NotoSansCJK-Regular.ttc"
+    paper_font = paper_package / "fonts/NotoSansCJK-Regular.ttc"
+    for path in (media_bin, paper_bin, media_font.parent, paper_font.parent):
+        path.mkdir(parents=True, exist_ok=True)
+    media_font.write_bytes(b"media font")
+    paper_font.write_bytes(b"paper font")
+    activations = {
+        "media-ffmpeg": toolchain_runtime._ValidatedActivation(
+            descriptor=media_descriptor,
+            package=media_package,
+            bin_dirs=(media_bin,),
+            resources={"noto-cjk-font": "fonts/NotoSansCJK-Regular.ttc"},
+        ),
+        "paper-tex": toolchain_runtime._ValidatedActivation(
+            descriptor=paper_descriptor,
+            package=paper_package,
+            bin_dirs=(paper_bin,),
+            resources={"noto-cjk-font": "fonts/NotoSansCJK-Regular.ttc"},
+        ),
+    }
+    validation_calls: list[str] = []
+    state_root = tmp_path / "state"
+    (state_root / "active").mkdir(parents=True)
+    for component_id in activations:
+        (state_root / "active" / f"{component_id}.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "component_ids",
+        lambda: ("paper-tex", "media-ffmpeg"),
+    )
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda component_id: activations[component_id].descriptor,
+    )
+
+    def select_activation(
+        _root: Path,
+        descriptor: ToolchainDescriptor,
+        *,
+        verify_payload: bool,
+    ) -> toolchain_runtime._ValidatedActivation:
+        assert verify_payload is True
+        validation_calls.append(descriptor.component_id)
+        return activations[descriptor.component_id]
+
+    monkeypatch.setattr(toolchain_runtime, "_validated_activation", select_activation)
+
+    default_env = managed_env({"PATH": "/system/bin"}, root=state_root)
+    operator_env = managed_env(
+        {"PATH": "/system/bin", "OPENSQUILLA_MEDIA_FONTS_DIR": "/operator/fonts"},
+        root=state_root,
+    )
+    empty_env = managed_env(
+        {"PATH": "/system/bin", "OPENSQUILLA_MEDIA_FONTS_DIR": ""},
+        root=state_root,
+    )
+
+    assert default_env["OPENSQUILLA_MEDIA_FONTS_DIR"] == str(media_font.parent)
+    assert operator_env["OPENSQUILLA_MEDIA_FONTS_DIR"] == "/operator/fonts"
+    assert empty_env["OPENSQUILLA_MEDIA_FONTS_DIR"] == ""
+    assert default_env["OSFONTDIR"] == str(paper_font.parent)
+    assert validation_calls == ["paper-tex", "media-ffmpeg"] * 3
+
+
 def test_brew_backend_requires_bottle_and_records_external_prefix(
     tmp_path: Path,
     monkeypatch: Any,
@@ -1573,8 +1840,9 @@ def test_brew_backend_requires_bottle_and_records_external_prefix(
     brew = tmp_path / "brew"
     _make_executable(brew)
     prefix = tmp_path / "Cellar/ffmpeg-full/1.0"
-    _make_executable(prefix / "bin/ffmpeg")
-    _make_executable(prefix / "bin/ffprobe")
+    executable_suffix = ".exe" if os.name == "nt" else ""
+    _make_executable(prefix / f"bin/ffmpeg{executable_suffix}")
+    _make_executable(prefix / f"bin/ffprobe{executable_suffix}")
     descriptor = replace(
         _descriptor(),
         component_id="media-ffmpeg",
@@ -1622,7 +1890,7 @@ def test_brew_backend_requires_bottle_and_records_external_prefix(
     assert commands == [[str(brew), "install", "--force-bottle", "ffmpeg-full"]]
     assert (
         resolve_managed_binary("ffmpeg", root=state_root, base_env={"PATH": ""})
-        == prefix / "bin/ffmpeg"
+        == prefix / f"bin/ffmpeg{executable_suffix}"
     )
 
 
@@ -1951,8 +2219,9 @@ def test_effective_capability_report_is_cached_and_invalidatable(
     )
     monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
     binaries = tmp_path / "system-bin"
+    executable_suffix = ".exe" if os.name == "nt" else ""
     for name in ("xelatex", "bibtex", "kpsewhich"):
-        _make_executable(binaries / name)
+        _make_executable(binaries / f"{name}{executable_suffix}")
     fonts = tmp_path / "fonts"
     fonts.mkdir()
     (fonts / "NotoSansCJK-Regular.ttc").write_bytes(b"font")
@@ -2118,7 +2387,8 @@ def test_runtime_rejects_tampered_managed_executable_with_intact_marker(
         / descriptor.version
         / descriptor.platform_key
     )
-    executable = package / "Bundle/bin/paperbin"
+    executable_suffix = ".exe" if os.name == "nt" else ""
+    executable = package / f"Bundle/bin/paperbin{executable_suffix}"
     _make_executable(executable, b"verified payload")
     marker_path = package / ".opensquilla-toolchain.json"
     marker_path.write_text(
@@ -2167,6 +2437,657 @@ def test_runtime_rejects_tampered_managed_executable_with_intact_marker(
     assert resolve_managed_binary("paperbin", root=state_root, base_env={"PATH": ""}) is None
     assert validation_calls == 2
     assert toolchain_runtime.list_active_components(root=state_root) == ()
+
+
+def test_runtime_warm_activation_does_not_parse_or_walk_large_manifest(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    _, executable = _write_runtime_activation(state_root, descriptor, extra_files=256)
+    toolchain_runtime.invalidate_payload_validation_cache()
+
+    validation_calls = 0
+    mapping_reads = 0
+    lstat_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+    real_read_mapping = toolchain_runtime._read_mapping
+    real_lstat = Path.lstat
+
+    def count_validation(package: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_validate(package, selected)
+
+    def count_mapping(path: Path) -> dict[str, object] | None:
+        nonlocal mapping_reads
+        mapping_reads += 1
+        return real_read_mapping(path)
+
+    def count_lstat(path: Path) -> os.stat_result:
+        nonlocal lstat_calls
+        lstat_calls += 1
+        return real_lstat(path)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    monkeypatch.setattr(toolchain_runtime, "_read_mapping", count_mapping)
+    monkeypatch.setattr(Path, "lstat", count_lstat)
+
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""}) == (
+        executable
+    )
+    cold_reads = mapping_reads
+    cold_lstats = lstat_calls
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""}) == (
+        executable
+    )
+
+    assert validation_calls == 1
+    assert mapping_reads == cold_reads
+    assert 0 < lstat_calls - cold_lstats <= 5
+
+
+def test_runtime_skips_host_descriptor_resolution_without_active_receipt(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: (_ for _ in ()).throw(AssertionError("descriptor resolved")),
+    )
+
+    assert managed_env({"PATH": "/system/bin"}, root=tmp_path / "state") == {
+        "PATH": "/system/bin"
+    }
+
+
+def test_real_artifact_validator_reports_bounded_runtime_hot_path(
+    tmp_path: Path,
+    monkeypatch: Any,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    state_root = tmp_path / "state"
+    _write_runtime_activation(state_root, descriptor, extra_files=64)
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    script = Path(__file__).resolve().parents[2] / "scripts/validate_managed_toolchain_artifacts.py"
+    namespace = runpy.run_path(str(script))
+    check_hot_path = namespace["_check_runtime_hot_path"]
+    check_hot_path.__globals__["describe_component"] = lambda _component: descriptor
+
+    assert check_hot_path("paper-tex", root=state_root) is True
+    event = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert event["event"] == "runtime_hot_path_result"
+    assert event["ready"] is True
+    assert event["cold_payload_validations"] == 1
+    assert 0 < event["warm_lstat"] <= event["warm_lstat_budget"]
+    assert event["warm_mapping_reads"] == 0
+    assert event["warm_payload_validations"] == 0
+    assert event["warm_stat"] <= event["warm_stat_budget"]
+
+
+def test_runtime_revalidates_deep_payload_after_thirty_seconds(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    package, executable = _write_runtime_activation(state_root, descriptor, extra_files=1)
+    clock = [100.0]
+    monkeypatch.setattr(toolchain_runtime, "_monotonic", lambda: clock[0])
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def count_validation(package_path: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_validate(package_path, selected)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""}) == (
+        executable
+    )
+    (package / "Bundle/share/payload-0000.txt").write_bytes(b"tampered-0000")
+
+    clock[0] = 129.999
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""}) == (
+        executable
+    )
+    assert validation_calls == 1
+
+    clock[0] = 130.0
+    assert resolve_managed_binary(
+        executable_name,
+        root=state_root,
+        base_env={"PATH": ""},
+    ) is None
+    assert validation_calls == 2
+
+
+def test_runtime_single_flights_concurrent_cold_validation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    _, executable = _write_runtime_activation(state_root, descriptor, extra_files=32)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+    validation_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def slow_validation(package: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        validation_started.set()
+        assert release_validation.wait(2)
+        return real_validate(package, selected)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", slow_validation)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(
+                resolve_managed_binary,
+                executable_name,
+                root=state_root,
+                base_env={"PATH": ""},
+            )
+            for _ in range(8)
+        ]
+        assert validation_started.wait(2)
+        release_validation.set()
+        assert [future.result(timeout=2) for future in futures] == [executable] * 8
+
+    assert validation_calls == 1
+
+
+def test_runtime_single_flights_concurrent_failed_validation_without_caching(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    _write_runtime_activation(state_root, descriptor, extra_files=32)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_started = threading.Event()
+    release_validation = threading.Event()
+    waiters_joined = threading.Event()
+    waiter_lock = threading.Lock()
+    waiter_count = 0
+    validation_calls = 0
+    real_wait = toolchain_runtime._wait_for_validation_flight
+
+    def reject_validation(_package: Path, _selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        validation_started.set()
+        assert release_validation.wait(2)
+        return False
+
+    def counted_wait(flight: Any):
+        nonlocal waiter_count
+        with waiter_lock:
+            waiter_count += 1
+            if waiter_count == 7:
+                waiters_joined.set()
+        return real_wait(flight)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", reject_validation)
+    monkeypatch.setattr(toolchain_runtime, "_wait_for_validation_flight", counted_wait)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(
+                resolve_managed_binary,
+                executable_name,
+                root=state_root,
+                base_env={"PATH": ""},
+            )
+            for _ in range(8)
+        ]
+        assert validation_started.wait(2)
+        assert waiters_joined.wait(2)
+        release_validation.set()
+        assert [future.result(timeout=2) for future in futures] == [None] * 8
+
+    assert validation_calls == 1
+    assert toolchain_runtime._payload_validation_flights == {}
+    assert resolve_managed_binary(
+        executable_name,
+        root=state_root,
+        base_env={"PATH": ""},
+    ) is None
+    assert validation_calls == 2
+    assert toolchain_runtime._payload_validation_flights == {}
+
+
+def test_runtime_invalidation_prevents_inflight_validation_from_repopulating_cache(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    package, _ = _write_runtime_activation(state_root, descriptor, extra_files=32)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_complete = threading.Event()
+    release_validation = threading.Event()
+    validation_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def paused_validation(package: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        result = real_validate(package, selected)
+        validation_complete.set()
+        assert release_validation.wait(2)
+        return result
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", paused_validation)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(
+            resolve_managed_binary,
+            executable_name,
+            root=state_root,
+            base_env={"PATH": ""},
+        )
+        assert validation_complete.wait(2)
+        (package / "Bundle/share/payload-0000.txt").write_bytes(b"tampered-inflight")
+        toolchain_runtime.invalidate_payload_validation_cache(
+            "paper-tex",
+            root=state_root,
+        )
+        release_validation.set()
+        assert pending.result(timeout=2) is None
+
+    assert resolve_managed_binary(
+        executable_name,
+        root=state_root,
+        base_env={"PATH": ""},
+    ) is None
+    assert validation_calls == 2
+
+
+def test_runtime_rejects_fixed_sentinel_change_during_full_validation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    _, executable = _write_runtime_activation(state_root, descriptor, extra_files=16)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    real_validate = toolchain_runtime.package_payload_matches
+    validation_calls = 0
+
+    def mutate_after_validation(package: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        result = real_validate(package, selected)
+        executable.write_bytes(b"tampered after full validation")
+        return result
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", mutate_after_validation)
+
+    assert resolve_managed_binary(
+        executable_name,
+        root=state_root,
+        base_env={"PATH": ""},
+    ) is None
+    assert validation_calls == 1
+    assert toolchain_runtime._payload_validation_cache == {}
+    assert toolchain_runtime._payload_validation_flights == {}
+
+
+def test_runtime_does_not_cache_failed_payload_validation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    _write_runtime_activation(state_root, descriptor)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_calls = 0
+
+    def reject_validation(_package: Path, _selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        return False
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", reject_validation)
+    for _ in range(2):
+        assert resolve_managed_binary(
+            executable_name,
+            root=state_root,
+            base_env={"PATH": ""},
+        ) is None
+
+    assert validation_calls == 2
+
+
+def test_runtime_pid_change_drops_inherited_activation_cache(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    _write_runtime_activation(state_root, descriptor)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def count_validation(package: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_validate(package, selected)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+    current_pid = toolchain_runtime._payload_validation_cache_pid
+    monkeypatch.setattr(toolchain_runtime.os, "getpid", lambda: current_pid + 1)
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+
+    assert validation_calls == 2
+
+
+def test_runtime_fork_reset_discards_flights_without_signaling_inherited_events(
+    tmp_path: Path,
+) -> None:
+    class InheritedEvent:
+        def set(self) -> None:
+            raise AssertionError("fork reset touched an inherited event")
+
+    descriptor = _descriptor()
+    key = toolchain_runtime._activation_cache_key(tmp_path / "state", descriptor)
+    flight = toolchain_runtime._ValidationFlight()
+    flight.event = InheritedEvent()  # type: ignore[assignment]
+    previous_lock = toolchain_runtime._payload_validation_cache_lock
+    toolchain_runtime._payload_validation_flights[key] = flight
+
+    toolchain_runtime._reset_payload_validation_cache_after_fork()
+
+    assert toolchain_runtime._payload_validation_flights == {}
+    assert toolchain_runtime._payload_validation_cache_lock is not previous_lock
+
+
+def test_activation_write_invalidates_only_changed_component_cache(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    state_root = tmp_path / "state"
+    manager._ensure_root(state_root)
+    invalidated: list[tuple[str | None, Path | None]] = []
+    monkeypatch.setattr(
+        toolchain_runtime,
+        "invalidate_payload_validation_cache",
+        lambda component_id=None, *, root=None: invalidated.append((component_id, root)),
+    )
+
+    manager._write_activation(
+        state_root,
+        {"component_id": "paper-tex", "receipt_id": "synthetic-receipt"},
+    )
+
+    assert invalidated == [("paper-tex", state_root)]
+
+
+def test_component_invalidation_preserves_other_validated_activation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_suffix = ".exe" if os.name == "nt" else ""
+    paper_descriptor = replace(
+        _descriptor(),
+        probe_commands=((f"paperbin{executable_suffix}", "--version"),),
+    )
+    media_descriptor = replace(
+        _descriptor(),
+        component_id="media-ffmpeg",
+        probe_commands=((f"mediabin{executable_suffix}", "--version"),),
+    )
+    descriptors = {
+        "paper-tex": paper_descriptor,
+        "media-ffmpeg": media_descriptor,
+    }
+    state_root = tmp_path / "state"
+    _write_runtime_activation(state_root, paper_descriptor)
+    _write_runtime_activation(state_root, media_descriptor)
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "component_ids",
+        lambda: ("paper-tex", "media-ffmpeg"),
+    )
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda component_id: descriptors[component_id],
+    )
+    toolchain_runtime.invalidate_payload_validation_cache()
+
+    managed_env({"PATH": ""}, root=state_root)
+    validation_calls: list[str] = []
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def count_validation(package: Path, descriptor: ToolchainDescriptor) -> bool:
+        validation_calls.append(descriptor.component_id)
+        return real_validate(package, descriptor)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    toolchain_runtime.invalidate_payload_validation_cache("paper-tex")
+
+    managed_env({"PATH": ""}, root=state_root)
+
+    assert validation_calls == ["paper-tex"]
+
+
+def test_root_invalidation_preserves_same_component_cache_in_other_root(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    descriptor = replace(_descriptor(), probe_commands=((executable_name, "--version"),))
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    first_root = tmp_path / "first-state"
+    second_root = tmp_path / "second-state"
+    first_package, _ = _write_runtime_activation(first_root, descriptor)
+    _write_runtime_activation(second_root, descriptor)
+    toolchain_runtime.invalidate_payload_validation_cache()
+    managed_env({"PATH": ""}, root=first_root)
+    managed_env({"PATH": ""}, root=second_root)
+    validated_packages: list[Path] = []
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def count_validation(package: Path, selected: ToolchainDescriptor) -> bool:
+        validated_packages.append(package)
+        return real_validate(package, selected)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    toolchain_runtime.invalidate_payload_validation_cache("paper-tex", root=first_root)
+
+    managed_env({"PATH": ""}, root=first_root)
+    managed_env({"PATH": ""}, root=second_root)
+
+    assert validated_packages == [first_package]
+
+
+@pytest.mark.parametrize("sentinel", ["receipt", "marker", "probe", "resource", "package"])
+def test_runtime_sentinel_changes_force_immediate_revalidation(
+    sentinel: str,
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    font_payload = b"font"
+    font_asset = registry.AuxiliaryAssetDescriptor(
+        asset_id="noto-cjk-font",
+        url="https://example.invalid/font",
+        sha256=hashlib.sha256(font_payload).hexdigest(),
+        size=len(font_payload),
+        destination="fonts/NotoSansCJK-Regular.ttc",
+        license="OFL-1.1",
+        source="https://example.invalid/fonts",
+    )
+    descriptor = replace(
+        _descriptor(),
+        probe_commands=((executable_name, "--version"),),
+        auxiliary_assets=(font_asset,),
+    )
+    monkeypatch.setattr(toolchain_runtime.registry, "component_ids", lambda: ("paper-tex",))
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    package, executable = _write_runtime_activation(
+        state_root,
+        descriptor,
+        resource_payloads={"noto-cjk-font": font_payload},
+    )
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_calls = 0
+    activation_validation_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+    real_activation_validate = toolchain_runtime._validated_activation_receipt
+
+    def count_validation(package_path: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_validate(package_path, selected)
+
+    def count_activation_validation(*args: Any, **kwargs: Any):
+        nonlocal activation_validation_calls
+        activation_validation_calls += 1
+        return real_activation_validate(*args, **kwargs)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    monkeypatch.setattr(
+        toolchain_runtime,
+        "_validated_activation_receipt",
+        count_activation_validation,
+    )
+    assert resolve_managed_binary(executable_name, root=state_root, base_env={"PATH": ""})
+
+    if sentinel == "receipt":
+        receipt_path = state_root / "active/paper-tex.json"
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["bin_relpaths"] = ["Bundle/other-bin"]
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    elif sentinel == "marker":
+        marker_path = package / ".opensquilla-toolchain.json"
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        marker["sha256"] = "f" * 64
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    elif sentinel == "probe":
+        executable.write_bytes(b"tampered probe")
+    elif sentinel == "resource":
+        (package / font_asset.destination).write_bytes(b"tampered font")
+    else:
+        package.touch()
+
+    resolved = resolve_managed_binary(
+        executable_name,
+        root=state_root,
+        base_env={"PATH": ""},
+    )
+    assert activation_validation_calls == 2
+    assert validation_calls == (1 if sentinel in {"receipt", "marker"} else 2)
+    if sentinel == "package":
+        assert resolved == executable
+    else:
+        assert resolved is None
+
+
+def test_runtime_sentinel_identity_tracks_symlink_target(tmp_path: Path) -> None:
+    first_target = tmp_path / "first"
+    second_target = tmp_path / "second"
+    first_target.write_bytes(b"same payload")
+    second_target.write_bytes(b"same payload")
+    link = tmp_path / "probe"
+    try:
+        link.symlink_to(first_target.name)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    first = toolchain_runtime._path_identity(link)
+    link.unlink()
+    link.symlink_to(second_target.name)
+    second = toolchain_runtime._path_identity(link)
+
+    assert first is not None
+    assert second is not None
+    assert first.symlink_target == first_target.name
+    assert second.symlink_target == second_target.name
+    assert first != second
 
 
 def test_native_probe_timeout_preserves_actionable_detail(

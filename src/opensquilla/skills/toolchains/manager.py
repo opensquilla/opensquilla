@@ -1368,7 +1368,7 @@ def _write_activation(root: Path, receipt: dict[str, Any]) -> None:
     invalidate_probe_cache(component_id)
     from opensquilla.skills.toolchains.runtime import invalidate_payload_validation_cache
 
-    invalidate_payload_validation_cache()
+    invalidate_payload_validation_cache(component_id, root=root)
 
 
 def _valid_existing_package(package: Path, descriptor: ToolchainDescriptor) -> bool:

@@ -102,10 +102,27 @@ def test_managed_font_directory_and_single_family_reach_libass(
     assert module.main() == 0
     ffmpeg_call = next(call for call in calls if Path(call[0]).name == "ffmpeg")
     vf = ffmpeg_call[ffmpeg_call.index("-vf") + 1]
-    assert f"fontsdir='{fonts.resolve()}'" in vf
+    escaped_fonts = module._escape_subtitle_path(str(fonts.resolve()))
+    assert f"fontsdir='{escaped_fonts}'" in vf
     assert "FontName=Noto Sans CJK SC" in vf
     assert "Microsoft YaHei," not in vf
     assert output.read_bytes() == b"encoded-video"
+
+
+@pytest.mark.parametrize(
+    ("native_path", "filter_path"),
+    [
+        (r"C:\Managed Fonts\Noto", r"C\:/Managed Fonts/Noto"),
+        ("/opt/opensquilla/fonts", "/opt/opensquilla/fonts"),
+    ],
+)
+def test_subtitle_filter_paths_are_platform_neutral(
+    native_path: str,
+    filter_path: str,
+) -> None:
+    module = _load_module()
+
+    assert module._escape_subtitle_path(native_path) == filter_path
 
 
 def test_missing_explicit_font_directory_fails_before_ffmpeg(

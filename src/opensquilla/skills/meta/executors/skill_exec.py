@@ -6,7 +6,9 @@ renders ``command`` / ``args`` (and optional ``env`` / ``stdin`` / ``assemble``
 templates) against ``inputs`` + ``outputs`` + ``with`` (the step's
 rendered ``with_args``), then runs the subprocess in a worker thread.
 Stdout is interpreted per ``parse`` (``text`` | ``json`` |
-``lines``) and returned as the step output.
+``lines``) and returned as the step output. Text output uses ``\n`` line
+endings on every platform so downstream Meta steps can compare and persist it
+deterministically.
 """
 
 from __future__ import annotations
@@ -49,8 +51,9 @@ from opensquilla.skills.meta.replay_safety import (
 )
 from opensquilla.skills.meta.templating import _JINJA_ENV, render_with_args
 from opensquilla.skills.meta.types import MetaStep
-from opensquilla.skills.runtime_env import managed_skill_env
+from opensquilla.skills.runtime_env import MEDIA_FONTS_DIR_ENV, managed_skill_env
 from opensquilla.skills.types import SkillLayer
+from opensquilla.subprocess_encoding import apply_utf8_child_env
 
 log = structlog.get_logger(__name__)
 
@@ -109,8 +112,38 @@ _BASE_ENV_KEYS = frozenset(
         "node_extra_ca_certs",
         "git_ssl_cainfo",
         "aws_ca_bundle",
+        # Operator-owned, non-secret media font selection. Presence matters:
+        # an explicit empty value disables managed font injection.
+        MEDIA_FONTS_DIR_ENV.casefold(),
     }
 )
+
+
+def _replace_base_dir(value: str, base_dir: str) -> str:
+    """Substitute the path placeholder without leaving mixed separators."""
+    stripped_base_dir = base_dir.rstrip("/\\")
+    native_join = f"{stripped_base_dir}{os.sep}" if base_dir else ""
+    return (
+        value.replace("{baseDir}/", native_join)
+        .replace("{baseDir}\\", native_join)
+        .replace("{baseDir}", base_dir)
+    )
+
+
+def _normalize_base_dir_argument(value: str, base_dir: str) -> str:
+    """Normalize every separator below a substituted ``{baseDir}`` prefix."""
+
+    prefix = base_dir.rstrip("/\\")
+    if not prefix or value == prefix:
+        return value
+    for separator in ("/", "\\"):
+        if value.startswith(f"{prefix}{separator}"):
+            suffix = value[len(prefix) + 1 :]
+            normalized_suffix = re.sub(r"[/\\]+", lambda _match: os.sep, suffix)
+            return f"{prefix}{os.sep}{normalized_suffix}"
+    return value
+
+
 _PROVIDER_FAILURE_EXIT_KINDS = {
     79: "auth_invalid",
     80: "insufficient_credits",
@@ -136,6 +169,12 @@ _ANSI_RE = re.compile(
 )
 # Keep tabs/newlines readable while removing executable C0/C1 controls.
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+
+def _normalize_text_newlines(value: str) -> str:
+    """Apply Python's universal-newline contract to Meta text output."""
+
+    return value.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _is_sensitive_env_key(key: str) -> bool:
@@ -487,7 +526,7 @@ async def run_skill_exec_step(
 
     # `{baseDir}` is a static placeholder (not Jinja) — substitute before
     # rendering so it survives shlex.split() below.
-    command_str = command_raw.replace("{baseDir}", base_dir)
+    command_str = _replace_base_dir(command_raw, base_dir)
     command_str = _render(command_str)
 
     raw_args = entrypoint.get("args") or []
@@ -501,7 +540,7 @@ async def run_skill_exec_step(
             raise RuntimeError(
                 f"step {step.id!r}: entrypoint.args[{index}] must be a string",
             )
-        rendered_args.append(_render(item.replace("{baseDir}", base_dir)))
+        rendered_args.append(_render(_replace_base_dir(item, base_dir)))
 
     # Resolve cwd early so assemble's relative-path anchoring matches the
     # subprocess's working directory. Precedence:
@@ -596,7 +635,10 @@ async def run_skill_exec_step(
             bytes=len(template_body),
         )
 
-    argv = shlex.split(command_str, posix=os.name != "nt") + rendered_args
+    argv = [
+        _normalize_base_dir_argument(item, base_dir)
+        for item in shlex.split(command_str, posix=os.name != "nt") + rendered_args
+    ]
     if not argv:
         raise RuntimeError(f"step {step.id!r}: empty argv after rendering")
 
@@ -681,6 +723,7 @@ async def run_skill_exec_step(
         if key in allowed_trusted_keys and value:
             child_env[key] = value
             sensitive_values.add(value)
+    apply_utf8_child_env(child_env)
 
     # Optional stdin: render Jinja template and pipe to the subprocess.
     stdin_raw = entrypoint.get("stdin")
@@ -820,7 +863,7 @@ async def run_skill_exec_step(
         lines = [ln for ln in stdout_text.splitlines() if ln.strip()]
         result = _json.dumps(lines, ensure_ascii=False)
     else:
-        result = stdout_text.strip()
+        result = _normalize_text_newlines(stdout_text).strip()
     if receipt_proof is not None:
         return PaidReceiptProofText(result, receipt_proof)
     return result

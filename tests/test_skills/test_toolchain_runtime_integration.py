@@ -207,9 +207,12 @@ def test_managed_skill_env_appends_bins_and_sets_verified_font_dir(
     monkeypatch.setattr(
         runtime_env,
         "managed_env",
-        lambda base: {**base, "PATH": str(managed_bin) + os.pathsep + base["PATH"]},
+        lambda base: {
+            **base,
+            "PATH": str(managed_bin) + os.pathsep + base["PATH"],
+            MEDIA_FONTS_DIR_ENV: str(font.parent),
+        },
     )
-    monkeypatch.setattr(runtime_env, "resolve_managed_resource", lambda *a, **k: font)
 
     result = runtime_env.managed_skill_env({"PATH": "/system/bin"})
 
@@ -221,15 +224,22 @@ def test_managed_skill_env_preserves_operator_font_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(runtime_env, "managed_env", lambda base: dict(base))
-    monkeypatch.setattr(
-        runtime_env,
-        "resolve_managed_resource",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("override should win")),
-    )
     result = runtime_env.managed_skill_env(
         {"PATH": "/system/bin", MEDIA_FONTS_DIR_ENV: "/operator/fonts"}
     )
     assert result[MEDIA_FONTS_DIR_ENV] == "/operator/fonts"
+
+
+def test_managed_skill_env_preserves_explicit_empty_font_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(runtime_env, "managed_env", lambda base: dict(base))
+
+    result = runtime_env.managed_skill_env(
+        {"PATH": "/system/bin", MEDIA_FONTS_DIR_ENV: ""}
+    )
+
+    assert result[MEDIA_FONTS_DIR_ENV] == ""
 
 
 def test_toolchain_inventory_is_sanitized_and_reports_active_capability(
@@ -302,7 +312,66 @@ async def test_skill_exec_receives_managed_runtime_environment(
     )
 
     assert output == "ok"
-    assert captured["env"] == {
+    expected_env = {
         "PATH": "/managed:/system",
         MEDIA_FONTS_DIR_ENV: "/managed/fonts",
     }
+    if os.name == "nt":
+        expected_env.update({
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+        })
+    assert captured["env"] == expected_env
+
+
+@pytest.mark.parametrize("font_override", ["/operator/fonts", ""])
+@pytest.mark.asyncio
+async def test_skill_exec_preserves_explicit_operator_font_environment(
+    font_override: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    spec = SimpleNamespace(
+        base_dir=str(tmp_path),
+        entrypoint={"command": "python", "parse": "text"},
+    )
+    loader = SimpleNamespace(get_by_name=lambda _name: spec)
+    captured: dict[str, str] = {}
+
+    def passthrough_env(base: object) -> dict[str, str]:
+        assert isinstance(base, dict)
+        assert base[MEDIA_FONTS_DIR_ENV] == font_override
+        return dict(base)
+
+    def fake_run(_argv: list[str], **kwargs: object) -> SimpleNamespace:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        captured[MEDIA_FONTS_DIR_ENV] = env[MEDIA_FONTS_DIR_ENV]
+        return SimpleNamespace(returncode=0, stdout=b"ok\n", stderr=b"")
+
+    monkeypatch.setenv(MEDIA_FONTS_DIR_ENV, font_override)
+    monkeypatch.setattr(skill_exec, "managed_skill_env", passthrough_env)
+    monkeypatch.setattr(skill_exec.subprocess, "run", fake_run)
+
+    output = await skill_exec.run_skill_exec_step(
+        MetaStep(id="run", skill="fake", kind="skill_exec"),
+        "fake",
+        {},
+        {},
+        skill_loader=loader,
+        workspace_dir=str(tmp_path),
+    )
+
+    assert output == "ok"
+    assert captured[MEDIA_FONTS_DIR_ENV] == font_override
+
+
+def test_skill_exec_normalizes_nested_base_dir_separators_for_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skill_exec.os, "sep", "\\")
+
+    assert skill_exec._normalize_base_dir_argument(
+        r"C:\runtime\paper/scripts/run.py",
+        r"C:\runtime\paper",
+    ) == r"C:\runtime\paper\scripts\run.py"

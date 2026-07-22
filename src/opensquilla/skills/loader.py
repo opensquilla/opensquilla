@@ -1160,7 +1160,7 @@ class SkillLoader:
                     MAX_SKILL_FILE_BYTES,
                 )
                 return None
-            text = skill_bytes.decode("utf-8")
+            text = skill_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             frontmatter, body = _parse_frontmatter(text)
 
             if not frontmatter or "name" not in frontmatter:

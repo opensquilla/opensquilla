@@ -2848,6 +2848,8 @@
       "routerAnimationOn": "ルーターアニメーション オン",
       "routerAnimationOff": "ルーターアニメーション オフ",
       "modelRouting": "モデルルーティング",
+      "ensembleImageUnsupported": "Ensemble はまだ画像入力に対応していません。単一モデルルーティングに切り替えて、もう一度お試しください。",
+      "routingUpdateImageBlocked": "モデルルーティングを更新しています。画像を送信する前にお待ちください。",
       "modelRoutingOff": "オフ",
       "modelRoutingOffDesc": "各ターンを選択中のモデルへ送信します。",
       "modelRoutingSquillaRouter": "AI搭載シングルモデルルーター",

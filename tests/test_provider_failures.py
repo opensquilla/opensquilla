@@ -3,10 +3,13 @@ from __future__ import annotations
 import pytest
 import structlog
 
+from opensquilla.engine.fallback import FallbackPolicy
 from opensquilla.provider.failures import (
     FailureMatcher,
     ProviderFailureKind,
+    ProviderRecoveryAction,
     classify_provider_error,
+    decide_recovery_action,
 )
 from opensquilla.provider.openai import _http_error_body_text
 
@@ -33,6 +36,25 @@ def test_provider_request_budget_exhausted_is_context_overflow() -> None:
         )
         is ProviderFailureKind.CONTEXT_OVERFLOW
     )
+
+
+@pytest.mark.parametrize("provider_name", ["ensemble", "openrouter"])
+def test_ensemble_multimodal_rejection_is_surfaced_without_fallback(
+    provider_name: str,
+) -> None:
+    kind = classify_provider_error(
+        provider_name=provider_name,
+        status_code=None,
+        raw_code="ensemble_multimodal_unsupported",
+        message=(
+            "Ensemble does not support image input yet. "
+            "Switch to a single-model routing mode and try again."
+        ),
+    )
+
+    assert kind is ProviderFailureKind.BAD_REQUEST
+    assert decide_recovery_action(kind) is ProviderRecoveryAction.SURFACE
+    assert FallbackPolicy().should_retry(kind, attempt=0) is False
 
 
 def test_unknown_classification_emits_redacted_fingerprint_event() -> None:

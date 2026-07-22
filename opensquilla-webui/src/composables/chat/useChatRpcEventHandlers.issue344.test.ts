@@ -11,6 +11,7 @@
 // task-B's own events (and legacy untagged events) still flow.
 import { describe, expect, it, vi } from 'vitest'
 import { effectScope, ref, type Ref } from 'vue'
+import i18n, { loadLocaleMessages } from '@/i18n'
 import type { ChatMessage, ChatRunStatus, ChatRunStatusSource } from '@/types/chat'
 import type { ToolUsePayload } from '@/types/rpc'
 import {
@@ -219,6 +220,27 @@ describe('issue #344 — live stream is bound to a single task', () => {
     })
     expect(stream.endStreaming).toHaveBeenCalled()
     expect(messages.value.some((m) => m.role === 'error')).toBe(true)
+  })
+
+  it('localizes the stable Ensemble image error code and keeps the code attached', async () => {
+    await loadLocaleMessages('zh-Hans')
+    i18n.global.locale.value = 'zh-Hans'
+    const { api, messages, scope } = makeHarness('task-B')
+
+    api.handlers.onAny('task.failed', {
+      task_id: 'task-B',
+      session_key: SESSION,
+      code: 'ensemble_multimodal_unsupported',
+      terminal_message: 'server fallback text',
+    })
+
+    expect(messages.value[messages.value.length - 1]).toMatchObject({
+      role: 'error',
+      errorCode: 'ensemble_multimodal_unsupported',
+      text: 'Ensemble 暂不支持图片输入，请切换到单模型路由后重试。',
+    })
+    scope.stop()
+    i18n.global.locale.value = 'en'
   })
 
   it('binds activeStreamTaskId from task.running, then filters the prior task', () => {

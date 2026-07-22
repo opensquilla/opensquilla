@@ -141,7 +141,10 @@ from opensquilla.provider import (
     ToolUseStartEvent as ProviderToolUseStart,
 )
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
-from opensquilla.provider.protocol import project_provider_message_count
+from opensquilla.provider.protocol import (
+    project_provider_message_count,
+    validate_provider_chat_request,
+)
 from opensquilla.provider.types import (
     ContentBlockImage,
     FailureInjector,
@@ -4969,6 +4972,26 @@ class Agent:
                         runtime_context_insert_index=active_runtime_context_insert_index,
                         turn_objective_message=turn_objective_message,
                     )
+                    validation_error = validate_provider_chat_request(
+                        self.provider,
+                        request_messages,
+                    )
+                    if validation_error is not None:
+                        terminal_error = ErrorEvent(
+                            message=validation_error.message,
+                            code=validation_error.code,
+                        )
+                        self._write_turn_call_log(
+                            "turn_policy_decision",
+                            action="stop",
+                            reason=terminal_error.message,
+                            code=terminal_error.code,
+                            iteration=iterations,
+                            attempt=_call_attempt,
+                        )
+                        yield self._transition(AgentState.ERROR)
+                        yield terminal_error
+                        break
                     identical_request_action = self._identical_request_loop_break_action(
                         request_messages,
                         first_attempt=_call_attempt == 0,

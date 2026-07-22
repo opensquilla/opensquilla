@@ -3,6 +3,7 @@ import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 import type { RpcClientError } from '@/lib/rpc'
 import type { Attachment, ChatMessage } from '@/types/chat'
+import type { ModelRoutingMode } from '@/types/modelRouting'
 import type { SandboxRunMode } from '@/types/sandbox'
 import { normalizeSandboxRunMode } from '@/types/sandbox'
 import type {
@@ -16,7 +17,14 @@ import type {
   PendingQueueOwnerContext,
 } from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
-import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
+import {
+  hasSendableModelInputImageAttachment,
+  isSendableAttachment,
+  serializeDisplayAttachment,
+  serializeSendableAttachment,
+  type SendableAttachment,
+} from '@/utils/chat/attachments'
+import { localizedChatErrorMessage } from '@/utils/chat/errors'
 import { createClientMessageId, createClientRequestId } from '@/utils/chat/messageIdentity'
 import {
   FINISHED_STREAM_TASK_ID,
@@ -79,6 +87,15 @@ export function decideSendResponseSession(input: {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function errorCode(err: unknown): string | undefined {
+  const code = (err as RpcClientError | null | undefined)?.code
+  return typeof code === 'string' && code ? code : undefined
+}
+
+function sendFailureMessage(err: unknown): string {
+  return localizedChatErrorMessage(errorCode(err), 'Send failed: ' + errorMessage(err))
 }
 
 function shouldRestoreSendAttempt(err: unknown): boolean {
@@ -184,6 +201,8 @@ export interface UseChatSendOptions {
   sessionKey: Ref<string>
   pendingQueueOwnerContext: Ref<PendingQueueOwnerContext | null>
   busySendMode: Ref<BusySendMode>
+  modelRoutingMode: Readonly<Ref<ModelRoutingMode>>
+  modelRoutingSettingsBusy: Readonly<Ref<boolean>>
   elevatedMode: Ref<string>
   runMode: Ref<SandboxRunMode>
   pendingAttachments: Ref<Attachment[]>
@@ -230,6 +249,12 @@ export function useChatSend(options: UseChatSendOptions) {
   let activeFreshSendToken: FreshSendToken | null = null
   let activeResponseHandoff: ResponseHandoffGate | null = null
   let recoveredAttempt: SendAttempt | null = null
+
+  function modelImageSendBlocked(attachments: readonly Attachment[]): boolean {
+    if (!hasSendableModelInputImageAttachment(attachments)) return false
+    return options.modelRoutingSettingsBusy.value
+      || options.modelRoutingMode.value === 'llm_ensemble'
+  }
 
   function beginFreshStream(requestSessionKey: string): FreshSendToken {
     const token: FreshSendToken = { stoppedByUser: false }
@@ -434,10 +459,11 @@ export function useChatSend(options: UseChatSendOptions) {
       finalizedFreshStream = true
     }
     if (status !== 'succeeded') {
+      const code = terminalReplayErrorCode(response, status)
       options.messages.value.push({
         role: 'error',
-        text: terminalReplayMessage(response, status),
-        errorCode: terminalReplayErrorCode(response, status),
+        text: localizedChatErrorMessage(code, terminalReplayMessage(response, status)),
+        errorCode: code,
         terminalNotice: true,
         ts: new Date().toISOString(),
       })
@@ -520,6 +546,9 @@ export function useChatSend(options: UseChatSendOptions) {
         return
       }
       if (!hasPayload) return
+      // Ensemble is text-only in P0. Do not consume the draft into Queue or
+      // Steer while the selected routing mode cannot accept its image blocks.
+      if (modelImageSendBlocked(sendableAttachments)) return
       // Steer injects into the active run right away; compaction cannot be
       // steered, so those sends still queue until it finishes.
       if (options.busySendMode.value === 'steer' && !compactInFlight && !handoffInFlight) {
@@ -554,6 +583,9 @@ export function useChatSend(options: UseChatSendOptions) {
     const requestSessionKey = options.sessionKey.value
     if (!requestSessionKey) return
     const initialSendableAttachments = options.pendingAttachments.value.filter(isSendableAttachment)
+    // This is deliberately before optimistic rendering, composer clearing,
+    // stream state, and chat.send. A blocked draft remains exactly editable.
+    if (modelImageSendBlocked(initialSendableAttachments)) return
     const retryCandidate = recoveredAttempt
     const isRecoveredRetry = Boolean(
       retryCandidate &&
@@ -581,6 +613,9 @@ export function useChatSend(options: UseChatSendOptions) {
       if (options.sessionKey.value !== requestSessionKey) return
     }
     const attachmentsToSend = retryAttempt?.attachments || options.pendingAttachments.value.filter((a): a is SendableAttachment => sendAttachmentIds.has(a.local_id) && isSendableAttachment(a))
+    // Routing can change while an expiring staged upload is refreshed. Recheck
+    // the authoritative live state before any visible or RPC mutation.
+    if (modelImageSendBlocked(attachmentsToSend)) return
     const attachmentsToKeep = options.pendingAttachments.value.filter(a => !sendAttachmentIds.has(a.local_id) || !isSendableAttachment(a))
     if (!text && attachmentsToSend.length === 0) return
 
@@ -785,7 +820,8 @@ export function useChatSend(options: UseChatSendOptions) {
         }
         options.messages.value.push({
           role: 'error',
-          text: 'Send failed: ' + errorMessage(err),
+          text: sendFailureMessage(err),
+          errorCode: errorCode(err),
           ts: new Date().toISOString(),
         })
         return
@@ -814,8 +850,12 @@ export function useChatSend(options: UseChatSendOptions) {
         options.stream.endStreaming()
       }
       if (shouldRestoreSendAttempt(err)) restoreSendAttempt(attempt)
-      const message = errorMessage(err)
-      options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+      options.messages.value.push({
+        role: 'error',
+        text: sendFailureMessage(err),
+        errorCode: errorCode(err),
+        ts: new Date().toISOString(),
+      })
     } finally {
       finishResponseHandoff(responseHandoff)
     }
@@ -1037,7 +1077,8 @@ export function useChatSend(options: UseChatSendOptions) {
         }
         options.messages.value.push({
           role: 'error',
-          text: 'Send failed: ' + errorMessage(err),
+          text: sendFailureMessage(err),
+          errorCode: errorCode(err),
           ts: new Date().toISOString(),
         })
         return
@@ -1065,8 +1106,12 @@ export function useChatSend(options: UseChatSendOptions) {
         options.activeStreamSessionKey.value = ''
         options.stream.endStreaming()
       }
-      const message = errorMessage(err)
-      options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+      options.messages.value.push({
+        role: 'error',
+        text: sendFailureMessage(err),
+        errorCode: errorCode(err),
+        ts: new Date().toISOString(),
+      })
     } finally {
       finishResponseHandoff(responseHandoff)
     }

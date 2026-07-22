@@ -177,6 +177,14 @@ _MODEL_UNAVAILABLE_SUBSTRINGS = (
 
 # Family-independent kinds checked before any family table.
 _SHARED_PRE_MATCHERS: tuple[FailureMatcher, ...] = (
+    # Local composite-provider validation.  This must classify before a
+    # provider-family "does not support" matcher can turn it into
+    # UNSUPPORTED_FEATURE: that kind deliberately hops to a fallback provider,
+    # which would bypass Ensemble's text-only contract.
+    FailureMatcher(
+        ProviderFailureKind.BAD_REQUEST,
+        raw_codes=frozenset({"ensemble_multimodal_unsupported"}),
+    ),
     FailureMatcher(
         ProviderFailureKind.CONTEXT_OVERFLOW,
         message_substrings=(

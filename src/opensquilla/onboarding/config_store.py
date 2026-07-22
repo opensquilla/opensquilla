@@ -336,7 +336,19 @@ def _sanitize_managed_config_backups(
             with backup_path.open("rb") as fh:
                 payload = tomllib.load(fh)
         except (tomllib.TOMLDecodeError, ValueError) as exc:
-            raise OSError(f"Cannot sanitize unreadable config backup: {backup_path}") from exc
+            # An unparseable backup is useless as a restore source, yet its
+            # raw bytes may still hold the credential being cleared in plain
+            # text. Deleting it completes the redaction for this file, while
+            # aborting would leave the LIVE config holding the secret the
+            # user explicitly asked to remove.
+            log.warning(
+                "onboarding.config_backup_unparseable_deleted",
+                path=str(backup_path),
+                error=str(exc),
+                action="deleting corrupt managed backup so the credential clear proceeds",
+            )
+            backup_path.unlink(missing_ok=True)
+            continue
         if _redact_backup_credentials(payload, redaction):
             _atomic_write_toml(backup_path, payload)
 

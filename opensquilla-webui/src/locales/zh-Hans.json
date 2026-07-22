@@ -472,6 +472,12 @@
       "defaultModelTitle": "{provider} 直连与回退模型",
       "defaultModelGroupDesc": "路由关闭或执行回退到当前服务商时使用。",
       "defaultModelLabel": "直连/回退模型",
+      "configuredModelTitle": "{provider} 模型",
+      "configuredModelCurrentLabel": "当前模型",
+      "configuredModelFallbackLabel": "回退模型",
+      "configuredModelDescFixed": "当前为固定模型模式：所有请求都使用下方选定的模型。",
+      "configuredModelDescRouter": "当前为智能模型路由模式：每轮请求路由到合适的模型，路由不可用时回退到下方模型。",
+      "configuredModelDescEnsemble": "当前为多模型协作模式：多个模型协作生成，无法完成时回退到下方模型。",
       "defaultModelDesc": "用于直连请求和主回退；路由模型请在“模型路由”中配置。",
       "defaultModelSemantics": "有推荐模型时会自动预填。你可以选择或输入其他模型；正式使用前请先验证该模型。",
       "profileModelTitle": "{provider} 直连与回退模型",
@@ -538,6 +544,9 @@
       "testCurrentSettings": "验证当前配置",
       "testing": "正在验证配置…",
       "connectionNotTested": "未验证",
+      "lastVerifiedAgo": "已验证 · {ago}",
+      "verifiedConfigChanged": "配置已变更，建议重新验证",
+      "lastVerifyFailedAgo": "上次验证失败 · {ago}",
       "currentSettingsNotTested": "当前配置尚未验证",
       "endpointVerified": "配置验证成功",
       "probeMissingRequired": "请先填写必填项：{fields}。",
@@ -2459,6 +2468,9 @@
       "cacheWrite": "缓存写"
     },
     "costHintTitle": "人民币金额使用内置汇率 {rate}。用于记账时请核对当前汇率。",
+    "nativeCostHintTitle": "原始服务商账单为人民币；美元金额按收据所载固定归一化汇率折算。",
+    "nativeMixedCostHintTitle": "混合币种或待结算账单继续使用规范化美元汇总，并单独展示已确认的原生币种收据。",
+    "nativeBillingSubtotals": "原始账单小计：{amounts}",
     "rangeHiddenHint": "已隐藏 {count} 个无日期的旧会话",
     "coverage": {
       "approximate": "当前连接的是旧版网关；日期范围按会话累计值近似统计。",
@@ -2466,7 +2478,9 @@
       "timezoneFallback": "时区 {requested} 无效；日期当前按 {effective} 分组。",
       "legacyIncluded": "账本启用前的用量已计入总数，但无法归入具体日期。",
       "estimated": "包含 {count} 次估算调用。",
-      "unpriced": "当前显示已知成本；另有 {count} 次调用缺少价格，成本不完整。"
+      "unpriced": "当前显示已知成本；另有 {count} 次调用缺少价格，成本不完整。",
+      "pendingBilling": "{count} 张服务商账单收据仍待结算。",
+      "nativeBillingMissing": "{count} 次已计费调用缺少原生币种收据。"
     },
     "chart": {
       "metric": "图表指标",
@@ -2856,6 +2870,8 @@
       "routerAnimationOn": "路由动画已开启",
       "routerAnimationOff": "路由动画已关闭",
       "modelRouting": "模型路由",
+      "ensembleImageUnsupported": "Ensemble 暂不支持图片输入，请切换到单模型路由后重试。",
+      "routingUpdateImageBlocked": "模型路由正在更新，请稍候再发送图片。",
       "modelRoutingOff": "关",
       "modelRoutingOffDesc": "每轮都发送到当前选定模型。",
       "modelRoutingSquillaRouter": "AI 智能单模型路由",

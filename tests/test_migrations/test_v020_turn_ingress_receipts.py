@@ -223,6 +223,10 @@ def test_schema_ahead_refuses_boot_without_v020(tmp_path: Path) -> None:
         "V021__usage_ledger.py",
         "V022__telemetry_daily_usage.py",
         "V023__router_deployment_telemetry.py",
+        "V024__usage_native_billing_receipts.py",
+        "V025__meta_control_intents.py",
+        "V026__meta_launch_drafts.py",
+        "V027__meta_launch_discard_tombstones.py",
     }
     for migration in MIGRATIONS_DIR.glob("V*.py"):
         if migration.name not in unavailable:

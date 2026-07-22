@@ -17,6 +17,7 @@ _MAX_SQLITE_INTEGER = (1 << 63) - 1
 
 UsageEventStatus = Literal["started", "finalized", "unknown"]
 UsageBackfillStatus = Literal["pending", "running", "complete", "partial", "failed"]
+UsageBillingReceiptStatus = Literal["confirmed", "pending"]
 
 
 class UsageLedgerConflictError(ValueError):
@@ -127,6 +128,33 @@ class UsageEventItem:
     estimate_basis: str | None = None
     price_source: str | None = None
     schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class UsageItemBillingReceipt:
+    """Provider-native bill attached to one physical usage item.
+
+    Native and USD amounts use nano-units so the persisted receipt can be
+    reconciled without a binary floating-point conversion. Pending receipts
+    deliberately have no USD equivalent because they are not billed spend.
+    """
+
+    event_id: str
+    ordinal: int
+    currency: str
+    status: UsageBillingReceiptStatus
+    amount_nanos: int | None
+    usd_equivalent_nanos: int | None
+    fx_native_per_usd_nanos: int
+    schema_version: int = 1
+
+
+@dataclass(frozen=True, slots=True)
+class UsageBillingReceiptState:
+    """Singleton cutover for exact provider-native billing coverage."""
+
+    tracking_started_at_ms: int
+    schema_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -309,3 +337,59 @@ def validate_usage_item(item: UsageEventItem, *, event_id: str) -> None:
         raise ValueError("item cost_nanos must equal billed + estimated cost")
     if not item.cost_source:
         raise ValueError("item cost_source must not be empty")
+
+
+def validate_usage_billing_receipt(
+    receipt: UsageItemBillingReceipt,
+    *,
+    event_id: str,
+) -> None:
+    """Validate shape and settlement semantics before durable insertion."""
+
+    if not receipt.event_id:
+        raise ValueError("billing receipt event_id must not be empty")
+    if receipt.event_id != event_id:
+        raise ValueError("billing receipt event_id does not match its envelope")
+    if isinstance(receipt.ordinal, bool) or not isinstance(receipt.ordinal, int):
+        raise TypeError("billing receipt ordinal must be an integer")
+    if receipt.ordinal < 0:
+        raise ValueError("billing receipt ordinal must be non-negative")
+    if (
+        len(receipt.currency) != 3
+        or not receipt.currency.isascii()
+        or not receipt.currency.isalpha()
+        or receipt.currency != receipt.currency.upper()
+    ):
+        raise ValueError("billing receipt currency must be a three-letter uppercase code")
+    if receipt.status not in {"confirmed", "pending"}:
+        raise ValueError("billing receipt status must be confirmed or pending")
+    for label, value in (
+        ("amount_nanos", receipt.amount_nanos),
+        ("usd_equivalent_nanos", receipt.usd_equivalent_nanos),
+    ):
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"billing receipt {label} must be an integer")
+        if value < 0:
+            raise ValueError(f"billing receipt {label} must be non-negative")
+        if value > _MAX_SQLITE_INTEGER:
+            raise OverflowError(f"billing receipt {label} exceeds the SQLite integer range")
+    if (
+        isinstance(receipt.fx_native_per_usd_nanos, bool)
+        or not isinstance(receipt.fx_native_per_usd_nanos, int)
+    ):
+        raise TypeError("billing receipt normalization rate must be an integer")
+    if receipt.fx_native_per_usd_nanos <= 0:
+        raise ValueError("billing receipt normalization rate must be positive")
+    if receipt.fx_native_per_usd_nanos > _MAX_SQLITE_INTEGER:
+        raise OverflowError("billing receipt normalization rate exceeds the SQLite integer range")
+    if isinstance(receipt.schema_version, bool) or not isinstance(receipt.schema_version, int):
+        raise TypeError("billing receipt schema_version must be an integer")
+    if receipt.schema_version < 1:
+        raise ValueError("billing receipt schema_version must be positive")
+    if receipt.status == "confirmed":
+        if receipt.amount_nanos is None or receipt.usd_equivalent_nanos is None:
+            raise ValueError("confirmed billing receipt requires native and USD amounts")
+    elif receipt.usd_equivalent_nanos is not None:
+        raise ValueError("pending billing receipt must not have a USD equivalent")

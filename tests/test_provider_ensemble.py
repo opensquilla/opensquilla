@@ -6,13 +6,17 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
+from opensquilla.engine.usage_accounting import normalize_provider_usage
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.provider import (
     ChatConfig,
+    ContentBlockDocument,
+    ContentBlockText,
+    ContentBlockToolResult,
     DoneEvent,
     ErrorEvent,
     Message,
@@ -31,7 +35,9 @@ from opensquilla.provider.ensemble import (
 )
 from opensquilla.provider.selector import ProviderConfig
 from opensquilla.provider.types import (
+    ContentBlockImage,
     EnsembleProgressEvent,
+    ProviderBillingReceipt,
     ProviderMessageCountProjection,
     ProviderMessageLimitProof,
     StreamEvent,
@@ -346,6 +352,417 @@ async def _collect(provider: EnsembleProvider) -> list[StreamEvent]:
             config=ChatConfig(max_tokens=99, thinking=False),
         )
     ]
+
+
+def _tokenrhythm_member(model: str) -> EnsembleMemberConfig:
+    return EnsembleMemberConfig(
+        provider_config=ProviderConfig(
+            provider="tokenrhythm",
+            model=model,
+            base_url="https://tokenrhythm.studio/v1",
+        ),
+        label=model,
+        thinking=None,
+    )
+
+
+def _tokenrhythm_done(
+    model: str,
+    *,
+    scale: int,
+) -> DoneEvent:
+    usd_nanos = scale * 4_000
+    receipt = ProviderBillingReceipt(
+        currency="CNY",
+        status="confirmed",
+        amount_nanos=usd_nanos * 279 // 40,
+        usd_equivalent_nanos=usd_nanos,
+        fx_native_per_usd_nanos=6_975_000_000,
+    )
+    return DoneEvent(
+        input_tokens=scale * 100,
+        output_tokens=scale * 10,
+        reasoning_tokens=scale * 3,
+        cached_tokens=scale * 20,
+        cache_write_tokens=scale,
+        billed_cost=usd_nanos / 1_000_000_000,
+        cost_source="provider_billed",
+        provider="tokenrhythm",
+        model=model,
+        billing_receipt=receipt,
+    )
+
+
+@pytest.mark.asyncio
+async def test_tokenrhythm_b5_default_quorum_reconciles_five_physical_receipts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposer_models = ["p1", "p2", "p3", "p4"]
+    registry = _FakeRegistry(
+        {
+            **{
+                model: _FakePlan(
+                    [
+                        TextDeltaEvent(text=f"draft {model}"),
+                        _tokenrhythm_done(model, scale=index),
+                    ]
+                )
+                for index, model in enumerate(proposer_models, start=1)
+            },
+            "agg": _FakePlan(
+                [TextDeltaEvent(text="final"), _tokenrhythm_done("agg", scale=5)]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="static_tokenrhythm_b5",
+        proposers=[_tokenrhythm_member(model) for model in proposer_models],
+        aggregator=_tokenrhythm_member("agg"),
+        min_successful_proposers=3,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0.1,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.billing_receipt is None
+    assert done.cost_source == "provider_billed"
+    assert done.usage_missing_count == 0
+    assert len(done.model_usage_breakdown) == 5
+    assert [row["model"] for row in done.model_usage_breakdown] == [
+        "p1",
+        "p2",
+        "p3",
+        "p4",
+        "agg",
+    ]
+    receipts = [row["billing_receipt"] for row in done.model_usage_breakdown]
+    assert all(receipt.currency == "CNY" for receipt in receipts)
+    assert sum(receipt.amount_nanos or 0 for receipt in receipts) == 418_500
+    assert done.input_tokens == 1_500
+    assert done.output_tokens == 150
+    assert done.reasoning_tokens == 45
+    assert done.cached_tokens == 300
+    assert done.cache_write_tokens == 15
+    assert done.billed_cost == pytest.approx(0.00006)
+
+    result = normalize_provider_usage(
+        done,
+        default_provider="ensemble",
+        default_model="agg",
+        completed_at_ms=1234,
+    )
+    assert len(result.items) == 5
+    assert result.cost_source == "provider_billed"
+    assert result.billed_cost_nanos == 60_000
+    assert result.estimated_cost_nanos == 0
+    assert result.billed_cost_nanos == sum(item.billed_cost_nanos for item in result.items)
+    assert result.input_tokens == sum(item.input_tokens for item in result.items)
+    assert result.output_tokens == sum(item.output_tokens for item in result.items)
+    assert result.reasoning_tokens == sum(item.reasoning_tokens for item in result.items)
+    assert result.cache_read_tokens == sum(item.cache_read_tokens for item in result.items)
+    assert result.cache_write_tokens == sum(item.cache_write_tokens for item in result.items)
+    assert [item.billing_receipt for item in result.items] == receipts
+
+
+@pytest.mark.asyncio
+async def test_tokenrhythm_b5_strict_quorum_partial_failure_preserves_fallback_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft p1"), _tokenrhythm_done("p1", scale=1)]
+            ),
+            "p2": _FakePlan(
+                [TextDeltaEvent(text="draft p2"), _tokenrhythm_done("p2", scale=2)]
+            ),
+            "p3": _FakePlan(
+                [TextDeltaEvent(text="draft p3"), _tokenrhythm_done("p3", scale=3)]
+            ),
+            "p4": _FakePlan([ErrorEvent(message="upstream failed", code="503")]),
+            "agg": _FakePlan(
+                [TextDeltaEvent(text="unused"), _tokenrhythm_done("agg", scale=5)]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+
+    class _TokenRhythmFallback:
+        provider_name = "tokenrhythm"
+
+        def chat(
+            self,
+            messages: list[Message],
+            tools: list[ToolDefinition] | None = None,
+            config: ChatConfig | None = None,
+        ) -> AsyncIterator[StreamEvent]:
+            del messages, tools, config
+
+            async def _stream() -> AsyncIterator[StreamEvent]:
+                yield TextDeltaEvent(text="fallback")
+                yield _tokenrhythm_done("fallback", scale=4)
+
+            return _stream()
+
+        async def list_models(self) -> list[Any]:
+            return []
+
+    provider = EnsembleProvider(
+        profile_name="static_tokenrhythm_b5",
+        proposers=[_tokenrhythm_member(model) for model in ("p1", "p2", "p3", "p4")],
+        aggregator=_tokenrhythm_member("agg"),
+        fallback_provider=_TokenRhythmFallback(),
+        fallback_provider_name="tokenrhythm",
+        fallback_model="fallback",
+        min_successful_proposers=4,
+        proposer_timeout_seconds=1,
+        aggregator_timeout_seconds=1,
+        quorum_grace_seconds=0,
+        shuffle_candidates=False,
+    )
+
+    events = await _collect(provider)
+
+    assert "agg" not in [call["model"] for call in registry.calls]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.billing_receipt is None
+    assert done.cost_source == "provider_billed"
+    assert done.usage_missing_count == 1
+    assert [row["role"] for row in done.model_usage_breakdown] == [
+        "proposer",
+        "proposer",
+        "proposer",
+        "fallback_single",
+    ]
+    receipts = [row["billing_receipt"] for row in done.model_usage_breakdown]
+    assert sum(receipt.amount_nanos or 0 for receipt in receipts) == 279_000
+    assert done.input_tokens == 1_000
+    assert done.output_tokens == 100
+    assert done.reasoning_tokens == 30
+    assert done.cached_tokens == 200
+    assert done.cache_write_tokens == 10
+    assert done.billed_cost == pytest.approx(0.00004)
+
+    result = normalize_provider_usage(
+        done,
+        default_provider="ensemble",
+        default_model="fallback",
+        completed_at_ms=1234,
+    )
+    assert len(result.items) == 4
+    assert result.missing_usage_entries == 1
+    assert result.cost_source == "provider_billed"
+    assert result.billed_cost_nanos == 40_000
+    assert result.estimated_cost_nanos == 0
+    assert result.billed_cost_nanos == sum(item.billed_cost_nanos for item in result.items)
+    assert result.input_tokens == sum(item.input_tokens for item in result.items)
+    assert result.output_tokens == sum(item.output_tokens for item in result.items)
+    assert result.reasoning_tokens == sum(item.reasoning_tokens for item in result.items)
+    assert result.cache_read_tokens == sum(item.cache_read_tokens for item in result.items)
+    assert result.cache_write_tokens == sum(item.cache_write_tokens for item in result.items)
+    assert [item.billing_receipt for item in result.items] == receipts
+
+
+def _ensemble_for_validation(
+    *,
+    proposers: list[EnsembleMemberConfig] | None = None,
+    fallback_provider: _FakeProvider | None = None,
+    all_failed_policy: Literal["error", "fallback_single"] = "error",
+) -> EnsembleProvider:
+    return EnsembleProvider(
+        profile_name="image-validation",
+        proposers=proposers if proposers is not None else [_member("p1")],
+        aggregator=_member("agg"),
+        fallback_provider=fallback_provider,
+        fallback_provider_name="fake" if fallback_provider is not None else "",
+        fallback_model="fallback" if fallback_provider is not None else "",
+        all_failed_policy=all_failed_policy,
+        shuffle_candidates=False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockImage(
+                        source_type="base64",
+                        media_type="image/png",
+                        data="aW1hZ2U=",
+                    )
+                ],
+            )
+        ],
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockImage(
+                        source_type="url",
+                        media_type="image/jpeg",
+                        data="https://example.invalid/image.jpg",
+                    )
+                ],
+            ),
+            Message(role="user", content="continue from the prior image"),
+        ],
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockText(text="describe this"),
+                    ContentBlockImage(
+                        source_type="base64",
+                        media_type="image/webp",
+                        data="aW1hZ2U=",
+                    ),
+                ],
+            )
+        ],
+        [
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call-image",
+                        content=[
+                            ContentBlockImage(
+                                source_type="base64",
+                                media_type="image/gif",
+                                data="aW1hZ2U=",
+                            )
+                        ],
+                    )
+                ],
+            )
+        ],
+    ],
+    ids=["base64", "historical-url", "mixed", "typed-tool-result"],
+)
+async def test_ensemble_rejects_typed_images_before_starting_any_leg(
+    monkeypatch: pytest.MonkeyPatch,
+    messages: list[Message],
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([DoneEvent(model="p1")]),
+            "agg": _FakePlan([DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = _ensemble_for_validation()
+
+    events = [event async for event in provider.chat(messages)]
+
+    assert len(events) == 1
+    assert isinstance(events[0], ErrorEvent)
+    assert events[0].code == "ensemble_multimodal_unsupported"
+    assert events[0].message == (
+        "Ensemble does not support image input yet. "
+        "Switch to a single-model routing mode and try again."
+    )
+    assert registry.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("all_failed_policy", ["error", "fallback_single"])
+async def test_ensemble_image_validation_precedes_empty_lineup_fallback(
+    all_failed_policy: Literal["error", "fallback_single"],
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "fallback": _FakePlan([DoneEvent(model="fallback")]),
+        }
+    )
+    fallback = _FakeProvider(
+        ProviderConfig(provider="fake", model="fallback"),
+        registry,
+    )
+    provider = _ensemble_for_validation(
+        proposers=[],
+        fallback_provider=fallback,
+        all_failed_policy=all_failed_policy,
+    )
+    messages = [
+        Message(
+            role="user",
+            content=[ContentBlockImage(media_type="image/png", data="aW1hZ2U=")],
+        )
+    ]
+
+    events = [event async for event in provider.chat(messages)]
+
+    assert [getattr(event, "code", "") for event in events] == [
+        "ensemble_multimodal_unsupported"
+    ]
+    assert registry.calls == []
+
+
+def test_ensemble_image_validation_does_not_guess_untyped_or_document_content() -> None:
+    provider = _ensemble_for_validation()
+    messages = [
+        Message(role="user", content="the word image/png is plain text"),
+        Message(
+            role="user",
+            content=[
+                ContentBlockDocument(
+                    media_type="application/pdf",
+                    data="cGRm",
+                ),
+                ContentBlockToolResult(
+                    tool_use_id="call-dict",
+                    content=[
+                        {
+                            "type": "image",
+                            "source_type": "base64",
+                            "media_type": "image/png",
+                            "data": "aW1hZ2U=",
+                        }
+                    ],
+                ),
+            ],
+        ),
+    ]
+
+    assert provider.validate_chat_request(messages) is None
+
+
+@pytest.mark.asyncio
+async def test_ensemble_text_block_input_still_executes_normally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="draft"), DoneEvent(model="p1")]
+            ),
+            "agg": _FakePlan(
+                [TextDeltaEvent(text="final"), DoneEvent(model="agg")]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = _ensemble_for_validation()
+    messages = [
+        Message(
+            role="user",
+            content=[ContentBlockText(text="text extracted from an attachment")],
+        )
+    ]
+
+    events = [event async for event in provider.chat(messages)]
+
+    assert [call["model"] for call in registry.calls] == ["p1", "agg"]
+    assert any(isinstance(event, TextDeltaEvent) and event.text == "final" for event in events)
 
 
 def test_ensemble_message_count_projection_includes_aggregator_bundle(

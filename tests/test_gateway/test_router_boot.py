@@ -554,6 +554,7 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
 
     events: list[str] = []
     scheduled: list[Any] = []
+    background_task = SimpleNamespace()
 
     async def fake_setup(config: GatewayConfig) -> None:
         events.append("setup")
@@ -570,7 +571,7 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
         close = getattr(coro, "close", None)
         if callable(close):
             close()
-        return SimpleNamespace()
+        return background_task
 
     monkeypatch.setattr(boot, "_ensure_sandbox_setup_on_boot", fake_setup)
     monkeypatch.setattr(boot, "create_background_task", fake_create_background_task)
@@ -600,9 +601,33 @@ async def test_build_services_schedules_sandbox_setup_after_runtime(
     try:
         assert events == ["runtime"]
         assert len(scheduled) == 1
+        assert services.sandbox_setup_task is background_task
     finally:
         await services.close()
     assert events == ["runtime", "runtime_reset"]
+
+
+@pytest.mark.asyncio
+async def test_service_container_close_cancels_owned_sandbox_setup_task() -> None:
+    from opensquilla.gateway import boot
+
+    entered = asyncio.Event()
+
+    async def blocked_setup() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(blocked_setup())
+    services = boot.ServiceContainer(
+        config=GatewayConfig(),
+        sandbox_setup_task=task,
+    )
+    await entered.wait()
+
+    await services.close()
+
+    assert services.sandbox_setup_task is None
+    assert task.cancelled()
 
 
 @pytest.mark.asyncio

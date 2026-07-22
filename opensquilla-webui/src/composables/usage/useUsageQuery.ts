@@ -13,6 +13,7 @@ import type {
   UsageSnapshot,
   UsageStatusData,
   UsageTotals,
+  NativeBilledByCurrency,
 } from '@/types/usage'
 
 const USAGE_QUERY_METHOD = 'usage.query'
@@ -95,6 +96,30 @@ function costUsd(source: Record<string, unknown> | undefined, prefix = ''): numb
   return finiteNumber(rawValue(source, `${prefix ? `${prefix}CostUsd` : 'costUsd'}`, `${snake}cost_usd`))
 }
 
+function normalizeNativeBilling(value: unknown): NativeBilledByCurrency {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {}
+  const normalized: NativeBilledByCurrency = {}
+  Object.entries(value as Record<string, unknown>).forEach(([currency, raw]) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+    const record = raw as Record<string, unknown>
+    const rates = rawValue(
+      record,
+      'normalizationRatesNativePerUsd',
+      'normalization_rates_native_per_usd',
+    )
+    normalized[currency.toUpperCase()] = {
+      amountNanos: String(rawValue(record, 'amountNanos', 'amount_nanos') || '0'),
+      amount: String(rawValue(record, 'amount') || '0'),
+      usdEquivalentNanos: String(
+        rawValue(record, 'usdEquivalentNanos', 'usd_equivalent_nanos') || '0',
+      ),
+      receiptCount: finiteNumber(rawValue(record, 'receiptCount', 'receipt_count')),
+      normalizationRatesNativePerUsd: Array.isArray(rates) ? rates.map(String) : [],
+    }
+  })
+  return normalized
+}
+
 function emptyTotals(sessions = 0): UsageTotals {
   return {
     input: 0,
@@ -111,6 +136,10 @@ function emptyTotals(sessions = 0): UsageTotals {
     eventCount: 0,
     costSource: 'none',
     costSourceCounts: {},
+    nativeBilledByCurrency: {},
+    pendingBillingReceiptCount: 0,
+    nativeBillingExpectedReceiptCount: 0,
+    nativeBillingMissingConfirmedReceiptCount: 0,
   }
 }
 
@@ -143,6 +172,26 @@ export function normalizeUsageTotals(
     eventCount: finiteNumber(rawValue(record, 'eventCount', 'event_count')),
     costSource: String(rawValue(record, 'costSource', 'cost_source') || 'none'),
     costSourceCounts,
+    nativeBilledByCurrency: normalizeNativeBilling(
+      rawValue(record, 'nativeBilledByCurrency', 'native_billed_by_currency'),
+    ),
+    pendingBillingReceiptCount: finiteNumber(
+      rawValue(record, 'pendingBillingReceiptCount', 'pending_billing_receipt_count'),
+    ),
+    nativeBillingExpectedReceiptCount: finiteNumber(
+      rawValue(
+        record,
+        'nativeBillingExpectedReceiptCount',
+        'native_billing_expected_receipt_count',
+      ),
+    ),
+    nativeBillingMissingConfirmedReceiptCount: finiteNumber(
+      rawValue(
+        record,
+        'nativeBillingMissingConfirmedReceiptCount',
+        'native_billing_missing_confirmed_receipt_count',
+      ),
+    ),
   }
 }
 
@@ -181,6 +230,27 @@ function normalizeBreakdown(items: unknown): ModelBreakdownItem[] {
       cacheWriteTokens: finiteNumber(rawValue(values, 'cacheWriteTokens', 'cache_write_tokens')),
       costUsd: costUsd(values),
       costSource: String(rawValue(values, 'costSource', 'cost_source') || 'none'),
+      costSourceCounts: normalizeUsageTotals(values as UsageQueryTotalsWire).costSourceCounts,
+      nativeBilledByCurrency: normalizeNativeBilling(
+        rawValue(values, 'nativeBilledByCurrency', 'native_billed_by_currency'),
+      ),
+      pendingBillingReceiptCount: finiteNumber(
+        rawValue(values, 'pendingBillingReceiptCount', 'pending_billing_receipt_count'),
+      ),
+      nativeBillingExpectedReceiptCount: finiteNumber(
+        rawValue(
+          values,
+          'nativeBillingExpectedReceiptCount',
+          'native_billing_expected_receipt_count',
+        ),
+      ),
+      nativeBillingMissingConfirmedReceiptCount: finiteNumber(
+        rawValue(
+          values,
+          'nativeBillingMissingConfirmedReceiptCount',
+          'native_billing_missing_confirmed_receipt_count',
+        ),
+      ),
     }
   })
 }
@@ -210,6 +280,12 @@ function normalizeQuerySession(row: UsageQuerySessionWire): SessionRow {
     estimatedEventCount: totals.estimatedEventCount,
     missingCostEntries: totals.missingCostEntries,
     costSource: totals.costSource,
+    costSourceCounts: totals.costSourceCounts,
+    nativeBilledByCurrency: totals.nativeBilledByCurrency,
+    pendingBillingReceiptCount: totals.pendingBillingReceiptCount,
+    nativeBillingExpectedReceiptCount: totals.nativeBillingExpectedReceiptCount,
+    nativeBillingMissingConfirmedReceiptCount:
+      totals.nativeBillingMissingConfirmedReceiptCount,
     modelBreakdown: normalizeBreakdown(rawValue(record, 'modelBreakdown', 'model_breakdown')),
   }
 }
@@ -233,7 +309,13 @@ function normalizeQueryModels(rows: UsageQueryModelWire[]): ModelCard[] {
       share: 0,
       totalTokens: totals.totalTokens,
       costSource: totals.costSource,
+      costSourceCounts: totals.costSourceCounts,
       anyCacheBlind: false,
+      nativeBilledByCurrency: totals.nativeBilledByCurrency,
+      pendingBillingReceiptCount: totals.pendingBillingReceiptCount,
+      nativeBillingExpectedReceiptCount: totals.nativeBillingExpectedReceiptCount,
+      nativeBillingMissingConfirmedReceiptCount:
+        totals.nativeBillingMissingConfirmedReceiptCount,
     }
   })
   const totalCost = normalized.reduce((sum, row) => sum + row.costUsd, 0)
@@ -260,6 +342,11 @@ function normalizeCoverage(wire: UsageQueryResponse['coverage']): UsageCoverage 
     : undefined
   const legacyTotals = rawValue(legacyRecord, 'totals')
   const reasons = rawValue(record, 'reasonCodes', 'reason_codes')
+  const native = rawValue(record, 'nativeBilling', 'native_billing')
+  const nativeRecord = native && typeof native === 'object'
+    ? native as Record<string, unknown>
+    : undefined
+  const nativeReasons = rawValue(nativeRecord, 'reasonCodes', 'reason_codes')
   return {
     status: String(rawValue(record, 'status') || 'complete'),
     timeAttribution: String(rawValue(record, 'timeAttribution', 'time_attribution') || 'complete'),
@@ -272,6 +359,21 @@ function normalizeCoverage(wire: UsageQueryResponse['coverage']): UsageCoverage 
     legacyTotals: legacyTotals && typeof legacyTotals === 'object'
       ? normalizeUsageTotals(legacyTotals as UsageQueryTotalsWire)
       : null,
+    nativeBilling: {
+      status: String(rawValue(nativeRecord, 'status') || 'unavailable'),
+      exactFromMs: nullableNumber(rawValue(nativeRecord, 'exactFromMs', 'exact_from_ms')),
+      reasonCodes: Array.isArray(nativeReasons) ? nativeReasons.map(String) : [],
+      missingConfirmedReceiptCount: finiteNumber(
+        rawValue(
+          nativeRecord,
+          'missingConfirmedReceiptCount',
+          'missing_confirmed_receipt_count',
+        ),
+      ),
+      pendingReceiptCount: finiteNumber(
+        rawValue(nativeRecord, 'pendingReceiptCount', 'pending_receipt_count'),
+      ),
+    },
   }
 }
 
@@ -350,6 +452,13 @@ export function normalizeUsageStatusResponse(
       anomalyCount: 0,
       legacyIncludedInTotals: range === 'all',
       legacyTotals: null,
+      nativeBilling: {
+        status: 'unavailable',
+        exactFromMs: null,
+        reasonCodes: ['legacy_usage_status'],
+        missingConfirmedReceiptCount: 0,
+        pendingReceiptCount: 0,
+      },
     },
   }
 }

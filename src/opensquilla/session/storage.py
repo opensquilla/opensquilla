@@ -38,15 +38,19 @@ from opensquilla.session.usage_ledger import (
     UsageBackfillEntry,
     UsageBackfillStatus,
     UsageBackfillWrite,
+    UsageBillingReceiptState,
+    UsageBillingReceiptStatus,
     UsageEventCompletion,
     UsageEventItem,
     UsageEventRecord,
     UsageEventStart,
     UsageEventStatus,
+    UsageItemBillingReceipt,
     UsageLedgerConflictError,
     UsageLedgerState,
     UsageLegacyBaseline,
     usd_to_nanos,
+    validate_usage_billing_receipt,
     validate_usage_completion,
     validate_usage_event_start,
     validate_usage_item,
@@ -238,9 +242,10 @@ def _serialized_read[**P, R](
 # Version 8 added the derived_title column for LLM-generated session titles.
 # Version 9 added durable turn-ingress receipts.
 # Version 10 added the durable provider usage ledger and content-free daily usage
-# telemetry aggregates. Version 11 added durable hidden MetaSkill control intents.
-# Version 12 added the bounded pre-acceptance MetaSkill launch outbox.
-SCHEMA_VERSION = 12
+# telemetry aggregates. Version 11 added per-item provider-native billing receipts.
+# Version 12 added durable hidden MetaSkill control intents.
+# Version 13 added the bounded MetaSkill launch outbox and discard tombstones.
+SCHEMA_VERSION = 13
 
 # Session rows at or above this semantic version were created by fork logic
 # that records enough existing metadata for canonical coverage to be checked
@@ -733,6 +738,39 @@ CREATE TABLE IF NOT EXISTS usage_event_items (
 )
 """
 
+_CREATE_USAGE_ITEM_BILLING_RECEIPTS = """
+CREATE TABLE IF NOT EXISTS usage_item_billing_receipts (
+    event_id                    TEXT NOT NULL,
+    ordinal                     INTEGER NOT NULL CHECK (ordinal >= 0),
+    currency                    TEXT NOT NULL
+                                CHECK (length(currency) = 3 AND currency = upper(currency)),
+    status                      TEXT NOT NULL
+                                CHECK (status IN ('confirmed', 'pending')),
+    amount_nanos                INTEGER CHECK (amount_nanos >= 0),
+    usd_equivalent_nanos        INTEGER CHECK (usd_equivalent_nanos >= 0),
+    fx_native_per_usd_nanos     INTEGER NOT NULL
+                                CHECK (fx_native_per_usd_nanos > 0),
+    schema_version              INTEGER NOT NULL DEFAULT 1 CHECK (schema_version >= 1),
+    PRIMARY KEY (event_id, ordinal),
+    FOREIGN KEY (event_id, ordinal)
+        REFERENCES usage_event_items(event_id, ordinal) ON DELETE CASCADE,
+    CHECK (
+        (status = 'confirmed' AND amount_nanos IS NOT NULL
+         AND usd_equivalent_nanos IS NOT NULL)
+        OR
+        (status = 'pending' AND usd_equivalent_nanos IS NULL)
+    )
+)
+"""
+
+_CREATE_USAGE_BILLING_RECEIPT_STATE = """
+CREATE TABLE IF NOT EXISTS usage_billing_receipt_state (
+    singleton_id                INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+    tracking_started_at_ms      INTEGER NOT NULL CHECK (tracking_started_at_ms >= 0),
+    schema_version              INTEGER NOT NULL DEFAULT 1 CHECK (schema_version >= 1)
+)
+"""
+
 _CREATE_USAGE_LEDGER_STATE = """
 CREATE TABLE IF NOT EXISTS usage_ledger_state (
     singleton_id                INTEGER PRIMARY KEY CHECK (singleton_id = 1),
@@ -1004,6 +1042,18 @@ def _usage_event_from_row(row: Any) -> UsageEventRecord:
 
 def _usage_item_from_row(row: Any) -> UsageEventItem:
     return UsageEventItem(**dict(row))
+
+
+def _usage_billing_receipt_from_row(row: Any) -> UsageItemBillingReceipt:
+    data = dict(row)
+    data["status"] = cast(UsageBillingReceiptStatus, data["status"])
+    return UsageItemBillingReceipt(**data)
+
+
+def _usage_billing_receipt_state_from_row(row: Any) -> UsageBillingReceiptState:
+    data = dict(row)
+    data.pop("singleton_id", None)
+    return UsageBillingReceiptState(**data)
 
 
 def _usage_state_from_row(row: Any) -> UsageLedgerState:
@@ -1323,6 +1373,16 @@ class SessionStorage:
         await self._conn.execute(_CREATE_TELEMETRY_DAILY_USAGE)
         await self._conn.execute(_CREATE_USAGE_EVENTS)
         await self._conn.execute(_CREATE_USAGE_EVENT_ITEMS)
+        await self._conn.execute(_CREATE_USAGE_ITEM_BILLING_RECEIPTS)
+        await self._conn.execute(_CREATE_USAGE_BILLING_RECEIPT_STATE)
+        await self._conn.execute(
+            """
+            INSERT OR IGNORE INTO usage_billing_receipt_state (
+                singleton_id, tracking_started_at_ms, schema_version
+            ) VALUES (1, ?, 1)
+            """,
+            (_now_ms(),),
+        )
         await self._conn.execute(_CREATE_USAGE_LEDGER_STATE)
         await self._conn.execute(_CREATE_USAGE_LEGACY_BASELINES)
         await self._conn.execute(_CREATE_IDX_USAGE_EVENTS_COMPLETED)
@@ -1681,6 +1741,22 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [_usage_item_from_row(row) for row in rows]
 
+    async def _get_usage_billing_receipts_on_conn(
+        self,
+        conn: Any,
+        event_id: str,
+    ) -> list[UsageItemBillingReceipt]:
+        async with conn.execute(
+            """
+            SELECT * FROM usage_item_billing_receipts
+            WHERE event_id = ?
+            ORDER BY ordinal
+            """,
+            (event_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [_usage_billing_receipt_from_row(row) for row in rows]
+
     @staticmethod
     def _assert_usage_start_matches(
         persisted: UsageEventRecord,
@@ -1792,6 +1868,42 @@ class SessionStorage:
             for field, expected in components
         )
 
+    @staticmethod
+    def _validate_usage_billing_receipts(
+        event_id: str,
+        items: Sequence[UsageEventItem],
+        receipts: Sequence[UsageItemBillingReceipt],
+    ) -> None:
+        items_by_ordinal = {item.ordinal: item for item in items}
+        seen_ordinals: set[int] = set()
+        for receipt in receipts:
+            validate_usage_billing_receipt(receipt, event_id=event_id)
+            if receipt.ordinal in seen_ordinals:
+                raise ValueError("billing receipt ordinals must be unique per event")
+            seen_ordinals.add(receipt.ordinal)
+            item = items_by_ordinal.get(receipt.ordinal)
+            if item is None:
+                raise ValueError("billing receipt must reference a usage item")
+            if receipt.status == "confirmed":
+                if receipt.usd_equivalent_nanos != item.billed_cost_nanos:
+                    raise ValueError(
+                        "confirmed billing receipt USD equivalent must equal item billed cost"
+                    )
+                if item.estimated_cost_nanos != 0:
+                    raise ValueError(
+                        "confirmed billing receipt item must not include estimated cost"
+                    )
+                if item.cost_source != "provider_billed":
+                    raise ValueError(
+                        "confirmed billing receipt item must use provider_billed cost source"
+                    )
+            elif item.billed_cost_nanos != 0:
+                raise ValueError("pending billing receipt item billed cost must be zero")
+            elif item.cost_source == "provider_billed":
+                raise ValueError(
+                    "pending billing receipt item must not use provider_billed cost source"
+                )
+
     async def _start_usage_event_on_conn(
         self,
         conn: Any,
@@ -1902,6 +2014,7 @@ class SessionStorage:
         event_id: str,
         completion: UsageEventCompletion,
         items: Sequence[UsageEventItem],
+        receipts: Sequence[UsageItemBillingReceipt],
     ) -> tuple[UsageEventRecord, bool]:
         persisted = await self._get_usage_event_on_conn(conn, event_id=event_id)
         if persisted is None:
@@ -1919,6 +2032,7 @@ class SessionStorage:
             raise ValueError(
                 "usage items must reconcile exactly with their event envelope"
             )
+        self._validate_usage_billing_receipts(event_id, items, receipts)
 
         if persisted.status == "finalized":
             self._assert_usage_completion_matches(persisted, completion)
@@ -1926,6 +2040,13 @@ class SessionStorage:
             if persisted_items != sorted(items, key=lambda item: item.ordinal):
                 raise UsageLedgerConflictError(
                     "usage event was finalized again with different model items"
+                )
+            persisted_receipts = await self._get_usage_billing_receipts_on_conn(
+                conn, event_id
+            )
+            if persisted_receipts != sorted(receipts, key=lambda receipt: receipt.ordinal):
+                raise UsageLedgerConflictError(
+                    "usage event was finalized again with different billing receipts"
                 )
             return persisted, False
 
@@ -1995,6 +2116,25 @@ class SessionStorage:
                     item.schema_version,
                 ),
             )
+        for receipt in sorted(receipts, key=lambda receipt: receipt.ordinal):
+            await conn.execute(
+                """
+                INSERT INTO usage_item_billing_receipts (
+                    event_id, ordinal, currency, status, amount_nanos,
+                    usd_equivalent_nanos, fx_native_per_usd_nanos, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    receipt.event_id,
+                    receipt.ordinal,
+                    receipt.currency,
+                    receipt.status,
+                    receipt.amount_nanos,
+                    receipt.usd_equivalent_nanos,
+                    receipt.fx_native_per_usd_nanos,
+                    receipt.schema_version,
+                ),
+            )
         finalized = await self._get_usage_event_on_conn(conn, event_id=event_id)
         assert finalized is not None
         return finalized, True
@@ -2005,15 +2145,16 @@ class SessionStorage:
         completion: UsageEventCompletion,
         *,
         items: Sequence[UsageEventItem] = (),
+        receipts: Sequence[UsageItemBillingReceipt] = (),
     ) -> UsageEventRecord:
-        """Atomically finalize one event and all of its per-model items."""
+        """Atomically finalize one event, its model items, and native receipts."""
 
         if not event_id:
             raise ValueError("event_id must not be empty")
         validate_usage_completion(completion)
         async with self._write_transaction("finalize_usage_event") as conn:
             record, _changed = await self._finalize_usage_event_on_conn(
-                conn, event_id, completion, items
+                conn, event_id, completion, items, receipts
             )
             return record
 
@@ -2361,6 +2502,41 @@ class SessionStorage:
         return items
 
     @_serialized_read
+    async def query_usage_item_billing_receipts(
+        self,
+        event_ids: Sequence[str],
+    ) -> list[UsageItemBillingReceipt]:
+        """Return native receipts for the requested physical usage items."""
+
+        if not event_ids:
+            return []
+        unique_ids = list(dict.fromkeys(event_ids))
+        receipts: list[UsageItemBillingReceipt] = []
+        for start in range(0, len(unique_ids), _SQLITE_VARIABLE_CHUNK_SIZE):
+            chunk = unique_ids[start : start + _SQLITE_VARIABLE_CHUNK_SIZE]
+            placeholders = ", ".join("?" for _ in chunk)
+            async with self.conn.execute(
+                "SELECT * FROM usage_item_billing_receipts "
+                f"WHERE event_id IN ({placeholders}) ORDER BY event_id, ordinal",  # noqa: S608
+                chunk,
+            ) as cur:
+                rows = await cur.fetchall()
+            receipts.extend(_usage_billing_receipt_from_row(row) for row in rows)
+        return receipts
+
+    @_serialized_read
+    async def get_usage_billing_receipt_state(
+        self,
+    ) -> UsageBillingReceiptState | None:
+        """Return the native-receipt coverage cutover, if tracking is installed."""
+
+        async with self.conn.execute(
+            "SELECT * FROM usage_billing_receipt_state WHERE singleton_id = 1"
+        ) as cur:
+            row = await cur.fetchone()
+        return None if row is None else _usage_billing_receipt_state_from_row(row)
+
+    @_serialized_read
     async def get_usage_backfill_batch(
         self,
         *,
@@ -2660,6 +2836,7 @@ class SessionStorage:
                     write.start.event_id,
                     write.completion,
                     write.items,
+                    (),
                 )
                 if changed:
                     added_count += 1

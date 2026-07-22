@@ -543,7 +543,11 @@ def _profile_direct_model(cfg: GatewayConfig, provider: str) -> str:
         return ""
 
 
-def _llm_profile_status(cfg: GatewayConfig) -> tuple[dict[str, object], ...]:
+def _llm_profile_status(
+    cfg: GatewayConfig,
+    *,
+    probe_history: dict[str, dict[str, object]] | None = None,
+) -> tuple[dict[str, object], ...]:
     """Resolve all configured/referenced deployments into a secret-free status view."""
     from opensquilla.gateway.llm_runtime import (
         NoCredentialsAvailable,
@@ -628,19 +632,30 @@ def _llm_profile_status(cfg: GatewayConfig) -> tuple[dict[str, object], ...]:
         else:
             primary_eligible = True
             primary_block_reason = ""
-        statuses.append(
-            {
-                "provider": resolution.provider,
-                "ready": resolution.ready,
-                "credentialSource": resolution.credential_source,
-                "credentialEnv": resolution.credential_env,
-                "endpointSource": resolution.endpoint_source,
-                "proxySource": resolution.proxy_source,
-                "reason": resolution.reason,
-                "primaryEligible": primary_eligible,
-                "primaryBlockReason": primary_block_reason,
-            }
-        )
+        row: dict[str, object] = {
+            "provider": resolution.provider,
+            "ready": resolution.ready,
+            "credentialSource": resolution.credential_source,
+            "credentialEnv": resolution.credential_env,
+            "endpointSource": resolution.endpoint_source,
+            "proxySource": resolution.proxy_source,
+            "reason": resolution.reason,
+            "primaryEligible": primary_eligible,
+            "primaryBlockReason": primary_block_reason,
+        }
+        if probe_history is not None:
+            from opensquilla.onboarding.probe_history import (
+                last_probe_payload,
+                saved_deployment_fingerprint,
+            )
+
+            last_probe = last_probe_payload(
+                probe_history.get(provider),
+                saved_deployment_fingerprint(cfg, provider),
+            )
+            if last_probe is not None:
+                row["lastProbe"] = last_probe
+        statuses.append(row)
     return tuple(statuses)
 
 
@@ -904,7 +919,11 @@ def _runtime_blocking_sections(
     return blocking
 
 
-def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
+def get_onboarding_status(
+    config: GatewayConfig,
+    *,
+    probe_history: dict[str, dict[str, object]] | None = None,
+) -> OnboardingStatus:
     path = Path(config.config_path).expanduser() if config.config_path else default_config_path()
     has_config = path.exists()
 
@@ -971,7 +990,7 @@ def get_onboarding_status(config: GatewayConfig) -> OnboardingStatus:
             _router_provider_conflicts(config)
         )
 
-    llm_profile_status = _llm_profile_status(config)
+    llm_profile_status = _llm_profile_status(config, probe_history=probe_history)
     return OnboardingStatus(
         config_path=str(path),
         has_config=has_config,

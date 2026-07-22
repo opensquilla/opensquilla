@@ -19,7 +19,7 @@ import contextlib
 import math
 import time
 import uuid
-from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -29,6 +29,7 @@ from typing import Any, Protocol, runtime_checkable
 import structlog
 
 from opensquilla.engine.pricing import estimate_cost, resolve_model_price
+from opensquilla.provider.types import ProviderBillingReceipt
 from opensquilla.usage_reasons import (
     normalize_usage_unknown_reason,
     provider_error_usage_reason,
@@ -119,6 +120,7 @@ class UsageCallItem:
     cost_source: str
     estimate_basis: str | None
     price_source: str | None
+    billing_receipt: ProviderBillingReceipt | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -448,6 +450,71 @@ def has_known_provider_usage_receipt(event: object) -> bool:
     )
 
 
+def _receipt_int(value: Any, *, nullable: bool = False) -> int | None:
+    if value is None and nullable:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("billing receipt nanos must be non-negative integers")
+    return int(value)
+
+
+def _coerce_billing_receipt(value: Any) -> ProviderBillingReceipt | None:
+    """Defensively normalize additive receipt rows from wrappers/test doubles."""
+
+    if value is None:
+        return None
+    if isinstance(value, ProviderBillingReceipt):
+        candidate = value
+    elif isinstance(value, Mapping):
+        try:
+            raw_fx = value.get("fx_native_per_usd_nanos")
+            raw_schema = value.get("schema_version", 1)
+            if (
+                isinstance(raw_fx, bool)
+                or not isinstance(raw_fx, int)
+                or isinstance(raw_schema, bool)
+                or not isinstance(raw_schema, int)
+            ):
+                return None
+            candidate = ProviderBillingReceipt(
+                currency=str(value.get("currency") or "").upper(),
+                status=str(value.get("status") or ""),  # type: ignore[arg-type]
+                amount_nanos=_receipt_int(value.get("amount_nanos"), nullable=True),
+                usd_equivalent_nanos=_receipt_int(
+                    value.get("usd_equivalent_nanos"), nullable=True
+                ),
+                fx_native_per_usd_nanos=raw_fx,
+                schema_version=raw_schema,
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+    else:
+        return None
+    try:
+        amount_nanos = _receipt_int(candidate.amount_nanos, nullable=True)
+        usd_nanos = _receipt_int(candidate.usd_equivalent_nanos, nullable=True)
+    except ValueError:
+        return None
+    if (
+        not isinstance(candidate.currency, str)
+        or len(candidate.currency) != 3
+        or candidate.currency != candidate.currency.upper()
+        or candidate.status not in {"confirmed", "pending"}
+        or isinstance(candidate.fx_native_per_usd_nanos, bool)
+        or not isinstance(candidate.fx_native_per_usd_nanos, int)
+        or candidate.fx_native_per_usd_nanos <= 0
+        or isinstance(candidate.schema_version, bool)
+        or not isinstance(candidate.schema_version, int)
+        or candidate.schema_version <= 0
+    ):
+        return None
+    if candidate.status == "confirmed" and (amount_nanos is None or usd_nanos is None):
+        return None
+    if candidate.status == "pending" and usd_nanos is not None:
+        return None
+    return candidate
+
+
 def _item_from_row(
     row: dict[str, Any],
     *,
@@ -467,11 +534,26 @@ def _item_from_row(
     )
     cache_write_tokens = _usage_int(row.get("cache_write_tokens"))
     billed = _usage_float(row.get("billed_cost"))
+    receipt = _coerce_billing_receipt(row.get("billing_receipt"))
+    row_source = str(row.get("cost_source") or "none").strip().lower()
+    receipt_pending = receipt is not None and receipt.status == "pending"
+    confirmed_receipt = receipt is not None and receipt.status == "confirmed"
+    # Explicit source retains compatibility with provider adapters and test
+    # doubles that have not yet attached the additive receipt object. Amount is
+    # only the final legacy fallback; confirmed zero relies on source/receipt.
+    provider_billed = (
+        not receipt_pending
+        and (
+            confirmed_receipt
+            or row_source in {"provider_billed", "openrouter_usage"}
+            or billed > 0.0
+        )
+    )
 
     estimate_usd = 0.0
     estimate_basis: str | None = None
     price_source: str | None = None
-    if billed <= 0.0:
+    if not provider_billed:
         resolved = resolve_model_price(model, provider)
         estimate = estimate_cost(
             input_tokens=input_tokens,
@@ -484,11 +566,17 @@ def _item_from_row(
         estimate_basis = estimate.basis
         price_source = resolved.source
 
-    billed_nanos = usd_to_nanos(billed)
+    billed_nanos = (
+        max(0, int(receipt.usd_equivalent_nanos or 0))
+        if confirmed_receipt and receipt is not None
+        else usd_to_nanos(billed)
+        if provider_billed
+        else 0
+    )
     estimated_nanos = usd_to_nanos(estimate_usd)
-    if billed_nanos and estimated_nanos:
+    if provider_billed and estimated_nanos:
         source = "mixed"
-    elif billed_nanos:
+    elif provider_billed:
         source = "provider_billed"
     elif estimated_nanos:
         source = "opensquilla_estimate"
@@ -513,6 +601,7 @@ def _item_from_row(
         cost_source=source,
         estimate_basis=estimate_basis,
         price_source=price_source,
+        billing_receipt=receipt,
     )
 
 
@@ -555,6 +644,7 @@ def normalize_provider_usage(
                 "cache_write_tokens": getattr(event, "cache_write_tokens", 0),
                 "billed_cost": getattr(event, "billed_cost", 0.0),
                 "cost_source": getattr(event, "cost_source", "none"),
+                "billing_receipt": getattr(event, "billing_receipt", None),
             }
         ]
 
@@ -569,11 +659,15 @@ def normalize_provider_usage(
     )
     billed_nanos = sum(item.billed_cost_nanos for item in items)
     estimated_nanos = sum(item.estimated_cost_nanos for item in items)
-    if billed_nanos and estimated_nanos:
+    item_sources = {item.cost_source for item in items}
+    has_billed = "provider_billed" in item_sources
+    has_estimated = bool(item_sources & {"opensquilla_estimate", "mixed"})
+    has_unavailable = "unavailable" in item_sources
+    if "mixed" in item_sources or has_billed and (has_estimated or has_unavailable):
         cost_source = "mixed"
-    elif billed_nanos:
+    elif has_billed:
         cost_source = "provider_billed"
-    elif estimated_nanos:
+    elif has_estimated:
         cost_source = "opensquilla_estimate"
     elif items and all(item.cost_source == "free" for item in items):
         cost_source = "free"

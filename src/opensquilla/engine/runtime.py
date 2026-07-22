@@ -203,6 +203,7 @@ from opensquilla.provider import (
     decide_recovery_action,
 )
 from opensquilla.provider.model_catalog import resolve_effective_context_window
+from opensquilla.provider.protocol import validate_provider_chat_request
 from opensquilla.provider.types import (
     EnsembleProgressEvent as ProviderEnsembleProgressEvent,
 )
@@ -1640,6 +1641,11 @@ class _SelectorFallbackProvider:
         tools: Any = None,
         config: Any = None,
     ) -> AsyncIterator[Any]:
+        validation_error = validate_provider_chat_request(self._provider, messages)
+        if validation_error is not None:
+            yield validation_error
+            return
+
         emitted_user_visible_content = False
         pre_text_buffer: list[Any] = []
 

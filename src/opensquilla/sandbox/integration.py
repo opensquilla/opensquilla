@@ -146,9 +146,10 @@ class _ApprovalQueueLike(Protocol):
 class SandboxRuntime:
     """Process-wide sandbox runtime assembled from settings.
 
-    The object is immutable after construction from the caller's point of
-    view; callers either pass it around explicitly (tests) or fetch it via
-    :func:`get_runtime`.
+    Callers either pass it around explicitly (tests) or fetch it via
+    :func:`get_runtime`. The backend may be atomically promoted after a
+    successful platform setup; the gate, ledger, cache, queue, and settings
+    remain stable for the lifetime of the runtime.
     """
 
     settings: SandboxSettings
@@ -257,6 +258,33 @@ def get_runtime() -> SandboxRuntime | None:
     than relying on the ``None`` branch.
     """
     return _runtime
+
+
+def refresh_runtime_backend_after_setup() -> Backend | None:
+    """Promote an auto-configured unavailable backend after platform setup.
+
+    Runtime setup happens after gateway construction on Windows. Replacing
+    the whole runtime would discard approval and denial state, so this
+    function changes only the backend reference. Existing real backends and
+    sandbox-disabled runtimes are deliberately left untouched.
+    """
+
+    runtime = _runtime
+    if runtime is None:
+        return None
+    if not runtime.effective.sandbox_enabled:
+        return runtime.backend
+    if not isinstance(runtime.backend, UnavailableBackend):
+        return runtime.backend
+
+    backend = select_backend(runtime.settings)
+    if isinstance(backend, (NoopBackend, UnavailableBackend)):
+        raise SandboxBackendError(
+            "sandbox setup completed but no real sandbox backend became available"
+        )
+    runtime.backend = backend
+    log.info("sandbox.runtime_backend_promoted: backend=%s", backend.name)
+    return backend
 
 
 def active_file_system_profile(
@@ -2032,6 +2060,7 @@ __all__ = [
     "prepare_subprocess_managed_network_proxy",
     "request_with_managed_network_proxy_env",
     "record_success",
+    "refresh_runtime_backend_after_setup",
     "reset_runtime",
     "run_in_process_network_action",
     "run_under_backend",

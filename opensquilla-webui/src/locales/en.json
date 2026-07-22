@@ -472,6 +472,12 @@
       "defaultModelTitle": "Direct and fallback model for {provider}",
       "defaultModelGroupDesc": "Used when Routing is off or when execution falls back to the active provider.",
       "defaultModelLabel": "Direct / fallback model",
+      "configuredModelTitle": "Model for {provider}",
+      "configuredModelCurrentLabel": "Current model",
+      "configuredModelFallbackLabel": "Fallback model",
+      "configuredModelDescFixed": "Fixed model mode: every request uses the model below.",
+      "configuredModelDescRouter": "Intelligent model routing mode: each request is routed to a suitable model and falls back to the model below when routing is unavailable.",
+      "configuredModelDescEnsemble": "Multi-model collaboration mode: several models generate together, falling back to the model below when the ensemble cannot complete.",
       "defaultModelDesc": "Used for direct requests and primary fallback. Routed models are configured in Model Routing.",
       "defaultModelSemantics": "A recommended model is prefilled when available. Choose or enter another model, then verify it before relying on it.",
       "profileModelTitle": "Direct and fallback model for {provider}",
@@ -538,6 +544,9 @@
       "testCurrentSettings": "Verify current configuration",
       "testing": "Verifying configuration…",
       "connectionNotTested": "Not verified",
+      "lastVerifiedAgo": "Verified · {ago}",
+      "verifiedConfigChanged": "Configuration changed since verification — verify again",
+      "lastVerifyFailedAgo": "Last verification failed · {ago}",
       "currentSettingsNotTested": "Current configuration not verified",
       "endpointVerified": "Configuration verified",
       "probeMissingRequired": "Complete required fields before verifying: {fields}.",
@@ -2459,6 +2468,9 @@
       "cacheWrite": "Cache W"
     },
     "costHintTitle": "CNY values use baked-in rate {rate}. Verify against current FX for accounting use.",
+    "nativeCostHintTitle": "The original provider bill is in CNY; USD uses the fixed normalization rate recorded on the receipt.",
+    "nativeMixedCostHintTitle": "Mixed-currency or pending billing stays in canonical USD; original confirmed receipts are shown separately.",
+    "nativeBillingSubtotals": "Original receipts: {amounts}",
     "rangeHiddenHint": "{count} undated legacy sessions hidden",
     "coverage": {
       "approximate": "Older Gateway: date ranges use approximate session-lifetime totals.",
@@ -2466,7 +2478,9 @@
       "timezoneFallback": "Timezone {requested} is invalid; dates are grouped in {effective}.",
       "legacyIncluded": "Pre-ledger usage is included in the total but cannot be assigned to a date.",
       "estimated": "Includes {count} estimated calls.",
-      "unpriced": "Known cost shown; {count} calls are unpriced, so cost is incomplete."
+      "unpriced": "Known cost shown; {count} calls are unpriced, so cost is incomplete.",
+      "pendingBilling": "{count} provider billing receipts are pending settlement.",
+      "nativeBillingMissing": "{count} billed calls are missing native receipts."
     },
     "chart": {
       "metric": "Chart metric",
@@ -2856,6 +2870,8 @@
       "routerAnimationOn": "Router animation on",
       "routerAnimationOff": "Router animation off",
       "modelRouting": "Model routing",
+      "ensembleImageUnsupported": "Ensemble doesn't support image input yet. Switch to single-model routing and try again.",
+      "routingUpdateImageBlocked": "Model routing is being updated. Wait before sending images.",
       "modelRoutingOff": "Off",
       "modelRoutingOffDesc": "Send every turn to the selected model.",
       "modelRoutingSquillaRouter": "AI-powered single-model router",

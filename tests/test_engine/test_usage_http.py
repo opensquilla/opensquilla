@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 import pytest
@@ -70,6 +71,7 @@ def _response_payload(content: str = "summary") -> dict:
 class _Response:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
+        self.text = json.dumps(payload)
 
     def raise_for_status(self) -> None:
         return None
@@ -138,6 +140,38 @@ async def test_direct_naming_receipt_finalizes_once(monkeypatch) -> None:
     assert call.run_kind == "test_direct_http"
     assert result.billed_cost_nanos == 9
     assert result.input_tokens == 11
+
+
+@pytest.mark.asyncio
+async def test_direct_tokenrhythm_receipt_uses_native_cny_policy(monkeypatch) -> None:
+    payload = _response_payload('"A native title"')
+    payload["usage"].pop("cost")
+    payload["billing_pending"] = False
+    payload["cost_cny"] = 0.000021
+    monkeypatch.setattr(
+        "opensquilla.session.naming.httpx.AsyncClient",
+        lambda **kwargs: _client(payload, []),
+    )
+    sink = _Sink()
+
+    with bind_usage_accounting_scope(_scope(sink)):
+        title = await call_naming_llm(
+            "please title this",
+            model="deepseek-v4-flash",
+            api_key="dummy",
+            base_url="https://tokenrhythm.studio",
+            provider="tokenrhythm",
+        )
+
+    assert title == "A native title"
+    [(_call, result)] = sink.finalized
+    assert result.cost_source == "provider_billed"
+    assert result.billed_cost_nanos == 3_011
+    [item] = result.items
+    assert item.billing_receipt is not None
+    assert item.billing_receipt.currency == "CNY"
+    assert item.billing_receipt.amount_nanos == 21_000
+    assert item.billing_receipt.usd_equivalent_nanos == 3_011
 
 
 @pytest.mark.asyncio

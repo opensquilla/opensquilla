@@ -185,7 +185,20 @@ interface OnboardingStatus {
     reason?: string
     primaryEligible?: boolean
     primaryBlockReason?: string
+    lastProbe?: {
+      ok?: boolean
+      at?: string
+      configChanged?: boolean
+      failureKind?: string
+    }
   }>
+}
+
+export interface LastProbeStatus {
+  ok: boolean
+  at: string
+  configChanged: boolean
+  failureKind: string
 }
 
 export interface ConfiguredProviderView {
@@ -200,6 +213,7 @@ export interface ConfiguredProviderView {
   primaryEligible: boolean
   primaryBlockReason: string
   probeModelAvailable: boolean
+  lastProbe: LastProbeStatus | null
 }
 
 interface OnboardingCatalog {
@@ -652,6 +666,18 @@ function profileCredentialUiSource(source: unknown, ready: boolean): string {
   return value || 'none'
 }
 
+function lastProbeView(
+  raw?: { ok?: boolean; at?: string; configChanged?: boolean; failureKind?: string },
+): LastProbeStatus | null {
+  if (!raw?.at) return null
+  return {
+    ok: raw.ok === true,
+    at: String(raw.at),
+    configChanged: raw.configChanged === true,
+    failureKind: String(raw.failureKind || ''),
+  }
+}
+
 const configuredProviders = computed<ConfiguredProviderView[]>(() => {
   const active = normalizeProviderId(currentProvider.value)
   const rows = new Map<string, ConfiguredProviderView>()
@@ -672,6 +698,7 @@ const configuredProviders = computed<ConfiguredProviderView[]>(() => {
       primaryBlockReason: 'already_active',
       probeModelAvailable: runtimeProviders.value.some(provider => normalizeProviderId(provider.providerId) === active)
         && Boolean(currentModel.value || representativeProviderModel(active)),
+      lastProbe: null,
     })
   }
   // config.get is the persistence source of truth. Seed stored profiles even
@@ -692,6 +719,7 @@ const configuredProviders = computed<ConfiguredProviderView[]>(() => {
       primaryBlockReason: 'profile_status_unavailable',
       probeModelAvailable: runtimeProviders.value.some(provider => normalizeProviderId(provider.providerId) === id)
         && Boolean(representativeProviderModel(id)),
+      lastProbe: null,
     })
   }
   for (const profile of status.value.llmProfileStatus || []) {
@@ -732,6 +760,7 @@ const configuredProviders = computed<ConfiguredProviderView[]>(() => {
             : 'profile_status_unavailable'),
       probeModelAvailable: runtimeProviders.value.some(provider => normalizeProviderId(provider.providerId) === id)
         && Boolean(id === active ? (currentModel.value || representativeProviderModel(id)) : representativeProviderModel(id)),
+      lastProbe: lastProbeView(profile.lastProbe),
     })
   }
   return Array.from(rows.values()).sort((left, right) => {

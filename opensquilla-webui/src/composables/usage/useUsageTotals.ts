@@ -1,5 +1,6 @@
 import { computed, type ComputedRef, type Ref } from 'vue'
 import i18n from '@/i18n'
+import { nativeBillingDisplay } from '@/composables/usage/nativeBilling'
 import type { SessionRow, UsageTotals } from '@/types/usage'
 
 const t = i18n.global.t
@@ -10,7 +11,10 @@ export function useUsageTotals(options: {
   currency: Ref<string>
   cnyRate: number
   rowVal: (row: Record<string, unknown>, ...keys: string[]) => unknown
-  fmtCost: (usd: number | null | undefined, opts?: { decimals?: number }) => string
+  fmtCost: (
+    usd: number | null | undefined,
+    opts?: { decimals?: number; source?: object },
+  ) => string
   sourceCompositionHint: (rows: SessionRow[]) => string
 }) {
   const usageTotals = computed((): UsageTotals => {
@@ -64,22 +68,47 @@ export function useUsageTotals(options: {
     return parts
   })
 
-  const totalCostDisplay = computed(() => options.fmtCost(usageTotals.value.cost, { decimals: 4 }))
+  const nativeDisplay = computed(() => nativeBillingDisplay(
+    usageTotals.value as unknown as Record<string, unknown>,
+    usageTotals.value.cost,
+  ))
+
+  const totalCostDisplay = computed(() => options.fmtCost(
+    usageTotals.value.cost,
+    {
+      decimals: 4,
+      source: usageTotals.value as unknown as Record<string, unknown>,
+    },
+  ))
 
   const costHintText = computed(() => {
     const visibleRows = options.visibleSessions.value
     const sourceHint = options.sourceCompositionHint(visibleRows)
-    let currencyHint = ''
+    const hints: string[] = []
     const totalCostUsd = usageTotals.value.cost
-    if (options.currency.value === 'CNY') {
-      currencyHint = `≈ ${('$' + Number(totalCostUsd).toFixed(4))} USD`
+    const native = nativeDisplay.value
+    if (native.useCanonicalUsd) {
+      if (native.subtotalText) {
+        hints.push(t('usageLogs.nativeBillingSubtotals', { amounts: native.subtotalText }))
+      }
+      if (native.pendingReceiptCount > 0) {
+        hints.push(t('usageLogs.coverage.pendingBilling', {
+          count: native.pendingReceiptCount,
+        }))
+      }
+    } else if (options.currency.value === 'CNY') {
+      hints.push(`${native.exactCny == null ? '≈' : '='} ${('$' + Number(totalCostUsd).toFixed(4))} USD`)
     } else if (options.currency.value === 'USD') {
-      currencyHint = `≈ ¥${(Number(totalCostUsd) * options.cnyRate).toFixed(4)} CNY`
+      hints.push(native.exactCny == null
+        ? `≈ ¥${(Number(totalCostUsd) * options.cnyRate).toFixed(4)} CNY`
+        : `= ¥${native.exactCny.toFixed(4)} CNY`)
     }
-    return [currencyHint, sourceHint].filter(Boolean).join(' · ')
+    return [...hints, sourceHint].filter(Boolean).join(' · ')
   })
 
   const costHintTitle = computed(() => {
+    if (nativeDisplay.value.exactCny != null) return t('usageLogs.nativeCostHintTitle')
+    if (nativeDisplay.value.useCanonicalUsd) return t('usageLogs.nativeMixedCostHintTitle')
     return t('usageLogs.costHintTitle', { rate: options.cnyRate })
   })
 
@@ -91,7 +120,15 @@ export function useUsageTotals(options: {
   const avgCostDisplay = computed(() => {
     const t = usageTotals.value
     const avg = t.sessions > 0 ? t.cost / t.sessions : null
-    return avg != null ? options.fmtCost(avg, { decimals: 4 }) : '-'
+    if (avg == null) return '-'
+    const native = nativeDisplay.value
+    if (options.currency.value === 'CNY' && native.exactCny != null) {
+      return `¥${(native.exactCny / t.sessions).toFixed(4)}`
+    }
+    return options.fmtCost(avg, {
+      decimals: 4,
+      source: t as unknown as Record<string, unknown>,
+    })
   })
 
   return {

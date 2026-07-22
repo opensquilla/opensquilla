@@ -24,6 +24,12 @@ from opensquilla.engine.usage_accounting import (
     mark_usage_call_unknown,
     start_usage_call,
 )
+from opensquilla.provider.openai import (
+    _billing_result,
+    _exact_provider_billing_payload,
+    _ProviderBillingAccumulator,
+    _UsageSnapshotAccumulator,
+)
 
 
 def _nonnegative_integer(value: Any, *, field: str) -> int:
@@ -79,6 +85,9 @@ def openai_compatible_done_event(
     payload: Mapping[str, Any],
     *,
     default_model: str,
+    provider_kind: str = "",
+    base_url: str = "",
+    billing_payload: Mapping[str, Any] | None = None,
 ) -> Any:
     """Validate one non-streaming JSON response and expose its usage receipt.
 
@@ -144,9 +153,26 @@ def openai_compatible_done_event(
         (prompt_details_raw, "cache_creation_tokens"),
     )
 
-    raw_cost = usage.get("cost", usage.get("total_cost"))
-    billed_cost = 0.0 if raw_cost is None else _nonnegative_cost(raw_cost)
     model = str(payload.get("model") or default_model or "")
+    billing_receipt = None
+    if provider_kind:
+        usage_accumulator = _UsageSnapshotAccumulator()
+        usage_accumulator.update(usage)
+        billing_accumulator = _ProviderBillingAccumulator()
+        billing_accumulator.update(provider_kind, billing_payload or payload)
+        billed_cost, cost_source, billing_receipt = _billing_result(
+            provider_kind=provider_kind,
+            base_url=base_url,
+            usage=usage_accumulator,
+            billing=billing_accumulator,
+            model=model,
+        )
+    else:
+        # Preserve the original helper contract for callers that have not yet
+        # supplied provider identity. Production direct-call reservations do.
+        raw_cost = usage.get("cost", usage.get("total_cost"))
+        billed_cost = 0.0 if raw_cost is None else _nonnegative_cost(raw_cost)
+        cost_source = "provider_billed" if billed_cost > 0 else "none"
     return SimpleNamespace(
         kind="done",
         input_tokens=input_tokens,
@@ -155,8 +181,10 @@ def openai_compatible_done_event(
         cached_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         billed_cost=billed_cost,
-        cost_source="provider_billed" if billed_cost > 0 else "none",
+        cost_source=cost_source,
         model=model,
+        provider=provider_kind,
+        billing_receipt=billing_receipt,
     )
 
 
@@ -166,9 +194,15 @@ class DirectUsageReservation:
 
     scope: UsageAccountingScope | None
     call: UsageCallStart | None
+    base_url: str = ""
     terminal: bool = False
 
-    async def finalize_openai_response(self, payload: Any) -> bool:
+    async def finalize_openai_response(
+        self,
+        payload: Any,
+        *,
+        raw_json: str = "",
+    ) -> bool:
         """Finalize a valid receipt; mark malformed/missing receipts unknown."""
 
         if self.terminal or self.scope is None or self.call is None:
@@ -179,6 +213,13 @@ class DirectUsageReservation:
             done = openai_compatible_done_event(
                 payload,
                 default_model=self.call.model,
+                provider_kind=self.call.provider,
+                base_url=self.base_url,
+                billing_payload=_exact_provider_billing_payload(
+                    self.call.provider,
+                    payload,
+                    raw_json,
+                ),
             )
         except (TypeError, ValueError):
             await self.mark_unknown("missing_or_invalid_usage_receipt")
@@ -198,14 +239,15 @@ async def reserve_direct_usage_call(
     *,
     provider: str,
     model: str,
+    base_url: str = "",
 ) -> DirectUsageReservation:
     """Commit a start row for a direct request when an accounting scope exists."""
 
     scope = current_usage_accounting_scope()
     if scope is None:
-        return DirectUsageReservation(scope=None, call=None)
+        return DirectUsageReservation(scope=None, call=None, base_url=base_url)
     call = await start_usage_call(scope, provider=provider, model=model)
-    return DirectUsageReservation(scope=scope, call=call)
+    return DirectUsageReservation(scope=scope, call=call, base_url=base_url)
 
 
 __all__ = [

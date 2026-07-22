@@ -16,6 +16,7 @@ import type {
 } from '@/composables/setup/useSetupProviderForm'
 import { parseContextWindowInput } from '@/composables/setup/useSettingsPromotedForm'
 import type { SetupTierRow } from '@/composables/setup/useSetupRouterForm'
+import { localizedRelativeTime } from '@/utils/messageTime'
 
 const { t, locale } = useI18n()
 
@@ -67,6 +68,7 @@ interface ProviderPanelContract {
     primaryEligible: boolean
     primaryBlockReason: string
     probeModelAvailable: boolean
+    lastProbe?: { ok: boolean; at: string; configChanged: boolean; failureKind: string } | null
   }>
   credentialRemovalPending: boolean
   editingPrimary: boolean
@@ -241,6 +243,37 @@ const modelUsageDescriptionKey = computed(() => {
   return 'setup.provider.modelUsageFixedDesc'
 })
 
+// One routing entry per panel: while the configured-primary model card is
+// shown (it carries the mode pills and the Model Routing link), the bottom
+// model-usage summary must not render its duplicate.
+const primaryModelCardVisible = computed(() => (
+  modelFields.value.length > 0 && props.panel.editingPrimary && !editingPrimaryDraft.value
+))
+
+const configuredModelLabelKey = computed(() => (
+  props.panel.routerEnabled || props.panel.ensembleEnabled
+    ? 'setup.provider.configuredModelFallbackLabel'
+    : 'setup.provider.configuredModelCurrentLabel'
+))
+
+const modelSectionTitle = computed(() => {
+  if (!props.panel.editingPrimary) {
+    return t('setup.provider.profileModelTitle', { provider: selectedProviderLabel.value })
+  }
+  if (editingPrimaryDraft.value) {
+    return t('setup.provider.defaultModelTitle', { provider: selectedProviderLabel.value })
+  }
+  return t('setup.provider.configuredModelTitle', { provider: selectedProviderLabel.value })
+})
+
+const modelSectionDesc = computed(() => {
+  if (!props.panel.editingPrimary) return t('setup.provider.profileModelGroupDesc')
+  if (editingPrimaryDraft.value) return t('setup.provider.defaultModelGroupDesc')
+  if (props.panel.ensembleEnabled) return t('setup.provider.configuredModelDescEnsemble')
+  if (props.panel.routerEnabled) return t('setup.provider.configuredModelDescRouter')
+  return t('setup.provider.configuredModelDescFixed')
+})
+
 watch(() => props.panel.providerSelected, (value, previous) => {
   if (!value || value === previous) return
   const selectedFromPicker = addOpen.value
@@ -376,14 +409,34 @@ function configuredTestLabel(provider: ProviderPanelContract['configuredProvider
   return t('setup.provider.testSavedConnection')
 }
 
+function configuredRowFor(
+  providerId: string,
+): ProviderPanelContract['configuredProviders'][number] | undefined {
+  return props.panel.configuredProviders.find(row => (
+    row.providerId.toLowerCase() === providerId.toLowerCase()
+  ))
+}
+
 function probeStatus(providerId: string): string {
   const state = probeFor(providerId)
   if (state.phase === 'probing') return t('setup.provider.testing')
   if (state.phase === 'unverified') {
-    const provider = props.panel.configuredProviders.find(row => (
-      row.providerId.toLowerCase() === providerId.toLowerCase()
-    ))
-    return provider?.ready ? t('setup.provider.connectionNotTested') : ''
+    const provider = configuredRowFor(providerId)
+    if (!provider?.ready) return ''
+    const lastProbe = provider.lastProbe
+    if (lastProbe?.ok) {
+      return lastProbe.configChanged
+        ? t('setup.provider.verifiedConfigChanged')
+        : t('setup.provider.lastVerifiedAgo', {
+            ago: localizedRelativeTime(lastProbe.at, locale.value),
+          })
+    }
+    if (lastProbe) {
+      return t('setup.provider.lastVerifyFailedAgo', {
+        ago: localizedRelativeTime(lastProbe.at, locale.value),
+      })
+    }
+    return t('setup.provider.connectionNotTested')
   }
   if (state.phase === 'verified') {
     return t('setup.provider.connected')
@@ -398,6 +451,16 @@ function probeStatus(providerId: string): string {
     return t('setup.provider.notReachable', { reason: probeFailureSentence(state) })
   }
   return ''
+}
+
+function probeToneClass(providerId: string): string {
+  const state = probeFor(providerId)
+  if (state.phase === 'probing') return ''
+  if (state.phase === 'verified') return 'is-ready'
+  if (state.phase !== 'unverified') return 'is-warn'
+  const lastProbe = configuredRowFor(providerId)?.lastProbe
+  if (lastProbe?.ok) return lastProbe.configChanged ? '' : 'is-ready'
+  return 'is-warn'
 }
 
 function providerIdentityLabel(
@@ -618,7 +681,7 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
           <span
             v-if="probeStatus(provider.providerId)"
             class="setup-provider-card__probe"
-            :class="probeFor(provider.providerId).phase === 'verified' ? 'is-ready' : (probeFor(provider.providerId).phase === 'probing' ? '' : 'is-warn')"
+            :class="probeToneClass(provider.providerId)"
             aria-live="polite"
           >
             <span>{{ probeStatus(provider.providerId) }}</span>
@@ -724,20 +787,22 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 
     <section v-if="modelFields.length" class="setup-provider-model setup-provider-model--primary">
       <div class="setup-provider-options__head">
-        <h5>{{ panel.editingPrimary
-          ? t('setup.provider.defaultModelTitle', { provider: selectedProviderLabel })
-          : t('setup.provider.profileModelTitle', { provider: selectedProviderLabel }) }}</h5>
-        <p>{{ panel.editingPrimary
-          ? t('setup.provider.defaultModelGroupDesc')
-          : t('setup.provider.profileModelGroupDesc') }}</p>
+        <h5>{{ modelSectionTitle }}</h5>
+        <p>{{ modelSectionDesc }}</p>
       </div>
       <div
-        v-if="panel.editingPrimary && !editingPrimaryDraft"
+        v-if="primaryModelCardVisible"
         class="setup-provider-model__routing-owner"
         data-testid="configured-primary-model-readonly"
       >
         <div class="setup-provider-model__routing-value">
-          <span>{{ t('setup.provider.defaultModelLabel', { provider: selectedProviderLabel }) }}</span>
+          <div class="setup-provider-model__routing-meta">
+            <span class="setup-provider-model__routing-label">{{ t(configuredModelLabelKey) }}</span>
+            <span class="control-pill control-pill--accent">{{ t(modelUsageModeKey) }}</span>
+            <span v-if="panel.crossProviderRoutingEnabled" class="control-pill">
+              {{ t('setup.provider.crossProviderActive') }}
+            </span>
+          </div>
           <strong>{{ currentModelId || t('setup.provider.contextWindowNoModel') }}</strong>
         </div>
         <button type="button" class="btn btn--ghost" @click="emit('goToSection', 'modelStrategy')">
@@ -873,7 +938,7 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
     </template>
 
     <div
-      v-if="panel.configuredProviders.length > 0"
+      v-if="panel.configuredProviders.length > 0 && !primaryModelCardVisible"
       class="setup-provider-routing"
       data-testid="provider-model-usage"
     >
@@ -1249,7 +1314,14 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   min-width: 0;
 }
 
-.setup-provider-model__routing-value span {
+.setup-provider-model__routing-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.setup-provider-model__routing-label {
   color: var(--text-muted);
   font-size: var(--fs-xs);
 }
@@ -1280,33 +1352,16 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   width: 100%;
 }
 
-/* Stack the router-support pill above a wayfinding link into Model Routing
-   (shown only when this provider actually supports model tiers). */
-.control-row__control--stack {
-  align-items: flex-start;
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-1);
-}
-
-.setup-inline-link {
-  background: none;
-  border: none;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  font-weight: 600;
-  padding: 0;
-}
-
-.setup-inline-link:hover {
-  text-decoration: underline;
-}
-
 .setup-effective-output {
   color: var(--text-secondary);
   font-size: var(--fs-sm);
   margin: calc(var(--sp-2) * -1) 0 var(--sp-3);
+}
+
+/* The negative top margin above assumes a preceding field/hint whose bottom
+   margin absorbs it; the read-only routing card has none, so restore a gap. */
+.setup-provider-model__routing-owner + .setup-effective-output {
+  margin-top: var(--sp-2);
 }
 
 .setup-provider-profile-model-hint {

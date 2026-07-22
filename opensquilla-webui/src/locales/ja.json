@@ -472,6 +472,12 @@
       "defaultModelTitle": "{provider} のデフォルトモデル",
       "defaultModelGroupDesc": "ルーティングがオフの場合、または実行が使用中のプロバイダーにフォールバックする場合に使われます。",
       "defaultModelLabel": "{provider} のデフォルト直接モデル",
+      "configuredModelTitle": "{provider} のモデル",
+      "configuredModelCurrentLabel": "現在のモデル",
+      "configuredModelFallbackLabel": "フォールバックモデル",
+      "configuredModelDescFixed": "固定モデルモード：すべてのリクエストが下記のモデルを使用します。",
+      "configuredModelDescRouter": "インテリジェントモデルルーティングモード：リクエストごとに適切なモデルへ振り分け、ルーティングが利用できない場合は下記のモデルにフォールバックします。",
+      "configuredModelDescEnsemble": "複数モデル連携モード：複数のモデルで生成し、完了できない場合は下記のモデルにフォールバックします。",
       "defaultModelDesc": "直接リクエストと主要なフォールバックに使われます。ルーティング対象のモデルはモデルルーティングで設定します。",
       "defaultModelSemantics": "A recommended model is prefilled when available. Choose or enter another model, then verify it before relying on it.",
       "profileModelTitle": "{provider} の直接／フォールバックモデル",
@@ -538,6 +544,9 @@
       "testCurrentSettings": "現在の構成を検証",
       "testing": "構成を検証中…",
       "connectionNotTested": "未検証",
+      "lastVerifiedAgo": "検証済み · {ago}",
+      "verifiedConfigChanged": "検証後に設定が変更されました。再検証してください",
+      "lastVerifyFailedAgo": "前回の検証に失敗 · {ago}",
       "currentSettingsNotTested": "現在の構成は未検証",
       "endpointVerified": "構成を検証済み",
       "probeMissingRequired": "検証前に必須項目を入力してください：{fields}。",
@@ -2459,6 +2468,9 @@
       "cacheWrite": "キャッシュ書き込み"
     },
     "costHintTitle": "CNY の値は固定レート {rate} を使用します。会計用途では現在の為替レートと照合してください。",
+    "nativeCostHintTitle": "プロバイダーの原請求は CNY です。USD は領収書に記録された固定換算レートを使用します。",
+    "nativeMixedCostHintTitle": "複数通貨または精算待ちの請求は標準 USD で集計し、確認済みの原通貨領収情報を別に表示します。",
+    "nativeBillingSubtotals": "原通貨の領収情報: {amounts}",
     "rangeHiddenHint": "日付なしのレガシーセッション {count} 件を非表示",
     "coverage": {
       "approximate": "旧 Gateway では、日付範囲をセッション累計から概算します。",
@@ -2466,7 +2478,9 @@
       "timezoneFallback": "タイムゾーン {requested} は無効です。日付は {effective} で集計されています。",
       "legacyIncluded": "台帳開始前の利用量は合計に含まれますが、日付には割り当てられません。",
       "estimated": "{count} 件の推定呼び出しを含みます。",
-      "unpriced": "既知のコストを表示しています。{count} 件は価格未設定のため、コストは不完全です。"
+      "unpriced": "既知のコストを表示しています。{count} 件は価格未設定のため、コストは不完全です。",
+      "pendingBilling": "{count} 件のプロバイダー請求が精算待ちです。",
+      "nativeBillingMissing": "{count} 件の請求済み呼び出しで原通貨の領収書がありません。"
     },
     "chart": {
       "metric": "チャートの指標",
@@ -2856,6 +2870,8 @@
       "routerAnimationOn": "ルーターアニメーション オン",
       "routerAnimationOff": "ルーターアニメーション オフ",
       "modelRouting": "モデルルーティング",
+      "ensembleImageUnsupported": "Ensemble はまだ画像入力に対応していません。単一モデルルーティングに切り替えて、もう一度お試しください。",
+      "routingUpdateImageBlocked": "モデルルーティングを更新しています。画像を送信する前にお待ちください。",
       "modelRoutingOff": "オフ",
       "modelRoutingOffDesc": "各ターンを選択中のモデルへ送信します。",
       "modelRoutingSquillaRouter": "AI搭載シングルモデルルーター",

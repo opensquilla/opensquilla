@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from .types import (
     ChatConfig,
+    ErrorEvent,
     Message,
     ModelInfo,
     ProviderMessageCountProjection,
@@ -175,6 +176,34 @@ def project_provider_message_count(
     except Exception:  # noqa: BLE001 - optional capability must stay best-effort
         return None
     return projection if isinstance(projection, ProviderMessageCountProjection) else None
+
+
+def validate_provider_chat_request(
+    provider: object | None,
+    messages: list[Message],
+) -> ErrorEvent | None:
+    """Run an optional, side-effect-free provider request preflight.
+
+    Validation is deliberately duck-typed instead of widening
+    :class:`LLMProvider`: ordinary providers keep the established chat
+    contract, while composite providers may reject requests before any
+    physical model call or usage-accounting envelope starts.
+
+    A missing, raising, or invalid optional implementation is ignored.  The
+    provider remains the authoritative fallback boundary and must repeat its
+    own validation immediately before starting work.
+    """
+
+    if provider is None:
+        return None
+    validation_fn = getattr(provider, "validate_chat_request", None)
+    if not callable(validation_fn):
+        return None
+    try:
+        validation_error = validation_fn(messages)
+    except Exception:  # noqa: BLE001 - optional preflight must stay best-effort
+        return None
+    return validation_error if isinstance(validation_error, ErrorEvent) else None
 
 
 @runtime_checkable

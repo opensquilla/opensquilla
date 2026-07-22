@@ -30,12 +30,15 @@ from .protocol import (
 from .selector import ModelSelector, ProviderConfig, SelectorConfig
 from .types import (
     ChatConfig,
+    ContentBlockImage,
+    ContentBlockToolResult,
     DoneEvent,
     EnsembleProgressEvent,
     ErrorEvent,
     Message,
     ModelCapabilities,
     ModelInfo,
+    ProviderBillingReceipt,
     ProviderHeartbeatEvent,
     ProviderMessageCountProjection,
     ProviderMessageLimitProof,
@@ -51,6 +54,11 @@ from .types import (
 TRACE_CONTENT_MAX_CHARS = 8_000
 _ENSEMBLE_HEARTBEAT_INTERVAL_SECONDS = 15.0
 _ENSEMBLE_CANCEL_CLEANUP_TIMEOUT_SECONDS = 5.0
+ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE = "ensemble_multimodal_unsupported"
+ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE = (
+    "Ensemble does not support image input yet. "
+    "Switch to a single-model routing mode and try again."
+)
 log = structlog.get_logger(__name__)
 
 
@@ -251,6 +259,7 @@ class _CandidateResult:
     cache_write_tokens: int = 0
     billed_cost: float = 0.0
     cost_source: str = "none"
+    billing_receipt: ProviderBillingReceipt | None = None
     stop_reason: str = ""
     elapsed_ms: int = 0
     ttft_ms: int | None = None
@@ -266,7 +275,7 @@ class _CandidateResult:
         return not self.error and bool(self.text.strip())
 
     def usage_row(self, *, role: str, profile: str) -> dict[str, Any]:
-        return {
+        row = {
             "role": role,
             "profile": profile,
             "label": self.label,
@@ -284,6 +293,9 @@ class _CandidateResult:
             # done payload replaces the live progress rows in WebUI.
             "elapsed_ms": self.elapsed_ms,
         }
+        if self.billing_receipt is not None:
+            row["billing_receipt"] = self.billing_receipt
+        return row
 
     def trace_row(self, *, include_text: bool, content_max_chars: int) -> dict[str, Any]:
         row: dict[str, Any] = {
@@ -322,6 +334,7 @@ class _AggregatorAccumulator:
     cache_write_tokens: int = 0
     billed_cost: float = 0.0
     cost_source: str = "none"
+    billing_receipt: ProviderBillingReceipt | None = None
     model: str = ""
 
     def usage_row(
@@ -334,7 +347,7 @@ class _AggregatorAccumulator:
         elapsed_ms: int = 0,
     ) -> dict[str, Any]:
         cfg = member.provider_config
-        return {
+        row = {
             "role": role,
             "profile": profile,
             "label": label or member.label or role,
@@ -350,6 +363,9 @@ class _AggregatorAccumulator:
             "cost_source": self.cost_source,
             "elapsed_ms": max(0, int(elapsed_ms)),
         }
+        if self.billing_receipt is not None:
+            row["billing_receipt"] = self.billing_receipt
+        return row
 
 
 def _normalize_thinking(value: str | None) -> tuple[bool | None, Any | None]:
@@ -516,7 +532,14 @@ def _truncate_text(text: str, max_chars: int) -> str:
 
 def _rollup_cost_source(rows: Sequence[dict[str, Any]]) -> str:
     sources = {str(row.get("cost_source") or "none") for row in rows}
-    billed = sum(1 for row in rows if float(row.get("billed_cost") or 0.0) > 0)
+    billed = sum(
+        1
+        for row in rows
+        if str(row.get("cost_source") or "none")
+        in {"provider_billed", "openrouter_usage"}
+    )
+    if "mixed" in sources:
+        return "mixed"
     if billed and billed == len(rows):
         return "provider_billed"
     if billed:
@@ -544,6 +567,7 @@ def _candidate_has_usage(candidate: _CandidateResult) -> bool:
         or candidate.cached_tokens
         or candidate.cache_write_tokens
         or candidate.billed_cost
+        or candidate.billing_receipt is not None
     )
 
 
@@ -602,7 +626,7 @@ def _done_usage_row(
     provider: str,
     model: str,
 ) -> dict[str, Any]:
-    return {
+    row = {
         "role": role,
         "profile": profile,
         "label": label,
@@ -617,6 +641,9 @@ def _done_usage_row(
         "billed_cost": event.billed_cost,
         "cost_source": event.cost_source,
     }
+    if event.billing_receipt is not None:
+        row["billing_receipt"] = event.billing_receipt
+    return row
 
 
 class EnsembleProvider:
@@ -721,6 +748,29 @@ class EnsembleProvider:
             base_url="",
         )
 
+    def validate_chat_request(self, messages: list[Message]) -> ErrorEvent | None:
+        """Reject typed image input before any ensemble leg can start."""
+
+        for message in messages:
+            if not isinstance(message.content, list):
+                continue
+            for block in message.content:
+                if isinstance(block, ContentBlockImage):
+                    return ErrorEvent(
+                        message=ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE,
+                        code=ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE,
+                    )
+                if not isinstance(block, ContentBlockToolResult):
+                    continue
+                if isinstance(block.content, list) and any(
+                    isinstance(item, ContentBlockImage) for item in block.content
+                ):
+                    return ErrorEvent(
+                        message=ENSEMBLE_MULTIMODAL_UNSUPPORTED_MESSAGE,
+                        code=ENSEMBLE_MULTIMODAL_UNSUPPORTED_CODE,
+                    )
+        return None
+
     async def list_models(self) -> list[ModelInfo]:
         models: list[ModelInfo] = []
         for member in [*self.proposers, self.aggregator]:
@@ -815,6 +865,11 @@ class EnsembleProvider:
         tools: list[ToolDefinition] | None = None,
         config: ChatConfig | None = None,
     ) -> AsyncIterator[StreamEvent]:
+        validation_error = self.validate_chat_request(messages)
+        if validation_error is not None:
+            yield validation_error
+            return
+
         if not self.proposers:
             async for event in self._fallback_or_error(
                 messages,
@@ -1272,6 +1327,7 @@ class EnsembleProvider:
                 result.cache_write_tokens = event.cache_write_tokens
                 result.billed_cost = event.billed_cost
                 result.cost_source = event.cost_source
+                result.billing_receipt = event.billing_receipt
                 result.stop_reason = event.stop_reason
                 result.model = event.model or result.model
             elif isinstance(event, ErrorEvent):
@@ -1451,6 +1507,7 @@ class EnsembleProvider:
                 cache_write_tokens=event.cache_write_tokens,
                 billed_cost=event.billed_cost,
                 cost_source=event.cost_source,
+                billing_receipt=event.billing_receipt,
                 model=event.model or self.aggregator.provider_config.model,
             )
             rows = [
@@ -1477,6 +1534,7 @@ class EnsembleProvider:
                 model_usage_breakdown=rows,
                 ensemble_trace=trace,
                 usage_missing_count=prior_missing_count,
+                billing_receipt=None,
             )
 
         def partial_error(event: ErrorEvent) -> ErrorEvent:
@@ -1695,6 +1753,7 @@ class EnsembleProvider:
                         model_usage_breakdown=rows,
                         ensemble_trace=trace,
                         usage_missing_count=proposer_missing_count,
+                        billing_receipt=None,
                     )
                     return
                 if isinstance(event, ErrorEvent):

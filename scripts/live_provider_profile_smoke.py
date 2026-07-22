@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from opensquilla.engine.pricing import lookup_price  # noqa: E402
+from opensquilla.engine.pricing import estimate_cost, resolve_model_price  # noqa: E402
 from opensquilla.provider.model_catalog import ModelCatalog  # noqa: E402
 from opensquilla.provider.openai import _versioned_api_url  # noqa: E402
 from opensquilla.provider.reasoning_dialects import (  # noqa: E402
@@ -503,23 +503,40 @@ def _usage_summary(usage: Any) -> dict[str, Any]:
     return {key: usage[key] for key in keys if key in usage}
 
 
-def _cost_estimate(model: str, usage: dict[str, Any]) -> dict[str, Any]:
-    direct_usage = usage.get("direct") if isinstance(usage.get("direct"), dict) else {}
-    stream_usage = usage.get("stream") if isinstance(usage.get("stream"), dict) else {}
+def _cost_estimate(provider: str, model: str, usage: dict[str, Any]) -> dict[str, Any]:
+    direct_value = usage.get("direct")
+    stream_value = usage.get("stream")
+    direct_usage: dict[str, Any] = direct_value if isinstance(direct_value, dict) else {}
+    stream_usage: dict[str, Any] = stream_value if isinstance(stream_value, dict) else {}
     prompt_tokens = direct_usage.get("prompt_tokens") or stream_usage.get("input_tokens") or 0
     completion_tokens = (
         direct_usage.get("completion_tokens") or stream_usage.get("output_tokens") or 0
     )
-    price = lookup_price(model)
-    estimate = (
-        prompt_tokens * price.input_per_m + completion_tokens * price.output_per_m
-    ) / 1_000_000
+    cache_read_tokens = int(
+        stream_usage.get("cached_tokens")
+        or direct_usage.get("cache_read_input_tokens")
+        or 0
+    )
+    cache_write_tokens = int(
+        stream_usage.get("cache_write_tokens")
+        or direct_usage.get("cache_creation_input_tokens")
+        or 0
+    )
+    resolved = resolve_model_price(model, provider)
+    estimate_result = estimate_cost(
+        input_tokens=int(prompt_tokens),
+        output_tokens=int(completion_tokens),
+        cache_read_tokens=cache_read_tokens,
+        cache_write_tokens=cache_write_tokens,
+        price=resolved.entry,
+    )
+    estimate = estimate_result.cost_usd
     # The stream DoneEvent carries the provider-billed cost when the upstream
     # reports one (OpenRouter usage.cost); surface it instead of pretending
     # only static estimates exist.
     billed = stream_usage.get("billed_cost") or 0.0
     billed_source = str(stream_usage.get("cost_source") or "")
-    provider_billed = billed if billed > 0 and billed_source == "provider_billed" else None
+    provider_billed = billed if billed_source == "provider_billed" else None
     cost_source = billed_source if provider_billed is not None else "opensquilla_static_estimate"
     return {
         "provider_billed_cost_usd": provider_billed,
@@ -528,8 +545,12 @@ def _cost_estimate(model: str, usage: dict[str, Any]) -> dict[str, Any]:
         "billing_scope": "provider_billed" if provider_billed is not None else "static_estimate",
         "provider_billed": provider_billed,
         "opensquilla_estimate": estimate,
-        "input_per_m": price.input_per_m,
-        "output_per_m": price.output_per_m,
+        "input_per_m": resolved.entry.input_per_m,
+        "output_per_m": resolved.entry.output_per_m,
+        "cache_read_per_m": resolved.entry.cache_read_per_m,
+        "cache_write_per_m": resolved.entry.cache_write_per_m,
+        "price_source": resolved.source,
+        "estimate_basis": estimate_result.basis,
         "source": cost_source,
     }
 
@@ -659,7 +680,7 @@ async def smoke_provider(
         response_model=response_model,
         content_match=content_match,
         usage=merged_usage,
-        cost=_cost_estimate(response_model or model, merged_usage),
+        cost=_cost_estimate(provider, response_model or model, merged_usage),
         error="; ".join(errors),
         latency_ms=direct_latency + stream_latency,
     )

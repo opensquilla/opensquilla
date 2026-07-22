@@ -472,6 +472,12 @@
       "defaultModelTitle": "Modelo predeterminado de {provider}",
       "defaultModelGroupDesc": "Se usa cuando el enrutamiento está desactivado o vuelve al proveedor activo.",
       "defaultModelLabel": "Modelo directo predeterminado de {provider}",
+      "configuredModelTitle": "Modelo de {provider}",
+      "configuredModelCurrentLabel": "Modelo actual",
+      "configuredModelFallbackLabel": "Modelo de reserva",
+      "configuredModelDescFixed": "Modo de modelo fijo: cada solicitud usa el modelo de abajo.",
+      "configuredModelDescRouter": "Modo de enrutamiento inteligente de modelos: cada solicitud se dirige a un modelo adecuado y vuelve al modelo de abajo si el enrutamiento no está disponible.",
+      "configuredModelDescEnsemble": "Modo de colaboración multimodelo: varios modelos generan juntos y se vuelve al modelo de abajo si el conjunto no puede completarse.",
       "defaultModelDesc": "Para solicitudes directas y respaldo principal. Los modelos de ruta se configuran en Enrutamiento de modelos.",
       "defaultModelSemantics": "A recommended model is prefilled when available. Choose or enter another model, then verify it before relying on it.",
       "profileModelTitle": "Modelo directo y de reserva para {provider}",
@@ -538,6 +544,9 @@
       "testCurrentSettings": "Verificar configuración actual",
       "testing": "Verificando configuración…",
       "connectionNotTested": "Sin verificar",
+      "lastVerifiedAgo": "Verificado · {ago}",
+      "verifiedConfigChanged": "La configuración cambió desde la verificación; vuelve a verificar",
+      "lastVerifyFailedAgo": "Última verificación fallida · {ago}",
       "currentSettingsNotTested": "Configuración actual sin verificar",
       "endpointVerified": "Configuración verificada",
       "probeMissingRequired": "Completa los campos obligatorios antes de verificar: {fields}.",
@@ -2459,6 +2468,9 @@
       "cacheWrite": "Escritura de caché"
     },
     "costHintTitle": "Los valores en CNY usan la tasa fija integrada {rate}. Verifícala con el tipo de cambio actual para uso contable.",
+    "nativeCostHintTitle": "La factura original del proveedor está en CNY; el valor USD usa la tasa fija registrada en el recibo.",
+    "nativeMixedCostHintTitle": "La facturación en monedas mixtas o pendiente permanece en USD canónicos; los recibos originales confirmados se muestran por separado.",
+    "nativeBillingSubtotals": "Recibos originales: {amounts}",
     "rangeHiddenHint": "{count} sesiones heredadas sin fecha ocultas",
     "coverage": {
       "approximate": "Gateway antiguo: los rangos de fechas son aproximaciones de totales por sesión.",
@@ -2466,7 +2478,9 @@
       "timezoneFallback": "La zona horaria {requested} no es válida; las fechas se agrupan según {effective}.",
       "legacyIncluded": "El uso anterior al libro se incluye en el total, pero no puede asignarse a una fecha.",
       "estimated": "Incluye {count} llamadas estimadas.",
-      "unpriced": "Se muestra el coste conocido; {count} llamadas no tienen precio, por lo que el coste está incompleto."
+      "unpriced": "Se muestra el coste conocido; {count} llamadas no tienen precio, por lo que el coste está incompleto.",
+      "pendingBilling": "{count} recibos del proveedor están pendientes de liquidación.",
+      "nativeBillingMissing": "Faltan recibos en moneda original para {count} llamadas facturadas."
     },
     "chart": {
       "metric": "Métrica del gráfico",
@@ -2856,6 +2870,8 @@
       "routerAnimationOn": "Animación del enrutador activada",
       "routerAnimationOff": "Animación del enrutador desactivada",
       "modelRouting": "Enrutamiento de modelos",
+      "ensembleImageUnsupported": "Ensemble aún no admite entradas de imagen. Cambia al enrutamiento de un solo modelo e inténtalo de nuevo.",
+      "routingUpdateImageBlocked": "El enrutamiento de modelos se está actualizando. Espera antes de enviar imágenes.",
       "modelRoutingOff": "Desactivado",
       "modelRoutingOffDesc": "Envía cada turno al modelo seleccionado.",
       "modelRoutingSquillaRouter": "Enrutador monomodelo con IA",

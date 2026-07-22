@@ -1129,7 +1129,10 @@ async def _special_child_report(
 ) -> tuple[dict[str, Any], dict[str, str]]:
     """Run one synthetic thinking or vision adapter case in an isolated child."""
 
-    from opensquilla.engine.pricing import lookup_price  # noqa: PLC0415
+    from opensquilla.engine.pricing import (  # noqa: PLC0415
+        estimate_cost,
+        resolve_model_price,
+    )
     from opensquilla.provider.selector import (  # noqa: PLC0415
         ProviderConfig,
         _build_provider,
@@ -1250,11 +1253,15 @@ async def _special_child_report(
         and toggle_verified
         and _usage_nonzero(usage)
     )
-    price = lookup_price(model_value)
-    estimated_cost = (
-        int(usage.get("input_tokens") or 0) * price.input_per_m
-        + int(usage.get("output_tokens") or 0) * price.output_per_m
-    ) / 1_000_000
+    resolved = resolve_model_price(model_value, provider)
+    estimate_result = estimate_cost(
+        input_tokens=int(usage.get("input_tokens") or 0),
+        output_tokens=int(usage.get("output_tokens") or 0),
+        cache_read_tokens=int(usage.get("cached_tokens") or 0),
+        cache_write_tokens=int(usage.get("cache_write_tokens") or 0),
+        price=resolved.entry,
+    )
+    estimated_cost = estimate_result.cost_usd
     row = {
         "stage": stage,
         "provider": provider,
@@ -1268,6 +1275,8 @@ async def _special_child_report(
             "billing_scope": "static_estimate",
             "opensquilla_estimate": estimated_cost,
             "source": "opensquilla_static_estimate",
+            "price_source": resolved.source,
+            "estimate_basis": estimate_result.basis,
         },
         "latency_ms": latency_ms,
         # Evidence consumed by the parent, then stripped by _stage_summary.

@@ -42,6 +42,7 @@ import {
   taskTerminalStatus as eventTaskTerminalStatus,
 } from '@/utils/chat/streamEvents'
 import { stoppedOutputNoticeMessage } from '@/composables/chat/stoppedOutputNotice'
+import { localizedChatErrorMessage } from '@/utils/chat/errors'
 
 export interface ChatUsageAccumulator {
   input: number
@@ -984,9 +985,10 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       stream.endStreaming()
       const rawErrorCode = (payload as { code?: unknown })?.code
       const errorCode = typeof rawErrorCode === 'string' ? rawErrorCode : undefined
+      const serverMessage = eventSessionErrorMessage(payload)
       messages.value.push({
         role: 'error',
-        text: eventSessionErrorMessage(payload),
+        text: localizedChatErrorMessage(errorCode, serverMessage),
         errorCode,
         terminalNotice: true,
         ts: new Date().toISOString(),

@@ -84,11 +84,13 @@ def _isolate_provider_credentials(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    """Keep default tests offline even when the developer shell has API keys."""
+    """Keep default tests offline even when local env files have API keys."""
     if any(request.node.get_closest_marker(marker) for marker in _LIVE_MARKERS):
         return
     for env_key in _PROVIDER_ENV_KEYS:
-        monkeypatch.delenv(env_key, raising=False)
+        # An explicit empty value prevents build_services.load_env() from
+        # rehydrating credentials from a repository or profile .env file.
+        monkeypatch.setenv(env_key, "")
 
 
 @pytest.fixture(autouse=True)

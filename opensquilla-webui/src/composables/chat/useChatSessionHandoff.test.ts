@@ -216,6 +216,8 @@ describe('chat send session handoff', () => {
       sessionKey,
       pendingQueueOwnerContext,
       busySendMode: pendingQueueRuntime.busySendMode,
+      modelRoutingMode: ref<'off'>('off'),
+      modelRoutingSettingsBusy: ref(false),
       elevatedMode: ref(''),
       runMode: ref('trusted'),
       pendingAttachments,

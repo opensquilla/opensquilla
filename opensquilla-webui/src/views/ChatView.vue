@@ -439,6 +439,7 @@
       :is-new-landing="isNewChatLanding"
       :placeholder="composerPlaceholder"
       :send-button-title="sendButtonTitle"
+      :send-blocked-message="modelImageSendBlockedMessage"
       :run-mode="runMode"
       :allowed-run-modes="allowedRunModes"
       :model-routing-mode="modelRoutingMode"
@@ -614,7 +615,10 @@ import {
   toolSecondaryText,
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
-import { isSendableAttachment } from '@/utils/chat/attachments'
+import {
+  hasSendableModelInputImageAttachment,
+  isSendableAttachment,
+} from '@/utils/chat/attachments'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
 import { agentIdFromSessionKey } from '@/utils/chat/sessionKeys'
 
@@ -1267,6 +1271,8 @@ const chatSend = useChatSend({
   sessionKey,
   pendingQueueOwnerContext,
   busySendMode,
+  modelRoutingMode,
+  modelRoutingSettingsBusy,
   elevatedMode,
   runMode,
   pendingAttachments,
@@ -1539,7 +1545,18 @@ const hasSendContent = computed(() => {
   return inputText.value.trim().length > 0 || pendingAttachments.value.some(isSendableAttachment)
 })
 
+const modelImageSendBlockedMessage = computed(() => {
+  if (!hasSendableModelInputImageAttachment(pendingAttachments.value)) return ''
+  if (modelRoutingSettingsBusy.value) {
+    return t('chat.composer.routingUpdateImageBlocked')
+  }
+  return modelRoutingMode.value === 'llm_ensemble'
+    ? t('chat.composer.ensembleImageUnsupported')
+    : ''
+})
+
 const sendButtonTitle = computed(() => {
+  if (modelImageSendBlockedMessage.value) return modelImageSendBlockedMessage.value
   if (isCompactInFlightForCurrentSession()) return t('chat.sendQueuesUntilCompaction')
   if (isStreaming.value) {
     return busySendMode.value === 'steer'

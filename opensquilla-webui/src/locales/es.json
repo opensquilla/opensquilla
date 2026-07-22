@@ -2857,6 +2857,8 @@
       "routerAnimationOn": "Animación del enrutador activada",
       "routerAnimationOff": "Animación del enrutador desactivada",
       "modelRouting": "Enrutamiento de modelos",
+      "ensembleImageUnsupported": "Ensemble aún no admite entradas de imagen. Cambia al enrutamiento de un solo modelo e inténtalo de nuevo.",
+      "routingUpdateImageBlocked": "El enrutamiento de modelos se está actualizando. Espera antes de enviar imágenes.",
       "modelRoutingOff": "Desactivado",
       "modelRoutingOffDesc": "Envía cada turno al modelo seleccionado.",
       "modelRoutingSquillaRouter": "Enrutador monomodelo con IA",

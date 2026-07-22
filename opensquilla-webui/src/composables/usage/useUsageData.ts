@@ -273,8 +273,13 @@ function toggleModelExpand(row: { raw: SessionRow; rowIdentity: string }) {
   }
 }
 
-async function loadData(): Promise<boolean> {
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false
+// 'superseded' means a newer load took over (auto-refresh tick, visibility
+// refresh); that newer load fetches with the freshest range selection, so the
+// superseded caller must neither report failure nor roll anything back.
+type LoadOutcome = 'loaded' | 'superseded' | 'failed' | 'hidden'
+
+async function requestLoad(): Promise<LoadOutcome> {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return 'hidden'
   const generation = ++loadGeneration
   usageLoading.value = true
   usageError.value = null
@@ -284,11 +289,11 @@ async function loadData(): Promise<boolean> {
       range.value as UsageRangeSelection,
       { cachedSnapshot: usageSnapshot.value },
     )
-    if (generation !== loadGeneration) return false
+    if (generation !== loadGeneration) return 'superseded'
     usageSnapshot.value = snapshot
-    return true
+    return 'loaded'
   } catch (error) {
-    if (generation !== loadGeneration) return false
+    if (generation !== loadGeneration) return 'superseded'
     // A refresh or range request must never replace already-rendered,
     // trustworthy data with a page-level error.  The caller that changed the
     // range restores the previous selection below, keeping the cached
@@ -296,17 +301,29 @@ async function loadData(): Promise<boolean> {
     if (!usageSnapshot.value) {
       usageError.value = error instanceof Error ? error.message : String(error)
     }
-    return false
+    return 'failed'
   } finally {
     if (generation === loadGeneration) usageLoading.value = false
   }
 }
 
+async function loadData(): Promise<boolean> {
+  return (await requestLoad()) === 'loaded'
+}
+
 function setRange(nextRange: string) {
   const previousRange = range.value
   persistRange(nextRange)
-  void loadData().then(loaded => {
-    if (!loaded && range.value === nextRange && usageSnapshot.value) {
+  void requestLoad().then(outcome => {
+    // Only this call's own failure (or a hidden-document no-op) may revert:
+    // a superseded request means a concurrent refresh already fetched the
+    // new range and published its snapshot, so rolling the selection back
+    // would mislabel that fresher data and persist the wrong preference.
+    if (
+      (outcome === 'failed' || outcome === 'hidden')
+      && range.value === nextRange
+      && usageSnapshot.value
+    ) {
       persistRange(previousRange)
     }
   })

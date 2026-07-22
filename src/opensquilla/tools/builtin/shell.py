@@ -104,6 +104,12 @@ from opensquilla.sandbox.types import (
     SandboxResult,
     sandbox_path_text,
 )
+from opensquilla.skills.runtime_env import (
+    MEDIA_FONTS_DIR_ENV,
+    PAPER_FONTS_ENV,
+    managed_skill_env,
+    managed_toolchain_readonly_paths,
+)
 from opensquilla.subprocess_encoding import apply_utf8_child_env, decode_subprocess_output
 from opensquilla.tools.builtin.shell_policy import check_safe_bin
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -2591,6 +2597,36 @@ def _policy_with_active_tool_mounts(policy: SandboxPolicy) -> SandboxPolicy:
     return dataclasses.replace(policy, mounts=tuple(mounts_by_target.values()))
 
 
+def _policy_with_managed_toolchain_mounts(policy: SandboxPolicy) -> SandboxPolicy:
+    """Make activated, receipt-validated toolchains visible read-only."""
+
+    if not hasattr(policy, "mounts"):
+        return policy
+    env_allowlist = tuple(
+        dict.fromkeys((*policy.env_allowlist, MEDIA_FONTS_DIR_ENV, PAPER_FONTS_ENV))
+    )
+    mounts_by_target = {
+        (str(mount.host_path), sandbox_path_text(mount.sandbox_path)): mount
+        for mount in policy.mounts
+    }
+    for path in managed_toolchain_readonly_paths():
+        key = (str(path), sandbox_path_text(path))
+        existing = mounts_by_target.get(key)
+        if existing is not None and existing.mode == "rw":
+            continue
+        mounts_by_target[key] = MountSpec(
+            host_path=path,
+            sandbox_path=path,
+            mode="ro",
+            required=False,
+        )
+    return dataclasses.replace(
+        policy,
+        mounts=tuple(mounts_by_target.values()),
+        env_allowlist=env_allowlist,
+    )
+
+
 def _windows_optional_mount_is_stale(mount: MountSpec, *, windows_backend: bool) -> bool:
     return windows_backend and not mount.required and not mount.host_path.exists()
 
@@ -4593,6 +4629,7 @@ async def _run_full_host_shell_command(
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
+    merged_env = managed_skill_env(merged_env)
     apply_utf8_child_env(merged_env)
     _append_windows_app_alias_path(merged_env, runtime=runtime)
     merged_env = _dedupe_windows_env_keys(_host_shell_env(merged_env))
@@ -4868,6 +4905,7 @@ async def exec_command(
     merged_env = os.environ.copy()
     if env:
         merged_env.update(env)
+    merged_env = managed_skill_env(merged_env)
     apply_utf8_child_env(merged_env)
     _append_windows_app_alias_path(merged_env, runtime=runtime)
     merged_env = _dedupe_windows_env_keys(merged_env)
@@ -4926,6 +4964,7 @@ async def exec_command(
             backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
             backend_policy = request.policy
             backend_policy = _policy_with_active_tool_mounts(backend_policy)
+            backend_policy = _policy_with_managed_toolchain_mounts(backend_policy)
             backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
             backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
             backend_policy = _trusted_managed_network_policy(backend_policy, runtime)
@@ -5053,7 +5092,9 @@ async def _start_host_background_process(
     """Start a host background process without sandbox policy or safety preflight."""
 
     session_id = str(uuid.uuid4())[:8]
-    host_env = apply_utf8_child_env(_host_shell_env(os.environ.copy()))
+    host_env = managed_skill_env(os.environ)
+    apply_utf8_child_env(host_env)
+    host_env = _host_shell_env(host_env)
     _append_windows_app_alias_path(host_env, runtime=runtime)
     host_env = _dedupe_windows_env_keys(host_env)
 
@@ -5295,7 +5336,7 @@ async def background_process(
     effective_timeout = _resolve_background_timeout(timeout)
 
     if runtime is not None and runtime.effective.sandbox_enabled and not host_execution:
-        merged_env = dict(os.environ)
+        merged_env = managed_skill_env(os.environ)
         apply_utf8_child_env(merged_env)
         _append_windows_app_alias_path(merged_env, runtime=runtime)
         merged_env = _dedupe_windows_env_keys(merged_env)
@@ -5328,6 +5369,7 @@ async def background_process(
             backend_cwd = _sandbox_shell_backend_cwd(cwd, request)
             backend_policy = policy
             backend_policy = _policy_with_active_tool_mounts(backend_policy)
+            backend_policy = _policy_with_managed_toolchain_mounts(backend_policy)
             backend_policy = _policy_with_windows_shell_runtime_mounts(backend_policy, runtime)
             backend_policy = _policy_with_wall_timeout(backend_policy, effective_timeout)
             backend_policy = _trusted_managed_network_policy(backend_policy, runtime)

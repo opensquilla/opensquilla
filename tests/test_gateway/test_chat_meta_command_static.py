@@ -37,3 +37,5 @@ def test_meta_run_path_uses_meta_run_rpc() -> None:
     assert "meta.run" in body, "running a chosen meta-skill must call the meta.run RPC"
     assert "sessionKey" in body, "meta.run must pass the session key"
     assert "dispatchHidden" in body, "running a meta-skill must trigger a turn via dispatchHidden"
+    assert "setup_required" in body, "setup failures must be rendered without starting a turn"
+    assert "readiness.missing_bins" in body, "the setup notice must identify missing binaries"

@@ -1,5 +1,6 @@
 import { ref, type Ref } from 'vue'
 import i18n from '@/i18n'
+import type { MetaSetupReadiness } from '@/types/metaSetup'
 
 type RpcClient = {
   waitForConnection: () => Promise<void>
@@ -9,6 +10,12 @@ type RpcClient = {
 export interface ArgumentChoice {
   value: string
   description: string
+  status?: 'ready' | 'needs_setup'
+  missingBins?: string[]
+  missingEnv?: string[]
+  missingEnvAny?: string[][]
+  missingSkills?: string[]
+  missingCapabilities?: string[]
 }
 
 export interface ChatSlashCommand {
@@ -24,6 +31,12 @@ export interface ChatSlashCommand {
   argumentChoices?: ArgumentChoice[]
   // Set on synthetic entries that represent a chosen argument ("/meta <skill>").
   argValue?: string
+  metaStatus?: 'ready' | 'needs_setup'
+  missingBins?: string[]
+  missingEnv?: string[]
+  missingEnvAny?: string[][]
+  missingSkills?: string[]
+  missingCapabilities?: string[]
   [key: string]: unknown
 }
 
@@ -62,6 +75,34 @@ export interface UseChatSlashCommandsOptions {
   // Send a turn whose provider text bypasses slash parsing (mirrors the TUI
   // override path). Used by /meta <name> to trigger the launch after meta.run.
   dispatchHidden: (providerText: string, displayText: string) => void
+  // Open a persistent, explicitly-confirmed setup flow. Older embeddings can
+  // omit this callback and keep the compact toast fallback.
+  requestMetaSetup?: (
+    name: string,
+    readiness: MetaSetupReadiness,
+    originatingSessionKey: string,
+    launchText: string,
+  ) => void | Promise<void>
+}
+
+export interface MetaCommandInvocation {
+  skillName: string
+  launchText: string
+}
+
+export function parseMetaCommandInvocation(args: string): MetaCommandInvocation | null {
+  const trimmed = String(args || '').trim()
+  if (!trimmed) return null
+
+  const firstWhitespace = trimmed.search(/\s/)
+  const skillName = firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace)
+  const suffix = firstWhitespace === -1 ? '' : trimmed.slice(firstWhitespace).trim()
+  const requestMatch = suffix.match(/^--(?:\s+([\s\S]*))?$/)
+  const request = requestMatch ? String(requestMatch[1] || '').trim() : ''
+  return {
+    skillName,
+    launchText: request ? `/meta ${skillName} -- ${request}` : `/meta ${skillName}`,
+  }
 }
 
 function slashCommandKey(value: string): string {
@@ -73,7 +114,7 @@ function slashCommandKey(value: string): string {
 function normalizeSlashCommand(cmd: SlashCommandPayload): ChatSlashCommand {
   const name = cmd?.name || cmd?.cmd || ''
   const rawChoices = Array.isArray((cmd as { argument_choices?: unknown })?.argument_choices)
-    ? (cmd as { argument_choices: Array<{ value?: unknown; description?: unknown }> }).argument_choices
+    ? (cmd as { argument_choices: Array<Record<string, unknown>> }).argument_choices
     : []
   return {
     ...cmd,
@@ -83,7 +124,20 @@ function normalizeSlashCommand(cmd: SlashCommandPayload): ChatSlashCommand {
     desc: cmd?.description || cmd?.desc || cmd?.usage || '',
     aliases: Array.isArray(cmd?.aliases) ? cmd.aliases : [],
     argumentChoices: rawChoices
-      .map((c) => ({ value: String(c?.value ?? ''), description: String(c?.description ?? '') }))
+      .map((c) => ({
+        value: String(c?.value ?? ''),
+        description: String(c?.description ?? ''),
+        status: c?.status === 'needs_setup' ? 'needs_setup' as const : 'ready' as const,
+        missingBins: Array.isArray(c?.missing_bins) ? c.missing_bins.map(String) : [],
+        missingEnv: Array.isArray(c?.missing_env) ? c.missing_env.map(String) : [],
+        missingEnvAny: Array.isArray(c?.missing_env_any)
+          ? c.missing_env_any.map(group => Array.isArray(group) ? group.map(String) : [])
+          : [],
+        missingSkills: Array.isArray(c?.missing_skills) ? c.missing_skills.map(String) : [],
+        missingCapabilities: Array.isArray(c?.missing_capabilities)
+          ? c.missing_capabilities.map(String)
+          : [],
+      }))
       .filter((c) => c.value),
   }
 }
@@ -98,6 +152,12 @@ function makeArgCandidate(parent: ChatSlashCommand, choice: ArgumentChoice): Cha
     aliases: [],
     execution: parent.execution,
     argValue: choice.value,
+    metaStatus: choice.status,
+    missingBins: choice.missingBins,
+    missingEnv: choice.missingEnv,
+    missingEnvAny: choice.missingEnvAny,
+    missingSkills: choice.missingSkills,
+    missingCapabilities: choice.missingCapabilities,
   }
 }
 
@@ -234,19 +294,56 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         // Bare "/meta" is handled by the argument-completion branch above
         // (it reopens the menu with the skill choices). Here we only reach the
         // run path, with a skill name supplied (e.g. Enter on "/meta <skill>").
-        const skillName = String(args || '').trim()
-        if (!skillName) break
+        const invocation = parseMetaCommandInvocation(args)
+        if (!invocation) break
+        const { skillName, launchText } = invocation
+        const originatingSessionKey = options.sessionKey.value
         // Stamp the launch, then trigger a turn so the pipeline seeds the
         // marker and the orchestrator runs the skill.
-        options.rpc.call<{ ok?: boolean; error?: string }>('meta.run', { name: skillName, sessionKey: options.sessionKey.value })
+        options.rpc.call<{
+          ok?: boolean
+          error?: string
+          setup_required?: boolean
+          readiness?: MetaSetupReadiness
+        }>('meta.run', { name: skillName, sessionKey: originatingSessionKey })
           .then((result) => {
+            // meta.run may resolve after navigation. Never launch or open setup
+            // in whichever chat happens to be active by then.
+            if (options.sessionKey.value !== originatingSessionKey) return
             if (result?.ok) {
-              options.dispatchHidden('/meta ' + skillName, '/meta ' + skillName)
+              options.dispatchHidden(launchText, launchText)
+            } else if (result?.setup_required) {
+              const readiness = result.readiness || {}
+              if (options.requestMetaSetup) {
+                void options.requestMetaSetup(
+                  skillName,
+                  readiness,
+                  originatingSessionKey,
+                  launchText,
+                )
+                return
+              }
+              const dependencies = [
+                ...(readiness.missing_bins || []),
+                ...(readiness.missing_env || []),
+                ...(readiness.missing_env_any || []).map(group => group.join(' / ')),
+                ...(readiness.missing_skills || []),
+                ...(readiness.missing_capabilities || []),
+              ].join(', ') || i18n.global.t('chat.metaRuns.unknownDependency')
+              options.notify(i18n.global.t('chat.metaRuns.setupRequired', {
+                skill: skillName,
+                dependencies,
+              }))
             } else {
               options.notify(result?.error || i18n.global.t('chat.metaRuns.couldNotRunSkill', { skill: skillName }))
             }
           })
-          .catch((err: unknown) => options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', { error: err instanceof Error ? err.message : String(err) })))
+          .catch((err: unknown) => {
+            if (options.sessionKey.value !== originatingSessionKey) return
+            options.notify(i18n.global.t('chat.metaRuns.couldNotRunSkillError', {
+              error: err instanceof Error ? err.message : String(err),
+            }))
+          })
         break
       }
     }
@@ -254,14 +351,17 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
 
   async function executeSlashCommand(text: string): Promise<boolean> {
     if (!slashCatalogLoaded.value) await loadSlashCommands()
-    const [cmdText, ...rest] = text.trim().split(/\s+/)
+    const trimmed = text.trim()
+    const firstWhitespace = trimmed.search(/\s/)
+    const cmdText = firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace)
+    const args = firstWhitespace === -1 ? '' : trimmed.slice(firstWhitespace).trimStart()
     const cmd = slashCmds.value.find(c => slashCommandKey(c.name) === slashCommandKey(cmdText))
     if (!cmd) {
       closeSlashMenu()
       console.warn('Unsupported command:', cmdText)
       return true
     }
-    selectSlashCmd(cmd, rest.join(' '))
+    selectSlashCmd(cmd, args)
     return true
   }
 

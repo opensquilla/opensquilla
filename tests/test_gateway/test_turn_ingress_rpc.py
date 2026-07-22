@@ -12,6 +12,12 @@ from typing import Any
 
 import pytest
 
+from opensquilla.engine.steps.meta_command import (
+    pending_meta_launch_peek,
+    pending_meta_launch_pop,
+    pending_meta_launch_put,
+    pending_meta_launch_state,
+)
 from opensquilla.gateway.auth import Principal
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
@@ -128,6 +134,126 @@ def _assert_no_runtime_acceptance_state(runtime: TaskRuntime) -> None:
 
 
 @pytest.mark.asyncio
+async def test_meta_launch_promotes_after_durable_acceptance_before_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_id = "meta-launch-promotion-order"
+    assert (
+        pending_meta_launch_put(
+            SESSION_KEY,
+            "meta-tiny",
+            client_request_id=request_id,
+        )
+        == "stamped"
+    )
+
+    async with _open_real_stack(tmp_path / "sessions.db") as stack:
+        order: list[str] = []
+        original_accept = stack.storage.accept_turn
+        original_activate = stack.runtime.activate
+
+        async def traced_accept(*args: Any, **kwargs: Any):
+            acceptance = await original_accept(*args, **kwargs)
+            order.append("durable")
+            return acceptance
+
+        async def traced_activate(*args: Any, **kwargs: Any):
+            order.append(
+                f"activate:{pending_meta_launch_state(SESSION_KEY, client_request_id=request_id)}"
+            )
+            return await original_activate(*args, **kwargs)
+
+        monkeypatch.setattr(stack.storage, "accept_turn", traced_accept)
+        monkeypatch.setattr(stack.runtime, "activate", traced_activate)
+        params = {
+            "sessionKey": SESSION_KEY,
+            "message": "/meta meta-tiny",
+            "clientRequestId": request_id,
+        }
+        response = await get_dispatcher().dispatch(
+            "rpc-meta-promotion-order",
+            "chat.send",
+            params,
+            stack.context,
+        )
+        await stack.wait_until_running()
+
+        assert response.ok is True
+        assert order == ["durable", "activate:accepted"]
+        assert pending_meta_launch_state(
+            SESSION_KEY,
+            client_request_id=request_id,
+        ) == "accepted"
+        # Simulate the pipeline's exact one-shot claim, then replay the same
+        # durable chat request. The receipt replay must not resurrect a marker.
+        assert pending_meta_launch_pop(
+            SESSION_KEY,
+            client_request_id=request_id,
+        ) == "meta-tiny"
+        replay = await get_dispatcher().dispatch(
+            "rpc-meta-promotion-replay",
+            "chat.send",
+            params,
+            stack.context,
+        )
+        assert replay.ok is True
+        assert replay.payload["replayed"] is True
+        assert pending_meta_launch_state(
+            SESSION_KEY,
+            client_request_id=request_id,
+        ) is None
+        assert (
+            pending_meta_launch_put(
+                SESSION_KEY,
+                "meta-tiny",
+                client_request_id=request_id,
+            )
+            == "replayed"
+        )
+
+
+@pytest.mark.asyncio
+async def test_durable_non_launch_message_does_not_promote_staged_marker(
+    tmp_path: Path,
+) -> None:
+    request_id = "meta-launch-invalid-message"
+    assert (
+        pending_meta_launch_put(
+            SESSION_KEY,
+            "meta-tiny",
+            client_request_id=request_id,
+        )
+        == "stamped"
+    )
+
+    async with _open_real_stack(tmp_path / "sessions.db") as stack:
+        response = await get_dispatcher().dispatch(
+            "rpc-meta-invalid-promotion",
+            "chat.send",
+            {
+                "sessionKey": SESSION_KEY,
+                "message": "ordinary chat text",
+                "clientRequestId": request_id,
+            },
+            stack.context,
+        )
+        await stack.wait_until_running()
+
+        assert response.ok is True
+        assert pending_meta_launch_state(
+            SESSION_KEY,
+            client_request_id=request_id,
+        ) == "staged"
+        assert pending_meta_launch_peek(
+            SESSION_KEY,
+            client_request_id=request_id,
+        ) == "meta-tiny"
+
+    pending_meta_launch_pop(SESSION_KEY, client_request_id=request_id)
+
+
+@pytest.mark.asyncio
 async def test_sessions_send_atomically_accepts_message_task_and_receipt(tmp_path: Path) -> None:
     async with _open_real_stack(tmp_path / "sessions.db") as stack:
         response = await get_dispatcher().dispatch(
@@ -157,6 +283,7 @@ async def test_sessions_send_atomically_accepts_message_task_and_receipt(tmp_pat
         entries = await stack.storage.get_transcript(stack.session_id)
         assert entries[0].turn_context == {
             "turn_id": response.payload["task_id"],
+            "client_request_id": CLIENT_REQUEST_ID,
             "client_message_id": "composer-message-1",
             "surface_id": "tui:atomic-test",
             "intent": "send",
@@ -579,6 +706,7 @@ async def test_collect_mode_atomically_merges_message_and_receipt_into_queued_ta
         entries = await stack.storage.get_transcript(stack.session_id)
         assert entries[-2].turn_context == {
             "turn_id": first.payload["task_id"],
+            "client_request_id": "collect-first",
             "client_message_id": "collect-composer-1",
             "surface_id": "tui:collect-1",
             "intent": "send",
@@ -587,6 +715,7 @@ async def test_collect_mode_atomically_merges_message_and_receipt_into_queued_ta
         }
         assert entries[-1].turn_context == {
             "turn_id": first.payload["task_id"],
+            "client_request_id": "collect-second",
             "client_message_id": "collect-composer-2",
             "surface_id": "tui:collect-2",
             "intent": "send",
@@ -791,6 +920,7 @@ async def test_chat_send_forwards_client_request_id_into_atomic_acceptance(
         assert task.queue_mode == "interrupt"
         entries = await stack.storage.get_transcript(stack.session_id)
         assert entries[0].turn_context is not None
+        assert entries[0].turn_context["client_request_id"] == CLIENT_REQUEST_ID
         assert entries[0].turn_context["client_message_id"] == "web-composer-message"
         assert entries[0].turn_context["surface_id"] == "webui:chat"
         assert _table_counts(stack.db_path) == {

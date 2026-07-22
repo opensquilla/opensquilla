@@ -1,0 +1,1773 @@
+from __future__ import annotations
+
+import hashlib
+import io
+import json
+import multiprocessing
+import os
+import shutil
+import stat
+import subprocess
+import tarfile
+import threading
+import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import opensquilla.skills.toolchains.runtime as toolchain_runtime
+from opensquilla.skills.toolchains import manager, registry
+from opensquilla.skills.toolchains.manager import (
+    DownloadVerificationError,
+    ToolchainProbeError,
+    UnsafeArchiveError,
+)
+from opensquilla.skills.toolchains.registry import ToolchainDescriptor, UnknownComponentError
+from opensquilla.skills.toolchains.runtime import (
+    managed_env,
+    resolve_managed_binary,
+    resolve_managed_resource,
+)
+
+
+def _descriptor(
+    *,
+    version: str = "test-v1",
+    size: int = 1,
+    sha256: str = "0" * 64,
+) -> ToolchainDescriptor:
+    return ToolchainDescriptor(
+        component_id="paper-tex",
+        display_name="Synthetic paper toolchain",
+        version=version,
+        platform_key="test-x64",
+        supported=True,
+        unsupported_reason=None,
+        url="https://example.invalid/paper.tar.xz",
+        sha256=sha256,
+        size=size,
+        install_backend="archive",
+        brew_formula=None,
+        archive_type="tar.xz",
+        archive_root="Bundle",
+        bin_relpaths=("Bundle/bin",),
+        probe_commands=(),
+        post_install=None,
+        package_closure=(),
+        auxiliary_assets=(),
+        license="Test-only",
+        license_url="https://example.invalid/license",
+        source="https://example.invalid/source",
+        closure_source=None,
+        notes="Synthetic fixture",
+    )
+
+
+def _write_tar_xz(
+    path: Path,
+    files: dict[str, bytes],
+    *,
+    executable: set[str] | None = None,
+) -> None:
+    executable = executable or set()
+    with tarfile.open(path, "w:xz", preset=0) as archive:
+        directories: set[str] = set()
+        for name in files:
+            parent = Path(name).parent
+            while str(parent) not in {"", "."}:
+                if parent.is_absolute() or parent.parent == parent:
+                    break
+                directories.add(parent.as_posix())
+                parent = parent.parent
+        for directory in sorted(directories, key=lambda value: (value.count("/"), value)):
+            info = tarfile.TarInfo(f"{directory}/")
+            info.type = tarfile.DIRTYPE
+            info.mode = 0o755
+            archive.addfile(info)
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755 if name in executable else 0o644
+            archive.addfile(info, io.BytesIO(data))
+
+
+def _write_special_tar(path: Path, name: str, entry_type: bytes) -> None:
+    with tarfile.open(path, "w:xz", preset=0) as archive:
+        info = tarfile.TarInfo(name)
+        info.type = entry_type
+        info.linkname = "target"
+        archive.addfile(info)
+
+
+def _make_executable(path: Path, content: bytes = b"test") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    path.chmod(0o755)
+
+
+def _hold_component_lock(root: str, ready: Any, release: Any) -> None:
+    state_root = Path(root)
+    manager._ensure_root(state_root)
+    with manager._ComponentInstallLock(state_root, "paper-tex", 5):
+        ready.set()
+        release.wait(5)
+
+
+def test_registry_is_code_owned_and_normalizes_supported_hosts() -> None:
+    assert registry.component_ids() == ("paper-tex", "media-ffmpeg")
+    assert registry.normalize_platform("macOS") == "darwin"
+    assert registry.normalize_platform("WIN32") == "windows"
+    assert registry.normalize_arch("AMD64") == "x64"
+    assert registry.normalize_arch("aarch64") == "arm64"
+    assert registry.platform_key("Darwin", "arm64") == "darwin-universal"
+    assert registry.platform_key("Linux", "AMD64", "musl") == "linux-musl-x64"
+
+    with pytest.raises(UnknownComponentError, match="Unknown managed toolchain"):
+        registry.describe_component("https://attacker.invalid/archive")
+
+
+def test_registry_pins_monthly_tinytex_full_archives_on_all_supported_hosts() -> None:
+    darwin = registry.describe_component("paper-tex", platform_name="darwin", arch="arm64")
+    assert darwin.supported is True
+    assert darwin.version == "2026.05"
+    assert darwin.size == 206_982_916
+    assert darwin.sha256 == "53f55f2ec100cc4e0ba5840f8a66086c6e37aa36b9aa4c64f924165352443e92"
+    assert darwin.url == (
+        "https://github.com/rstudio/tinytex-releases/releases/download/v2026.05/"
+        "TinyTeX-darwin-v2026.05.tar.xz"
+    )
+    assert darwin.post_install == "paper-capability"
+    assert darwin.package_closure == ()
+    assert darwin.closure_source is None
+    assert darwin.total_download_size == 226_472_001
+    assert {asset.asset_id for asset in darwin.auxiliary_assets} == {
+        "noto-cjk-font",
+        "noto-cjk-license",
+    }
+    assert "self-contained" in darwin.notes
+
+    windows = registry.describe_component("paper-tex", platform_name="windows", arch="x86_64")
+    assert windows.supported is True
+    assert windows.version == "2026.05"
+    assert windows.archive_type == "zip"
+    assert windows.archive_root == "TinyTeX"
+    assert windows.bin_relpaths == ("TinyTeX/bin/windows",)
+    assert windows.size == 245_928_318
+    assert windows.total_download_size == 265_417_403
+    assert windows.sha256 == "64eab7759cc2a17231cb84bd4a08c0da2efd074ebcabf663d8919d6411070f4d"
+    assert windows.url == (
+        "https://github.com/rstudio/tinytex-releases/releases/download/v2026.05/"
+        "TinyTeX-v2026.05.zip"
+    )
+    assert windows.unsupported_reason is None
+    assert "ordinary ZIP" in windows.notes
+
+
+def test_media_catalog_selects_safe_backends_and_enforces_linux_floor() -> None:
+    darwin = registry.describe_component("media-ffmpeg", platform_name="darwin", arch="arm64")
+    assert darwin.supported is True
+    assert darwin.install_backend == "brew"
+    assert darwin.version == "homebrew-stable"
+    assert darwin.brew_formula == "ffmpeg-full"
+    assert darwin.source == "https://formulae.brew.sh/formula/ffmpeg-full"
+    assert darwin.size is None
+    assert {asset.asset_id for asset in darwin.auxiliary_assets} == {
+        "noto-cjk-font",
+        "noto-cjk-license",
+    }
+
+    linux = registry.describe_component(
+        "media-ffmpeg",
+        platform_name="linux",
+        arch="x86_64",
+        libc_name="glibc",
+        libc_version="2.31",
+        kernel_release="5.15.0",
+    )
+    assert linux.supported is True
+    assert linux.version == "7.1.5-2026.06.30"
+    assert linux.install_backend == "archive"
+    assert linux.archive_type == "tar.xz"
+    assert linux.size == 118_937_200
+    assert linux.total_download_size == 138_426_285
+    assert linux.sha256 == ("f0c580f5f12af54e8c9c649c70b2d25f264edb35393203d34b20cf4f9c126288")
+
+    old_glibc = registry.describe_component(
+        "media-ffmpeg",
+        platform_name="linux",
+        arch="x86_64",
+        libc_name="glibc",
+        libc_version="2.27",
+        kernel_release="5.15.0",
+    )
+    assert old_glibc.supported is False
+    assert "glibc 2.28" in (old_glibc.unsupported_reason or "")
+    old_kernel = registry.describe_component(
+        "media-ffmpeg",
+        platform_name="linux",
+        arch="arm64",
+        libc_name="glibc",
+        libc_version="2.31",
+        kernel_release="4.17.9",
+    )
+    assert old_kernel.supported is False
+    assert "kernel 4.18" in (old_kernel.unsupported_reason or "")
+    windows = registry.describe_component("media-ffmpeg", platform_name="windows", arch="amd64")
+    assert windows.version == "8.1.2"
+
+
+@pytest.mark.parametrize(
+    ("name", "entry_type"),
+    [
+        ("Bundle/device", tarfile.CHRTYPE),
+        ("Bundle/fifo", tarfile.FIFOTYPE),
+    ],
+)
+def test_tar_extraction_rejects_links_devices_and_special_entries(
+    tmp_path: Path,
+    name: str,
+    entry_type: bytes,
+) -> None:
+    archive = tmp_path / "unsafe.tar.xz"
+    _write_special_tar(archive, name, entry_type)
+    with pytest.raises(UnsafeArchiveError, match="device or special"):
+        manager._extract_archive(archive, tmp_path / "out", "tar.xz", archive.stat().st_size)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs host policy")
+def test_tar_extraction_allows_valid_internal_symlink_chains_and_hardlinks(
+    tmp_path: Path,
+) -> None:
+    archive_path = tmp_path / "links.tar.xz"
+    with tarfile.open(archive_path, "w:xz", preset=0) as archive:
+        for name, data in (
+            ("Bundle/bin/universal/xetex", b"xetex"),
+            ("Bundle/texmf-dist/scripts/texlive/mktexlsr", b"mktexlsr"),
+        ):
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mode = 0o755
+            archive.addfile(info, io.BytesIO(data))
+        for name, linkname in (
+            ("Bundle/bin/universal/xelatex", "xetex"),
+            ("Bundle/bin/universal/latex", "xelatex"),
+            (
+                "Bundle/bin/universal/mktexlsr",
+                "../../texmf-dist/scripts/texlive/mktexlsr",
+            ),
+        ):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = linkname
+            archive.addfile(info)
+        hardlink = tarfile.TarInfo("Bundle/bin/universal/xetex-hard")
+        hardlink.type = tarfile.LNKTYPE
+        hardlink.linkname = "Bundle/bin/universal/xetex"
+        archive.addfile(hardlink)
+
+    output = tmp_path / "out"
+    manager._extract_archive(archive_path, output, "tar.xz", archive_path.stat().st_size)
+    assert (output / "Bundle/bin/universal/xelatex").is_symlink()
+    assert os.readlink(output / "Bundle/bin/universal/xelatex") == "xetex"
+    assert (output / "Bundle/bin/universal/latex").read_bytes() == b"xetex"
+    assert (output / "Bundle/bin/universal/mktexlsr").read_bytes() == b"mktexlsr"
+    assert (output / "Bundle/bin/universal/xetex-hard").stat().st_ino == (
+        output / "Bundle/bin/universal/xetex"
+    ).stat().st_ino
+
+
+@pytest.mark.parametrize(
+    ("name", "target"),
+    [
+        ("Bundle/bin/escape", "../../../outside"),
+        ("Bundle/bin/absolute", "/tmp/outside"),
+        ("Bundle/bin/drive", "C:/outside"),
+        ("Bundle/bin/backslash", "..\\outside"),
+        ("Bundle/bin/missing", "not-present"),
+    ],
+)
+def test_tar_extraction_rejects_unsafe_or_missing_link_targets(
+    tmp_path: Path,
+    name: str,
+    target: str,
+) -> None:
+    archive_path = tmp_path / "bad-link.tar.xz"
+    with tarfile.open(archive_path, "w:xz", preset=0) as archive:
+        info = tarfile.TarInfo(name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = target
+        archive.addfile(info)
+    with pytest.raises(UnsafeArchiveError):
+        manager._extract_archive(
+            archive_path,
+            tmp_path / "out",
+            "tar.xz",
+            archive_path.stat().st_size,
+        )
+
+
+def test_tar_extraction_rejects_cyclic_and_link_ancestor_chains(tmp_path: Path) -> None:
+    cyclic = tmp_path / "cyclic.tar.xz"
+    with tarfile.open(cyclic, "w:xz", preset=0) as archive:
+        for name, target in (("Bundle/a", "b"), ("Bundle/b", "a")):
+            info = tarfile.TarInfo(name)
+            info.type = tarfile.SYMTYPE
+            info.linkname = target
+            archive.addfile(info)
+    with pytest.raises(UnsafeArchiveError, match="cyclic"):
+        manager._extract_archive(cyclic, tmp_path / "cycle-out", "tar.xz", cyclic.stat().st_size)
+
+    ancestor = tmp_path / "ancestor.tar.xz"
+    with tarfile.open(ancestor, "w:xz", preset=0) as archive:
+        directory = tarfile.TarInfo("Bundle/real/")
+        directory.type = tarfile.DIRTYPE
+        archive.addfile(directory)
+        link = tarfile.TarInfo("Bundle/alias")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "real"
+        archive.addfile(link)
+        child = tarfile.TarInfo("Bundle/alias/file")
+        child.size = 1
+        archive.addfile(child, io.BytesIO(b"x"))
+    with pytest.raises(UnsafeArchiveError, match="descends through a link"):
+        manager._extract_archive(
+            ancestor,
+            tmp_path / "ancestor-out",
+            "tar.xz",
+            ancestor.stat().st_size,
+        )
+
+
+@pytest.mark.parametrize("name", ["../escape", "/absolute", "C:/windows", "bad\\path"])
+def test_tar_extraction_rejects_unsafe_paths(tmp_path: Path, name: str) -> None:
+    archive = tmp_path / "unsafe.tar.xz"
+    _write_tar_xz(archive, {name: b"no"})
+    with pytest.raises(UnsafeArchiveError):
+        manager._extract_archive(archive, tmp_path / "out", "tar.xz", archive.stat().st_size)
+
+
+def test_tar_extraction_preserves_only_safe_files_and_execute_bits(tmp_path: Path) -> None:
+    archive = tmp_path / "safe.tar.xz"
+    _write_tar_xz(
+        archive,
+        {"Bundle/bin/tool": b"binary", "Bundle/share/data": b"data"},
+        executable={"Bundle/bin/tool"},
+    )
+    output = tmp_path / "out"
+    manager._extract_archive(archive, output, "tar.xz", archive.stat().st_size)
+    assert (output / "Bundle/bin/tool").read_bytes() == b"binary"
+    assert os.access(output / "Bundle/bin/tool", os.X_OK)
+    assert (output / "Bundle/share/data").read_bytes() == b"data"
+
+
+def test_extraction_size_limit_stops_decompression_bomb(tmp_path: Path, monkeypatch: Any) -> None:
+    archive = tmp_path / "bomb.tar.xz"
+    _write_tar_xz(archive, {"Bundle/large": b"x" * 2_000})
+    monkeypatch.setattr(manager, "_MAX_EXPANSION_RATIO", 1)
+    with pytest.raises(UnsafeArchiveError, match="extracted-size"):
+        manager._extract_archive(archive, tmp_path / "out", "tar.xz", 1)
+
+
+def test_zip_extraction_rejects_traversal_and_symlink(tmp_path: Path) -> None:
+    traversal = tmp_path / "traversal.zip"
+    with zipfile.ZipFile(traversal, "w") as archive:
+        archive.writestr("../outside", b"no")
+    with pytest.raises(UnsafeArchiveError, match="traversal"):
+        manager._extract_archive(
+            traversal, tmp_path / "traversal-out", "zip", traversal.stat().st_size
+        )
+
+    symlink = tmp_path / "symlink.zip"
+    with zipfile.ZipFile(symlink, "w") as archive:
+        info = zipfile.ZipInfo("Bundle/link")
+        info.create_system = 3
+        info.external_attr = (stat.S_IFLNK | 0o777) << 16
+        archive.writestr(info, "target")
+    with pytest.raises(UnsafeArchiveError, match="link, device, or special"):
+        manager._extract_archive(symlink, tmp_path / "symlink-out", "zip", symlink.stat().st_size)
+
+
+class _Response(io.BytesIO):
+    def __init__(
+        self,
+        data: bytes,
+        *,
+        content_length: int | None = None,
+        final_url: str = "https://objects.example.invalid/artifact",
+    ) -> None:
+        super().__init__(data)
+        self.headers = {} if content_length is None else {"Content-Length": str(content_length)}
+        self._final_url = final_url
+
+    def geturl(self) -> str:
+        return self._final_url
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def test_streaming_download_verifies_size_digest_https_and_reports_progress(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    data = b"verified artifact"
+    descriptor = _descriptor(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+    monkeypatch.setattr(
+        manager.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(data, content_length=len(data)),
+    )
+    progress: list[tuple[int, int]] = []
+    destination = tmp_path / "artifact"
+    manager._download(
+        descriptor,
+        destination,
+        lambda current, total: progress.append((current, total)),
+    )
+    assert destination.read_bytes() == data
+    assert progress[0] == (0, len(data))
+    assert progress[-1] == (len(data), len(data))
+
+
+@pytest.mark.parametrize("failure", ["too-large", "wrong-digest", "http-redirect"])
+def test_streaming_download_fails_closed(
+    tmp_path: Path,
+    monkeypatch: Any,
+    failure: str,
+) -> None:
+    data = b"artifact"
+    descriptor = _descriptor(size=len(data), sha256=hashlib.sha256(data).hexdigest())
+    final_url = "https://objects.example.invalid/artifact"
+    if failure == "too-large":
+        descriptor = replace(descriptor, size=len(data) - 1)
+    elif failure == "wrong-digest":
+        descriptor = replace(descriptor, sha256="f" * 64)
+    else:
+        final_url = "http://objects.example.invalid/artifact"
+    monkeypatch.setattr(
+        manager.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _Response(data, final_url=final_url),
+    )
+    with pytest.raises(DownloadVerificationError):
+        manager._download(descriptor, tmp_path / failure, None)
+
+
+def test_archive_payload_manifest_covers_runtime_tree_and_excludes_own_marker(
+    tmp_path: Path,
+) -> None:
+    descriptor = _descriptor()
+    package = tmp_path / "package"
+    _make_executable(package / "Bundle/bin/paperbin", b"verified executable")
+    runtime_data = package / "Bundle/texmf-dist/tex/latex/example/example.sty"
+    runtime_data.parent.mkdir(parents=True)
+    runtime_data.write_bytes(b"verified runtime package")
+    marker_path = package / ".opensquilla-toolchain.json"
+    marker_path.write_text("pre-existing marker must be excluded", encoding="utf-8")
+
+    marker = manager._package_marker(descriptor, package)
+    manifest = marker["payload_manifest"]
+
+    assert "Bundle/bin/paperbin" in manifest
+    assert "Bundle/texmf-dist/tex/latex/example/example.sty" in manifest
+    assert ".opensquilla-toolchain.json" not in manifest
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    assert manager.package_payload_matches(package, descriptor) is True
+
+    runtime_data.write_bytes(b"tampered runtime package")
+    assert manager.package_payload_matches(package, descriptor) is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows symlink creation needs host policy")
+def test_archive_payload_manifest_rejects_symlink_escape(tmp_path: Path) -> None:
+    descriptor = _descriptor()
+    package = tmp_path / "package"
+    _make_executable(package / "Bundle/bin/paperbin")
+    outside = tmp_path / "outside-runtime"
+    outside.write_bytes(b"outside")
+    (package / "Bundle/escaped-runtime").symlink_to(outside)
+
+    with pytest.raises(manager.ToolchainError, match="symlink escaped"):
+        manager._package_marker(descriptor, package)
+
+
+def test_repeated_install_reuses_verified_package_without_downloading(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        archive,
+        {
+            f"Bundle/bin/{executable_name}": b"tool",
+            "Bundle/texmf-dist/runtime.sty": b"runtime",
+        },
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    descriptor = _descriptor(size=archive.stat().st_size)
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    download_calls = 0
+
+    def fake_download(
+        _descriptor: ToolchainDescriptor,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        nonlocal download_calls
+        download_calls += 1
+        shutil.copyfile(archive, destination)
+
+    monkeypatch.setattr(manager, "_download", fake_download)
+    state_root = tmp_path / "state"
+
+    first = manager.install_component("paper-tex", root=state_root)
+    second = manager.install_component("paper-tex", root=state_root)
+
+    assert download_calls == 1
+    assert second == first
+
+    (state_root / "active/paper-tex.json").unlink()
+    repaired = manager.install_component("paper-tex", root=state_root)
+    assert download_calls == 1
+    assert repaired.receipt_id != first.receipt_id
+    assert repaired.package_relpath == first.package_relpath
+
+
+def test_non_bin_runtime_tamper_forces_fresh_archive_download(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        archive,
+        {
+            f"Bundle/bin/{executable_name}": b"tool",
+            "Bundle/texmf-dist/runtime.sty": b"verified runtime",
+        },
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    descriptor = _descriptor(size=archive.stat().st_size)
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    download_calls = 0
+
+    def fake_download(
+        _descriptor: ToolchainDescriptor,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        nonlocal download_calls
+        download_calls += 1
+        shutil.copyfile(archive, destination)
+
+    monkeypatch.setattr(manager, "_download", fake_download)
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("paper-tex", root=state_root)
+    assert receipt.package_relpath is not None
+    runtime_data = state_root / receipt.package_relpath / "Bundle/texmf-dist/runtime.sty"
+    runtime_data.write_bytes(b"tampered runtime")
+
+    repaired = manager.install_component("paper-tex", root=state_root)
+
+    assert download_calls == 2
+    assert repaired.receipt_id != receipt.receipt_id
+    assert runtime_data.read_bytes() == b"verified runtime"
+
+
+def test_install_activation_failure_rollback_and_runtime_path_order(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    executable_v1 = b"#!/bin/sh\nprintf 'v1'\n"
+    executable_v2 = b"#!/bin/sh\nprintf 'v2'\n"
+    font_v1 = b"font-v1"
+    font_v2 = b"font-v2"
+    archive_v1 = tmp_path / "v1.tar.xz"
+    archive_v2 = tmp_path / "v2.tar.xz"
+    _write_tar_xz(
+        archive_v1,
+        {f"Bundle/bin/{executable_name}": executable_v1},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    _write_tar_xz(
+        archive_v2,
+        {f"Bundle/bin/{executable_name}": executable_v2},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+
+    def descriptor_for(version: str, archive: Path, font: bytes) -> ToolchainDescriptor:
+        return replace(
+            _descriptor(version=version, size=archive.stat().st_size),
+            auxiliary_assets=(
+                registry.AuxiliaryAssetDescriptor(
+                    asset_id="test-font",
+                    url=f"https://example.invalid/{version}.ttc",
+                    sha256=hashlib.sha256(font).hexdigest(),
+                    size=len(font),
+                    destination="fonts/test-font.ttc",
+                    license="OFL-1.1",
+                    source="https://example.invalid/fonts",
+                ),
+            ),
+        )
+
+    selected = {
+        "descriptor": descriptor_for("v1", archive_v1, font_v1),
+        "archive": archive_v1,
+    }
+    real_describe_component = manager.registry.describe_component
+
+    def fake_describe_component(component_id: str) -> ToolchainDescriptor:
+        if component_id == "paper-tex":
+            return selected["descriptor"]
+        return real_describe_component(component_id)
+
+    monkeypatch.setattr(manager.registry, "describe_component", fake_describe_component)
+
+    def fake_download(
+        _descriptor: ToolchainDescriptor,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        shutil.copyfile(selected["archive"], destination)
+
+    monkeypatch.setattr(manager, "_download", fake_download)
+    font_payloads = {
+        "https://example.invalid/v1.ttc": font_v1,
+        "https://example.invalid/v2.ttc": font_v2,
+    }
+
+    def fake_pinned_download(
+        url: str,
+        sha256: str,
+        size: int,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        data = font_payloads[url]
+        assert len(data) == size
+        assert hashlib.sha256(data).hexdigest() == sha256
+        destination.write_bytes(data)
+
+    monkeypatch.setattr(manager, "_download_pinned", fake_pinned_download)
+    state_root = tmp_path / "state"
+    first = manager.install_component("paper-tex", root=state_root)
+    active_path = state_root / "active/paper-tex.json"
+    first_active = json.loads(active_path.read_text(encoding="utf-8"))
+    assert first.version == "v1"
+    assert first_active["receipt_id"] == first.receipt_id
+    assert list((state_root / "receipts/paper-tex").glob("*.json"))
+
+    selected.update(
+        descriptor=descriptor_for("v2", archive_v2, font_v2),
+        archive=archive_v2,
+    )
+    with pytest.raises(ToolchainProbeError, match="callback rejected"):
+        manager.install_component(
+            "paper-tex",
+            root=state_root,
+            probe_cb=lambda *_args: False,
+        )
+    assert json.loads(active_path.read_text(encoding="utf-8")) == first_active
+    assert not (state_root / "packages/paper-tex/v2/test-x64").exists()
+
+    second = manager.install_component("paper-tex", root=state_root)
+    assert second.version == "v2"
+    assert json.loads(active_path.read_text(encoding="utf-8"))["previous"]["version"] == "v1"
+
+    system_dir = tmp_path / "system-bin"
+    _make_executable(system_dir / executable_name, b"system")
+    environment = managed_env({"PATH": str(system_dir)}, root=state_root)
+    segments = environment["PATH"].split(os.pathsep)
+    assert "packages/paper-tex/v2/test-x64/Bundle/bin" in segments[0].replace("\\", "/")
+    assert segments[-1] == str(system_dir)
+    assert (
+        resolve_managed_binary(
+            executable_name,
+            root=state_root,
+            base_env={"PATH": str(system_dir)},
+        )
+        == state_root / "packages/paper-tex/v2/test-x64/Bundle/bin" / executable_name
+    )
+    assert (
+        resolve_managed_binary(
+            executable_name,
+            root=state_root,
+            base_env={"PATH": ""},
+        )
+        == state_root / "packages/paper-tex/v2/test-x64/Bundle/bin" / executable_name
+    )
+
+    assert manager.rollback_component("paper-tex", root=state_root) is True
+    rolled_back = json.loads(active_path.read_text(encoding="utf-8"))
+    assert rolled_back["version"] == "v1"
+    assert rolled_back["rolled_back_from"] == second.receipt_id
+
+    changed_bins = dict(rolled_back)
+    changed_bins["bin_relpaths"] = ["Bundle/other-bin"]
+    active_path.write_text(json.dumps(changed_bins), encoding="utf-8")
+    assert (
+        resolve_managed_binary(
+            executable_name,
+            root=state_root,
+            base_env={"PATH": ""},
+        )
+        is None
+    )
+
+    changed_resources = dict(rolled_back)
+    changed_resources["resources"] = {"test-font": "fonts/renamed-font.ttc"}
+    active_path.write_text(json.dumps(changed_resources), encoding="utf-8")
+    assert (
+        resolve_managed_resource(
+            "test-font",
+            component_id="paper-tex",
+            root=state_root,
+        )
+        is None
+    )
+    active_path.write_text(json.dumps(rolled_back), encoding="utf-8")
+
+    rolled_back_binary = state_root / "packages/paper-tex/v1/test-x64/Bundle/bin" / executable_name
+    assert (
+        resolve_managed_binary(
+            executable_name,
+            root=state_root,
+            base_env={"PATH": ""},
+        )
+        == rolled_back_binary
+    )
+    if os.name == "nt":
+        assert rolled_back_binary.read_bytes() == executable_v1
+    else:
+        completed = subprocess.run(
+            [str(rolled_back_binary)],
+            check=True,
+            capture_output=True,
+        )
+        assert completed.stdout == b"v1"
+    rolled_back_font = state_root / "packages/paper-tex/v1/test-x64/fonts/test-font.ttc"
+    assert (
+        resolve_managed_resource(
+            "test-font",
+            component_id="paper-tex",
+            root=state_root,
+        )
+        == rolled_back_font
+    )
+    assert rolled_back_font.read_bytes() == font_v1
+    assert toolchain_runtime.list_active_components(root=state_root) == (
+        toolchain_runtime.ActiveComponentStatus(
+            component_id="paper-tex",
+            version="v1",
+            platform_key="test-x64",
+            install_backend="archive",
+            supported=True,
+        ),
+    )
+
+    # A historical marker is not a license to trust changed bytes.  The full
+    # archived payload manifest gates binaries and resources after rollback.
+    rolled_back_font.write_bytes(b"evil-v1")
+    assert (
+        resolve_managed_binary(
+            executable_name,
+            root=state_root,
+            base_env={"PATH": ""},
+        )
+        is None
+    )
+    assert (
+        resolve_managed_resource(
+            "test-font",
+            component_id="paper-tex",
+            root=state_root,
+        )
+        is None
+    )
+    assert toolchain_runtime.list_active_components(root=state_root) == ()
+
+
+def test_runtime_rejects_historical_brew_receipt_for_live_external_prefix() -> None:
+    current = replace(
+        _descriptor(version="v2"),
+        component_id="media-ffmpeg",
+        platform_key="darwin-universal",
+        install_backend="brew",
+        brew_formula="ffmpeg-full",
+        url=None,
+        sha256=None,
+        size=None,
+        archive_type=None,
+        archive_root=None,
+        bin_relpaths=("bin",),
+    )
+    receipt: dict[str, object] = {
+        "component_id": current.component_id,
+        "version": "v1",
+        "platform_key": current.platform_key,
+        "sha256": "",
+        "install_backend": current.install_backend,
+        "bin_relpaths": list(current.bin_relpaths),
+    }
+    marker: dict[str, object] = {
+        "component_id": current.component_id,
+        "version": "v1",
+        "platform_key": current.platform_key,
+        "sha256": None,
+        "install_backend": current.install_backend,
+        "payload_manifest_version": 1,
+        "payload_manifest": {},
+    }
+
+    assert toolchain_runtime._descriptor_for_receipt(receipt, marker, current) is None
+
+
+def test_rollback_rejects_historical_brew_before_mutating_active(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = replace(
+        _descriptor(version="v2"),
+        component_id="media-ffmpeg",
+        platform_key="darwin-universal",
+        install_backend="brew",
+        brew_formula="ffmpeg-full",
+        url=None,
+        sha256=None,
+        size=None,
+        archive_type=None,
+        archive_root=None,
+        bin_relpaths=("bin",),
+    )
+    monkeypatch.setattr(
+        manager.registry,
+        "describe_component",
+        lambda _component_id: descriptor,
+    )
+    state_root = tmp_path / "state"
+    active_path = state_root / "active" / "media-ffmpeg.json"
+    active_path.parent.mkdir(parents=True)
+    current = {
+        "component_id": "media-ffmpeg",
+        "version": "v2",
+        "platform_key": "darwin-universal",
+        "install_backend": "brew",
+        "previous": {
+            "component_id": "media-ffmpeg",
+            "version": "v1",
+            "platform_key": "darwin-universal",
+            "install_backend": "brew",
+            "package_relpath": "packages/media-ffmpeg/v1/darwin-universal",
+            "external_root": "/opt/homebrew/opt/ffmpeg-full",
+        },
+    }
+    active_path.write_text(json.dumps(current), encoding="utf-8")
+    before = active_path.read_bytes()
+
+    with pytest.raises(manager.ToolchainError, match="Historical Homebrew"):
+        manager.rollback_component("media-ffmpeg", root=state_root)
+
+    assert active_path.read_bytes() == before
+
+
+def test_rollback_serializes_with_install_per_root_and_component(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = _descriptor(version="v3")
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    first_root = tmp_path / "first-state"
+    second_root = tmp_path / "second-state"
+    manager._ensure_root(first_root)
+
+    previous_package = first_root / "packages/paper-tex/v1/test-x64"
+    previous_package.mkdir(parents=True)
+    (previous_package / ".opensquilla-toolchain.json").write_text("{}", encoding="utf-8")
+    previous = {
+        "component_id": "paper-tex",
+        "version": "v1",
+        "platform_key": "test-x64",
+        "sha256": "1" * 64,
+        "install_backend": "archive",
+        "package_relpath": previous_package.relative_to(first_root).as_posix(),
+        "external_root": None,
+        "bin_relpaths": ["Bundle/bin"],
+        "resources": {},
+        "activated_at_ms": 1,
+        "receipt_id": "receipt-v1",
+        "previous": None,
+    }
+    current = {
+        **previous,
+        "version": "v2",
+        "package_relpath": "packages/paper-tex/v2/test-x64",
+        "activated_at_ms": 2,
+        "receipt_id": "receipt-v2",
+        "previous": previous,
+    }
+    active_path = first_root / "active/paper-tex.json"
+    manager._atomic_json(active_path, current)
+
+    rollback_read = threading.Event()
+    release_rollback = threading.Event()
+    pause_guard = threading.Lock()
+    pause_pending = True
+    real_read_json = manager._read_json
+
+    def pause_after_rollback_read(path: Path) -> dict[str, Any] | None:
+        nonlocal pause_pending
+        value = real_read_json(path)
+        should_pause = False
+        if path == active_path:
+            with pause_guard:
+                if pause_pending:
+                    pause_pending = False
+                    should_pause = True
+        if should_pause:
+            rollback_read.set()
+            if not release_rollback.wait(5):
+                raise AssertionError("timed out waiting to release the rollback test hook")
+        return value
+
+    monkeypatch.setattr(manager, "_read_json", pause_after_rollback_read)
+    same_root_install_entered = threading.Event()
+    other_root_install_entered = threading.Event()
+
+    def fake_install_unlocked(
+        _component_id: str,
+        _progress_cb: object = None,
+        *,
+        root: Path | None = None,
+        probe_cb: object = None,
+    ) -> manager.ActivationReceipt:
+        del probe_cb
+        assert root is not None
+        install_root = Path(root)
+        if install_root == first_root:
+            same_root_install_entered.set()
+            active = real_read_json(active_path)
+            assert active is not None
+            receipt = {
+                "component_id": descriptor.component_id,
+                "version": descriptor.version,
+                "platform_key": descriptor.platform_key,
+                "sha256": descriptor.sha256 or "",
+                "install_backend": descriptor.install_backend,
+                "package_relpath": None,
+                "external_root": None,
+                "bin_relpaths": list(descriptor.bin_relpaths),
+                "resources": {},
+                "activated_at_ms": 3,
+                "receipt_id": "receipt-v3",
+                "previous": active,
+            }
+            manager._write_activation(install_root, receipt)
+        else:
+            assert install_root == second_root
+            other_root_install_entered.set()
+        return manager.ActivationReceipt(
+            component_id=descriptor.component_id,
+            version=descriptor.version,
+            platform_key=descriptor.platform_key,
+            sha256=descriptor.sha256 or "",
+            install_backend=descriptor.install_backend,
+            package_relpath=None,
+            external_root=None,
+            bin_relpaths=descriptor.bin_relpaths,
+            resources={},
+            activated_at_ms=3,
+            receipt_id="receipt-v3",
+        )
+
+    monkeypatch.setattr(manager, "_install_component_unlocked", fake_install_unlocked)
+    same_root_install_started = threading.Event()
+
+    def install_same_root() -> manager.ActivationReceipt:
+        same_root_install_started.set()
+        return manager.install_component("paper-tex", root=first_root)
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        rollback_future = executor.submit(
+            manager.rollback_component,
+            "paper-tex",
+            root=first_root,
+        )
+        assert rollback_read.wait(2)
+        other_install_future = executor.submit(
+            manager.install_component,
+            "paper-tex",
+            root=second_root,
+        )
+        assert other_root_install_entered.wait(2)
+        assert other_install_future.result(timeout=2).version == "v3"
+        same_install_future = executor.submit(install_same_root)
+        assert same_root_install_started.wait(2)
+        try:
+            assert not same_root_install_entered.wait(0.2)
+        finally:
+            release_rollback.set()
+        assert rollback_future.result(timeout=2) is True
+        assert same_install_future.result(timeout=2).version == "v3"
+
+    final = real_read_json(active_path)
+    assert final is not None
+    assert final["version"] == "v3"
+    assert final["previous"]["version"] == "v1"
+
+
+def test_auxiliary_assets_are_pinned_receipted_and_runtime_resolvable(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    from opensquilla.skills.toolchains.registry import AuxiliaryAssetDescriptor
+
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        archive,
+        {f"Bundle/bin/{executable_name}": b"tool"},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    font_data = b"pinned font"
+    license_data = b"pinned license"
+    descriptor = replace(
+        _descriptor(size=archive.stat().st_size),
+        auxiliary_assets=(
+            AuxiliaryAssetDescriptor(
+                asset_id="test-font",
+                url="https://example.invalid/font",
+                sha256=hashlib.sha256(font_data).hexdigest(),
+                size=len(font_data),
+                destination="fonts/test-font.bin",
+                license="OFL-1.1",
+                source="https://example.invalid/fonts",
+            ),
+            AuxiliaryAssetDescriptor(
+                asset_id="test-license",
+                url="https://example.invalid/license.txt",
+                sha256=hashlib.sha256(license_data).hexdigest(),
+                size=len(license_data),
+                destination="licenses/OFL.txt",
+                license="OFL-1.1",
+                source="https://example.invalid/fonts",
+            ),
+        ),
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    monkeypatch.setattr(
+        manager,
+        "_download",
+        lambda _descriptor, destination, _progress, **_kwargs: shutil.copyfile(
+            archive, destination
+        ),
+    )
+    assets = {
+        "https://example.invalid/font": font_data,
+        "https://example.invalid/license.txt": license_data,
+    }
+
+    def fake_pinned_download(
+        url: str,
+        sha256: str,
+        size: int,
+        destination: Path,
+        _progress: object,
+        **_kwargs: object,
+    ) -> None:
+        data = assets[url]
+        assert len(data) == size
+        assert hashlib.sha256(data).hexdigest() == sha256
+        destination.write_bytes(data)
+
+    monkeypatch.setattr(manager, "_download_pinned", fake_pinned_download)
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("paper-tex", root=state_root)
+    assert receipt.resources == {
+        "test-font": "fonts/test-font.bin",
+        "test-license": "licenses/OFL.txt",
+    }
+    assert (
+        resolve_managed_resource("test-font", component_id="paper-tex", root=state_root)
+        == state_root / receipt.package_relpath / "fonts/test-font.bin"
+    )
+    license_path = resolve_managed_resource(
+        "test-license", component_id="paper-tex", root=state_root
+    )
+    assert license_path is not None
+    assert license_path.read_bytes() == license_data
+
+
+def test_managed_env_exposes_pinned_paper_font_to_xetex(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    font_asset = registry.AuxiliaryAssetDescriptor(
+        asset_id="noto-cjk-font",
+        url="https://example.invalid/font",
+        sha256=hashlib.sha256(b"font").hexdigest(),
+        size=4,
+        destination="fonts/NotoSansCJK-Regular.ttc",
+        license="OFL-1.1",
+        source="https://example.invalid/fonts",
+    )
+    descriptor = replace(
+        _descriptor(),
+        auxiliary_assets=(font_asset,),
+    )
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    package = (
+        state_root
+        / "packages"
+        / descriptor.component_id
+        / descriptor.version
+        / descriptor.platform_key
+    )
+    bin_dir = package / "Bundle/bin"
+    _make_executable(bin_dir / ("paperbin.exe" if os.name == "nt" else "paperbin"))
+    (package / "fonts").mkdir(parents=True)
+    (package / "fonts/NotoSansCJK-Regular.ttc").write_bytes(b"font")
+    (package / ".opensquilla-toolchain.json").write_text(
+        json.dumps(manager._package_marker(descriptor, package)),
+        encoding="utf-8",
+    )
+    active = state_root / "active"
+    active.mkdir(parents=True)
+    (active / "paper-tex.json").write_text(
+        json.dumps(
+            {
+                "component_id": descriptor.component_id,
+                "version": descriptor.version,
+                "platform_key": descriptor.platform_key,
+                "install_backend": descriptor.install_backend,
+                "package_relpath": package.relative_to(state_root).as_posix(),
+                "external_root": None,
+                "bin_relpaths": list(descriptor.bin_relpaths),
+                "resources": {"noto-cjk-font": font_asset.destination},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    env = managed_env(
+        {"PATH": "", "OSFONTDIR": "/system/fonts"},
+        root=state_root,
+    )
+
+    assert env["OSFONTDIR"].split(os.pathsep) == [
+        str(package / "fonts"),
+        "/system/fonts",
+    ]
+
+
+def test_brew_backend_requires_bottle_and_records_external_prefix(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    brew = tmp_path / "brew"
+    _make_executable(brew)
+    prefix = tmp_path / "Cellar/ffmpeg-full/1.0"
+    _make_executable(prefix / "bin/ffmpeg")
+    _make_executable(prefix / "bin/ffprobe")
+    descriptor = replace(
+        _descriptor(),
+        component_id="media-ffmpeg",
+        platform_key="darwin-universal",
+        install_backend="brew",
+        brew_formula="ffmpeg-full",
+        url=None,
+        sha256=None,
+        size=None,
+        archive_type=None,
+        archive_root=None,
+        bin_relpaths=("bin",),
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    monkeypatch.setattr(
+        manager.registry,
+        "trusted_brew_executable",
+        lambda: brew,
+    )
+    prefix_calls = 0
+
+    def fake_prefix(*_args: object) -> Path | None:
+        nonlocal prefix_calls
+        prefix_calls += 1
+        return None if prefix_calls == 1 else prefix
+
+    monkeypatch.setattr(manager, "_brew_prefix", fake_prefix)
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(manager, "_run_checked", fake_run)
+    monkeypatch.setattr(toolchain_runtime, "_verified_brew_prefix", lambda _formula: prefix)
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("media-ffmpeg", root=state_root)
+    assert commands == [[str(brew), "install", "--force-bottle", "ffmpeg-full"]]
+    assert receipt.install_backend == "brew"
+    assert receipt.external_root == str(prefix)
+    assert receipt.package_relpath is not None
+    assert (state_root / receipt.package_relpath / ".opensquilla-toolchain.json").is_file()
+    repeated = manager.install_component("media-ffmpeg", root=state_root)
+    assert repeated == receipt
+    assert commands == [[str(brew), "install", "--force-bottle", "ffmpeg-full"]]
+    assert (
+        resolve_managed_binary("ffmpeg", root=state_root, base_env={"PATH": ""})
+        == prefix / "bin/ffmpeg"
+    )
+
+
+def test_brew_backend_rejects_path_shadowed_brew(tmp_path: Path, monkeypatch: Any) -> None:
+    malicious = tmp_path / "repo-bin/brew"
+    _make_executable(malicious)
+    descriptor = replace(
+        _descriptor(),
+        component_id="media-ffmpeg",
+        install_backend="brew",
+        brew_formula="ffmpeg-full",
+        url=None,
+        sha256=None,
+        size=None,
+        archive_type=None,
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _id: descriptor)
+    monkeypatch.setattr(manager.registry, "trusted_brew_executable", lambda: None)
+    monkeypatch.setenv("PATH", str(malicious.parent))
+    with pytest.raises(manager.UnsupportedToolchainError, match="Homebrew is required"):
+        manager.install_component("media-ffmpeg", root=tmp_path / "state")
+
+
+def test_media_capability_probe_requires_cjk_font_filters_codecs_and_encode(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = replace(_descriptor(), post_install="ffmpeg-media-capability")
+    bin_dir = tmp_path / "Bundle/bin"
+    _make_executable(bin_dir / "ffmpeg")
+    _make_executable(bin_dir / "ffprobe")
+    (tmp_path / "fonts").mkdir()
+    (tmp_path / "fonts/NotoSansCJK-Regular.ttc").write_bytes(b"font")
+    commands: list[tuple[list[str], Path]] = []
+    subtitle_text: list[str] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[bytes]:
+        commands.append((command, cwd))
+        if "-filters" in command:
+            return subprocess.CompletedProcess(command, 0, b"subtitles zoompan xfade", b"")
+        if "-encoders" in command:
+            return subprocess.CompletedProcess(command, 0, b"libx264 aac", b"")
+        if Path(command[0]).name == "ffprobe":
+            return subprocess.CompletedProcess(command, 0, b"1.000000\n", b"")
+        if "-c:v" in command:
+            subtitle_text.append((cwd / "smoke.srt").read_text(encoding="utf-8"))
+            Path(command[-1]).write_bytes(b"media")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(manager, "_run_checked", fake_run)
+    manager._ffmpeg_media_capability(descriptor, tmp_path, (bin_dir,))
+    encode = next(command for command, _cwd in commands if "-c:v" in command)
+    filter_value = encode[encode.index("-vf") + 1]
+    assert encode.count("color=c=black:s=320x180:d=1") == 1
+    assert "fontsdir=fonts" in filter_value
+    assert "Noto Sans CJK SC" in filter_value
+    assert "中文烟测" in subtitle_text[0]
+
+
+def test_component_install_lock_times_out_cross_process_and_releases(tmp_path: Path) -> None:
+    state_root = tmp_path / "state"
+    manager._ensure_root(state_root)
+    with manager._ComponentInstallLock(state_root, "paper-tex", 1):
+        with pytest.raises(manager.ToolchainError, match="Timed out"):
+            with manager._ComponentInstallLock(state_root, "paper-tex", 0.01):
+                pass
+    with manager._ComponentInstallLock(state_root, "paper-tex", 0.1):
+        pass
+
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_component_lock,
+        args=(str(state_root), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(5)
+        with pytest.raises(manager.ToolchainError, match="Timed out"):
+            with manager._ComponentInstallLock(state_root, "paper-tex", 0.1):
+                pass
+    finally:
+        release.set()
+        process.join(5)
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+    assert process.exitcode == 0
+    with manager._ComponentInstallLock(state_root, "paper-tex", 0.1):
+        pass
+
+
+def test_corrupt_package_retry_replaces_atomically_and_cleans_quarantine(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        archive,
+        {f"Bundle/bin/{executable_name}": b"fresh"},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    descriptor = _descriptor(version="repair", size=archive.stat().st_size)
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    monkeypatch.setattr(
+        manager,
+        "_download",
+        lambda _descriptor, destination, _progress, **_kwargs: shutil.copyfile(
+            archive, destination
+        ),
+    )
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("paper-tex", root=state_root)
+    assert receipt.package_relpath is not None
+    package = state_root / receipt.package_relpath
+    (package / ".opensquilla-toolchain.json").write_text("corrupt", encoding="utf-8")
+    (package / f"Bundle/bin/{executable_name}").write_bytes(b"corrupt")
+
+    repaired = manager.install_component("paper-tex", root=state_root)
+    assert repaired.package_relpath == receipt.package_relpath
+    assert (package / f"Bundle/bin/{executable_name}").read_bytes() == b"fresh"
+    assert not list(package.parent.glob(f".{package.name}.quarantine-*"))
+
+
+def test_corrupt_package_activation_failure_restores_previous_bytes(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    executable_name = "paperbin.exe" if os.name == "nt" else "paperbin"
+    archive = tmp_path / "paper.tar.xz"
+    _write_tar_xz(
+        archive,
+        {f"Bundle/bin/{executable_name}": b"fresh"},
+        executable={f"Bundle/bin/{executable_name}"},
+    )
+    descriptor = _descriptor(version="restore", size=archive.stat().st_size)
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    monkeypatch.setattr(
+        manager,
+        "_download",
+        lambda _descriptor, destination, _progress, **_kwargs: shutil.copyfile(
+            archive, destination
+        ),
+    )
+    state_root = tmp_path / "state"
+    receipt = manager.install_component("paper-tex", root=state_root)
+    assert receipt.package_relpath is not None
+    package = state_root / receipt.package_relpath
+    marker = package / ".opensquilla-toolchain.json"
+    marker.write_text("corrupt-before-retry", encoding="utf-8")
+    monkeypatch.setattr(
+        manager,
+        "_write_activation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("receipt failed")),
+    )
+    with pytest.raises(RuntimeError, match="receipt failed"):
+        manager.install_component("paper-tex", root=state_root)
+    assert marker.read_text(encoding="utf-8") == "corrupt-before-retry"
+    assert not list(package.parent.glob(f".{package.name}.quarantine-*"))
+
+
+def test_effective_capability_report_is_cached_and_invalidatable(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = replace(
+        _descriptor(),
+        probe_commands=(("xelatex", "--version"), ("bibtex", "--version")),
+        post_install="paper-capability",
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    binaries = tmp_path / "system-bin"
+    for name in ("xelatex", "bibtex", "kpsewhich"):
+        _make_executable(binaries / name)
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    (fonts / "NotoSansCJK-Regular.ttc").write_bytes(b"font")
+    from opensquilla.skills.toolchains import runtime as toolchain_runtime_module
+
+    monkeypatch.setattr(
+        toolchain_runtime_module,
+        "managed_env",
+        lambda base_env, **_kwargs: {
+            **dict(base_env or {}),
+            "OSFONTDIR": str(fonts),
+        },
+    )
+    run_count = 0
+
+    def fake_run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        nonlocal run_count
+        run_count += 1
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    capability_count = 0
+
+    def fake_capability(*_args: object, **_kwargs: object) -> None:
+        nonlocal capability_count
+        capability_count += 1
+
+    monkeypatch.setattr(manager, "_run_checked", fake_run)
+    monkeypatch.setattr(manager, "_paper_capability", fake_capability)
+    manager.invalidate_probe_cache()
+    report = manager.probe_component(
+        "paper-tex",
+        root=tmp_path / "state",
+        base_env={"PATH": str(binaries)},
+    )
+    assert report.supported is True
+    assert report.ready is True
+    assert report.reason == "ready"
+    assert set(report.binaries) == {"bibtex", "kpsewhich", "xelatex"}
+    assert (
+        manager.probe_component(
+            "paper-tex",
+            root=tmp_path / "state",
+            base_env={"PATH": str(binaries)},
+        )
+        is report
+    )
+    assert run_count == 2
+    assert capability_count == 1
+    manager.invalidate_probe_cache("paper-tex")
+    manager.probe_component(
+        "paper-tex",
+        root=tmp_path / "state",
+        base_env={"PATH": str(binaries)},
+    )
+    assert capability_count == 2
+
+
+def test_media_capability_report_uses_active_managed_bins_and_font_env(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    from opensquilla.skills.toolchains.registry import AuxiliaryAssetDescriptor
+
+    font_asset = AuxiliaryAssetDescriptor(
+        asset_id="noto-cjk-font",
+        url="https://example.invalid/font",
+        sha256=hashlib.sha256(b"font").hexdigest(),
+        size=4,
+        destination="fonts/NotoSansCJK-Regular.ttc",
+        license="OFL-1.1",
+        source="https://example.invalid/fonts",
+    )
+    descriptor = replace(
+        _descriptor(version="media-v1"),
+        component_id="media-ffmpeg",
+        probe_commands=(("ffmpeg", "-version"), ("ffprobe", "-version")),
+        post_install="ffmpeg-media-capability",
+        auxiliary_assets=(font_asset,),
+    )
+    monkeypatch.setattr(manager.registry, "describe_component", lambda _component: descriptor)
+    state_root = tmp_path / "state"
+    package = state_root / "packages/media-ffmpeg/media-v1/test-x64"
+    bin_dir = package / "Bundle/bin"
+    executable_suffix = ".exe" if os.name == "nt" else ""
+    for name in ("ffmpeg", "ffprobe"):
+        _make_executable(bin_dir / f"{name}{executable_suffix}")
+    (package / "fonts").mkdir(parents=True)
+    (package / "fonts/NotoSansCJK-Regular.ttc").write_bytes(b"font")
+    (package / ".opensquilla-toolchain.json").write_text(
+        json.dumps(manager._package_marker(descriptor, package)), encoding="utf-8"
+    )
+    active = state_root / "active"
+    active.mkdir(parents=True)
+    receipt = {
+        "component_id": descriptor.component_id,
+        "version": descriptor.version,
+        "platform_key": descriptor.platform_key,
+        "install_backend": descriptor.install_backend,
+        "package_relpath": package.relative_to(state_root).as_posix(),
+        "external_root": None,
+        "bin_relpaths": list(descriptor.bin_relpaths),
+        "resources": {"noto-cjk-font": font_asset.destination},
+    }
+    (active / "media-ffmpeg.json").write_text(json.dumps(receipt), encoding="utf-8")
+    system_dir = tmp_path / "system"
+    _make_executable(system_dir / f"ffmpeg{executable_suffix}", b"insufficient")
+    _make_executable(system_dir / f"ffprobe{executable_suffix}", b"insufficient")
+    monkeypatch.setattr(
+        manager,
+        "_run_checked",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, b"", b""),
+    )
+    capability_calls: list[tuple[Path, str]] = []
+
+    def fake_media_capability(
+        _descriptor: ToolchainDescriptor,
+        payload: Path,
+        _bin_dirs: tuple[Path, ...],
+        *,
+        env_override: dict[str, str],
+    ) -> None:
+        capability_calls.append((payload, env_override["PATH"]))
+
+    monkeypatch.setattr(manager, "_ffmpeg_media_capability", fake_media_capability)
+    manager.invalidate_probe_cache()
+    report = manager.probe_component(
+        "media-ffmpeg",
+        root=state_root,
+        base_env={"PATH": str(system_dir)},
+    )
+    assert report.ready is True
+    assert Path(report.binaries["ffmpeg"]).parent == bin_dir
+    assert report.resources["noto-cjk-font"] == str(package / "fonts/NotoSansCJK-Regular.ttc")
+    assert capability_calls[0][0] == package
+    assert capability_calls[0][1].split(os.pathsep)[0] == str(bin_dir)
+
+
+def test_runtime_rejects_tampered_managed_executable_with_intact_marker(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = replace(
+        _descriptor(),
+        probe_commands=(("paperbin", "--version"),),
+    )
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "component_ids",
+        lambda: (descriptor.component_id,),
+    )
+    monkeypatch.setattr(
+        toolchain_runtime.registry,
+        "describe_component",
+        lambda _component: descriptor,
+    )
+    state_root = tmp_path / "state"
+    package = (
+        state_root
+        / "packages"
+        / descriptor.component_id
+        / descriptor.version
+        / descriptor.platform_key
+    )
+    executable = package / "Bundle/bin/paperbin"
+    _make_executable(executable, b"verified payload")
+    marker_path = package / ".opensquilla-toolchain.json"
+    marker_path.write_text(
+        json.dumps(manager._package_marker(descriptor, package)),
+        encoding="utf-8",
+    )
+    marker_before = marker_path.read_bytes()
+    active = state_root / "active"
+    active.mkdir(parents=True)
+    (active / "paper-tex.json").write_text(
+        json.dumps(
+            {
+                "component_id": descriptor.component_id,
+                "version": descriptor.version,
+                "platform_key": descriptor.platform_key,
+                "install_backend": descriptor.install_backend,
+                "package_relpath": package.relative_to(state_root).as_posix(),
+                "external_root": None,
+                "bin_relpaths": list(descriptor.bin_relpaths),
+                "resources": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    toolchain_runtime.invalidate_payload_validation_cache()
+    validation_calls = 0
+    real_validate = toolchain_runtime.package_payload_matches
+
+    def count_validation(package_path: Path, selected: ToolchainDescriptor) -> bool:
+        nonlocal validation_calls
+        validation_calls += 1
+        return real_validate(package_path, selected)
+
+    monkeypatch.setattr(toolchain_runtime, "package_payload_matches", count_validation)
+    assert resolve_managed_binary("paperbin", root=state_root, base_env={"PATH": ""}) == (
+        executable
+    )
+    assert resolve_managed_binary("paperbin", root=state_root, base_env={"PATH": ""}) == (
+        executable
+    )
+    assert validation_calls == 1
+
+    executable.write_bytes(b"tampered payload")
+
+    assert marker_path.read_bytes() == marker_before
+    assert resolve_managed_binary("paperbin", root=state_root, base_env={"PATH": ""}) is None
+    assert validation_calls == 2
+    assert toolchain_runtime.list_active_components(root=state_root) == ()
+
+
+def test_native_probe_timeout_preserves_actionable_detail(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(
+        manager.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(cmd=["ffmpeg", "-version"], timeout=3)
+        ),
+    )
+
+    with pytest.raises(ToolchainProbeError, match="ffmpeg version probe timed out after 3 seconds"):
+        manager._run_checked(
+            ["/trusted/ffmpeg", "-version"],
+            cwd=tmp_path,
+            env={},
+            timeout=3,
+            label="ffmpeg version probe",
+        )
+
+
+def test_runtime_rejects_forged_external_root_and_symlink_escape(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = registry.describe_component("media-ffmpeg", platform_name="darwin", arch="arm64")
+    monkeypatch.setattr(toolchain_runtime.registry, "describe_component", lambda _id: descriptor)
+    state_root = tmp_path / "state"
+    package = (
+        state_root
+        / "packages"
+        / descriptor.component_id
+        / descriptor.version
+        / descriptor.platform_key
+    )
+    package.mkdir(parents=True)
+    (package / ".opensquilla-toolchain.json").write_text(
+        json.dumps(manager._package_marker(descriptor)), encoding="utf-8"
+    )
+    evil = tmp_path / "evil"
+    _make_executable(evil / "bin/ffmpeg")
+    active = state_root / "active"
+    active.mkdir(parents=True)
+    receipt = {
+        "component_id": descriptor.component_id,
+        "version": descriptor.version,
+        "platform_key": descriptor.platform_key,
+        "install_backend": descriptor.install_backend,
+        "package_relpath": package.relative_to(state_root).as_posix(),
+        "external_root": str(evil),
+        "bin_relpaths": list(descriptor.bin_relpaths),
+        "resources": {
+            "noto-cjk-font": "fonts/NotoSansCJK-Regular.ttc",
+        },
+    }
+    (active / "media-ffmpeg.json").write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(
+        toolchain_runtime,
+        "_verified_brew_prefix",
+        lambda _formula: tmp_path / "real-prefix",
+    )
+    assert toolchain_runtime.managed_env({"PATH": ""}, root=state_root)["PATH"] == ""
+
+    if os.name == "nt":
+        return
+    fonts = package / "fonts"
+    fonts.mkdir()
+    outside_font = tmp_path / "outside-font.ttc"
+    outside_font.write_bytes(b"font")
+    (fonts / "NotoSansCJK-Regular.ttc").symlink_to(outside_font)
+    assert (
+        toolchain_runtime.resolve_managed_resource(
+            "noto-cjk-font", component_id="media-ffmpeg", root=state_root
+        )
+        is None
+    )
+    (fonts / "NotoSansCJK-Regular.ttc").unlink()
+    fonts.rmdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (package / ".opensquilla-toolchain.json").unlink()
+    package.rmdir()
+    package.symlink_to(outside, target_is_directory=True)
+    (outside / ".opensquilla-toolchain.json").write_text(
+        json.dumps(manager._package_marker(descriptor)), encoding="utf-8"
+    )
+    assert toolchain_runtime.managed_env({"PATH": ""}, root=state_root)["PATH"] == ""
+
+
+def test_paper_post_install_is_self_contained_and_runs_smoke_test(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    descriptor = replace(
+        _descriptor(),
+        post_install="paper-capability",
+        package_closure=(),
+        closure_source=None,
+    )
+    bin_dir = tmp_path / "Bundle/bin"
+    for name in ("kpsewhich", "xelatex", "bibtex"):
+        _make_executable(bin_dir / name)
+    fonts = tmp_path / "fonts"
+    fonts.mkdir()
+    (fonts / "NotoSansCJK-Regular.ttc").write_bytes(b"font")
+    commands: list[tuple[list[str], Path]] = []
+
+    def fake_run_checked(command: list[str], *, cwd: Path, **_kwargs: object) -> None:
+        commands.append((command, cwd))
+        if Path(command[0]).name == "xelatex":
+            (cwd / "paper.pdf").write_bytes(b"%PDF-test")
+
+    monkeypatch.setattr(manager, "_run_checked", fake_run_checked)
+    manager._run_post_install(descriptor, tmp_path, (bin_dir,))
+
+    tlmgr_commands = [command for command, _cwd in commands if Path(command[0]).name == "tlmgr"]
+    assert tlmgr_commands == []
+    kpse_commands = [command for command, _cwd in commands if Path(command[0]).name == "kpsewhich"]
+    assert [command[-1] for command in kpse_commands] == [
+        "fontspec.sty",
+        "NotoSansCJK-Regular.ttc",
+    ]
+    xelatex_commands = [command for command, _cwd in commands if Path(command[0]).name == "xelatex"]
+    assert len(xelatex_commands) == 3
+    assert all("-no-shell-escape" in command for command in xelatex_commands)
+
+
+def test_runtime_ignores_tampered_activation_receipt(tmp_path: Path) -> None:
+    active = tmp_path / "active"
+    active.mkdir(parents=True)
+    (active / "paper-tex.json").write_text(
+        json.dumps(
+            {
+                "component_id": "paper-tex",
+                "package_relpath": "../outside",
+                "bin_relpaths": ["bin"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert managed_env({"PATH": "/system/bin"}, root=tmp_path)["PATH"] == "/system/bin"

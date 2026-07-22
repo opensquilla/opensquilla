@@ -5,15 +5,19 @@ from __future__ import annotations
 import json
 import shutil
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from yoyo import get_backend, read_migrations
 
 from opensquilla.persistence.meta_run_writer import MetaRunWriter
+from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.events import _StepDone
 from opensquilla.skills.meta.orchestrator import MetaOrchestrator
+from opensquilla.skills.meta.parser import parse_meta_plan
 from opensquilla.skills.meta.plan_serde import to_jsonable
+from opensquilla.skills.meta.templating import render_with_args
 from opensquilla.skills.meta.types import (
     ClarifyField,
     ClarifyStepConfig,
@@ -21,6 +25,14 @@ from opensquilla.skills.meta.types import (
     MetaPlan,
     MetaResult,
     MetaStep,
+)
+
+BUNDLED = (
+    Path(__file__).resolve().parents[2]
+    / "src"
+    / "opensquilla"
+    / "skills"
+    / "bundled"
 )
 
 
@@ -413,6 +425,272 @@ async def test_resume_injects_additional_notes_into_downstream_user_message(writ
     assert sm["inputs_user_message"].startswith("I want to plan a trip")
     assert "Additional user notes" in sm["inputs_user_message"]
     assert "Please avoid museums; kid wants trains." in sm["inputs_user_message"]
+
+
+@pytest.mark.asyncio
+async def test_short_drama_pause_resume_keeps_draft_and_reread_in_same_run_folder(
+    writer: MetaRunWriter,
+    tmp_path: Path,
+) -> None:
+    """Additional notes may change user_message, never the run output path."""
+
+    loader = SkillLoader(
+        bundled_dir=BUNDLED,
+        snapshot_path=tmp_path / "skills-snapshot.json",
+    )
+    loader.invalidate_cache()
+    spec = loader.get_by_name("meta-short-drama")
+    assert spec is not None
+    full_plan = parse_meta_plan(spec)
+    assert full_plan is not None
+    full_steps = {step.id: step for step in full_plan.steps}
+
+    draft_text = "TITLE: Stable folder test\nSHOT 1: same file after resume"
+    script_save_draft = replace(
+        full_steps["script_save_draft"],
+        depends_on=(),
+        tool_args={
+            **full_steps["script_save_draft"].tool_args,
+            "content": draft_text,
+        },
+    )
+    review_cfg = full_steps["review_gate"].clarify_config
+    assert review_cfg is not None
+    review_gate = replace(
+        full_steps["review_gate"],
+        depends_on=("script_save_draft",),
+        clarify_config=replace(
+            review_cfg,
+            intro="Review the saved draft.",
+            intro_by_language={},
+            nl_extract=False,
+        ),
+    )
+    script_reread = replace(
+        full_steps["script_reread"],
+        depends_on=("review_gate", "script_save_draft"),
+    )
+    plan = replace(
+        full_plan,
+        steps=(script_save_draft, review_gate, script_reread),
+        final_text_mode="raw",
+        output_contract={},
+    )
+
+    observed: dict[str, object] = {}
+
+    async def unused_agent_runner(_system: str, _user: str):
+        raise AssertionError("trimmed regression plan must not spawn an agent")
+        yield  # type: ignore[unreachable]
+
+    async def tool_invoker(tool: str, args: dict[str, object]) -> str:
+        assert tool == "write_file"
+        path = Path(str(args["path"]))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(args["content"]), encoding="utf-8")
+        observed["draft_path"] = path
+        return str(path)
+
+    workspace = tmp_path / "workspace"
+    orch = MetaOrchestrator(
+        agent_runner=unused_agent_runner,
+        skill_loader=loader,
+        tool_invoker=tool_invoker,
+        workspace_dir=str(workspace),
+        run_writer=writer,
+        session_key="S1",
+    )
+    inputs = {
+        "user_message": "生成一个单镜头短剧",
+        # Reserved runtime inputs must not be caller-controlled.
+        "meta_run_id": "../../caller-controlled",
+    }
+
+    paused_result: MetaResult | None = None
+    async for event in orch.iter_events(MetaMatch(plan=plan, inputs=inputs)):
+        if isinstance(event, MetaResult):
+            paused_result = event
+    assert paused_result is not None and paused_result.paused is True
+    assert paused_result.paused_payload is not None
+    run_id = paused_result.paused_payload.run_id
+
+    record = writer.get_run(run_id)
+    assert record is not None
+    persisted_inputs = json.loads(record.inputs_json)
+    stable_id = persisted_inputs["meta_run_id"]
+    assert stable_id == inputs["meta_run_id"]
+    assert stable_id.startswith("run-")
+    assert "/" not in stable_id and "\\" not in stable_id
+
+    draft_path = observed["draft_path"]
+    assert isinstance(draft_path, Path)
+    assert draft_path == workspace / "meta_short_drama" / stable_id / "script.txt"
+
+    async def resume_dispatch(step, effective_skill, match_inputs, outputs):
+        if step.id == "script_reread":
+            rendered = render_with_args(
+                step.with_args,
+                inputs=match_inputs,
+                outputs=outputs,
+            )
+            observed["reread_path"] = Path(str(rendered["input"]))
+            observed["resumed_meta_run_id"] = match_inputs["meta_run_id"]
+            observed["resumed_user_message"] = match_inputs["user_message"]
+        async for event in orch._dispatch_step_stream(
+            step,
+            effective_skill,
+            match_inputs,
+            outputs,
+        ):
+            yield event
+
+    resumed = await orch.resume(
+        run_id=run_id,
+        session_id="S1",
+        filled_fields={
+            "review": "继续",
+            "additional_notes": "让结尾更温暖。",
+        },
+        dispatch_step_stream=resume_dispatch,
+        yield_skill_view_preface=orch._yield_skill_view_preface,
+    )
+
+    assert resumed.ok is True
+    assert observed["reread_path"] == draft_path
+    assert observed["resumed_meta_run_id"] == stable_id
+    assert "让结尾更温暖" in str(observed["resumed_user_message"])
+    assert resumed.step_outputs["script_reread"] == draft_text
+
+
+@pytest.mark.asyncio
+async def test_non_persistent_orchestrator_seeds_safe_runtime_run_id() -> None:
+    observed: dict[str, object] = {}
+    plan = MetaPlan(
+        name="non-persistent-stable-id",
+        triggers=("test",),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="capture",
+                skill="",
+                kind="tool_call",
+                tool="capture",
+                tool_allowlist=("capture",),
+                tool_args={"meta_run_id": "{{ inputs.meta_run_id }}"},
+            ),
+        ),
+        final_text_mode="raw",
+    )
+
+    async def unused_agent_runner(_system: str, _user: str):
+        raise AssertionError("tool-call-only plan must not spawn an agent")
+        yield  # type: ignore[unreachable]
+
+    async def tool_invoker(tool: str, args: dict[str, object]) -> str:
+        assert tool == "capture"
+        observed.update(args)
+        return "captured"
+
+    inputs = {"user_message": "test", "meta_run_id": "../../unsafe"}
+    result = await MetaOrchestrator(
+        agent_runner=unused_agent_runner,
+        skill_loader=None,
+        tool_invoker=tool_invoker,
+    ).run(MetaMatch(plan=plan, inputs=inputs))
+
+    assert result.ok is True
+    stable_id = str(observed["meta_run_id"])
+    assert stable_id == inputs["meta_run_id"]
+    assert stable_id.startswith("run-")
+    assert "/" not in stable_id and "\\" not in stable_id
+
+
+@pytest.mark.asyncio
+async def test_failed_replay_seeds_success_and_reads_original_artifact_directory(
+    tmp_path: Path,
+    writer: MetaRunWriter,
+) -> None:
+    artifact_run_id = "run-original-short-drama-artifacts"
+    workspace = tmp_path / "workspace"
+    script_path = workspace / "meta_short_drama" / artifact_run_id / "script.txt"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("persisted short-drama script", encoding="utf-8")
+    observed: dict[str, object] = {}
+
+    plan = MetaPlan(
+        name="meta-short-drama-replay",
+        triggers=(),
+        priority=0,
+        steps=(
+            MetaStep(
+                id="script_save",
+                skill="",
+                kind="tool_call",
+                tool="must_not_run",
+                tool_allowlist=("must_not_run",),
+            ),
+            MetaStep(
+                id="script_reread",
+                skill="",
+                kind="tool_call",
+                tool="read_original_script",
+                tool_allowlist=("read_original_script",),
+                tool_args={
+                    "input": (
+                        "{{ inputs.workspace_dir }}/meta_short_drama/"
+                        "{{ inputs.meta_run_id }}/script.txt"
+                    ),
+                },
+                depends_on=("script_save",),
+            ),
+        ),
+        final_text_mode="raw",
+    )
+
+    async def unused_agent_runner(_system: str, _user: str):
+        raise AssertionError("tool-call-only replay must not spawn an agent")
+        yield  # type: ignore[unreachable]
+
+    async def tool_invoker(tool: str, args: dict[str, object]) -> str:
+        assert tool == "read_original_script"
+        path = Path(str(args["input"]))
+        observed["path"] = path
+        return path.read_text(encoding="utf-8")
+
+    inputs = {
+        "user_message": "retry the failed delivery step",
+        # The new invocation must never redirect a replay's artifact directory.
+        "meta_run_id": "caller-spoofed-safe-id",
+    }
+    orchestrator = MetaOrchestrator(
+        agent_runner=unused_agent_runner,
+        skill_loader=None,
+        tool_invoker=tool_invoker,
+        workspace_dir=str(workspace),
+        run_writer=writer,
+        session_key="replay-session",
+    )
+    final: MetaResult | None = None
+    async for event in orchestrator.iter_events(
+        MetaMatch(plan=plan, inputs=inputs),
+        seed_outputs={"script_save": str(script_path)},
+        trusted_preflight_replay=True,
+        trusted_replay_meta_run_id=artifact_run_id,
+    ):
+        if isinstance(event, MetaResult):
+            final = event
+
+    assert final is not None and final.ok is True
+    assert final.step_outputs["script_save"] == str(script_path)
+    assert final.step_outputs["script_reread"] == "persisted short-drama script"
+    assert observed["path"] == script_path
+    assert inputs["meta_run_id"] == artifact_run_id
+
+    replay_record = writer.hydrate_runs(writer.list_runs(limit=1))[0]
+    assert json.loads(replay_record.inputs_json)["meta_run_id"] == artifact_run_id
+    replay_steps = {step.step_id: step for step in replay_record.steps}
+    assert replay_steps["script_save"].status == "ok"
+    assert replay_steps["script_reread"].status == "ok"
 
 
 @pytest.mark.asyncio

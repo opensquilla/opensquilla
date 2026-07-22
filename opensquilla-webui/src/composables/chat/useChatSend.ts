@@ -2,7 +2,11 @@ import type { Ref } from 'vue'
 import i18n from '@/i18n'
 import { useToasts } from '@/composables/useToasts'
 import type { RpcClientError } from '@/lib/rpc'
-import type { Attachment, ChatMessage } from '@/types/chat'
+import type {
+  Attachment,
+  ChatMessage,
+  HiddenControlDispatchResult,
+} from '@/types/chat'
 import type { SandboxRunMode } from '@/types/sandbox'
 import { normalizeSandboxRunMode } from '@/types/sandbox'
 import type {
@@ -215,7 +219,12 @@ export interface UseChatSendOptions {
   prepareAttachmentsForSend?: (options?: { isCurrent?: () => boolean }) => Promise<boolean>
   enqueuePendingInput: (text: string, owner?: PendingQueueOwner) => boolean
   enqueueHiddenControl?: (
-    item: { text: string; displayText: string },
+    item: {
+      text: string
+      displayText: string
+      clientRequestId?: string
+      sessionKey?: string
+    },
     owner?: PendingQueueOwner,
   ) => boolean
   popAllPendingIntoComposer: () => boolean
@@ -230,6 +239,8 @@ export function useChatSend(options: UseChatSendOptions) {
   let activeFreshSendToken: FreshSendToken | null = null
   let activeResponseHandoff: ResponseHandoffGate | null = null
   let recoveredAttempt: SendAttempt | null = null
+  const hiddenDispatchInFlight = new Map<string, Promise<HiddenControlDispatchResult>>()
+  const renderedHiddenControls = new Set<string>()
 
   function beginFreshStream(requestSessionKey: string): FreshSendToken {
     const token: FreshSendToken = { stoppedByUser: false }
@@ -878,17 +889,79 @@ export function useChatSend(options: UseChatSendOptions) {
    * compaction is in flight, it is queued (carrying provider + display text and
    * a hiddenControl flag) so the drain restores both.
    */
-  async function dispatchHiddenSend(providerText: string, displayText: string) {
+  function hiddenDispatchResult(
+    status: HiddenControlDispatchResult['status'],
+    reason: HiddenControlDispatchResult['reason'],
+    clientRequestId: string,
+    sessionKey: string,
+  ): HiddenControlDispatchResult {
+    return { status, reason, clientRequestId, sessionKey }
+  }
+
+  function dispatchHiddenSend(
+    providerText: string,
+    displayText: string,
+    clientRequestId?: string,
+  ): Promise<HiddenControlDispatchResult> {
     const requestSessionKey = options.sessionKey.value
-    if (!requestSessionKey || !providerText) return
+    const stableClientRequestId = String(clientRequestId || '').trim() || createClientRequestId()
+    if (!requestSessionKey || !providerText) {
+      return Promise.resolve(hiddenDispatchResult(
+        'rejected',
+        'invalid_request',
+        stableClientRequestId,
+        requestSessionKey,
+      ))
+    }
+
+    const hiddenDispatchKey = `${requestSessionKey}\u0000${stableClientRequestId}`
+    const existing = hiddenDispatchInFlight.get(hiddenDispatchKey)
+    if (existing) return existing
+
+    const operation = performHiddenSend(
+      providerText,
+      displayText,
+      stableClientRequestId,
+      requestSessionKey,
+    )
+    hiddenDispatchInFlight.set(hiddenDispatchKey, operation)
+    void operation.then(() => {
+      if (hiddenDispatchInFlight.get(hiddenDispatchKey) === operation) {
+        hiddenDispatchInFlight.delete(hiddenDispatchKey)
+      }
+    }, () => {
+      if (hiddenDispatchInFlight.get(hiddenDispatchKey) === operation) {
+        hiddenDispatchInFlight.delete(hiddenDispatchKey)
+      }
+    })
+    return operation
+  }
+
+  async function performHiddenSend(
+    providerText: string,
+    displayText: string,
+    stableClientRequestId: string,
+    requestSessionKey: string,
+  ): Promise<HiddenControlDispatchResult> {
     const compactInFlight = options.isCompactInFlightForCurrentSession()
     const handoffInFlight = responseHandoffBlocksCurrentSession()
     if (options.stream.isStreaming.value || compactInFlight || handoffInFlight) {
-      options.enqueueHiddenControl?.(
-        { text: providerText, displayText },
-        pendingQueueOwner(),
+      const queuedItem = {
+        text: providerText,
+        displayText,
+        clientRequestId: stableClientRequestId,
+        sessionKey: requestSessionKey,
+      }
+      const owner = pendingQueueOwner()
+      const queued = owner
+        ? options.enqueueHiddenControl?.(queuedItem, owner)
+        : options.enqueueHiddenControl?.(queuedItem)
+      return hiddenDispatchResult(
+        queued ? 'queued' : 'rejected',
+        queued ? 'queued' : 'queue_full',
+        stableClientRequestId,
+        requestSessionKey,
       )
-      return
     }
 
     options.aborted.value = false
@@ -898,8 +971,10 @@ export function useChatSend(options: UseChatSendOptions) {
     })
     // Show the visible confirmation as a user bubble (NOT the marker text).
     const now = new Date().toISOString()
-    const clientMessageId = createClientMessageId()
-    if (displayText) {
+    const clientMessageId = `hidden-control:${stableClientRequestId}`
+    const renderedKey = `${requestSessionKey}\u0000${stableClientRequestId}`
+    if (displayText && !renderedHiddenControls.has(renderedKey)) {
+      renderedHiddenControls.add(renderedKey)
       options.messages.value.push({
         role: 'user',
         text: displayText,
@@ -911,7 +986,7 @@ export function useChatSend(options: UseChatSendOptions) {
     }
 
     const params: ChatSendParams = {
-      clientRequestId: createClientRequestId(),
+      clientRequestId: stableClientRequestId,
       clientMessageId,
       message: providerText,
       sessionKey: requestSessionKey,
@@ -952,7 +1027,12 @@ export function useChatSend(options: UseChatSendOptions) {
           responseHandoff.terminalResponse = Boolean(terminalStatus)
           await handoffResponseSession(acceptedSessionKey, responseHandoff)
         }
-        return
+        return hiddenDispatchResult(
+          'accepted',
+          'accepted',
+          stableClientRequestId,
+          requestSessionKey,
+        )
       }
       if ((res?.sessionKey || requestSessionKey) === requestSessionKey) {
         bindAcceptedUserMessage(clientMessageId, res)
@@ -1000,8 +1080,15 @@ export function useChatSend(options: UseChatSendOptions) {
         handleTerminalResponse(res, freshSendToken, { finishFreshStream: !wasStreaming })
         // See dispatchSend: a terminal response has no future lifecycle event.
       }
+      return hiddenDispatchResult(
+        'accepted',
+        'accepted',
+        stableClientRequestId,
+        requestSessionKey,
+      )
     } catch (err: unknown) {
       const acceptedError = acceptedErrorInfo(err)
+      const accepted = (err as RpcClientError | null | undefined)?.accepted
       const acceptedSessionKey = acceptedError?.sessionKey || requestSessionKey
       const stoppedByUser = freshSendToken?.stoppedByUser === true
       if (
@@ -1040,11 +1127,30 @@ export function useChatSend(options: UseChatSendOptions) {
           text: 'Send failed: ' + errorMessage(err),
           ts: new Date().toISOString(),
         })
-        return
+        return hiddenDispatchResult(
+          'accepted',
+          'accepted',
+          stableClientRequestId,
+          requestSessionKey,
+        )
       }
       if (acceptedError && options.sessionKey.value === requestSessionKey) {
         bindUserMessageId(clientMessageId, acceptedError.messageId)
         options.scheduleHistorySync()
+        return hiddenDispatchResult(
+          'accepted',
+          'accepted',
+          stableClientRequestId,
+          requestSessionKey,
+        )
+      }
+      if (acceptedError) {
+        return hiddenDispatchResult(
+          'accepted',
+          'accepted',
+          stableClientRequestId,
+          requestSessionKey,
+        )
       }
       if (options.sessionKey.value !== requestSessionKey) {
         recordSessionNavigationDiag('hiddenSend.error.stale', {
@@ -1052,10 +1158,20 @@ export function useChatSend(options: UseChatSendOptions) {
           current: options.sessionKey.value,
           reason: errorMessage(err),
         })
-        return
+        return hiddenDispatchResult(
+          accepted === false ? 'rejected' : 'unknown',
+          accepted === false ? 'send_rejected' : 'response_unknown',
+          stableClientRequestId,
+          requestSessionKey,
+        )
       }
       if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
-        return
+        return hiddenDispatchResult(
+          accepted === false ? 'rejected' : 'unknown',
+          accepted === false ? 'send_rejected' : 'response_unknown',
+          stableClientRequestId,
+          requestSessionKey,
+        )
       }
       if (!wasStreaming) {
         if (activeFreshSendToken === freshSendToken) {
@@ -1067,6 +1183,12 @@ export function useChatSend(options: UseChatSendOptions) {
       }
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+      return hiddenDispatchResult(
+        accepted === false ? 'rejected' : 'unknown',
+        accepted === false ? 'send_rejected' : 'response_unknown',
+        stableClientRequestId,
+        requestSessionKey,
+      )
     } finally {
       finishResponseHandoff(responseHandoff)
     }

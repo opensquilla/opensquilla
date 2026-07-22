@@ -1964,6 +1964,16 @@ async def _handle_sessions_send(
         if stripped_message is not None:
             provider_message_text = stripped_message.strip()
 
+    def _promote_pending_meta_launch() -> str | None:
+        from opensquilla.engine.steps.meta_command import pending_meta_launch_promote
+
+        return pending_meta_launch_promote(
+            key,
+            client_request_id=ingress_identity.client_request_id,
+            message=provider_message_text,
+            semantic_message=semantic_message_text,
+        )
+
     from opensquilla.agents.scope import resolve_agent_workspace_dir
     from opensquilla.gateway.routing import (
         build_cli_route_envelope,
@@ -2051,6 +2061,7 @@ async def _handle_sessions_send(
         route_envelope,
         metadata={
             **route_envelope.metadata,
+            "client_request_id": ingress_identity.client_request_id,
             "client_message_id": client_message_id,
             "surface_id": surface_id,
             "turn_context_intent": "send",
@@ -2059,6 +2070,7 @@ async def _handle_sessions_send(
     )
     ingress_turn_context = {
         "turn_id": turn_id,
+        "client_request_id": ingress_identity.client_request_id,
         "client_message_id": client_message_id,
         "surface_id": surface_id,
         "intent": "send",
@@ -2133,12 +2145,15 @@ async def _handle_sessions_send(
 
         from opensquilla.gateway.task_runtime import TaskQueueFullError
 
+        meta_launch_promotion: str | None = None
+
         async def _accept_task_record(
             task_record: AgentTaskRecord,
             *,
             merge_into_task: bool = False,
         ) -> TurnAcceptanceResult:
-            return await storage.accept_turn(
+            nonlocal meta_launch_promotion
+            acceptance = await storage.accept_turn(
                 persisted_entry,
                 expected_epoch=expected_epoch,
                 updated_at=int(time.time() * 1000),
@@ -2164,6 +2179,14 @@ async def _handle_sessions_send(
                 ),
                 merge_into_task=merge_into_task,
             )
+            if not acceptance.replayed and not merge_into_task:
+                # This synchronous in-memory transition sits strictly after
+                # the durable commit and before reserve activation, so the
+                # turn can never execute while its exact marker is still
+                # expirable staging state. A prompt merged into an older
+                # collect task is not a distinct matching launch turn.
+                meta_launch_promotion = _promote_pending_meta_launch()
+            return acceptance
 
         async def _commit_and_activate() -> TurnAcceptanceResult:
             if runtime_mode == "collect" and atomic_intent_plan.action == "continue":
@@ -2267,6 +2290,15 @@ async def _handle_sessions_send(
                             task_id=acceptance.receipt.task_id,
                         )
                 if not reservation.activated:
+                    if meta_launch_promotion == "promoted":
+                        from opensquilla.engine.steps.meta_command import (
+                            pending_meta_launch_cancel_accepted,
+                        )
+
+                        pending_meta_launch_cancel_accepted(
+                            key,
+                            client_request_id=ingress_identity.client_request_id,
+                        )
                     try:
                         await atomic_task_runtime.abort_reservation(reservation)
                     except Exception:  # noqa: BLE001 - preserve accepted response.
@@ -2497,6 +2529,11 @@ async def _handle_sessions_send(
         async with _persist_lock:
             await _persist_user_message()
 
+    # Compatibility managers without atomic acceptance still persist the user
+    # row before runtime enqueue. Promote now, while no task has been admitted,
+    # and restage if a clean queue rejection rolls the row back below.
+    legacy_meta_launch_promotion = _promote_pending_meta_launch()
+
     user_message_id = getattr(legacy_persisted_entry, "message_id", None)
 
     async def _rollback_persisted_user_message(reason: str) -> tuple[str | None, bool]:
@@ -2559,6 +2596,15 @@ async def _handle_sessions_send(
             from opensquilla.gateway.task_runtime import TaskQueueFullError
 
             if not isinstance(exc, TaskQueueFullError):
+                if legacy_meta_launch_promotion == "promoted":
+                    from opensquilla.engine.steps.meta_command import (
+                        pending_meta_launch_restage,
+                    )
+
+                    pending_meta_launch_restage(
+                        key,
+                        client_request_id=ingress_identity.client_request_id,
+                    )
                 raise
 
             # Roll back the just-appended user turn so a retry doesn't leave
@@ -2569,6 +2615,15 @@ async def _handle_sessions_send(
             orphan_id, rollback_ok = await _rollback_persisted_user_message("queue_full")
 
             if rollback_ok:
+                if legacy_meta_launch_promotion == "promoted":
+                    from opensquilla.engine.steps.meta_command import (
+                        pending_meta_launch_restage,
+                    )
+
+                    pending_meta_launch_restage(
+                        key,
+                        client_request_id=ingress_identity.client_request_id,
+                    )
                 raise RpcHandlerError(
                     "QUEUE_FULL",
                     "The session task queue is full. Try again after queued work completes.",
@@ -2580,6 +2635,15 @@ async def _handle_sessions_send(
                     retryable=True,
                     accepted=False,
                 ) from exc
+            if legacy_meta_launch_promotion == "promoted":
+                from opensquilla.engine.steps.meta_command import (
+                    pending_meta_launch_cancel_accepted,
+                )
+
+                pending_meta_launch_cancel_accepted(
+                    key,
+                    client_request_id=ingress_identity.client_request_id,
+                )
             raise RpcHandlerError(
                 "QUEUE_FULL_DIRTY",
                 (
@@ -2598,6 +2662,15 @@ async def _handle_sessions_send(
                 accepted=True,
             ) from exc
         if handle.task_id != turn_id:
+            if legacy_meta_launch_promotion == "promoted":
+                from opensquilla.engine.steps.meta_command import (
+                    pending_meta_launch_restage,
+                )
+
+                pending_meta_launch_restage(
+                    key,
+                    client_request_id=ingress_identity.client_request_id,
+                )
             # ``collect`` coalesces this durable prompt into an already queued
             # runtime turn. TaskRuntime has rebound the stored row; project and
             # return that same canonical identity instead of the unused

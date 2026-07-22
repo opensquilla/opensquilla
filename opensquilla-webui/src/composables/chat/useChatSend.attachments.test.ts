@@ -75,6 +75,100 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
 }
 
 describe('useChatSend attachment payloads', () => {
+  it('uses a supplied stable ingress id for a resumed hidden control', async () => {
+    const { api, rpc } = makeOptions()
+
+    const result = await api.dispatchHiddenSend(
+      '/meta meta-short-drama -- original request',
+      '/meta meta-short-drama -- original request',
+      'provider-handoff-request-1',
+    )
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      clientRequestId: 'provider-handoff-request-1',
+    }))
+    expect(result).toEqual({
+      status: 'accepted',
+      reason: 'accepted',
+      clientRequestId: 'provider-handoff-request-1',
+      sessionKey: 'agent:main:webchat:test',
+    })
+  })
+
+  it('preserves a resumed hidden control ingress id when it must queue', async () => {
+    const enqueueHiddenControl = vi.fn(() => true)
+    const { api, stream } = makeOptions({ enqueueHiddenControl })
+    stream.isStreaming.value = true
+
+    const result = await api.dispatchHiddenSend(
+      '/meta meta-short-drama -- original request',
+      '/meta meta-short-drama -- original request',
+      'provider-handoff-request-2',
+    )
+
+    expect(enqueueHiddenControl).toHaveBeenCalledWith({
+      text: '/meta meta-short-drama -- original request',
+      displayText: '/meta meta-short-drama -- original request',
+      clientRequestId: 'provider-handoff-request-2',
+      sessionKey: 'agent:main:webchat:test',
+    })
+    expect(result.status).toBe('queued')
+    expect(result.reason).toBe('queued')
+  })
+
+  it('rejects a hidden control without sending when the pending queue is full', async () => {
+    const enqueueHiddenControl = vi.fn(() => false)
+    const { api, rpc, stream } = makeOptions({ enqueueHiddenControl })
+    stream.isStreaming.value = true
+
+    const result = await api.dispatchHiddenSend(
+      '/meta meta-short-drama -- original request',
+      '/meta meta-short-drama -- original request',
+      'provider-handoff-queue-full',
+    )
+
+    expect(result).toEqual({
+      status: 'rejected',
+      reason: 'queue_full',
+      clientRequestId: 'provider-handoff-queue-full',
+      sessionKey: 'agent:main:webchat:test',
+    })
+    expect(rpc.call).not.toHaveBeenCalled()
+  })
+
+  it('classifies rejected, ambiguous, and accepted RPC failures', async () => {
+    const rejected = makeOptions()
+    rejected.rpc.call.mockRejectedValue(Object.assign(new Error('Rejected'), { accepted: false }))
+    await expect(rejected.api.dispatchHiddenSend('/meta test', '/meta test', 'rejected-id'))
+      .resolves.toMatchObject({ status: 'rejected', reason: 'send_rejected' })
+
+    const ambiguous = makeOptions()
+    ambiguous.rpc.call.mockRejectedValue(new Error('Connection closed before response'))
+    await expect(ambiguous.api.dispatchHiddenSend('/meta test', '/meta test', 'unknown-id'))
+      .resolves.toMatchObject({ status: 'unknown', reason: 'response_unknown' })
+
+    const accepted = makeOptions()
+    accepted.rpc.call.mockRejectedValue(Object.assign(new Error('Response lost'), { accepted: true }))
+    await expect(accepted.api.dispatchHiddenSend('/meta test', '/meta test', 'accepted-id'))
+      .resolves.toMatchObject({ status: 'accepted', reason: 'accepted' })
+    expect(accepted.stream.endStreaming).not.toHaveBeenCalled()
+  })
+
+  it('coalesces concurrent retries with the same session and ingress id', async () => {
+    let resolveSend: ((value: unknown) => void) | undefined
+    const pendingSend = new Promise(resolve => { resolveSend = resolve })
+    const { api, rpc } = makeOptions()
+    rpc.call.mockImplementation(() => pendingSend)
+
+    const first = api.dispatchHiddenSend('/meta test', '/meta test', 'same-request')
+    const second = api.dispatchHiddenSend('/meta test', '/meta test', 'same-request')
+
+    expect(second).toBe(first)
+    expect(rpc.call).toHaveBeenCalledOnce()
+    resolveSend?.({ sessionKey: 'agent:main:webchat:test' })
+    await expect(first).resolves.toMatchObject({ status: 'accepted' })
+  })
+
   it('sends the selected sandbox run mode as trusted source metadata', async () => {
     const { api, rpc } = makeOptions({
       runMode: ref('standard'),

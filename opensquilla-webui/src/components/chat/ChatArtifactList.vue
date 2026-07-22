@@ -109,7 +109,19 @@
       />
     </TransitionGroup>
 
-    <!-- Non-image/non-audio artifacts: file cards with explicit actions. -->
+    <!-- Video artifacts: authenticated, lazy-loaded inline players. -->
+    <TransitionGroup v-if="videoArtifacts.length" name="artifact-card" tag="div" class="msg-video-cards">
+      <VideoArtifactCard
+        v-for="artifact in videoArtifacts"
+        :key="`video-${artifactKey(artifact)}`"
+        :artifact="artifact"
+        :session-key="sessionKey"
+        :auth-token="authToken"
+        @download="$emit('download', $event)"
+      />
+    </TransitionGroup>
+
+    <!-- Remaining artifacts: file cards with explicit Open/Download actions. -->
     <TransitionGroup v-if="fileArtifacts.length" name="artifact-chip" tag="div" class="msg-artifact-files">
       <ArtifactChip
         v-for="artifact in fileArtifacts"
@@ -231,6 +243,7 @@ import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ArtifactChip from '@/components/chat/ArtifactChip.vue'
 import AudioArtifactCard from '@/components/chat/AudioArtifactCard.vue'
+import VideoArtifactCard from '@/components/chat/VideoArtifactCard.vue'
 import type { ArtifactPayload } from '@/types/rpc'
 import { useToasts } from '@/composables/useToasts'
 import { useDialogLayer } from '@/composables/useDialogA11y'
@@ -257,6 +270,7 @@ import {
   artifactSizeLabel,
   artifactThumbnailUrl,
   canPreview,
+  isVideoArtifact,
 } from '@/utils/chat/artifacts'
 
 const props = defineProps<{
@@ -277,13 +291,14 @@ const rpcStore = useRpcStore()
 
 const visualArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) === 'visual'))
 const audioArtifacts = computed(() => props.artifacts.filter(artifact => artifactCategory(artifact) === 'audio'))
+const videoArtifacts = computed(() => props.artifacts.filter(isVideoArtifact))
 const navigationVisualArtifacts = computed(() => {
   const source = props.navigationArtifacts?.length ? props.navigationArtifacts : props.artifacts
   return source.filter(artifact => artifactCategory(artifact) === 'visual')
 })
 const fileArtifacts = computed(() => props.artifacts.filter(artifact => {
   const category = artifactCategory(artifact)
-  return category !== 'visual' && category !== 'audio'
+  return category !== 'visual' && category !== 'audio' && !isVideoArtifact(artifact)
 }))
 
 function artifactKey(artifact: ArtifactPayload): string {
@@ -615,6 +630,13 @@ onUnmounted(() => {
 .msg-media-cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.msg-video-cards {
+  display: flex;
+  flex-direction: column;
   gap: var(--sp-2);
   margin-bottom: var(--sp-2);
 }

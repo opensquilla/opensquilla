@@ -149,6 +149,8 @@ METHOD_SCOPES: dict[str, str] = {
     "usage.cost": READ_SCOPE,
     "usage.query": READ_SCOPE,
     "meta.list": READ_SCOPE,  # OpenSquilla-only; invokable meta-skill catalog.
+    "meta.setup.plan": READ_SCOPE,  # OpenSquilla-only; dependency setup preview.
+    "meta.setup.status": READ_SCOPE,  # OpenSquilla-only; background setup progress.
     "meta.runs.list": READ_SCOPE,
     "meta.runs.failures": READ_SCOPE,
     "meta.runs.cost": READ_SCOPE,
@@ -259,9 +261,11 @@ METHOD_SCOPES: dict[str, str] = {
     "skills.uninstall": ADMIN_SCOPE,
     "skills.reload": ADMIN_SCOPE,
     "skills.deps.install": ADMIN_SCOPE,
+    "meta.setup.install": ADMIN_SCOPE,
     "meta.runs.show": ADMIN_SCOPE,
     "meta.runs.draft": ADMIN_SCOPE,
     "meta.runs.confirm_preflight": ADMIN_SCOPE,
+    "meta.runs.recovery": ADMIN_SCOPE,
     "meta.runs.diff": ADMIN_SCOPE,
     "meta.runs.replay": ADMIN_SCOPE,
     "meta.runs.validate": ADMIN_SCOPE,

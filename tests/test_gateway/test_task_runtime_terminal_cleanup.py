@@ -134,6 +134,7 @@ async def test_preallocated_turn_identity_is_propagated_to_handler() -> None:
     env = replace(
         env,
         metadata={
+            "client_request_id": "request-1",
             "client_message_id": "client-1",
             "surface_id": "tui:test",
         },
@@ -145,6 +146,7 @@ async def test_preallocated_turn_identity_is_propagated_to_handler() -> None:
     assert observed == [
         {
             "turn_id": "turn-preallocated",
+            "client_request_id": "request-1",
             "client_message_id": "client-1",
             "surface_id": "tui:test",
             "intent": "send",

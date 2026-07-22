@@ -37,15 +37,19 @@ export interface UseChatSessionRuntimeOptions {
   createSessionKey: (agentId?: string) => string
   persistSession: (key: string, options?: PersistSessionOptions) => void
   unsubscribeSession: () => void | Promise<void>
-  subscribeSession: () => void | Promise<void | SessionSubscriptionOutcome>
+  subscribeSession: () =>
+    | boolean
+    | void
+    | SessionSubscriptionOutcome
+    | Promise<boolean | void | SessionSubscriptionOutcome>
   loadHistory: () => void | Promise<void>
   loadCurrentSessionUsage: () => void | Promise<void>
   applySessionRunState: (source: ChatRunStatusSource | null | undefined) => void
   setCompactInFlight: (active: boolean, key?: string) => void
   hideCompactStatus: () => void
   clearPendingQueue: () => void
-  switchPendingQueue: (targetSessionKey: string) => void
-  adoptPendingQueue: (targetSessionKey: string, ownerRequestId: string) => void
+  switchPendingQueue?: (targetSessionKey: string) => void
+  adoptPendingQueue?: (targetSessionKey: string, ownerRequestId: string) => void
   resetSavingsPopupCooldown: () => void
   restoreWidgetState: () => void
   resetStreamLiveTurnState: () => void
@@ -100,20 +104,31 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     resetSessionViewState()
   }
 
+  function switchSession(
+    key: string,
+    pendingQueuePolicy: { kind: 'navigate' },
+  ): Promise<boolean>
+  function switchSession(
+    key: string,
+    pendingQueuePolicy: { kind: 'response_handoff'; ownerRequestId: string },
+  ): Promise<ResponseSessionAdoptionResult | undefined>
   async function switchSession(
     key: string,
     pendingQueuePolicy:
       | { kind: 'navigate' }
       | { kind: 'response_handoff'; ownerRequestId: string },
-  ): Promise<ResponseSessionAdoptionResult | undefined> {
-    if (!key || key === options.sessionKey.value) return
+  ): Promise<boolean | ResponseSessionAdoptionResult | undefined> {
+    if (!key || key === options.sessionKey.value) {
+      return pendingQueuePolicy.kind === 'navigate' ? false : undefined
+    }
 
     options.unsubscribeSession()
     resetCompactState()
     if (pendingQueuePolicy.kind === 'response_handoff') {
-      options.adoptPendingQueue(key, pendingQueuePolicy.ownerRequestId)
+      options.adoptPendingQueue?.(key, pendingQueuePolicy.ownerRequestId)
     } else {
-      options.switchPendingQueue(key)
+      if (options.switchPendingQueue) options.switchPendingQueue(key)
+      else options.clearPendingQueue()
     }
     options.persistSession(key, { source: 'runtime.switchToSession' })
     resetSessionRuntimeState()
@@ -122,13 +137,26 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     resetSessionViewState()
     options.restoreWidgetState()
     options.loadCurrentSessionUsage()
-    const subscription = options.subscribeSession()
-    const history = options.loadHistory()
-    const [subscriptionOutcome] = await Promise.all([subscription, history])
+    if (pendingQueuePolicy.kind === 'navigate') {
+      const subscriptionOutcome = await options.subscribeSession()
+      if (subscriptionOutcome === false || !isAuthoritativeSubscription(subscriptionOutcome)) {
+        return false
+      }
+      if (options.sessionKey.value !== key) return false
+      await options.loadHistory()
+      return true
+    }
+
+    const [subscriptionOutcome] = await Promise.all([
+      options.subscribeSession(),
+      options.loadHistory(),
+    ])
     return {
-      authoritativeIdle: subscriptionOutcome?.authoritative === true
+      authoritativeIdle: isSubscriptionOutcome(subscriptionOutcome)
+        && subscriptionOutcome.authoritative === true
         && subscriptionOutcome.live === false,
-      backgroundOnly: subscriptionOutcome?.authoritative === true
+      backgroundOnly: isSubscriptionOutcome(subscriptionOutcome)
+        && subscriptionOutcome.authoritative === true
         && subscriptionOutcome.backgroundOnly === true,
     }
   }
@@ -147,7 +175,8 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     options.unsubscribeSession()
     const key = options.createSessionKey(agentId)
     resetCompactState()
-    options.switchPendingQueue(key)
+    if (options.switchPendingQueue) options.switchPendingQueue(key)
+    else options.clearPendingQueue()
     options.sessionKey.value = key
     resetSessionRuntimeState()
     options.pendingSessionIntent.value = 'new_chat'
@@ -161,4 +190,16 @@ export function useChatSessionRuntime(options: UseChatSessionRuntimeOptions) {
     switchToSession,
     adoptResponseSession,
   }
+}
+
+function isSubscriptionOutcome(
+  value: boolean | void | SessionSubscriptionOutcome,
+): value is SessionSubscriptionOutcome {
+  return typeof value === 'object' && value !== null
+}
+
+function isAuthoritativeSubscription(
+  value: boolean | void | SessionSubscriptionOutcome,
+): boolean {
+  return !isSubscriptionOutcome(value) || value.authoritative
 }

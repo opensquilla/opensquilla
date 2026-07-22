@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ import yaml
 from opensquilla.engine.steps.meta_resolution import meta_resolution
 from opensquilla.skills.loader import SkillLoader
 from opensquilla.skills.meta.parser import parse_meta_plan
+from opensquilla.skills.meta.templating import evaluate_when
 
 BUNDLED = (
     Path(__file__).resolve().parents[2]
@@ -20,6 +22,22 @@ BUNDLED = (
     / "bundled"
 )
 EXP = Path(__file__).resolve().parents[2] / "src" / "opensquilla" / "skills" / "exp"
+
+SHORT_DRAMA_PAID_STEP_IDS = {
+    "reference_image",
+    *(f"shot{shot}_{kind}" for shot in range(1, 11) for kind in ("image", "video")),
+}
+SHORT_DRAMA_MEDIA_PREPARATION_STEP_IDS = {
+    "title_extract",
+    "subtitle_extract",
+    "ending_text_extract",
+    "reference_prompt_extract",
+    *(
+        f"shot{shot}_{suffix}"
+        for shot in range(1, 11)
+        for suffix in ("img_prompt", "vid_prompt", "duration")
+    ),
+}
 
 
 def _loader(tmp_path: Path) -> SkillLoader:
@@ -113,10 +131,9 @@ def test_paper_meta_skill_has_pre_compile_quality_gates(tmp_path: Path) -> None:
         "final_manuscript_package",
         "persist_sections",
         "assemble_manuscript_tex",
+        "paper_length_gate",
         "citation_map",
         "citation_integrity_gate",
-        "latex_sanitizer",
-        "compile_latex",
     } <= ids
 
 
@@ -152,6 +169,7 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     assert "user_language" in clarify.intro
     assert "contains_cjk" in clarify.intro
     assert clarify.fields[1].default == "COMPACT_SKELETON"
+    assert clarify.fields[1].choices == ("FULL_MANUSCRIPT", "COMPACT_SKELETON")
     assert "Mode (default COMPACT_SKELETON" in clarify.fields[1].prompt
     assert "类型（默认 COMPACT_SKELETON" in clarify.fields[1].prompt
     raw = str(loader.get_by_name("meta-paper-write").composition_raw)
@@ -168,21 +186,21 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     assert steps["figure_placeholders"].when == steps["experiment_design"].when
     assert steps["table_placeholders"].when == steps["experiment_design"].when
     assert steps["analysis_outline"].when == steps["experiment_design"].when
-    assert steps["compile_latex"].when == (
-        "'PAPER_MODE: COMPILE_ONLY' in outputs.paper_contract"
-    )
     assert steps["writing_plan"].when == (
         "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract"
     )
     assert steps["compile_pdf"].when == (
         "'PAPER_MODE: FULL_MANUSCRIPT' in outputs.paper_contract or "
-        "'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract or "
-        "'PAPER_MODE: REPAIR_EXISTING' in outputs.paper_contract"
+        "'PAPER_MODE: COMPACT_SKELETON' in outputs.paper_contract"
     )
     assert steps["publish_pdf"].when == steps["compile_pdf"].when
     assert steps["deliver_paper"].when == steps["compile_pdf"].when
-    compile_prompt = str(steps["compile_pdf"].tool_args)
-    assert "refusing to create degraded PDF" in compile_prompt
+    assert steps["deliver_paper"].kind == "skill_exec"
+    assert steps["deliver_paper"].skill == "paper-delivery-summary"
+    artifact_runtime = (
+        BUNDLED / "paper-artifact-runtime" / "scripts" / "run.py"
+    ).read_text(encoding="utf-8")
+    assert "refusing to create degraded PDF" in artifact_runtime
     for step_id in (
         "paper_contract",
         "paper_preferences",
@@ -194,9 +212,6 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
         "outline",
         "citation_plan",
         "final_manuscript_package",
-        "citation_integrity_gate",
-        "latex_sanitizer",
-        "compile_latex",
     ):
         assert steps[step_id].kind == "llm_chat", step_id
     for step_id in (
@@ -205,7 +220,8 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
         "citation_map",
         "compile_pdf",
     ):
-        assert steps[step_id].kind == "tool_call", step_id
+        assert steps[step_id].kind == "skill_exec", step_id
+        assert steps[step_id].skill == "paper-artifact-runtime", step_id
     for step_id in (
         "section_abstract",
         "section_introduction",
@@ -217,8 +233,18 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     ):
         assert steps[step_id].kind == "agent", step_id
         assert steps[step_id].skill == "paper-section-author", step_id
-    for step_id in ("search_papers", "refbib"):
+    for step_id in (
+        "latex_sanitizer",
+        "search_papers",
+        "refbib",
+        "paper_length_gate",
+        "citation_integrity_gate",
+        "deliver_paper",
+    ):
         assert steps[step_id].kind == "skill_exec"
+    assert steps["paper_length_gate"].skill == "paper-length-gate"
+    assert steps["latex_sanitizer"].skill == "paper-latex-sanitizer"
+    assert steps["citation_integrity_gate"].skill == "paper-citation-integrity-gate"
     assert steps["persist_sections"].depends_on == (
         "section_abstract",
         "section_introduction",
@@ -231,7 +257,9 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     assert steps["assemble_manuscript_tex"].depends_on == (
         "writing_plan", "persist_sections", "refbib",
     )
-    assert steps["compile_latex"].depends_on == ("latex_sanitizer",)
+    assert "compile_latex" not in steps
+    assert "REPAIR_EXISTING" not in raw
+    assert "COMPILE_ONLY" not in raw
     # New citation-provenance contract — the manuscript prompt must
     # carry the strict "do not invent cite keys" instructions.
     final_prompt = str(steps["final_manuscript_package"].with_args)
@@ -252,16 +280,13 @@ def test_paper_meta_skill_uses_compact_default_with_clarification(
     assert "analysis_outline" in final_prompt
     assert "CITATION_STRATEGY" in final_prompt
     # citation_map step exposes the per-key audit table.
-    persist_prompt = str(steps["persist_sections"].tool_args)
-    assert "SECTION_ARTIFACTS" in persist_prompt
-    assert "CONTEXT_POLICY" in persist_prompt
-    assemble_prompt = str(steps["assemble_manuscript_tex"].tool_args)
-    assert "MANUSCRIPT_PATH" in assemble_prompt
-    assert "full manuscript persisted on disk" in assemble_prompt
-    citation_map_prompt = str(steps["citation_map"].tool_args)
-    assert "Source Quality" in citation_map_prompt
-    assert "INVALID" in citation_map_prompt
-    assert "STRONG" in citation_map_prompt
+    assert "SECTION_ARTIFACTS" in artifact_runtime
+    assert "CONTEXT_POLICY" in artifact_runtime
+    assert "MANUSCRIPT_PATH" in artifact_runtime
+    assert "full manuscript persisted on disk" in artifact_runtime
+    assert "Source Quality" in artifact_runtime
+    assert "INVALID" in artifact_runtime
+    assert "STRONG" in artifact_runtime
 
 
 def test_pdf_intelligence_preserves_traceable_multi_document_structure(
@@ -447,6 +472,329 @@ def test_stack_trace_final_report_requires_patch_target_checklist(
     assert "history-explorer" in _orchestrated_skill_names(
         loader, "meta-stack-trace-investigator",
     )
+
+
+def test_short_drama_delivery_waits_for_final_media_and_audits_fallbacks(
+    tmp_path: Path,
+) -> None:
+    loader = _loader(tmp_path)
+    spec = loader.get_by_name("meta-short-drama")
+    assert spec is not None
+    assert spec.composition_raw is not None
+    steps = {step["id"]: step for step in spec.composition_raw["steps"]}
+    run_dir = "{{ inputs.workspace_dir }}/meta_short_drama/{{ inputs.meta_run_id }}"
+
+    assert steps["script_save_draft"]["tool_args"]["path"] == f"{run_dir}/script.txt"
+    assert steps["script_reread"]["with"]["input"] == f"{run_dir}/script.txt"
+    assert "inputs.user_message | slugify" not in str(spec.composition_raw)
+
+    def _iter_strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for child in value.values():
+                yield from _iter_strings(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from _iter_strings(child)
+
+    output_paths = [
+        value
+        for value in _iter_strings(spec.composition_raw)
+        if "/meta_short_drama/" in value
+    ]
+    assert output_paths
+    assert all(run_dir in value for value in output_paths)
+
+    intake_task = str(steps["intake_extract"]["with"]["task"])
+    assert "copy it exactly" in intake_task
+    assert "STYLE_POLICY_WARNING" in intake_task
+    assert "Photoreal human references may be rejected" in intake_task
+    assert "虚构 2D 编辑插画" in intake_task
+    assert "clearly fictional stylized illustration" in intake_task
+    assert "电影级写实, 真实摄影" not in intake_task
+
+    review_clarify = steps["review_gate"]["clarify"]
+    assert "外部图像/视频提供商" in str(review_clarify["intro_zh"])
+    assert "未经授权的真人照片" in str(review_clarify["intro_zh"])
+    assert "configured external image/video providers" in str(review_clarify["intro_en"])
+    assert review_clarify["nl_extract"] is False
+
+    review_normalize = steps["review_normalize"]
+    assert review_normalize["kind"] == "skill_exec"
+    assert review_normalize["skill"] == "short-drama-review-normalizer"
+    assert review_normalize["depends_on"] == ["review_gate"]
+    assert review_normalize["with"]["payload"]["review"].startswith(
+        "{{ inputs.get('collected', {}).get('review_gate', {})"
+    )
+
+    review_spec = loader.get_by_name("short-drama-review-normalizer")
+    assert review_spec is not None and review_spec.entrypoint is not None
+    assert review_spec.entrypoint["parse"] == "text"
+    assert review_spec.entrypoint["stdin"] == "{{ with.payload | tojson }}"
+
+    external_media_steps = [
+        step
+        for step in steps.values()
+        if step.get("skill") in {"nano-banana-pro", "seedance-2-prompt"}
+    ]
+    assert external_media_steps
+    assert all(
+        "'DECISION: proceed' in outputs.review_normalize" in str(step.get("when", ""))
+        for step in external_media_steps
+    )
+    paid_step_ids = {
+        step_id
+        for step_id, step in steps.items()
+        if step.get("side_effect") == "external_paid_submit"
+    }
+    assert paid_step_ids == SHORT_DRAMA_PAID_STEP_IDS
+    for step_id in SHORT_DRAMA_PAID_STEP_IDS:
+        assert steps[step_id]["kind"] == "skill_exec"
+        assert steps[step_id]["skill"] in {"nano-banana-pro", "seedance-2-prompt"}
+        assert "'DECISION: proceed' in outputs.review_normalize" in steps[step_id]["when"]
+        if step_id != "reference_image":
+            shot = int(step_id.removeprefix("shot").split("_", 1)[0])
+            assert (
+                f"'=== SHOT_{shot} ===' in outputs.final_script.splitlines()"
+                in steps[step_id]["when"]
+            )
+
+    for step_id in SHORT_DRAMA_MEDIA_PREPARATION_STEP_IDS:
+        assert steps[step_id]["kind"] == "llm_chat"
+        assert steps[step_id]["depends_on"] == ["final_script", "review_normalize"]
+        if step_id.startswith("shot"):
+            shot = int(step_id.removeprefix("shot").split("_", 1)[0])
+            assert steps[step_id]["when"] == (
+                "'DECISION: proceed' in outputs.review_normalize and "
+                f"'=== SHOT_{shot} ===' in outputs.final_script.splitlines()"
+            )
+        else:
+            assert steps[step_id]["when"] == (
+                "'DECISION: proceed' in outputs.review_normalize"
+            )
+
+    absent_outputs = {
+        "review_normalize": "DECISION: proceed",
+        "final_script": "=== OVERVIEW ===\nN_SHOTS: 1\n=== SHOT_1 ===\n",
+    }
+    for shot in range(2, 11):
+        for suffix in ("img_prompt", "vid_prompt", "duration"):
+            assert not evaluate_when(
+                steps[f"shot{shot}_{suffix}"]["when"],
+                inputs={},
+                outputs=absent_outputs,
+            )
+        hallucinated = {
+            **absent_outputs,
+            f"shot{shot}_img_prompt": f"I could not find SHOT_{shot}",
+            f"shot{shot}_vid_prompt": f"No SHOT_{shot} block was present",
+        }
+        assert not evaluate_when(
+            steps[f"shot{shot}_image"]["when"],
+            inputs={},
+            outputs=hallucinated,
+        )
+        assert not evaluate_when(
+            steps[f"shot{shot}_video"]["when"],
+            inputs={},
+            outputs=hallucinated,
+        )
+
+    inline_header_outputs = {
+        "review_normalize": "DECISION: proceed",
+        "final_script": "=== SHOT_1 ===\nVIDEO_PROMPT: mention === SHOT_2 === inline",
+        "shot2_img_prompt": "hallucinated image prompt",
+        "shot2_vid_prompt": "hallucinated video prompt",
+    }
+    assert not evaluate_when(
+        steps["shot2_image"]["when"], inputs={}, outputs=inline_header_outputs
+    )
+    assert not evaluate_when(
+        steps["shot2_video"]["when"], inputs={}, outputs=inline_header_outputs
+    )
+
+    reference_prompt = str(steps["reference_prompt_extract"]["with"]["task"])
+    assert "character-design lineup composition" in reference_prompt
+    assert "wide-angle group photo" not in reference_prompt
+
+    for shot in range(1, 11):
+        video_prompt = str(steps[f"shot{shot}_video"]["with"]["prompt"])
+        assert "fictional character-design anchor" in video_prompt
+        assert "never infer or reproduce a real-person likeness" in video_prompt
+        assert "skin tone" not in video_prompt
+        assert "faces" not in video_prompt
+        assert "byte-identical" not in video_prompt
+
+    deliver = steps["deliver"]
+    assert {
+        "final_script",
+        "review_normalize",
+        "script_save",
+        "merge",
+        "subtitles_srt",
+        "subtitled_final",
+        "delivery_audit",
+        "publish_final_video",
+        "publish_script",
+    } <= set(deliver["depends_on"])
+
+    audit_spec = loader.get_by_name("short-drama-delivery-audit")
+    assert audit_spec is not None
+    entrypoint = audit_spec.entrypoint
+    assert entrypoint is not None
+    assert entrypoint["command"] == "python {baseDir}/scripts/audit_delivery.py"
+    assert entrypoint["parse"] == "json"
+    assert entrypoint["stdin"] == "{{ with.runtime | tojson }}"
+
+    delivery_audit = steps["delivery_audit"]
+    assert delivery_audit["kind"] == "skill_exec"
+    assert delivery_audit["skill"] == "short-drama-delivery-audit"
+    assert "meta-short-drama" not in _orchestrated_skill_names(loader, "meta-short-drama")
+    assert delivery_audit["with"]["run_dir"] == run_dir
+    assert {"final_script", "reference_image", "subtitled_final"} <= set(
+        delivery_audit["depends_on"]
+    )
+    assert delivery_audit["with"]["runtime"]["fallback_outputs"] == {
+        str(shot): f"{{{{ outputs.get('shot{shot}_video_fallback', '') | truncate(400) }}}}"
+        for shot in range(1, 11)
+    }
+    assert delivery_audit["with"]["runtime"]["paid_submission_dispositions"] == (
+        "{{ outputs.get('__opensquilla_paid_submission_dispositions_v1__', '{}') "
+        "| truncate(8000) }}"
+    )
+
+    publish_video = steps["publish_final_video"]
+    assert publish_video["kind"] == "tool_call"
+    assert publish_video["tool"] == "publish_artifact"
+    assert publish_video["tool_allowlist"] == ["publish_artifact"]
+    assert {"subtitled_final", "delivery_audit", "review_normalize"} <= set(
+        publish_video["depends_on"]
+    )
+    assert publish_video["when"] == (
+        "'DECISION: proceed' in outputs.review_normalize and "
+        "'\"status\": \"blocked\"' not in outputs.delivery_audit"
+    )
+    assert publish_video["tool_args"]["name"] == "final_subtitled.mp4"
+    assert publish_video["tool_args"]["mime"] == "video/mp4"
+    assert publish_video["tool_args"]["path"].endswith("/final_subtitled.mp4")
+
+    publish_script = steps["publish_script"]
+    assert publish_script["kind"] == "tool_call"
+    assert publish_script["tool"] == "publish_artifact"
+    assert publish_script["tool_allowlist"] == ["publish_artifact"]
+    assert publish_script["depends_on"] == ["script_save"]
+    assert publish_script["tool_args"]["name"] == "script.txt"
+    assert publish_script["tool_args"]["mime"] == "text/plain"
+    assert publish_script["tool_args"]["path"].endswith("/script.txt")
+
+    task = str(deliver["with"]["task"])
+    assert "DELIVERY_AUDIT_JSON (machine-owned, sole authority)" in task
+    assert "copy the value of DELIVERY_AUDIT_JSON.media_provenance" in task
+    assert "Never upgrade degraded/blocked to verified" in task
+    assert "content_duration_s is the story-shot content duration" in task
+    assert "final_duration_s is the probed finished-MP4 duration" in task
+    assert "Never call a 7s" in task
+    assert "If status is blocked, say the final video was not" in task
+    assert "outputs.get('publish_final_video'" in task
+    assert "outputs.get('publish_script'" in task
+    assert "Do not invent or print URLs" in task
+    assert "For VIDEO_POLICY_REJECTED" in task
+    assert "sanitized reason/policy_code" in task
+    assert "DELIVERY_AUDIT_JSON.may_have_been_billed" in task
+    assert "paid_submission_status_unknown_assets" in task
+    assert "check provider history before starting a replacement" in task
+    assert "Never expose fallback output or raw failure text" in task
+    assert "DELIVERY_AUDIT_JSON.safe_no_submit_assets" in task
+    assert "Do not warn that those assets may have been billed" in task
+    assert "DELIVERY_AUDIT_JSON.unexpected_paid_assets" in task
+    assert "outside the canonical" in task
+    assert "outputs.get('reference_image'" not in task
+    assert "outputs.get('shot1_video_fallback'" not in task
+
+    raw = Path(spec.file_path).read_text(encoding="utf-8")
+    assert "DURATION_S always means STORY-CONTENT duration" in raw
+    assert "content DURATION_S + 4s" in raw
+    assert "例如 3 秒剧情的成片约 7 秒" in raw
+    assert "provider-policy" in raw
+    assert "refusals stop immediately without another paid submission" in raw
+
+    ai_video_script = loader.get_by_name("ai-video-script")
+    assert ai_video_script is not None
+    ai_video_raw = Path(ai_video_script.file_path).read_text(encoding="utf-8")
+    assert "provider-policy refusal stops" in ai_video_raw
+    assert "video step retries twice" not in ai_video_raw
+
+
+def test_short_drama_generator_keeps_delivery_gate_contract_in_sync(tmp_path: Path) -> None:
+    loader = _loader(tmp_path)
+    spec = loader.get_by_name("meta-short-drama")
+    assert spec is not None and spec.composition_raw is not None
+    actual_steps = {step["id"]: step for step in spec.composition_raw["steps"]}
+
+    generator_path = Path(__file__).resolve().parents[2] / "scripts" / "_gen_meta_short_drama.py"
+    namespace = runpy.run_path(str(generator_path))
+    generated_text = namespace["render"]()
+    actual_text = Path(spec.file_path).read_text(encoding="utf-8")
+    assert generated_text == actual_text
+    generated_frontmatter, separator, _body = generated_text.removeprefix("---\n").partition(
+        "\n---\n"
+    )
+    assert separator
+    generated = yaml.safe_load(generated_frontmatter)
+    generated_steps = {step["id"]: step for step in generated["composition"]["steps"]}
+
+    assert generated.get("entrypoint") is None
+    assert spec.entrypoint is None
+    generated_audit = dict(generated_steps["delivery_audit"])
+    actual_audit = dict(actual_steps["delivery_audit"])
+    assert generated_audit == actual_audit
+    generated_review = dict(generated_steps["review_normalize"])
+    actual_review = dict(actual_steps["review_normalize"])
+    assert generated_review == actual_review
+    actual_paid_steps = {
+        step_id: step
+        for step_id, step in actual_steps.items()
+        if step.get("side_effect") == "external_paid_submit"
+    }
+    generated_paid_steps = {
+        step_id: step
+        for step_id, step in generated_steps.items()
+        if step.get("side_effect") == "external_paid_submit"
+    }
+    assert set(actual_paid_steps) == SHORT_DRAMA_PAID_STEP_IDS
+    assert set(generated_paid_steps) == SHORT_DRAMA_PAID_STEP_IDS
+    for step_id in SHORT_DRAMA_PAID_STEP_IDS:
+        assert generated_paid_steps[step_id]["kind"] == actual_paid_steps[step_id]["kind"]
+        assert generated_paid_steps[step_id]["skill"] == actual_paid_steps[step_id]["skill"]
+        assert generated_paid_steps[step_id]["side_effect"] == (
+            actual_paid_steps[step_id]["side_effect"]
+        )
+        assert generated_paid_steps[step_id]["when"] == actual_paid_steps[step_id]["when"]
+    for step_id in SHORT_DRAMA_MEDIA_PREPARATION_STEP_IDS:
+        assert generated_steps[step_id]["depends_on"] == actual_steps[step_id]["depends_on"]
+        assert generated_steps[step_id]["when"] == actual_steps[step_id]["when"]
+    assert generated_steps["publish_final_video"]["depends_on"] == actual_steps[
+        "publish_final_video"
+    ]["depends_on"]
+    assert generated_steps["deliver"]["with"] == actual_steps["deliver"]["with"]
+    assert "content DURATION_S + 4s" in generated_text
+    assert "例如 3 秒剧情的成片约 7 秒" in generated_text
+    assert "STYLE_POLICY_WARNING" in generated_text
+    assert "外部图像/视频提供商" in generated_text
+    assert "fictional character-design anchor" in generated_text
+    assert "wide-angle group photo" not in generated_text
+    assert "skin tone" not in generated_text
+    assert "retry twice" not in generated_text
+    assert "retry +" not in generated_text
+    assert "submit failures may retry" not in generated_text
+    assert "**Video generation per active shot** — `seedance-2.0`; paid submit" in generated_text
+    assert "failures are never retried automatically" in generated_text
+    assert "transient polling" in generated_text
+    assert "retry that same job" in generated_text
+    assert "skill: short-drama-review-normalizer" in generated_text
+    assert "DECISION: hold" in generated_text
+    assert "proceed otherwise" not in generated_text
 
 
 def test_travel_planner_collects_preferences_constraints_and_variants(

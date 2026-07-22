@@ -89,8 +89,12 @@ class SkillCatalogSnapshot:
         return next((skill for skill in self.skills if skill.name == name), None)
 
     def list_meta_specs(self) -> list[SkillSpec]:
-        """Return compiled meta skills from this generation only."""
-        return [skill for skill in self.skills if skill.kind == "meta"]
+        """Return invokable compiled meta skills from this generation only."""
+        return [
+            skill
+            for skill in self.skills
+            if skill.kind == "meta" and not skill.disable_model_invocation
+        ]
 
 
 class PinnedSkillLoader:
@@ -115,7 +119,11 @@ class PinnedSkillLoader:
         return next((skill for skill in self.load_all() if skill.name == name), None)
 
     def list_meta_specs(self) -> list[SkillSpec]:
-        return [skill for skill in self.load_all() if skill.kind == "meta"]
+        return [
+            skill
+            for skill in self.load_all()
+            if skill.kind == "meta" and not skill.disable_model_invocation
+        ]
 
     def find_by_trigger(self, text: str) -> list[SkillSpec]:
         text_lower = text.lower()
@@ -1309,11 +1317,18 @@ class SkillLoader:
         return None
 
     def list_meta_specs(self) -> list[SkillSpec]:
-        """Return all loaded specs with kind == 'meta'.
+        """Return invokable loaded specs with kind == 'meta'.
 
         Note: loader Pass 2 compiles authored 'meta_sop' specs into
         'meta' shape before they reach this function, so meta_sop authors
         ARE included. The helper exists to centralize that contract — do
-        not filter against 'meta_sop' here.
+        not filter against 'meta_sop' here. Compatibility definitions with
+        ``disable-model-invocation: true`` stay addressable through
+        :meth:`get_by_name` for persisted-run recovery, but are not part of
+        fresh-run discovery.
         """
-        return [spec for spec in self.load_all() if spec.kind == "meta"]
+        return [
+            spec
+            for spec in self.load_all()
+            if spec.kind == "meta" and not spec.disable_model_invocation
+        ]

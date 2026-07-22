@@ -1827,6 +1827,9 @@ class TaskRuntime:
                         ),
                         "revision": int(metadata.get("turn_context_revision", 1) or 1),
                     }
+                    client_request_id = metadata.get("client_request_id")
+                    if isinstance(client_request_id, str) and client_request_id:
+                        turn_context["client_request_id"] = client_request_id
                     for field in ("target_turn_id", "promoted_from_turn_id"):
                         value = metadata.get(field)
                         if isinstance(value, str) and value:

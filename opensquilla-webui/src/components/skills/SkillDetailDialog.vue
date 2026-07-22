@@ -257,6 +257,8 @@ function syncDialog(key = selectionKey()) {
   const dialog = dialogRef.value
   if (!dialog) return
   if (key) {
+    // Watch the selected identity rather than a boolean so a different card
+    // can reopen a dialog that the browser closed independently.
     if (!dialog.open) dialog.showModal()
     return
   }
@@ -271,6 +273,8 @@ function requestClose() {
 }
 
 function onNativeClose() {
+  // Keep parent selection in sync with native close paths so the same card can
+  // be selected again without leaving stale truthy state in the parent.
   if (props.skill || props.proposal) requestClose()
 }
 

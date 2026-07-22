@@ -91,6 +91,19 @@ describe('SkillDetailDialog behavior contract', () => {
     expect(mounted.skill.value).toBeNull()
   })
 
+  it('reopens a closed dialog when a different card is selected', async () => {
+    const mounted = mountDialog(null)
+    mounted.skill.value = { name: 'alpha' }
+    await nextTick()
+    mounted.dialog.removeAttribute('open')
+
+    mounted.skill.value = { name: 'beta' }
+    await nextTick()
+
+    expect(mounted.dialog.open).toBe(true)
+    expect(mounted.dialog.textContent).toContain('beta')
+  })
+
   it('shows only install actions that match current missing dependencies', async () => {
     const mounted = mountDialog({
       name: 'render',

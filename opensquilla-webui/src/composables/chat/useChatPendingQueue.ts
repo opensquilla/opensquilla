@@ -1,5 +1,9 @@
 import { computed, nextTick, ref, watch, type Ref } from 'vue'
-import type { Attachment, ChatPendingItem } from '@/types/chat'
+import type {
+  Attachment,
+  ChatPendingItem,
+  HiddenControlDispatchResult,
+} from '@/types/chat'
 
 const MAX_PENDING = 5
 
@@ -15,7 +19,7 @@ export interface PendingQueueOwnerContext {
 }
 
 export interface UseChatPendingQueueOptions {
-  sessionKey: Ref<string>
+  sessionKey?: Ref<string>
   ownerContext?: Readonly<Ref<PendingQueueOwnerContext | null>>
   inputText: Ref<string>
   pendingAttachments: Ref<Attachment[]>
@@ -28,7 +32,12 @@ export interface UseChatPendingQueueOptions {
   hasComposer: () => boolean
   // Drain a queued hidden-control send (e.g. meta-preflight confirmation)
   // directly through the dedicated hidden-send path instead of the composer.
-  dispatchHiddenControl?: (providerText: string, displayText: string) => void
+  dispatchHiddenControl?: (
+    providerText: string,
+    displayText: string,
+    clientRequestId?: string,
+  ) => void | HiddenControlDispatchResult | Promise<void | HiddenControlDispatchResult>
+  onHiddenControlDispatchResult?: (result: HiddenControlDispatchResult) => void
 }
 
 export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
@@ -54,9 +63,13 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
   function resolveOwnerRequestId(owner?: PendingQueueOwner): string | undefined {
     if (owner?.ownerRequestId) return owner.ownerRequestId
     const context = options.ownerContext?.value
-    return context?.sessionKey === options.sessionKey.value
+    return context && context.sessionKey === options.sessionKey?.value
       ? context.ownerRequestId
       : undefined
+  }
+
+  function currentSessionKey(): string {
+    return options.sessionKey?.value || ''
   }
 
   function enqueuePendingInput(text: string, owner?: PendingQueueOwner) {
@@ -69,7 +82,7 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
       text,
       attachments: options.pendingAttachments.value.map(a => ({ ...a })),
       intent: options.pendingSessionIntent.value,
-      ownerSessionKey: options.sessionKey.value,
+      ...(currentSessionKey() ? { ownerSessionKey: currentSessionKey() } : {}),
       ...(ownerRequestId ? { ownerRequestId } : {}),
     })
     options.inputText.value = ''
@@ -81,9 +94,26 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
   }
 
   function enqueueHiddenControl(
-    item: { text: string; displayText: string },
+    item: {
+      text: string
+      displayText: string
+      clientRequestId?: string
+      sessionKey?: string
+    },
     owner?: PendingQueueOwner,
   ) {
+    const stableRequestId = String(item.clientRequestId || '').trim()
+    const hiddenControlSessionKey = item.sessionKey || currentSessionKey()
+    if (
+      stableRequestId
+      && pendingQueue.value.some(candidate => (
+        candidate.hiddenControl
+        && candidate.clientRequestId === stableRequestId
+        && candidate.hiddenControlSessionKey === hiddenControlSessionKey
+      ))
+    ) {
+      return true
+    }
     if (pendingQueue.value.length >= MAX_PENDING) {
       console.warn(`Pending queue full (${MAX_PENDING})`)
       return false
@@ -94,28 +124,44 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
       text: item.text,
       attachments: [],
       intent: null,
-      ownerSessionKey: options.sessionKey.value,
+      ...(currentSessionKey() ? { ownerSessionKey: currentSessionKey() } : {}),
       ...(ownerRequestId ? { ownerRequestId } : {}),
       hiddenControl: true,
       displayTextOverride: item.displayText,
+      clientRequestId: item.clientRequestId,
+      hiddenControlSessionKey,
     })
     flushDeferredPendingDrain()
     return true
   }
 
   function removePendingChip(index: number) {
-    pendingQueue.value.splice(index, 1)
+    const [removed] = pendingQueue.value.splice(index, 1)
+    notifyDiscardedHiddenControl(removed)
   }
 
   function clearPendingQueue() {
     clearPendingDrainAfterTerminalTimer()
+    for (const item of pendingQueue.value) notifyDiscardedHiddenControl(item)
     pendingQueue.value = []
+  }
+
+  function notifyDiscardedHiddenControl(item?: ChatPendingItem): void {
+    if (!item?.hiddenControl || !item.clientRequestId) return
+    options.onHiddenControlDispatchResult?.({
+      status: 'rejected',
+      reason: 'discarded',
+      clientRequestId: item.clientRequestId,
+      sessionKey: item.hiddenControlSessionKey || '',
+    })
   }
 
   function switchPendingQueue(targetSessionKey: string) {
     clearPendingDrainAfterTerminalTimer()
-    const restored = (parkedQueues.get(targetSessionKey) || [])
-      .filter(item => !item.hiddenControl)
+    for (const item of pendingQueue.value) notifyDiscardedHiddenControl(item)
+    const parked = parkedQueues.get(targetSessionKey) || []
+    for (const item of parked) notifyDiscardedHiddenControl(item)
+    const restored = parked.filter(item => !item.hiddenControl)
     parkedQueues.delete(targetSessionKey)
     // Explicit navigation keeps its historical behavior of discarding the
     // active session's queue. Only items parked during an automatic response
@@ -125,7 +171,7 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
 
   function adoptPendingQueue(targetSessionKey: string, ownerRequestId: string) {
     clearPendingDrainAfterTerminalTimer()
-    const sourceSessionKey = options.sessionKey.value
+    const sourceSessionKey = currentSessionKey()
     const carried: ChatPendingItem[] = []
     const stayingVisible: ChatPendingItem[] = []
     for (const item of pendingQueue.value) {
@@ -144,6 +190,8 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
         // matching run's controls, but never resurrect an older confirmation
         // after a later manual navigation back to the parent session.
         stayingVisible.push(item)
+      } else {
+        notifyDiscardedHiddenControl(item)
       }
     }
     if (stayingVisible.length > 0) {
@@ -152,8 +200,9 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
         ...stayingVisible,
       ])
     }
-    const targetItems = (parkedQueues.get(targetSessionKey) || [])
-      .filter(item => !item.hiddenControl)
+    const parkedTargetItems = parkedQueues.get(targetSessionKey) || []
+    for (const item of parkedTargetItems) notifyDiscardedHiddenControl(item)
+    const targetItems = parkedTargetItems.filter(item => !item.hiddenControl)
     parkedQueues.delete(targetSessionKey)
     pendingQueue.value = [...targetItems, ...carried]
   }
@@ -201,7 +250,24 @@ export function useChatPendingQueue(options: UseChatPendingQueueOptions) {
       // Hidden-control sends bypass the composer entirely.
       const providerText = head.text || ''
       const displayText = head.displayTextOverride || ''
-      nextTick(() => options.dispatchHiddenControl?.(providerText, displayText))
+      void nextTick(async () => {
+        try {
+          const result = await options.dispatchHiddenControl?.(
+            providerText,
+            displayText,
+            head.clientRequestId,
+          )
+          if (result) options.onHiddenControlDispatchResult?.(result)
+        } catch {
+          if (!head.clientRequestId) return
+          options.onHiddenControlDispatchResult?.({
+            status: 'unknown',
+            reason: 'response_unknown',
+            clientRequestId: head.clientRequestId,
+            sessionKey: head.hiddenControlSessionKey || '',
+          })
+        }
+      })
       return
     }
     options.inputText.value = head?.text || ''

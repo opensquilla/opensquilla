@@ -1,7 +1,11 @@
 <template>
   <div
     class="chat"
-    :class="{ 'chat--new-landing': isNewChatLanding, 'chat--drag-over': threadDragOver }"
+    :class="{
+      'chat--new-landing': isNewChatLanding,
+      'chat--meta-setup': Boolean(setupState),
+      'chat--drag-over': threadDragOver,
+    }"
     @dragenter="onChatDragEnter"
     @dragover="onChatDragOver"
     @dragleave="onChatDragLeave"
@@ -394,6 +398,16 @@
       @dismiss="dismissSandboxSetup"
     />
 
+    <MetaSkillSetupCard
+      v-if="setupState"
+      :state="setupState"
+      :provider-navigation-pending="metaSetupProviderNavigationPending"
+      @confirm="confirmSetup"
+      @retry="retrySetup"
+      @cancel="cancelSetup"
+      @configure="openMetaSetupProviderSettings"
+    />
+
     <!-- Composer dock: positioning context so the slash menu anchors directly
          above the composer in any layout. The new-chat landing centers the
          composer instead of pinning it to the bottom, so the menu must not
@@ -424,6 +438,10 @@
         @click="selectSlashCmd(cmd)"
       >
         <span class="chat-slash-cmd">{{ cmd.cmd }}</span>
+        <span
+          v-if="cmd.metaStatus === 'needs_setup'"
+          class="chat-slash-status"
+        >{{ t('chat.metaRuns.needsSetup') }}</span>
         <span class="chat-slash-desc">{{ cmd.desc }}</span>
       </div>
     </div>
@@ -529,6 +547,7 @@ import InterruptPart from '@/components/chat/parts/InterruptPart.vue'
 import MetaPreflightCard from '@/components/chat/MetaPreflightCard.vue'
 import MetaRibbon from '@/components/chat/MetaRibbon.vue'
 import MetaRunHistoryDrawer from '@/components/chat/MetaRunHistoryDrawer.vue'
+import MetaSkillSetupCard from '@/components/chat/MetaSkillSetupCard.vue'
 import PendingQueue from '@/components/chat/PendingQueue.vue'
 import RouterFxStrip from '@/components/chat/RouterFxStrip.vue'
 import SandboxSetupBanner from '@/components/chat/SandboxSetupBanner.vue'
@@ -568,6 +587,7 @@ import { useChatSend } from '@/composables/chat/useChatSend'
 import { useSandboxSetupRecovery } from '@/composables/chat/useSandboxSetupRecovery'
 import { useChatStallWatchdog } from '@/composables/chat/useChatStallWatchdog'
 import { useMetaRuns } from '@/composables/chat/useMetaRuns'
+import { useMetaSkillSetup } from '@/composables/chat/useMetaSkillSetup'
 import { runStatusLabelText as sessionRunStatusLabelText } from '@/composables/useSessions'
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
@@ -578,6 +598,7 @@ import { useChatStream } from '@/composables/chat/useChatStream'
 import { useChatTextRendering } from '@/composables/chat/useChatTextRendering'
 import { useChatUsageWidget } from '@/composables/chat/useChatUsageWidget'
 import { useVoiceInput } from '@/composables/chat/useVoiceInput'
+import { navigateMetaSetupProviderSettings } from '@/composables/chat/metaSetupProviderNavigation'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
 import { hasOpenDialogLayer } from '@/composables/useDialogA11y'
 import { useToasts } from '@/composables/useToasts'
@@ -588,6 +609,7 @@ import type {
   ChatRunStatusSource,
   ChatRunStatusState,
   DisplayAttachment,
+  HiddenControlDispatchResult,
   ToolResultContext,
 } from '@/types/chat'
 import type {
@@ -834,10 +856,26 @@ const {
 let sendCurrentInput: () => void = () => {}
 // Late-bound: dispatchHiddenSend is created below (useChatSend) but the /meta
 // slash handler (useChatSlashCommands, created earlier) needs it at call time.
-let dispatchHiddenForMeta: (providerText: string, displayText: string) => void = () => {}
+let dispatchHiddenForMeta: (
+  providerText: string,
+  displayText: string,
+  clientRequestId?: string,
+) => Promise<HiddenControlDispatchResult> = (_providerText, _displayText, clientRequestId = '') => (
+  Promise.resolve({
+    status: 'rejected',
+    reason: 'invalid_request',
+    clientRequestId,
+    sessionKey: sessionKey.value,
+  })
+)
 let isCompactInFlightForCurrentSession: () => boolean = () => false
-let dispatchHiddenControl: (providerText: string, displayText: string) => void = () => {}
 const pendingQueueOwnerContext = ref<PendingQueueOwnerContext | null>(null)
+let dispatchHiddenControl: (
+  providerText: string,
+  displayText: string,
+  clientRequestId?: string,
+) => Promise<HiddenControlDispatchResult> = dispatchHiddenForMeta
+let handleHiddenControlDispatchResult: (result: HiddenControlDispatchResult) => void = () => {}
 const chatPendingQueue = useChatPendingQueue({
   sessionKey,
   ownerContext: pendingQueueOwnerContext,
@@ -853,7 +891,10 @@ const chatPendingQueue = useChatPendingQueue({
   sendCurrentInput: () => sendCurrentInput(),
   resetInputHistory: () => resetComposerInputHistory(),
   hasComposer: () => Boolean(composerRef.value),
-  dispatchHiddenControl: (providerText, displayText) => dispatchHiddenControl(providerText, displayText),
+  dispatchHiddenControl: (providerText, displayText, clientRequestId) => (
+    dispatchHiddenControl(providerText, displayText, clientRequestId)
+  ),
+  onHiddenControlDispatchResult: result => handleHiddenControlDispatchResult(result),
 })
 const {
   pendingQueue,
@@ -1212,6 +1253,28 @@ const {
   adoptResponseSession,
 } = chatSessionRuntime
 
+const metaSkillSetup = useMetaSkillSetup({
+  rpc,
+  currentSessionKey: sessionKey,
+  dispatchHidden: (providerText: string, displayText: string, clientRequestId?: string) => (
+    dispatchHiddenForMeta(providerText, displayText, clientRequestId)
+  ),
+  autoRestore: false,
+})
+const {
+  setupState,
+  requestSetup: requestMetaSetup,
+  confirmSetup,
+  beginProviderHandoff,
+  cancelProviderHandoff,
+  retrySetup,
+  cancelSetup,
+  restoreSetupJob: restoreMetaSetupJob,
+  handleHiddenDispatchResult,
+} = metaSkillSetup
+handleHiddenControlDispatchResult = handleHiddenDispatchResult
+const metaSetupProviderNavigationPending = ref(false)
+
 const chatSlashCommands = useChatSlashCommands({
   rpc,
   inputText,
@@ -1223,6 +1286,7 @@ const chatSlashCommands = useChatSlashCommands({
   showCompactStatus,
   notify: (message: string) => pushToast(message, { duration: 6000 }),
   dispatchHidden: (providerText: string, displayText: string) => dispatchHiddenForMeta(providerText, displayText),
+  requestMetaSetup,
 })
 const {
   slashOpen,
@@ -1367,6 +1431,7 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   popAllPendingIntoComposer,
   saveWidgetState,
   subscribeSession,
+  onSessionSubscribed: () => restoreMetaSetupJob(sessionKey.value),
   loadHistory,
   loadCurrentSessionUsage,
 })
@@ -1443,6 +1508,9 @@ const metaRuns = useMetaRuns({
   currentEpoch,
   lastStreamSeq,
   sendHiddenConfirmation: sendHiddenMetaPreflightConfirmation,
+  sendHiddenReplay: (providerText: string, displayText: string) => (
+    dispatchHiddenForMeta(providerText, displayText)
+  ),
   scrollToStepCard,
   sendComposerText,
   lastUserMessageText,
@@ -1624,6 +1692,32 @@ function onVoiceInput() {
 function onVoiceSetup() {
   pushToast(t('chat.toast.voiceSetupNeeded'), { tone: 'info' })
   router.push('/settings/capabilities').catch(() => {})
+}
+
+async function openMetaSetupProviderSettings(providerId: string) {
+  if (metaSetupProviderNavigationPending.value) return
+  metaSetupProviderNavigationPending.value = true
+  try {
+    const opened = await navigateMetaSetupProviderSettings({
+      providerId,
+      sessionKey: setupState.value?.sessionKey || '',
+      currentRouteSession: route.query.session,
+      router,
+      beginHandoff: beginProviderHandoff,
+      cancelHandoff: cancelProviderHandoff,
+      materializeSession: (handoffSessionKey) => {
+        persistSession(handoffSessionKey, {
+          updateRoute: false,
+          source: 'chatView.metaSetupProviderHandoff',
+        })
+      },
+    })
+    if (!opened) {
+      pushToast(t('chat.metaSetup.providerNavigationFailed'), { tone: 'danger' })
+    }
+  } finally {
+    metaSetupProviderNavigationPending.value = false
+  }
 }
 
 function normalizeRunStatus(status: string): ChatRunStatusState {
@@ -2194,6 +2288,11 @@ onMounted(async () => {
   if (!initialSession.draft) loadHistory()
   loadSlashCommands()
 
+  // A provider handoff may immediately resume the original hidden send. Wait
+  // until replay/subscription is established so no early stream frame is lost.
+  const sessionSubscribed = await sessionSubscription
+  if (sessionSubscribed) await restoreMetaSetupJob(initialSession.sessionKey)
+
   // Focus textarea on desktop
   if (isDesktopViewport.value) {
     composerRef.value?.focusTextarea()
@@ -2205,7 +2304,6 @@ onMounted(async () => {
   if (pendingAutoSend.value) {
     const text = pendingAutoSend.value
     pendingAutoSend.value = ''
-    await sessionSubscription
     sendComposerText(text)
   }
 })
@@ -2234,14 +2332,15 @@ useDocumentEvent('paste', onDocumentPaste)
 useDocumentEvent('keydown', onDocumentKeydown)
 
 // Watch for route changes
-watch(() => route.query.session, (newSession) => {
+watch(() => route.query.session, async (newSession) => {
   if (newSession && typeof newSession === 'string') {
     recordSessionNavigationDiag('route.query.session', {
       from: sessionKey.value,
       to: newSession,
       routeSession: newSession,
     })
-    switchToSession(newSession)
+    const switched = await switchToSession(newSession)
+    if (switched) await restoreMetaSetupJob(newSession)
   }
 })
 

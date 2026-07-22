@@ -60,13 +60,8 @@ def test_desktop_gateway_completion_uses_current_live_window() -> None:
     assert "if (mainWindow === window) mainWindow = null" in main_ts
 
 
-def test_desktop_activation_retry_and_second_instance_share_resume_helper() -> None:
+def test_desktop_activation_and_second_instance_share_resume_helper() -> None:
     main_ts = _read("desktop/electron/src/main.ts")
-    retry = _section(
-        main_ts,
-        "ipcMain.handle('desktop:boot:retry'",
-        "ipcMain.handle('desktop:boot:quit'",
-    )
 
     assert "if (process.platform !== 'darwin') app.quit()" in main_ts
     assert "app.on('activate', () => {\n  void openOrResumeDesktopApp()" in main_ts
@@ -85,15 +80,112 @@ def test_desktop_activation_retry_and_second_instance_share_resume_helper() -> N
         "})\n}",
     )
 
+
+def test_desktop_retry_waits_for_all_owned_gateways_and_fails_closed() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    retry = _section(
+        main_ts,
+        "ipcMain.handle('desktop:boot:retry'",
+        "ipcMain.handle('desktop:boot:quit'",
+    )
+
     # Retry backs both the boot-error button and the Control UI "Restart runtime"
     # action, so it forces a real restart: an in-flight start is joined (clearing
-    # the stale error), otherwise an owned gateway is torn down and awaited before
-    # respawn rather than reused, so a healthy-but-misbehaving runtime can restart.
+    # the stale error), otherwise every lifecycle-owned gateway is torn down and
+    # awaited before respawn rather than reused. The join result is a hard safety
+    # boundary: timing out must leave the old runtime authoritative and must not
+    # clear its reusable state or start a competing writer.
     assert "if (gatewayStartPromise)" in retry
-    assert "stopGateway()" in retry
-    assert "await waitForGatewayProcessExit(previousChild)" in retry
-    assert "clearReusableGatewayState()" in retry
-    assert "void openOrResumeDesktopApp()" in retry
+    join_call = "const exited = await stopAndJoinAllLifecycleOwnedGateways()"
+    assert join_call in retry
+    assert "if (!exited)" in retry
+    assert "stopGateway()" not in retry
+    assert "waitForGatewayProcessExit(" not in retry
+
+    failure = _section(retry, "if (!exited)", "clearReusableGatewayState()")
+    assert "gatewayState.status = 'error'" in failure
+    assert "gatewayState.error = message" in failure
+    assert "desktopLog('gateway_restart_wait_timeout'" in failure
+    assert "sendBootError(message)" in failure
+    assert "await restoreMainWindowToBootPage()" in failure
+    assert "return { ok: false, error: message }" in failure
+    assert "clearReusableGatewayState()" not in failure
+    assert "openOrResumeDesktopApp()" not in failure
+
+    join_index = retry.index(join_call)
+    failure_index = retry.index("if (!exited)", join_index)
+    clear_index = retry.index("clearReusableGatewayState()", failure_index)
+    open_index = retry.index("openOrResumeDesktopApp()", clear_index)
+    assert join_index < failure_index < clear_index < open_index
+
+    success = retry[clear_index:]
+    assert success.count("clearReusableGatewayState()") == 1
+    assert success.count("openOrResumeDesktopApp()") == 1
+    assert success.index("clearReusableGatewayState()") < success.index(
+        "openOrResumeDesktopApp()"
+    )
+    assert success.index("openOrResumeDesktopApp()") < success.index("return { ok: true }")
+
+
+def test_desktop_shared_spawn_gate_blocks_still_stopping_gateways() -> None:
+    main_ts = _read("desktop/electron/src/main.ts")
+    start = _section(
+        main_ts,
+        "async function startGateway()",
+        "async function startGatewayWithPortRecovery()",
+    )
+
+    # activate and second-instance both reach this shared boundary. A child that
+    # Retry already moved into the stopping set must therefore block every entry
+    # point, not only the original retry handler.
+    stopping_check = "const alreadyStoppingGateways = liveLifecycleOwnedGatewayProcesses()"
+    assert stopping_check in start
+    assert "if (alreadyStoppingGateways.length > 0)" in start
+    assert "throw new Error(desktopGatewayStillRunningMessage())" in start
+
+    final_gate = _section(
+        start,
+        "const liveOwnedGatewayCount = liveLifecycleOwnedGatewayProcesses().length",
+        "const url = `http://127.0.0.1:${port}`",
+    )
+    assert "lifecycleAllowsProcessSpawn(" in final_gate
+    assert "liveOwnedGatewayCount," in final_gate
+    assert "if (liveOwnedGatewayCount > 0)" in final_gate
+    assert "throw new Error(desktopGatewayStillRunningMessage())" in final_gate
+
+
+def test_boot_retry_surfaces_failed_restart_and_prevents_repeat_clicks() -> None:
+    boot_html = _read("desktop/electron/src/boot.html")
+    apply_error = _section(
+        boot_html,
+        "function applyError(payload)",
+        "function renderRecoveryState",
+    )
+    retry_flow = _section(
+        boot_html,
+        "async function retryStartup()",
+        "function updateTimer()",
+    )
+
+    assert "retryButton.disabled = true" in retry_flow
+    assert "const result = await api.retryStartup()" in retry_flow
+    assert "result && result.ok === false" in retry_flow
+    assert "result.error || msg.errorDefault" in retry_flow
+    assert "applyError({ message: result.error || msg.errorDefault })" in retry_flow
+    assert "errorPanel.classList.add('visible')" in apply_error
+    assert "retryButton.disabled = false" in retry_flow
+    assert retry_flow.index("retryButton.disabled = true") < retry_flow.index(
+        "await api.retryStartup()"
+    )
+    assert retry_flow.index("await api.retryStartup()") < retry_flow.index(
+        "retryButton.disabled = false"
+    )
+    assert (
+        "document.getElementById('retry').addEventListener('click', () => retryStartup())"
+        in boot_html
+    )
+    assert "rawMessage.includes('OPENSQUILLA_PROFILE_IN_USE')" in apply_error
+    assert boot_html.count("profileInUse:") == 6
 
 
 def test_boot_error_panel_exposes_reset_setup_recovery() -> None:
@@ -116,9 +208,9 @@ def test_boot_error_panel_exposes_reset_setup_recovery() -> None:
     assert "msg.resetFailed" in boot_html
     assert "workspace path, identity, memory, and chat history are kept" in boot_html
     assert "await api.resetDesktopSettings()" in reset_flow
-    assert "await api.retryStartup()" in reset_flow
+    assert "await retryStartup()" in reset_flow
     assert reset_flow.index("await api.resetDesktopSettings()") < reset_flow.index(
-        "await api.retryStartup()"
+        "await retryStartup()"
     )
     assert "errorPanel.classList.add('visible')" in reset_flow
 
@@ -360,6 +452,14 @@ def test_windows_uninstall_preserves_app_data() -> None:
     package_json = json.loads(_read("desktop/electron/package.json"))
 
     assert package_json["build"]["nsis"]["deleteAppDataOnUninstall"] is False
+
+
+def test_desktop_local_web_build_installs_locked_dependencies_first() -> None:
+    package_json = json.loads(_read("desktop/electron/package.json"))
+
+    assert package_json["scripts"]["build:web"] == (
+        "cd ../../opensquilla-webui && npm ci && npm run build"
+    )
 
 
 def test_desktop_onboarding_is_owned_modal_child_of_main_window() -> None:
@@ -1387,20 +1487,25 @@ def test_packaged_gateway_smoke_profile_satisfies_recovery_guard(
     assert report.effective_workspace == workspace
 
 
-def test_desktop_gateway_bundle_collects_usage_ledger_and_query_ui() -> None:
-    """PyInstaller's collected package must contain both sides of the upgrade."""
+def test_desktop_gateway_bundle_collects_usage_ledger_and_verifies_query_ui() -> None:
+    """PyInstaller's package contract covers both sides of the upgrade.
+
+    Source checkouts do not carry a generated Vite bundle. The release path
+    verifies that artifact before PyInstaller runs, while this test checks the
+    canonical Usage client source that feeds the bundle.
+    """
 
     build_script = _read("desktop/electron/scripts/build-gateway.mjs")
     migration = ROOT / "migrations" / "V021__usage_ledger.py"
-    dist_dir = ROOT / "src" / "opensquilla" / "gateway" / "static" / "dist"
+    usage_query = _read("opensquilla-webui/src/composables/usage/useUsageQuery.ts")
 
     assert "'--collect-all',\n  'opensquilla'," in build_script
     assert migration.is_file()
-    assert (dist_dir / "index.html").is_file()
-    javascript = sorted((dist_dir / "assets").glob("*.js"))
-    assert javascript
-    assert any(b"usage.query" in path.read_bytes() for path in javascript), (
-        "desktop Control UI bundle was not rebuilt with usage.query"
+    assert "const USAGE_QUERY_METHOD = 'usage.query'" in usage_query
+    assert "controlUiVerifier" in build_script
+    assert "spawnSync(process.execPath, [controlUiVerifier, controlUiDistDir]" in build_script
+    assert build_script.index("\nassertControlUiArtifactReady()\n") < build_script.index(
+        "'--collect-all',\n  'opensquilla',"
     )
 
 
@@ -1575,8 +1680,11 @@ def test_desktop_update_and_recovery_join_every_lifecycle_owned_gateway() -> Non
     )
 
     start = _section(main_ts, "async function startGateway", "async function loadControlUi")
-    admission = "lifecycleAllowsProcessSpawn(isQuitting, desktopWriters.closed)"
+    admission = "if (!lifecycleAllowsProcessSpawn("
     assert admission in start
+    assert "isQuitting," in start
+    assert "desktopWriters.closed," in start
+    assert "liveOwnedGatewayCount," in start
     assert start.index("const port = await findGatewayPort()") < start.index(admission)
     assert start.index(admission) < start.index("const child = spawn(")
 

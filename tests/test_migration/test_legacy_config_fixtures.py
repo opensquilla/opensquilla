@@ -182,6 +182,23 @@ def test_matching_tier_profile_is_untouched() -> None:
     assert not result.changed
 
 
+def test_mismatched_tier_profile_is_preserved_when_profile_deployment_exists() -> None:
+    result = migrate_config_payload(
+        {
+            "llm": {"provider": "deepseek", "model": "deepseek-chat"},
+            "llm_profiles": {
+                "OpenAI": {"api_key_env": "SYNTHETIC_OPENAI_PROFILE_KEY"}
+            },
+            "squilla_router": {"tier_profile": "openai"},
+        }
+    )
+
+    assert not result.changed
+    cfg = GatewayConfig.model_validate(result.payload)
+    assert cfg.squilla_router.tier_profile == "openai"
+    assert cfg.squilla_router.tiers["c0"]["provider"] == "openai"
+
+
 def test_out_of_range_search_max_results_is_clamped() -> None:
     data = tomllib.loads(
         (FIXTURES_ROOT / "adversarial" / "search-max-results-over.toml").read_text(

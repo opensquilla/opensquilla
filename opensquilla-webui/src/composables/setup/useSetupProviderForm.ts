@@ -51,6 +51,36 @@ interface ProviderPanelContext {
   contextWindowGlobal: ComputedRef<number | null>
   effectiveMaxTokens: ComputedRef<EffectiveMaxTokens | null>
   providerIsLocal: ComputedRef<boolean>
+  configuredProviders?: ComputedRef<Array<{
+    providerId: string
+    label: string
+    active: boolean
+    ready: boolean
+    credentialSource: string
+    credentialEnv: string
+    endpointSource: string
+    reason: string
+    primaryEligible: boolean
+    primaryBlockReason: string
+    probeModelAvailable: boolean
+  }>>
+  editingPrimary?: ComputedRef<boolean>
+  selectedStoredProfile?: ComputedRef<boolean>
+  editingNew?: ComputedRef<boolean>
+  routingEnabled?: ComputedRef<boolean>
+  routerEnabled?: ComputedRef<boolean>
+  routerBinding?: ComputedRef<'follow_primary' | 'custom' | 'legacy'>
+  crossProviderRoutingEnabled?: ComputedRef<boolean>
+  ensembleEnabled?: ComputedRef<boolean>
+  activationRouterConflict?: ComputedRef<boolean>
+  configuredProviderProbes?: Ref<Record<string, ConnectionState>>
+  activation?: Ref<{
+    providerId: string
+    phase: 'idle' | 'discovering' | 'ready' | 'activating' | 'error'
+    models: DiscoveredModel[]
+    suggestedModel: string
+    error: string
+  }>
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +141,11 @@ export interface ConnectionState {
   phase: ConnectionPhase
   failureKind: string
   detail: string
-  /** Round-trip time of the last probe (success or failure), null when unknown. */
+  /** Time until the first model response event, null when an older gateway does not report it. */
+  firstResponseMs: number | null
+  /** Full model probe duration through the terminal event, null when unknown. */
+  totalMs: number | null
+  /** @deprecated Legacy gateway field retained only for in-memory compatibility. */
   latencyMs: number | null
   models: DiscoveredModel[]
   modelSource: 'live' | 'none'
@@ -133,8 +167,11 @@ export interface ProviderCredentialPanelState {
   replacing: boolean
   apiKeyValue: string
   apiKeyEnvValue: string
+  /** Unsaved credential input, kept distinct from saved credential readiness. */
+  draftCredentialSource?: '' | 'key' | 'env'
   probeReady: boolean
   probeDisabledReason: string
+  probeButtonLabel: string
   connection: ConnectionState
   onReveal?: () => void
   onReplace?: () => void
@@ -147,10 +184,12 @@ export interface ProviderCredentialPanelState {
 // the generic "couldn't connect" headline.
 const AUTH_FAILURE_KINDS = new Set(['auth_invalid'])
 
-// Editing any of these form fields changes what a probe would test, so a
-// previously earned verdict no longer applies. (Model is deliberately absent:
-// the connection verdict is about credentials + endpoint, not the model id.)
-const CONNECTION_FIELDS = new Set(['api_key', 'api_key_env', 'base_url', 'proxy'])
+// Editing credentials or deployment transport changes both what the small
+// current-settings probe would execute and which model catalog is reachable.
+// A model selection only invalidates the probe verdict: the catalog itself is
+// still valid for the same provider deployment and must remain available in
+// the combobox.
+const DEPLOYMENT_CONNECTION_FIELDS = new Set(['api_key', 'api_key_env', 'base_url', 'proxy'])
 
 export const PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS = 30_000
 
@@ -159,6 +198,8 @@ function freshConnection(providerId: string): ConnectionState {
     phase: providerId ? 'unverified' : 'unconfigured',
     failureKind: '',
     detail: '',
+    firstResponseMs: null,
+    totalMs: null,
     latencyMs: null,
     models: [],
     modelSource: 'none',
@@ -166,11 +207,37 @@ function freshConnection(providerId: string): ConnectionState {
   }
 }
 
-function normalizeLatencyMs(value: unknown): number | null {
+function normalizeLegacyLatencyMs(value: unknown): number | null {
   // The gateway sends latencyMs=0 as the "never reached the network" sentinel
   // (missing key / build failure), so a zero is not a real round trip — treat
-  // it as unknown rather than rendering a bogus "· 0ms".
+  // it as unknown. New explicit timing fields legitimately may be zero.
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function normalizeProbeDurationMs(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+export function normalizeProbeTimings(response: {
+  ok?: unknown
+  firstResponseMs?: unknown
+  totalMs?: unknown
+  latencyMs?: unknown
+} | null | undefined): Pick<ConnectionState, 'firstResponseMs' | 'totalMs' | 'latencyMs'> {
+  const latencyMs = normalizeLegacyLatencyMs(response?.latencyMs)
+  const firstResponseMs = normalizeProbeDurationMs(response?.firstResponseMs)
+  let totalMs = normalizeProbeDurationMs(response?.totalMs) ?? latencyMs
+  // New gateways use totalMs=0 when a failure was rejected before any network
+  // or model response. Preserve legitimate zero-duration success measurements,
+  // but do not present this failure sentinel as a completed probe.
+  if (response?.ok === false && firstResponseMs == null && totalMs === 0) totalMs = null
+  return {
+    firstResponseMs,
+    // Older gateways expose only latencyMs. It measured the complete probe,
+    // never TTFT, so preserve it solely as a total-duration fallback.
+    totalMs,
+    latencyMs,
+  }
 }
 
 export function normalizeDiscoveredModels(rows: unknown): DiscoveredModel[] {
@@ -220,6 +287,7 @@ export function hasEffectiveProvider(config: ProviderConfig, status: SetupStatus
 export function useSetupProviderForm() {
   const providerSelected = ref('')
   const providerFieldValues = ref<Record<string, unknown>>({})
+  const touchedFields = ref<Set<string>>(new Set())
   const replacingCredential = ref(false)
   const revealedCredential = ref('')
   const revealError = ref('')
@@ -245,6 +313,26 @@ export function useSetupProviderForm() {
     connectionEpoch += 1
     discoverPromise = null
     connection.value = freshConnection(providerSelected.value)
+  }
+
+  function invalidateProbeVerdictPreservingCatalog() {
+    // A model edit must cancel a probe that is still judging the previous
+    // model. It must not cancel an independent catalog request, though: model
+    // discovery is deployment-scoped and remains valid while the user types or
+    // chooses a model from that same provider.
+    if (connection.value.phase === 'probing') {
+      connectionEpoch += 1
+      discoverPromise = null
+    }
+    connection.value = {
+      ...connection.value,
+      phase: providerSelected.value ? 'unverified' : 'unconfigured',
+      failureKind: '',
+      detail: '',
+      firstResponseMs: null,
+      totalMs: null,
+      latencyMs: null,
+    }
   }
 
   function clearRevealTimer() {
@@ -280,7 +368,28 @@ export function useSetupProviderForm() {
     return params
   }
 
-  async function probeConnection(options: { defaultModel?: string } = {}): Promise<void> {
+  function profileDraftParams(defaultModel = ''): Record<string, unknown> {
+    const params = connectionParams(defaultModel)
+    // Empty endpoint fields are meaningful in a draft: they mean “remove the
+    // stored override and use the registry/global fallback”. buildProviderPayload
+    // intentionally drops empties for ordinary saves, so restore these two from
+    // the live form when the user explicitly edited or hydrated them.
+    for (const [field, wire] of [['base_url', 'baseUrl'], ['proxy', 'proxy']] as const) {
+      if (Object.prototype.hasOwnProperty.call(providerFieldValues.value, field)) {
+        params[wire] = String(providerFieldValues.value[field] ?? '')
+      }
+    }
+    return {
+      ...params,
+      keepCurrentSecret: params.apiKey === undefined && params.apiKeyEnv === undefined,
+    }
+  }
+
+  async function probeConnection(options: {
+    defaultModel?: string
+    storedProfile?: boolean
+    draftProfile?: boolean
+  } = {}): Promise<void> {
     if (!providerSelected.value || connection.value.phase === 'probing') return
     const epoch = ++connectionEpoch
     discoverPromise = null
@@ -288,14 +397,29 @@ export function useSetupProviderForm() {
     const rpc = useRpcStore()
     let outcome: ConnectionState
     try {
-      const res = await rpc.call<{ ok?: boolean; failureKind?: string; message?: string; latencyMs?: number }>(
-        'onboarding.provider.probe',
-        connectionParams(options.defaultModel),
+      const params = connectionParams(options.defaultModel)
+      const draftParams = profileDraftParams(options.defaultModel)
+      const res = await rpc.call<{
+        ok?: boolean
+        failureKind?: string
+        message?: string
+        firstResponseMs?: number
+        totalMs?: number
+        latencyMs?: number
+      }>(
+        options.draftProfile
+          ? 'onboarding.llmProfile.draft.probe'
+          : (options.storedProfile ? 'onboarding.llmProfile.probe' : 'onboarding.provider.probe'),
+        options.draftProfile
+          ? draftParams
+          : (options.storedProfile
+              ? { providerId: providerSelected.value, model: params.model || options.defaultModel || '' }
+              : params),
       )
       if (epoch !== connectionEpoch) return
-      const latencyMs = normalizeLatencyMs(res?.latencyMs)
+      const timings = normalizeProbeTimings(res)
       if (res?.ok) {
-        outcome = { ...freshConnection(providerSelected.value), phase: 'verified', latencyMs }
+        outcome = { ...freshConnection(providerSelected.value), phase: 'verified', ...timings }
       } else {
         const kind = String(res?.failureKind || '')
         outcome = {
@@ -303,7 +427,7 @@ export function useSetupProviderForm() {
           phase: AUTH_FAILURE_KINDS.has(kind) ? 'key_invalid' : 'unreachable',
           failureKind: kind,
           detail: String(res?.message || ''),
-          latencyMs,
+          ...timings,
         }
       }
     } catch (err) {
@@ -320,11 +444,14 @@ export function useSetupProviderForm() {
       // verified+models state is kept live only; every explicit test click
       // re-probes so a newly issued key or recovered provider is not masked by
       // a stale verdict.
-      await discoverModels()
+      await discoverModels({
+        storedProfile: options.storedProfile,
+        draftProfile: options.draftProfile,
+      })
     }
   }
 
-  function discoverModels(): Promise<void> {
+  function discoverModels(options: { storedProfile?: boolean; draftProfile?: boolean } = {}): Promise<void> {
     if (!providerSelected.value) return Promise.resolve()
     if (discoverPromise) return discoverPromise
     const epoch = connectionEpoch
@@ -337,7 +464,18 @@ export function useSetupProviderForm() {
           detail?: string
           source?: string
           models?: unknown
-        }>('onboarding.models.discover', connectionParams())
+        }>(
+          options.draftProfile
+            ? 'onboarding.llmProfile.draft.models.discover'
+            : (options.storedProfile
+                ? 'onboarding.llmProfile.models.discover'
+                : 'onboarding.models.discover'),
+          options.draftProfile
+            ? profileDraftParams()
+            : (options.storedProfile
+                ? { providerId: providerSelected.value }
+                : connectionParams()),
+        )
         if (epoch !== connectionEpoch) return
         if (res?.ok) {
           const modelSource = res.source === 'live' ? 'live' : 'none'
@@ -374,11 +512,17 @@ export function useSetupProviderForm() {
     return tracked
   }
 
-  function initFromConfig(config: ProviderConfig, status: SetupStatus, providers: ProviderSpec[]) {
+  function initFromConfig(
+    config: ProviderConfig,
+    status: SetupStatus,
+    providers: ProviderSpec[],
+    configured = hasEffectiveProvider(config, status),
+  ) {
     resetCredentialUiState()
+    touchedFields.value = new Set()
     providerSelected.value = ''
     providerFieldValues.value = {}
-    if (hasEffectiveProvider(config, status) && config.provider) {
+    if (configured && config.provider) {
       providerSelected.value = config.provider
       const spec = providers.find(p => p.providerId === config.provider)
       spec?.fields?.forEach(field => {
@@ -394,13 +538,40 @@ export function useSetupProviderForm() {
     resetConnection()
   }
 
-  function resetForProvider(spec: { fields?: ProviderField[] } | null | undefined) {
+  function resetForProvider(
+    spec: { fields?: ProviderField[] } | null | undefined,
+    options: { inheritModelDefault?: boolean } = {},
+  ) {
     resetCredentialUiState()
+    touchedFields.value = new Set()
     providerFieldValues.value = {}
     spec?.fields?.forEach(field => {
-      if (field.name === 'api_key_env') return
+      if (field.name === 'model' && options.inheritModelDefault) return
       providerFieldValues.value[field.name] = field.default ?? ''
     })
+    resetConnection()
+  }
+
+  /**
+   * Select an already-persisted non-primary profile for inspection/editing.
+   * Secrets remain write-only, while the public model and endpoint fields are
+   * hydrated from config.get and baselined so selecting the profile stays clean.
+   */
+  function initStoredProfile(providerId: string, config: ProviderConfig = {}) {
+    resetCredentialUiState()
+    touchedFields.value = new Set()
+    providerSelected.value = providerId
+    providerFieldValues.value = {}
+    // Profile secrets and credential references stay write-only/implicit, but
+    // model and endpoint fields are public config and must be present in the
+    // editor. Seeding them also makes a later partial edit round-trip the
+    // deployment instead of silently dropping its direct model or transport.
+    const savedModel = String(config.model ?? '').trim()
+    if (savedModel) providerFieldValues.value.model = savedModel
+    for (const name of ['base_url', 'proxy'] as const) {
+      if (config[name] !== undefined) providerFieldValues.value[name] = config[name]
+    }
+    baseline.value = serialized.value
     resetConnection()
   }
 
@@ -421,6 +592,7 @@ export function useSetupProviderForm() {
   }
 
   function updateField(name: string, value: unknown) {
+    touchedFields.value = new Set([...touchedFields.value, name])
     providerFieldValues.value[name] = value
     // api_key (pasted) and api_key_env (env reference) are mutually exclusive:
     // the gateway rejects a save that carries both. Setting one to a non-empty
@@ -434,9 +606,11 @@ export function useSetupProviderForm() {
       clearRevealedCredential()
       revealError.value = ''
     }
-    // A credential/endpoint edit invalidates any earned connection verdict
-    // (model edits deliberately don't — the verdict is about reachability).
-    if (CONNECTION_FIELDS.has(name)) resetConnection()
+    // Any field used by the provider-bounded probe invalidates its earned
+    // verdict. A model choice does not invalidate the provider's model
+    // listing, while credential/endpoint changes do.
+    if (name === 'model') invalidateProbeVerdictPreservingCatalog()
+    else if (DEPLOYMENT_CONNECTION_FIELDS.has(name)) resetConnection()
   }
 
   function startCredentialReplace() {
@@ -471,6 +645,7 @@ export function useSetupProviderForm() {
 
   function selectProvider(value: string) {
     providerSelected.value = value
+    touchedFields.value = new Set()
     resetCredentialUiState()
     resetConnection()
   }
@@ -487,6 +662,10 @@ export function useSetupProviderForm() {
       if (!isNonEmpty(values.api_key_env)) delete values.api_key_env
     }
     return buildProviderPayload(providerSelected.value, values)
+  }
+
+  function fieldTouched(name: string): boolean {
+    return touchedFields.value.has(name)
   }
 
   function createPanel(context: ProviderPanelContext) {
@@ -510,6 +689,20 @@ export function useSetupProviderForm() {
       contextWindowGlobal: context.contextWindowGlobal.value,
       effectiveMaxTokens: context.effectiveMaxTokens.value,
       providerIsLocal: context.providerIsLocal.value,
+      configuredProviders: context.configuredProviders?.value ?? [],
+      editingPrimary: context.editingPrimary?.value ?? true,
+      selectedStoredProfile: context.selectedStoredProfile?.value ?? false,
+      editingNew: context.editingNew?.value ?? false,
+      routingEnabled: context.routingEnabled?.value ?? false,
+      routerEnabled: context.routerEnabled?.value ?? false,
+      routerBinding: context.routerBinding?.value ?? 'legacy',
+      crossProviderRoutingEnabled: context.crossProviderRoutingEnabled?.value ?? false,
+      ensembleEnabled: context.ensembleEnabled?.value ?? false,
+      activationRouterConflict: context.activationRouterConflict?.value ?? false,
+      configuredProviderProbes: context.configuredProviderProbes?.value ?? {},
+      activation: context.activation?.value ?? {
+        providerId: '', phase: 'idle', models: [], suggestedModel: '', error: '',
+      },
       connection: connection.value,
       providerFieldValue: (field: ProviderField) => fieldValue(field, context.currentConfig.value),
     }))
@@ -524,8 +717,10 @@ export function useSetupProviderForm() {
     revealedCredential,
     revealError,
     initFromConfig,
+    initStoredProfile,
     resetForProvider,
     fieldValue,
+    fieldTouched,
     selectProvider,
     updateField,
     startCredentialReplace,

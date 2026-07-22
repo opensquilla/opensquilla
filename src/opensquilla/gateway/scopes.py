@@ -304,6 +304,13 @@ METHOD_SCOPES: dict[str, str] = {
     "onboarding.provider.configure": ADMIN_SCOPE,
     # The probe persists nothing but carries candidate credentials.
     "onboarding.provider.probe": ADMIN_SCOPE,
+    "onboarding.llmProfile.upsert": ADMIN_SCOPE,
+    "onboarding.llmProfile.remove": ADMIN_SCOPE,
+    "onboarding.llmProfile.activate": ADMIN_SCOPE,
+    "onboarding.llmProfile.probe": ADMIN_SCOPE,
+    "onboarding.llmProfile.models.discover": ADMIN_SCOPE,
+    "onboarding.llmProfile.draft.probe": ADMIN_SCOPE,
+    "onboarding.llmProfile.draft.models.discover": ADMIN_SCOPE,
     # Model discovery is read-shaped but admin-scoped for the same reason as
     # the probe: its params accept candidate credentials (apiKey/apiKeyEnv),
     # which must never be acceptable from a read/write-tier caller.

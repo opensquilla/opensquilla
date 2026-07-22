@@ -434,6 +434,39 @@ describe('useChatRenderedMessages router visual mode', () => {
   })
 })
 
+describe('useChatRenderedMessages per-turn usage', () => {
+  it('keeps each assistant message token counts independent', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'first answer',
+        ts: 1,
+        messageId: 'assistant-1',
+        usage: { input_tokens: 11, output_tokens: 3 },
+      },
+      {
+        role: 'user',
+        text: 'next question',
+        ts: 2,
+        messageId: 'user-2',
+      },
+      {
+        role: 'assistant',
+        text: 'second answer',
+        ts: 3,
+        messageId: 'assistant-3',
+        usage: { input_tokens: 22, output_tokens: 5 },
+      },
+    ])
+
+    const assistantMessages = api.renderedMessages.value.filter(
+      message => message.displayRole === 'assistant',
+    )
+    expect(assistantMessages.map(message => message.meta?.input)).toEqual([11, 22])
+    expect(assistantMessages.map(message => message.meta?.output)).toEqual([3, 5])
+  })
+})
+
 describe('useChatRenderedMessages clarify history recovery', () => {
   it('restores a clarify interrupt from persisted meta-step tool input', () => {
     const api = renderedMessagesFor([

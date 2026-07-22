@@ -50,19 +50,28 @@ def redact_error_text(
 ) -> str:
     """Truncate ``text`` and mask credential-shaped material for safe logging.
 
-    Masks bearer tokens, ``sk-``-style keys, ``key=``/``api_key=``/``token=``
-    style values, URL userinfo, and long unbroken base64/hex runs. The policy
-    is deliberately conservative: secret-shaped runs are masked even when they
+    Masks exact ``known_secrets`` first, then bearer tokens, ``sk-``-style
+    keys, ``key=``/``api_key=``/``token=`` style values, URL userinfo, and
+    long unbroken base64/hex runs. Exact replacement protects provider keys
+    whose shape is not recognizable (including short or ``AIza``-prefixed
+    credentials) when an upstream echoes them in an error. The policy is
+    deliberately conservative: secret-shaped runs are masked even when they
     might be innocuous identifiers.
     """
     if not text:
         return ""
-    out = text[: max(_MIN_SCAN_WINDOW, max_len * 4)]
-    for secret in sorted(
-        {str(value) for value in known_secrets if len(str(value)) >= 4},
-        key=len,
-        reverse=True,
-    ):
+    secrets = tuple(
+        sorted(
+            {secret for secret in known_secrets if isinstance(secret, str) and secret},
+            key=len,
+            reverse=True,
+        )
+    )
+    scan_window = max(_MIN_SCAN_WINDOW, max_len * 4)
+    # Include one maximum secret length beyond the scan boundary so a secret
+    # beginning inside the bounded prefix cannot be split before replacement.
+    out = text[: scan_window + max((len(secret) for secret in secrets), default=0)]
+    for secret in secrets:
         out = out.replace(secret, _MASK)
     out = _URL_USERINFO_RE.sub(f"{_MASK}@", out)
     out = _BEARER_RE.sub(f"Bearer {_MASK}", out)

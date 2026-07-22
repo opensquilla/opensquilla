@@ -244,6 +244,12 @@ docker build -t opensquilla:local .
 docker compose up -d
 ```
 
+The Dockerfile builds the Vue console in a pinned Node.js build stage, so the
+host does not need Node.js or npm. The first source image build does download
+frontend packages and uses additional build time, network transfer, and cache
+space. Published images already contain the console and have none of that
+client-side build cost.
+
 On a low-power or `arm64` NAS this build is slow; prefer the prebuilt image
 and keep source builds for development machines.
 

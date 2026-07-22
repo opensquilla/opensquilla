@@ -5,12 +5,18 @@ import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import {
   hasEffectiveProvider,
   normalizeDiscoveredModels,
+  normalizeProbeTimings,
   useSetupProviderForm,
+  type ConnectionState,
   type DiscoveredModelsByProvider,
+  type DiscoveredModel,
   type EffectiveMaxTokens,
+  type ProviderCredentialPanelState,
 } from '@/composables/setup/useSetupProviderForm'
 import { useSetupRouterForm, type SetupTierRow } from '@/composables/setup/useSetupRouterForm'
 import {
+  CUSTOM_B5_SELECTION_MODE,
+  LEGACY_OPENROUTER_MODEL_OPTIONS,
   STATIC_B5_PROFILES,
   staticB5ModeForProvider,
   useSetupEnsembleForm,
@@ -27,6 +33,7 @@ import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/s
 import { useRpcStore } from '@/stores/rpc'
 import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
+import { useConfirm } from '@/composables/useConfirm'
 import { saveFailedMessage } from '@/lib/rpcErrors'
 import { copyTextWithFallback } from '@/utils/browser'
 import { TEXT_TIERS, IMAGE_TIER, normalizeRouterTier, routerTierLabelKey } from '@/utils/chat/routerTiers'
@@ -75,6 +82,7 @@ interface ProviderSpec {
   acceptsApiKey?: boolean
   requiresApiKey?: boolean
   defaultBaseUrl?: string
+  defaultDirectModel?: string
   defaultModel?: string
   deployment?: string
   presets?: ProviderPresetSpec[]
@@ -130,6 +138,9 @@ interface SectionDetail {
   // Server-computed router mode (router section card only):
   // recommended | openrouter-mix | custom | disabled.
   routerMode?: string
+  // Server-owned routing intent. Older gateways omit this field and are
+  // treated conservatively as legacy/preserve by the WebUI.
+  routerBinding?: 'follow_primary' | 'custom' | 'legacy'
 }
 
 interface OnboardingStatus {
@@ -165,6 +176,31 @@ interface OnboardingStatus {
     revealAllowed?: boolean
   }
   ensembleCredentialStatus?: EnsembleCredentialStatus[]
+  llmProfileStatus?: Array<{
+    provider?: string
+    ready?: boolean
+    credentialSource?: string
+    credentialEnv?: string
+    endpointSource?: string
+    proxySource?: string
+    reason?: string
+    primaryEligible?: boolean
+    primaryBlockReason?: string
+  }>
+}
+
+export interface ConfiguredProviderView {
+  providerId: string
+  label: string
+  active: boolean
+  ready: boolean
+  credentialSource: string
+  credentialEnv: string
+  endpointSource: string
+  reason: string
+  primaryEligible: boolean
+  primaryBlockReason: string
+  probeModelAvailable: boolean
 }
 
 interface OnboardingCatalog {
@@ -179,6 +215,17 @@ interface OnboardingCatalog {
   memoryEmbeddingProviders?: ProviderSpec[]
 }
 
+interface StoredLlmProfileConfig {
+  // config.get redacts api_key; the WebUI never reads or reconstructs it.
+  model?: string
+  api_key?: string
+  api_key_env?: string
+  api_key_env_pool?: string[]
+  base_url?: string
+  proxy?: string
+  [key: string]: unknown
+}
+
 interface ConfigData {
   llm?: {
     provider?: string
@@ -189,14 +236,21 @@ interface ConfigData {
     api_key?: string
     [key: string]: unknown
   }
+  // Public config.get redacts profile secrets but preserves the profile keys.
+  // Those keys are the source of truth for what is actually persisted and
+  // therefore belongs in Model Service's "Configured providers" list.
+  llm_profiles?: Record<string, StoredLlmProfileConfig>
   llm_request_timeout_seconds?: number
   // Per-provider/per-model overrides (deep-merge subtree; model ids carry
   // dots/colons so dot-path patches cannot address it).
   models?: Record<string, Record<string, { context_window?: number }>>
   squilla_router?: {
     enabled?: boolean
+    preset_binding?: 'follow_primary' | 'custom'
     default_tier?: string
     visual_mode?: string
+    cross_provider_tiers?: boolean
+    tier_provider_mismatch?: string
     tiers?: Record<string, TierConfig>
   }
   llm_ensemble?: {
@@ -261,6 +315,7 @@ export function useSetupCatalog() {
 
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
+const { confirm } = useConfirm()
 const pendingRestart = usePendingRestart()
 const t = i18n.global.t
 
@@ -274,6 +329,20 @@ const { section, setSection } = useSettingsSection('provider')
 const disableNetworkObservability = ref(false)
 
 const providerForm = useSetupProviderForm()
+const configuredProviderProbes = ref<Record<string, ConnectionState>>({})
+let configuredProbeEpoch = 0
+const providerActivation = ref<{
+  providerId: string
+  phase: 'idle' | 'discovering' | 'ready' | 'activating' | 'error'
+  models: DiscoveredModel[]
+  suggestedModel: string
+  error: string
+}>({ providerId: '', phase: 'idle', models: [], suggestedModel: '', error: '' })
+// Activation swaps the primary deployment and reloads the provider editor.
+// Keep a synchronous lock as well as the rendered phase so a second click in
+// the confirmation microtask cannot start another activation.
+let providerActivationRequestPending = false
+const providerSelectionKind = ref<'primary' | 'profile' | 'new'>('primary')
 const behaviorForm = useSetupBehaviorForm()
 const routerForm = useSetupRouterForm()
 const ensembleForm = useSetupEnsembleForm()
@@ -289,6 +358,24 @@ function normalizeProviderId(value: unknown): string {
   return String(value || '').trim().toLowerCase()
 }
 
+function primaryProviderIsConfigured(
+  llm: ConfigData['llm'],
+  onboardingStatus: OnboardingStatus,
+  effective: EffectiveConfigData,
+): boolean {
+  if (!normalizeProviderId(llm?.provider)) return false
+
+  // A config file can exist because the user changed an unrelated setting;
+  // config.get still materializes llm defaults in that case. Prefer the
+  // effective field's provenance so only an operator choice (or a usable
+  // registry-default credential) hydrates the primary provider editor.
+  const source = String(effective.fields?.['llm.provider']?.source || '')
+  if (source) {
+    return source !== 'default' || onboardingStatus.llmConfigured === true
+  }
+  return hasEffectiveProvider(llm || {}, onboardingStatus)
+}
+
 function resetTierModelDiscovery() {
   tierModelDiscoveryEpoch += 1
   tierModelCatalogs.value = {}
@@ -302,10 +389,15 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
 
   const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
   if (provider === selectedProvider) {
-    // Keep using the provider form's discovery path for the selected provider:
-    // it is the only path allowed to include unsaved credentials/endpoints.
+    // Keep using the provider form's discovery state for the selected provider
+    // so its live catalog feeds both Model Service and Model Routing.
     if (providerForm.connection.value.models.length > 0) return Promise.resolve()
-    return providerForm.discoverModels()
+    // A selected stored profile has write-only credentials/endpoint state, so
+    // the legacy form RPC cannot reconstruct its deployment. Resolve that
+    // provider through the profile RPC just like non-selected routing members.
+    return providerForm.discoverModels({
+      storedProfile: providerSelectionKind.value === 'profile',
+    })
   }
 
   const existing = tierModelDiscoveries.get(provider)
@@ -318,11 +410,25 @@ function discoverTierProviderModels(providerId: string): Promise<void> {
     try {
       // Deliberately provider-only. Never forward the selected provider's
       // unsaved apiKey/baseUrl/proxy into another provider's request.
-      const res = await rpc.call<{
+      const discover = () => rpc.call<{
         ok?: boolean
         source?: string
         models?: unknown
-      }>('onboarding.models.discover', { providerId: provider })
+      }>('onboarding.llmProfile.models.discover', { providerId: provider })
+      let res: { ok?: boolean; source?: string; models?: unknown }
+      try {
+        res = await discover()
+      } catch (err) {
+        if (!isRpcMethodUnavailableError(err)) throw err
+        // Compatibility with pre-profile gateways: the legacy endpoint can
+        // still resolve the provider's registry env key. Never send another
+        // provider's unsaved credentials in this fallback.
+        res = await rpc.call<{
+          ok?: boolean
+          source?: string
+          models?: unknown
+        }>('onboarding.models.discover', { providerId: provider })
+      }
       if (epoch !== tierModelDiscoveryEpoch) return
       const source = res?.ok && res.source === 'live' ? 'live' : 'none'
       tierModelCatalogs.value = {
@@ -360,6 +466,11 @@ async function maybeDiscoverModelsForStrategy(): Promise<void> {
   )
   const selectedProvider = normalizeProviderId(providerForm.selectedProvider.value)
   if (selectedProvider) providers.add(selectedProvider)
+  for (const candidate of ensembleForm.candidates.value) {
+    if (candidate.enabled === false) continue
+    const provider = normalizeProviderId(candidate.provider)
+    if (provider) providers.add(provider)
+  }
   await Promise.all(Array.from(providers, provider => discoverTierProviderModels(provider)))
 }
 
@@ -401,14 +512,40 @@ async function loadData() {
     effectiveConfig.value = effective || {}
     channelStatus.value = chStatus || { channels: [] }
     pendingRestart.reconcile(channelStatus.value.channels || [])
+    // A probe result describes one exact saved deployment. Any successful
+    // reload may follow a key, endpoint, model, activation, or deletion
+    // mutation, so stale results must never survive it.
+    configuredProbeEpoch += 1
+    configuredProviderProbes.value = {}
     resetTierModelDiscovery()
 
     // Initialize form values from config
-    providerForm.initFromConfig(config.value.llm || {}, status.value, runtimeProviders.value)
+    providerForm.initFromConfig(
+      config.value.llm || {},
+      status.value,
+      runtimeProviders.value,
+      primaryProviderIsConfigured(config.value.llm, status.value, effectiveConfig.value),
+    )
+    providerSelectionKind.value = 'primary'
+    // Model discovery is a read-only UI accelerator. Populate the active
+    // provider's combobox as soon as the saved editor opens, independently of
+    // connection probing. Failure and source=none intentionally leave the
+    // free-form model input available.
+    if (providerForm.selectedProvider.value) void providerForm.discoverModels()
     behaviorForm.initFromConfig(config.value)
-    routerForm.initFromConfig(config.value.squilla_router || {}, currentRouterProfile.value?.tiers || {}, currentProvider.value)
+    const routerDetail = (status.value.sectionDetails || {}).router || {}
+    const binding = String(
+      routerDetail.routerBinding
+      || config.value.squilla_router?.preset_binding
+      || '',
+    ).trim().toLowerCase()
+    routerForm.initFromConfig(
+      config.value.squilla_router || {},
+      currentRouterProfile.value?.tiers || {},
+      currentProvider.value,
+      binding === 'follow_primary' || binding === 'custom' ? binding : 'legacy',
+    )
     ensembleForm.initFromConfig(config.value.llm_ensemble || {})
-    reconcileEnsembleProviderCompatibility()
     capabilitiesForm.initSearchFromConfig(config.value, searchProviders.value)
     capabilitiesForm.initMemoryFromConfig(config.value)
     capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
@@ -434,15 +571,17 @@ async function loadData() {
 const currentProvider = computed(() => (config.value.llm || {}).provider || '')
 const currentProviderConfig = computed(() => config.value.llm || {})
 const currentModel = computed(() => (config.value.llm || {}).model || '')
-const hasSavedProvider = computed(() => hasEffectiveProvider(currentProviderConfig.value, status.value))
-// Lazy: routerPanel is declared below; this computed is only evaluated from
-// user-triggered strategy switches, long after setup completes.
-const modelStrategyTierCandidates = computed(() => {
-  const provider = normalizeProviderId(currentProvider.value)
-  return ensembleTierCandidates.value.filter(
-    candidate => normalizeProviderId(candidate.provider) === provider,
+const hasConfiguredPrimaryProvider = computed(() => {
+  return primaryProviderIsConfigured(
+    currentProviderConfig.value,
+    status.value,
+    effectiveConfig.value,
   )
 })
+const hasSavedProvider = hasConfiguredPrimaryProvider
+// Lazy: routerPanel is declared below; this computed is only evaluated from
+// user-triggered strategy switches, long after setup completes.
+const modelStrategyTierCandidates = computed(() => ensembleTierCandidates.value)
 const modelStrategyForm = useSetupModelStrategyForm(
   routerForm,
   ensembleForm,
@@ -451,12 +590,200 @@ const modelStrategyForm = useSetupModelStrategyForm(
 )
 
 const runtimeProviders = computed(() => (catalog.value.providers || []).filter(p => p.runtimeSupported))
+function providerCatalogLabel(providerId: string): string {
+  const id = normalizeProviderId(providerId)
+  return runtimeProviders.value.find(provider => normalizeProviderId(provider.providerId) === id)?.label
+    || providerId
+}
+
+const storedProfileIds = computed(() => new Set(
+  Object.keys(config.value.llm_profiles || {})
+    .map(providerId => normalizeProviderId(providerId))
+    .filter(Boolean),
+))
+
+function storedProfileConfig(providerId: string): StoredLlmProfileConfig {
+  const normalized = normalizeProviderId(providerId)
+  const entry = Object.entries(config.value.llm_profiles || {}).find(
+    ([id]) => normalizeProviderId(id) === normalized,
+  )
+  return entry?.[1] || {}
+}
+
+function profileCredentialUiSource(source: unknown, ready: boolean): string {
+  const value = String(source || '')
+  if (['profile', 'member', 'explicit'].includes(value)) return 'explicit'
+  if ([
+    'profile_pool',
+    'profile_pool_env',
+    'profile_env',
+    'registry_env',
+    'member_env',
+    'env',
+  ].includes(value)) return ready ? 'env' : 'missing_env'
+  if (['keyless', 'not_required'].includes(value)) return 'not_required'
+  return value || 'none'
+}
+
+const configuredProviders = computed<ConfiguredProviderView[]>(() => {
+  const active = normalizeProviderId(currentProvider.value)
+  const rows = new Map<string, ConfiguredProviderView>()
+  const activeCredential = status.value.llmCredentialStatus || {}
+  if (active && hasConfiguredPrimaryProvider.value) {
+    rows.set(active, {
+      providerId: active,
+      label: providerCatalogLabel(active),
+      active: true,
+      ready: activeCredential.available === true || status.value.llmConfigured === true,
+      credentialSource: String(activeCredential.source || status.value.llmSource || 'none'),
+      credentialEnv: String(activeCredential.envKey || ''),
+      endpointSource: '',
+      reason: (activeCredential.available === true || status.value.llmConfigured === true)
+        ? ''
+        : String(status.value.llmSource || ''),
+      primaryEligible: false,
+      primaryBlockReason: 'already_active',
+      probeModelAvailable: runtimeProviders.value.some(provider => normalizeProviderId(provider.providerId) === active)
+        && Boolean(currentModel.value || representativeProviderModel(active)),
+    })
+  }
+  // config.get is the persistence source of truth. Seed stored profiles even
+  // when an older Gateway omits the additive llmProfileStatus field; the
+  // status rows below enhance these cards with readiness when available.
+  for (const id of storedProfileIds.value) {
+    if (!id || id === active) continue
+    rows.set(id, {
+      providerId: id,
+      label: providerCatalogLabel(id),
+      active: false,
+      ready: false,
+      credentialSource: 'none',
+      credentialEnv: '',
+      endpointSource: '',
+      reason: 'profile_status_unavailable',
+      primaryEligible: false,
+      primaryBlockReason: 'profile_status_unavailable',
+      probeModelAvailable: runtimeProviders.value.some(provider => normalizeProviderId(provider.providerId) === id)
+        && Boolean(representativeProviderModel(id)),
+    })
+  }
+  for (const profile of status.value.llmProfileStatus || []) {
+    const id = normalizeProviderId(profile.provider)
+    if (!id) continue
+    // llmProfileStatus covers every deployment referenced by Router or
+    // Ensemble so those surfaces can show readiness. A status row alone does
+    // not mean a persisted llm_profile exists. Showing route-only rows here
+    // creates a bogus Delete action whose backend correctly answers
+    // "profile does not exist". Keep Model Service scoped to the active
+    // provider plus profiles that are actually present in config.get.
+    if (id === active && !hasConfiguredPrimaryProvider.value) continue
+    if (id !== active && !storedProfileIds.value.has(id)) continue
+    const existing = rows.get(id)
+    const primaryEligibilityKnown = (
+      typeof profile.primaryEligible === 'boolean'
+      || typeof profile.primaryBlockReason === 'string'
+    )
+    rows.set(id, {
+      providerId: id,
+      label: providerCatalogLabel(id),
+      active: id === active,
+      ready: profile.ready === true,
+      credentialSource: profileCredentialUiSource(profile.credentialSource, profile.ready === true),
+      credentialEnv: String(profile.credentialEnv || existing?.credentialEnv || ''),
+      endpointSource: String(profile.endpointSource || ''),
+      // The presence of an additive status row is authoritative, including an
+      // intentionally empty success reason. Falling back to the seeded legacy
+      // reason would render a ready profile as "Status unavailable".
+      reason: String(profile.reason ?? ''),
+      primaryEligible: id === active
+        ? false
+        : (primaryEligibilityKnown && profile.primaryEligible === true),
+      primaryBlockReason: id === active
+        ? 'already_active'
+        : (primaryEligibilityKnown
+            ? String(profile.primaryBlockReason || '')
+            : 'profile_status_unavailable'),
+      probeModelAvailable: runtimeProviders.value.some(provider => normalizeProviderId(provider.providerId) === id)
+        && Boolean(id === active ? (currentModel.value || representativeProviderModel(id)) : representativeProviderModel(id)),
+    })
+  }
+  return Array.from(rows.values()).sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1
+    return left.label.localeCompare(right.label)
+  })
+})
+
+const configuredProviderIds = computed(() => new Set(
+  configuredProviders.value.map(provider => normalizeProviderId(provider.providerId)),
+))
+
+const routingProviderOptions = computed(() => {
+  // Routing controls may only create deployments for providers that are
+  // actually persisted in Model Service. Historical Router/Ensemble
+  // references are rendered locally by the relevant editor as disabled
+  // compatibility options; promoting them into this global list would make an
+  // unconfigured provider selectable again after its profile was removed.
+  return Array.from(configuredProviderIds.value, providerId => ({
+    providerId,
+    label: providerCatalogLabel(providerId),
+  }))
+})
 const searchProviders = computed(() => (catalog.value.searchProviders || []).filter(p => p.runtimeSupported))
 const imageProviders = computed(() => (catalog.value.imageGenerationProviders || []).filter(p => p.runtimeSupported))
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
 const routerProfiles = computed(() => catalog.value.routerProfiles?.profiles || [])
-const currentRouterProfile = computed(() => routerProfiles.value.find(p => p.providerId === currentProvider.value))
-const providerSpec = computed(() => runtimeProviders.value.find(p => p.providerId === providerForm.selectedProvider.value) || null)
+const currentRouterProfile = computed(() => {
+  const providerId = normalizeProviderId(currentProvider.value)
+  const persistedProfile = routerProfiles.value.find(
+    profile => normalizeProviderId(profile.providerId) === providerId,
+  )
+  if (persistedProfile) return persistedProfile
+  // Curated inline and synthesized presets are intentionally absent from the
+  // legacy tier_profile catalog, but their provider entries still carry the
+  // managed ladder. Follow-primary must use that ladder too; otherwise a
+  // disabled sparse config would expose the settings model's materialized
+  // OpenRouter defaults when re-enabled.
+  const provider = runtimeProviders.value.find(
+    candidate => normalizeProviderId(candidate.providerId) === providerId,
+  )
+  const preset = provider?.presets?.[0]
+  const directModel = currentModel.value
+  return preset
+    ? {
+        providerId,
+        tiers: Object.fromEntries(
+          Object.entries(preset.tiers || {}).map(([name, tier]) => [
+            name,
+            {
+              ...tier,
+              model: String(tier.model || '').trim() ? tier.model : directModel,
+            },
+          ]),
+        ),
+      }
+    : undefined
+})
+const providerSpec = computed(() => runtimeProviders.value.find(
+  p => normalizeProviderId(p.providerId) === normalizeProviderId(providerForm.selectedProvider.value),
+) || null)
+const editingPrimaryProvider = computed(() => providerSelectionKind.value === 'primary')
+const selectedProfileStatus = computed(() => configuredProviders.value.find(provider => (
+  normalizeProviderId(provider.providerId) === normalizeProviderId(providerForm.selectedProvider.value)
+)) || null)
+const providerEditorConfig = computed(() => {
+  if (editingPrimaryProvider.value) return config.value.llm || {}
+  const profile = selectedProfileStatus.value
+  const stored = storedProfileConfig(providerForm.selectedProvider.value)
+  return {
+    // Keep catalog defaults effective rather than materializing them into the
+    // profile. An explicit saved model wins; otherwise the provider's direct
+    // default is shown and activation resolves the same fallback server-side.
+    model: stored.model || providerSpec.value?.defaultDirectModel || '',
+    api_key_env: stored.api_key_env || profile?.credentialEnv || '',
+    base_url: stored.base_url || '',
+    proxy: stored.proxy || '',
+  }
+})
 const providerFields = computed(() => providerSpec.value?.fields || [])
 const providerCoreFields = computed(() => providerFields.value.filter(f => !isProviderCredentialField(f) && !isProviderAdvancedField(f)))
 const providerAdvancedFields = computed(() => providerFields.value.filter(f => !isProviderCredentialField(f) && isProviderAdvancedField(f)))
@@ -559,7 +886,9 @@ const providerAdvancedOpen = computed(() => {
   })
 })
 
-const providerEnvMissing = computed(() => status.value.llmSource === 'missing_env')
+const providerEnvMissing = computed(() => (
+  editingPrimaryProvider.value && status.value.llmSource === 'missing_env'
+))
 const providerEnvKey = computed(() => (config.value.llm || {}).api_key_env || t('setup.provider.envKeyFallback'))
 const providerEnvCommand = computed(() => envRecoveryCommand('llm'))
 const searchEnvCommand = computed(() => envRecoveryCommand('search'))
@@ -645,8 +974,35 @@ const audioBadgeLabel = computed(() => {
 })
 const audioKeyPlaceholder = computed(() => promotedForm.audioKeyConfigured.value ? t('setup.common.leaveBlankKeep') : t('setup.audio.pasteKey'))
 
+const providerProbeModel = computed(() => {
+  const provider = normalizeProviderId(providerForm.selectedProvider.value)
+  if (!provider) return ''
+
+  // Prefer the current editor value (saved profile override or catalog direct
+  // default), then reuse a model already proven relevant by a saved route or
+  // ensemble member for legacy model-less profiles.
+  const editorModel = currentFormModelValue()
+  if (editorModel) return editorModel
+  for (const tier of Object.values(config.value.squilla_router?.tiers || {})) {
+    if (normalizeProviderId(tier.provider) !== provider) continue
+    const model = String(tier.model || '').trim()
+    if (model) return model
+  }
+  for (const candidate of config.value.llm_ensemble?.candidates || []) {
+    if (candidate.enabled === false || normalizeProviderId(candidate.provider) !== provider) continue
+    const model = String(candidate.model || '').trim()
+    if (model) return model
+  }
+  const defaultModel = String(providerSpec.value?.defaultModel || '').trim()
+  if (defaultModel) return defaultModel
+  return tierModelCatalogs.value[provider]?.models[0]?.id || ''
+})
+
 const providerProbeMissingFields = computed(() => {
   if (!providerForm.selectedProvider.value) return []
+  if (providerSelectionKind.value === 'profile') {
+    return providerProbeModel.value ? [] : [t('setup.common.model')]
+  }
   return providerFields.value
     .filter(field => field.required === true && !isProviderCredentialField(field))
     .filter(field => !String(providerForm.fieldValue(field, currentProviderConfig.value) ?? '').trim())
@@ -660,12 +1016,32 @@ const providerProbeDisabledReason = computed(() => {
   })
 })
 
-const providerCredentialPanel = computed(() => {
+const providerCredentialPanel = computed<ProviderCredentialPanelState | null>(() => {
   if (!providerSpec.value) return null
   const selectedProviderId = String(providerForm.selectedProvider.value || '').trim().toLowerCase()
-  const savedCredential = status.value.llmCredentialStatus || {}
-  const savedProviderId = String(savedCredential.provider || '').trim().toLowerCase()
-  const savedMatchesSelected = selectedProviderId !== '' && savedProviderId === selectedProviderId
+  const primaryCredential = status.value.llmCredentialStatus || {}
+  const savedProviderId = String(primaryCredential.provider || '').trim().toLowerCase()
+  const profileCredential = selectedProfileStatus.value
+  const savedMatchesSelected = editingPrimaryProvider.value
+    ? selectedProviderId !== '' && savedProviderId === selectedProviderId
+    : providerSelectionKind.value === 'profile' && Boolean(profileCredential)
+  const savedCredential = editingPrimaryProvider.value
+    ? {
+        available: primaryCredential.available,
+        source: primaryCredential.source,
+        envKey: primaryCredential.envKey,
+        masked: primaryCredential.masked,
+        revealAllowed: primaryCredential.revealAllowed,
+      }
+    : {
+        available: profileCredential?.ready,
+        source: profileCredential?.credentialSource,
+        envKey: profileCredential?.credentialEnv,
+        // Profile status is deliberately redacted more aggressively than the
+        // primary credential status. An empty mask keeps the field write-only.
+        masked: '',
+        revealAllowed: false,
+      }
   const requiresApiKey = providerSpec.value.requiresApiKey !== false
   const acceptsApiKey = providerSpec.value.acceptsApiKey !== undefined
     ? providerSpec.value.acceptsApiKey === true
@@ -674,6 +1050,20 @@ const providerCredentialPanel = computed(() => {
     // optional/keyless provider stays keyless instead of exposing a control
     // whose semantics that gateway never advertised.
     : requiresApiKey
+  const hasDraftKey = String(providerForm.providerFieldValues.value.api_key || '').trim().length > 0
+  const apiKeyEnvValue = providerForm.fieldValue(
+    { name: 'api_key_env', label: t('setup.common.apiKeyEnv'), default: providerSpec.value.envKey || '' },
+    savedMatchesSelected ? providerEditorConfig.value : {},
+  )
+  const hasDraftEnv = String(apiKeyEnvValue || '').trim().length > 0
+  const envReferenceEdited = hasDraftEnv && providerForm.fieldTouched('api_key_env')
+  const credentialReady = !requiresApiKey || hasDraftKey || envReferenceEdited || (
+    savedMatchesSelected && savedCredential.available === true
+  )
+  const fieldsReady = providerProbeMissingFields.value.length === 0
+  const probeDisabledReason = !fieldsReady
+    ? providerProbeDisabledReason.value
+    : (!credentialReady ? t('setup.provider.addKeyToTestHint') : '')
 
   return {
     providerLabel: providerSpec.value.label || providerForm.selectedProvider.value,
@@ -693,21 +1083,130 @@ const providerCredentialPanel = computed(() => {
     revealError: providerForm.revealError.value,
     replacing: providerForm.replacingCredential.value,
     apiKeyValue: String(providerForm.providerFieldValues.value.api_key || ''),
-    apiKeyEnvValue: providerForm.fieldValue(
-      { name: 'api_key_env', label: t('setup.common.apiKeyEnv'), default: providerSpec.value.envKey || '' },
-      savedMatchesSelected ? (config.value.llm || {}) : {},
-    ),
-    probeReady: Boolean(providerForm.selectedProvider.value) && providerProbeMissingFields.value.length === 0,
-    probeDisabledReason: providerProbeDisabledReason.value,
+    apiKeyEnvValue,
+    draftCredentialSource: hasDraftKey ? 'key' : (envReferenceEdited ? 'env' : ''),
+    probeReady: Boolean(providerForm.selectedProvider.value) && fieldsReady && credentialReady,
+    probeDisabledReason,
+    probeButtonLabel: credentialReady ? t('setup.provider.testCurrentSettings') : t('setup.provider.addKeyToTest'),
     connection: providerForm.connection.value,
     onReveal: revealProviderCredential,
-    onReplace: providerForm.startCredentialReplace,
-    onCancelReplace: providerForm.cancelCredentialReplace,
+    onReplace: () => {
+      if (!providerInteractionLocked()) providerForm.startCredentialReplace()
+    },
+    onCancelReplace: () => {
+      if (!providerInteractionLocked()) providerForm.cancelCredentialReplace()
+    },
   }
 })
 
+const selectedStoredProfile = computed(() => providerSelectionKind.value === 'profile')
+const selectedNewProfile = computed(() => providerSelectionKind.value === 'new')
+const ensembleProviderIds = computed(() => {
+  const ensemble = config.value.llm_ensemble || {}
+  const providers = new Set<string>()
+  if (ensemble.enabled !== true) return providers
+
+  const add = (value: unknown) => {
+    const provider = normalizeProviderId(value)
+    if (provider) providers.add(provider)
+  }
+
+  // The primary deployment is the baseline from which an enabled ensemble is
+  // selected and the fallback target if the ensemble cannot produce a result.
+  // A fixed/custom lineup on a different provider is therefore cross-provider
+  // even when every ensemble member happens to share that foreign provider.
+  add(currentProvider.value)
+
+  const selectionMode = String(ensemble.selection_mode || '')
+  const staticProfile = STATIC_B5_PROFILES[selectionMode]
+  if (staticProfile) {
+    add(staticProfile.provider)
+    return providers
+  }
+
+  if (selectionMode === CUSTOM_B5_SELECTION_MODE) {
+    for (const candidate of ensemble.candidates || []) {
+      if (candidate.enabled === false) continue
+      add(candidate.provider)
+    }
+    return providers
+  }
+
+  // selection_mode was introduced after model_options. Treat an omitted mode
+  // with legacy options as router_dynamic for older Gateway compatibility;
+  // unknown explicit modes fail closed instead of advertising a capability
+  // the runtime would reject.
+  const legacyDynamic = !selectionMode && (ensemble.model_options || []).length > 0
+  if (selectionMode === 'router_dynamic' || legacyDynamic) {
+    for (const candidate of ensemble.candidates || []) {
+      if (candidate.enabled === false) continue
+      add(candidate.provider || currentProvider.value)
+    }
+    for (const tier of Object.values(config.value.squilla_router?.tiers || {})) {
+      add(tier.provider || currentProvider.value)
+    }
+    const modelOptions = ensemble.model_options || []
+    const isCurrentRuntimeLegacyDefault = selectionMode === 'router_dynamic'
+      && modelOptions.length === LEGACY_OPENROUTER_MODEL_OPTIONS.length
+      && modelOptions.every((model, index) => model === LEGACY_OPENROUTER_MODEL_OPTIONS[index])
+    for (const model of isCurrentRuntimeLegacyDefault ? [] : modelOptions) {
+      const modelId = String(model || '').trim()
+      if (!modelId) continue
+      add(modelId.includes('/') ? 'openrouter' : currentProvider.value)
+    }
+  }
+  return providers
+})
+
+const multiProviderRoutingEnabled = computed(() => (
+  hasConfiguredPrimaryProvider.value
+  && (
+    (
+      config.value.squilla_router?.enabled === true
+      && config.value.squilla_router?.cross_provider_tiers === true
+    )
+    || (
+      config.value.llm_ensemble?.enabled === true
+      && ensembleProviderIds.value.size > 1
+    )
+  )
+))
+const crossProviderRoutingEnabled = computed(() => (
+  config.value.squilla_router?.enabled === true
+  && config.value.squilla_router?.cross_provider_tiers === true
+))
+const modelRouterEnabled = computed(() => config.value.squilla_router?.enabled === true)
+const routerBinding = computed<'follow_primary' | 'custom' | 'legacy'>(() => {
+  const value = String(
+    ((status.value.sectionDetails || {}).router || {}).routerBinding
+    || config.value.squilla_router?.preset_binding
+    || '',
+  )
+    .trim()
+    .toLowerCase()
+  if (value === 'follow_primary' || value === 'custom') return value
+  return 'legacy'
+})
+const ensembleEnabled = computed(() => config.value.llm_ensemble?.enabled === true)
+function routerConflictsWithTarget(value: string): boolean {
+  const target = normalizeProviderId(value)
+  if (
+    !target
+    || !modelRouterEnabled.value
+    || routerBinding.value === 'follow_primary'
+    || crossProviderRoutingEnabled.value
+  ) return false
+  return Object.values(config.value.squilla_router?.tiers || {}).some(tier => {
+    const provider = normalizeProviderId(tier.provider)
+    return Boolean(provider && provider !== target)
+  })
+}
+const activationRouterConflict = computed(() => (
+  routerConflictsWithTarget(providerActivation.value.providerId)
+))
+
 const providerPanel = providerForm.createPanel({
-  currentConfig: currentProviderConfig,
+  currentConfig: providerEditorConfig,
   providerSummary,
   runtimeProviders,
   routerSupportTone,
@@ -726,6 +1225,18 @@ const providerPanel = providerForm.createPanel({
   contextWindowGlobal,
   effectiveMaxTokens,
   providerIsLocal,
+  configuredProviders,
+  editingPrimary: editingPrimaryProvider,
+  selectedStoredProfile,
+  editingNew: selectedNewProfile,
+  routingEnabled: multiProviderRoutingEnabled,
+  routerEnabled: modelRouterEnabled,
+  routerBinding,
+  crossProviderRoutingEnabled,
+  ensembleEnabled,
+  activationRouterConflict,
+  configuredProviderProbes,
+  activation: providerActivation,
 })
 
 const behaviorPanel = behaviorForm.createPanel({
@@ -740,22 +1251,39 @@ const privacyPanel = computed(() => ({
 
 const isOpenrouterProvider = computed(() => currentProvider.value.toLowerCase() === 'openrouter')
 const normalizedProvider = computed(() => currentProvider.value.toLowerCase())
-function reconcileEnsembleProviderCompatibility() {
-  const provider = normalizedProvider.value
-  const staticProfile = STATIC_B5_PROFILES[ensembleForm.selectionMode.value]
-  if (provider && staticProfile && provider !== staticProfile.provider) {
-    // The stored static profile belongs to another provider: move to this
-    // provider's own static profile when it has one, else to an explicit
-    // custom lineup (seeded from the router tiers so it can actually run).
-    const ownPreset = staticB5ModeForProvider(provider)
-    if (ownPreset) {
-      ensembleForm.setSelectionMode(ownPreset)
-    } else {
-      ensembleForm.activateForProvider(provider, ensembleTierCandidates.value)
-    }
+const modelStrategyCredentialStatus = computed<EnsembleCredentialStatus[]>(() => {
+  // Existing ensemble-specific entries remain authoritative for compatibility;
+  // profile statuses fill providers that were not already present. Older
+  // gateways simply omit llmProfileStatus and retain the previous behavior.
+  const rows: EnsembleCredentialStatus[] = [
+    ...(status.value.ensembleCredentialStatus || []).map(row => ({ ...row })),
+  ]
+  const seen = new Set(rows.map(row => normalizeProviderId(row.provider)))
+  const active = status.value.llmCredentialStatus
+  const activeProvider = normalizeProviderId(active?.provider)
+  if (activeProvider && !seen.has(activeProvider)) {
+    seen.add(activeProvider)
+    rows.push({
+      provider: activeProvider,
+      available: active?.available === true,
+      source: String(active?.source || 'none'),
+      envKey: active?.envKey,
+    })
   }
-}
-
+  for (const profile of status.value.llmProfileStatus || []) {
+    const provider = normalizeProviderId(profile.provider)
+    if (!provider || seen.has(provider)) continue
+    seen.add(provider)
+    rows.push({
+      provider,
+      available: profile.ready === true,
+      source: String(profile.credentialSource || 'none'),
+      envKey: profile.credentialEnv,
+      reason: profile.reason,
+    })
+  }
+  return rows
+})
 // openrouter-mix is only valid for the openrouter provider. When the selection
 // moves off openrouter while a stored mix mode is loaded, coerce the mode back
 // to recommended so the save payload stays valid for the new provider. watch
@@ -764,7 +1292,6 @@ watch(normalizedProvider, (provider) => {
   if (provider !== 'openrouter' && routerForm.mode.value === 'openrouter-mix') {
     routerForm.setRouterMode('recommended')
   }
-  reconcileEnsembleProviderCompatibility()
 })
 const routerPanel = routerForm.createPanel({
   routerSummary,
@@ -773,6 +1300,8 @@ const routerPanel = routerForm.createPanel({
   isOpenrouter: isOpenrouterProvider,
   textTiers: TEXT_TIERS,
   tierLabel,
+  providerOptions: routingProviderOptions,
+  providerCredentialStatus: modelStrategyCredentialStatus,
   discoveredModelsByProvider: computed(() => {
     const catalogs: DiscoveredModelsByProvider = { ...tierModelCatalogs.value }
     const provider = normalizeProviderId(providerForm.selectedProvider.value)
@@ -786,11 +1315,13 @@ const routerPanel = routerForm.createPanel({
   }),
 })
 
-const ensembleTierCandidates = computed(() => routerPanel.value.tierRows.map(row => ({
-  provider: row.provider,
-  model: row.model,
-  tier: row.name,
-})))
+const ensembleTierCandidates = computed(() => routerPanel.value.tierRows
+  .filter(row => configuredProviderIds.value.has(normalizeProviderId(row.provider)))
+  .map(row => ({
+    provider: row.provider,
+    model: row.model,
+    tier: row.name,
+  })))
 
 // ---------------------------------------------------------------------------
 // Routing preset card (Provider panel)
@@ -848,7 +1379,7 @@ const ensemblePanel = ensembleForm.createPanel({
   activeProvider: currentProvider,
   activeModel: currentModel,
   tierCandidates: modelStrategyTierCandidates,
-  credentialStatus: computed(() => status.value.ensembleCredentialStatus || []),
+  credentialStatus: modelStrategyCredentialStatus,
 })
 
 const modelStrategyPanel = modelStrategyForm.createPanel({
@@ -1101,8 +1632,8 @@ function sectionForDetailName(name: string): SettingsSectionId | null {
 
 const providerDirty = computed(() => (
   providerForm.isDirty.value
-  || promotedForm.timeoutDirty.value
-  || promotedForm.contextWindowDirty.value
+  || (editingPrimaryProvider.value && promotedForm.timeoutDirty.value)
+  || (editingPrimaryProvider.value && promotedForm.contextWindowDirty.value)
 ))
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
 const privacySectionDirty = computed(() => privacyDirty.value)
@@ -1152,6 +1683,7 @@ async function saveDirtySections() {
 }
 
 async function discardChanges() {
+  if (providerInteractionLocked()) return
   await loadData()
 }
 
@@ -1177,8 +1709,223 @@ function providerProbeFieldLabel(field: FieldSpec): string {
   return field.label
 }
 
+function providerInteractionLocked(): boolean {
+  return providerActivationRequestPending || providerActivation.value.phase === 'activating'
+}
+
 function selectProvider(value: string) {
+  if (providerInteractionLocked()) return
   providerForm.selectProvider(value)
+}
+
+function applyConfiguredProviderSelection(value: string) {
+  const provider = normalizeProviderId(value)
+  if (!provider) return
+  if (provider === normalizeProviderId(currentProvider.value)) {
+    providerSelectionKind.value = 'primary'
+    providerForm.initFromConfig(config.value.llm || {}, status.value, runtimeProviders.value, true)
+  } else {
+    providerSelectionKind.value = 'profile'
+    providerForm.initStoredProfile(provider, storedProfileConfig(provider))
+  }
+  promotedForm.reseedContextWindow(
+    config.value,
+    provider,
+    provider === normalizeProviderId(currentProvider.value) ? currentFormModelValue() : '',
+  )
+  // Resolve the selected saved deployment without issuing a chat/probe call.
+  // initFromConfig/initStoredProfile bumped the form epoch, so a response from
+  // the previously selected row cannot overwrite this provider's catalog.
+  void providerForm.discoverModels({ storedProfile: providerSelectionKind.value === 'profile' })
+}
+
+function selectConfiguredProvider(value: string) {
+  if (providerInteractionLocked()) return
+  applyConfiguredProviderSelection(value)
+}
+
+async function confirmProviderDraftDiscard(): Promise<boolean> {
+  if (!providerDirty.value) return true
+  return confirm({
+    title: t('setup.provider.discardDraftTitle'),
+    body: t('setup.provider.discardDraftBody'),
+    primaryLabel: t('setup.provider.discardDraftPrimary'),
+  })
+}
+
+async function requestSelectConfiguredProvider(value: string) {
+  if (providerInteractionLocked()) return
+  const next = normalizeProviderId(value)
+  if (!next) return
+  if (next === normalizeProviderId(providerForm.selectedProvider.value)) {
+    // Re-clicking the current row is not a navigation. In particular, do not
+    // rehydrate from saved config and silently discard the editor's draft.
+    return
+  }
+  if (!(await confirmProviderDraftDiscard())) return
+  applyConfiguredProviderSelection(next)
+}
+
+async function requestAddProvider(value: string) {
+  if (providerInteractionLocked()) return
+  const next = normalizeProviderId(value)
+  if (!next || !(await confirmProviderDraftDiscard())) return
+  providerForm.selectProvider(next)
+  onProviderChange()
+}
+
+function freshConfiguredProbe(phase: ConnectionState['phase'] = 'unverified'): ConnectionState {
+  return {
+    phase,
+    failureKind: '',
+    detail: '',
+    firstResponseMs: null,
+    totalMs: null,
+    latencyMs: null,
+    models: [],
+    modelSource: 'none',
+    discoverError: '',
+  }
+}
+
+function providerRpcErrorMessage(err: unknown): string {
+  const message = saveFailedMessage(err)
+  return isRpcMethodUnavailableError(err)
+    ? `${message} ${t('setup.provider.upgradeGatewayHint')}`
+    : message
+}
+
+function isRpcMethodUnavailableError(err: unknown): boolean {
+  return /method.*not found|unknown method|not registered/i.test(saveFailedMessage(err))
+}
+
+function representativeProviderModel(providerId: string): string {
+  const provider = normalizeProviderId(providerId)
+  const savedModel = String(storedProfileConfig(provider).model || '').trim()
+  if (savedModel) return savedModel
+
+  const spec = runtimeProviders.value.find(
+    item => normalizeProviderId(item.providerId) === provider,
+  )
+  const directDefault = String(spec?.defaultDirectModel || '').trim()
+  if (directDefault) return directDefault
+
+  // Compatibility for model-less profiles created by an older Gateway: a
+  // routed deployment remains a useful probe target only when the provider
+  // has no catalog direct default.
+  for (const tier of Object.values(config.value.squilla_router?.tiers || {})) {
+    if (normalizeProviderId(tier.provider) !== provider) continue
+    const model = String(tier.model || '').trim()
+    if (model) return model
+  }
+  for (const candidate of config.value.llm_ensemble?.candidates || []) {
+    if (normalizeProviderId(candidate.provider) !== provider) continue
+    const model = String(candidate.model || '').trim()
+    if (model) return model
+  }
+  return String(spec?.defaultModel || '').trim()
+}
+
+async function probeConfiguredProvider(value: string) {
+  if (providerInteractionLocked()) return
+  const providerId = normalizeProviderId(value)
+  const row = configuredProviders.value.find(item => normalizeProviderId(item.providerId) === providerId)
+  if (!providerId || !row?.ready || configuredProviderProbes.value[providerId]?.phase === 'probing') return
+  configuredProviderProbes.value = {
+    ...configuredProviderProbes.value,
+    [providerId]: freshConfiguredProbe('probing'),
+  }
+  const probeEpoch = configuredProbeEpoch
+  const active = providerId === normalizeProviderId(currentProvider.value)
+  const model = active
+    ? String(currentModel.value || representativeProviderModel(providerId))
+    : representativeProviderModel(providerId)
+  try {
+    const res = await rpc.call<{
+      ok?: boolean
+      failureKind?: string
+      message?: string
+      firstResponseMs?: number
+      totalMs?: number
+      latencyMs?: number
+    }>(
+      active ? 'onboarding.provider.probe' : 'onboarding.llmProfile.probe',
+      active ? { providerId, model } : { providerId, model },
+    )
+    if (probeEpoch !== configuredProbeEpoch) return
+    const timings = normalizeProbeTimings(res)
+    configuredProviderProbes.value = {
+      ...configuredProviderProbes.value,
+      [providerId]: {
+        ...freshConfiguredProbe(res?.ok ? 'verified' : (res?.failureKind === 'auth_invalid' ? 'key_invalid' : 'unreachable')),
+        failureKind: String(res?.failureKind || ''),
+        detail: String(res?.message || ''),
+        ...timings,
+      },
+    }
+  } catch (err) {
+    if (probeEpoch !== configuredProbeEpoch) return
+    configuredProviderProbes.value = {
+      ...configuredProviderProbes.value,
+      [providerId]: {
+        ...freshConfiguredProbe('unreachable'),
+        detail: saveFailedMessage(err),
+      },
+    }
+  }
+}
+
+async function activateProvider(value: string) {
+  if (providerInteractionLocked()) return
+  const providerId = normalizeProviderId(value)
+  const row = configuredProviders.value.find(item => normalizeProviderId(item.providerId) === providerId)
+  if (!providerId || !row?.primaryEligible) return
+  providerActivationRequestPending = true
+  try {
+    const discardDraft = providerDirty.value
+    if (!(await confirmProviderDraftDiscard())) return
+    if (discardDraft) {
+      const selected = normalizeProviderId(providerForm.selectedProvider.value)
+      applyConfiguredProviderSelection(
+        configuredProviderIds.value.has(selected) ? selected : currentProvider.value,
+      )
+    }
+    // A custom/legacy Router that still names the previous provider cannot be
+    // executed safely after a primary swap while cross-provider routing is off.
+    // Keep its saved tiers intact and turn it off; the operator can review and
+    // re-enable it deliberately from Model Routing.
+    const routerAction = routerConflictsWithTarget(providerId) ? 'disable' : undefined
+    providerActivation.value = {
+      providerId,
+      phase: 'activating',
+      models: [],
+      suggestedModel: '',
+      error: '',
+    }
+    try {
+      await rpc.call('onboarding.llmProfile.activate', {
+        providerId,
+        ...(routerAction ? { routerAction } : {}),
+      })
+      await loadData()
+      providerActivation.value = {
+        providerId: '', phase: 'idle', models: [], suggestedModel: '', error: '',
+      }
+      pushToast(t(
+        routerAction === 'disable'
+          ? 'setup.toast.providerActivatedRouterDisabled'
+          : 'setup.toast.providerActivated',
+        { provider: providerCatalogLabel(providerId) },
+      ))
+    } catch (err) {
+      providerActivation.value = {
+        providerId: '', phase: 'idle', models: [], suggestedModel: '', error: '',
+      }
+      pushToast(providerRpcErrorMessage(err), { tone: 'danger' })
+    }
+  } finally {
+    providerActivationRequestPending = false
+  }
 }
 
 function setAutoSessionTitles(enabled: boolean) {
@@ -1190,7 +1937,19 @@ function setDisableNetworkObservability(enabled: boolean) {
 }
 
 function onProviderChange() {
-  providerForm.resetForProvider(providerSpec.value)
+  if (providerInteractionLocked()) return
+  const provider = normalizeProviderId(providerForm.selectedProvider.value)
+  if (configuredProviderIds.value.has(provider)) {
+    applyConfiguredProviderSelection(provider)
+    return
+  }
+  // config.get contains a runtime default provider even on a pristine install.
+  // Until there is an effective primary deployment, the first user selection
+  // must configure that primary rather than create an orphan routing profile.
+  providerSelectionKind.value = hasConfiguredPrimaryProvider.value ? 'new' : 'primary'
+  providerForm.resetForProvider(providerSpec.value, {
+    inheritModelDefault: providerSelectionKind.value === 'new',
+  })
   // The context-window override is per provider+model, so a provider switch must
   // reseed the field (value + baseline) from the newly-selected provider's saved
   // override — otherwise it keeps showing/saving the previous provider's value.
@@ -1201,10 +1960,11 @@ function onProviderChange() {
 // config → spec default), trimmed. Drives the per-model context-window override.
 function currentFormModelValue(): string {
   const modelField = providerFields.value.find(f => f.name === 'model') || { name: 'model', label: 'model' }
-  return String(providerForm.fieldValue(modelField, config.value.llm || {}) || '').trim()
+  return String(providerForm.fieldValue(modelField, providerEditorConfig.value) || '').trim()
 }
 
 function updateProviderField(name: string, value: unknown) {
+  if (providerInteractionLocked()) return
   providerForm.updateField(name, value)
   // Editing the model field switches which per-model override applies, so reseed
   // the context-window field from the saved override for the new model id.
@@ -1214,6 +1974,8 @@ function updateProviderField(name: string, value: unknown) {
 }
 
 async function revealProviderCredential() {
+  if (providerInteractionLocked()) return
+  if (!editingPrimaryProvider.value) return
   const providerId = String(providerForm.selectedProvider.value || '').trim()
   if (!providerId) return
   try {
@@ -1232,15 +1994,47 @@ async function revealProviderCredential() {
 // form values. Never gates saving. The probe RPC requires a model id, so an
 // empty model field falls back to the catalog's default for the provider.
 function probeProviderConnection() {
-  if (providerProbeMissingFields.value.length > 0) return
-  void providerForm.probeConnection({ defaultModel: providerSpec.value?.defaultModel || '' })
+  if (providerInteractionLocked()) return
+  if (!providerCredentialPanel.value?.probeReady) return
+  void providerForm.probeConnection({
+    defaultModel: selectedStoredProfile.value
+      ? providerProbeModel.value
+      : currentFormModelValue() || providerSpec.value?.defaultModel || '',
+    draftProfile: selectedStoredProfile.value,
+  })
+}
+
+async function removeProviderProfile(providerId: string) {
+  if (providerInteractionLocked()) return
+  const provider = normalizeProviderId(providerId)
+  if (!provider || provider === normalizeProviderId(currentProvider.value)) return
+  // Defend against stale callers as well as the rendered-list filter. A
+  // Router/Ensemble deployment status is not proof that an llm_profile exists,
+  // so never show a confirmation or issue a destructive RPC for it.
+  if (!storedProfileIds.value.has(provider)) return
+  if (!(await confirmProviderDraftDiscard())) return
+  const ok = await confirm({
+    title: t('setup.provider.removeConfirmTitle'),
+    body: t('setup.provider.removeConfirmBody', { provider: providerCatalogLabel(provider) }),
+    primaryLabel: t('setup.provider.removeConfirmPrimary'),
+  })
+  if (!ok) return
+  try {
+    await rpc.call('onboarding.llmProfile.remove', { providerId: provider })
+    pushToast(t('setup.toast.providerProfileRemoved', { provider: providerCatalogLabel(provider) }))
+    await loadData()
+  } catch (err) {
+    pushToast(saveFailedMessage(err), { tone: 'danger' })
+  }
 }
 
 function updateLlmTimeout(value: number) {
+  if (providerInteractionLocked()) return
   promotedForm.setLlmTimeoutSeconds(value)
 }
 
 function updateContextWindow(value: string) {
+  if (providerInteractionLocked()) return
   promotedForm.setContextWindowTokens(value)
 }
 
@@ -1268,6 +2062,9 @@ function updateTierField(
   value: string | boolean,
 ) {
   routerForm.updateTierField(name, key, value)
+  if (key === 'provider') {
+    void discoverTierProviderModels(String(value || ''))
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1298,8 +2095,8 @@ function removeEnsembleCandidate(candidate: EnsembleCandidateView) {
   ensembleForm.removeCandidate(candidate)
 }
 
-function replaceEnsembleCandidate(candidate: EnsembleCandidateView, model: string) {
-  ensembleForm.replaceCandidate(candidate, model)
+function replaceEnsembleCandidate(candidate: EnsembleCandidateView, provider: string, model: string) {
+  ensembleForm.replaceCandidate(candidate, provider, model)
 }
 
 function setEnsembleAggregator(provider: string, model: string) {
@@ -1311,11 +2108,15 @@ function setEnsembleCandidateRole(candidate: EnsembleCandidateView, role: Ensemb
 }
 
 function importEnsembleTierCandidates() {
-  ensembleForm.importTierCandidates(modelStrategyTierCandidates.value, currentProvider.value)
+  ensembleForm.importTierCandidates(modelStrategyTierCandidates.value)
+}
+
+function discoverModelStrategyProviderModels(provider: string) {
+  void discoverTierProviderModels(provider)
 }
 
 function migrateEnsembleLegacy() {
-  ensembleForm.migrateLegacyToCustom(ensembleTierCandidates.value)
+  ensembleForm.migrateLegacyToCustom(ensembleTierCandidates.value, currentProvider.value)
 }
 
 function resetEnsembleCandidates() {
@@ -1540,11 +2341,36 @@ async function deepPatchConfig(patch: Record<string, unknown>): Promise<boolean>
 }
 
 async function saveProvider() {
+  if (providerInteractionLocked()) return
   if (!providerForm.selectedProvider.value) {
     pushToast(t('setup.toast.chooseProvider'), { tone: 'danger' })
     return
   }
   try {
+    const selectedProviderId = normalizeProviderId(providerForm.selectedProvider.value)
+    if (!editingPrimaryProvider.value && currentProvider.value) {
+      const payload = providerForm.payload()
+      // Model is a persisted part of each profile. Preserve an explicit clear
+      // so the backend can remove a custom override and fall back to the
+      // provider catalog's defaultDirectModel instead of retaining the old
+      // value under keep-current/partial-update semantics.
+      if (Object.prototype.hasOwnProperty.call(providerForm.providerFieldValues.value, 'model')) {
+        payload.model = String(providerForm.providerFieldValues.value.model ?? '').trim()
+      }
+      const replacesCredential = payload.apiKey !== undefined || payload.apiKeyEnv !== undefined
+      // Switching an existing explicit secret to an env reference must clear
+      // the old explicit value; otherwise resolver precedence would keep using
+      // it and the apparently-saved env choice would never take effect.
+      if (payload.apiKeyEnv !== undefined) payload.apiKey = ''
+      payload.keepCurrentSecret = selectedStoredProfile.value && !replacesCredential
+      await rpc.call('onboarding.llmProfile.upsert', payload)
+      await loadData()
+      selectConfiguredProvider(selectedProviderId)
+      pushToast(t('setup.toast.providerProfileSaved', {
+        provider: providerCatalogLabel(selectedProviderId),
+      }))
+      return
+    }
     const payload = providerConfigurePayload()
     await rpc.call('onboarding.provider.configure', payload)
     const restart = await patchConfig(promotedForm.providerPatches())
@@ -1678,6 +2504,7 @@ async function saveModelStrategy() {
 // Router section and routerMode reflect the applied tiers. Confirm-free by
 // design — the Router section can always change the result afterwards.
 async function applyProviderPreset() {
+  if (providerInteractionLocked()) return
   if (!providerForm.selectedProvider.value) {
     pushToast(t('setup.toast.chooseProvider'), { tone: 'danger' })
     return
@@ -1843,6 +2670,9 @@ async function copyConfigPath() {
     saveDirtySections,
     discardChanges,
     selectProvider,
+    selectConfiguredProvider,
+    requestSelectConfiguredProvider,
+    requestAddProvider,
     setAutoSessionTitles,
     setDisableNetworkObservability,
     setModelStrategy: modelStrategyForm.setStrategy,
@@ -1859,6 +2689,7 @@ async function copyConfigPath() {
     setEnsembleAggregator,
     setEnsembleCandidateRole,
     importEnsembleTierCandidates,
+    discoverModelStrategyProviderModels,
     migrateEnsembleLegacy,
     resetEnsembleCandidates,
     setEnsembleScheme,
@@ -1868,6 +2699,9 @@ async function copyConfigPath() {
     updateLlmTimeout,
     updateContextWindow,
     probeProviderConnection,
+    probeConfiguredProvider,
+    activateProvider,
+    removeProviderProfile,
     revealProviderCredential,
     updateTierField,
     updateCapabilityField,

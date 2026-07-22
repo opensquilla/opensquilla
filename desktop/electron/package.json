@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "build:gateway": "node scripts/build-gateway.mjs",
-    "build:web": "cd ../../opensquilla-webui && npm run build",
+    "build:web": "cd ../../opensquilla-webui && npm ci && npm run build",
     "dev": "npm run build && electron .",
     "dist:local": "npm run build:web && npm run build:gateway && npm run dist",
     "pack:local": "npm run build:web && npm run build:gateway && npm run pack",

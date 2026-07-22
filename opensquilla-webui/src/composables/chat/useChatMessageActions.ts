@@ -81,8 +81,14 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
       return
     }
 
-    const userText = options.messages.value[userMsgIndex]?.text || ''
-    options.pendingForkBeforeMessageId.value = options.messages.value[userMsgIndex]?.messageId || null
+    const userMessage = options.messages.value[userMsgIndex]
+    const forkBeforeMessageId = userMessage?.messageId || ''
+    if (!forkBeforeMessageId) {
+      console.warn('Wait for the message to finish saving before regenerating')
+      return
+    }
+    const userText = userMessage?.text || ''
+    options.pendingForkBeforeMessageId.value = forkBeforeMessageId
     options.messages.value = options.messages.value.slice(0, userMsgIndex)
     options.inputText.value = userText
     options.autoResizeTextarea()
@@ -97,8 +103,14 @@ export function useChatMessageActions(options: UseChatMessageActionsOptions) {
     const msgIndex = sourceMessageIndex(message)
     if (msgIndex < 0) return
     if (options.messages.value[msgIndex]?.role !== 'user') return
-    const text = options.messages.value[msgIndex].text || ''
-    options.pendingForkBeforeMessageId.value = options.messages.value[msgIndex]?.messageId || null
+    const sourceMessage = options.messages.value[msgIndex]
+    const forkBeforeMessageId = sourceMessage?.messageId || ''
+    if (!forkBeforeMessageId) {
+      console.warn('Wait for the message to finish saving before editing')
+      return
+    }
+    const text = sourceMessage.text || ''
+    options.pendingForkBeforeMessageId.value = forkBeforeMessageId
     options.messages.value = options.messages.value.slice(0, msgIndex)
     options.inputText.value = text
     options.autoResizeTextarea()

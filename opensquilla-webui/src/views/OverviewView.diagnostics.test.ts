@@ -300,6 +300,98 @@ describe('OverviewView diagnose-with-agent hand-off', () => {
   })
 })
 
+describe('OverviewView recovery activation copy', () => {
+  it('keeps restart guidance on the concrete step without a finding-level restart claim', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'provider.active.not_configured',
+        surface: 'provider',
+        severity: 'error',
+        readinessImpact: 'blocks_ready',
+        title: 'Active provider is not configured',
+        restartRequired: true,
+        fixSteps: [
+          {
+            label: 'Set provider environment variable',
+            detail: 'Set TOKENRHYTHM_API_KEY, then restart OpenSquilla.',
+          },
+          {
+            label: 'Restart gateway',
+            command: 'opensquilla gateway restart',
+          },
+        ],
+      },
+    ]
+
+    const { el } = await mountOverview({ report })
+
+    expect(el.textContent).not.toContain('Recovery requires restart')
+    expect(el.textContent).toContain('then restart OpenSquilla')
+    expect(el.textContent).toContain('Restart gateway')
+  })
+
+  it('keeps only the migration preview when the current target already has data', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'migration.legacy_home_detected',
+        surface: 'migration',
+        severity: 'info',
+        readinessImpact: 'optional',
+        title: 'Legacy data found',
+        evidence: { target_fresh: false },
+        restartRequired: true,
+        fixSteps: [
+          {
+            label: 'Preview the import',
+            command: 'opensquilla migrate opensquilla --source /tmp/old',
+          },
+          {
+            label: 'Apply the import',
+            command: 'opensquilla migrate opensquilla --source /tmp/old --apply',
+          },
+        ],
+      },
+    ]
+
+    const { el } = await mountOverview({ report })
+
+    expect(el.textContent).toContain('Preview the import')
+    expect(el.textContent).not.toContain('Apply the import')
+    expect(el.textContent).not.toContain('--apply')
+  })
+
+  it('keeps the migration apply step for a fresh target', async () => {
+    const report = baseReport()
+    report.findings = [
+      {
+        id: 'migration.legacy_home_detected',
+        surface: 'migration',
+        severity: 'warn',
+        readinessImpact: 'degrades',
+        title: 'Legacy data found',
+        evidence: { targetFresh: true },
+        fixSteps: [
+          {
+            label: 'Preview the import',
+            command: 'opensquilla migrate opensquilla --source /tmp/old',
+          },
+          {
+            label: 'Apply the import',
+            command: 'opensquilla migrate opensquilla --source /tmp/old --apply',
+          },
+        ],
+      },
+    ]
+
+    const { el } = await mountOverview({ report })
+
+    expect(el.textContent).toContain('Apply the import')
+    expect(el.textContent).toContain('--apply')
+  })
+})
+
 describe('OverviewView copy diagnostics JSON', () => {
   it('copies the normalized report with gatewayUrl and copiedAt attached', async () => {
     const { el, copyText, pushToast, flush } = await mountOverview()

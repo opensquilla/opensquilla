@@ -44,9 +44,9 @@ corresponding feature is enabled by configuration or user action.
 ## Network Observability Controls
 
 OpenSquilla groups non-user-initiated network observability under one switch.
-Set this before startup to disable automatic install telemetry, passive update
-checks, and automatic desktop update checks at startup and during long-running
-app sessions:
+Set this before startup to disable automatic install telemetry, daily aggregate
+usage telemetry, passive update checks, and automatic desktop update checks at
+startup and during long-running app sessions:
 
 ```sh
 OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true
@@ -103,11 +103,29 @@ Use the unified network observability switch above to opt out before startup.
 The legacy telemetry opt-out `OPENSQUILLA_TELEMETRY_DISABLED=true` remains
 honored for compatibility.
 
-Advanced deployments can direct installation telemetry to their own endpoint:
+Advanced deployments can direct installation and usage telemetry to independent
+routes on their own service:
 
 ```sh
 OPENSQUILLA_TELEMETRY_ENDPOINT=https://example.com/v1/install
+OPENSQUILLA_USAGE_TELEMETRY_ENDPOINT=https://example.com/v1/usage
 ```
+
+## Daily Aggregate Usage Telemetry
+
+OpenSquilla uses the same telemetry service with a dedicated `/v1/usage` route
+and the unified network observability switch for content-free daily usage
+aggregates. It records only completed top-level interactive turns. While the
+gateway is running, it attempts to upload pending cumulative UTC-day snapshots
+at startup and once per hour, including the current day. Heartbeats, scheduled
+jobs, subagents, and incomplete turns are excluded.
+
+Daily payloads include the existing `install_id`, OpenSquilla version, UTC day,
+send timestamp, a retry-stable event ID, completed conversation count, and
+aggregate input, output, cached, and cache-write token counts. They do not
+include prompts, responses, provider or model names, channels, session
+identifiers, costs, tools, file names, or file contents. Failed uploads remain
+pending locally and are retried later.
 
 ## Logs And Diagnostics
 

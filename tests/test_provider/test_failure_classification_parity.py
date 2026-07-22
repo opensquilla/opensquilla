@@ -136,6 +136,20 @@ _OPENAI_COMPAT_CASES: list[Case] = [
     ("openai", None, "", "invalid_request_error: bad payload", K.BAD_REQUEST),
     # Family miss falls through to the shared tail.
     ("openai", None, "", "malformed chunk received", K.MALFORMED_RESPONSE),
+    (
+        "tokenrhythm",
+        None,
+        "invalid_stream_order",
+        "TokenRhythm stream mutated state after finish_reason",
+        K.MALFORMED_RESPONSE,
+    ),
+    (
+        "openai",
+        None,
+        "invalid_stream_frame",
+        "Provider stream returned an invalid choice batch",
+        K.MALFORMED_RESPONSE,
+    ),
     ("openrouter", None, "", "request error: connection reset by peer", K.TRANSPORT_TRANSIENT),
     ("openai", None, "timeout", "Request timed out: ", K.TRANSPORT_TRANSIENT),
 ]

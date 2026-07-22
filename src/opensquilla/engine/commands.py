@@ -237,10 +237,11 @@ class SlashCommandRegistry:
 
 # ---------------------------------------------------------------------------
 # Canonical registry: every slash command shipped today across the three
-# surfaces. Sourced from:
-#   - cli/repl/commands.py REGISTRY (TUI, 17)
-#   - channels/command_registry.py DEFAULT_COMMAND_REGISTRY (channel, 9)
-#   - gateway/static/js/views/chat.js slash-command list (web, 3)
+# surfaces. Its surface adapters are:
+#   - cli/repl/commands.py (TUI)
+#   - channels/command_registry.py (channel)
+#   - opensquilla-webui/src/composables/chat/useChatSlashCommands.ts (web,
+#     loaded through the commands.list_for_surface RPC)
 # Where canonical name diverges (TUI's /clear vs web/channel's /reset),
 # we pick the cross-surface name and demote the other to alias.
 # ---------------------------------------------------------------------------

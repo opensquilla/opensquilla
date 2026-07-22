@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from typing import cast
 
 from .pricing import CostEstimate, estimate_cost, lookup_price, resolve_model_price
 
@@ -103,12 +104,24 @@ class SessionUsage:
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     provider: str = ""
+    # Additive exact-attribution index. The legacy ``_per_model`` map remains
+    # intact for compatibility, while this map prevents equal model ids on
+    # different providers from collapsing into one usage/cost row.
+    _per_deployment: dict[tuple[str, str], ModelUsage] | None = None
+
+    def _cost_entries(self) -> dict[object, ModelUsage] | None:
+        if self._per_deployment:
+            return cast(dict[object, ModelUsage], self._per_deployment)
+        if self._per_model:
+            return cast(dict[object, ModelUsage], self._per_model)
+        return None
 
     @property
     def cost(self) -> float:
         """Cache-aware pricing-table estimate over the session's tokens."""
-        if self._per_model:
-            return sum(m.cost for m in self._per_model.values())
+        entries = self._cost_entries()
+        if entries:
+            return sum(m.cost for m in entries.values())
         price = lookup_price(self.model_id, self.provider)
         return estimate_cost(
             input_tokens=self.input_tokens,
@@ -127,9 +140,10 @@ class SessionUsage:
         use this to decide whether the session-level row should display
         the actual billed total or fall back to the pricing-table estimate.
         """
-        if not self._per_model:
+        entries = self._cost_entries()
+        if not entries:
             return 0.0
-        return sum(float(getattr(m, "billed_cost", 0.0) or 0.0) for m in self._per_model.values())
+        return sum(float(getattr(m, "billed_cost", 0.0) or 0.0) for m in entries.values())
 
     @property
     def total_cost(self) -> float:
@@ -142,9 +156,10 @@ class SessionUsage:
         equals the breakdown's per-model ``costUsd`` sum by construction
         (since the breakdown serializer makes the same per-model decision).
         """
-        if not self._per_model:
+        entries = self._cost_entries()
+        if not entries:
             return self.cost
-        return sum(m.total_cost for m in self._per_model.values())
+        return sum(m.total_cost for m in entries.values())
 
     @property
     def cost_source(self) -> str:
@@ -155,16 +170,17 @@ class SessionUsage:
         - ``opensquilla_estimate``: no billed data at all, or provider returned
           no cost for any call.
         """
-        if not self._per_model:
+        entries = self._cost_entries()
+        if not entries:
             return "opensquilla_estimate"
         billed_count = sum(
             1
-            for m in self._per_model.values()
+            for m in entries.values()
             if float(getattr(m, "billed_cost", 0.0) or 0.0) > 0
         )
         if billed_count == 0:
             return "opensquilla_estimate"
-        if billed_count == len(self._per_model):
+        if billed_count == len(entries):
             return "provider_billed"
         return "mixed"
 
@@ -197,26 +213,38 @@ class SessionUsage:
             self.provider = provider
         mid = model_id or self.model_id
         if mid:
+            def accumulate(mu: ModelUsage) -> None:
+                mu.input_tokens += input_tokens
+                mu.output_tokens += output_tokens
+                mu.cache_read_tokens += cache_read_tokens
+                mu.cache_write_tokens += cache_write_tokens
+                mu.billed_cost += billed_cost
+                if billed_cost <= 0.0:
+                    # Pure counters only — pricing stays lazy in the cost
+                    # properties/serializers so add() never blocks the event loop.
+                    mu.unbilled_input_tokens += input_tokens
+                    mu.unbilled_output_tokens += output_tokens
+                    mu.unbilled_cache_read_tokens += cache_read_tokens
+                    mu.unbilled_cache_write_tokens += cache_write_tokens
+                if provider:
+                    mu.provider = provider
+
             if self._per_model is None:
                 self._per_model = {}
             mu = self._per_model.get(mid)
             if mu is None:
                 mu = ModelUsage(model_id=mid)
                 self._per_model[mid] = mu
-            mu.input_tokens += input_tokens
-            mu.output_tokens += output_tokens
-            mu.cache_read_tokens += cache_read_tokens
-            mu.cache_write_tokens += cache_write_tokens
-            mu.billed_cost += billed_cost
-            if billed_cost <= 0.0:
-                # Pure counters only — pricing stays lazy in the cost
-                # properties/serializers so add() never blocks the event loop.
-                mu.unbilled_input_tokens += input_tokens
-                mu.unbilled_output_tokens += output_tokens
-                mu.unbilled_cache_read_tokens += cache_read_tokens
-                mu.unbilled_cache_write_tokens += cache_write_tokens
-            if provider:
-                mu.provider = provider
+            accumulate(mu)
+
+            if self._per_deployment is None:
+                self._per_deployment = {}
+            deployment_key = (str(provider or ""), mid)
+            deployment_usage = self._per_deployment.get(deployment_key)
+            if deployment_usage is None:
+                deployment_usage = ModelUsage(model_id=mid, provider=str(provider or ""))
+                self._per_deployment[deployment_key] = deployment_usage
+            accumulate(deployment_usage)
 
     @staticmethod
     def _breakdown_cost_fields(mu_or_self: ModelUsage | SessionUsage) -> dict:
@@ -287,6 +315,40 @@ class SessionUsage:
             )
         ]
 
+    @property
+    def deployment_breakdown(self) -> list[dict]:
+        """Usage grouped by exact ``(provider, model)`` deployment identity."""
+        if not self._per_deployment:
+            if not self.model_id:
+                return []
+            return [
+                {
+                    "provider": self.provider,
+                    "model": self.model_id,
+                    "inputTokens": self.input_tokens,
+                    "outputTokens": self.output_tokens,
+                    "cacheReadTokens": self.cache_read_tokens,
+                    "cacheWriteTokens": self.cache_write_tokens,
+                    **SessionUsage._breakdown_cost_fields(self),
+                }
+            ]
+        return [
+            {
+                "provider": mu.provider,
+                "model": mu.model_id,
+                "inputTokens": mu.input_tokens,
+                "outputTokens": mu.output_tokens,
+                "cacheReadTokens": mu.cache_read_tokens,
+                "cacheWriteTokens": mu.cache_write_tokens,
+                **SessionUsage._breakdown_cost_fields(mu),
+            }
+            for mu in sorted(
+                self._per_deployment.values(),
+                key=lambda item: (item.total_cost, item.provider, item.model_id),
+                reverse=True,
+            )
+        ]
+
 
 def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
     clone = SessionUsage(
@@ -313,6 +375,23 @@ def _clone_session_usage(usage: SessionUsage) -> SessionUsage:
                 unbilled_cache_write_tokens=mu.unbilled_cache_write_tokens,
             )
             for mid, mu in usage._per_model.items()
+        }
+    if usage._per_deployment:
+        clone._per_deployment = {
+            deployment: ModelUsage(
+                model_id=mu.model_id,
+                input_tokens=mu.input_tokens,
+                output_tokens=mu.output_tokens,
+                cache_read_tokens=mu.cache_read_tokens,
+                cache_write_tokens=mu.cache_write_tokens,
+                billed_cost=mu.billed_cost,
+                provider=mu.provider,
+                unbilled_input_tokens=mu.unbilled_input_tokens,
+                unbilled_output_tokens=mu.unbilled_output_tokens,
+                unbilled_cache_read_tokens=mu.unbilled_cache_read_tokens,
+                unbilled_cache_write_tokens=mu.unbilled_cache_write_tokens,
+            )
+            for deployment, mu in usage._per_deployment.items()
         }
     return clone
 
@@ -566,10 +645,11 @@ class UsageTracker:
         billed_cost = usage.billed_cost - (checkpoint.billed_cost if checkpoint else 0.0)
         cost_usd = 0.0
 
-        if usage._per_model:
-            before_models = checkpoint._per_model if checkpoint and checkpoint._per_model else {}
-            for mid, mu in usage._per_model.items():
-                before = before_models.get(mid) if before_models else None
+        usage_entries = usage._cost_entries()
+        if usage_entries:
+            before_entries = checkpoint._cost_entries() if checkpoint else None
+            for deployment, mu in usage_entries.items():
+                before = before_entries.get(deployment) if before_entries else None
                 delta_billed = mu.billed_cost - (before.billed_cost if before else 0.0)
                 delta_unb_input = mu.unbilled_input_tokens - (
                     before.unbilled_input_tokens if before else 0
@@ -591,7 +671,7 @@ class UsageTracker:
                     or delta_unb_write
                 ):
                     cost_usd += _model_delta_cost(
-                        model_id=mid,
+                        model_id=mu.model_id,
                         billed_cost=max(0.0, delta_billed),
                         provider=mu.provider,
                         unbilled_input_tokens=max(0, delta_unb_input),

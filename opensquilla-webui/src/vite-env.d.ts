@@ -3,6 +3,7 @@
 import type {
   ArtifactNativeOpenResult,
   ArtifactOpenRequest,
+  DesktopRetryStartupResult,
   DesktopUpdateState,
   DesktopSettings,
   DesktopSettingsPayload,
@@ -69,7 +70,7 @@ declare global {
     getBootState: () => Promise<unknown>
     getRecoveryState?: () => Promise<unknown>
     getDesktopProfileKind?: () => Promise<'primary' | 'recovery' | null>
-    retryStartup: () => Promise<unknown>
+    retryStartup: () => Promise<DesktopRetryStartupResult>
     quitApp: () => Promise<unknown>
     migrationSummary?: (payload?: { source?: string }) => Promise<unknown>
     migrationBrowseSource?: (payload: { kind: MigrationSourceKind }) => Promise<unknown>

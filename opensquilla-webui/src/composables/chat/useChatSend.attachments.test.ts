@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import { ref } from 'vue'
 
 import { useChatSend, type UseChatSendOptions } from './useChatSend'
+import { useChatMessageActions } from './useChatMessageActions'
 import type { FoldLiveTurnMode } from './useChatTurnLog'
-import type { Attachment, ChatMessage } from '@/types/chat'
+import type { Attachment, ChatMessage, ChatRenderedMessage } from '@/types/chat'
 import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
-import { FINISHED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
+import { FINISHED_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 
 const pushToast = vi.hoisted(() => vi.fn())
 
@@ -43,6 +44,7 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     inputText: ref('hello'),
     messages: ref<ChatMessage[]>([]),
     sessionKey: ref('agent:main:webchat:test'),
+    pendingQueueOwnerContext: ref(null),
     busySendMode: ref<BusySendMode>('queue'),
     elevatedMode: ref(''),
     runMode: ref('trusted'),
@@ -55,8 +57,10 @@ function makeOptions(overrides: Partial<UseChatSendOptions> = {}) {
     autoScroll: ref(false),
     stream,
     normalizeElevatedMode: mode => mode,
-    persistSession: vi.fn(),
+    adoptResponseSession: vi.fn(),
     scheduleHistorySync: vi.fn(),
+    schedulePendingDrainAfterTerminal: vi.fn(),
+    flushDeferredPendingDrain: vi.fn(),
     isCompactInFlightForCurrentSession: () => false,
     hasPendingAttachmentWork: () => false,
     enqueuePendingInput: vi.fn(() => true),
@@ -325,6 +329,136 @@ describe('useChatSend attachment payloads', () => {
     expect(pendingForkBeforeMessageId.value).toBeNull()
   })
 
+  it('switches the session lifecycle when a stopped turn is edited into a child session', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const pendingForkBeforeMessageId = ref<string | null>(null)
+    const adoptResponseSession = vi.fn()
+    const rpcCall = vi.fn(async (method: string) => {
+      if (method === 'chat.send') {
+        return { sessionKey: childSessionKey, task_id: 'task-child' }
+      }
+      return { ok: true }
+    })
+    const rpc: UseChatSendOptions['rpc'] = {
+      call: rpcCall as unknown as UseChatSendOptions['rpc']['call'],
+    }
+    const { api, options, stream } = makeOptions({
+      rpc,
+      sessionKey: ref(parentSessionKey),
+      activeStreamSessionKey: ref(parentSessionKey),
+      pendingForkBeforeMessageId,
+      adoptResponseSession,
+    })
+    stream.isStreaming.value = true
+    vi.mocked(stream.endStreaming).mockImplementation(() => {
+      stream.isStreaming.value = false
+    })
+
+    api.onStop()
+    pendingForkBeforeMessageId.value = 'msg-B'
+    options.inputText.value = 'edited question'
+    await api.onSend()
+
+    expect(rpcCall).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: parentSessionKey,
+      source: 'webui_stop',
+    })
+    expect(rpcCall).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      sessionKey: parentSessionKey,
+      forkBeforeMessageId: 'msg-B',
+      message: 'edited question',
+    }))
+    expect(adoptResponseSession).toHaveBeenCalledOnce()
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+  })
+
+  it('binds the accepted user message id so stop then edit sends a real fork', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('original question')
+    const messages = ref<ChatMessage[]>([])
+    const pendingForkBeforeMessageId = ref<string | null>(null)
+    let sendCount = 0
+    const rpc = {
+      call: vi.fn(<T = unknown>(method: string, params?: Record<string, unknown>) => {
+        if (method === 'chat.abort') return Promise.resolve({ aborted: true }) as Promise<T>
+        sendCount += 1
+        if (sendCount === 1) {
+          return Promise.resolve({
+            sessionKey: parentSessionKey,
+            task_id: 'task-original',
+            user_message_id: 'message-original',
+            client_message_id: params?.clientMessageId,
+          }) as Promise<T>
+        }
+        return Promise.resolve({
+          sessionKey: childSessionKey,
+          task_id: 'task-edited',
+          user_message_id: 'message-edited',
+          client_message_id: params?.clientMessageId,
+        }) as Promise<T>
+      }) as UseChatSendOptions['rpc']['call'],
+    }
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      messages,
+      pendingForkBeforeMessageId,
+      adoptResponseSession,
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    await harness.api.onSend()
+
+    const optimisticUser = messages.value[0]
+    expect(optimisticUser?.clientId).toBeTruthy()
+    expect(optimisticUser?.messageId).toBe('message-original')
+    expect(rpc.call).toHaveBeenNthCalledWith(1, 'chat.send', expect.objectContaining({
+      clientMessageId: optimisticUser?.clientId,
+    }))
+
+    harness.api.onStop()
+    const actions = useChatMessageActions({
+      messages,
+      inputText,
+      isStreaming: harness.stream.isStreaming,
+      sanitizeCopyText: text => text,
+      stripTimePrefix: text => text,
+      autoResizeTextarea: vi.fn(),
+      sendCurrentInput: vi.fn(),
+      focusComposer: vi.fn(),
+      pendingForkBeforeMessageId,
+    })
+    actions.editMessage({
+      ...optimisticUser,
+      sourceIndex: 0,
+    } as ChatRenderedMessage)
+    expect(pendingForkBeforeMessageId.value).toBe('message-original')
+
+    inputText.value = 'edited question'
+    await harness.api.onSend()
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.send', expect.objectContaining({
+      sessionKey: parentSessionKey,
+      forkBeforeMessageId: 'message-original',
+    }))
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+  })
+
   it('restores the pending fork target only when chat.send explicitly rejects the attempt', async () => {
     const pendingForkBeforeMessageId = ref<string | null>('msg-B')
     const rpc = {
@@ -380,6 +514,7 @@ describe('useChatSend attachment payloads', () => {
     const firstParams = rpc.call.mock.calls[0]?.[1]
     expect(firstParams).toMatchObject({
       clientRequestId: expect.any(String),
+      clientMessageId: expect.any(String),
       message: 'hello',
       sessionKey: 'agent:main:webchat:test',
       intent: 'NEW',
@@ -434,6 +569,133 @@ describe('useChatSend attachment payloads', () => {
 
     expect(rpc.call.mock.calls[1]?.[1]).toEqual(firstParams)
     expect(options.messages.value.filter(message => message.role === 'user')).toHaveLength(1)
+  })
+
+  it('keeps a recovered fork gated while its canonical child response is pending', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    let resolveRetry!: (value: unknown) => void
+    let sendCount = 0
+    const rpcCall = vi.fn(<T = unknown>(method: string, _params?: Record<string, unknown>) => {
+      if (method !== 'chat.send') return Promise.resolve({}) as Promise<T>
+      sendCount += 1
+      if (sendCount === 1) {
+        return Promise.reject(Object.assign(new Error('database busy'), {
+          accepted: false,
+          retryable: true,
+        })) as Promise<T>
+      }
+      if (sendCount === 2) {
+        return new Promise<T>((resolve) => {
+          resolveRetry = resolve as (value: unknown) => void
+        })
+      }
+      return Promise.resolve({ sessionKey: parentSessionKey }) as Promise<T>
+    })
+    const rpc = { call: rpcCall as UseChatSendOptions['rpc']['call'] }
+    const enqueuePendingInput = vi.fn(() => true)
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      busySendMode: ref<BusySendMode>('steer'),
+      enqueuePendingInput,
+      adoptResponseSession,
+    })
+
+    await harness.api.onSend()
+    harness.stream.isStreaming.value = true
+    const retry = harness.api.onSend()
+    await vi.waitFor(() => expect(sendCount).toBe(2))
+    const ownerRequestId = String(rpcCall.mock.calls[1]?.[1]?.clientRequestId)
+
+    inputText.value = 'follow the recovered edit'
+    await harness.api.onSend()
+
+    expect(sendCount).toBe(2)
+    expect(enqueuePendingInput).toHaveBeenCalledWith('follow the recovered edit', {
+      ownerRequestId,
+    })
+
+    resolveRetry({ sessionKey: childSessionKey, task_id: 'task-child' })
+    await retry
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, ownerRequestId)
+  })
+
+  it('aborts a recovered fork child that resolves after Stop during an ambient run', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    let resolveRetry!: (value: unknown) => void
+    let sendCount = 0
+    const rpcCall = vi.fn(<T = unknown>(method: string, params?: Record<string, unknown>) => {
+      if (method === 'chat.abort') {
+        if (params?.sessionKey === childSessionKey) {
+          return Promise.reject(new Error('socket closed')) as Promise<T>
+        }
+        return Promise.resolve({ aborted: true }) as Promise<T>
+      }
+      sendCount += 1
+      if (sendCount === 1) {
+        return Promise.reject(Object.assign(new Error('response lost'), {
+          accepted: false,
+          retryable: true,
+        })) as Promise<T>
+      }
+      return new Promise<T>((resolve) => {
+        resolveRetry = resolve as (value: unknown) => void
+      })
+    })
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc: { call: rpcCall as UseChatSendOptions['rpc']['call'] },
+      sessionKey,
+      inputText,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    await harness.api.onSend()
+    harness.stream.isStreaming.value = true
+    harness.options.activeStreamSessionKey.value = parentSessionKey
+    const retry = harness.api.onSend()
+    await vi.waitFor(() => expect(sendCount).toBe(2))
+
+    // The ambient parent run can finish while the idempotent fork retry is
+    // still waiting for its canonical child response.
+    harness.stream.isStreaming.value = false
+    harness.api.onStop()
+    resolveRetry({ sessionKey: childSessionKey, task_id: 'task-child' })
+    await retry
+
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+    expect(rpcCall).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: childSessionKey,
+      taskId: 'task-child',
+      source: 'webui_stale_send',
+    })
+    expect(harness.options.aborted.value).toBe(true)
+    expect(harness.options.activeStreamTaskId.value).toBe(STOPPED_STREAM_TASK_ID)
+    expect(harness.options.activeStreamSessionKey.value).toBe(childSessionKey)
+    expect(harness.stream.isStreaming.value).toBe(false)
+    await vi.waitFor(() => expect(harness.options.messages.value).toContainEqual(
+      expect.objectContaining({
+        role: 'system',
+        text: 'Stop could not reach the server — the run may still be finishing.',
+      }),
+    ))
   })
 
   it('uses a new id when the user changes a recovered attempt before resending', async () => {
@@ -551,6 +813,750 @@ describe('useChatSend attachment payloads', () => {
       terminalNotice: true,
     })
     expect(options.scheduleHistorySync).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a child-session activation failure after the session handoff', async () => {
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref('agent:main:webchat:parent')
+    const messages = ref<ChatMessage[]>([])
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      messages.value = []
+    })
+    const rpc = {
+      call: vi.fn().mockResolvedValue({
+        sessionKey: childSessionKey,
+        task_id: 'task-child-failed',
+        task_status: 'failed',
+        terminal_reason: 'activation_failed',
+        terminal_message: 'The edited question could not be activated.',
+      }),
+    }
+    const { api, options } = makeOptions({
+      rpc,
+      sessionKey,
+      messages,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+
+    await api.onSend()
+
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+    expect(options.messages.value[options.messages.value.length - 1]).toMatchObject({
+      role: 'error',
+      text: 'The edited question could not be activated.',
+      errorCode: 'activation_failed',
+      terminalNotice: true,
+    })
+  })
+
+  it('keeps a hidden child-session terminal failure after the session handoff', async () => {
+    const childSessionKey = 'agent:main:webchat:hidden-child'
+    const sessionKey = ref('agent:main:webchat:parent')
+    const messages = ref<ChatMessage[]>([])
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      messages.value = []
+    })
+    const rpc = {
+      call: vi.fn().mockResolvedValue({
+        sessionKey: childSessionKey,
+        task_id: 'task-hidden-failed',
+        task_status: 'failed',
+        terminal_reason: 'activation_failed',
+        terminal_message: 'The confirmation could not be activated.',
+      }),
+    }
+    const { api, options } = makeOptions({ rpc, sessionKey, messages, adoptResponseSession })
+
+    await api.dispatchHiddenSend('provider confirmation', 'Confirmed')
+
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+    expect(options.messages.value[options.messages.value.length - 1]).toMatchObject({
+      role: 'error',
+      text: 'The confirmation could not be activated.',
+      errorCode: 'activation_failed',
+      terminalNotice: true,
+    })
+  })
+
+  it('does not leak a child terminal failure after navigation during the handoff', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const otherSessionKey = 'agent:main:webchat:other'
+    const sessionKey = ref(parentSessionKey)
+    let finishHandoff!: () => void
+    const handoffGate = new Promise<void>((resolve) => {
+      finishHandoff = resolve
+    })
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      await handoffGate
+    })
+    const rpc = {
+      call: vi.fn().mockResolvedValue({
+        sessionKey: childSessionKey,
+        task_id: 'task-child-failed',
+        task_status: 'failed',
+        terminal_reason: 'activation_failed',
+        terminal_message: 'This failure belongs to the child session.',
+      }),
+    }
+    const { api, options } = makeOptions({ rpc, sessionKey, adoptResponseSession })
+
+    const send = api.onSend()
+    await vi.waitFor(() => expect(adoptResponseSession).toHaveBeenCalledWith(
+      childSessionKey,
+      expect.any(String),
+    ))
+    sessionKey.value = otherSessionKey
+    finishHandoff()
+    await send
+
+    expect(options.messages.value.some(message => message.terminalNotice)).toBe(false)
+  })
+
+  it('queues instead of steering a new child input while response handoff hydrates', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    let finishHandoff!: () => void
+    const handoffGate = new Promise<void>((resolve) => {
+      finishHandoff = resolve
+    })
+    let stream!: UseChatSendOptions['stream']
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      // The real session runtime resets the parent live-turn state before
+      // child subscription/history hydration has completed.
+      stream.isStreaming.value = false
+      await handoffGate
+    })
+    let sendCount = 0
+    const rpc = {
+      call: vi.fn(<T = unknown>(method: string) => {
+        if (method !== 'chat.send') return Promise.resolve({}) as Promise<T>
+        sendCount += 1
+        if (sendCount === 1) {
+          return Promise.resolve({
+            sessionKey: childSessionKey,
+            task_id: 'task-child-old',
+            task_status: 'failed',
+            terminal_reason: 'activation_failed',
+            terminal_message: 'The edited question could not be activated.',
+          }) as Promise<T>
+        }
+        return Promise.resolve({ sessionKey: childSessionKey }) as Promise<T>
+      }) as UseChatSendOptions['rpc']['call'],
+    }
+    const enqueuePendingInput = vi.fn(() => true)
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      adoptResponseSession,
+      enqueuePendingInput,
+      busySendMode: ref<BusySendMode>('steer'),
+    })
+    stream = harness.stream
+    stream.startStreaming = vi.fn(() => {
+      stream.isStreaming.value = true
+    })
+    stream.endStreaming = vi.fn(() => {
+      stream.isStreaming.value = false
+    })
+
+    const oldSend = harness.api.onSend()
+    await vi.waitFor(() => expect(adoptResponseSession).toHaveBeenCalledWith(
+      childSessionKey,
+      expect.any(String),
+    ))
+
+    inputText.value = 'new child question'
+    await harness.api.onSend()
+    expect(sendCount).toBe(1)
+    expect(enqueuePendingInput).toHaveBeenCalledWith('new child question', {
+      ownerRequestId: expect.any(String),
+    })
+
+    finishHandoff()
+    await oldSend
+
+    expect(stream.endStreaming).toHaveBeenCalledTimes(1)
+    expect(stream.isStreaming.value).toBe(false)
+    expect(harness.options.schedulePendingDrainAfterTerminal).toHaveBeenCalledTimes(1)
+    expect(harness.options.flushDeferredPendingDrain).toHaveBeenCalledOnce()
+  })
+
+  it('schedules an adopted follow-up when terminal replay finishes before hydration', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    const activeStreamTaskId = ref('')
+    let finishHydration!: () => void
+    const hydration = new Promise<void>((resolve) => {
+      finishHydration = resolve
+    })
+    let stream!: UseChatSendOptions['stream']
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      stream.isStreaming.value = false
+      // A terminal replay can arrive while the handoff reset has streaming
+      // false; the event handler records the FINISHED sentinel and returns.
+      activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
+      await hydration
+      return { authoritativeIdle: true }
+    })
+    const rpc = {
+      call: vi.fn().mockResolvedValue({
+        sessionKey: childSessionKey,
+        task_id: 'task-child-not-replayed',
+      }),
+    }
+    const enqueuePendingInput = vi.fn(() => true)
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      activeStreamTaskId,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+      enqueuePendingInput,
+    })
+    stream = harness.stream
+    stream.startStreaming = vi.fn(() => {
+      stream.isStreaming.value = true
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(adoptResponseSession).toHaveBeenCalledOnce())
+    inputText.value = 'follow-up for idle child'
+    await harness.api.onSend()
+    expect(enqueuePendingInput).toHaveBeenCalledOnce()
+
+    finishHydration()
+    await forkSend
+
+    expect(harness.options.schedulePendingDrainAfterTerminal).toHaveBeenCalledOnce()
+    expect(harness.options.flushDeferredPendingDrain).toHaveBeenCalledOnce()
+  })
+
+  it('waits for a terminal event before draining a legacy child without a task id', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    const activeStreamTaskId = ref('')
+    let finishHydration!: () => void
+    const hydration = new Promise<void>((resolve) => {
+      finishHydration = resolve
+    })
+    let stream!: UseChatSendOptions['stream']
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      stream.isStreaming.value = false
+      activeStreamTaskId.value = ''
+      await hydration
+      return { authoritativeIdle: true }
+    })
+    const rpc = {
+      call: vi.fn().mockResolvedValue({ sessionKey: childSessionKey }),
+    }
+    const enqueuePendingInput = vi.fn(() => true)
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      activeStreamTaskId,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+      enqueuePendingInput,
+    })
+    stream = harness.stream
+    stream.startStreaming = vi.fn(() => {
+      stream.isStreaming.value = true
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(adoptResponseSession).toHaveBeenCalledOnce())
+    inputText.value = 'follow-up for legacy child'
+    await harness.api.onSend()
+    expect(enqueuePendingInput).toHaveBeenCalledOnce()
+
+    finishHydration()
+    await forkSend
+
+    expect(harness.options.schedulePendingDrainAfterTerminal).not.toHaveBeenCalled()
+    expect(harness.options.flushDeferredPendingDrain).toHaveBeenCalledOnce()
+    expect(stream.startStreaming).toHaveBeenCalledTimes(2)
+    expect(stream.isStreaming.value).toBe(true)
+  })
+
+  it('drains a legacy child when terminal replay is authoritatively complete', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const activeStreamTaskId = ref('')
+    let stream!: UseChatSendOptions['stream']
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      stream.isStreaming.value = false
+      activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
+      return { authoritativeIdle: true }
+    })
+    const harness = makeOptions({
+      rpc: { call: vi.fn().mockResolvedValue({ sessionKey: childSessionKey }) },
+      sessionKey,
+      activeStreamTaskId,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+    stream = harness.stream
+    stream.startStreaming = vi.fn(() => {
+      stream.isStreaming.value = true
+    })
+
+    await harness.api.onSend()
+
+    expect(stream.startStreaming).toHaveBeenCalledOnce()
+    expect(stream.isStreaming.value).toBe(false)
+    expect(harness.options.schedulePendingDrainAfterTerminal).toHaveBeenCalledOnce()
+  })
+
+  it('does not treat a failed child subscription as authoritative idle', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    let finishHydration!: () => void
+    const hydration = new Promise<void>((resolve) => {
+      finishHydration = resolve
+    })
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      await hydration
+      return { authoritativeIdle: false }
+    })
+    const enqueuePendingInput = vi.fn(() => true)
+    const harness = makeOptions({
+      rpc: {
+        call: vi.fn().mockResolvedValue({
+          sessionKey: childSessionKey,
+          task_id: 'task-child-unknown',
+        }),
+      },
+      sessionKey,
+      inputText,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+      enqueuePendingInput,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(adoptResponseSession).toHaveBeenCalledOnce())
+    inputText.value = 'follow-up while subscription is unavailable'
+    await harness.api.onSend()
+    finishHydration()
+    await forkSend
+
+    expect(enqueuePendingInput).toHaveBeenCalledOnce()
+    expect(harness.options.schedulePendingDrainAfterTerminal).not.toHaveBeenCalled()
+  })
+
+  it('queues steer input while a fork send is awaiting its canonical session', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    let resolveFork!: (value: unknown) => void
+    let sendCount = 0
+    const rpcCall = vi.fn(<T = unknown>(method: string, _params?: Record<string, unknown>) => {
+      if (method !== 'chat.send') return Promise.resolve({}) as Promise<T>
+      sendCount += 1
+      if (sendCount === 1) {
+        return new Promise<T>((resolve) => {
+          resolveFork = resolve as (value: unknown) => void
+        })
+      }
+      return Promise.resolve({ sessionKey: parentSessionKey }) as Promise<T>
+    })
+    const rpc = {
+      call: rpcCall as UseChatSendOptions['rpc']['call'],
+    }
+    const enqueuePendingInput = vi.fn(() => true)
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      busySendMode: ref<BusySendMode>('steer'),
+      enqueuePendingInput,
+      adoptResponseSession,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(sendCount).toBe(1))
+    const ownerRequestId = String(rpcCall.mock.calls[0]?.[1]?.clientRequestId)
+
+    inputText.value = 'follow the edited question'
+    await harness.api.onSend()
+
+    expect(sendCount).toBe(1)
+    expect(enqueuePendingInput).toHaveBeenCalledWith('follow the edited question', {
+      ownerRequestId,
+    })
+
+    resolveFork({ sessionKey: childSessionKey, task_id: 'task-child' })
+    await forkSend
+  })
+
+  it('does not drain a follow-up over a restored fork draft after rejection', async () => {
+    const inputText = ref('edited question')
+    let rejectFork!: (reason: unknown) => void
+    const rpc = {
+      call: vi.fn(<T = unknown>() => new Promise<T>((_resolve, reject) => {
+        rejectFork = reject
+      })) as UseChatSendOptions['rpc']['call'],
+    }
+    const enqueuePendingInput = vi.fn(() => {
+      inputText.value = ''
+      return true
+    })
+    const harness = makeOptions({
+      rpc,
+      inputText,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      enqueuePendingInput,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(rpc.call).toHaveBeenCalledOnce())
+    inputText.value = 'queued follow-up'
+    await harness.api.onSend()
+
+    rejectFork(Object.assign(new Error('database busy'), { accepted: false }))
+    await forkSend
+
+    expect(inputText.value).toBe('edited question')
+    expect(enqueuePendingInput).toHaveBeenCalledOnce()
+    expect(rpc.call).toHaveBeenCalledOnce()
+    expect(harness.options.flushDeferredPendingDrain).not.toHaveBeenCalled()
+    expect(harness.options.schedulePendingDrainAfterTerminal).not.toHaveBeenCalled()
+  })
+
+  it('does not let an old handoff gate queue input in a newly selected session', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const otherSessionKey = 'agent:main:webchat:other'
+    const sessionKey = ref(parentSessionKey)
+    const inputText = ref('edited question')
+    let finishHandoff!: () => void
+    const hydration = new Promise<void>((resolve) => {
+      finishHandoff = resolve
+    })
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+      await hydration
+    })
+    let sendCount = 0
+    const rpc = {
+      call: vi.fn(<T = unknown>(method: string, params?: Record<string, unknown>) => {
+        if (method !== 'chat.send') return Promise.resolve({}) as Promise<T>
+        sendCount += 1
+        if (sendCount === 1) {
+          return Promise.resolve({ sessionKey: childSessionKey, task_id: 'task-child' }) as Promise<T>
+        }
+        return Promise.resolve({ sessionKey: params?.sessionKey, task_id: 'task-other' }) as Promise<T>
+      }) as UseChatSendOptions['rpc']['call'],
+    }
+    const enqueuePendingInput = vi.fn(() => true)
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      inputText,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+      enqueuePendingInput,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(adoptResponseSession).toHaveBeenCalledOnce())
+
+    sessionKey.value = otherSessionKey
+    harness.stream.isStreaming.value = false
+    inputText.value = 'question for other session'
+    await harness.api.onSend()
+
+    expect(sendCount).toBe(2)
+    expect(rpc.call).toHaveBeenLastCalledWith('chat.send', expect.objectContaining({
+      sessionKey: otherSessionKey,
+      message: 'question for other session',
+    }))
+    expect(enqueuePendingInput).not.toHaveBeenCalled()
+
+    finishHandoff()
+    await forkSend
+    expect(harness.options.flushDeferredPendingDrain).not.toHaveBeenCalled()
+  })
+
+  it('adopts and aborts a fork child when its response arrives after Stop', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    let resolveFork!: (value: unknown) => void
+    const rpc = {
+      call: vi.fn(<T = unknown>(method: string, params?: Record<string, unknown>) => {
+        if (method === 'chat.send') {
+          return new Promise<T>((resolve) => {
+            resolveFork = resolve as (value: unknown) => void
+          })
+        }
+        if (params?.sessionKey === childSessionKey) {
+          return Promise.reject(new Error('socket closed')) as Promise<T>
+        }
+        return Promise.resolve({ aborted: true }) as Promise<T>
+      }) as UseChatSendOptions['rpc']['call'],
+    }
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(rpc.call).toHaveBeenCalledWith(
+      'chat.send',
+      expect.objectContaining({ sessionKey: parentSessionKey }),
+    ))
+    const optimisticClientId = harness.options.messages.value[0]?.clientId
+    harness.api.onStop()
+
+    resolveFork({
+      sessionKey: childSessionKey,
+      task_id: 'task-child',
+      user_message_id: 'message-child',
+    })
+    await forkSend
+
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+    expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: childSessionKey,
+      taskId: 'task-child',
+      source: 'webui_stale_send',
+    })
+    expect(harness.options.messages.value.find(
+      message => message.clientId === optimisticClientId,
+    )?.messageId).toBeUndefined()
+    expect(harness.options.aborted.value).toBe(true)
+    expect(harness.options.activeStreamTaskId.value).toBe(STOPPED_STREAM_TASK_ID)
+    expect(harness.options.activeStreamSessionKey.value).toBe(childSessionKey)
+    expect(harness.stream.isStreaming.value).toBe(false)
+  })
+
+  it('still aborts a stopped fork response after navigation to another session', async () => {
+    pushToast.mockClear()
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const otherSessionKey = 'agent:main:webchat:other'
+    const sessionKey = ref(parentSessionKey)
+    let resolveFork!: (value: unknown) => void
+    const rpc = {
+      call: vi.fn(<T = unknown>(method: string, params?: Record<string, unknown>) => {
+        if (method === 'chat.send') {
+          return new Promise<T>((resolve) => {
+            resolveFork = resolve as (value: unknown) => void
+          })
+        }
+        if (params?.sessionKey === childSessionKey) {
+          return Promise.reject(new Error('socket closed')) as Promise<T>
+        }
+        return Promise.resolve({ aborted: true }) as Promise<T>
+      }) as UseChatSendOptions['rpc']['call'],
+    }
+    const adoptResponseSession = vi.fn()
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    const forkSend = harness.api.onSend()
+    await vi.waitFor(() => expect(rpc.call).toHaveBeenCalledWith(
+      'chat.send',
+      expect.objectContaining({ sessionKey: parentSessionKey }),
+    ))
+    harness.api.onStop()
+    sessionKey.value = otherSessionKey
+    harness.options.activeStreamTaskId.value = ''
+
+    resolveFork({ sessionKey: childSessionKey, task_id: 'task-child-late' })
+    await forkSend
+
+    expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
+      sessionKey: childSessionKey,
+      taskId: 'task-child-late',
+      source: 'webui_stale_send',
+    })
+    expect(adoptResponseSession).not.toHaveBeenCalled()
+    expect(sessionKey.value).toBe(otherSessionKey)
+    await Promise.resolve()
+    expect(harness.options.messages.value).not.toContainEqual(expect.objectContaining({
+      role: 'system',
+      text: 'Stop could not reach the server — the run may still be finishing.',
+    }))
+    expect(pushToast).toHaveBeenCalledWith(
+      'Stop could not reach the server — the run may still be finishing.',
+      { tone: 'warn', duration: 8000 },
+    )
+  })
+
+  it('binds an orphan message id and reconciles history for an accepted queue error', async () => {
+    const rpc = {
+      call: vi.fn().mockRejectedValue(Object.assign(new Error('queue bookkeeping failed'), {
+        accepted: true,
+        retryable: false,
+        details: { orphan_message_id: 'message-orphan' },
+      })),
+    }
+    const harness = makeOptions({ rpc })
+
+    await harness.api.onSend()
+
+    expect(harness.options.messages.value[0]).toMatchObject({
+      role: 'user',
+      messageId: 'message-orphan',
+    })
+    expect(harness.options.scheduleHistorySync).toHaveBeenCalledOnce()
+    expect(harness.options.inputText.value).toBe('')
+  })
+
+  it('adopts the child without binding its orphan id onto the parent after a dirty fork error', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    const messages = ref<ChatMessage[]>([])
+    const rpc = {
+      call: vi.fn().mockRejectedValue(Object.assign(new Error('queue bookkeeping failed'), {
+        code: 'QUEUE_FULL_DIRTY',
+        accepted: true,
+        retryable: false,
+        details: {
+          session_key: childSessionKey,
+          orphan_message_id: 'message-child-orphan',
+        },
+      })),
+    }
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc,
+      sessionKey,
+      messages,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+
+    await harness.api.onSend()
+
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+    expect(messages.value.find(message => message.role === 'user')?.messageId).toBeUndefined()
+    expect(harness.options.scheduleHistorySync).toHaveBeenCalledOnce()
+    expect(harness.stream.startStreaming).toHaveBeenCalledOnce()
+    expect(harness.stream.endStreaming).toHaveBeenCalledOnce()
+    expect(harness.options.schedulePendingDrainAfterTerminal).toHaveBeenCalledOnce()
+    expect(sessionKey.value).toBe(childSessionKey)
+  })
+
+  it('does not abort unrelated child work for a stopped dirty fork rejection', async () => {
+    const parentSessionKey = 'agent:main:webchat:parent'
+    const childSessionKey = 'agent:main:webchat:child'
+    const sessionKey = ref(parentSessionKey)
+    let rejectSend!: (reason: unknown) => void
+    const rpcCall = vi.fn(<T = unknown>(method: string) => {
+      if (method === 'chat.abort') return Promise.resolve({ aborted: true }) as Promise<T>
+      return new Promise<T>((_resolve, reject) => {
+        rejectSend = reject
+      })
+    })
+    const adoptResponseSession = vi.fn(async (key: string) => {
+      sessionKey.value = key
+    })
+    const harness = makeOptions({
+      rpc: { call: rpcCall as UseChatSendOptions['rpc']['call'] },
+      sessionKey,
+      pendingForkBeforeMessageId: ref('msg-B'),
+      adoptResponseSession,
+    })
+    harness.stream.startStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = true
+    })
+    harness.stream.endStreaming = vi.fn(() => {
+      harness.stream.isStreaming.value = false
+    })
+
+    const send = harness.api.onSend()
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'chat.send',
+      expect.objectContaining({ sessionKey: parentSessionKey }),
+    ))
+    harness.api.onStop()
+    rejectSend(Object.assign(new Error('queue bookkeeping failed'), {
+      code: 'QUEUE_FULL_DIRTY',
+      accepted: true,
+      retryable: false,
+      details: {
+        session_key: childSessionKey,
+        orphan_message_id: 'message-child-orphan',
+      },
+    }))
+    await send
+
+    expect(adoptResponseSession).toHaveBeenCalledWith(childSessionKey, expect.any(String))
+    expect(rpcCall).not.toHaveBeenCalledWith('chat.abort', expect.objectContaining({
+      sessionKey: childSessionKey,
+    }))
   })
 
   it('surfaces a terminal steer failure without ending the existing stream', async () => {
@@ -723,25 +1729,40 @@ describe('useChatSend attachment payloads', () => {
       }) as UseChatSendOptions['rpc']['call'],
     }
     const inputText = ref('first')
+    const messages = ref<ChatMessage[]>([])
     const activeStreamTaskId = ref('')
-    const { api, stream } = makeOptions({ rpc, inputText, activeStreamTaskId })
+    const { api, stream } = makeOptions({ rpc, inputText, messages, activeStreamTaskId })
     stream.startStreaming = vi.fn(() => { stream.isStreaming.value = true })
     stream.endStreaming = vi.fn(() => { stream.isStreaming.value = false })
 
     const firstSend = api.onSend()
+    const firstClientMessageId = messages.value[0]?.clientId
     api.onStop()
 
     inputText.value = 'second'
     const secondSend = api.onSend()
+    const secondClientMessageId = messages.value[1]?.clientId
 
-    pendingResponses[1]({ sessionKey: 'agent:main:webchat:test', task_id: 'task-B' })
+    pendingResponses[1]({
+      sessionKey: 'agent:main:webchat:test',
+      task_id: 'task-B',
+      message_id: 'message-B',
+    })
     await secondSend
     expect(activeStreamTaskId.value).toBe('task-B')
+    expect(messages.value.find(message => message.clientId === secondClientMessageId)?.messageId)
+      .toBe('message-B')
 
-    pendingResponses[0]({ sessionKey: 'agent:main:webchat:test', task_id: 'task-A' })
+    pendingResponses[0]({
+      sessionKey: 'agent:main:webchat:test',
+      task_id: 'task-A',
+      user_message_id: 'message-A',
+    })
     await firstSend
 
     expect(activeStreamTaskId.value).toBe('task-B')
+    expect(messages.value.find(message => message.clientId === firstClientMessageId)?.messageId)
+      .toBe('message-A')
     expect(rpc.call).toHaveBeenCalledWith('chat.abort', {
       sessionKey: 'agent:main:webchat:test',
       taskId: 'task-A',

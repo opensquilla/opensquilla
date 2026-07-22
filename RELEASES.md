@@ -59,6 +59,15 @@ reference; source installs should use `git clone` plus Git LFS. Python wheel
 filenames must remain versioned because installers validate the version segment
 inside the wheel filename.
 
+Release wheels, Electron Desktop installers, and container images include the
+CI-built Vue control console; installing those artifacts does not require
+Node.js or npm. Git checkouts do not track the generated console. Source
+installers and contributors producing Web UI or wheel artifacts require Node.js
+22.12+ with npm, run `npm ci` plus `npm run build`, and therefore pay the
+frontend dependency download, build-time, and cache-space cost. Backend-only
+editable installs remain available without that build. Release notes should
+call this out whenever the source build contract changes.
+
 Release docs must describe the unified non-user-initiated network observability
 switch. `OPENSQUILLA_PRIVACY_DISABLE_NETWORK_OBSERVABILITY=true` or:
 

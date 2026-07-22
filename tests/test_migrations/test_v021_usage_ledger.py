@@ -37,6 +37,12 @@ INDEXES = {
 }
 
 
+def _is_before_v021(path: Path) -> bool:
+    """Return whether a versioned migration belongs to the pre-V021 history."""
+    prefix = path.name.split("__", 1)[0]
+    return prefix.startswith("V") and prefix[1:].isdigit() and int(prefix[1:]) < 21
+
+
 def _objects(conn: sqlite3.Connection, object_type: str) -> set[str]:
     return {
         str(row[0])
@@ -48,12 +54,12 @@ def _objects(conn: sqlite3.Connection, object_type: str) -> set[str]:
 
 def test_v021_is_schema_only_and_enforces_event_idempotency(tmp_path: Path) -> None:
     db_path = tmp_path / "sessions.db"
-    pre_v021 = tmp_path / "pre_v021"
-    pre_v021.mkdir()
+    migration_slice = tmp_path / "through_v021"
+    migration_slice.mkdir()
     for path in MIGRATIONS_DIR.glob("V*.py"):
-        if path.name != "V021__usage_ledger.py":
-            shutil.copy2(path, pre_v021 / path.name)
-    apply_pending(str(db_path), pre_v021)
+        if _is_before_v021(path):
+            shutil.copy2(path, migration_slice / path.name)
+    apply_pending(str(db_path), migration_slice)
 
     conn = sqlite3.connect(db_path)
     try:
@@ -97,7 +103,12 @@ def test_v021_is_schema_only_and_enforces_event_idempotency(tmp_path: Path) -> N
     finally:
         conn.close()
 
-    applied = apply_pending(str(db_path), MIGRATIONS_DIR)
+    # Exercise V021 in isolation. Applying the repository's entire migration
+    # history here would make every later schema addition look like it belonged
+    # to V021 and force this regression test to change for each new release.
+    v021_path = MIGRATIONS_DIR / "V021__usage_ledger.py"
+    shutil.copy2(v021_path, migration_slice / v021_path.name)
+    applied = apply_pending(str(db_path), migration_slice)
     assert V021_ID in applied
 
     conn = sqlite3.connect(db_path)
@@ -174,10 +185,10 @@ def test_v021_rollback_and_schema_ahead_guard(tmp_path: Path) -> None:
         conn.close()
 
     apply_pending(str(db_path), MIGRATIONS_DIR)
-    older_build = tmp_path / "migrations_without_v021"
+    older_build = tmp_path / "migrations_before_v021"
     older_build.mkdir()
     for path in MIGRATIONS_DIR.glob("V*.py"):
-        if path.name != "V021__usage_ledger.py":
+        if _is_before_v021(path):
             shutil.copy2(path, older_build / path.name)
     with pytest.raises(SchemaAheadError, match=V021_ID):
         assert_schema_not_ahead(str(db_path), older_build)

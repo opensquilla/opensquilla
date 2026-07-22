@@ -227,8 +227,8 @@ def _default_direct_model(provider_id: str) -> str:
 def _model_description(spec: ProviderSpec, *, router_supported: bool) -> str:
     if router_supported:
         return (
-            "Optional direct fallback model. Leave blank to use the selected "
-            "SquillaRouter default tier."
+            "Optional direct fallback model. Leave blank to use this provider's "
+            "default direct model. SquillaRouter tiers are configured separately."
         )
     if spec.provider_id in _LOCAL_PROVIDER_IDS:
         return "Required local model id. Use a model available from your local model server."
@@ -340,8 +340,9 @@ def _to_setup_spec(spec: ProviderSpec) -> ProviderSetupSpec:
         router_supported=_is_router_supported_provider(spec.provider_id),
         deployment=_deployment_for(spec),
         blocking=True,
-        # Runtime-supported providers can be probed live (one-token chat via
-        # onboarding.provider.probe) before the config is saved.
+        # Runtime-supported providers can be probed live (a small,
+        # provider-bounded chat via onboarding.provider.probe) before the
+        # config is saved.
         can_probe=runtime_supported,
         readme_scenarios=("first-run setup", "quick terminal install"),
         what_you_need=_what_you_need(spec),

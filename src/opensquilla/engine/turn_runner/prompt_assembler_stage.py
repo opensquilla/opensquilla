@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from opensquilla.provider.protocol import configured_provider_id
+
 if TYPE_CHECKING:
     from opensquilla.engine.turn_runner.outcome import StageOutcome
     from opensquilla.observability.decision_log import PipelineStepRecord
@@ -512,9 +514,41 @@ class PromptAssemblerStage:
                 )
             except Exception:  # noqa: BLE001 - defensive
                 selector_model = ""
-        resolved_model = getattr(turn, "model", None) or inp.model or selector_model
+        # ``turn.model`` is the router's requested model.  When a
+        # cross-provider deployment cannot be resolved, apply_model_override
+        # deliberately keeps the selector on its primary deployment and
+        # records ``routed_provider_blocked``.  In that fail-closed branch the
+        # selector is authoritative for execution; letting the stale routed
+        # model win here would pair the primary provider with a foreign model
+        # id in AgentConfig and turn-call records.
+        if turn.metadata.get("routed_provider_blocked") and selector_model:
+            resolved_model = selector_model
+        else:
+            resolved_model = getattr(turn, "model", None) or inp.model or selector_model
+        # Turn-call records describe the configured deployment, not the
+        # generic adapter family.  A DashScope/DeepSeek deployment runs through
+        # OpenAIProvider and a MiniMax deployment may run through
+        # AnthropicProvider; attributing those as ``openai`` / ``anthropic``
+        # makes cross-provider execution evidence false even when routing was
+        # correct.  The cloned selector is authoritative for the active link;
+        # direct provider construction falls back to its additive provider_id.
+        selector_provider_id = ""
+        if inp.cloned_selector is not None:
+            selector_provider_id = str(
+                getattr(inp.cloned_selector, "active_provider_id", "") or ""
+            ).strip()
+            if not selector_provider_id:
+                try:
+                    selector_provider_id = str(
+                        getattr(inp.cloned_selector.current_config, "provider", "")
+                        or ""
+                    ).strip()
+                except Exception:  # noqa: BLE001 - telemetry fallback only
+                    selector_provider_id = ""
         provider_name = (
-            getattr(provider, "provider_name", "") or type(provider).__name__
+            selector_provider_id
+            or configured_provider_id(provider)
+            or type(provider).__name__
         )
 
         return StageOutcome.success(

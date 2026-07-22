@@ -71,6 +71,7 @@ from opensquilla.engine.turn_runner.turn_finalizer_stage import (
     TranscriptAppendResult,
     TurnErrorPersistPort,
     TurnMemoryCapturePort,
+    UsageTelemetryPort,
 )
 from opensquilla.engine.usage_accounting import UsageExecutionContext
 from opensquilla.provider.model_catalog import resolve_effective_context_window
@@ -1344,3 +1345,23 @@ class _TurnRunnerTurnErrorPersistAdapter(TurnErrorPersistPort):
         event: ErrorEvent | None,
     ) -> None:
         await self._runner._persist_turn_error(session_key, event)
+
+
+class _TurnRunnerUsageTelemetryAdapter(UsageTelemetryPort):
+    """Persist content-free counters for the gateway's hourly upload loop."""
+
+    def __init__(self, runner: TurnRunner) -> None:
+        self._runner = runner
+
+    async def record_turn(self, *, run_kind: str, done_event: DoneEvent | None) -> None:
+        from opensquilla.observability.usage_telemetry import record_completed_turn
+
+        session_manager = self._runner._session_manager
+        if session_manager is None:
+            return
+        await record_completed_turn(
+            session_manager.storage,
+            config=self._runner._config,
+            run_kind=run_kind,
+            done_event=done_event,
+        )

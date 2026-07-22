@@ -10,7 +10,11 @@ import type {
   ChatSendResponse,
 } from '@/types/rpc'
 import type { ChatRpcStreamApi } from '@/composables/chat/useChatRpcEventHandlers'
-import type { BusySendMode } from '@/composables/chat/useChatPendingQueue'
+import type {
+  BusySendMode,
+  PendingQueueOwner,
+  PendingQueueOwnerContext,
+} from '@/composables/chat/useChatPendingQueue'
 import { recordSessionNavigationDiag } from '@/utils/chat/sessionNavigationDiag'
 import { isSendableAttachment, serializeDisplayAttachment, serializeSendableAttachment, type SendableAttachment } from '@/utils/chat/attachments'
 import { createClientMessageId, createClientRequestId } from '@/utils/chat/messageIdentity'
@@ -25,10 +29,9 @@ type RpcClient = {
   call: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-type PersistSessionOptions = { updateRoute?: boolean; source?: string }
-
 interface SendAttempt {
   clientRequestId: string
+  clientMessageId: string
   composerText: string
   requestSessionKey: string
   queueMode?: 'steer'
@@ -37,6 +40,21 @@ interface SendAttempt {
   intent: string | null
   forkBeforeMessageId: string | null
   params: ChatSendParams
+}
+
+interface ResponseHandoffGate {
+  requestSessionKey: string
+  ownerRequestId: string
+  targetSessionKey: string | null
+  stoppedByUser: boolean
+  acceptedTaskId: string
+  terminalResponse: boolean
+  authoritativeIdle: boolean
+  backgroundOnly: boolean
+}
+
+interface FreshSendToken {
+  stoppedByUser: boolean
 }
 
 export type SendResponseSessionDecision =
@@ -68,6 +86,27 @@ function shouldRestoreSendAttempt(err: unknown): boolean {
   // the exact attempt keeps its durable clientRequestId. Only a positive
   // accepted signal proves that restoring the composer would be misleading.
   return (err as RpcClientError | null | undefined)?.accepted !== true
+}
+
+interface AcceptedErrorInfo {
+  messageId: string
+  sessionKey: string
+  terminalWithoutTask: boolean
+}
+
+function acceptedErrorInfo(err: unknown): AcceptedErrorInfo | null {
+  const rpcError = err as RpcClientError | null | undefined
+  if (rpcError?.accepted !== true) return null
+  const details = rpcError.details && typeof rpcError.details === 'object'
+    ? rpcError.details as Record<string, unknown>
+    : {}
+  const rawMessageId = details.orphan_message_id ?? details.orphanMessageId
+  const rawSessionKey = details.session_key ?? details.sessionKey
+  return {
+    messageId: typeof rawMessageId === 'string' ? rawMessageId : '',
+    sessionKey: typeof rawSessionKey === 'string' ? rawSessionKey : '',
+    terminalWithoutTask: rpcError.code === 'QUEUE_FULL_DIRTY',
+  }
 }
 
 const TERMINAL_TASK_STATUSES = new Set([
@@ -143,6 +182,7 @@ export interface UseChatSendOptions {
   inputText: Ref<string>
   messages: Ref<ChatMessage[]>
   sessionKey: Ref<string>
+  pendingQueueOwnerContext: Ref<PendingQueueOwnerContext | null>
   busySendMode: Ref<BusySendMode>
   elevatedMode: Ref<string>
   runMode: Ref<SandboxRunMode>
@@ -158,16 +198,26 @@ export interface UseChatSendOptions {
   stream: ChatRpcStreamApi
   canStop?: () => boolean
   normalizeElevatedMode: (mode: string) => string
-  persistSession: (key: string, options?: PersistSessionOptions) => void
+  adoptResponseSession: (
+    key: string,
+    ownerRequestId: string,
+  ) => void
+    | { authoritativeIdle: boolean; backgroundOnly?: boolean }
+    | Promise<void | { authoritativeIdle: boolean; backgroundOnly?: boolean }>
   scheduleHistorySync: () => void
+  schedulePendingDrainAfterTerminal: () => void
+  flushDeferredPendingDrain: () => void
   // Event frames can beat the chat.send response. The event handler owns the
   // pending-terminal buffer and consumes only the task id accepted here.
   bindActiveStreamTask?: (taskId: string) => void
   isCompactInFlightForCurrentSession: () => boolean
   hasPendingAttachmentWork: () => boolean
   prepareAttachmentsForSend?: (options?: { isCurrent?: () => boolean }) => Promise<boolean>
-  enqueuePendingInput: (text: string) => boolean
-  enqueueHiddenControl?: (item: { text: string; displayText: string }) => boolean
+  enqueuePendingInput: (text: string, owner?: PendingQueueOwner) => boolean
+  enqueueHiddenControl?: (
+    item: { text: string; displayText: string },
+    owner?: PendingQueueOwner,
+  ) => boolean
   popAllPendingIntoComposer: () => boolean
   executeSlashCommand: (text: string) => Promise<boolean>
   closeSlashMenu: () => void
@@ -177,11 +227,12 @@ export interface UseChatSendOptions {
 
 export function useChatSend(options: UseChatSendOptions) {
   const { pushToast } = useToasts()
-  let activeFreshSendToken: symbol | null = null
+  let activeFreshSendToken: FreshSendToken | null = null
+  let activeResponseHandoff: ResponseHandoffGate | null = null
   let recoveredAttempt: SendAttempt | null = null
 
-  function beginFreshStream(requestSessionKey: string): symbol {
-    const token = Symbol('fresh-send')
+  function beginFreshStream(requestSessionKey: string): FreshSendToken {
+    const token: FreshSendToken = { stoppedByUser: false }
     activeFreshSendToken = token
     options.activeStreamTaskId.value = PENDING_STREAM_TASK_ID
     options.activeStreamSessionKey.value = requestSessionKey
@@ -190,7 +241,127 @@ export function useChatSend(options: UseChatSendOptions) {
     return token
   }
 
-  function freshSendStillOwnsStream(token: symbol | null, requestSessionKey: string): boolean {
+  function pendingQueueOwner(): PendingQueueOwner | undefined {
+    const context = options.pendingQueueOwnerContext.value
+    return context?.sessionKey === options.sessionKey.value
+      ? { ownerRequestId: context.ownerRequestId }
+      : undefined
+  }
+
+  function beginResponseHandoff(
+    requestSessionKey: string,
+    ownerRequestId: string,
+  ): ResponseHandoffGate {
+    const gate: ResponseHandoffGate = {
+      requestSessionKey,
+      ownerRequestId,
+      targetSessionKey: null,
+      stoppedByUser: false,
+      acceptedTaskId: '',
+      terminalResponse: false,
+      authoritativeIdle: false,
+      backgroundOnly: false,
+    }
+    activeResponseHandoff = gate
+    options.pendingQueueOwnerContext.value = { sessionKey: requestSessionKey, ownerRequestId }
+    return gate
+  }
+
+  function responseHandoffBlocksCurrentSession(): boolean {
+    const gate = activeResponseHandoff
+    if (!gate) return false
+    const currentSessionKey = options.sessionKey.value
+    return (
+      currentSessionKey === gate.requestSessionKey
+      || currentSessionKey === gate.targetSessionKey
+    )
+  }
+
+  async function handoffResponseSession(key: string, gate: ResponseHandoffGate) {
+    gate.targetSessionKey = key
+    if (activeResponseHandoff === gate) {
+      options.pendingQueueOwnerContext.value = {
+        sessionKey: key,
+        ownerRequestId: gate.ownerRequestId,
+      }
+    }
+    const adoption = await options.adoptResponseSession(key, gate.ownerRequestId)
+    gate.authoritativeIdle = adoption?.authoritativeIdle === true
+    gate.backgroundOnly = adoption?.backgroundOnly === true
+    if (gate.stoppedByUser && options.sessionKey.value === key) {
+      options.aborted.value = true
+      options.activeStreamTaskId.value = STOPPED_STREAM_TASK_ID
+      options.activeStreamSessionKey.value = key
+      if (options.stream.isStreaming.value) {
+        options.stream.endStreaming({ reason: 'aborted' })
+      }
+      options.popAllPendingIntoComposer()
+      return
+    }
+    const terminalReplayFinished = (
+      options.activeStreamTaskId.value === FINISHED_STREAM_TASK_ID
+      && gate.authoritativeIdle
+    )
+    const shouldPreserveAcceptedStream = (
+      options.sessionKey.value === key
+      && !gate.terminalResponse
+      && !terminalReplayFinished
+      && !gate.backgroundOnly
+      && (!gate.authoritativeIdle || !gate.acceptedTaskId)
+    )
+    if (shouldPreserveAcceptedStream && !options.stream.isStreaming.value) {
+      options.stream.startStreaming()
+      options.stream.showThinkingIndicator()
+    }
+    if (
+      shouldPreserveAcceptedStream
+      && gate.acceptedTaskId
+      && !options.activeStreamTaskId.value
+    ) {
+      bindAcceptedTask(gate.acceptedTaskId)
+    }
+    if (
+      shouldPreserveAcceptedStream
+      || (options.sessionKey.value === key && options.stream.isStreaming.value)
+    ) {
+      options.activeStreamSessionKey.value = key
+    }
+  }
+
+  function finishResponseHandoff(gate: ResponseHandoffGate | null) {
+    if (!gate || activeResponseHandoff !== gate) return
+    const adoptedTargetIsCurrent = Boolean(
+      gate.targetSessionKey
+      && options.sessionKey.value === gate.targetSessionKey,
+    )
+    activeResponseHandoff = null
+    if (options.pendingQueueOwnerContext.value?.ownerRequestId === gate.ownerRequestId) {
+      options.pendingQueueOwnerContext.value = null
+    }
+    if (adoptedTargetIsCurrent && !gate.stoppedByUser) {
+      options.flushDeferredPendingDrain()
+      // An idle subscription snapshot can be authoritative without replaying
+      // a terminal event. In that case there is no deferred signal to flush,
+      // so explicitly release the adopted follow-up after hydration finishes.
+      if (
+        (gate.acceptedTaskId || options.activeStreamTaskId.value === FINISHED_STREAM_TASK_ID)
+        && !gate.terminalResponse
+        && gate.authoritativeIdle
+        && !options.stream.isStreaming.value
+        && (
+          !options.activeStreamTaskId.value
+          || options.activeStreamTaskId.value === FINISHED_STREAM_TASK_ID
+        )
+      ) {
+        options.schedulePendingDrainAfterTerminal()
+      }
+    }
+  }
+
+  function freshSendStillOwnsStream(
+    token: FreshSendToken | null,
+    requestSessionKey: string,
+  ): boolean {
     return (
       token !== null &&
       activeFreshSendToken === token &&
@@ -202,6 +373,23 @@ export function useChatSend(options: UseChatSendOptions) {
     return response?.task_id || response?.taskId || ''
   }
 
+  function bindAcceptedUserMessage(
+    clientMessageId: string,
+    response: ChatSendResponse | null | undefined,
+  ) {
+    const messageId = response?.user_message_id || response?.message_id || ''
+    bindUserMessageId(clientMessageId, messageId)
+  }
+
+  function bindUserMessageId(clientMessageId: string, messageId: string) {
+    if (!clientMessageId || !messageId) return
+    const index = options.messages.value.findIndex(message => message.clientId === clientMessageId)
+    if (index < 0) return
+    const optimistic = options.messages.value[index]
+    if (!optimistic || optimistic.messageId === messageId) return
+    options.messages.value[index] = { ...optimistic, messageId }
+  }
+
   function bindAcceptedTask(taskId: string) {
     if (options.bindActiveStreamTask) {
       options.bindActiveStreamTask(taskId)
@@ -210,18 +398,40 @@ export function useChatSend(options: UseChatSendOptions) {
     options.activeStreamTaskId.value = taskId
   }
 
+  function reportAbortFailure(relevantSessionKeys?: string[]) {
+    const message = 'Stop could not reach the server — the run may still be finishing.'
+    if (
+      relevantSessionKeys
+      && !relevantSessionKeys.includes(options.sessionKey.value)
+    ) {
+      pushToast(message, { tone: 'warn', duration: 8000 })
+      return
+    }
+    options.messages.value.push({
+      role: 'system',
+      text: message,
+      ts: new Date().toISOString(),
+    })
+  }
+
   function handleTerminalResponse(
     response: ChatSendResponse,
-    freshSendToken: symbol | null,
+    freshSendToken: FreshSendToken | null,
     optionsForResponse: { finishFreshStream: boolean },
   ): boolean {
     const status = terminalResponseStatus(response)
     if (!status) return false
-    if (optionsForResponse.finishFreshStream) {
-      if (activeFreshSendToken === freshSendToken) activeFreshSendToken = null
+    let finalizedFreshStream = false
+    if (
+      optionsForResponse.finishFreshStream
+      && freshSendToken !== null
+      && activeFreshSendToken === freshSendToken
+    ) {
+      activeFreshSendToken = null
       options.activeStreamTaskId.value = FINISHED_STREAM_TASK_ID
       options.activeStreamSessionKey.value = ''
       options.stream.endStreaming(status === 'cancelled' ? { reason: 'aborted' } : undefined)
+      finalizedFreshStream = true
     }
     if (status !== 'succeeded') {
       options.messages.value.push({
@@ -233,18 +443,30 @@ export function useChatSend(options: UseChatSendOptions) {
       })
     }
     options.scheduleHistorySync()
+    if (finalizedFreshStream) {
+      if (status === 'cancelled') options.popAllPendingIntoComposer()
+      else options.schedulePendingDrainAfterTerminal()
+    }
     return true
   }
 
-  function abortStaleAcceptedTask(response: ChatSendResponse | null | undefined, requestSessionKey: string) {
-    if (options.sessionKey.value !== requestSessionKey) return
+  function abortStaleAcceptedTask(
+    response: ChatSendResponse | null | undefined,
+    requestSessionKey: string,
+    force = false,
+  ) {
+    if (!force && options.sessionKey.value !== requestSessionKey) return
     const taskId = acceptedTaskId(response)
-    if (!taskId) return
-    options.rpc.call('chat.abort', {
-      sessionKey: requestSessionKey,
-      taskId,
+    if (!taskId && !force) return
+    const acceptedSessionKey = response?.sessionKey || requestSessionKey
+    const params: Record<string, string> = {
+      sessionKey: acceptedSessionKey,
       source: 'webui_stale_send',
-    }).catch(() => {})
+    }
+    if (taskId) params.taskId = taskId
+    options.rpc.call('chat.abort', params).catch(() => {
+      if (force) reportAbortFailure([requestSessionKey, acceptedSessionKey])
+    })
   }
 
   async function onSend() {
@@ -252,6 +474,7 @@ export function useChatSend(options: UseChatSendOptions) {
     let sendableAttachments = options.pendingAttachments.value.filter(isSendableAttachment)
     let hasPayload = text || sendableAttachments.length > 0
     let isLiteralSlash = false
+    const handoffInFlight = responseHandoffBlocksCurrentSession()
 
     if (options.hasPendingAttachmentWork()) {
       pushToast(i18n.global.t('chat.toast.waitAttachments'), { tone: 'info' })
@@ -270,6 +493,7 @@ export function useChatSend(options: UseChatSendOptions) {
     // Deriving steer/followup again here would create a new fingerprint and
     // could duplicate a turn that the gateway already accepted.
     if (
+      !handoffInFlight &&
       recoveredAttempt &&
       matchesRecoveredDraft(recoveredAttempt, {
         requestSessionKey: options.sessionKey.value,
@@ -287,7 +511,7 @@ export function useChatSend(options: UseChatSendOptions) {
     }
 
     const compactInFlight = options.isCompactInFlightForCurrentSession()
-    if (options.stream.isStreaming.value || compactInFlight) {
+    if (options.stream.isStreaming.value || compactInFlight || handoffInFlight) {
       if (!isLiteralSlash && text.startsWith('/')) {
         pushToast(i18n.global.t(
           compactInFlight ? 'chat.toast.waitCompactionBeforeCommand' : 'chat.toast.waitResponseBeforeCommand',
@@ -298,7 +522,7 @@ export function useChatSend(options: UseChatSendOptions) {
       if (!hasPayload) return
       // Steer injects into the active run right away; compaction cannot be
       // steered, so those sends still queue until it finishes.
-      if (options.busySendMode.value === 'steer' && !compactInFlight) {
+      if (options.busySendMode.value === 'steer' && !compactInFlight && !handoffInFlight) {
         await dispatchSend(text, {
           composerText: options.inputText.value,
           queueMode: 'steer',
@@ -307,7 +531,7 @@ export function useChatSend(options: UseChatSendOptions) {
       }
       // Surface a full queue instead of silently dropping the send: the draft is
       // preserved (enqueue returns false before clearing the composer).
-      if (!options.enqueuePendingInput(text)) {
+      if (!options.enqueuePendingInput(text, pendingQueueOwner())) {
         pushToast(i18n.global.t('chat.toast.queueFull'), { tone: 'info' })
       }
       return
@@ -375,6 +599,7 @@ export function useChatSend(options: UseChatSendOptions) {
       const clientMessageId = createClientMessageId()
       const params: ChatSendParams = {
         clientRequestId: createClientRequestId(),
+        clientMessageId,
         message: text || 'Describe these attachments',
         sessionKey: requestSessionKey,
       }
@@ -388,6 +613,7 @@ export function useChatSend(options: UseChatSendOptions) {
       }
       attempt = {
         clientRequestId: params.clientRequestId!,
+        clientMessageId,
         composerText: sendOpts?.composerText ?? text,
         requestSessionKey,
         queueMode: sendOpts?.queueMode,
@@ -422,29 +648,64 @@ export function useChatSend(options: UseChatSendOptions) {
     // A steer send rides an already-active stream; restarting it would wipe
     // the partial output of the run being steered.
     const wasStreaming = options.stream.isStreaming.value
-    const freshSendToken = wasStreaming ? null : beginFreshStream(requestSessionKey)
+    const freshSendToken = wasStreaming
+      ? null
+      : beginFreshStream(requestSessionKey)
+    let responseHandoff = (
+      attempt.forkBeforeMessageId
+        ? beginResponseHandoff(requestSessionKey, attempt.clientRequestId)
+        : null
+    )
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', attempt.params)
-      if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
-        abortStaleAcceptedTask(res, requestSessionKey)
+      const taskId = acceptedTaskId(res)
+      const terminalStatus = terminalResponseStatus(res)
+      if (responseHandoff) {
+        responseHandoff.acceptedTaskId = taskId
+        responseHandoff.terminalResponse = Boolean(terminalStatus)
+      }
+      const stoppedByUser = freshSendToken?.stoppedByUser === true
+        || responseHandoff?.stoppedByUser === true
+      const lostFreshStream = !wasStreaming
+        && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)
+      if (stoppedByUser || lostFreshStream) {
+        const acceptedSessionKey = res?.sessionKey || requestSessionKey
+        // A same-session accepted row remains part of the visible parent even
+        // after Stop or a newer send. A child identity must never be written
+        // onto that parent row; the child history owns it after handoff.
+        if (
+          options.sessionKey.value === requestSessionKey
+          && acceptedSessionKey === requestSessionKey
+        ) {
+          bindAcceptedUserMessage(attempt.clientMessageId, res)
+        }
+        abortStaleAcceptedTask(res, requestSessionKey, stoppedByUser)
+        if (
+          stoppedByUser
+          && options.sessionKey.value === requestSessionKey
+          && acceptedSessionKey !== requestSessionKey
+        ) {
+          responseHandoff ||= beginResponseHandoff(
+            requestSessionKey,
+            attempt.clientRequestId,
+          )
+          responseHandoff.stoppedByUser = true
+          responseHandoff.acceptedTaskId = taskId
+          responseHandoff.terminalResponse = Boolean(terminalStatus)
+          await handoffResponseSession(acceptedSessionKey, responseHandoff)
+        }
         return
+      }
+      if ((res?.sessionKey || requestSessionKey) === requestSessionKey) {
+        bindAcceptedUserMessage(attempt.clientMessageId, res)
       }
       // Bind the live stream to this turn's task so a prior task's late events
       // can't bleed into it (issue #344). Only a fresh turn takes over rendering
       // — a steer/queue send rides the in-flight stream and must not rebind —
       // and only while this session is still the one on screen.
-      const taskId = acceptedTaskId(res)
-      const terminalStatus = terminalResponseStatus(res)
       const responseIsCurrent = options.sessionKey.value === requestSessionKey
-      if (terminalStatus && responseIsCurrent) {
-        handleTerminalResponse(res, freshSendToken, {
-          finishFreshStream: !wasStreaming,
-        })
-        // A terminal task response (including first-attempt activation failure)
-        // may have no future live event. Fresh turns close their spinner;
-        // steer responses only surface the result without ending the older run.
-      } else if (!terminalStatus && !wasStreaming && responseIsCurrent) {
+      if (!terminalStatus && !wasStreaming && responseIsCurrent) {
         options.activeStreamSessionKey.value = res?.sessionKey || requestSessionKey
         if (taskId) bindAcceptedTask(taskId)
       }
@@ -453,13 +714,19 @@ export function useChatSend(options: UseChatSendOptions) {
         currentSessionKey: options.sessionKey.value,
         responseSessionKey: res?.sessionKey,
       })
+      const terminalSessionKey = decision.action === 'persist'
+        ? decision.responseSessionKey
+        : requestSessionKey
       if (decision.action === 'persist') {
         recordSessionNavigationDiag('send.response.persist', {
           requestSession: requestSessionKey,
           responseSession: decision.responseSessionKey,
           current: options.sessionKey.value,
         })
-        options.persistSession(decision.responseSessionKey, { source: 'send.response' })
+        responseHandoff ||= beginResponseHandoff(requestSessionKey, attempt.clientRequestId)
+        responseHandoff.acceptedTaskId = taskId
+        responseHandoff.terminalResponse = Boolean(terminalStatus)
+        await handoffResponseSession(decision.responseSessionKey, responseHandoff)
       } else if (decision.reason === 'current_session_changed') {
         recordSessionNavigationDiag('send.response.stale', {
           requestSession: requestSessionKey,
@@ -468,7 +735,65 @@ export function useChatSend(options: UseChatSendOptions) {
           reason: decision.reason,
         })
       }
+      if (
+        terminalStatus
+        && responseIsCurrent
+        && options.sessionKey.value === terminalSessionKey
+      ) {
+        handleTerminalResponse(res, freshSendToken, {
+          finishFreshStream: !wasStreaming,
+        })
+        // A terminal task response (including first-attempt activation failure)
+        // may have no future live event. Fresh turns close their spinner;
+        // steer responses only surface the result without ending the older run.
+      }
     } catch (err: unknown) {
+      const acceptedError = acceptedErrorInfo(err)
+      const acceptedSessionKey = acceptedError?.sessionKey || requestSessionKey
+      const stoppedByUser = freshSendToken?.stoppedByUser === true
+        || responseHandoff?.stoppedByUser === true
+      if (
+        acceptedError
+        && stoppedByUser
+        && !acceptedError.terminalWithoutTask
+        && acceptedSessionKey !== requestSessionKey
+      ) {
+        abortStaleAcceptedTask(
+          { sessionKey: acceptedSessionKey },
+          requestSessionKey,
+          true,
+        )
+      }
+      if (
+        acceptedError
+        && options.sessionKey.value === requestSessionKey
+        && acceptedSessionKey !== requestSessionKey
+      ) {
+        if (!wasStreaming && activeFreshSendToken === freshSendToken) {
+          activeFreshSendToken = null
+          options.activeStreamTaskId.value = ''
+          options.activeStreamSessionKey.value = ''
+          options.stream.endStreaming()
+        }
+        responseHandoff ||= beginResponseHandoff(requestSessionKey, attempt.clientRequestId)
+        responseHandoff.stoppedByUser = stoppedByUser
+        responseHandoff.terminalResponse = acceptedError.terminalWithoutTask
+        await handoffResponseSession(acceptedSessionKey, responseHandoff)
+        options.scheduleHistorySync()
+        if (acceptedError.terminalWithoutTask && !stoppedByUser) {
+          options.schedulePendingDrainAfterTerminal()
+        }
+        options.messages.value.push({
+          role: 'error',
+          text: 'Send failed: ' + errorMessage(err),
+          ts: new Date().toISOString(),
+        })
+        return
+      }
+      if (acceptedError && options.sessionKey.value === requestSessionKey) {
+        bindUserMessageId(attempt.clientMessageId, acceptedError.messageId)
+        options.scheduleHistorySync()
+      }
       if (options.sessionKey.value !== requestSessionKey) {
         recordSessionNavigationDiag('send.error.stale', {
           requestSession: requestSessionKey,
@@ -481,7 +806,9 @@ export function useChatSend(options: UseChatSendOptions) {
         return
       }
       if (!wasStreaming) {
-        if (activeFreshSendToken === freshSendToken) activeFreshSendToken = null
+        if (activeFreshSendToken === freshSendToken) {
+          activeFreshSendToken = null
+        }
         options.activeStreamTaskId.value = ''
         options.activeStreamSessionKey.value = ''
         options.stream.endStreaming()
@@ -489,6 +816,8 @@ export function useChatSend(options: UseChatSendOptions) {
       if (shouldRestoreSendAttempt(err)) restoreSendAttempt(attempt)
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+    } finally {
+      finishResponseHandoff(responseHandoff)
     }
   }
 
@@ -518,9 +847,15 @@ export function useChatSend(options: UseChatSendOptions) {
   }
 
   function onStop() {
-    if (!(options.canStop?.() ?? options.stream.isStreaming.value)) return
+    const handoffCanStop = responseHandoffBlocksCurrentSession()
+    if (!(handoffCanStop || (options.canStop?.() ?? options.stream.isStreaming.value))) return
     options.aborted.value = true
-    const abortSessionKey = options.activeStreamSessionKey.value || options.sessionKey.value
+    const handoff = handoffCanStop ? activeResponseHandoff : null
+    if (handoff) handoff.stoppedByUser = true
+    const abortSessionKey = handoff?.targetSessionKey
+      || options.activeStreamSessionKey.value
+      || options.sessionKey.value
+    if (activeFreshSendToken !== null) activeFreshSendToken.stoppedByUser = true
     activeFreshSendToken = null
     options.activeStreamTaskId.value = STOPPED_STREAM_TASK_ID
     // Be honest if the abort can't reach the gateway (e.g. the socket dropped):
@@ -528,11 +863,7 @@ export function useChatSend(options: UseChatSendOptions) {
     // know the server-side run may keep going rather than trust a false "stopped".
     const abortParams: Record<string, string> = { sessionKey: abortSessionKey, source: 'webui_stop' }
     options.rpc.call('chat.abort', abortParams).catch(() => {
-      options.messages.value.push({
-        role: 'system',
-        text: 'Stop could not reach the server — the run may still be finishing.',
-        ts: new Date().toISOString(),
-      })
+      reportAbortFailure([abortSessionKey])
     })
     options.stream.endStreaming({ reason: 'aborted' })
     options.popAllPendingIntoComposer()
@@ -551,8 +882,12 @@ export function useChatSend(options: UseChatSendOptions) {
     const requestSessionKey = options.sessionKey.value
     if (!requestSessionKey || !providerText) return
     const compactInFlight = options.isCompactInFlightForCurrentSession()
-    if (options.stream.isStreaming.value || compactInFlight) {
-      options.enqueueHiddenControl?.({ text: providerText, displayText })
+    const handoffInFlight = responseHandoffBlocksCurrentSession()
+    if (options.stream.isStreaming.value || compactInFlight || handoffInFlight) {
+      options.enqueueHiddenControl?.(
+        { text: providerText, displayText },
+        pendingQueueOwner(),
+      )
       return
     }
 
@@ -563,14 +898,21 @@ export function useChatSend(options: UseChatSendOptions) {
     })
     // Show the visible confirmation as a user bubble (NOT the marker text).
     const now = new Date().toISOString()
+    const clientMessageId = createClientMessageId()
     if (displayText) {
-      options.messages.value.push({ role: 'user', text: displayText, ts: now })
+      options.messages.value.push({
+        role: 'user',
+        text: displayText,
+        ts: now,
+        clientId: clientMessageId,
+      })
       options.autoScroll.value = true
       options.scrollToBottom()
     }
 
     const params: ChatSendParams = {
       clientRequestId: createClientRequestId(),
+      clientMessageId,
       message: providerText,
       sessionKey: requestSessionKey,
     }
@@ -578,22 +920,49 @@ export function useChatSend(options: UseChatSendOptions) {
     params._source = chatSourceMetadata(options)
 
     const wasStreaming = options.stream.isStreaming.value
-    const freshSendToken = wasStreaming ? null : beginFreshStream(requestSessionKey)
+    const freshSendToken = wasStreaming
+      ? null
+      : beginFreshStream(requestSessionKey)
+    let responseHandoff: ResponseHandoffGate | null = null
 
     try {
       const res = await options.rpc.call<ChatSendResponse>('chat.send', params)
-      if (!wasStreaming && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)) {
-        abortStaleAcceptedTask(res, requestSessionKey)
+      const taskId = acceptedTaskId(res)
+      const terminalStatus = terminalResponseStatus(res)
+      const stoppedByUser = freshSendToken?.stoppedByUser === true
+      const lostFreshStream = !wasStreaming
+        && !freshSendStillOwnsStream(freshSendToken, requestSessionKey)
+      if (stoppedByUser || lostFreshStream) {
+        const acceptedSessionKey = res?.sessionKey || requestSessionKey
+        if (
+          options.sessionKey.value === requestSessionKey
+          && acceptedSessionKey === requestSessionKey
+        ) {
+          bindAcceptedUserMessage(clientMessageId, res)
+        }
+        abortStaleAcceptedTask(res, requestSessionKey, stoppedByUser)
+        if (
+          stoppedByUser
+          && options.sessionKey.value === requestSessionKey
+          && acceptedSessionKey !== requestSessionKey
+        ) {
+          responseHandoff = beginResponseHandoff(requestSessionKey, params.clientRequestId!)
+          responseHandoff.stoppedByUser = true
+          responseHandoff.acceptedTaskId = taskId
+          responseHandoff.terminalResponse = Boolean(terminalStatus)
+          await handoffResponseSession(acceptedSessionKey, responseHandoff)
+        }
         return
+      }
+      if ((res?.sessionKey || requestSessionKey) === requestSessionKey) {
+        bindAcceptedUserMessage(clientMessageId, res)
       }
       // Bind the live stream to this turn's task so a prior task's late events
       // can't bleed into it (issue #344). Only a fresh turn takes over rendering
       // — a steer/queue send rides the in-flight stream and must not rebind —
       // and only while this session is still the one on screen.
-      const taskId = acceptedTaskId(res)
-      if (handleTerminalResponse(res, freshSendToken, { finishFreshStream: !wasStreaming })) {
-        // See dispatchSend: a terminal response has no future lifecycle event.
-      } else if (!wasStreaming && options.sessionKey.value === requestSessionKey) {
+      const responseIsCurrent = options.sessionKey.value === requestSessionKey
+      if (!terminalStatus && !wasStreaming && responseIsCurrent) {
         options.activeStreamSessionKey.value = res?.sessionKey || requestSessionKey
         if (taskId) bindAcceptedTask(taskId)
       }
@@ -602,13 +971,19 @@ export function useChatSend(options: UseChatSendOptions) {
         currentSessionKey: options.sessionKey.value,
         responseSessionKey: res?.sessionKey,
       })
+      const terminalSessionKey = decision.action === 'persist'
+        ? decision.responseSessionKey
+        : requestSessionKey
       if (decision.action === 'persist') {
         recordSessionNavigationDiag('hiddenSend.response.persist', {
           requestSession: requestSessionKey,
           responseSession: decision.responseSessionKey,
           current: options.sessionKey.value,
         })
-        options.persistSession(decision.responseSessionKey, { source: 'hiddenSend.response' })
+        responseHandoff = beginResponseHandoff(requestSessionKey, params.clientRequestId!)
+        responseHandoff.acceptedTaskId = taskId
+        responseHandoff.terminalResponse = Boolean(terminalStatus)
+        await handoffResponseSession(decision.responseSessionKey, responseHandoff)
       } else if (decision.reason === 'current_session_changed') {
         recordSessionNavigationDiag('hiddenSend.response.stale', {
           requestSession: requestSessionKey,
@@ -617,7 +992,60 @@ export function useChatSend(options: UseChatSendOptions) {
           reason: decision.reason,
         })
       }
+      if (
+        terminalStatus
+        && responseIsCurrent
+        && options.sessionKey.value === terminalSessionKey
+      ) {
+        handleTerminalResponse(res, freshSendToken, { finishFreshStream: !wasStreaming })
+        // See dispatchSend: a terminal response has no future lifecycle event.
+      }
     } catch (err: unknown) {
+      const acceptedError = acceptedErrorInfo(err)
+      const acceptedSessionKey = acceptedError?.sessionKey || requestSessionKey
+      const stoppedByUser = freshSendToken?.stoppedByUser === true
+      if (
+        acceptedError
+        && stoppedByUser
+        && !acceptedError.terminalWithoutTask
+        && acceptedSessionKey !== requestSessionKey
+      ) {
+        abortStaleAcceptedTask(
+          { sessionKey: acceptedSessionKey },
+          requestSessionKey,
+          true,
+        )
+      }
+      if (
+        acceptedError
+        && options.sessionKey.value === requestSessionKey
+        && acceptedSessionKey !== requestSessionKey
+      ) {
+        if (!wasStreaming && activeFreshSendToken === freshSendToken) {
+          activeFreshSendToken = null
+          options.activeStreamTaskId.value = ''
+          options.activeStreamSessionKey.value = ''
+          options.stream.endStreaming()
+        }
+        responseHandoff = beginResponseHandoff(requestSessionKey, params.clientRequestId!)
+        responseHandoff.stoppedByUser = stoppedByUser
+        responseHandoff.terminalResponse = acceptedError.terminalWithoutTask
+        await handoffResponseSession(acceptedSessionKey, responseHandoff)
+        options.scheduleHistorySync()
+        if (acceptedError.terminalWithoutTask && !stoppedByUser) {
+          options.schedulePendingDrainAfterTerminal()
+        }
+        options.messages.value.push({
+          role: 'error',
+          text: 'Send failed: ' + errorMessage(err),
+          ts: new Date().toISOString(),
+        })
+        return
+      }
+      if (acceptedError && options.sessionKey.value === requestSessionKey) {
+        bindUserMessageId(clientMessageId, acceptedError.messageId)
+        options.scheduleHistorySync()
+      }
       if (options.sessionKey.value !== requestSessionKey) {
         recordSessionNavigationDiag('hiddenSend.error.stale', {
           requestSession: requestSessionKey,
@@ -630,13 +1058,17 @@ export function useChatSend(options: UseChatSendOptions) {
         return
       }
       if (!wasStreaming) {
-        if (activeFreshSendToken === freshSendToken) activeFreshSendToken = null
+        if (activeFreshSendToken === freshSendToken) {
+          activeFreshSendToken = null
+        }
         options.activeStreamTaskId.value = ''
         options.activeStreamSessionKey.value = ''
         options.stream.endStreaming()
       }
       const message = errorMessage(err)
       options.messages.value.push({ role: 'error', text: 'Send failed: ' + message, ts: new Date().toISOString() })
+    } finally {
+      finishResponseHandoff(responseHandoff)
     }
   }
 

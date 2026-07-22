@@ -513,6 +513,35 @@ def test_partial_ensemble_error_preserves_known_items_and_missing_coverage() -> 
     assert result.missing_usage_entries == 1
 
 
+def test_complete_ensemble_error_preserves_known_items_without_missing_coverage() -> None:
+    event = ProviderError(
+        message="aggregator was unavailable",
+        code="ensemble_aggregator_error",
+        model_usage_breakdown=[
+            {
+                "provider": "p1",
+                "model": "m1",
+                "input_tokens": 10,
+                "output_tokens": 2,
+                "billed_cost": 0.25,
+            }
+        ],
+        usage_missing_count=0,
+    )
+
+    result = normalize_provider_usage(
+        event,
+        default_provider="ensemble",
+        default_model="aggregator",
+        completed_at_ms=1234,
+    )
+
+    assert len(result.items) == 1
+    assert result.items[0].model == "m1"
+    assert result.billed_cost_nanos == usd_to_nanos("0.25")
+    assert result.missing_usage_entries == 0
+
+
 @pytest.mark.asyncio
 async def test_partial_ensemble_error_finalizes_outer_call_instead_of_unknown() -> None:
     sink = _RecordingSink()
@@ -547,6 +576,43 @@ async def test_partial_ensemble_error_finalizes_outer_call_instead_of_unknown() 
     assert len(events) == 1
     assert len(sink.finalized) == 1
     assert sink.finalized[0][1].missing_usage_entries == 2
+    assert sink.unknown == []
+
+
+@pytest.mark.asyncio
+async def test_complete_ensemble_error_finalizes_outer_call_instead_of_unknown() -> None:
+    sink = _RecordingSink()
+    scope = UsageAccountingScope(sink=sink, context=_context())
+
+    async def stream() -> AsyncIterator[ProviderError]:
+        yield ProviderError(
+            message="aggregator was unavailable",
+            code="ensemble_aggregator_error",
+            model_usage_breakdown=[
+                {
+                    "provider": "p1",
+                    "model": "m1",
+                    "input_tokens": 4,
+                    "output_tokens": 2,
+                    "billed_cost": 0.1,
+                }
+            ],
+            usage_missing_count=0,
+        )
+
+    with bind_usage_accounting_scope(scope):
+        events = [
+            event
+            async for event in account_provider_stream(
+                stream,
+                provider="ensemble",
+                model="aggregator",
+            )
+        ]
+
+    assert len(events) == 1
+    assert len(sink.finalized) == 1
+    assert sink.finalized[0][1].missing_usage_entries == 0
     assert sink.unknown == []
 
 

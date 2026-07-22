@@ -636,6 +636,7 @@ class ServiceContainer:
     task_runtime: Any = None
     heartbeat_loop: Any = None
     heartbeat_watcher: Any = None
+    daily_usage_telemetry_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     deferred_warmups: list[Callable[[], Any]] = field(default_factory=list)
     _compaction_listener_remove: Callable[[], None] | None = None
     _approval_listener_remove: Callable[[], None] | None = None
@@ -686,6 +687,16 @@ class ServiceContainer:
             self._approval_channel_notifier_remove = None
 
         # ── 1. Stop scheduled producers (no further writes after this) ──
+        daily_usage_task = self.daily_usage_telemetry_task
+        self.daily_usage_telemetry_task = None
+        if daily_usage_task is not None:
+            daily_usage_task.cancel()
+            try:
+                await daily_usage_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                log.debug("gateway.usage_telemetry_close_failed", exc_info=True)
         if self.heartbeat_watcher is not None:
             try:
                 await self.heartbeat_watcher.stop()
@@ -771,6 +782,15 @@ class ServiceContainer:
             from opensquilla.gateway.auto_propose_bridge import reset_runtime
 
             reset_runtime()
+        except Exception:
+            pass
+        # build_services() installs the sandbox runtime process-wide. Clear it
+        # with the rest of this container's shared services so a later gateway
+        # (or an in-process caller) cannot inherit stale Full Host semantics.
+        try:
+            from opensquilla.sandbox.integration import reset_runtime as reset_sandbox_runtime
+
+            reset_sandbox_runtime()
         except Exception:
             pass
         # Clear the shared catalog installed by build_services() so a torn-down
@@ -2446,6 +2466,7 @@ async def build_services(
 
         configure_image_generation(
             config.image_generation,
+            gateway_config=config,
             llm_config=config.llm,
             squilla_router_config=config.squilla_router,
         )
@@ -2730,37 +2751,41 @@ async def build_services(
         meta_run_writer = None
 
     # ── Router decision records (V017 router_decisions) ─────────────
-    # Same yoyo-only-table pattern as meta_run_writer: the writer exists only
-    # when the session DB is real (not :memory:); with no writer registered
-    # the router step's stage/flush hooks are no-ops. Boot also rehydrates
-    # the in-process sticky/anti-downgrade history from the last <=5 records
-    # per recently-active session so it survives a gateway restart.
+    # Same yoyo-only-table pattern as meta_run_writer: the writer exists when
+    # the session DB is real (not :memory:), even if routing is disabled at
+    # boot. The control UI can enable routing live without restarting the
+    # gateway, so gating writer construction on the initial enabled flag would
+    # silently drop every decision recorded after that transition. Boot only
+    # rehydrates sticky/anti-downgrade history when routing starts enabled;
+    # disabled gateways avoid that startup read, while newly routed turns
+    # still begin accumulating immediately after a live enable.
     router_decision_writer = None
     try:
         router_cfg_for_decisions = getattr(config, "squilla_router", None)
-        if getattr(router_cfg_for_decisions, "enabled", False):
-            decisions_storage = get_session_storage(session_manager)
-            decisions_db_path = (
-                getattr(decisions_storage, "_db_path", None)
-                if decisions_storage is not None
-                else None
+        decisions_storage = get_session_storage(session_manager)
+        decisions_db_path = (
+            getattr(decisions_storage, "_db_path", None)
+            if decisions_storage is not None
+            else None
+        )
+        if decisions_db_path and decisions_db_path != ":memory:":
+            from opensquilla.engine.steps.router_decision_record import (
+                rehydrate_history_from_writer,
+                set_decision_writer,
             )
-            if decisions_db_path and decisions_db_path != ":memory:":
-                from opensquilla.engine.steps.router_decision_record import (
-                    rehydrate_history_from_writer,
-                    set_decision_writer,
-                )
-                from opensquilla.persistence.router_decision_writer import (
-                    open_router_decision_writer,
-                )
+            from opensquilla.persistence.router_decision_writer import (
+                open_router_decision_writer,
+            )
 
-                router_decision_writer = open_router_decision_writer(
-                    decisions_db_path,
-                    retention_days=int(
-                        getattr(router_cfg_for_decisions, "decision_retention_days", 30) or 30
-                    ),
-                )
-                set_decision_writer(router_decision_writer)
+            router_decision_writer = open_router_decision_writer(
+                decisions_db_path,
+                retention_days=int(
+                    getattr(router_cfg_for_decisions, "decision_retention_days", 30)
+                    or 30
+                ),
+            )
+            set_decision_writer(router_decision_writer)
+            if getattr(router_cfg_for_decisions, "enabled", False):
                 rehydrated = rehydrate_history_from_writer(router_decision_writer)
                 if rehydrated:
                     log.info(
@@ -3103,6 +3128,25 @@ async def start_gateway_server(
     except BaseException:
         _pid_lock.release()
         raise
+
+    # Daily usage uses the existing telemetry service's dedicated /v1/usage
+    # route and the same unified privacy switch. Upload once at startup and
+    # every hour while the gateway is running; failures remain pending.
+    try:
+        from opensquilla.observability.usage_telemetry import (
+            run_daily_usage_upload_loop,
+        )
+
+        daily_usage_storage = get_session_storage(svc.session_manager)
+        if daily_usage_storage is not None:
+            svc.daily_usage_telemetry_task = create_background_task(
+                run_daily_usage_upload_loop(
+                    daily_usage_storage,
+                    config=config,
+                )
+            )
+    except Exception:
+        log.debug("gateway.usage_telemetry_upload_skipped", exc_info=True)
 
     # Some embedding/tests provide a service-shaped object from an older
     # bootstrap contract.  Treat the ledger sink as an optional additive

@@ -147,7 +147,7 @@ async def test_router_configure_recommended_profile(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
+async def test_router_configure_accepts_tier_overrides_without_rebinding_direct_model(
     tmp_path,
     monkeypatch,
 ):
@@ -177,10 +177,10 @@ async def test_router_configure_accepts_tier_overrides_and_syncs_llm_model(
     )
 
     assert res.error is None, res.error
-    assert ctx.config.llm.model == "gpt-5.5-custom"
+    assert ctx.config.llm.model == "gpt-5.4-mini"
     assert ctx.config.squilla_router.default_tier == "c2"
     persisted = tomllib.loads((tmp_path / "c.toml").read_text())
-    assert persisted["llm"]["model"] == "gpt-5.5-custom"
+    assert persisted["llm"]["model"] == "gpt-5.4-mini"
     assert persisted["squilla_router"]["tiers"]["c2"]["model"] == "gpt-5.5-custom"
     assert persisted["squilla_router"]["tiers"]["image_model"]["supports_image"] is True
 
@@ -259,6 +259,72 @@ async def test_router_configure_persists_cross_provider_tiers(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_router_configure_mixed_default_preserves_primary_deployment(
+    tmp_path,
+    monkeypatch,
+):
+    """A foreign default tier must not become the primary fallback model."""
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    from opensquilla.gateway.config import GatewayConfig
+
+    sync_calls: list[object] = []
+
+    class FakeSelector:
+        def sync_primary(self, provider_config):
+            sync_calls.append(provider_config)
+
+    ctx = _admin_ctx()
+    ctx.config = GatewayConfig(
+        llm={"provider": "dashscope", "model": "qwen3.7-plus"}
+    )
+    ctx.config.config_path = str(tmp_path / "c.toml")
+    ctx.provider_selector = FakeSelector()
+
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.router.configure",
+        {
+            "mode": "custom",
+            "defaultTier": "c0",
+            "crossProviderTiers": True,
+            "tierProviderMismatch": "veto",
+            "tiers": {
+                "c0": {
+                    "provider": "volcengine",
+                    "model": "doubao-seed-1-6-251015",
+                },
+                "c1": {"provider": "dashscope", "model": "qwen3.7-plus"},
+                "c2": {"provider": "dashscope", "model": "qwen3.7-plus"},
+                "c3": {"provider": "dashscope", "model": "qwen3.7-plus"},
+            },
+        },
+        ctx,
+    )
+
+    assert res.error is None, res.error
+    assert ctx.config.squilla_router.default_tier == "c0"
+    assert ctx.config.squilla_router.tiers["c0"]["provider"] == "volcengine"
+    assert (
+        ctx.config.squilla_router.tiers["c0"]["model"]
+        == "doubao-seed-1-6-251015"
+    )
+    assert ctx.config.llm.provider == "dashscope"
+    assert ctx.config.llm.model == "qwen3.7-plus"
+    assert len(sync_calls) == 1
+    assert sync_calls[0].provider == "dashscope"
+    assert sync_calls[0].model == "qwen3.7-plus"
+
+    persisted = tomllib.loads((tmp_path / "c.toml").read_text())
+    assert persisted["llm"]["provider"] == "dashscope"
+    assert persisted["llm"]["model"] == "qwen3.7-plus"
+    assert persisted["squilla_router"]["default_tier"] == "c0"
+    assert (
+        persisted["squilla_router"]["tiers"]["c0"]["model"]
+        == "doubao-seed-1-6-251015"
+    )
+
+
+@pytest.mark.asyncio
 async def test_router_configure_rejects_image_model_as_default_tier(
     tmp_path,
     monkeypatch,
@@ -289,7 +355,10 @@ async def test_provider_configure_recomputes_existing_router_profile(tmp_path, m
     ctx = _admin_ctx()
     ctx.config = GatewayConfig(
         llm={"provider": "deepseek", "model": "deepseek-chat"},
-        squilla_router={"tier_profile": "deepseek"},
+        squilla_router={
+            "tier_profile": "deepseek",
+            "preset_binding": "follow_primary",
+        },
     )
     ctx.config.config_path = str(tmp_path / "c.toml")
 
@@ -318,7 +387,10 @@ async def test_provider_configure_recomputes_openrouter_mix_router(tmp_path, mon
     from opensquilla.gateway.config import GatewayConfig
 
     ctx = _admin_ctx()
-    ctx.config = GatewayConfig(llm={"provider": "openrouter", "model": "deepseek/x"})
+    ctx.config = GatewayConfig(
+        llm={"provider": "openrouter", "model": "deepseek/x"},
+        squilla_router={"preset_binding": "follow_primary"},
+    )
     ctx.config.config_path = str(tmp_path / "c.toml")
 
     res = await get_dispatcher().dispatch(

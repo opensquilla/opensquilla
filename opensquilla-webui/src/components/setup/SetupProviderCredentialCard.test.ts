@@ -23,6 +23,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     apiKeyEnvValue: 'DEEPSEEK_API_KEY',
     probeReady: true,
     probeDisabledReason: '',
+    probeButtonLabel: 'Verify current configuration',
     connection: { phase: 'unverified' },
     ...overrides,
   }
@@ -81,7 +82,9 @@ function verifiedConnection(overrides: Record<string, unknown> = {}) {
     phase: 'verified',
     failureKind: '',
     detail: '',
-    latencyMs: 412,
+    firstResponseMs: 123,
+    totalMs: 412,
+    latencyMs: null,
     models: [
       discoveredModel('test-vendor/alpha'),
       discoveredModel('test-vendor/beta'),
@@ -108,11 +111,46 @@ describe('SetupProviderCredentialCard', () => {
     const { app, el } = await mountCard()
 
     expect(el.textContent).toContain('DeepSeek authentication')
-    expect(el.textContent).toContain('Credential ready')
-    expect(el.textContent).toContain('Not tested')
-    expect(el.textContent).not.toContain('✓ Connected')
+    expect(el.textContent).toContain('Key available')
+    expect(el.textContent).toContain('Current configuration not verified')
+    expect(el.textContent).not.toContain('Configuration verified')
     expect(el.textContent).toContain('Current source: environment variable DEEPSEEK_API_KEY')
     expect(el.querySelector('input[name="setup_provider_api_key_env"]')).toBeNull()
+
+    app.unmount()
+  })
+
+  it.each([
+    { name: 'first key', available: false, source: 'none', masked: '', replacing: false },
+    { name: 'replacement key', available: true, source: 'explicit', masked: 'sk-••••7890', replacing: true },
+  ])('marks an unsaved $name as entered without treating it as saved', async state => {
+    const { app, el } = await mountCard({
+      ...state,
+      apiKeyValue: 'synthetic-unsaved-key',
+    })
+
+    expect(el.textContent).toContain('Key entered · not saved')
+    expect(el.textContent).toContain('Current source: unsaved API key')
+    expect(el.textContent).not.toContain('Needs key')
+
+    app.unmount()
+  })
+
+  it('labels an explicitly entered environment reference as unsaved credential input', async () => {
+    const { app, el } = await mountCard({
+      available: false,
+      source: 'none',
+      masked: '',
+      apiKeyValue: '',
+      apiKeyEnvValue: 'DEEPSEEK_DRAFT_KEY',
+      draftCredentialSource: 'env',
+    })
+
+    expect(el.textContent).toContain('Environment variable entered · not saved')
+    expect(el.textContent).toContain(
+      'Current source: unsaved environment variable DEEPSEEK_DRAFT_KEY',
+    )
+    expect(el.textContent).not.toContain('Needs key')
 
     app.unmount()
   })
@@ -131,6 +169,21 @@ describe('SetupProviderCredentialCard', () => {
   it('shows the public-session hint when a masked credential exists but reveal is not allowed', async () => {
     const { app, el } = await mountCard({ revealAllowed: false })
 
+    expect(el.textContent).toContain('Current session can replace this credential but cannot view its secret.')
+
+    app.unmount()
+  })
+
+  it('explains that a write-only saved profile key is kept until replacement', async () => {
+    const { app, el } = await mountCard({
+      available: true,
+      source: 'explicit',
+      masked: '',
+      revealAllowed: false,
+    })
+
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]')
+    expect(input?.placeholder).toBe('Saved key kept — paste to replace')
     expect(el.textContent).toContain('Current session can replace this credential but cannot view its secret.')
 
     app.unmount()
@@ -205,6 +258,29 @@ describe('SetupProviderCredentialCard', () => {
     app.unmount()
   })
 
+  it('labels the disabled action as Add key to verify when credentials are missing', async () => {
+    const { app, el } = await mountCard({
+      masked: '',
+      source: 'none',
+      available: false,
+      probeReady: false,
+      probeDisabledReason: 'Add an API key before verifying this provider.',
+      probeButtonLabel: 'Add key to verify',
+    })
+
+    const button = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .find(candidate => candidate.textContent?.trim() === 'Add key to verify')
+    expect(button).toBeTruthy()
+    expect(button?.disabled).toBe(true)
+    expect(button?.title).toBe('Add an API key before verifying this provider.')
+    expect(button?.getAttribute('aria-describedby')).toBe('setup-provider-probe-hint-deepseek')
+    expect(el.querySelector('#setup-provider-probe-hint-deepseek')?.textContent)
+      .toBe('Add an API key before verifying this provider.')
+    expect(el.textContent).toContain('Add an API key before verifying this provider.')
+
+    app.unmount()
+  })
+
   it('keeps the editable input directly available when a declared env var is not visible', async () => {
     const { app, el } = await mountCard({ masked: '', source: 'missing_env', available: false })
 
@@ -227,7 +303,7 @@ describe('SetupProviderCredentialCard', () => {
     expect(el.textContent).toContain(
       'Enter a key only if this endpoint requires authentication; otherwise leave it blank.',
     )
-    expect(el.textContent).not.toContain('Credential ready')
+    expect(el.textContent).not.toContain('Key available')
     expect(el.querySelector('input[name="setup_provider_api_key"]')).toBeTruthy()
     expect(el.querySelector('input[name="setup_provider_api_key_display"]')).toBeNull()
 
@@ -255,7 +331,7 @@ describe('SetupProviderCredentialCard', () => {
     const { app, el } = await mountCard({ probeReady: false, probeDisabledReason: reason })
 
     const button = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
-      .find(candidate => candidate.textContent?.includes('Test connection'))
+      .find(candidate => candidate.textContent?.includes('Verify current configuration'))
     expect(button?.disabled).toBe(true)
     expect(button?.title).toBe(reason)
     expect(el.textContent).toContain(reason)
@@ -330,7 +406,7 @@ describe('SetupProviderCredentialCard', () => {
     const { app, el } = await mountCard({}, { onUpdateField })
 
     const summary = Array.from(el.querySelectorAll('summary'))
-      .find(node => (node.textContent || '').includes('Advanced'))
+      .find(node => (node.textContent || '').includes('Credential source'))
     ;(summary as HTMLElement | undefined)?.click()
     await nextTick()
 
@@ -347,14 +423,52 @@ describe('SetupProviderCredentialCard', () => {
   })
 })
 
-describe('SetupProviderCredentialCard — connection verdict line', () => {
-  it('shows latency, live model count, and up to 3 sample ids when verified', async () => {
+describe('SetupProviderCredentialCard — configuration verification verdict', () => {
+  it('announces the current-settings verdict and exposes probing as busy', async () => {
+    const verified = await mountCard({ connection: verifiedConnection() })
+    const status = verified.el.querySelector('[role="status"]')
+    expect(status?.getAttribute('aria-live')).toBe('polite')
+    expect(status?.getAttribute('aria-atomic')).toBe('true')
+    expect(status?.textContent).toContain('Configuration verified')
+    verified.app.unmount()
+
+    const probing = await mountCard({ connection: { phase: 'probing' } })
+    const button = Array.from(probing.el.querySelectorAll<HTMLButtonElement>('button'))
+      .find(candidate => candidate.textContent?.includes('Verifying configuration'))
+    expect(button?.getAttribute('aria-busy')).toBe('true')
+    probing.app.unmount()
+  })
+
+  it.each(['malformed_response', 'invalid_stream_order'])(
+    'reports %s as an incompatible stream rather than a connectivity failure',
+    async failureKind => {
+      const { app, el } = await mountCard({
+        connection: verifiedConnection({
+          phase: 'unreachable',
+          failureKind,
+          detail: 'provider stream rejected after finish_reason',
+          models: [],
+          modelSource: 'none',
+        }),
+      })
+
+      const status = el.querySelector('[role="status"]')
+      expect(status?.textContent).toContain('Streaming response incompatible')
+      expect(status?.textContent).not.toContain("Couldn't connect")
+      expect(status?.textContent).not.toContain(failureKind)
+
+      app.unmount()
+    },
+  )
+
+  it('shows first response, complete probe duration, and live model samples when verified', async () => {
     const { app, el } = await mountCard({ connection: verifiedConnection() })
 
     const verdict = el.querySelector('.setup-connection__verdict')
     expect(verdict).toBeTruthy()
     expect(verdict?.getAttribute('aria-live')).toBe('polite')
-    expect(verdict?.textContent).toContain('412ms')
+    expect(verdict?.textContent).toContain('First model response · 123 ms')
+    expect(verdict?.textContent).toContain('Complete probe · 412 ms')
     expect(verdict?.textContent).toContain('4 models')
     expect(verdict?.textContent).toContain('e.g. test-vendor/alpha, test-vendor/beta, test-vendor/gamma')
     expect(verdict?.textContent).not.toContain('test-vendor/delta')
@@ -378,48 +492,56 @@ describe('SetupProviderCredentialCard — connection verdict line', () => {
     })
 
     const verdict = el.querySelector('.setup-connection__verdict')
-    expect(verdict?.textContent).toContain('412ms')
+    expect(verdict?.textContent).toContain('First model response · 123 ms')
+    expect(verdict?.textContent).toContain('Complete probe · 412 ms')
     expect(verdict?.textContent).not.toContain('models')
 
     app.unmount()
   })
 
-  it('keeps the verdict line empty when latency is unknown and nothing was discovered', async () => {
+  it('keeps the verdict line empty when timings are unknown and nothing was discovered', async () => {
     const { app, el } = await mountCard({
-      connection: verifiedConnection({ latencyMs: null, models: [], modelSource: 'none' }),
+      connection: verifiedConnection({
+        firstResponseMs: null,
+        totalMs: null,
+        latencyMs: null,
+        models: [],
+        modelSource: 'none',
+      }),
     })
 
     expect(el.querySelector('.setup-connection__verdict')?.textContent?.trim()).toBe('')
-    expect(el.querySelector('.setup-connection__latency')).toBeNull()
+    expect(el.querySelector('.setup-connection__timing')).toBeNull()
 
     app.unmount()
   })
 
-  it('appends a muted latency span to failure pills when a round trip completed', async () => {
+  it('labels legacy gateway latency explicitly as complete probe duration', async () => {
+    const { app, el } = await mountCard({
+      connection: verifiedConnection({
+        firstResponseMs: null,
+        totalMs: 412,
+        latencyMs: 412,
+        models: [],
+        modelSource: 'none',
+      }),
+    })
+
+    const verdict = el.querySelector('.setup-connection__verdict')
+    expect(verdict?.textContent).toContain('Complete probe · 412 ms')
+    expect(verdict?.textContent).not.toContain('First model response')
+
+    app.unmount()
+  })
+
+  it('appends labeled probe timings to a failure after a model response', async () => {
     const { app, el } = await mountCard({
       connection: {
         phase: 'key_invalid',
         failureKind: 'auth_invalid',
         detail: 'HTTP 401',
-        latencyMs: 87,
-        models: [],
-        modelSource: 'none',
-        discoverError: '',
-      },
-    })
-
-    const actions = el.querySelector('.setup-connection__actions')
-    expect(actions?.querySelector('.setup-connection__latency')?.textContent).toContain('87ms')
-
-    app.unmount()
-  })
-
-  it('does not append latency to failure pills when no round trip completed', async () => {
-    const { app, el } = await mountCard({
-      connection: {
-        phase: 'unreachable',
-        failureKind: 'transport_transient',
-        detail: 'timeout',
+        firstResponseMs: 25,
+        totalMs: 87,
         latencyMs: null,
         models: [],
         modelSource: 'none',
@@ -427,7 +549,29 @@ describe('SetupProviderCredentialCard — connection verdict line', () => {
       },
     })
 
-    expect(el.querySelector('.setup-connection__actions .setup-connection__latency')).toBeNull()
+    const actions = el.querySelector('.setup-connection__actions')
+    expect(actions?.textContent).toContain('First model response · 25 ms')
+    expect(actions?.textContent).toContain('Complete probe · 87 ms')
+
+    app.unmount()
+  })
+
+  it('does not append timings to failure pills when no model probe completed', async () => {
+    const { app, el } = await mountCard({
+      connection: {
+        phase: 'unreachable',
+        failureKind: 'transport_transient',
+        detail: 'timeout',
+        firstResponseMs: null,
+        totalMs: null,
+        latencyMs: null,
+        models: [],
+        modelSource: 'none',
+        discoverError: '',
+      },
+    })
+
+    expect(el.querySelector('.setup-connection__actions .setup-connection__timing')).toBeNull()
 
     app.unmount()
   })

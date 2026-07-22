@@ -2,11 +2,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createApp, nextTick } from 'vue'
 import { useSetupCatalog } from './useSetupCatalog'
+import { LEGACY_OPENROUTER_MODEL_OPTIONS } from './useSetupEnsembleForm'
 import { PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS } from './useSetupProviderForm'
 
 const rpcCall = vi.hoisted(() => vi.fn())
 const waitForConnection = vi.hoisted(() => vi.fn(async () => {}))
 const pushToast = vi.hoisted(() => vi.fn())
+const confirmAction = vi.hoisted(() => vi.fn(async () => true))
 
 vi.mock('@/stores/rpc', () => ({
   useRpcStore: () => ({
@@ -19,6 +21,10 @@ vi.mock('@/stores/rpc', () => ({
 
 vi.mock('@/composables/useToasts', () => ({
   useToasts: () => ({ pushToast }),
+}))
+
+vi.mock('@/composables/useConfirm', () => ({
+  useConfirm: () => ({ confirm: confirmAction }),
 }))
 
 async function mountCatalog() {
@@ -56,6 +62,7 @@ afterEach(() => {
   rpcCall.mockReset()
   waitForConnection.mockClear()
   pushToast.mockClear()
+  confirmAction.mockClear()
   document.body.innerHTML = ''
 })
 
@@ -347,6 +354,7 @@ describe('useSetupCatalog model strategy IA', () => {
 
   it('discovers and isolates catalogs for every provider used by mixed router tiers', async () => {
     const requests: Array<Record<string, unknown>> = []
+    const discoveryMethods: string[] = []
     rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'onboarding.catalog') {
         return {
@@ -380,7 +388,9 @@ describe('useSetupCatalog model strategy IA', () => {
           },
         }
       }
-      if (method === 'onboarding.models.discover') {
+      if (method === 'onboarding.models.discover'
+        || method === 'onboarding.llmProfile.models.discover') {
+        discoveryMethods.push(method)
         requests.push(params || {})
         const providerId = String(params?.providerId || '').toLowerCase()
         if (providerId === 'anthropic') return { ok: true, source: 'none', models: [] }
@@ -404,8 +414,12 @@ describe('useSetupCatalog model strategy IA', () => {
 
     api.updateProviderField('api_key', 'unsaved-selected-provider-key')
     api.setSection('modelStrategy')
-    await vi.waitFor(() => expect(requests).toHaveLength(3))
+    await vi.waitFor(() => expect(requests).toHaveLength(4))
 
+    expect(requests).toContainEqual({
+      providerId: 'tokenrhythm',
+      model: 'deepseek-v4-pro',
+    })
     expect(requests).toContainEqual({
       providerId: 'tokenrhythm',
       apiKey: 'unsaved-selected-provider-key',
@@ -414,6 +428,8 @@ describe('useSetupCatalog model strategy IA', () => {
     expect(requests).toContainEqual({ providerId: 'openrouter' })
     expect(requests).toContainEqual({ providerId: 'anthropic' })
     expect(requests.filter(request => request.apiKey !== undefined)).toHaveLength(1)
+    expect(discoveryMethods.filter(method => method === 'onboarding.models.discover')).toHaveLength(2)
+    expect(discoveryMethods.filter(method => method === 'onboarding.llmProfile.models.discover')).toHaveLength(2)
 
     const byProvider = api.routerPanel.value.discoveredModelsByProvider
     expect(Object.keys(byProvider).sort()).toEqual(['anthropic', 'openrouter', 'tokenrhythm'])
@@ -454,6 +470,9 @@ describe('useSetupCatalog model strategy IA', () => {
         requests.push(String(params?.providerId || ''))
         await blocked
         return { ok: true, source: 'none', models: [] }
+      }
+      if (method === 'onboarding.llmProfile.models.discover') {
+        throw new Error('RPC method not found')
       }
       throw new Error(`Unexpected RPC method: ${method}`)
     })
@@ -692,6 +711,1870 @@ describe('useSetupCatalog model strategy IA', () => {
   })
 })
 
+describe('useSetupCatalog fresh-install provider semantics', () => {
+  interface FreshProviderStateOptions {
+    catalog?: Record<string, unknown>
+    effective?: Record<string, unknown>
+    allowPrimarySave?: boolean
+  }
+
+  const tokenRhythmCatalog = {
+    providers: [{
+      providerId: 'tokenrhythm',
+      label: 'TokenRhythm',
+      runtimeSupported: true,
+      fields: [{ name: 'model', label: 'Model' }],
+      presets: [{
+        presetId: 'tokenrhythm',
+        label: 'TokenRhythm',
+        tiers: {
+          c0: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+          c1: { provider: 'tokenrhythm', model: 'deepseek-v4-pro' },
+        },
+      }],
+    }],
+  }
+
+  function mockProviderState(
+    status: Record<string, unknown>,
+    config: Record<string, unknown>,
+    options: FreshProviderStateOptions = {},
+  ) {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return options.catalog ?? tokenRhythmCatalog
+      if (method === 'onboarding.status') return status
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return config
+      if (method === 'config.effective' && options.effective) return options.effective
+      if (method === 'onboarding.provider.configure' && options.allowPrimarySave) return {}
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+  }
+
+  function mockFreshRuntimeDefaults(options: FreshProviderStateOptions = {}) {
+    mockProviderState(
+      {
+        hasConfig: false,
+        llmConfigured: false,
+        llmSource: 'missing_env',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: false,
+          source: 'missing_env',
+          envKey: 'TOKENRHYTHM_API_KEY',
+        },
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        squilla_router: { enabled: true, cross_provider_tiers: false },
+        llm_ensemble: { enabled: false },
+      },
+      options,
+    )
+  }
+
+  function configuredProviderStatus(provider: string) {
+    return {
+      hasConfig: true,
+      llmConfigured: true,
+      llmSource: 'explicit',
+      llmCredentialStatus: {
+        provider,
+        available: true,
+        source: 'explicit',
+      },
+    }
+  }
+
+  async function expectMultiProviderRouting(
+    provider: string,
+    router: Record<string, unknown> | undefined,
+    ensemble: Record<string, unknown> | undefined,
+    expected: boolean,
+  ) {
+    mockProviderState(
+      configuredProviderStatus(provider),
+      {
+        llm: { provider, model: 'primary-model' },
+        ...(router ? { squilla_router: router } : {}),
+        ...(ensemble ? { llm_ensemble: ensemble } : {}),
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+    expect(api.providerPanel.value.routingEnabled).toBe(expected)
+    app.unmount()
+  }
+
+  it('keeps runtime defaults out of configured providers', async () => {
+    mockFreshRuntimeDefaults()
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders).toEqual([])
+    app.unmount()
+  })
+
+  it('re-enables an inline provider preset without leaking materialized OpenRouter tiers', async () => {
+    mockProviderState(
+      {
+        ...configuredProviderStatus('tokenrhythm'),
+        sectionDetails: {
+          router: { routerBinding: 'follow_primary' },
+        },
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        squilla_router: {
+          enabled: false,
+          tiers: {
+            c0: { provider: 'openrouter', model: 'materialized-default' },
+          },
+        },
+        llm_ensemble: { enabled: false },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+    api.setModelStrategy('router')
+
+    expect(api.routerPanel.value.providerOptions.map(row => row.providerId)).toEqual([
+      'tokenrhythm',
+    ])
+    expect(api.routerPanel.value.tierRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ provider: 'tokenrhythm', model: 'deepseek-v4-flash' }),
+      expect.objectContaining({ provider: 'tokenrhythm', model: 'deepseek-v4-pro' }),
+    ]))
+    expect(api.routerPanel.value.tierRows.some(row => row.provider === 'openrouter')).toBe(false)
+    app.unmount()
+  })
+
+  it('fills synthesized follow-primary tiers from the active direct model', async () => {
+    const anthropicCatalog = {
+      providers: [{
+        providerId: 'anthropic',
+        label: 'Anthropic',
+        runtimeSupported: true,
+        fields: [{ name: 'model', label: 'Model' }],
+        presets: [{
+          presetId: 'anthropic',
+          label: 'Anthropic',
+          synthesized: true,
+          tiers: Object.fromEntries(['c0', 'c1', 'c2', 'c3'].map(name => [name, {
+            provider: 'anthropic',
+            model: '',
+          }])),
+        }],
+      }],
+    }
+    mockProviderState(
+      {
+        ...configuredProviderStatus('anthropic'),
+        sectionDetails: {
+          router: { routerBinding: 'follow_primary' },
+        },
+      },
+      {
+        llm: { provider: 'anthropic', model: 'claude-sonnet-4' },
+        squilla_router: {
+          enabled: false,
+          tiers: {
+            c0: { provider: 'openrouter', model: 'materialized-default' },
+          },
+        },
+        llm_ensemble: { enabled: false },
+      },
+      { catalog: anthropicCatalog },
+    )
+
+    const { api, app } = await mountCatalog()
+    api.setModelStrategy('router')
+
+    expect(api.routerPanel.value.tierRows).toHaveLength(4)
+    expect(api.routerPanel.value.tierRows.every(row => (
+      row.provider === 'anthropic' && row.model === 'claude-sonnet-4'
+    ))).toBe(true)
+    expect(api.routerPanel.value.tierRows.some(row => row.provider === 'openrouter')).toBe(false)
+    app.unmount()
+  })
+
+  it('ignores an active TokenRhythm profile-status row when it only describes the fresh default', async () => {
+    mockProviderState(
+      {
+        hasConfig: false,
+        llmConfigured: false,
+        llmSource: 'missing_env',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: false,
+          source: 'missing_env',
+          envKey: 'TOKENRHYTHM_API_KEY',
+        },
+        llmProfileStatus: [{
+          provider: 'tokenrhythm',
+          ready: false,
+          credentialSource: 'missing_env',
+          credentialEnv: 'TOKENRHYTHM_API_KEY',
+          endpointSource: 'registry',
+          reason: 'missing_credentials',
+        }],
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        squilla_router: { enabled: true, cross_provider_tiers: false },
+        llm_ensemble: { enabled: false },
+      },
+      {
+        effective: {
+          fields: {
+            'llm.provider': { value: 'tokenrhythm', source: 'default' },
+          },
+        },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders).toEqual([])
+    app.unmount()
+  })
+
+  it('keeps the default provider unconfigured after an unrelated config file is persisted', async () => {
+    mockProviderState(
+      {
+        hasConfig: true,
+        llmConfigured: false,
+        llmSource: 'missing_env',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: false,
+          source: 'missing_env',
+          envKey: 'TOKENRHYTHM_API_KEY',
+        },
+        llmProfileStatus: [{
+          provider: 'tokenrhythm',
+          ready: false,
+          credentialSource: 'missing_env',
+          credentialEnv: 'TOKENRHYTHM_API_KEY',
+          endpointSource: 'registry',
+          reason: 'missing_credentials',
+        }],
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        naming: { enabled: false },
+        squilla_router: { enabled: true, cross_provider_tiers: false },
+        llm_ensemble: { enabled: false },
+      },
+      {
+        effective: {
+          fields: {
+            'llm.provider': { value: 'tokenrhythm', source: 'default' },
+          },
+        },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders).toEqual([])
+    expect(api.providerPanel.value.providerSelected).toBe('')
+    expect(api.hasSavedProvider.value).toBe(false)
+    expect(api.modelStrategyPanel.value.hasSavedProvider).toBe(false)
+    expect(api.hasUnsavedChanges.value).toBe(false)
+    app.unmount()
+  })
+
+  it('configures TokenRhythm as the primary provider on its first fresh-install save', async () => {
+    mockFreshRuntimeDefaults({ allowPrimarySave: true })
+    const { api, app } = await mountCatalog()
+
+    api.selectProvider('tokenrhythm')
+    api.onProviderChange()
+    api.updateProviderField('model', 'deepseek-v4-flash')
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.configure', {
+      providerId: 'tokenrhythm',
+      model: 'deepseek-v4-flash',
+    })
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.upsert')).toBe(false)
+    app.unmount()
+  })
+
+  it('configures a non-default first selection as primary rather than a routing profile', async () => {
+    const openAiCatalog = {
+      providers: [
+        ...tokenRhythmCatalog.providers,
+        {
+          providerId: 'openai',
+          label: 'OpenAI',
+          runtimeSupported: true,
+          requiresApiKey: true,
+          fields: [
+            { name: 'model', label: 'Model', required: true, default: 'gpt-4.1-mini' },
+            { name: 'api_key', label: 'API key', secret: true },
+          ],
+        },
+      ],
+    }
+    mockFreshRuntimeDefaults({ catalog: openAiCatalog, allowPrimarySave: true })
+    const { api, app } = await mountCatalog()
+
+    api.selectProvider('openai')
+    api.onProviderChange()
+    api.updateProviderField('api_key', 'sk-public-test-placeholder')
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.configure', {
+      providerId: 'openai',
+      model: 'gpt-4.1-mini',
+      apiKey: 'sk-public-test-placeholder',
+    })
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.upsert')).toBe(false)
+    app.unmount()
+  })
+
+  it('leaves Model Strategy pristine for the default disabled ensemble', async () => {
+    mockFreshRuntimeDefaults()
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+    expect(api.hasUnsavedChanges.value).toBe(false)
+    app.unmount()
+  })
+
+  it('preserves an enabled foreign static ensemble profile without dirtying the form', async () => {
+    mockProviderState(
+      {
+        hasConfig: true,
+        llmConfigured: true,
+        llmSource: 'explicit',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: true,
+          source: 'explicit',
+        },
+        llmProfileStatus: [{
+          provider: 'openrouter',
+          ready: true,
+          credentialSource: 'explicit',
+          endpointSource: 'registry',
+        }],
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        llm_profiles: { openrouter: {} },
+        squilla_router: { enabled: false, cross_provider_tiers: false },
+        llm_ensemble: {
+          enabled: true,
+          selection_mode: 'static_openrouter_b5',
+        },
+      },
+      {
+        effective: {
+          fields: {
+            'llm.provider': { value: 'tokenrhythm', source: 'config' },
+          },
+        },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.ensemblePanel.value.selectionMode).toBe('static_openrouter_b5')
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+    expect(api.hasUnsavedChanges.value).toBe(false)
+    app.unmount()
+  })
+
+  it('does not present ordinary router enablement as multi-provider routing', async () => {
+    mockProviderState(
+      {
+        hasConfig: true,
+        llmConfigured: true,
+        llmSource: 'explicit',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: true,
+          source: 'explicit',
+        },
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        squilla_router: { enabled: true, cross_provider_tiers: false },
+        llm_ensemble: { enabled: false },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.routingEnabled).toBe(false)
+    app.unmount()
+  })
+
+  it('keeps an env-only effective provider visible as Active before config is persisted', async () => {
+    mockProviderState(
+      {
+        hasConfig: false,
+        llmConfigured: true,
+        llmSource: 'env',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: true,
+          source: 'env',
+          envKey: 'TOKENRHYTHM_API_KEY',
+        },
+      },
+      {
+        llm: {
+          provider: 'tokenrhythm',
+          model: 'deepseek-v4-flash',
+          api_key_env: 'TOKENRHYTHM_API_KEY',
+        },
+        squilla_router: { enabled: true, cross_provider_tiers: false },
+        llm_ensemble: { enabled: false },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders).toEqual([
+      expect.objectContaining({ providerId: 'tokenrhythm', active: true, ready: true }),
+    ])
+    app.unmount()
+  })
+
+  it('presents explicitly enabled cross-provider tiers as multi-provider routing', async () => {
+    mockProviderState(
+      {
+        hasConfig: true,
+        llmConfigured: true,
+        llmSource: 'explicit',
+        llmCredentialStatus: {
+          provider: 'tokenrhythm',
+          available: true,
+          source: 'explicit',
+        },
+      },
+      {
+        llm: { provider: 'tokenrhythm', model: 'deepseek-v4-flash' },
+        squilla_router: { enabled: true, cross_provider_tiers: true },
+        llm_ensemble: { enabled: false },
+      },
+    )
+
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.routingEnabled).toBe(true)
+    app.unmount()
+  })
+
+  it.each([
+    {
+      name: 'ignores a stale cross-provider flag while the router is disabled',
+      router: { enabled: false, cross_provider_tiers: true },
+    },
+    {
+      name: 'fails closed when an older Gateway omits cross_provider_tiers',
+      router: {
+        enabled: true,
+        tiers: {
+          c0: { provider: 'tokenrhythm', model: 'fast-model' },
+          c1: { provider: 'openrouter', model: 'vendor/balanced-model' },
+        },
+      },
+    },
+  ])('$name', async ({ router }) => {
+    await expectMultiProviderRouting('tokenrhythm', router, { enabled: false }, false)
+  })
+
+  it.each([
+    {
+      name: 'keeps a same-provider custom lineup off',
+      candidates: [
+        { provider: 'tokenrhythm', model: 'draft-a' },
+        { provider: 'tokenrhythm', model: 'draft-b' },
+      ],
+      modelOptions: undefined,
+      expected: false,
+    },
+    {
+      name: 'detects a custom lineup routed wholly to a secondary provider',
+      candidates: [
+        { provider: 'deepseek', model: 'deepseek-chat' },
+        { provider: 'deepseek', model: 'deepseek-reasoner' },
+      ],
+      modelOptions: undefined,
+      expected: true,
+    },
+    {
+      name: 'ignores disabled foreign custom candidates',
+      candidates: [
+        { provider: 'tokenrhythm', model: 'draft-a' },
+        { provider: 'tokenrhythm', model: 'draft-b' },
+        { provider: 'deepseek', model: 'deepseek-chat', enabled: false },
+      ],
+      modelOptions: undefined,
+      expected: false,
+    },
+    {
+      name: 'counts a foreign custom aggregator as cross-provider execution',
+      candidates: [
+        { provider: 'tokenrhythm', model: 'draft-a' },
+        { provider: 'tokenrhythm', model: 'draft-b' },
+        { provider: 'gemini', model: 'gemini-flash', role: 'aggregator' },
+      ],
+      modelOptions: undefined,
+      expected: true,
+    },
+    {
+      name: 'ignores legacy model_options in custom mode',
+      candidates: [
+        { provider: 'tokenrhythm', model: 'draft-a' },
+        { provider: 'tokenrhythm', model: 'draft-b' },
+      ],
+      modelOptions: ['vendor/ignored-model'],
+      expected: false,
+    },
+  ])('$name', async ({ candidates, modelOptions, expected }) => {
+    await expectMultiProviderRouting(
+      'tokenrhythm',
+      { enabled: false, cross_provider_tiers: false },
+      {
+        enabled: true,
+        selection_mode: 'custom_b5',
+        candidates,
+        ...(modelOptions ? { model_options: modelOptions } : {}),
+      },
+      expected,
+    )
+  })
+
+  it.each([
+    {
+      name: 'keeps the OpenRouter static lineup off for an OpenRouter primary',
+      provider: 'openrouter',
+      selectionMode: 'static_openrouter_b5',
+      expected: false,
+    },
+    {
+      name: 'detects the OpenRouter static lineup for a different primary',
+      provider: 'tokenrhythm',
+      selectionMode: 'static_openrouter_b5',
+      expected: true,
+    },
+    {
+      name: 'keeps the TokenRhythm static lineup off for a TokenRhythm primary',
+      provider: 'tokenrhythm',
+      selectionMode: 'static_tokenrhythm_b5',
+      expected: false,
+    },
+    {
+      name: 'detects the TokenRhythm static lineup for a different primary',
+      provider: 'openrouter',
+      selectionMode: 'static_tokenrhythm_b5',
+      expected: true,
+    },
+  ])('$name', async ({ provider, selectionMode, expected }) => {
+    await expectMultiProviderRouting(
+      provider,
+      { enabled: false, cross_provider_tiers: false },
+      { enabled: true, selection_mode: selectionMode },
+      expected,
+    )
+  })
+
+  it('ignores stale candidate and model-option fields in a static lineup', async () => {
+    await expectMultiProviderRouting(
+      'openrouter',
+      { enabled: false, cross_provider_tiers: false },
+      {
+        enabled: true,
+        selection_mode: 'static_openrouter_b5',
+        candidates: [
+          { provider: 'deepseek', model: 'deepseek-chat' },
+          { provider: 'gemini', model: 'gemini-flash' },
+        ],
+        model_options: ['vendor/ignored-model'],
+      },
+      false,
+    )
+  })
+
+  it.each([
+    {
+      name: 'detects a foreign router_dynamic candidate',
+      router: { enabled: false, cross_provider_tiers: false },
+      candidates: [
+        { provider: 'deepseek', model: 'deepseek-chat' },
+      ],
+      modelOptions: [] as string[],
+      expected: true,
+    },
+    {
+      name: 'detects a foreign router tier in the router_dynamic pool',
+      router: {
+        enabled: false,
+        cross_provider_tiers: false,
+        tiers: { c1: { provider: 'gemini', model: 'gemini-flash' } },
+      },
+      candidates: [],
+      modelOptions: [] as string[],
+      expected: true,
+    },
+    {
+      name: 'maps slash-prefixed router_dynamic model options to OpenRouter',
+      router: { enabled: false, cross_provider_tiers: false },
+      candidates: [],
+      modelOptions: ['vendor/routed-model'],
+      expected: true,
+    },
+    {
+      name: 'maps plain router_dynamic model options to the active provider',
+      router: { enabled: false, cross_provider_tiers: false },
+      candidates: [],
+      modelOptions: ['same-provider-model'],
+      expected: false,
+    },
+    {
+      name: 'ignores the retired default option list in explicit router_dynamic mode',
+      router: { enabled: false, cross_provider_tiers: false },
+      candidates: [],
+      modelOptions: [...LEGACY_OPENROUTER_MODEL_OPTIONS],
+      expected: false,
+    },
+  ])('$name', async ({ router, candidates, modelOptions, expected }) => {
+    await expectMultiProviderRouting(
+      'tokenrhythm',
+      router,
+      {
+        enabled: true,
+        selection_mode: 'router_dynamic',
+        candidates,
+        model_options: modelOptions,
+      },
+      expected,
+    )
+  })
+
+  it('treats a pre-selection-mode Gateway response as legacy router_dynamic', async () => {
+    await expectMultiProviderRouting(
+      'tokenrhythm',
+      { enabled: false },
+      {
+        enabled: true,
+        model_options: [...LEGACY_OPENROUTER_MODEL_OPTIONS],
+      },
+      true,
+    )
+  })
+
+  it('fails closed for an unknown enabled ensemble selection mode', async () => {
+    await expectMultiProviderRouting(
+      'tokenrhythm',
+      { enabled: false },
+      {
+        enabled: true,
+        selection_mode: 'future_unknown_mode',
+        candidates: [
+          { provider: 'deepseek', model: 'deepseek-chat' },
+          { provider: 'gemini', model: 'gemini-flash' },
+        ],
+        model_options: ['vendor/routed-model'],
+      },
+      false,
+    )
+  })
+
+  it('keeps a disabled foreign static ensemble out of routing state', async () => {
+    await expectMultiProviderRouting(
+      'tokenrhythm',
+      { enabled: false },
+      { enabled: false, selection_mode: 'static_openrouter_b5' },
+      false,
+    )
+  })
+})
+
+describe('useSetupCatalog configured provider management', () => {
+  const customProvider = {
+    providerId: 'custom',
+    label: 'Custom OpenAI-compatible endpoint',
+    runtimeSupported: true,
+    requiresApiKey: false,
+    defaultModel: '',
+    fields: [
+      { name: 'model', label: 'Model', required: true, default: '' },
+      { name: 'base_url', label: 'Base URL', required: true, default: '' },
+    ],
+  }
+  const providers = [
+    {
+      providerId: 'openai',
+      label: 'OpenAI',
+      runtimeSupported: true,
+      requiresApiKey: true,
+      defaultDirectModel: 'gpt-4.1-mini',
+      defaultModel: 'gpt-4.1-mini',
+      fields: [{ name: 'model', label: 'Model', required: true, default: 'gpt-4.1-mini' }],
+    },
+    {
+      providerId: 'deepseek',
+      label: 'DeepSeek',
+      runtimeSupported: true,
+      requiresApiKey: true,
+      defaultDirectModel: 'deepseek-chat',
+      defaultModel: 'deepseek-chat',
+      fields: [
+        { name: 'model', label: 'Model', required: true, default: 'deepseek-chat' },
+        { name: 'api_key', label: 'API key', secret: true },
+        { name: 'api_key_env', label: 'API key env' },
+      ],
+    },
+    { providerId: 'gemini', label: 'Google Gemini', runtimeSupported: true },
+  ]
+
+  function statusWithDeepSeek() {
+    return {
+      hasConfig: true,
+      llmConfigured: true,
+      llmSource: 'explicit',
+      llmCredentialStatus: {
+        provider: 'openai',
+        available: true,
+        source: 'explicit',
+      },
+      llmProfileStatus: [
+        {
+          provider: 'openai',
+          ready: true,
+          credentialSource: 'explicit',
+          endpointSource: 'registry',
+        },
+        {
+          provider: 'deepseek',
+          ready: true,
+          credentialSource: 'env',
+          credentialEnv: 'DEEPSEEK_API_KEY',
+          endpointSource: 'registry',
+        },
+        {
+          provider: 'legacy-provider',
+          ready: false,
+          credentialSource: 'none',
+          endpointSource: 'registry',
+          reason: 'missing_credentials',
+        },
+      ],
+    }
+  }
+
+  function configWithProfiles(...providerIds: string[]) {
+    return {
+      llm: { provider: 'openai', model: 'gpt-4.1-mini' },
+      llm_profiles: Object.fromEntries(providerIds.map(providerId => [providerId, {}])),
+    }
+  }
+
+  it('loads the saved active provider catalog without probing or dirtying the editor', async () => {
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.models.discover') {
+        expect(params).toEqual({ providerId: 'openai', model: 'gpt-4.1-mini' })
+        return {
+          ok: true,
+          source: 'live',
+          models: [{ id: 'gpt-4.1-mini', name: 'GPT-4.1 mini' }],
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await vi.waitFor(() => expect(api.providerPanel.value.connection.models).toHaveLength(1))
+    expect(api.providerPanel.value.connection).toMatchObject({
+      phase: 'unverified',
+      modelSource: 'live',
+    })
+    expect(api.sectionDirty('provider')).toBe(false)
+    expect(rpcCall.mock.calls.some(call => String(call[0]).includes('.probe'))).toBe(false)
+    app.unmount()
+  })
+
+  it('loads a selected saved profile catalog through the profile deployment RPC', async () => {
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.models.discover') {
+        return { ok: true, source: 'live', models: [{ id: 'gpt-4.1-mini', name: 'GPT-4.1 mini' }] }
+      }
+      if (method === 'onboarding.llmProfile.models.discover') {
+        expect(params).toEqual({ providerId: 'deepseek' })
+        return { ok: true, source: 'live', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    await vi.waitFor(() => expect(api.providerPanel.value.connection.models[0]?.id).toBe('deepseek-chat'))
+
+    expect(api.providerPanel.value.connection).toMatchObject({
+      phase: 'unverified',
+      modelSource: 'live',
+    })
+    expect(api.sectionDirty('provider')).toBe(false)
+    expect(rpcCall.mock.calls.some(call => String(call[0]).includes('.probe'))).toBe(false)
+    app.unmount()
+  })
+
+  it.each([
+    ['an empty provider catalog', async () => ({ ok: true, source: 'none', models: [] })],
+    ['an unavailable discovery method', async () => { throw new Error('unknown method') }],
+  ])('keeps manual model entry available for %s', async (_label, discover) => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.models.discover') return discover()
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await vi.waitFor(() => expect(
+      rpcCall.mock.calls.some(call => call[0] === 'onboarding.models.discover'),
+    ).toBe(true))
+    expect(api.providerPanel.value.connection.models).toEqual([])
+    expect(api.providerPanel.value.connection.modelSource).toBe('none')
+    expect(api.providerPanel.value.connection.phase).toBe('unverified')
+
+    api.updateProviderField('model', 'manually-entered-model')
+    expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
+      .toBe('manually-entered-model')
+    app.unmount()
+  })
+
+  it('does not expose route-only deployment status as a deletable configured profile', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openai', model: 'gpt-4.1-mini' },
+          llm_profiles: {},
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+          },
+          llm_ensemble: {
+            enabled: true,
+            selection_mode: 'custom_b5',
+            candidates: [
+              { provider: 'gemini', model: 'gemini-2.5-flash', role: 'aggregator' },
+            ],
+          },
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    // llmProfileStatus is deployment readiness for Router/Ensemble and can
+    // legitimately contain providers that have no persisted llm_profile.
+    // Only the active provider and actual llm_profiles belong in Model Service.
+    expect(api.providerPanel.value.configuredProviders.map(row => row.providerId)).toEqual([
+      'openai',
+    ])
+    expect(api.routerPanel.value.providerOptions.map(row => row.providerId)).toEqual(['openai'])
+    await api.removeProviderProfile('deepseek')
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.remove')).toBe(false)
+    app.unmount()
+  })
+
+  it('offers only persisted providers when historical router tiers name a removed provider', async () => {
+    const tokenRhythm = {
+      providerId: 'tokenrhythm',
+      label: 'TokenRhythm',
+      runtimeSupported: true,
+      requiresApiKey: true,
+      defaultDirectModel: 'deepseek-v4-flash',
+      defaultModel: 'deepseek-v4-flash',
+      fields: [{ name: 'model', label: 'Model', required: true, default: 'deepseek-v4-flash' }],
+    }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers: [...providers, tokenRhythm] }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: true,
+          llmSource: 'explicit',
+          llmCredentialStatus: {
+            provider: 'deepseek',
+            available: true,
+            source: 'explicit',
+          },
+          llmProfileStatus: [
+            {
+              provider: 'deepseek',
+              ready: true,
+              credentialSource: 'explicit',
+              endpointSource: 'registry',
+            },
+            {
+              provider: 'tokenrhythm',
+              ready: true,
+              credentialSource: 'explicit',
+              endpointSource: 'registry',
+            },
+          ],
+          sectionDetails: {
+            router: { routerBinding: 'custom' },
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'deepseek', model: 'deepseek-chat' },
+          llm_profiles: { tokenrhythm: {} },
+          squilla_router: {
+            enabled: true,
+            preset_binding: 'custom',
+            tiers: {
+              c0: { provider: 'openrouter', model: 'legacy-model' },
+              c1: { provider: 'deepseek', model: 'deepseek-chat' },
+            },
+          },
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders.map(row => row.providerId)).toEqual([
+      'deepseek',
+      'tokenrhythm',
+    ])
+    expect(api.routerPanel.value.providerOptions.map(row => row.providerId)).toEqual([
+      'deepseek',
+      'tokenrhythm',
+    ])
+    expect(api.routerPanel.value.tierRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'c0', provider: 'openrouter', model: 'legacy-model' }),
+      expect.objectContaining({ name: 'c1', provider: 'deepseek', model: 'deepseek-chat' }),
+    ]))
+    expect(api.ensemblePanel.value.tierCandidates).toEqual([
+      expect.objectContaining({ provider: 'deepseek', model: 'deepseek-chat', source: 'tier' }),
+    ])
+    app.unmount()
+  })
+
+  it('keeps persisted profiles visible when an older gateway omits profile status', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: true,
+          llmSource: 'explicit',
+          llmCredentialStatus: {
+            provider: 'openai',
+            available: true,
+            source: 'explicit',
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders).toEqual([
+      expect.objectContaining({ providerId: 'openai', active: true }),
+      expect.objectContaining({
+        providerId: 'deepseek',
+        active: false,
+        ready: false,
+        reason: 'profile_status_unavailable',
+      }),
+    ])
+    app.unmount()
+  })
+
+  it('treats additive profile status without activation fields as compatibility-unknown', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.configuredProviders.find(row => row.providerId === 'deepseek'))
+      .toMatchObject({
+        ready: true,
+        primaryEligible: false,
+        primaryBlockReason: 'profile_status_unavailable',
+      })
+    app.unmount()
+  })
+
+  it('does not discard a dirty editor when the selected provider is clicked again', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.updateProviderField('model', 'unsaved-model')
+    expect(api.sectionDirty('provider')).toBe(true)
+
+    await api.requestSelectConfiguredProvider('openai')
+
+    expect(confirmAction).not.toHaveBeenCalled()
+    expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
+      .toBe('unsaved-model')
+    expect(api.sectionDirty('provider')).toBe(true)
+    app.unmount()
+  })
+
+  it('hydrates and safely round-trips a saved profile endpoint and proxy', async () => {
+    const endpointProvider = {
+      ...customProvider,
+      fields: [
+        ...(customProvider.fields || []),
+        { name: 'proxy', label: 'Proxy', default: '' },
+      ],
+    }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers: [...providers, endpointProvider] }
+      if (method === 'onboarding.status') {
+        return {
+          ...statusWithDeepSeek(),
+          llmProfileStatus: [
+            ...(statusWithDeepSeek().llmProfileStatus || []),
+            {
+              provider: 'custom',
+              ready: true,
+              credentialSource: 'profile_env',
+              credentialEnv: 'CUSTOM_PROFILE_KEY',
+              endpointSource: 'profile',
+              reason: '',
+            },
+          ],
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('custom'),
+          llm_profiles: {
+            custom: {
+              api_key_env: 'CUSTOM_PROFILE_KEY',
+              base_url: 'https://llm.example.test/v1',
+              proxy: 'http://proxy.example.test:8080',
+            },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.upsert') return { changed: true }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('custom')
+    expect(api.providerPanel.value.providerFieldValue({ name: 'base_url', label: 'Base URL' }))
+      .toBe('https://llm.example.test/v1')
+    expect(api.providerPanel.value.providerFieldValue({ name: 'proxy', label: 'Proxy' }))
+      .toBe('http://proxy.example.test:8080')
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      source: 'env',
+      available: true,
+      envKey: 'CUSTOM_PROFILE_KEY',
+      apiKeyEnvValue: 'CUSTOM_PROFILE_KEY',
+    })
+    expect(api.providerPanel.value.configuredProviders.find(row => row.providerId === 'custom'))
+      .toMatchObject({ ready: true, reason: '' })
+    expect(api.sectionDirty('provider')).toBe(false)
+
+    api.updateProviderField('proxy', 'http://proxy-b.example.test:8080')
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.upsert', {
+      providerId: 'custom',
+      baseUrl: 'https://llm.example.test/v1',
+      proxy: 'http://proxy-b.example.test:8080',
+      keepCurrentSecret: true,
+    })
+    app.unmount()
+  })
+
+  it('limits routing provider choices to configured profiles without promoting historical references', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek', 'legacy-provider'),
+          squilla_router: {
+            enabled: true,
+            tiers: {
+              c0: { provider: 'deepseek', model: 'deepseek-chat' },
+              c1: { provider: 'historical-unknown', model: 'archived-model' },
+            },
+          },
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.routerPanel.value.providerOptions.map(row => row.providerId).sort()).toEqual([
+      'deepseek',
+      'legacy-provider',
+      'openai',
+    ])
+    expect(api.routerPanel.value.providerOptions.map(row => row.providerId)).not.toContain('gemini')
+    expect(api.providerPanel.value.configuredProviders.map(row => row.providerId)).toEqual([
+      'openai',
+      'deepseek',
+      'legacy-provider',
+    ])
+    app.unmount()
+  })
+
+  it('upserts and reloads a non-primary profile without replacing the active provider', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.upsert') return { changed: true }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    expect(api.sectionDirty('provider')).toBe(false)
+    api.updateProviderField('model', 'deepseek-reasoner')
+    expect(api.sectionDirty('provider')).toBe(true)
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.upsert', {
+      providerId: 'deepseek',
+      model: 'deepseek-reasoner',
+      keepCurrentSecret: true,
+    })
+    expect(api.providerPanel.value.providerSelected).toBe('deepseek')
+    expect(api.providerPanel.value.selectedStoredProfile).toBe(true)
+    expect(api.providerPanel.value.configuredProviders.map(row => row.providerId)).toContain('deepseek')
+    app.unmount()
+  })
+
+  it('sends an explicit empty model when clearing a saved profile override', async () => {
+    const saved = configWithProfiles('deepseek')
+    saved.llm_profiles.deepseek = { model: 'deepseek-reasoner' }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return saved
+      if (method === 'onboarding.llmProfile.upsert') return { changed: true }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    api.updateProviderField('model', '')
+    expect(api.sectionDirty('provider')).toBe(true)
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.upsert', {
+      providerId: 'deepseek',
+      model: '',
+      keepCurrentSecret: true,
+    })
+    app.unmount()
+  })
+
+  it('saves the registry env default without materializing the inherited model default', async () => {
+    const providersWithEnvDefault = providers.map(provider => (
+      provider.providerId === 'deepseek'
+        ? {
+            ...provider,
+            fields: (provider.fields || []).map(field => (
+              field.name === 'api_key_env'
+                ? { ...field, default: 'DEEPSEEK_API_KEY' }
+                : field
+            )),
+          }
+        : provider
+    ))
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers: providersWithEnvDefault }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles()
+      if (method === 'onboarding.provider.probe') {
+        return {
+          ok: false,
+          failureKind: 'auth_invalid',
+          message: 'Environment variable DEEPSEEK_API_KEY is not visible',
+        }
+      }
+      if (method === 'onboarding.llmProfile.upsert') return { changed: true }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await api.requestAddProvider('deepseek')
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      apiKeyEnvValue: 'DEEPSEEK_API_KEY',
+      draftCredentialSource: '',
+      probeReady: false,
+    })
+    api.probeProviderConnection()
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.provider.probe')).toBe(false)
+
+    // A registry default is only a suggestion. Explicitly choosing/entering
+    // the reference makes the draft probe-eligible so the Gateway can report
+    // whether that environment variable is actually visible.
+    api.updateProviderField('api_key_env', 'DEEPSEEK_API_KEY')
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      draftCredentialSource: 'env',
+      probeReady: true,
+    })
+    const modelField = [
+      ...api.providerPanel.value.providerCoreFields,
+      ...api.providerPanel.value.providerAdvancedFields,
+    ].find(field => field.name === 'model')!
+    expect(api.providerPanel.value.providerFieldValue(modelField)).toBe('deepseek-chat')
+    api.probeProviderConnection()
+    await vi.waitFor(() => expect(api.providerPanel.value.connection).toMatchObject({
+      phase: 'key_invalid',
+      failureKind: 'auth_invalid',
+      detail: 'Environment variable DEEPSEEK_API_KEY is not visible',
+    }))
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.probe', {
+      providerId: 'deepseek',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      model: 'deepseek-chat',
+    })
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.upsert', {
+      providerId: 'deepseek',
+      apiKey: '',
+      apiKeyEnv: 'DEEPSEEK_API_KEY',
+      keepCurrentSecret: false,
+    })
+    app.unmount()
+  })
+
+  it('tests the current saved-profile editor draft, including unsaved values', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.draft.probe') return { ok: true, latencyMs: 21 }
+      if (method === 'onboarding.llmProfile.draft.models.discover') {
+        return { ok: true, source: 'live', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    api.updateProviderField('api_key', 'draft-secret')
+    api.updateProviderField('model', 'draft-deepseek-model')
+    api.probeProviderConnection()
+    const expectedDraft = {
+      providerId: 'deepseek',
+      apiKey: 'draft-secret',
+      model: 'draft-deepseek-model',
+      keepCurrentSecret: false,
+    }
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'onboarding.llmProfile.draft.probe',
+      expectedDraft,
+    ))
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'onboarding.llmProfile.draft.models.discover',
+      expectedDraft,
+    ))
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.probe')).toBe(false)
+    expect(api.providerPanel.value.connection.phase).toBe('verified')
+    expect(api.providerPanel.value.connection.models[0]?.id).toBe('deepseek-chat')
+    app.unmount()
+  })
+
+  it('tests a configured-provider row against its saved deployment without changing editor state', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.probe') return { ok: true, latencyMs: 19 }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.providerSelected).toBe('openai')
+    await api.probeConfiguredProvider('deepseek')
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.probe', {
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    })
+    expect(api.providerPanel.value.providerSelected).toBe('openai')
+    expect(api.providerPanel.value.configuredProviderProbes.deepseek).toMatchObject({
+      phase: 'verified',
+      latencyMs: 19,
+    })
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.draft.probe')).toBe(false)
+    app.unmount()
+  })
+
+  it('tests a saved profile model before catalog or routed defaults', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          llm_profiles: { deepseek: { model: 'deepseek-saved-direct' } },
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-routed-model' } },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.probe') return { ok: true, latencyMs: 17 }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await api.probeConfiguredProvider('deepseek')
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.probe', {
+      providerId: 'deepseek',
+      model: 'deepseek-saved-direct',
+    })
+    app.unmount()
+  })
+
+  it('uses the provider direct default before a routed model for legacy profiles', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-routed-model' } },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.probe') return { ok: true, latencyMs: 13 }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await api.probeConfiguredProvider('deepseek')
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.probe', {
+      providerId: 'deepseek',
+      model: 'deepseek-chat',
+    })
+    app.unmount()
+  })
+
+  it('invalidates saved-provider probe evidence after a successful reload', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.probe') return { ok: true, latencyMs: 11 }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await api.probeConfiguredProvider('deepseek')
+    expect(api.providerPanel.value.configuredProviderProbes.deepseek?.phase).toBe('verified')
+
+    await api.loadData()
+    expect(api.providerPanel.value.configuredProviderProbes.deepseek).toBeUndefined()
+    app.unmount()
+  })
+
+  it('discards a saved-provider probe that finishes after a reload', async () => {
+    let finishProbe!: (value: { ok: boolean; latencyMs: number }) => void
+    const pendingProbe = new Promise<{ ok: boolean; latencyMs: number }>((resolve) => {
+      finishProbe = resolve
+    })
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.probe') return pendingProbe
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    const probe = api.probeConfiguredProvider('deepseek')
+    await vi.waitFor(() => expect(
+      api.providerPanel.value.configuredProviderProbes.deepseek?.phase,
+    ).toBe('probing'))
+
+    await api.loadData()
+    expect(api.providerPanel.value.configuredProviderProbes.deepseek).toBeUndefined()
+    finishProbe({ ok: true, latencyMs: 9 })
+    await probe
+    expect(api.providerPanel.value.configuredProviderProbes.deepseek).toBeUndefined()
+    app.unmount()
+  })
+
+  it('uses stored-profile discovery when the selected secondary provider opens Model Routing', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.models.discover') {
+        return {
+          ok: true,
+          source: 'live',
+          models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }],
+        }
+      }
+      if (method === 'onboarding.models.discover') {
+        return { ok: true, source: 'none', models: [] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    api.setSection('modelStrategy')
+
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'onboarding.llmProfile.models.discover',
+      { providerId: 'deepseek' },
+    ))
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.models.discover', {
+      providerId: 'openai',
+      model: 'gpt-4.1-mini',
+    })
+    expect(api.routerPanel.value.discoveredModelsByProvider.deepseek?.models[0]?.id)
+      .toBe('deepseek-chat')
+    app.unmount()
+  })
+
+  it('does not disguise profile discovery failures as an old-Gateway fallback', async () => {
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.models.discover') {
+        throw new Error('401 unauthorized profile deployment')
+      }
+      if (method === 'onboarding.models.discover') {
+        return { ok: true, source: 'live', models: [{ id: 'wrong-deployment' }] }
+      }
+      throw new Error(`Unexpected RPC method: ${method} ${String(params?.providerId || '')}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setSection('modelStrategy')
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'onboarding.llmProfile.models.discover',
+      { providerId: 'deepseek' },
+    ))
+    await vi.waitFor(() => expect(
+      api.routerPanel.value.discoveredModelsByProvider.deepseek,
+    ).toEqual({ models: [], source: 'none' }))
+    expect(rpcCall.mock.calls.some(([method, params]) => (
+      method === 'onboarding.models.discover'
+      && (params as Record<string, unknown> | undefined)?.providerId === 'deepseek'
+    ))).toBe(false)
+    app.unmount()
+  })
+
+  it('uses the legacy discovery endpoint only when the profile method is unavailable', async () => {
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.models.discover') {
+        throw new Error('RPC method not found')
+      }
+      if (method === 'onboarding.models.discover') {
+        return {
+          ok: true,
+          source: 'live',
+          models: [{ id: String(params?.providerId) === 'deepseek' ? 'legacy-model' : 'active-model' }],
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setSection('modelStrategy')
+    await vi.waitFor(() => expect(
+      api.routerPanel.value.discoveredModelsByProvider.deepseek?.models[0]?.id,
+    ).toBe('legacy-model'))
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.models.discover', {
+      providerId: 'deepseek',
+    })
+    app.unmount()
+  })
+
+  it('probes a model-less stored profile with a representative routed model', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers: [...providers, customProvider] }
+      if (method === 'onboarding.status') {
+        return {
+          ...statusWithDeepSeek(),
+          llmProfileStatus: [
+            ...(statusWithDeepSeek().llmProfileStatus || []),
+            {
+              provider: 'custom',
+              ready: true,
+              credentialSource: 'not_required',
+              endpointSource: 'profile',
+            },
+          ],
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('custom'),
+          squilla_router: {
+            enabled: true,
+            tiers: { c0: { provider: 'custom', model: 'local-chat-model' } },
+          },
+        }
+      }
+      if (method === 'onboarding.llmProfile.draft.probe') return { ok: true, latencyMs: 17 }
+      if (method === 'onboarding.llmProfile.draft.models.discover') {
+        return { ok: true, source: 'none', models: [] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('custom')
+    api.probeProviderConnection()
+
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'onboarding.llmProfile.draft.probe',
+      { providerId: 'custom', model: 'local-chat-model', keepCurrentSecret: true },
+    ))
+    expect(api.providerPanel.value.connection.phase).toBe('verified')
+    app.unmount()
+  })
+
+  it('blocks a stored profile probe when no representative model exists', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers: [...providers, customProvider] }
+      if (method === 'onboarding.status') {
+        return {
+          ...statusWithDeepSeek(),
+          llmProfileStatus: [
+            ...(statusWithDeepSeek().llmProfileStatus || []),
+            {
+              provider: 'custom',
+              ready: true,
+              credentialSource: 'not_required',
+              endpointSource: 'profile',
+            },
+          ],
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return configWithProfiles('custom')
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('custom')
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      probeReady: false,
+      probeDisabledReason: 'Complete required fields before verifying: Model.',
+    })
+    api.probeProviderConnection()
+
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.draft.probe')).toBe(false)
+    app.unmount()
+  })
+
+  it('activates with the provider default and turns off an incompatible custom Router', async () => {
+    const status = {
+      ...statusWithDeepSeek(),
+      sectionDetails: {
+        router: { routerMode: 'custom', routerBinding: 'custom' },
+      },
+      llmProfileStatus: (statusWithDeepSeek().llmProfileStatus || []).map(profile => (
+        profile.provider === 'deepseek'
+          ? { ...profile, primaryEligible: true, primaryBlockReason: '' }
+          : profile
+      )),
+    }
+    const saved = {
+      ...configWithProfiles('deepseek'),
+      squilla_router: {
+        enabled: true,
+        preset_binding: 'custom',
+        cross_provider_tiers: false,
+        tiers: {
+          c0: { provider: 'openai', model: 'gpt-4.1-mini' },
+          c1: { provider: 'deepseek', model: 'deepseek-chat' },
+        },
+      },
+      llm_ensemble: { enabled: false },
+    }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return status
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return saved
+      if (method === 'onboarding.models.discover') return { ok: true, source: 'none', models: [] }
+      if (method === 'onboarding.llmProfile.activate') return { changed: true }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.routerEnabled).toBe(true)
+    expect(api.providerPanel.value.routerBinding).toBe('custom')
+    await api.activateProvider('deepseek')
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.activate', {
+      providerId: 'deepseek',
+      routerAction: 'disable',
+    })
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.models.discover'))
+      .toBe(false)
+    expect(pushToast).toHaveBeenCalledWith(expect.stringContaining('Model Routing was turned off'))
+    app.unmount()
+  })
+
+  it('serializes activation and ignores provider edits or mutations until reload completes', async () => {
+    let resolveActivation!: () => void
+    const activationRequest = new Promise<{ changed: boolean }>(resolve => {
+      resolveActivation = () => resolve({ changed: true })
+    })
+    const status = statusWithDeepSeek()
+    status.llmProfileStatus = status.llmProfileStatus.map(profile => (
+      profile.provider === 'deepseek'
+        ? { ...profile, primaryEligible: true, primaryBlockReason: '' }
+        : profile
+    ))
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return status
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.models.discover') {
+        return { ok: true, source: 'none', models: [] }
+      }
+      if (method === 'onboarding.llmProfile.activate') return activationRequest
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    const firstActivation = api.activateProvider('deepseek')
+    await vi.waitFor(() => expect(api.providerPanel.value.activation).toMatchObject({
+      providerId: 'deepseek',
+      phase: 'activating',
+    }))
+
+    api.selectConfiguredProvider('deepseek')
+    api.updateProviderField('model', 'must-not-be-applied')
+    api.updateLlmTimeout(7)
+    api.probeProviderConnection()
+    const duplicateActivation = api.activateProvider('deepseek')
+    await api.removeProviderProfile('deepseek')
+    await api.saveProvider()
+
+    expect(api.providerPanel.value.providerSelected).toBe('openai')
+    expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
+      .toBe('gpt-4.1-mini')
+    expect(api.providerPanel.value.llmTimeoutSeconds).not.toBe(7)
+    expect(rpcCall.mock.calls.filter(call => call[0] === 'onboarding.llmProfile.activate'))
+      .toHaveLength(1)
+    expect(rpcCall.mock.calls.some(call => [
+      'onboarding.provider.configure',
+      'onboarding.provider.probe',
+      'onboarding.llmProfile.remove',
+    ].includes(String(call[0])))).toBe(false)
+
+    resolveActivation()
+    await Promise.all([firstActivation, duplicateActivation])
+    expect(api.providerPanel.value.activation.phase).toBe('idle')
+    app.unmount()
+  })
+
+  it('treats a missing router binding as legacy and never guesses follow-primary', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          squilla_router: { enabled: true, tiers: {} },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: true, source: 'none', models: [] }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.routerBinding).toBe('legacy')
+    app.unmount()
+  })
+
+  it('falls back to the persisted router binding when additive status is absent', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          ...configWithProfiles('deepseek'),
+          squilla_router: {
+            enabled: true,
+            preset_binding: 'custom',
+            tiers: { c0: { provider: 'deepseek', model: 'deepseek-chat' } },
+          },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: true, source: 'none', models: [] }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.routerBinding).toBe('custom')
+    app.unmount()
+  })
+
+  it('guards unsaved provider edits before direct activation', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        const status = statusWithDeepSeek()
+        return {
+          ...status,
+          llmProfileStatus: status.llmProfileStatus.map(profile => (
+            profile.provider === 'deepseek'
+              ? { ...profile, primaryEligible: true, primaryBlockReason: '' }
+              : profile
+          )),
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.models.discover') {
+        return { ok: true, source: 'live', models: [{ id: 'deepseek-chat', name: 'DeepSeek Chat' }] }
+      }
+      if (method === 'onboarding.models.discover') return { ok: true, source: 'none', models: [] }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+    api.selectConfiguredProvider('deepseek')
+    await vi.waitFor(() => expect(
+      rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.models.discover'),
+    ).toBe(true))
+    rpcCall.mockClear()
+    api.updateProviderField('api_key_env', 'DEEPSEEK_KEY_UNSAVED')
+    confirmAction.mockResolvedValueOnce(false)
+
+    await api.activateProvider('deepseek')
+
+    expect(confirmAction).toHaveBeenCalledOnce()
+    expect(api.providerPanel.value.activation.phase).toBe('idle')
+    expect(rpcCall.mock.calls.some(call => call[0] === 'onboarding.llmProfile.activate'))
+      .toBe(false)
+    app.unmount()
+  })
+
+  it('removes an unused profile and surfaces backend refusal for referenced profiles', async () => {
+    let refuse = false
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'onboarding.llmProfile.remove') {
+        if (refuse) throw new Error('profile is still referenced by router tier c0')
+        return { changed: true }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await api.removeProviderProfile('deepseek')
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.remove', { providerId: 'deepseek' })
+
+    refuse = true
+    await api.removeProviderProfile('deepseek')
+    expect(pushToast).toHaveBeenCalledWith(
+      expect.stringContaining('profile is still referenced'),
+      { tone: 'danger' },
+    )
+    app.unmount()
+  })
+})
+
 describe('useSetupCatalog provider credential reveal', () => {
   it('reveals the saved provider key through the dedicated RPC', async () => {
     rpcCall.mockImplementation(async (method: string) => {
@@ -820,6 +2703,7 @@ describe('useSetupCatalog optional provider credentials', () => {
         }
       }
       if (method === 'onboarding.provider.configure') return {}
+      if (method === 'onboarding.llmProfile.upsert') return {}
       throw new Error(`Unexpected RPC method: ${method}`)
     })
   }
@@ -868,7 +2752,7 @@ describe('useSetupCatalog optional provider credentials', () => {
       probeReady: false,
     })
     expect(credential?.probeDisabledReason).toBe(
-      'Complete required fields before testing: Model, Base URL.',
+      'Complete required fields before verifying: Model, Base URL.',
     )
 
     api.probeProviderConnection()
@@ -1051,7 +2935,7 @@ describe('useSetupCatalog optional provider credentials', () => {
     app.unmount()
   })
 
-  it('does not carry preserveApiKey across a provider switch', async () => {
+  it('adds a different provider as a persistent routing profile without carrying the primary secret', async () => {
     mockSavedProviderForSave({ additionalProviderId: 'custom-alt' })
     const { api, app } = await mountCatalog()
 
@@ -1060,9 +2944,10 @@ describe('useSetupCatalog optional provider credentials', () => {
     api.updateProviderField('model', 'other-model')
     await api.saveProvider()
 
-    const configureCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.provider.configure')
-    const payload = configureCall?.[1] as Record<string, unknown>
-    expect(payload).toMatchObject({ providerId: 'custom-alt', model: 'other-model' })
+    const upsertCall = rpcCall.mock.calls.find(call => call[0] === 'onboarding.llmProfile.upsert')
+    const payload = upsertCall?.[1] as Record<string, unknown>
+    expect(payload).toMatchObject({ providerId: 'custom-alt', keepCurrentSecret: false })
+    expect(payload).toHaveProperty('model', 'other-model')
     expect(payload).not.toHaveProperty('preserveApiKey')
     app.unmount()
   })

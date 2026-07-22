@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -13,6 +12,7 @@ from typing import Any
 import structlog
 
 from opensquilla.provider.credentials import Credential, CredentialPool, NoCredentialsAvailable
+from opensquilla.provider.environment import environment_value
 from opensquilla.provider.failures import ProviderFailureKind
 
 log = structlog.get_logger(__name__)
@@ -119,8 +119,8 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
         "" if explicit_api_key else (getattr(llm, "api_key_env", "") or spec_env_key)
     )
     base_url_env_name = provider_base_url_env_name(provider) if spec is not None else ""
-    env_api_key = os.environ.get(api_key_env_name, "") if api_key_env_name else ""
-    env_base_url = os.environ.get(base_url_env_name, "") if base_url_env_name else ""
+    env_api_key = environment_value(api_key_env_name) if api_key_env_name else ""
+    env_base_url = environment_value(base_url_env_name) if base_url_env_name else ""
     api_key = explicit_api_key or env_api_key or llm.api_key
     # Explicit config > derived env > spec default, mirroring the api_key
     # rule (#484): a base_url the operator chose must not be overridden by
@@ -138,7 +138,7 @@ def resolve_llm_runtime_config(config: Any) -> LlmRuntimeConfig:
     else:
         base_url = env_base_url or (spec.default_base_url if spec else stored_base_url)
     base_url_from_env = bool(env_base_url) and base_url == env_base_url
-    proxy = os.environ.get("OPENSQUILLA_LLM_PROXY", "") or getattr(llm, "proxy", "")
+    proxy = environment_value("OPENSQUILLA_LLM_PROXY") or getattr(llm, "proxy", "")
 
     # Record runtime provenance BEFORE mutating the live model: values
     # resolved from the environment (or spec defaults) here must never be
@@ -350,6 +350,48 @@ class ProfileCredentialPools:
                 permanent=cooldown == float("inf"),
             )
 
+    def peek_available(
+        self,
+        provider_id: str,
+        env_pool: list[str],
+    ) -> PooledCredential | None:
+        """Return one currently runnable credential without mutating pool state.
+
+        Status/readiness surfaces use this instead of ``acquire_for_session``:
+        it observes the same process-wide parked state but never advances the
+        cursor, increments acquisition counts, creates a session pin, or
+        rebuilds a pool.  When the configured name list has not been seen by
+        the runtime yet (or has changed), a direct environment inspection
+        predicts the next rebuild without performing it.
+        """
+
+        provider_id = (provider_id or "").strip().lower()
+        names = tuple(dict.fromkeys(n.strip() for n in env_pool if n and n.strip()))
+        if not provider_id or not names:
+            return None
+        with self._lock:
+            if self._pool_fingerprints.get(provider_id) != names:
+                for env_name in names:
+                    secret = environment_value(env_name).strip()
+                    if secret:
+                        return PooledCredential(
+                            provider_id=provider_id,
+                            env_name=env_name,
+                            key_id=masked_key_id(secret),
+                            api_key=secret,
+                        )
+                return None
+
+            pool = self._pools.get(provider_id)
+            if pool is None:
+                return None
+            for env_name in names:
+                if not pool.available(env_name):
+                    continue
+                cred = self._creds_by_id[provider_id][env_name]
+                return self._pooled_locked(provider_id, cred)
+            raise NoCredentialsAvailable("all credentials in cooldown")
+
     def _pooled_locked(self, provider_id: str, cred: Credential) -> PooledCredential:
         return PooledCredential(
             provider_id=provider_id,
@@ -371,7 +413,7 @@ class ProfileCredentialPools:
         credentials: list[Credential] = []
         key_ids: dict[str, str] = {}
         for env_name in names:
-            secret = os.environ.get(env_name, "").strip()
+            secret = environment_value(env_name).strip()
             if not secret:
                 log.warning(
                     "credential_pool.env_unset",

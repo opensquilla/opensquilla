@@ -630,7 +630,7 @@ function stepToRenderItem(step: NodeStep): ChatToolCallRenderItem {
   return {
     toolId: step.id,
     renderKey: step.id,
-    name: step.operationKey,
+    name: step.toolName || step.operationKey,
     displayName: step.title,
     inputRaw: step.input,
     inputPreview: step.inputPreview ?? '',
@@ -744,7 +744,7 @@ function groupBulletClass(group: ChatToolCallGroup) {
 
 function resultCountText(call: ChatToolCallRenderItem): string {
   if (call.isRunning || call.isError) return ''
-  const count = toolResultCount(call.result)
+  const count = toolResultCount(call.result, call.name)
   return count === null ? '' : t('shared.runTrace.resultsCount', { count })
 }
 

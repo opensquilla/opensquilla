@@ -351,6 +351,61 @@ def test_vision_provider_env_override_wins_over_router_image_tier(monkeypatch) -
     assert cfg.base_url == "https://anthropic.example"
 
 
+def test_vision_provider_resolves_demoted_primary_from_profile(monkeypatch) -> None:
+    _clear_vision_provider_env(monkeypatch)
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.tools.builtin import media
+
+    config = GatewayConfig(
+        llm={
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "api_key": "synthetic-active-secret",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+        llm_profiles={
+            "OpenAI": {
+                "api_key": "synthetic-demoted-secret",
+                "base_url": "https://profile-openai.example/v1",
+                "proxy": "http://profile-proxy.example:8080",
+            }
+        },
+        squilla_router={
+            "tier_profile": "openai",
+            "tiers": {
+                "image_model": {
+                    "provider": "openai",
+                    "model": "gpt-4o-mini",
+                    "supports_image": True,
+                    "image_only": True,
+                }
+            },
+        },
+    )
+
+    media.configure_image_generation(
+        config.image_generation,
+        gateway_config=config,
+        llm_config=config.llm,
+        squilla_router_config=config.squilla_router,
+    )
+    try:
+        resolved = media._resolve_vision_provider_config(
+            default_model="openai/gpt-4o-mini"
+        )
+    finally:
+        media.configure_image_generation(None)
+
+    assert resolved.provider == "openai"
+    assert resolved.model == "gpt-4o-mini"
+    assert resolved.api_key == "synthetic-demoted-secret"
+    assert resolved.base_url == "https://profile-openai.example/v1"
+    assert resolved.proxy == "http://profile-proxy.example:8080"
+    assert resolved.replay_provider_state is False
+    assert "synthetic-demoted-secret" not in repr(resolved)
+
+
 def test_image_analysis_tool_timeout_exceeds_provider_request_timeout() -> None:
     from opensquilla.provider.types import ChatConfig
     from opensquilla.tools.registry import get_default_registry

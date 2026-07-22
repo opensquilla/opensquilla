@@ -251,6 +251,8 @@ export interface ChatSendParams {
   sessionKey: string
   /** Stable idempotency key for one logical send attempt. */
   clientRequestId?: string
+  /** Stable client identity for reconciling the optimistic user row. */
+  clientMessageId?: string
   _source?: { elevated?: string; runMode?: 'standard' | 'trusted' | 'full' }
   intent?: string
   forkBeforeMessageId?: string
@@ -261,6 +263,10 @@ export interface ChatSendParams {
 
 export interface ChatSendResponse {
   sessionKey?: string
+  message_id?: string
+  user_message_id?: string
+  client_message_id?: string
+  clientMessageId?: string
   task_id?: string
   taskId?: string
   replayed?: boolean

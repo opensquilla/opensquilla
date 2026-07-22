@@ -241,6 +241,26 @@ describe('useChatFeatureToggles coding mode', () => {
   })
 })
 
+describe('useChatFeatureToggles router visual effects', () => {
+  it('persists router visual effects without a legacy browser global', () => {
+    const setItem = vi.fn()
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn(() => null),
+      setItem,
+    })
+    const { api } = createHarness()
+
+    api.setRouterVisualEffectsEnabled(false)
+
+    expect(api.routerVisualEffectsEnabled.value).toBe(false)
+    expect(setItem).toHaveBeenCalledWith('opensquilla.routerFx', JSON.stringify({
+      enabled: false,
+      variant: 'default',
+    }))
+    expect(source).not.toContain('SavingsFX')
+  })
+})
+
 describe('useChatFeatureToggles model routing mode', () => {
   it('uses the canonical routing snapshot over legacy config inference', async () => {
     const { api } = createHarness({

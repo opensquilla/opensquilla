@@ -458,6 +458,27 @@ def test_run_wide_generation_policy_overrides_realized_ensemble_members(module) 
 
 
 @pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
+def test_default_model_specific_budget_is_resolved_per_ensemble_member(module) -> None:
+    provider = module.EnsembleProvider(
+        profile_name="router_dynamic/c3",
+        proposers=[_ensemble_member(module, "anthropic/claude-opus-4.8")],
+        aggregator=_ensemble_member(module, "x-ai/grok-4.5"),
+    )
+    policy = module.generation_thinking_policy()
+    assert policy["thinking_budget_tokens"] == "model-specific"
+
+    aligned = module.apply_generation_policy_to_ensemble_provider(provider, policy)
+
+    assert {
+        row["model"]: row["thinking_budget_tokens"]
+        for row in aligned.selection_plan["member_generation"]
+    } == {
+        "anthropic/claude-opus-4.8": 50_000,
+        "x-ai/grok-4.5": 50_000,
+    }
+
+
+@pytest.mark.parametrize("module", [runner, resume_runner], ids=["main", "resume"])
 def test_strict_ensemble_validation_rejects_unproved_reasoning_member(
     module,
     monkeypatch: pytest.MonkeyPatch,

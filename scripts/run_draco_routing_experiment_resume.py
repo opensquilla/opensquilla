@@ -1647,13 +1647,13 @@ def generation_chat_config(
     tool_choice: Any | None = None,
 ) -> ChatConfig:
     mode = generation_thinking_for_model(model, policy)
-    budget_level = ThinkingLevel.XHIGH if mode == "max" else ThinkingLevel(mode)
+    budget_level = ThinkingLevel.MAX if mode == "max" else ThinkingLevel(mode)
     thinking_level: ThinkingLevel | str = "max" if mode == "max" else budget_level
     raw_budget = policy.get("thinking_budget_tokens")
     thinking_budget = (
         int(raw_budget)
         if isinstance(raw_budget, int | float) and not isinstance(raw_budget, bool)
-        else THINKING_BUDGETS[budget_level]
+        else THINKING_BUDGETS.get(budget_level, THINKING_BUDGETS[ThinkingLevel.XHIGH])
     )
     return with_openrouter_model_capabilities(
         ChatConfig(
@@ -1879,7 +1879,10 @@ def apply_generation_policy_to_ensemble_provider(
             "temperature": member.temperature,
             "max_tokens": member.max_tokens,
             "thinking": member.thinking,
-            "thinking_budget_tokens": int(policy.get("thinking_budget_tokens") or 0),
+            "thinking_budget_tokens": generation_chat_config(
+                policy,
+                model=member.provider_config.model,
+            ).thinking_budget_tokens,
             "k": member.k,
         }
         for role, member in [

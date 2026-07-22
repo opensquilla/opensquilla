@@ -208,7 +208,7 @@ def test_recovery_after_degraded_accept_does_not_double_dispatch(tmp_path) -> No
 
 
 def test_claim_while_journal_blocked_retains_same_process_dedupe(tmp_path) -> None:
-    """A pass-through claim must retain its marker while storage is unavailable."""
+    """A pass-through claim must retain bounded dedupe while storage is unavailable."""
     store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
     message = _message()
     event_key = inbound_event_key("slack-main", message)
@@ -228,17 +228,45 @@ def test_claim_while_journal_blocked_retains_same_process_dedupe(tmp_path) -> No
         claim = store.claim_inbound("slack-main", queue[0])
         assert claim is not None
         assert claim.event_key == ""
-        assert event_key in store._unjournaled_events
+        assert event_key not in store._unjournaled_events
+        assert event_key in store._claimed_unjournaled_events
         assert durable_enqueue(channel, message, Queue()) is False
 
     # Recovery after the pass-through claim must not make a provider redelivery
     # visible a second time in this process.
     assert durable_enqueue(channel, message, Queue()) is False
     assert len(queue) == 1
-    assert event_key in store._unjournaled_events
+    assert event_key not in store._unjournaled_events
+    assert event_key in store._claimed_unjournaled_events
     assert _durable_ingress_count(store) == 0
     assert store.claim_inbound("slack-main", message) is None
     store.complete_inbound(claim, "turn_dispatched")  # pass-through no-op
+    store.close()
+
+
+def test_persistent_journal_outage_bounds_claimed_event_dedupe(tmp_path) -> None:
+    """Claimed memory-only events must not accumulate for the process lifetime."""
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    store._max_claimed_unjournaled_events = 2
+
+    with _blocked_journal(store):
+        event_keys: list[str] = []
+        for index in range(3):
+            message = _message(f"event-{index}")
+            event_key = inbound_event_key("slack-main", message)
+            assert event_key is not None
+            event_keys.append(event_key)
+
+            assert store.accept_inbound("slack-main", message) is True
+            assert event_key in store._unjournaled_events
+            claim = store.claim_inbound("slack-main", message)
+            assert claim is not None
+            assert claim.event_key == ""
+            assert event_key not in store._unjournaled_events
+
+    assert list(store._claimed_unjournaled_events) == event_keys[-2:]
+    assert store.accept_inbound("slack-main", _message("event-1")) is False
+    assert store.claim_inbound("slack-main", _message("event-2")) is None
     store.close()
 
 

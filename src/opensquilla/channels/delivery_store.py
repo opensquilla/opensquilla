@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,10 @@ MAX_PENDING_PAIRINGS_PER_CHANNEL = 25
 # synchronous commit per message before admission even runs.
 PAIRING_REFRESH_WINDOW_S = 30.0
 _PAIRING_PRUNE_EVERY = 64
+# Match the bounded event caches used by channel adapters. Pending degraded
+# events remain tracked until claimed; only claimed pass-through events are
+# eligible for LRU eviction.
+_DEGRADED_INGRESS_DEDUPE_SIZE = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,9 +170,10 @@ class ChannelDeliveryStore:
         # duplicate for lacking an ``accepted`` row.
         self._unjournaled_events: set[str] = set()
         # A pass-through claim is issued at most once while the journal remains
-        # unavailable. Keep the original marker as the same-process dedup trace
-        # and track its consumed claim separately.
-        self._claimed_unjournaled_events: set[str] = set()
+        # unavailable. Claimed markers move into this bounded LRU so a long
+        # outage cannot retain every event for the process lifetime.
+        self._claimed_unjournaled_events: OrderedDict[str, None] = OrderedDict()
+        self._max_claimed_unjournaled_events = _DEGRADED_INGRESS_DEDUPE_SIZE
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=FULL;")
         self._conn.execute("PRAGMA busy_timeout=30000;")
@@ -522,6 +528,9 @@ class ChannelDeliveryStore:
         now = time.time()
         lane_key = f"{message.channel_id}:{message.sender_id}"
         with self._lock:
+            if event_key in self._claimed_unjournaled_events:
+                self._claimed_unjournaled_events.move_to_end(event_key)
+                return False
             if event_key in self._unjournaled_events:
                 # A prior delivery of this event was already accepted
                 # memory-only after a journal fault, and its pass-through claim
@@ -589,6 +598,7 @@ class ChannelDeliveryStore:
             return IngressClaim("", "")
         with self._lock:
             if event_key in self._claimed_unjournaled_events:
+                self._claimed_unjournaled_events.move_to_end(event_key)
                 return None
             if event_key in self._unjournaled_events:
                 # Accepted memory-only after a journal write failure: there is
@@ -631,7 +641,13 @@ class ChannelDeliveryStore:
                     # Preserve availability for the original delivery, while
                     # retaining enough process-local state to reject both a
                     # provider redelivery and a repeated direct claim.
-                    self._claimed_unjournaled_events.add(event_key)
+                    self._unjournaled_events.discard(event_key)
+                    self._claimed_unjournaled_events[event_key] = None
+                    if (
+                        len(self._claimed_unjournaled_events)
+                        > self._max_claimed_unjournaled_events
+                    ):
+                        self._claimed_unjournaled_events.popitem(last=False)
                     return IngressClaim("", "")
                 self._unjournaled_events.discard(event_key)
                 return IngressClaim(event_key, token)

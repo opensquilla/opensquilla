@@ -165,6 +165,7 @@ _SQLITE_STORES = (
     Path("state/scheduler.db"),
     Path("state/approval_queue.sqlite"),
     Path("state/sandbox_user_grants.sqlite"),
+    Path("state/channel_delivery.sqlite"),
 )
 _SQLITE_DURABLE_SIDECAR_SUFFIXES = ("-wal",)
 _SQLITE_TRANSIENT_SIDECAR_SUFFIXES = ("-shm",)

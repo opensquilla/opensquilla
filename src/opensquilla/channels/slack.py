@@ -31,13 +31,21 @@ from opensquilla.channels._util import (
 from opensquilla.channels.contract import (
     ChannelCapabilities,
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
     ChannelPlatformManifest,
     ChannelSendResult,
 )
-from opensquilla.channels.types import ChannelHealth, IncomingMessage, OutgoingMessage
+from opensquilla.channels.types import (
+    AuthenticatedPrincipal,
+    ChannelHealth,
+    IncomingMessage,
+    IngressProvenance,
+    IngressVerification,
+    OutgoingMessage,
+)
 from opensquilla.env import trust_env as _trust_env
 
 log = structlog.get_logger(__name__)
@@ -49,7 +57,7 @@ _SLACK_MAX_MESSAGE_CHARS = 40000
 _MENTION_RE = re.compile(r"<@(U[A-Z0-9]+)(?:\|[^>]*)?>")
 
 # Channel-contract constants pinned by the adapter audit.
-CAPABILITY_TIER = "GREEN-shipping"
+CAPABILITY_TIER = "YELLOW-experimental"
 
 # Slack is a DM/group channel; the permission matrix denies admin-only tools.
 DM_SAFETY_TIERS: tuple[str, ...] = ("safe", "confirm")
@@ -131,6 +139,9 @@ class SlackChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="slack",
+            max_message_len=40000,
+            length_unit=ChannelLengthUnit.CODE_POINTS,
+            splits_natively=True,
             group_chat=True,
             mentions=True,
             native_file_upload=True,
@@ -208,7 +219,9 @@ class SlackChannel:
 
     def enqueue(self, message: IncomingMessage) -> None:
         """Push an inbound Slack message into the receive queue."""
-        self._queue.put_nowait(message)
+        from opensquilla.channels.delivery_store import durable_enqueue
+
+        durable_enqueue(self, message, self._queue)
 
     async def receive(self) -> IncomingMessage:
         """Block until an inbound message is available."""
@@ -217,7 +230,12 @@ class SlackChannel:
         log.debug("slack.receive", channel=self.slack_channel_id, content=msg.content[:80])
         return msg
 
-    def parse_event(self, event: dict[str, Any]) -> IncomingMessage:
+    def parse_event(
+        self,
+        event: dict[str, Any],
+        *,
+        verification: IngressVerification = IngressVerification.LEGACY_UNVERIFIED,
+    ) -> IncomingMessage:
         """Convert a Slack event payload dict into IncomingMessage."""
         ts = event.get("ts")
         thread_ts = event.get("thread_ts")
@@ -248,11 +266,24 @@ class SlackChannel:
         if thread_ts is not None:
             self._last_thread_ts = thread_ts
 
+        sender_id = str(event.get("user", self.sender_id))
         return IncomingMessage(
-            sender_id=event.get("user", self.sender_id),
+            sender_id=sender_id,
             channel_id=event.get("channel", self.slack_channel_id),
             content=event.get("text", ""),
             metadata=metadata,
+            provenance=IngressProvenance(
+                provider="slack",
+                account_id=str(event.get("team") or ""),
+                transport=self.transport_name,
+                verification=verification,
+                event_id=str(event.get("client_msg_id") or ts or "") or None,
+                principal=(
+                    AuthenticatedPrincipal(subject_id=sender_id)
+                    if verification != IngressVerification.LEGACY_UNVERIFIED
+                    else None
+                ),
+            ),
         )
 
     def build_reply_message(self, content: str, inbound: IncomingMessage) -> OutgoingMessage:
@@ -538,6 +569,10 @@ class SlackChannel:
     async def start(self) -> None:
         """Validate the bot token, store ``bot_user_id``, and - in Socket Mode -
         open the Slack Socket Mode long-connection."""
+        if self.connection_mode == "webhook" and not (self.signing_secret or "").strip():
+            raise SlackAuthError(
+                "connection_mode='webhook' requires signing_secret for request verification"
+            )
         client = self._get_client()
         resp = await client.post("/auth.test")
         resp.raise_for_status()
@@ -557,6 +592,19 @@ class SlackChannel:
             )
         self._connected = True
         log.info("slack.started", bot_user_id=self.bot_user_id, mode=self.connection_mode)
+
+    async def probe_connection(self) -> dict[str, Any]:
+        """Validate bot credentials without opening or mutating a transport."""
+        response = await self._get_client().post("/auth.test")
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("ok"):
+            raise SlackAuthError(data.get("error", "unknown auth error"))
+        return {
+            "authenticated": True,
+            "bot_user_id": str(data.get("user_id") or ""),
+            "team_id": str(data.get("team_id") or ""),
+        }
 
     async def stop(self) -> None:
         """Gracefully shut down the channel adapter."""
@@ -646,7 +694,10 @@ class SlackChannel:
             return
         payload = msg.get("payload")
         if isinstance(payload, dict) and payload.get("type") == "event_callback":
-            self._ingest_event_callback(payload)
+            self._ingest_event_callback(
+                payload,
+                verification=IngressVerification.SDK_SESSION,
+            )
 
     def is_connected(self) -> bool:
         """Return whether the adapter has been started and is connected."""
@@ -664,22 +715,24 @@ class SlackChannel:
         """Handle an incoming Slack Events API request."""
         body = await request.body()
 
-        # Signature verification
-        if self.signing_secret is not None:
-            timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
-            signature = request.headers.get("X-Slack-Signature", "")
+        # Never accept an unsigned webhook, even if an adapter is constructed
+        # outside the normal gateway/onboarding validation path.
+        if not (self.signing_secret or "").strip():
+            log.error("slack.webhook_missing_signing_secret")
+            return Response(status_code=503)
 
-            # Reject requests older than 5 minutes (replay protection)
-            try:
-                if abs(time.time() - float(timestamp)) > 300:
-                    return Response(status_code=403)
-            except (ValueError, TypeError):
+        timestamp = request.headers.get("X-Slack-Request-Timestamp", "")
+        signature = request.headers.get("X-Slack-Signature", "")
+
+        # Reject requests older than 5 minutes (replay protection)
+        try:
+            if abs(time.time() - float(timestamp)) > 300:
                 return Response(status_code=403)
+        except (ValueError, TypeError):
+            return Response(status_code=403)
 
-            if not self._verify_signature(body, timestamp, signature):
-                return Response(status_code=401)
-        else:
-            log.warning("slack.webhook_no_signing_secret")
+        if not self._verify_signature(body, timestamp, signature):
+            return Response(status_code=401)
 
         try:
             data = json.loads(body)
@@ -693,11 +746,19 @@ class SlackChannel:
             return JSONResponse({"challenge": challenge})
 
         if event_type == "event_callback":
-            self._ingest_event_callback(data)
+            self._ingest_event_callback(
+                data,
+                verification=IngressVerification.WEBHOOK_SIGNATURE,
+            )
 
         return Response(status_code=200)
 
-    def _ingest_event_callback(self, data: dict[str, Any]) -> None:
+    def _ingest_event_callback(
+        self,
+        data: dict[str, Any],
+        *,
+        verification: IngressVerification = IngressVerification.LEGACY_UNVERIFIED,
+    ) -> None:
         """Shared inbound path for an Events API ``event_callback`` payload,
         used by both the webhook handler and the Socket Mode loop."""
         event = data.get("event", {})
@@ -719,7 +780,7 @@ class SlackChannel:
         ).strip(":")
         if dedupe_key and not self._dedupe.check_and_add(dedupe_key):
             return
-        self.enqueue(self.parse_event(event))
+        self.enqueue(self.parse_event(event, verification=verification))
 
     def _is_own_message(self, event: dict[str, Any]) -> bool:
         """Drop the bot's own messages so replies never loop back as input."""
@@ -748,8 +809,11 @@ class SlackChannel:
 
     async def health_check(self) -> ChannelHealth:
         """Return current health status of the Slack adapter."""
+        socket_alive = self.connection_mode != "socket" or (
+            self._socket_task is not None and not self._socket_task.done()
+        )
         return ChannelHealth(
-            connected=self._connected,
+            connected=self._connected and socket_alive,
             bot_user_id=self.bot_user_id,
             last_message_at=self._last_message_at,
         )

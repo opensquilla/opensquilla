@@ -18,6 +18,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable, Hashable, Mapping, Sequence
@@ -387,20 +388,6 @@ class _ToolConcurrencyPolicy:
     limit_key: Hashable | None = None
 
 
-_FEISHU_READ_ONLY_TOOL_NAMES: frozenset[str] = frozenset(
-    {
-        "feishu_chat_read",
-        "feishu_doc_list_blocks",
-        "feishu_doc_read_raw",
-        "feishu_drive_meta",
-        "feishu_drive_search",
-        "feishu_scopes_status",
-        "feishu_wiki_get_node",
-        "feishu_wiki_list_nodes",
-        "feishu_wiki_list_spaces",
-    }
-)
-
 _MUTEX_TOOL_POLICY = _ToolConcurrencyPolicy(mode="mutex")
 _CONCURRENT_TOOL_POLICY = _ToolConcurrencyPolicy(mode="concurrent")
 # Image analysis crosses a provider boundary. Keep slide-thumbnail bursts below
@@ -410,13 +397,6 @@ _IMAGE_ANALYSIS_TOOL_POLICY = _ToolConcurrencyPolicy(
     max_inflight=2,
     limit_key=("media", "image_analysis"),
 )
-_FEISHU_READ_TOOL_POLICY = _ToolConcurrencyPolicy(
-    mode="concurrent",
-    max_inflight=4,
-    limit_key=("feishu", "read"),
-)
-
-
 def _get_tool_concurrency_policy(
     tool_name: str,
     arguments: Mapping[str, Any] | None = None,
@@ -427,8 +407,6 @@ def _get_tool_concurrency_policy(
         return _IMAGE_ANALYSIS_TOOL_POLICY
     if tool_name in _SAFE_TOOL_NAMES:
         return _CONCURRENT_TOOL_POLICY
-    if tool_name in _FEISHU_READ_ONLY_TOOL_NAMES:
-        return _FEISHU_READ_TOOL_POLICY
     if tool_name == "sessions_send":
         session_key = (arguments or {}).get("session_key")
         if isinstance(session_key, str) and session_key.strip():
@@ -812,6 +790,15 @@ _TOOL_RESULT_METADATA_KEYS: Final[frozenset[str]] = frozenset(
 )
 _SENTINELS: Final[frozenset[str]] = frozenset({"NO_REPLY", "HEARTBEAT_OK"})
 _HEARTBEAT_ACK_TOKEN: Final[str] = "HEARTBEAT_OK"
+_HEARTBEAT_THINK_BLOCK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<think>.*?</think>",
+    re.DOTALL,
+)
+_HEARTBEAT_UNCLOSED_THINK_RE: Final[re.Pattern[str]] = re.compile(
+    r"<think>.*\Z",
+    re.DOTALL,
+)
+_HEARTBEAT_FINAL_TAG_RE: Final[re.Pattern[str]] = re.compile(r"</?final>")
 _THINKING_ALIASES: Final[dict[str, str]] = {
     "x-high": "xhigh",
     "x_high": "xhigh",
@@ -1409,6 +1396,17 @@ def _normalize_heartbeat_text(
         return ""
     if run_kind != "heartbeat":
         return text
+
+    normalized = _HEARTBEAT_THINK_BLOCK_RE.sub("", text)
+    normalized = _HEARTBEAT_UNCLOSED_THINK_RE.sub("", normalized)
+    normalized = _HEARTBEAT_FINAL_TAG_RE.sub("", normalized)
+    if normalized != text:
+        text = normalized.strip()
+        stripped = text.strip()
+
+    if stripped in _SENTINELS:
+        log.debug("turn_runner.sentinel_suppressed", sentinel=stripped)
+        return ""
 
     def _suppressed(payload: str) -> bool:
         return len(payload.strip()) <= heartbeat_ack_max_chars

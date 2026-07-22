@@ -1495,11 +1495,16 @@ def test_interactive_feishu_websocket_prompts_only_core_fields(tmp_path, monkeyp
     assert "uv sync --extra recommended" in normalized_out
     assert "--extra feishu" not in normalized_out
     assert "Restarting alone will not install Python packages." in out
-    assert calls == ["Channel type", "Channel name", "App id", "App secret", "Connection mode"]
+    # connection_mode folded into Advanced: the wizard no longer prompts for
+    # it — the websocket default seeds silently, so an interactive add is
+    # type → name → the two credentials, nothing else.
+    assert calls == ["Channel type", "Channel name", "App id", "App secret"]
     data = target.read_text()
     assert 'type = "feishu"' in data
     assert 'app_id = "cli_test"' in data
     assert 'connection_mode = "websocket"' in data
+    saved = flow.load_config(target)
+    assert saved.channels.channels[0].dm_access == "pairing"
 
 
 def test_interactive_channel_add_uses_explicit_config_path(tmp_path, monkeypatch):

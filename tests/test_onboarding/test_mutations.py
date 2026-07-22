@@ -382,6 +382,21 @@ def test_remove_channel():
     assert res2.restart_required is True
 
 
+def test_remove_channel_withdraws_admin_grants():
+    # A dormant channel_admin_senders entry would silently re-arm for any
+    # future channel created under the same name; removal must drop it while
+    # leaving other channels' grants untouched.
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "slack", "name": "w", "token": "x", "signing_secret": "ss"},
+    )
+    res1.config.channel_admin_senders = {"w": ["U-1"], "other": ["Z-9"]}
+    res2 = remove_channel(res1.config, name="w")
+    assert list_channel_entries(res2.config) == []
+    assert res2.config.channel_admin_senders == {"other": ["Z-9"]}
+
+
 def test_remove_missing_channel_raises():
     cfg = GatewayConfig()
     with pytest.raises(KeyError, match="w"):
@@ -1831,3 +1846,86 @@ def test_image_generation_explicit_enabled_decision_is_force_persisted(tmp_path)
 
     data = _tomllib.loads(target.read_text())
     assert data["image_generation"]["enabled"] is False
+
+
+def test_upsert_channel_blank_secret_keeps_stored_value():
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "telegram", "name": "tg", "token": "tok-stored"},
+    )
+    for blank in ("", "   ", None):
+        payload: dict[str, object] = {"type": "telegram", "name": "tg", "default_chat_id": "42"}
+        if blank is not None:
+            payload["token"] = blank
+        res = upsert_channel(res1.config, entry_payload=payload)
+        raw = res.config.channels.channels[0]
+        assert raw.token == "tok-stored"
+        assert raw.default_chat_id == "42"
+
+
+def test_upsert_channel_redaction_placeholder_keeps_stored_value():
+    # '***' is what channels.get / probe echo for a stored secret; a client
+    # round-tripping that payload means "keep the current value". Enforced
+    # server-side so every RPC/CLI client gets the same trust boundary (the
+    # Web UI scrub is defense in depth only).
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "telegram", "name": "tg", "token": "tok-real"},
+    )
+    res2 = upsert_channel(
+        res1.config,
+        entry_payload={"type": "telegram", "name": "tg", "token": REDACTED_PLACEHOLDER},
+    )
+    # Raw config access: the redacted *listing* would mask a real value too.
+    assert res2.config.channels.channels[0].token == "tok-real"
+
+
+def test_upsert_channel_redaction_placeholder_without_stored_value_rejected():
+    # With no stored credential to keep, persisting the literal sentinel
+    # would overwrite the channel's token with asterisks — reject instead.
+    cfg = GatewayConfig()
+    with pytest.raises(ValueError, match="looks redacted"):
+        upsert_channel(
+            cfg,
+            entry_payload={
+                "type": "telegram",
+                "name": "tg",
+                "token": REDACTED_PLACEHOLDER,
+            },
+        )
+
+
+def test_upsert_channel_same_name_different_type_replaces_without_secret_merge():
+    # The replace loop matches on name only, while the keep-current secret
+    # merge matches on name AND type: re-saving an existing name under a new
+    # type replaces the entry and preserves no secrets. The Web UI duplicate
+    # guard words its warning ("Save will replace it") on this behavior.
+    cfg = GatewayConfig()
+    res1 = upsert_channel(
+        cfg,
+        entry_payload={"type": "telegram", "name": "bridge", "token": "tg-secret"},
+    )
+    with pytest.raises(ValueError):
+        # Blank secret cannot borrow the other type's stored value.
+        upsert_channel(res1.config, entry_payload={"type": "discord", "name": "bridge"})
+    res2 = upsert_channel(
+        res1.config,
+        entry_payload={"type": "discord", "name": "bridge", "token": "dc-secret"},
+    )
+    raw_entries = res2.config.channels.channels
+    assert len(raw_entries) == 1
+    assert raw_entries[0].type == "discord"
+    assert raw_entries[0].token == "dc-secret"
+
+
+def test_validate_channel_entry_raises_structured_field_errors():
+    from opensquilla.onboarding.mutations import ChannelValidationError, validate_channel_entry
+
+    with pytest.raises(ChannelValidationError) as ei:
+        validate_channel_entry({"type": "slack"})  # missing required name/token
+    assert ei.value.field_errors, "expected per-field detail"
+    assert all("field" in fe and "message" in fe for fe in ei.value.field_errors)
+    # The joined string message is preserved for callers that only read str(exc).
+    assert "invalid channel entry" in str(ei.value)

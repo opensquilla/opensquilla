@@ -1858,6 +1858,12 @@ def _should_prompt_channel_field(
         return True
     if field.required:
         return True
+    # The interactive channel flow is intentionally a minimal-field wizard.
+    # Optional advanced controls still seed their safe defaults so dependent
+    # fields are evaluated correctly, but they are configured later rather
+    # than expanding every existing add flow with another prompt.
+    if field.advanced:
+        return False
     if field.name in controls:
         return True
     if field.show_when and field.default in (None, ""):

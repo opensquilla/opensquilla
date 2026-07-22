@@ -1,6 +1,5 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import i18n from '@/i18n'
-import { useSetupChannelsForm } from '@/composables/setup/useSetupChannelsForm'
 import { useSetupCapabilitiesForm } from '@/composables/setup/useSetupCapabilitiesForm'
 import { useSetupBehaviorForm } from '@/composables/setup/useSetupBehaviorForm'
 import {
@@ -33,6 +32,7 @@ import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composab
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
 import { useRpcStore } from '@/stores/rpc'
+import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { saveFailedMessage } from '@/lib/rpcErrors'
@@ -116,6 +116,8 @@ interface ChannelStatusRow {
   status?: string
   configured?: boolean
   enabled?: boolean
+  capability_profile?: unknown
+  diagnostics?: Record<string, unknown>
 }
 
 interface TierConfig {
@@ -313,6 +315,7 @@ export function useSetupCatalog() {
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
+const pendingRestart = usePendingRestart()
 const t = i18n.global.t
 
 const catalog = ref<OnboardingCatalog>({})
@@ -347,11 +350,9 @@ const providerSelectionKind = ref<'primary' | 'profile' | 'new'>('primary')
 const behaviorForm = useSetupBehaviorForm()
 const routerForm = useSetupRouterForm()
 const ensembleForm = useSetupEnsembleForm()
-const channelsForm = useSetupChannelsForm()
 const capabilitiesForm = useSetupCapabilitiesForm()
 const promotedForm = useSettingsPromotedForm()
 
-let pollTimer: ReturnType<typeof setInterval> | null = null
 const tierModelCatalogs = ref<DiscoveredModelsByProvider>({})
 const tierModelDiscoveries = new Map<string, Promise<void>>()
 const tierModelDiscoveryCompleted = new Set<string>()
@@ -502,11 +503,9 @@ watch(section, () => {
 onMounted(async () => {
   await loadData()
   loaded.value = true
-  startChannelPolling()
 })
 
 onUnmounted(() => {
-  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
 })
 
 // ---------------------------------------------------------------------------
@@ -533,6 +532,7 @@ async function loadData(options: {
     config.value = cfg || {}
     effectiveConfig.value = effective || {}
     channelStatus.value = chStatus || { channels: [] }
+    pendingRestart.reconcile(channelStatus.value.channels || [])
     // A probe result describes one exact saved deployment. Any successful
     // reload may follow a key, endpoint, model, activation, or deletion
     // mutation, so stale results must never survive it.
@@ -574,7 +574,6 @@ async function loadData(options: {
       capabilitiesForm.initSearchFromConfig(config.value, searchProviders.value)
       capabilitiesForm.initMemoryFromConfig(config.value)
       capabilitiesForm.initImageFromConfig(config.value, status.value, imageProviders.value)
-      channelsForm.initFromCatalog(catalog.value.channels || [])
       promotedForm.initFromConfig(config.value)
       disableNetworkObservability.value = currentDisableNetworkObservability.value
     }
@@ -589,22 +588,6 @@ async function loadData(options: {
   } catch (err) {
     pushToast(t('setup.toast.loadFailed', { error: err instanceof Error ? err.message : String(err) }), { tone: 'danger' })
   }
-}
-
-async function loadChannelStatus() {
-  try {
-    channelStatus.value = await rpc.call<{ channels: ChannelStatusRow[] }>('channels.status')
-  } catch {
-    channelStatus.value = { channels: [] }
-  }
-}
-
-function startChannelPolling() {
-  if (pollTimer) clearInterval(pollTimer)
-  pollTimer = setInterval(async () => {
-    if (section.value !== 'channels') return
-    await loadChannelStatus()
-  }, 5000)
 }
 
 // ---------------------------------------------------------------------------
@@ -772,7 +755,6 @@ const routingProviderOptions = computed(() => {
     label: providerCatalogLabel(providerId),
   }))
 })
-const catalogChannels = computed(() => catalog.value.channels || [])
 const searchProviders = computed(() => (catalog.value.searchProviders || []).filter(p => p.runtimeSupported))
 const imageProviders = computed(() => (catalog.value.imageGenerationProviders || []).filter(p => p.runtimeSupported))
 const memoryProviders = computed(() => catalog.value.memoryEmbeddingProviders || [])
@@ -971,9 +953,6 @@ const privacyStatusText = computed(() => {
     : t('setup.privacy.statusEnabled')
 })
 
-const channelSpec = computed(() => catalogChannels.value.find(c => c.type === channelsForm.selectedChannelType.value) || null)
-const channelSpecFields = computed(() => channelSpec.value?.fields || [])
-const channelRuntimeRows = computed(() => (channelStatus.value.channels || []).filter(row => row.configured !== false))
 
 const modelSummary = computed(() => {
   if (!hasSavedProvider.value) return t('setup.summary.notConfigured')
@@ -1503,12 +1482,6 @@ const modelStrategyPanel = modelStrategyForm.createPanel({
   fixedModelCatalog,
 })
 
-const channelsPanel = channelsForm.createPanel({
-  channelRuntimeRows,
-  catalogChannels,
-  channelSpec,
-  channelSpecFields,
-})
 
 const capabilitiesPanel = capabilitiesForm.createPanel({
   searchProviders,
@@ -1757,7 +1730,6 @@ const providerDirty = computed(() => (
 const behaviorDirty = computed(() => behaviorForm.isDirty.value)
 const privacySectionDirty = computed(() => privacyDirty.value)
 const modelStrategyDirty = computed(() => modelStrategyForm.isDirty.value)
-const channelsDirty = computed(() => channelsForm.isDirty.value)
 const capabilitiesDirty = computed(() => (
   capabilitiesForm.searchDirty.value
   || capabilitiesForm.memoryDirty.value
@@ -1771,7 +1743,6 @@ function sectionDirty(sectionId: string): boolean {
   if (sectionId === 'behavior') return behaviorDirty.value
   if (sectionId === 'privacy') return privacySectionDirty.value
   if (sectionId === 'modelStrategy') return modelStrategyDirty.value
-  if (sectionId === 'channels') return channelsDirty.value
   if (sectionId === 'capabilities') return capabilitiesDirty.value
   return false
 }
@@ -1792,7 +1763,6 @@ async function saveDirtySections() {
       provider: providerDirty.value,
       behavior: behaviorDirty.value,
       modelStrategy: modelStrategyDirty.value,
-      channels: channelsDirty.value,
       search: capabilitiesForm.searchDirty.value,
       memory: capabilitiesForm.memoryDirty.value || promotedForm.captureDirty.value,
       image: capabilitiesForm.imageDirty.value,
@@ -1816,7 +1786,6 @@ async function saveDirtySections() {
       reload: false,
       allowUnsavedProvider: work.provider,
     }))) return
-    if (work.channels && !(await saveChannel({ reload: false }))) return
     if (work.search && !(await saveSearch({ reload: false }))) return
     if (work.memory && !(await saveMemory({ reload: false }))) return
     if (work.image && !(await saveImage({ reload: false }))) return
@@ -2274,22 +2243,6 @@ function envRecoveryCommand(section: string): string {
   const commands = Array.isArray(status.value.envRecoveryCommands) ? status.value.envRecoveryCommands : []
   const entry = commands.find(e => e && e.section === section && e.command)
   return entry ? (entry.command ?? '') : ''
-}
-
-// ---------------------------------------------------------------------------
-// Channel helpers
-// ---------------------------------------------------------------------------
-
-function onChannelTypeChange() {
-  channelsForm.resetForSpec(channelSpec.value)
-}
-
-function selectChannelType(value: string) {
-  channelsForm.selectChannelType(value)
-}
-
-function updateChannelField(name: string, value: unknown) {
-  channelsForm.updateField(name, value)
 }
 
 function setRouterMode(value: string) {
@@ -2815,57 +2768,6 @@ async function applyProviderPreset() {
   }
 }
 
-async function saveChannel(options: SaveOptions = {}): Promise<boolean> {
-  const entry = channelsForm.payload()
-  try {
-    await rpc.call('onboarding.channel.probe', { entry })
-    await rpc.call('onboarding.channel.upsert', { entry })
-    pushToast(t('setup.toast.channelSaved'))
-    if (options.reload !== false) await loadData()
-    return true
-  } catch (err) {
-    pushToast(saveFailedMessage(err), { tone: 'danger' })
-    return false
-  }
-}
-
-// Lifecycle actions on already-configured channels. The enable/disable/remove
-// RPCs all require a gateway restart to take effect; refresh only the runtime
-// list (loadChannelStatus) so the in-progress entry draft is preserved.
-async function setChannelEnabled(name: string, enabled: boolean) {
-  try {
-    await rpc.call(enabled ? 'onboarding.channel.enable' : 'onboarding.channel.disable', { name })
-    pushToast(enabled ? t('setup.toast.channelEnabled') : t('setup.toast.channelDisabled'))
-    await loadChannelStatus()
-  } catch (err) {
-    pushToast(saveFailedMessage(err), { tone: 'danger' })
-  }
-}
-
-function enableChannel(name: string) {
-  return setChannelEnabled(name, true)
-}
-
-function disableChannel(name: string) {
-  return setChannelEnabled(name, false)
-}
-
-async function removeChannel(name: string) {
-  const ok = await confirm({
-    title: t('setup.channels.removeConfirmTitle'),
-    body: t('setup.channels.removeConfirmBody', { name }),
-    primaryLabel: t('setup.channels.removeConfirmPrimary'),
-  })
-  if (!ok) return
-  try {
-    await rpc.call('onboarding.channel.remove', { name })
-    pushToast(t('setup.toast.channelRemoved'))
-    await loadChannelStatus()
-  } catch (err) {
-    pushToast(saveFailedMessage(err), { tone: 'danger' })
-  }
-}
-
 async function saveSearch(options: SaveOptions = {}): Promise<boolean> {
   const params = capabilitiesForm.searchPayload()
   try {
@@ -3000,7 +2902,6 @@ async function copyConfigPath() {
     routerPanel,
     presetPanel,
     ensemblePanel,
-    channelsPanel,
     capabilitiesPanel,
     loadData,
     hasSavedProvider,
@@ -3048,7 +2949,6 @@ async function copyConfigPath() {
     setEnsembleScheme,
     setEnsembleMinSuccessful,
     setEnsembleAllFailedPolicy,
-    selectChannelType,
     updateProviderField,
     updateLlmTimeout,
     updateContextWindow,
@@ -3059,10 +2959,8 @@ async function copyConfigPath() {
     revealProviderCredential,
     removeProviderCredential,
     updateTierField,
-    updateChannelField,
     updateCapabilityField,
     onProviderChange,
-    onChannelTypeChange,
     onSearchProviderChange,
     onMemoryProviderChange,
     onImageProviderChange,
@@ -3073,10 +2971,6 @@ async function copyConfigPath() {
     saveEnsemble,
     saveModelStrategy,
     applyProviderPreset,
-    saveChannel,
-    enableChannel,
-    disableChannel,
-    removeChannel,
     saveSearch,
     saveMemory,
     saveImage,

@@ -5,8 +5,9 @@ RPC context provides one (``ctx.config``). The same context exposes the
 running ``provider_selector``; provider mutations are mirrored into it so a
 ``configure`` from the WebUI takes effect on the next chat without a restart.
 
-Channel mutations always require a restart because ``ChannelManager`` is built
-once at boot.
+Channel mutations reconcile live through the boot-registered channels
+reconciler when one is available; webhook-mode entries (HTTP routes bound at
+boot) and reconciler-less contexts stay restart-gated.
 
 The onboarding mutation/store modules import ``opensquilla.gateway.config`` at
 module top level, which transitively re-enters ``opensquilla.gateway`` during
@@ -19,6 +20,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
+
+import structlog
 
 from opensquilla.gateway.config_secrets import inherit_runtime_secrets
 from opensquilla.gateway.model_routing import broadcast_model_routing_changed
@@ -57,7 +60,16 @@ def _channel_error() -> Iterator[None]:
     except KeyError as exc:
         raise RpcHandlerError("onboarding.channel.not_found", str(exc)) from exc
     except ValueError as exc:
-        raise RpcHandlerError("onboarding.channel.invalid", str(exc)) from exc
+        # A ChannelValidationError additionally carries per-field detail so the
+        # Web UI can anchor errors to fields instead of parsing the message.
+        details = getattr(exc, "field_errors", None)
+        raise RpcHandlerError(
+            "onboarding.channel.invalid",
+            str(exc),
+            details={"fields": details} if details else None,
+        ) from exc
+
+log = structlog.get_logger(__name__)
 
 _d = get_dispatcher()
 
@@ -1208,11 +1220,14 @@ async def _channel_probe(params: Any, ctx: RpcContext) -> dict[str, Any]:
         normalized = validate_channel_entry(merge_channel_entry_secrets(cfg, entry))
     type_name = str(normalized.get("type") or "")
     return {
-        "status": "ready",
+        "status": "validated",
         "connected": False,
+        "probeKind": "local_validation",
         "restartRequired": True,
         "entry": redact_channel_entry(type_name, normalized),
-        "warnings": [],
+        "warnings": [
+            "Configuration is locally valid; no provider connection was attempted."
+        ],
     }
 
 
@@ -1343,6 +1358,42 @@ async def _audio_configure(params: Any, ctx: RpcContext) -> dict[str, Any]:
     }
 
 
+async def _reconcile_channels_live() -> dict[str, str] | None:
+    """Run the boot-registered channel reconciler against the live config.
+
+    ``None`` means no reconciler is registered (standalone/config-only
+    contexts) — everything stays restart-gated. A reconciler failure also
+    degrades to restart-gated: the config is already persisted and applied
+    in place, so the honest fallback is the pre-reconcile contract.
+    """
+    from opensquilla.gateway.channels_bridge import get_channels_reconciler
+
+    reconciler = get_channels_reconciler()
+    if reconciler is None:
+        return None
+    try:
+        return await reconciler()
+    except Exception as exc:  # noqa: BLE001 - config stays valid either way
+        log.warning("onboarding.channel_reconcile_failed", error=str(exc))
+        return None
+
+
+def _live_apply_fields(live: dict[str, str] | None, names: list[str]) -> dict[str, Any]:
+    """Response fields describing what the reconciler actually did.
+
+    ``restartRequired`` stays the compatibility signal older clients read; it
+    is scoped to the channel(s) THIS call mutated — an unrelated channel's
+    outstanding restart must not relabel a live-applied save. ``failed`` does
+    NOT flag a restart — restarting won't fix a bad entry; the channel
+    carries its error in channels.status and channels.restart retries it.
+    ``liveApply`` keeps the full per-name outcome map for observability.
+    """
+    if live is None:
+        return {"restartRequired": True, "liveApply": None}
+    pending = any(live.get(name) == "pending_restart" for name in names)
+    return {"restartRequired": pending, "liveApply": live}
+
+
 @_d.method("onboarding.channel.upsert", scope="operator.admin")
 async def _channel_upsert(params: Any, ctx: RpcContext) -> dict[str, Any]:
     from opensquilla.onboarding.mutations import upsert_channel
@@ -1357,9 +1408,11 @@ async def _channel_upsert(params: Any, ctx: RpcContext) -> dict[str, Any]:
     # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=True)
     _apply_inplace(ctx, res.config)
+    live = await _reconcile_channels_live()
+    entry_name = str(res.public_payload.get("name") or entry.get("name") or "")
     return {
         "changed": res.changed,
-        "restartRequired": True,
+        **_live_apply_fields(live, [entry_name]),
         "configPath": config_path,
         "entry": res.public_payload,
         "warnings": res.warnings,
@@ -1378,9 +1431,10 @@ async def _channel_remove(params: Any, ctx: RpcContext) -> dict[str, Any]:
     # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=True)
     _apply_inplace(ctx, res.config)
+    live = await _reconcile_channels_live()
     return {
         "changed": res.changed,
-        "restartRequired": True,
+        **_live_apply_fields(live, [name]),
         "configPath": config_path,
         "removed": name,
     }
@@ -1397,9 +1451,10 @@ async def _toggle(ctx: RpcContext, params: Any, enabled: bool) -> dict[str, Any]
     # memory/disk stay consistent. Tool syncs run only on applied state.
     config_path = _persist(ctx, res.config, restart_required=True)
     _apply_inplace(ctx, res.config)
+    live = await _reconcile_channels_live()
     return {
         "changed": res.changed,
-        "restartRequired": True,
+        **_live_apply_fields(live, [name]),
         "configPath": config_path,
         "name": name,
         "enabled": enabled,

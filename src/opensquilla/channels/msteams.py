@@ -37,6 +37,7 @@ from starlette.routing import Route
 from opensquilla.channels._util import ChannelAccessPolicy, EventDedupeCache
 from opensquilla.channels.contract import (
     ChannelCapabilityProfile,
+    ChannelLengthUnit,
     ChannelPlatformCapability,
     ChannelPlatformCapabilityStatus,
     ChannelPlatformCategories,
@@ -130,6 +131,9 @@ class MSTeamsChannel:
     def capability_profile(self) -> ChannelCapabilityProfile:
         return ChannelCapabilityProfile(
             channel_type="msteams",
+            max_message_len=20000,
+            length_unit=ChannelLengthUnit.CODE_POINTS,
+            splits_natively=False,
             group_chat=True,
             mentions=True,
             reply=True,

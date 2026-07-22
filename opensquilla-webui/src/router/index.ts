@@ -7,6 +7,7 @@ import { sharedRoutes } from './sharedRoutes'
 import { webRoutes } from './webRoutes'
 import { captureContentScroll, contentScrollBehavior } from './scrollMemory'
 import { saveLastRoute } from './lastRoute'
+import { legacyChannelHashRedirect } from './legacyRedirects'
 
 const basePath = (() => {
   const el = document.getElementById('opensquilla-data')
@@ -34,6 +35,9 @@ export const router = createRouter({
 router.beforeEach((_to, from) => {
   captureContentScroll(from)
 })
+
+// Stale channel-setup bookmarks (#channel-… hashes) land on the workspace.
+router.beforeEach((to) => legacyChannelHashRedirect(to) ?? true)
 
 // Localize the document title from the route name token (e.g. `nav.sessions`),
 // falling back to the English meta.title. `applyRouteTitle` is also re-run when

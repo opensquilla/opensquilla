@@ -220,17 +220,7 @@
               @update-ensemble-all-failed-policy="setEnsembleAllFailedPolicy"
               @go-to-section="selectSection"
             />
-            <SetupChannelsPanel
-              v-else-if="section === 'channels'"
-              :panel="channelsPanel"
-              @update-channel-type="selectChannelType"
-              @channel-type-change="onChannelTypeChange"
-              @update-channel-field="updateChannelField"
-              @save="saveChannel"
-              @enable-channel="enableChannel"
-              @disable-channel="disableChannel"
-              @remove-channel="removeChannel"
-            />
+            <SettingsChannelsJumpCard v-else-if="section === 'channels'" />
             <SetupCapabilitiesPanel
               v-else-if="section === 'capabilities'"
               :panel="capabilitiesPanel"
@@ -309,7 +299,7 @@ import SetupBehaviorPanel from '@/components/setup/SetupBehaviorPanel.vue'
 import SetupConnectionPanel from '@/components/settings/SetupConnectionPanel.vue'
 import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupModelStrategyPanel from '@/components/setup/SetupModelStrategyPanel.vue'
-import SetupChannelsPanel from '@/components/setup/SetupChannelsPanel.vue'
+import SettingsChannelsJumpCard from '@/components/settings/SettingsChannelsJumpCard.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
 import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'
@@ -345,7 +335,6 @@ const {
   privacyPanel,
   modelStrategyPanel,
   presetPanel,
-  channelsPanel,
   capabilitiesPanel,
   hasSetupAction,
   actionItems,
@@ -382,7 +371,6 @@ const {
   setEnsembleMinSuccessful,
   setEnsembleAllFailedPolicy,
   applyProviderPreset,
-  selectChannelType,
   updateProviderField,
   updateLlmTimeout,
   updateContextWindow,
@@ -391,17 +379,11 @@ const {
   activateProvider,
   removeProviderProfile,
   updateTierField,
-  updateChannelField,
   updateCapabilityField,
   onProviderChange,
-  onChannelTypeChange,
   onSearchProviderChange,
   onMemoryProviderChange,
   onImageProviderChange,
-  saveChannel,
-  enableChannel,
-  disableChannel,
-  removeChannel,
   saveSearch,
   saveMemory,
   saveImage,
@@ -665,9 +647,9 @@ async function openDataMaintenance() {
 // close button, backdrop click) and the history-back leave guard below.
 function confirmDiscard(): Promise<boolean> {
   return confirm({
-    title: 'Discard unsaved changes?',
-    body: 'You have unsaved edits. Closing now will lose them.',
-    primaryLabel: 'Discard',
+    title: t('settings.dialog.discardTitle'),
+    body: t('settings.dialog.discardBody'),
+    primaryLabel: t('settings.dialog.discardPrimary'),
   })
 }
 
@@ -737,8 +719,10 @@ function onViewportChange(event: MediaQueryListEvent) {
 // loads; the loaded watcher below completes that case.
 watch(routeParam, () => applyRouteSection())
 
-// A provider deep-link hash can arrive (or change) after mount.
-watch(() => route.hash, () => applyProviderHash())
+// A provider deep-link hash can arrive (or change) after mount. (Legacy
+// #channel- hashes never reach this dialog: a router guard rewrites them to
+// the /channels workspace before the settings route resolves.)
+watch(() => route.hash, () => { applyProviderHash() })
 
 // Whenever the active section changes (rail click, deep link, Back), bring its
 // tab into view on the horizontally-scrolling mobile rail.
@@ -753,7 +737,7 @@ watch(section, () => {
 watch(loaded, (isLoaded) => {
   if (isLoaded && wantsAutoSection.value && !userNavigated) selectInitialSection('auto')
   // Catalog data is required to validate a provider hash, so (re)try now.
-  if (isLoaded) applyProviderHash()
+  if (isLoaded) { applyProviderHash() }
 })
 
 onMounted(() => {

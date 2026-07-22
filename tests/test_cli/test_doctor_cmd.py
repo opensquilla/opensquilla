@@ -1136,3 +1136,37 @@ def test_local_config_findings_explain_optional_env_references(monkeypatch) -> N
     detail_steps = " ".join(step.detail or "" for step in finding.fix_steps)
     assert "CUSTOM_SEARCH_KEY" in detail_steps
     assert "CUSTOM_IMAGE_KEY" in detail_steps
+
+
+def test_refresh_report_readiness_labels_operator_action_items() -> None:
+    # The CLI recomputes the summary locally after rewriting fix commands; a
+    # warn-severity optional finding must keep the "awaiting operator action"
+    # label the gateway report uses, not decay to "optional setup item".
+    from opensquilla.cli.doctor_cmd import _refresh_report_readiness
+
+    report: dict[str, Any] = {
+        "findings": [
+            {
+                "id": "channel.telegram-main.pending_pairings",
+                "severity": "warn",
+                "readinessImpact": "optional",
+                "surface": "channels",
+                "title": "Channel telegram-main has pairing requests awaiting approval",
+                "detail": "1 sender is waiting on operator approval.",
+            },
+            {
+                "id": "logs.gateway_file_log.disabled",
+                "severity": "info",
+                "readinessImpact": "optional",
+                "surface": "logs",
+                "title": "Gateway file logging is disabled",
+                "detail": "Persistent gateway file logging is optional.",
+            },
+        ]
+    }
+
+    _refresh_report_readiness(report)
+
+    assert report["ready"] is True
+    assert report["status"] == "ready"
+    assert report["summary"] == "Ready, 1 item awaiting operator action, 1 optional setup item"

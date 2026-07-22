@@ -87,6 +87,22 @@ class HeartbeatService:
             }
             return result
 
+        if not summary.strip():
+            ran_at_ms = int(time.time() * 1000)
+            result = HeartbeatRunResult(
+                status="skipped",
+                session_key=session_key,
+                summary=summary,
+                reason="heartbeat_ack",
+                ran_at_ms=ran_at_ms,
+            )
+            self._last_run_status = {
+                "ts": ran_at_ms,
+                "status": result.status,
+                "reason": result.reason,
+            }
+            return result
+
         override = {
             key: value
             for key, value in (delivery_override or {}).items()
@@ -217,9 +233,20 @@ class HeartbeatService:
                 text = getattr(event, "text", "")
                 if text:
                     parts.append(text)
-        if done_text_present:
-            return done_text
-        return "".join(parts)
+        summary = done_text if done_text_present else "".join(parts)
+
+        # Most providers publish an authoritative terminal text snapshot, which
+        # TurnRunner already normalizes for heartbeat runs.  Legacy/custom
+        # providers may finish with an empty DoneEvent and force this service to
+        # fall back to streamed deltas instead.  Normalize again at the delivery
+        # boundary so that fallback can never reintroduce private <think> text.
+        from opensquilla.engine.runtime import _normalize_heartbeat_text
+
+        return _normalize_heartbeat_text(
+            summary,
+            run_kind="heartbeat",
+            heartbeat_ack_max_chars=heartbeat_ack_max_chars,
+        )
 
     async def _send_delivery(self, delivery: Any, text: str) -> str | None:
         manager = self._channel_manager_ref()

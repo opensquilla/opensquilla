@@ -60,6 +60,9 @@ def create_gateway_app(
     provider_selector: Any = None,
     tool_registry: Any = None,
     subscription_manager: Any = None,
+    # May be a manager instance OR a zero-arg callable resolving to one:
+    # live channel reconcile can create the manager after boot, so contexts
+    # must re-resolve it per request instead of freezing the boot-time value.
     channel_manager: Any = None,
     usage_tracker: Any = None,
     usage_event_sink: Any = None,
@@ -86,6 +89,9 @@ def create_gateway_app(
         diagnostics_state = DiagnosticsState.from_config(config)
 
     dispatcher = get_dispatcher()
+
+    def _resolve_channel_manager() -> Any:
+        return channel_manager() if callable(channel_manager) else channel_manager
 
     def _rpc_status_code(result: Any, default: int = 500) -> int:
         if result.error is None:
@@ -382,7 +388,7 @@ def create_gateway_app(
             provider_selector=provider_selector,
             tool_registry=tool_registry,
             subscription_manager=subscription_manager,
-            channel_manager=channel_manager,
+            channel_manager=_resolve_channel_manager(),
             usage_tracker=usage_tracker,
             usage_event_sink=usage_event_sink,
             meta_run_writer=meta_run_writer,
@@ -420,6 +426,46 @@ def create_gateway_app(
             return JSONResponse(result.payload or {"ok": True})
         msg = result.error.message if result.error else "error"
         return JSONResponse({"error": msg}, status_code=_rpc_status_code(result, default=400))
+
+    async def api_channel_pairings(request: Request) -> JSONResponse:
+        ctx = _make_ctx(request)
+        result = await dispatcher.dispatch(
+            "_http",
+            "channels.pairings",
+            {"channelName": request.query_params.get("channelName", "")},
+            ctx,
+        )
+        if result.ok:
+            return JSONResponse(result.payload or {"pairings": []})
+        msg = result.error.message if result.error else "error"
+        return JSONResponse({"error": msg}, status_code=_rpc_status_code(result, default=400))
+
+    async def _api_channel_pairing_mutation(
+        request: Request,
+        method: str,
+    ) -> JSONResponse:
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+        ctx = _make_ctx(request)
+        result = await dispatcher.dispatch("_http", method, body, ctx)
+        if result.ok:
+            return JSONResponse(result.payload or {"ok": True})
+        msg = result.error.message if result.error else "error"
+        return JSONResponse({"error": msg}, status_code=_rpc_status_code(result, default=400))
+
+    async def api_channel_pairing_approve(request: Request) -> JSONResponse:
+        return await _api_channel_pairing_mutation(
+            request,
+            "channels.pairing.approve",
+        )
+
+    async def api_channel_pairing_revoke(request: Request) -> JSONResponse:
+        return await _api_channel_pairing_mutation(
+            request,
+            "channels.pairing.revoke",
+        )
 
     async def api_approvals(request: Request) -> JSONResponse:
         ctx = _make_ctx(request)
@@ -598,7 +644,7 @@ def create_gateway_app(
             provider_selector=provider_selector,
             tool_registry=tool_registry,
             subscription_manager=subscription_manager,
-            channel_manager=channel_manager,
+            channel_manager=_resolve_channel_manager,
             usage_tracker=usage_tracker,
             usage_event_sink=usage_event_sink,
             meta_run_writer=meta_run_writer,
@@ -639,6 +685,17 @@ def create_gateway_app(
         Route("/api/usage", api_usage, methods=["GET"]),
         Route("/api/channels/status", api_channels_status, methods=["GET"]),
         Route("/api/channels/logout", _same_origin(api_channels_logout), methods=["POST"]),
+        Route("/api/channels/pairings", api_channel_pairings, methods=["GET"]),
+        Route(
+            "/api/channels/pairings/approve",
+            _same_origin(api_channel_pairing_approve),
+            methods=["POST"],
+        ),
+        Route(
+            "/api/channels/pairings/revoke",
+            _same_origin(api_channel_pairing_revoke),
+            methods=["POST"],
+        ),
         Route("/api/approvals", api_approvals, methods=["GET"]),
         Route("/api/approvals/settings", _same_origin(api_approvals_settings), methods=["POST"]),
         Route("/api/approvals/resolve", _same_origin(api_approvals_resolve), methods=["POST"]),

@@ -195,6 +195,20 @@ const allCommands = computed<Command[]>(() => {
     })
   }
 
+  // Configuration counterpart of the Channels monitor entry: searching
+  // "channel" surfaces both roles with distinguishing labels. Channel setup
+  // now happens on the workspace itself, so this lands in the add-channel
+  // compose takeover there.
+  const channelSetupTitle = t('nav.channelSetup')
+  out.push({
+    id: 'nav:/channels?compose=1',
+    title: channelSetupTitle,
+    icon: 'channels',
+    keywords: `${channelSetupTitle} channels setup config add /channels`.toLowerCase(),
+    group: 'Actions',
+    run: navTo('/channels?compose=1'),
+  })
+
   // Actions: app-level commands that are not routes.
   out.push(
     {

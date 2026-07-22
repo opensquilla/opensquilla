@@ -17,7 +17,12 @@ from rich.table import Table
 from opensquilla.cli.gateway_rpc import default_gateway_url, gateway_url_from_config
 from opensquilla.cli.output import print_json
 from opensquilla.cli.url_utils import normalize_gateway_url
-from opensquilla.health.model import FixStep, HealthFinding, build_report
+from opensquilla.health.model import (
+    FixStep,
+    HealthFinding,
+    build_report,
+    summarize_impact_counts,
+)
 from opensquilla.health.recovery_commands import command_with_config as _command_with_config
 
 _LOCAL_GATEWAY_HOSTS = {"127.0.0.1", "::1", "localhost", "0.0.0.0"}
@@ -429,25 +434,6 @@ def _impact_text(finding: dict[str, Any]) -> str:
     return labels[_impact_value(finding)]
 
 
-def _summary_from_impact_counts(impact_counts: dict[str, int]) -> str:
-    parts: list[str] = []
-    if impact_counts["blocks_ready"]:
-        label = "action" if impact_counts["blocks_ready"] == 1 else "actions"
-        parts.append(f"{impact_counts['blocks_ready']} {label} required")
-    if impact_counts["degrades"]:
-        label = "check" if impact_counts["degrades"] == 1 else "checks"
-        if not impact_counts["blocks_ready"]:
-            parts.append(f"Ready, {impact_counts['degrades']} degraded {label}")
-        else:
-            parts.append(f"{impact_counts['degrades']} degraded {label}")
-    if parts:
-        return ", ".join(parts)
-    if impact_counts["optional"]:
-        label = "item" if impact_counts["optional"] == 1 else "items"
-        return f"Ready, {impact_counts['optional']} optional setup {label}"
-    return "Ready"
-
-
 def _same_config_path(left: str, right: str) -> bool:
     try:
         return Path(left).expanduser().resolve() == Path(right).expanduser().resolve()
@@ -458,6 +444,7 @@ def _same_config_path(left: str, right: str) -> bool:
 def _refresh_report_readiness(report: dict[str, Any]) -> None:
     counts = {"error": 0, "warn": 0, "info": 0, "ok": 0}
     impact_counts = {"blocks_ready": 0, "degrades": 0, "optional": 0, "none": 0}
+    attention_count = 0
     findings = list(report.get("findings") or [])
     for finding in findings:
         severity = str(finding.get("severity") or "info")
@@ -465,6 +452,8 @@ def _refresh_report_readiness(report: dict[str, Any]) -> None:
             severity = "info"
         counts[severity] += 1
         impact_counts[_impact_value(finding)] += 1
+        if severity == "warn" and _impact_value(finding) == "optional":
+            attention_count += 1
     severity_rank = {"error": 0, "warn": 1, "info": 2, "ok": 3}
     impact_rank = {"blocks_ready": 0, "degrades": 1, "optional": 2, "none": 3}
     ordered_findings = sorted(
@@ -482,7 +471,7 @@ def _refresh_report_readiness(report: dict[str, Any]) -> None:
         "degraded" if impact_counts["degrades"] else "ready"
     )
     report["ready"] = impact_counts["blocks_ready"] == 0
-    report["summary"] = _summary_from_impact_counts(impact_counts)
+    report["summary"] = summarize_impact_counts(impact_counts, attention_count=attention_count)
 
 
 def _apply_requested_config_context(

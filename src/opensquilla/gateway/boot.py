@@ -846,6 +846,9 @@ class ServiceContainer:
 
 # Server boot timestamp (set once at first start)
 _boot_time_ms: int = 0
+# Per-boot identity token: lets clients tell "same process, config changed"
+# (a pending restart is still pending) from "process restarted" (apply it).
+_boot_id: str = ""
 
 
 def _configured_agent_ids(
@@ -1679,6 +1682,12 @@ class GatewayServer:
     _server: uvicorn.Server | None = field(default=None, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)
     _channel_manager: Any = field(default=None, repr=False)
+    # Zero-arg resolver for the LIVE manager: live reconcile can create the
+    # manager after boot (zero-channel start + first live add), so shutdown
+    # must resolve through the holder, not the boot-time snapshot. Kept as a
+    # separate field because tests inject (callable) mocks into
+    # _channel_manager directly.
+    _channel_manager_ref: Any = field(default=None, repr=False)
     _services: ServiceContainer | None = field(default=None, repr=False)
     _background_completion_manager: Any = field(default=None, repr=False)
     _pid_lock: Any = field(default=None, repr=False)
@@ -1723,8 +1732,11 @@ class GatewayServer:
                 self._background_completion_manager = None
 
             # Stop channels after task_runtime is drained (no in-flight turns remain)
-            if self._channel_manager is not None:
-                await self._channel_manager.stop_all()
+            live_channel_manager = self._channel_manager
+            if live_channel_manager is None and self._channel_manager_ref is not None:
+                live_channel_manager = self._channel_manager_ref()
+            if live_channel_manager is not None:
+                await live_channel_manager.stop_all()
                 log.info("gateway.channels_stopped")
 
             registry = get_registry()
@@ -3113,8 +3125,9 @@ async def start_gateway_server(
     usage_event_sink = getattr(svc, "usage_event_sink", None)
 
     # Record boot time for uptime calculation (gateway-specific)
-    global _boot_time_ms
+    global _boot_time_ms, _boot_id
     _boot_time_ms = int(time.time() * 1000)
+    _boot_id = secrets.token_hex(16)
 
     log.info(
         "gateway.starting",
@@ -3807,6 +3820,47 @@ async def start_gateway_server(
     if channel_manager is not None:
         _cm_holder[0] = channel_manager
 
+    async def _reconcile_runtime_channels() -> dict[str, str]:
+        # Make running adapters match the LIVE config object: a channel CRUD
+        # RPC has already mutated it in place by the time this fires. When no
+        # manager exists yet (gateway booted with zero channels), build an
+        # empty one so the first channel ever added still starts live —
+        # webhook-mode entries are declined by reconcile() and stay
+        # restart-gated because their HTTP routes are bound at app creation.
+        manager = _cm_holder[0]
+        if manager is None:
+            from opensquilla.channels.manager import ChannelManager
+            from opensquilla.gateway.event_bridge import EventBridge
+
+            manager = ChannelManager.from_config(
+                [],
+                turn_runner=turn_runner,
+                session_manager=svc.session_manager,
+                event_bridge=EventBridge(
+                    subscription_manager=subscription_manager,
+                    connection_registry=get_registry(),
+                ),
+                config=config,
+                task_runtime=task_runtime,
+                rpc_dispatcher=get_dispatcher(),
+                channel_rpc_context_factory=_make_channel_rpc_context_factory(
+                    svc,
+                    config,
+                    subscription_manager=subscription_manager,
+                    channel_manager_ref=lambda: _cm_holder[0],
+                    turn_runner=turn_runner,
+                    heartbeat_service=heartbeat_service,
+                    diagnostics_state=diagnostics_state,
+                ),
+            )
+            _cm_holder[0] = manager
+        results: dict[str, str] = await manager.reconcile(config.channels.channels)
+        return results
+
+    from opensquilla.gateway.channels_bridge import register_channels_reconciler
+
+    register_channels_reconciler(_reconcile_runtime_channels)
+
     # ── ASGI app ─────────────────────────────────────────────────────
     app = create_gateway_app(
         config,
@@ -3814,7 +3868,9 @@ async def start_gateway_server(
         provider_selector=svc.provider_selector,
         tool_registry=svc.tool_registry,
         subscription_manager=subscription_manager,
-        channel_manager=channel_manager,
+        # Resolved per request: live reconcile may create the manager after
+        # boot when the gateway started with zero channels configured.
+        channel_manager=lambda: _cm_holder[0],
         usage_tracker=svc.usage_tracker,
         usage_event_sink=usage_event_sink,
         meta_run_writer=getattr(svc, "meta_run_writer", None),
@@ -3847,6 +3903,7 @@ async def start_gateway_server(
     server_handle = GatewayServer(app=app, config=config)
     server_handle._pid_lock = _pid_lock
     server_handle._channel_manager = channel_manager
+    server_handle._channel_manager_ref = lambda: _cm_holder[0]
     server_handle._services = svc
     server_handle._background_completion_manager = background_completion_manager
 

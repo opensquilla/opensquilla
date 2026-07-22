@@ -603,7 +603,8 @@ async def test_channel_probe_validates_and_redacts_without_persisting(tmp_path, 
         _admin_ctx(),
     )
     assert res.error is None, res.error
-    assert res.payload["status"] in {"ready", "action_needed"}
+    assert res.payload["status"] == "validated"
+    assert res.payload["probeKind"] == "local_validation"
     assert res.payload["entry"]["token"] == "***"
     assert "123:secret" not in str(res.payload)
     assert not target.exists()
@@ -1422,3 +1423,140 @@ async def test_models_discover_unverified_provider_stays_empty_without_build(
         "source": "none",
         "models": [],
     }
+
+
+@pytest.fixture()
+def _clean_channels_reconciler():
+    from opensquilla.gateway.channels_bridge import reset_channels_reconciler
+
+    reset_channels_reconciler()
+    yield
+    reset_channels_reconciler()
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_applies_live_when_reconciler_succeeds(
+    tmp_path, monkeypatch, _clean_channels_reconciler
+):
+    from opensquilla.gateway.channels_bridge import register_channels_reconciler
+
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+    calls: list[int] = []
+
+    async def _reconciler() -> dict[str, str]:
+        calls.append(1)
+        return {"w": "started"}
+
+    register_channels_reconciler(_reconciler)
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "signing_secret": "signing-secret",
+                "app_token": "xapp-token",
+            }
+        },
+        _admin_ctx(),
+    )
+    assert res.error is None, res.error
+    assert calls == [1]
+    # Applied live: nothing waits on a restart, and the outcome is itemized.
+    assert res.payload["restartRequired"] is False
+    assert res.payload["liveApply"] == {"w": "started"}
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_stays_restart_gated_for_webhook_outcomes(
+    tmp_path, monkeypatch, _clean_channels_reconciler
+):
+    from opensquilla.gateway.channels_bridge import register_channels_reconciler
+
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    async def _reconciler() -> dict[str, str]:
+        return {"w": "pending_restart"}
+
+    register_channels_reconciler(_reconciler)
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "signing_secret": "signing-secret",
+            }
+        },
+        _admin_ctx(),
+    )
+    assert res.error is None, res.error
+    assert res.payload["restartRequired"] is True
+    assert res.payload["liveApply"] == {"w": "pending_restart"}
+
+
+@pytest.mark.asyncio
+async def test_channel_upsert_failed_start_does_not_flag_restart(
+    tmp_path, monkeypatch, _clean_channels_reconciler
+):
+    # A bad entry is not fixed by restarting: it stays visible through
+    # channels.status start errors and is retried via channels.restart.
+    from opensquilla.gateway.channels_bridge import register_channels_reconciler
+
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(tmp_path / "c.toml"))
+
+    async def _reconciler() -> dict[str, str]:
+        return {"w": "failed"}
+
+    register_channels_reconciler(_reconciler)
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.upsert",
+        {
+            "entry": {
+                "type": "slack",
+                "name": "w",
+                "token": "supersecret",
+                "signing_secret": "signing-secret",
+            }
+        },
+        _admin_ctx(),
+    )
+    assert res.error is None, res.error
+    assert res.payload["restartRequired"] is False
+    assert res.payload["liveApply"] == {"w": "failed"}
+
+
+@pytest.mark.asyncio
+async def test_channel_remove_degrades_honestly_when_reconciler_raises(
+    tmp_path, monkeypatch, _clean_channels_reconciler
+):
+    from opensquilla.gateway.channels_bridge import register_channels_reconciler
+
+    config_path = tmp_path / "c.toml"
+    config_path.write_text(
+        '[[channels.channels]]\ntype = "slack"\nname = "w"\n'
+        'token = "supersecret"\nsigning_secret = "ss"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(config_path))
+
+    async def _reconciler() -> dict[str, str]:
+        raise RuntimeError("manager exploded")
+
+    register_channels_reconciler(_reconciler)
+    res = await get_dispatcher().dispatch(
+        "r1",
+        "onboarding.channel.remove",
+        {"name": "w"},
+        _admin_ctx(),
+    )
+    # Config change persisted and applied; the live swap failed, so the
+    # response falls back to the pre-reconcile restart contract.
+    assert res.error is None, res.error
+    assert res.payload["restartRequired"] is True
+    assert res.payload["liveApply"] is None

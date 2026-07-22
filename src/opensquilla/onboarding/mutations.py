@@ -36,6 +36,7 @@ from opensquilla.onboarding.image_generation_specs import (
 )
 from opensquilla.onboarding.provider_specs import get_provider_setup_spec
 from opensquilla.onboarding.redaction import (
+    REDACTED_PLACEHOLDER,
     redact_audio_payload,
     redact_channel_entry,
     redact_error_text,
@@ -2028,6 +2029,29 @@ def list_channel_entries(config: GatewayConfig) -> list[dict[str, Any]]:
     return [redact_channel_entry(d.get("type", ""), d) for d in _channel_entries_as_dicts(config)]
 
 
+class ChannelValidationError(ValueError):
+    """A channel-entry validation failure carrying per-field detail.
+
+    Behaves like the plain ``ValueError`` callers already expect (the string
+    message is unchanged) while additionally exposing ``field_errors`` so the
+    RPC layer can return a structured envelope instead of only a joined string.
+    """
+
+    def __init__(self, message: str, field_errors: list[dict[str, str]]) -> None:
+        super().__init__(message)
+        self.field_errors = field_errors
+
+
+def _channel_validation_field_errors(exc: ValidationError) -> list[dict[str, str]]:
+    """Per-field ``{field, message}`` list; never echoes input values."""
+    out: list[dict[str, str]] = []
+    for error in exc.errors(include_url=False, include_context=False, include_input=False):
+        loc = ".".join(str(item) for item in error.get("loc", ()) or ())
+        msg = str(error.get("msg") or "invalid value")
+        out.append({"field": loc, "message": redact_error_text(msg, max_len=200)})
+    return out
+
+
 def _format_channel_validation_error(exc: ValidationError) -> str:
     """Render a channel-entry ValidationError as a field-naming summary.
 
@@ -2046,12 +2070,15 @@ def _format_channel_validation_error(exc: ValidationError) -> str:
 
 
 def _require_non_blank_secret_fields(type_name: str, entry: Mapping[str, Any]) -> None:
-    """Reject blank required credential fields at mutation time.
+    """Reject blank or sentinel-valued credential fields at mutation time.
 
     An empty or whitespace-only secret (e.g. ``--field token=``) would
     otherwise persist cleanly and only fail much later at gateway start.
     Fields gated by ``show_when`` are checked only when their condition
-    matches the normalized entry.
+    matches the normalized entry. The literal ``'***'`` redaction sentinel is
+    rejected for every secret field: it can only reach this point when a
+    client echoed a redacted payload for an entry with no stored value to
+    keep, and persisting it would overwrite a credential with asterisks.
     """
     from opensquilla.onboarding.channel_specs import get_channel_setup_spec
 
@@ -2060,14 +2087,21 @@ def _require_non_blank_secret_fields(type_name: str, entry: Mapping[str, Any]) -
     except KeyError:
         return
     for field_spec in spec.fields:
-        if not (field_spec.required and field_spec.secret):
+        if not field_spec.secret:
+            continue
+        value = entry.get(field_spec.name)
+        if isinstance(value, str) and value.strip() == REDACTED_PLACEHOLDER:
+            raise ValueError(
+                f"channel field {field_spec.name!r} looks redacted ({REDACTED_PLACEHOLDER!r}); "
+                "provide the real value or leave it blank to keep the stored one"
+            )
+        if not field_spec.required:
             continue
         if field_spec.show_when and not all(
             str(entry.get(key, "")) == str(expected)
             for key, expected in field_spec.show_when.items()
         ):
             continue
-        value = entry.get(field_spec.name)
         if value is None or not str(value).strip():
             raise ValueError(
                 f"channel field {field_spec.name!r} requires a non-empty value"
@@ -2086,7 +2120,10 @@ def validate_channel_entry(payload: dict[str, Any]) -> dict[str, Any]:
     try:
         entry = parse_channel_entry(full)
     except ValidationError as exc:
-        raise ValueError(_format_channel_validation_error(exc)) from exc
+        raise ChannelValidationError(
+            _format_channel_validation_error(exc),
+            _channel_validation_field_errors(exc),
+        ) from exc
     normalized = entry.model_dump(mode="python")
     _require_non_blank_secret_fields(type_name, normalized)
     if (
@@ -2162,8 +2199,15 @@ def _merge_with_existing_secrets(
         if not f.secret:
             continue
         provided = merged.get(f.name)
-        blank = provided is None or (isinstance(provided, str) and not provided.strip())
-        if blank and existing.get(f.name):
+        text = provided if isinstance(provided, str) else None
+        blank = provided is None or (text is not None and not text.strip())
+        # The '***' redaction sentinel is what channels.get / probe echo for a
+        # stored secret; a client round-tripping that payload means "keep the
+        # current value", never "my token is three asterisks". Enforced here,
+        # server-side, so every RPC/CLI client gets the same trust boundary
+        # (the Web UI scrub is defense in depth only).
+        redacted = text is not None and text.strip() == REDACTED_PLACEHOLDER
+        if (blank or redacted) and existing.get(f.name):
             merged[f.name] = existing[f.name]
     return merged
 
@@ -2193,6 +2237,14 @@ def remove_channel(
     if len(remaining) == len(raw):
         raise KeyError(f"no channel named {name!r}")
     new_cfg.channels = ChannelsConfig.model_validate({"channels": remaining})
+    # Removal withdraws admin standing too (mirroring pairing revoke): a
+    # dormant channel_admin_senders entry would otherwise silently re-arm for
+    # any future channel created under the same name.
+    admin_senders = getattr(new_cfg, "channel_admin_senders", None)
+    if isinstance(admin_senders, dict) and name in admin_senders:
+        new_cfg.channel_admin_senders = {
+            key: value for key, value in admin_senders.items() if key != name
+        }
     return MutationResult(
         config=new_cfg,
         changed=True,

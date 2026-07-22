@@ -60,6 +60,118 @@ REQUIRED_FATAL_ERROR_CLASSES: tuple[str, ...] = (
     "contract_violation",
 )
 
+#: Every value an adapter may declare. The classifier will not emit anything
+#: outside this set, and will not trust an adapter-declared value outside it.
+ALL_ERROR_CLASSES: frozenset[str] = frozenset(
+    REQUIRED_RETRYABLE_ERROR_CLASSES + REQUIRED_FATAL_ERROR_CLASSES
+)
+
+#: A send failure we cannot place in the taxonomy. Deliberately outside BOTH
+#: the retryable and fatal sets: guessing "transient" would retry a permanent
+#: failure forever, guessing "fatal" would discard a recoverable one. An
+#: unclassified failure parks for a human instead.
+UNCLASSIFIED_ERROR_CLASS: str = "unknown"
+
+#: HTTP status → taxonomy. Only statuses whose meaning is unambiguous across
+#: chat providers are mapped; anything else falls through to unclassified.
+_SEND_ERROR_STATUS_CLASSES: dict[int, str] = {
+    400: "payload_rejected",
+    401: "auth_invalid",
+    403: "auth_invalid",
+    404: "target_missing",
+    410: "target_missing",
+    413: "payload_rejected",
+    422: "payload_rejected",
+    429: "rate_limited",
+}
+
+
+def classify_send_error_status(status_code: int | None) -> str:
+    """Map an HTTP status from a send attempt onto the error taxonomy.
+
+    5xx is transport-transient: the request may well succeed on a retry.
+    Unmapped statuses are unclassified rather than guessed.
+    """
+    if status_code is None:
+        return UNCLASSIFIED_ERROR_CLASS
+    mapped = _SEND_ERROR_STATUS_CLASSES.get(status_code)
+    if mapped is not None:
+        return mapped
+    if 500 <= status_code <= 599:
+        return "transport_transient"
+    return UNCLASSIFIED_ERROR_CLASS
+
+
+def classify_channel_send_error(error: BaseException) -> str:
+    """Classify a provider send failure into the taxonomy adapters declare.
+
+    The taxonomy is enforced verbatim across every adapter, but nothing used
+    to produce it: the durable outbox stored ``type(error).__name__``, which
+    no consumer can act on. This is the single producer.
+
+    Resolution order, most authoritative first:
+
+    1. An explicit ``error_class`` the raising adapter set. An adapter knows
+       its own provider's semantics better than any generic rule; a value
+       outside the taxonomy is ignored rather than trusted.
+    2. A ``retry_after`` hint — only a rate limit carries one.
+    3. An HTTP status, from ``httpx.HTTPStatusError`` or a ``status_code``
+       attribute. Note that a bare ``code`` attribute is NOT read: several
+       providers number their own business errors there, and reading those as
+       HTTP statuses would misclassify confidently.
+    4. Transport-layer exceptions (connect/read/timeout) → transient.
+
+    Anything else is unclassified — never a benign default.
+    """
+    declared = getattr(error, "error_class", None)
+    if isinstance(declared, str) and declared in ALL_ERROR_CLASSES:
+        return declared
+
+    retry_after = getattr(error, "retry_after", None)
+    if isinstance(retry_after, int | float) and retry_after >= 0:
+        return "rate_limited"
+
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if not isinstance(status, int):
+        status = getattr(error, "status_code", None)
+    if isinstance(status, int):
+        return classify_send_error_status(status)
+
+    # Duck-typed so this module stays importable by every adapter (importing
+    # httpx exception types here would invert the dependency direction).
+    if _is_transport_exception(error):
+        return "transport_transient"
+
+    return UNCLASSIFIED_ERROR_CLASS
+
+
+_TRANSPORT_EXCEPTION_NAMES: frozenset[str] = frozenset(
+    {
+        "ConnectError",
+        "ConnectTimeout",
+        "NetworkError",
+        "PoolTimeout",
+        "ProtocolError",
+        "ReadError",
+        "ReadTimeout",
+        "RemoteProtocolError",
+        "TimeoutException",
+        "WriteError",
+        "WriteTimeout",
+    }
+)
+
+
+def _is_transport_exception(error: BaseException) -> bool:
+    if isinstance(error, TimeoutError | ConnectionError):
+        return True
+    return any(
+        klass.__name__ in _TRANSPORT_EXCEPTION_NAMES
+        and klass.__module__.split(".")[0] == "httpx"
+        for klass in type(error).__mro__
+    )
+
 
 class ChannelCapabilities:
     """Capability tags an adapter may declare on its module.
@@ -171,6 +283,20 @@ class ChannelSendResult:
         return self.status == ChannelSendStatus.SENT
 
 
+class ChannelLengthUnit(StrEnum):
+    """The unit a platform counts a message's length in.
+
+    A code-point cap measured in the wrong unit silently drops replies: an
+    emoji is two UTF-16 units and up to four UTF-8 bytes, so a reply that
+    looks in-budget by ``len()`` is rejected wholesale by a byte- or
+    UTF-16-counting provider.
+    """
+
+    CODE_POINTS = "code_points"  # Python len()
+    UTF8_BYTES = "utf8_bytes"  # len(s.encode("utf-8"))
+    UTF16_UNITS = "utf16_units"  # len(s.encode("utf-16-le")) // 2
+
+
 @dataclass(frozen=True)
 class ChannelCapabilityProfile:
     """Minimal typed capability declaration for channel adapters."""
@@ -205,6 +331,17 @@ class ChannelCapabilityProfile:
     artifact_delivery: bool = False
     transports: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
+    #: Per-message outbound length cap in ``length_unit``. 0 (default) means no
+    #: central cap is declared, so central chunk-or-truncate is skipped for this
+    #: channel — the safe passthrough for local transports with no platform cap.
+    max_message_len: int = 0
+    #: Unit ``max_message_len`` is measured in.
+    length_unit: ChannelLengthUnit = ChannelLengthUnit.CODE_POINTS
+    #: True when the adapter already splits over-length text inside its own
+    #: ``send()``; central dispatch must skip it to avoid double-processing.
+    #: Defaults False so an adapter that declares a cap but forgets to split
+    #: degrades to central handling rather than shipping over-cap messages.
+    splits_natively: bool = False
 
     def capability_tags(self) -> frozenset[str]:
         tags: set[str] = set()
@@ -482,6 +619,52 @@ def channel_platform_manifest(channel: Any) -> ChannelPlatformManifest | None:
     )
 
 
+_CAPABILITY_METHOD_EVIDENCE: dict[str, tuple[str, ...]] = {
+    ChannelCapabilities.TYPING_INDICATOR: ("send_typing",),
+    ChannelCapabilities.NATIVE_FILE_UPLOAD: ("send_file",),
+    ChannelCapabilities.REPLY: ("build_reply_message",),
+    ChannelCapabilities.THREAD_REPLY: ("build_reply_message",),
+    ChannelCapabilities.EDIT: ("edit",),
+    ChannelCapabilities.DELETE: ("delete",),
+    ChannelCapabilities.REACTIONS: (
+        "set_reaction",
+        "add_reaction",
+        "remove_reaction",
+    ),
+    ChannelCapabilities.CARDS: ("send_card", "send_streaming"),
+    ChannelCapabilities.INTERACTIVE_CARDS: ("send_card", "send"),
+}
+
+
+def channel_capability_evidence(channel: Any) -> dict[str, dict[str, Any]]:
+    """Describe declared, method-backed, and effective adapter capabilities.
+
+    Semantic capabilities such as group topology and mention parsing cannot be
+    proved by method presence. They remain explicitly marked ``declaration``;
+    CI/live-smoke proof timestamps can replace that evidence kind later.
+    """
+    profile = channel_capability_profile(channel)
+    if profile is None:
+        return {}
+    evidence: dict[str, dict[str, Any]] = {}
+    for capability in sorted(profile.capability_tags()):
+        methods = _CAPABILITY_METHOD_EVIDENCE.get(capability, ())
+        implemented_methods = [
+            method for method in methods if callable(getattr(channel, method, None))
+        ]
+        method_backed = bool(methods)
+        implemented = bool(implemented_methods) if method_backed else True
+        evidence[capability] = {
+            "declared": True,
+            "implemented": implemented,
+            "effective": implemented,
+            "evidence_kind": "method" if method_backed else "declaration",
+            "methods": implemented_methods,
+            "proof_status": "unverified",
+        }
+    return evidence
+
+
 def normalize_channel_send_result(
     result: Any,
     *,
@@ -585,6 +768,10 @@ def run_channel_contract(module: ModuleType) -> None:
 __all__ = [
     "ALLOWED_CAPABILITY_TIERS",
     "ALLOWED_DM_SAFETY_TIERS",
+    "ALL_ERROR_CLASSES",
+    "UNCLASSIFIED_ERROR_CLASS",
+    "classify_channel_send_error",
+    "classify_send_error_status",
     "PUBLIC_VENDOR_ADAPTERS",
     "REQUIRED_FATAL_ERROR_CLASSES",
     "REQUIRED_RETRYABLE_ERROR_CLASSES",
@@ -600,6 +787,7 @@ __all__ = [
     "assert_dm_safety_tiers",
     "assert_error_class_taxonomy",
     "channel_capability_profile",
+    "channel_capability_evidence",
     "channel_platform_manifest",
     "normalize_channel_send_result",
     "run_channel_contract",

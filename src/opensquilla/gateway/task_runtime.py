@@ -37,7 +37,7 @@ from opensquilla.engine.outcome import completed_outcome, outcome_from_error
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.session_lifecycle import TaskLifecycleEvent, TaskLifecycleListener
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
-from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus
+from opensquilla.session.models import AgentTaskRecord, AgentTaskStatus, QueueMode
 from opensquilla.session.terminal_reply import (
     build_terminal_reply,
     is_context_payload_too_large,
@@ -431,6 +431,13 @@ class TaskRuntime:
         cover model streaming, tool execution, slot waits, or approval waits.
     """
 
+    supported_queue_modes = frozenset(mode.value for mode in QueueMode)
+
+    @classmethod
+    def supports_queue_mode(cls, mode: str) -> bool:
+        """Return whether ``enqueue`` implements the exact queue-mode value."""
+        return mode in cls.supported_queue_modes
+
     def __init__(
         self,
         *,
@@ -567,7 +574,10 @@ class TaskRuntime:
             agent_id=normalize_agent_id(envelope.agent_id),
             session_key=canonicalize_session_key(envelope.session_key),
         )
-        queue_mode = mode or "followup"
+        queue_mode = mode or QueueMode.FOLLOWUP.value
+        if not self.supports_queue_mode(queue_mode):
+            valid = ", ".join(sorted(self.supported_queue_modes))
+            raise ValueError(f"mode must be one of {{{valid}}}")
         if queue_mode == "collect":
             async with self.collect_admission(envelope.session_key):
                 collected = await self._try_collect(
@@ -826,7 +836,10 @@ class TaskRuntime:
         )
 
         async with self._state_lock:
-            if queue_mode != "interrupt" and self._max_pending_per_session is not None:
+            if (
+                queue_mode not in {QueueMode.STEER.value, QueueMode.INTERRUPT.value}
+                and self._max_pending_per_session is not None
+            ):
                 pending = [
                     task
                     for task in self._pending_by_session.get(envelope.session_key, [])
@@ -982,7 +995,10 @@ class TaskRuntime:
             ):
                 runtime_task.primary_input_pending = True
 
-            if runtime_task.queue_mode == "interrupt":
+            if runtime_task.queue_mode in {
+                QueueMode.STEER.value,
+                QueueMode.INTERRUPT.value,
+            }:
                 interrupt_targets = [
                     task
                     for task in self._tasks.values()
@@ -991,8 +1007,8 @@ class TaskRuntime:
                 ]
                 for target in interrupt_targets:
                     target.cancel_requested = True
-                    target.cancel_source = "queue_interrupt"
-                    target.cancel_reason = "queue_mode_interrupt"
+                    target.cancel_source = f"queue_{runtime_task.queue_mode}"
+                    target.cancel_reason = f"queue_mode_{runtime_task.queue_mode}"
 
             victim = reservation.overflow_victim
             if victim is not None:

@@ -230,6 +230,15 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.proposals.list": PROPOSALS_SCOPE,
     "exec.proposals.show": PROPOSALS_SCOPE,
     "exec.proposals.settings.get": PROPOSALS_SCOPE,
+    # Channel identity pairing is a dedicated operator capability. Admin
+    # implies this scope, while remote no-auth operators do not receive it.
+    "channels.pairings": PAIRING_SCOPE,
+    "channels.pairing.approve": PAIRING_SCOPE,
+    "channels.pairing.revoke": PAIRING_SCOPE,
+    # Grant/revoke a sender's channel-admin standing. Same narrow scope as
+    # pairing: an operator managing a channel's members may promote or demote
+    # its senders, but this is not an arbitrary config write.
+    "channels.admin.set": PAIRING_SCOPE,
     "exec.proposals.auto_enabled.list": PROPOSALS_SCOPE,
     # ----- admin -----
     # OpenSquilla-only; re-reads the on-disk TOML and swaps the ENTIRE runtime
@@ -271,6 +280,8 @@ METHOD_SCOPES: dict[str, str] = {
     "exec.proposals.auto_enabled.disable": ADMIN_SCOPE,
     "channels.logout": ADMIN_SCOPE,
     "channels.restart": ADMIN_SCOPE,  # OpenSquilla-only.
+    "channels.get": ADMIN_SCOPE,  # Redacted editable config still exposes secret presence.
+    "channels.probe": ADMIN_SCOPE,  # Live credential/network probe.
     "diagnostics.set": ADMIN_SCOPE,
     "onboarding.provider.credential.reveal": ADMIN_SCOPE,
     "onboarding.provider.credential.clear": ADMIN_SCOPE,

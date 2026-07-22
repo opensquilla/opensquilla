@@ -91,6 +91,26 @@ def _channel_last_error(row: dict[str, Any]) -> dict[str, Any] | None:
     return last_error if isinstance(last_error, dict) else None
 
 
+def _channel_outbox_unknown(row: dict[str, Any]) -> dict[str, Any] | None:
+    """The outbox 'unknown' bucket for a channel row, if it has entries."""
+    diagnostics = row.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        return None
+    delivery = diagnostics.get("delivery")
+    if not isinstance(delivery, dict):
+        return None
+    outbox = delivery.get("outbox")
+    if not isinstance(outbox, dict):
+        return None
+    unknown = outbox.get("unknown")
+    if not isinstance(unknown, dict):
+        return None
+    count = unknown.get("count")
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
+        return None
+    return unknown
+
+
 def evaluate_provider(payload: dict[str, Any]) -> list[HealthFinding]:
     raw_rows = payload.get("providers")
     if not isinstance(raw_rows, list):
@@ -1322,6 +1342,7 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     ),
                     evidence={
                         "name": name,
+                        "channelName": name,
                         "status": status,
                         "type": row.get("type"),
                         "errorClass": "auth_invalid",
@@ -1352,7 +1373,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is disabled",
                     detail="The channel is configured but disabled on disk.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Enable channel",
@@ -1372,7 +1398,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is {status}",
                     detail="The configured channel is not able to receive or send messages.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Restart channel",
@@ -1393,7 +1424,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is stopped",
                     detail="The channel is configured and enabled but is not connected.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Inspect channels",
@@ -1414,7 +1450,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                     surface="channels",
                     title=f"Channel {name} is restarting",
                     detail="The channel is recovering after dispatch errors.",
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Inspect channels",
@@ -1434,7 +1475,12 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                         f"The channel reported status {status}, which is not recognized "
                         "as a ready state."
                     ),
-                    evidence={"name": name, "status": status, "type": row.get("type")},
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "status": status,
+                        "type": row.get("type"),
+                    },
                     fix_steps=[
                         FixStep(
                             label="Inspect channels",
@@ -1443,6 +1489,91 @@ def evaluate_channels(payload: dict[str, Any]) -> list[HealthFinding]:
                         FixStep(
                             label="Restart channel",
                             command=f"opensquilla channels restart {name_arg} --yes",
+                        ),
+                    ],
+                )
+            )
+        # Action items ride alongside the status finding: a connected channel
+        # can still be silently gating senders or losing replies, and "ready"
+        # must not paper over either.
+        pending_pairings = row.get("pendingPairings")
+        if (
+            isinstance(pending_pairings, int)
+            and not isinstance(pending_pairings, bool)
+            and pending_pairings > 0
+        ):
+            findings.append(
+                HealthFinding(
+                    id=f"channel.{name}.pending_pairings",
+                    severity="warn",
+                    # Awaiting a human decision, not a malfunction: surface it
+                    # without downgrading overall readiness.
+                    readiness_impact="optional",
+                    surface="channels",
+                    title=f"Channel {name} has pairing requests awaiting approval",
+                    detail=(
+                        f"{pending_pairings} sender(s) asked to pair and were told to "
+                        "wait for operator approval. Until someone approves or revokes "
+                        "the requests, their messages get no replies."
+                    ),
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "pendingPairings": pending_pairings,
+                    },
+                    fix_steps=[
+                        FixStep(
+                            label="Review pending pairings",
+                            command=f"opensquilla channels pairings list {name_arg}",
+                            detail=(
+                                "Approve or revoke each request from this list or "
+                                "the control console Channels page."
+                            ),
+                        ),
+                        FixStep(
+                            label="Inspect channels",
+                            command=f"opensquilla channels status {name_arg} --json",
+                        ),
+                    ],
+                )
+            )
+        outbox_unknown = _channel_outbox_unknown(row)
+        if outbox_unknown is not None:
+            unknown_count = int(outbox_unknown["count"])
+            findings.append(
+                HealthFinding(
+                    id=f"channel.{name}.sends_unknown_outcome",
+                    severity="warn",
+                    # Unknown-outcome rows are terminal until a human resolves
+                    # them; letting them degrade readiness would flag the
+                    # channel forever after a single lost send.
+                    readiness_impact="optional",
+                    surface="channels",
+                    title=f"Channel {name} has sends with unknown outcome",
+                    detail=(
+                        f"{unknown_count} outbound send(s) raised mid-delivery, so "
+                        "whether they reached the recipient is unknown. These rows "
+                        "are kept for a human decision; nothing retries them "
+                        "automatically."
+                    ),
+                    evidence={
+                        "name": name,
+                        "channelName": name,
+                        "unknownSends": unknown_count,
+                        "oldestAt": outbox_unknown.get("oldest_at"),
+                    },
+                    fix_steps=[
+                        FixStep(
+                            label="Inspect channels",
+                            command=f"opensquilla channels status {name_arg} --json",
+                        ),
+                        FixStep(
+                            label="Confirm delivery with the recipient",
+                            detail=(
+                                "Check the conversation on the provider side; the "
+                                "outbox diagnostics carry an error class per "
+                                "affected send."
+                            ),
                         ),
                     ],
                 )

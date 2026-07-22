@@ -158,6 +158,12 @@ class ChannelDeliveryStore:
         # them visible in memory without treating an ordinary provider replay
         # of an unclaimed ``accepted`` row as a new delivery.
         self._recovered_pending_visibility: set[str] = set()
+        # Events accepted memory-only because the journal write itself failed
+        # (database locked past the busy timeout, disk full, I/O error).
+        # ``claim_inbound`` honors these with a pass-through claim so a
+        # degraded message is still processed instead of being dropped as a
+        # duplicate for lacking an ``accepted`` row.
+        self._unjournaled_events: set[str] = set()
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=FULL;")
         self._conn.execute("PRAGMA busy_timeout=30000;")
@@ -496,45 +502,65 @@ class ChannelDeliveryStore:
         return self._pairing_from_row(row)
 
     def accept_inbound(self, channel_name: str, message: IncomingMessage) -> bool:
-        """Commit an inbound event before a provider-facing ACK is returned."""
+        """Commit an inbound event before a provider-facing ACK is returned.
+
+        A storage fault degrades to memory-only acceptance instead of raising:
+        this runs inside adapter receive loops (Telegram polling, the Discord
+        gateway dispatch loop, SDK message hooks), where one transient SQLite
+        error would otherwise kill the channel's receive path outright. The
+        degraded event loses at-least-once crash durability for that single
+        message — the pre-journal baseline — and is recorded so
+        :meth:`claim_inbound` still lets dispatch process it.
+        """
         event_key = inbound_event_key(channel_name, message)
         if event_key is None:
             return True
         now = time.time()
         lane_key = f"{message.channel_id}:{message.sender_id}"
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
             try:
-                self._conn.execute(
-                    "INSERT INTO channel_ingress "
-                    "(event_key, channel_name, account_id, lane_key, message_json, "
-                    "state, accepted_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
-                    (
-                        event_key,
-                        channel_name,
-                        message.provenance.account_id or channel_name,
-                        lane_key,
-                        _safe_message_json(message),
-                        now,
-                        now,
-                    ),
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._conn.execute(
+                        "INSERT INTO channel_ingress "
+                        "(event_key, channel_name, account_id, lane_key, message_json, "
+                        "state, accepted_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
+                        (
+                            event_key,
+                            channel_name,
+                            message.provenance.account_id or channel_name,
+                            lane_key,
+                            _safe_message_json(message),
+                            now,
+                            now,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    self._conn.rollback()
+                    row = self._conn.execute(
+                        "SELECT state FROM channel_ingress WHERE event_key = ?",
+                        (event_key,),
+                    ).fetchone()
+                    if (
+                        row is not None
+                        and str(row["state"]) == "accepted"
+                        and event_key in self._recovered_pending_visibility
+                    ):
+                        self._recovered_pending_visibility.discard(event_key)
+                        return True
+                    return False
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                with contextlib.suppress(sqlite3.Error):
+                    self._conn.rollback()
+                self._unjournaled_events.add(event_key)
+                log.warning(
+                    "channel.ingress_journal_degraded",
+                    channel=channel_name,
+                    error_type=type(exc).__name__,
+                    error=_safe_error_text(exc),
                 )
-            except sqlite3.IntegrityError:
-                self._conn.rollback()
-                row = self._conn.execute(
-                    "SELECT state FROM channel_ingress WHERE event_key = ?",
-                    (event_key,),
-                ).fetchone()
-                if (
-                    row is not None
-                    and str(row["state"]) == "accepted"
-                    and event_key in self._recovered_pending_visibility
-                ):
-                    self._recovered_pending_visibility.discard(event_key)
-                    return True
-                return False
-            self._conn.commit()
         return True
 
     def claim_inbound(
@@ -545,6 +571,14 @@ class ChannelDeliveryStore:
         event_key = inbound_event_key(channel_name, message)
         if event_key is None:
             return IngressClaim("", "")
+        with self._lock:
+            if event_key in self._unjournaled_events:
+                # Accepted memory-only after a journal write failure: there is
+                # no ``accepted`` row to claim, so hand back the same
+                # pass-through claim eventless messages get. Returning ``None``
+                # here would drop the message as a duplicate.
+                self._unjournaled_events.discard(event_key)
+                return IngressClaim("", "")
         token = uuid.uuid4().hex
         now = time.time()
         with self._lock:

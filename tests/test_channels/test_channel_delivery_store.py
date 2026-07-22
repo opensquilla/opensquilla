@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import sqlite3
+from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -91,6 +94,134 @@ def test_durable_enqueue_commits_before_memory_visibility(tmp_path) -> None:
 
     assert durable_enqueue(channel, _message(), Queue()) is True
     assert len(queue) == 1
+    store.close()
+
+
+@contextlib.contextmanager
+def _blocked_journal(store: ChannelDeliveryStore) -> Iterator[None]:
+    """Hold the write lock from a second connection to force SQLITE_BUSY."""
+    store._conn.execute("PRAGMA busy_timeout=100;")
+    blocker = sqlite3.connect(store.path)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        yield
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+
+def test_journal_write_failure_degrades_to_memory_only_acceptance(tmp_path) -> None:
+    """A storage fault must not raise out of accept_inbound or lose the event."""
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    message = _message()
+
+    with _blocked_journal(store):
+        assert store.accept_inbound("slack-main", message) is True
+
+    # The degraded event has no journal row, yet dispatch must still be able
+    # to claim and finalize it instead of skipping it as a duplicate.
+    claim = store.claim_inbound("slack-main", message)
+    assert claim is not None
+    assert claim.event_key == ""
+    store.complete_inbound(claim, "turn_dispatched")  # pass-through no-op
+
+    # Once storage recovers, the journal is used again.
+    follow_up = _message("event-2")
+    assert store.accept_inbound("slack-main", follow_up) is True
+    follow_claim = store.claim_inbound("slack-main", follow_up)
+    assert follow_claim is not None
+    assert follow_claim.event_key
+    assert store.diagnostics("slack-main")["ingress"]["processing"]["count"] == 1
+    store.close()
+
+
+async def test_telegram_poll_loop_survives_journal_write_failure(tmp_path) -> None:
+    """One SQLite fault must not kill the Telegram receive path."""
+    from opensquilla.channels.telegram import TelegramChannel, TelegramChannelConfig
+
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    channel = TelegramChannel(TelegramChannelConfig(token="synthetic-token"))
+    channel._delivery_store = store
+    channel._delivery_channel_name = "telegram-main"
+
+    calls = 0
+
+    async def fake_api(method: str, payload: dict | None = None) -> list[dict]:
+        nonlocal calls
+        assert method == "getUpdates"
+        calls += 1
+        if calls == 1:
+            return [
+                {
+                    "update_id": 7,
+                    "message": {
+                        "message_id": 1,
+                        "chat": {"id": 42, "type": "private"},
+                        "from": {"id": 9},
+                        "text": "hello",
+                    },
+                }
+            ]
+        raise asyncio.CancelledError
+
+    channel._api = fake_api  # type: ignore[method-assign]
+
+    with _blocked_journal(store):
+        with pytest.raises(asyncio.CancelledError):
+            await channel._poll_loop()
+
+    assert channel._update_offset == 8
+    assert channel._queue.get_nowait().content == "hello"
+    store.close()
+
+
+async def test_discord_dispatch_enqueue_survives_journal_write_failure(tmp_path) -> None:
+    """A journal fault in the Discord dispatch path must not raise."""
+    from opensquilla.channels.discord import DiscordChannel, DiscordChannelConfig
+
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    channel = DiscordChannel(DiscordChannelConfig(token="synthetic-token"))
+    channel.bot_user_id = "bot-1"
+    channel._delivery_store = store
+    channel._delivery_channel_name = "discord-main"
+
+    with _blocked_journal(store):
+        await channel._handle_dispatch(
+            "MESSAGE_CREATE",
+            {
+                "id": "message-1",
+                "channel_id": "channel-1",
+                "author": {"id": "user-1"},
+                "content": "hello",
+            },
+        )
+
+    assert channel._queue.get_nowait().content == "hello"
+    store.close()
+
+
+def test_qq_enqueue_survives_journal_write_failure(tmp_path) -> None:
+    """A journal fault in the QQ message hook must not raise."""
+    from opensquilla.channels.qq import QQChannel, QQChannelConfig
+
+    store = ChannelDeliveryStore(tmp_path / "channel_delivery.sqlite")
+    channel = QQChannel(
+        QQChannelConfig(name="qq", app_id="app-id", app_secret="app-secret")
+    )
+    channel._delivery_store = store
+    channel._delivery_channel_name = "qq-main"
+
+    with _blocked_journal(store):
+        channel._enqueue_message(
+            SimpleNamespace(
+                id="message-1",
+                author=SimpleNamespace(user_openid="user-1"),
+                content="hello",
+            ),
+            is_group=False,
+        )
+
+    assert channel._inbound_queue.get_nowait().content == "hello"
     store.close()
 
 

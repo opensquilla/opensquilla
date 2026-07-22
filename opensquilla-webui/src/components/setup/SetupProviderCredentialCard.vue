@@ -14,6 +14,7 @@ interface ProviderCredentialPanelContract {
   source: string
   available: boolean
   removable: boolean
+  removing: boolean
   envKey: string
   masked: string
   revealAllowed: boolean
@@ -105,7 +106,11 @@ const hasRemovableCredential = computed(() => (
   showCredentialControls.value
   && props.panel.removable
 ))
-const removeCredentialLabel = computed(() => t('setup.provider.removeCredential'))
+const removeCredentialLabel = computed(() => t(
+  props.panel.removing
+    ? 'setup.provider.removingCredential'
+    : 'setup.provider.removeCredential',
+))
 const removeCredentialAriaLabel = computed(() => (
   `${removeCredentialLabel.value} — ${props.panel.providerLabel}`
 ))
@@ -238,7 +243,10 @@ const verdictModelsText = computed(() => {
 </script>
 
 <template>
-  <section class="setup-provider-credential">
+  <section
+    class="setup-provider-credential"
+    :aria-busy="panel.removing ? 'true' : undefined"
+  >
     <div class="setup-provider-credential__head">
       <div>
         <h4 class="setup-provider-credential__title">{{ title }}</h4>
@@ -284,9 +292,14 @@ const verdictModelsText = computed(() => {
               v-if="hasRemovableCredential"
               type="button"
               class="btn btn--ghost setup-provider-credential__remove"
+              :disabled="panel.removing"
+              :aria-busy="panel.removing ? 'true' : undefined"
               :aria-label="removeCredentialAriaLabel"
               @click="emit('removeCredential')"
-            >{{ removeCredentialLabel }}</button>
+            >
+              <span v-if="panel.removing" class="setup-connection__spinner" aria-hidden="true"></span>
+              {{ removeCredentialLabel }}
+            </button>
           </div>
         </label>
         <p v-if="panel.revealError" class="setup-provider-credential__error">{{ panel.revealError }}</p>
@@ -329,9 +342,14 @@ const verdictModelsText = computed(() => {
               v-else-if="hasRemovableCredential"
               type="button"
               class="btn btn--ghost setup-provider-credential__remove"
+              :disabled="panel.removing"
+              :aria-busy="panel.removing ? 'true' : undefined"
               :aria-label="removeCredentialAriaLabel"
               @click="emit('removeCredential')"
-            >{{ removeCredentialLabel }}</button>
+            >
+              <span v-if="panel.removing" class="setup-connection__spinner" aria-hidden="true"></span>
+              {{ removeCredentialLabel }}
+            </button>
           </div>
         </label>
       </template>
@@ -511,8 +529,11 @@ const verdictModelsText = computed(() => {
 }
 
 .setup-provider-credential__remove {
+  align-items: center;
   color: var(--danger);
+  display: inline-flex;
   flex: 0 0 auto;
+  gap: var(--sp-1);
   white-space: nowrap;
 }
 

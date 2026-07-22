@@ -1089,6 +1089,64 @@ describe('SetupModelStrategyPanel', () => {
     app.unmount()
   })
 
+  it.each(['router', 'single', 'ensemble'] as const)(
+    'keeps the fixed and fallback model selector available in %s mode',
+    async activeStrategy => {
+      const { app, el } = await mountPanel({ activeStrategy })
+
+      expect(el.querySelector('[data-testid="setup-model-strategy-fixed-model"]')).toBeTruthy()
+      const fixedModelInput = el.querySelector<HTMLInputElement>(
+        'input[name="setup_provider_model_strategy_fixed_model"]',
+      )
+      expect(fixedModelInput?.value).toBe('deepseek/deepseek-v4-pro')
+      const fixedSection = el.querySelector<HTMLElement>(
+        '[data-testid="setup-model-strategy-fixed-section"]',
+      )!
+      const fixedFieldDescription = fixedSection.querySelector<HTMLElement>(
+        '#setup-provider-model_strategy_fixed_model-description',
+      )
+      expect(fixedFieldDescription?.textContent)
+        .toContain('as the fallback when routing or collaboration cannot complete')
+      expect(fixedModelInput?.getAttribute('aria-describedby'))
+        .toBe('setup-provider-model_strategy_fixed_model-description')
+      if (activeStrategy === 'single') {
+        expect(fixedSection.querySelector('h4')?.textContent).toContain('Fixed model')
+        expect(fixedSection.querySelector('.control-section__head .control-section__desc')?.textContent)
+          .toContain('Choose the model used for every request.')
+        expect(fixedSection.textContent)
+          .toContain('without automatic routing or multi-model collaboration')
+      } else {
+        expect(fixedSection.querySelector('h4')?.textContent)
+          .toContain('Fixed and fallback model')
+        expect(fixedSection.textContent)
+          .toContain('as the fallback when routing or collaboration cannot complete')
+        expect(fixedSection.querySelector('.control-section__head .control-section__desc')).toBeNull()
+        expect(fixedSection.textContent).not.toContain('Choose the model used for every request.')
+        expect(fixedSection.textContent)
+          .not.toContain('without automatic routing or multi-model collaboration')
+      }
+
+      app.unmount()
+    },
+  )
+
+  it('uses one page heading followed by section and subsection headings', async () => {
+    const { app, el } = await mountPanel({ activeStrategy: 'router' })
+
+    expect(Array.from(el.querySelectorAll('h3')).map(node => node.textContent?.trim()))
+      .toEqual(['Model routing'])
+    expect(Array.from(el.querySelectorAll('h4')).map(node => node.textContent?.trim()))
+      .toEqual(expect.arrayContaining([
+        'Choose how models are used',
+        'Intelligent model routing',
+        'Fixed and fallback model',
+      ]))
+    expect(el.querySelector('.setup-model-strategy__roles-head h5')?.textContent)
+      .toContain('Model roles')
+
+    app.unmount()
+  })
+
   it('shows non-empty single model details', async () => {
     const { app, el } = await mountPanel({
       activeStrategy: 'single',

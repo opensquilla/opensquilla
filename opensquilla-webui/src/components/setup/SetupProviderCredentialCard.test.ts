@@ -13,6 +13,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     requiresApiKey: true,
     available: true,
     removable: true,
+    removing: false,
     source: 'env',
     envKey: 'DEEPSEEK_API_KEY',
     masked: 'sk-••••7890',
@@ -64,6 +65,7 @@ beforeEach(() => {
     setup: {
       provider: {
         removeCredential: 'Remove saved key',
+        removingCredential: 'Removing saved key…',
         verdictModels: '{count} models · e.g. {samples}',
         verdictSampleJoiner: ', ',
       },
@@ -252,6 +254,27 @@ describe('SetupProviderCredentialCard', () => {
 
     remove?.click()
     expect(onRemoveCredential).toHaveBeenCalledTimes(1)
+
+    app.unmount()
+  })
+
+  it('disables credential removal and exposes progress while it is pending', async () => {
+    const onRemoveCredential = vi.fn()
+    const { app, el } = await mountCard(
+      { removing: true },
+      { onRemoveCredential },
+    )
+
+    const card = el.querySelector<HTMLElement>('.setup-provider-credential')
+    const remove = el.querySelector<HTMLButtonElement>('.setup-provider-credential__remove')
+    expect(card?.getAttribute('aria-busy')).toBe('true')
+    expect(remove?.disabled).toBe(true)
+    expect(remove?.getAttribute('aria-busy')).toBe('true')
+    expect(remove?.textContent).toContain('Removing saved key…')
+    expect(remove?.querySelector('.setup-connection__spinner')).toBeTruthy()
+
+    remove?.click()
+    expect(onRemoveCredential).not.toHaveBeenCalled()
 
     app.unmount()
   })

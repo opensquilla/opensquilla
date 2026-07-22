@@ -112,6 +112,7 @@ const emit = defineEmits<{
 }>()
 
 const showRouterDetails = computed(() => props.panel.activeStrategy === 'router')
+const fixedModelIsPrimaryStrategy = computed(() => props.panel.activeStrategy === 'single')
 const routerEditingDisabled = computed(() => !props.panel.hasSavedProvider)
 const newCandidateProvider = ref('')
 const newCandidateModel = ref('')
@@ -501,7 +502,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
 
       <section v-if="showRouterDetails" class="control-section setup-model-strategy__detail">
         <div class="control-section__head">
-          <h3 class="control-section__title">{{ t('setup.modelStrategy.routerTitle') }}</h3>
+          <h4 class="control-section__title">{{ t('setup.modelStrategy.routerTitle') }}</h4>
           <p class="control-section__desc">
             {{ t('setup.modelStrategy.routerDependency', { provider: currentProvider, model: currentModel }) }}
           </p>
@@ -526,7 +527,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
         </label>
 
         <div class="setup-model-strategy__roles-head">
-          <h4>{{ t('setup.modelStrategy.modelRolesTitle') }}</h4>
+          <h5>{{ t('setup.modelStrategy.modelRolesTitle') }}</h5>
           <p>{{ t('setup.modelStrategy.modelRolesDesc') }}</p>
         </div>
 
@@ -583,7 +584,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
         data-testid="ensemble-panel"
       >
         <div class="control-section__head">
-          <h3 class="control-section__title">{{ t('setup.modelStrategy.ensembleTitle') }}</h3>
+          <h4 class="control-section__title">{{ t('setup.modelStrategy.ensembleTitle') }}</h4>
           <p class="control-section__desc">{{ t('setup.modelStrategy.ensembleFlowDesc') }}</p>
         </div>
 
@@ -1244,11 +1245,18 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
         </details>
       </section>
 
-      <section v-else class="control-section setup-model-strategy__detail">
+      <section
+        class="control-section setup-model-strategy__detail"
+        data-testid="setup-model-strategy-fixed-section"
+      >
         <div class="control-section__head">
-          <h3 class="control-section__title">{{ t('setup.modelStrategy.singleTitle') }}</h3>
-          <p class="control-section__desc">
-            {{ t('setup.modelStrategy.singleDependency', { provider: currentProvider, model: currentModel }) }}
+          <h4 class="control-section__title">
+            {{ t(fixedModelIsPrimaryStrategy
+              ? 'setup.modelStrategy.singleTitle'
+              : 'setup.modelStrategy.singleModelLabel') }}
+          </h4>
+          <p v-if="fixedModelIsPrimaryStrategy" class="control-section__desc">
+            {{ t('setup.modelStrategy.singleDependency') }}
           </p>
         </div>
         <div class="setup-model-strategy__single-provider">
@@ -1269,7 +1277,9 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
           :model-source="panel.single.modelSource"
           @update="emit('updateFixedModel', $event)"
         />
-        <p class="setup-model-strategy__muted">{{ t('setup.modelStrategy.singleDesc') }}</p>
+        <p v-if="fixedModelIsPrimaryStrategy" class="setup-model-strategy__muted">
+          {{ t('setup.modelStrategy.singleDesc') }}
+        </p>
       </section>
     </template>
   </section>
@@ -1457,7 +1467,7 @@ function credentialLabel(candidate: EnsembleCandidateView): string {
   margin-top: var(--sp-1);
 }
 
-.setup-model-strategy__roles-head h4,
+.setup-model-strategy__roles-head h5,
 .setup-model-strategy__roles-head p {
   margin: 0;
 }

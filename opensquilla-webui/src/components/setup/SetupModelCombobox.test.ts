@@ -115,6 +115,29 @@ describe('SetupModelCombobox', () => {
     expect(input?.placeholder).toBe('Search models or enter a custom ID')
   })
 
+  it('associates field help and live catalog context with the input', async () => {
+    const { el } = await mountCombobox({
+      field: { ...FIELD, description: 'Used for direct requests and fallback.' },
+    })
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model"]')
+    const description = el.querySelector<HTMLElement>('#setup-provider-model-description')
+
+    expect(description?.textContent).toBe('Used for direct requests and fallback.')
+    expect(input?.getAttribute('aria-describedby'))
+      .toBe('setup-provider-model-description setup-provider-model-catalog-count')
+  })
+
+  it('keeps field help associated when no live catalog is available', async () => {
+    const { el } = await mountCombobox({
+      field: { ...FIELD, description: 'Enter a provider model ID.' },
+      models: [],
+      modelSource: 'none',
+    })
+    const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model"]')
+
+    expect(input?.getAttribute('aria-describedby')).toBe('setup-provider-model-description')
+  })
+
   it('lists compact context, maximum output, and capability hints', async () => {
     const { el } = await mountCombobox()
     await openList(el)

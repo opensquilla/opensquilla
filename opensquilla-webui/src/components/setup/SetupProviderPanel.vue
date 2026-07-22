@@ -68,6 +68,7 @@ interface ProviderPanelContract {
     primaryBlockReason: string
     probeModelAvailable: boolean
   }>
+  credentialRemovalPending: boolean
   editingPrimary: boolean
   selectedStoredProfile: boolean
   editingNew: boolean
@@ -306,6 +307,21 @@ function activationInProgress(providerId: string): boolean {
 }
 
 const activationBusy = computed(() => activationState.value.phase === 'activating')
+const providerBusy = computed(() => (
+  activationBusy.value || props.panel.credentialRemovalPending
+))
+
+watch(() => props.panel.credentialRemovalPending, (pending, wasPending) => {
+  if (pending || !wasPending) return
+  void nextTick(() => {
+    const credentialInput = sectionRef.value?.querySelector<HTMLInputElement>(
+      'input[name="setup_provider_api_key"]:not([disabled])',
+    )
+    const target = credentialInput ?? editorHeadingRef.value
+    target?.scrollIntoView({ block: 'nearest' })
+    target?.focus({ preventScroll: true })
+  })
+})
 
 function activationActionLabel(
   provider: ProviderPanelContract['configuredProviders'][number],
@@ -510,8 +526,8 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 
     <fieldset
       class="setup-provider-interactions"
-      :disabled="activationBusy"
-      :aria-busy="activationBusy ? 'true' : undefined"
+      :disabled="providerBusy"
+      :aria-busy="providerBusy ? 'true' : undefined"
     >
 
     <div class="setup-provider-overview">
@@ -715,7 +731,21 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
           ? t('setup.provider.defaultModelGroupDesc')
           : t('setup.provider.profileModelGroupDesc') }}</p>
       </div>
-      <template v-for="field in modelFields" :key="field.name">
+      <div
+        v-if="panel.editingPrimary && !editingPrimaryDraft"
+        class="setup-provider-model__routing-owner"
+        data-testid="configured-primary-model-readonly"
+      >
+        <div class="setup-provider-model__routing-value">
+          <span>{{ t('setup.provider.defaultModelLabel', { provider: selectedProviderLabel }) }}</span>
+          <strong>{{ currentModelId || t('setup.provider.contextWindowNoModel') }}</strong>
+        </div>
+        <button type="button" class="btn btn--ghost" @click="emit('goToSection', 'modelStrategy')">
+          {{ t('setup.provider.configureModelRouting') }}
+          <Icon name="chevronRight" :size="15" aria-hidden="true" />
+        </button>
+      </div>
+      <template v-else v-for="field in modelFields" :key="field.name">
         <SetupModelCombobox
           v-if="useCombobox(field)"
           :field="displayField(field)"
@@ -732,10 +762,10 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
           @update="(name, val) => emit('updateProviderField', name, val)"
         />
       </template>
-      <p v-if="panel.editingPrimary" class="setup-provider-model__semantics">
+      <p v-if="panel.editingPrimary && editingPrimaryDraft" class="setup-provider-model__semantics">
         {{ t('setup.provider.defaultModelSemantics') }}
       </p>
-      <p v-else class="setup-provider-profile-model-hint">
+      <p v-else-if="!panel.editingPrimary" class="setup-provider-profile-model-hint">
         {{ t('setup.provider.profileModelHint') }}
       </p>
       <p
@@ -1202,6 +1232,39 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   padding-block: var(--sp-3);
 }
 
+.setup-provider-model__routing-owner {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3);
+}
+
+.setup-provider-model__routing-value {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.setup-provider-model__routing-value span {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.setup-provider-model__routing-value strong {
+  overflow-wrap: anywhere;
+}
+
+.setup-provider-model__routing-owner .btn {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+}
+
 .setup-provider-model__semantics {
   color: var(--text-muted);
   font-size: var(--fs-xs);
@@ -1314,6 +1377,15 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   }
 
   .setup-provider-routing > .btn {
+    align-self: flex-start;
+  }
+
+  .setup-provider-model__routing-owner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .setup-provider-model__routing-owner .btn {
     align-self: flex-start;
   }
 

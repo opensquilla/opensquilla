@@ -39,6 +39,7 @@ from opensquilla.observability.decision_log import build_vision_followup_gate_re
 if TYPE_CHECKING:
     from opensquilla.engine.agent import Agent
     from opensquilla.engine.agent_injection import PendingInputProvider
+    from opensquilla.engine.artifact_delivery import OmittedArtifactPublishResult
     from opensquilla.engine.hooks.types import CompactionHook
     from opensquilla.engine.types import (
         AgentEvent,
@@ -470,6 +471,21 @@ class _WarningHandler:
             state.final_text_parts[:] = [accumulated_text[: -len(current_text)]]
         state.current_text_parts[:] = []
 
+@dataclass
+class _DonePrePublish:
+    """Carrier between the done handler's on-loop pre/post-publish phases.
+
+    Holds the transformed ``DoneEvent``, the pre-publish ``extra_yields`` and
+    the accumulated final text so the blocking artifact publish can run in a
+    worker thread BETWEEN two on-loop phases -- without ever carrying a
+    ``_StreamState`` mutation into that thread.
+    """
+
+    event: DoneEvent
+    extra_yields: list[AgentEvent]
+    accumulated_text: str
+
+
 class _DoneHandler:
     """Apply routing-tier metadata, savings, normalize text, emit notices.
 
@@ -479,6 +495,13 @@ class _DoneHandler:
     the corrective fallback RouterDecisionEvent (when the selector
     hopped mid-turn), the artifact-delivery-failure notice TextDelta
     and/or the hallucination Warning yield, in the original order.
+
+    Split into three phases so the live stage can keep every
+    ``_StreamState`` mutation on the event loop while offloading ONLY the
+    blocking artifact publish to a worker thread: ``pre_publish`` (on loop)
+    -> ``run_publish`` (offloadable, self-contained) -> ``post_publish`` (on
+    loop, applied only after the publish completes). ``handle`` composes all
+    three synchronously for callers that do not need the offload.
     """
 
     def handle(
@@ -487,20 +510,36 @@ class _DoneHandler:
         inp: StreamConsumerStageInput,
         state: _StreamState,
     ) -> tuple[DoneEvent, list[AgentEvent]]:
-        from opensquilla.engine.artifact_delivery import (
-            auto_publish_omitted_workspace_artifacts,
-        )
+        """Run all three phases synchronously on the calling thread.
+
+        Convenience composition for callers that do not need to keep the
+        blocking publish off a live event loop (focused unit tests). The
+        live stage runs the phases separately -- see ``StreamConsumerStage``.
+        """
+
+        pre = self.pre_publish(event, inp, state)
+        publish_result = self.run_publish(inp, pre.accumulated_text)
+        return self.post_publish(pre, publish_result, inp, state)
+
+    def pre_publish(
+        self,
+        event: DoneEvent,
+        inp: StreamConsumerStageInput,
+        state: _StreamState,
+    ) -> _DonePrePublish:
+        """Metadata, savings, text reconciliation and pre-publish notices.
+
+        Every ``_StreamState`` mutation here runs on the caller's thread. The
+        live stage calls this on the event loop so the shared, by-reference
+        accumulators the CancelledError finalizer reads are never mutated
+        concurrently with cancellation.
+        """
+
         from opensquilla.engine.runtime import (
-            _artifact_delivery_failure_notice,
-            _claims_image_without_tool_use,
             _compute_comprehensive_turn_savings,
             _compute_route_input_savings_usd,
             _normalize_heartbeat_text,
-            _should_add_artifact_delivery_failure_notice,
             _turn_used_ensemble,
-        )
-        from opensquilla.engine.types import (
-            WarningEvent as _WarningEvent,
         )
         from opensquilla.engine.types import (
             done_text_snapshot,
@@ -623,20 +662,75 @@ class _DoneHandler:
             )
             extra_yields.append(fallback_event)
             accumulated_text = "".join(state.final_text_parts)
-        from opensquilla.engine.types import ArtifactEvent as _ArtifactEvent
 
-        omitted_publish_result = auto_publish_omitted_workspace_artifacts(
+        return _DonePrePublish(
+            event=event,
+            extra_yields=extra_yields,
+            accumulated_text=accumulated_text,
+        )
+
+    def run_publish(
+        self,
+        inp: StreamConsumerStageInput,
+        accumulated_text: str,
+    ) -> OmittedArtifactPublishResult:
+        """Publish deliverables the model wrote but forgot to publish.
+
+        The blocking phase: re-reads workspace files, validates, hashes and
+        writes them through the ``ArtifactStore``. Self-contained -- it reads
+        ``inp.tool_context`` and returns a result, and never touches
+        ``_StreamState``. This is the ONLY phase the live stage offloads to a
+        worker thread, so a cancelled turn cannot leave a store write racing
+        the finalizer's reads of the shared stream accumulators.
+        """
+
+        from opensquilla.engine.artifact_delivery import (
+            auto_publish_omitted_workspace_artifacts,
+        )
+
+        return auto_publish_omitted_workspace_artifacts(
             inp.tool_context,
             final_text=accumulated_text,
         )
-        for artifact in omitted_publish_result.artifacts:
+
+    def post_publish(
+        self,
+        pre: _DonePrePublish,
+        publish_result: OmittedArtifactPublishResult,
+        inp: StreamConsumerStageInput,
+        state: _StreamState,
+    ) -> tuple[DoneEvent, list[AgentEvent]]:
+        """Apply the publish result and post-publish notices to state.
+
+        Runs on the caller's thread (the event loop in the live stage) and
+        only AFTER ``run_publish`` has fully completed, so a cancelled turn
+        never observes a half-applied result: on cancellation the stage
+        re-raises before this phase runs.
+        """
+
+        from opensquilla.engine.runtime import (
+            _artifact_delivery_failure_notice,
+            _claims_image_without_tool_use,
+            _should_add_artifact_delivery_failure_notice,
+        )
+        from opensquilla.engine.types import ArtifactEvent as _ArtifactEvent
+        from opensquilla.engine.types import (
+            WarningEvent as _WarningEvent,
+        )
+
+        event = pre.event
+        extra_yields = pre.extra_yields
+        accumulated_text = pre.accumulated_text
+        turn = inp.turn
+
+        for artifact in publish_result.artifacts:
             artifact_event = _ArtifactEvent(**artifact)
             state.turn_artifacts.append(artifact)
             extra_yields.append(artifact_event)
-        for target_key in omitted_publish_result.resolved_target_keys:
+        for target_key in publish_result.resolved_target_keys:
             _clear_artifact_delivery_failure(state, target_key)
         state.artifact_delivery_failures.extend(
-            omitted_publish_result.failure_summaries
+            publish_result.failure_summaries
         )
 
         if _should_add_artifact_delivery_failure_notice(
@@ -1131,11 +1225,35 @@ class StreamConsumerStage:
             elif isinstance(event, DoneEvent):
                 # The done handler may auto-publish forgotten workspace
                 # deliverables, which re-reads and fully validates them
-                # (PPTX inflation plus deck parse). Run the whole sync
-                # handler in a worker thread so that CPU-bound work never
-                # blocks the gateway event loop.
-                transformed, extra_yields = await asyncio.to_thread(
-                    self._done_handler.handle, event, inp, state
+                # (PPTX inflation plus deck parse). Keep every _StreamState
+                # mutation on the event loop (pre/post-publish) and offload
+                # ONLY that blocking publish to a worker thread. The worker
+                # cannot be cancelled, so on cancellation we wait for it to
+                # finish before unwinding: otherwise a steered follow-up turn
+                # could start finalizing (reading the shared, by-reference
+                # stream accumulators) while the worker was still writing to
+                # the ArtifactStore -- yielding a torn transcript or an
+                # artifact persisted without a transcript record.
+                pre = self._done_handler.pre_publish(event, inp, state)
+                publish_task = asyncio.ensure_future(
+                    asyncio.to_thread(
+                        self._done_handler.run_publish,
+                        inp,
+                        pre.accumulated_text,
+                    )
+                )
+                try:
+                    publish_result = await asyncio.shield(publish_task)
+                except asyncio.CancelledError:
+                    # Let the in-flight store write drain before the
+                    # CancelledError finalizer runs. post_publish is skipped,
+                    # so no half-applied result reaches the shared state.
+                    await asyncio.shield(asyncio.wait({publish_task}))
+                    if not publish_task.cancelled():
+                        publish_task.exception()
+                    raise
+                transformed, extra_yields = self._done_handler.post_publish(
+                    pre, publish_result, inp, state
                 )
             elif isinstance(event, CompactionEvent):
                 await self._compaction_handler.handle(event, inp)

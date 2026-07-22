@@ -11,6 +11,8 @@ runtime wrapper.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -1276,30 +1278,119 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
 
 
 @pytest.mark.asyncio
-async def test_outer_stage_runs_done_handler_off_the_event_loop() -> None:
-    """The done handler can auto-publish and validate deliverables (PPTX
-    inflation plus deck parse); the stage must run it in a worker thread so
-    that blocking work never stalls the gateway event loop."""
-    import threading
-
+async def test_outer_stage_runs_only_publish_off_the_event_loop() -> None:
+    """The done handler's artifact publish re-reads and fully validates
+    deliverables (PPTX inflation plus deck parse), so the stage must run
+    THAT phase in a worker thread. The state-mutating pre/post-publish
+    phases stay on the event loop so the shared, by-reference stream
+    accumulators are never mutated concurrently with a cancellation."""
     agent_run = _RecordingAgentRun(events=[DoneEvent(text="hi world")])
     stage, _ = _make_stage(agent_run=agent_run)
     inp = _make_input()
 
-    handler_threads: list[threading.Thread] = []
-    real_handle = stage._done_handler.handle
+    pre_threads: list[threading.Thread] = []
+    publish_threads: list[threading.Thread] = []
+    post_threads: list[threading.Thread] = []
+    real_pre = stage._done_handler.pre_publish
+    real_publish = stage._done_handler.run_publish
+    real_post = stage._done_handler.post_publish
 
-    def recording_handle(event: Any, inner_inp: Any, state: Any) -> Any:
-        handler_threads.append(threading.current_thread())
-        return real_handle(event, inner_inp, state)
+    def recording_pre(event: Any, inner_inp: Any, state: Any) -> Any:
+        pre_threads.append(threading.current_thread())
+        return real_pre(event, inner_inp, state)
 
-    stage._done_handler.handle = recording_handle  # type: ignore[method-assign]
+    def recording_publish(inner_inp: Any, accumulated_text: str) -> Any:
+        publish_threads.append(threading.current_thread())
+        return real_publish(inner_inp, accumulated_text)
+
+    def recording_post(pre: Any, result: Any, inner_inp: Any, state: Any) -> Any:
+        post_threads.append(threading.current_thread())
+        return real_post(pre, result, inner_inp, state)
+
+    stage._done_handler.pre_publish = recording_pre  # type: ignore[method-assign]
+    stage._done_handler.run_publish = recording_publish  # type: ignore[method-assign]
+    stage._done_handler.post_publish = recording_post  # type: ignore[method-assign]
     loop_thread = threading.current_thread()
     yielded = await _drain(stage, inp)
 
     assert [type(e).__name__ for e in yielded] == ["DoneEvent"]
-    assert handler_threads
-    assert all(thread is not loop_thread for thread in handler_threads)
+    # Blocking publish ran off the loop thread.
+    assert publish_threads
+    assert all(thread is not loop_thread for thread in publish_threads)
+    # State mutations stayed on the loop thread.
+    assert pre_threads == [loop_thread]
+    assert post_threads == [loop_thread]
+
+
+@pytest.mark.asyncio
+async def test_done_publish_cancellation_does_not_race_finalizer() -> None:
+    """Cancelling a turn while the artifact publish is in flight must not
+    tear the shared stream accumulators or leave a half-applied result.
+
+    The publish runs in a worker thread that cannot be interrupted, so the
+    stage must (a) keep every ``_StreamState`` mutation on the event loop --
+    the pre-publish mutations are applied deterministically before the
+    publish starts and the post-publish result is applied only after it
+    completes -- and (b) wait for the worker to drain before the
+    CancelledError unwinds, so a steered follow-up turn's finalizer never
+    reads the accumulators while the worker is still writing to disk.
+    """
+    from opensquilla.engine.artifact_delivery import OmittedArtifactPublishResult
+
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+
+    def blocking_publish(inner_inp: Any, accumulated_text: str) -> Any:
+        # Runs in a worker thread. Announce entry, then block until the test
+        # releases us, mimicking a slow ArtifactStore write.
+        publish_started.set()
+        assert release_publish.wait(timeout=5.0), "publish was never released"
+        publish_finished.set()
+        # A post-publish result that WOULD mutate shared state if applied.
+        return OmittedArtifactPublishResult(
+            failure_summaries=["would-be delivery failure"],
+        )
+
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="hi world")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    stage._done_handler.run_publish = blocking_publish  # type: ignore[method-assign]
+    state = _make_state()
+    inp = _make_input(state=state)
+
+    task = asyncio.ensure_future(_drain(stage, inp))
+
+    # Handshake: wait until the worker thread has entered the publish.
+    assert await asyncio.to_thread(publish_started.wait, 5.0)
+
+    # Pre-publish ran on the loop and is fully applied before the publish;
+    # post-publish has not run, so its result is not yet in shared state.
+    assert state.done_event is not None
+    assert state.turn_artifacts == []
+    assert state.artifact_delivery_failures == []
+
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    # The cancel is pending on the shielded wait for the worker: the stage
+    # has NOT unwound yet because the worker is still blocked. (Under the
+    # whole-handler offload this task would already be done.)
+    assert not task.done()
+    assert not publish_finished.is_set()
+
+    # Release the worker; the stage drains it, then re-raises CancelledError.
+    release_publish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The worker completed before the turn unwound -- a finalizer running
+    # after this point cannot race an in-flight store write.
+    assert publish_finished.is_set()
+    # post_publish was skipped, so its result never reached shared state:
+    # no torn transcript and no artifacts-without-transcript-record.
+    assert state.turn_artifacts == []
+    assert state.artifact_delivery_failures == []
 
 
 @pytest.mark.asyncio

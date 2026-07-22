@@ -103,6 +103,37 @@ beforeEach(() => {
 })
 
 describe('SetupTierTable — editable routing rows', () => {
+  it('hides the redundant provider column when every row uses the only configured provider', async () => {
+    const rows = ROWS.map(row => ({ ...row, provider: 'openrouter' }))
+    const { app, el } = await mountTable({
+      rows,
+      providerOptions: [{ providerId: 'openrouter', label: 'OpenRouter' }],
+    })
+
+    const table = el.querySelector('[role="table"]')
+    expect(table?.classList.contains('setup-tier-table--without-provider')).toBe(true)
+    expect(el.querySelector('.setup-tier-table__row.is-head')?.textContent)
+      .not.toContain('Request entry')
+    expect(el.querySelector('[aria-label="c0 request entry"]')).toBeNull()
+    expect(el.querySelector('[aria-label="c1 request entry"]')).toBeNull()
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 model"]')?.disabled).toBe(false)
+    expect(el.querySelector<HTMLInputElement>('input[aria-label="c1 model"]')?.disabled).toBe(false)
+
+    app.unmount()
+  })
+
+  it('keeps the provider column when no provider is configured', async () => {
+    const { app, el } = await mountTable({ providerOptions: [] })
+
+    expect(el.querySelector('[role="table"]')?.classList.contains('setup-tier-table--without-provider'))
+      .toBe(false)
+    expect(el.querySelector('.setup-tier-table__row.is-head')?.textContent)
+      .toContain('Request entry')
+    expect(el.querySelector('[aria-label="c0 request entry"]')).toBeTruthy()
+
+    app.unmount()
+  })
+
   it('renders provider, model, thinking, and image controls', async () => {
     const { app, el } = await mountTable()
 
@@ -147,7 +178,6 @@ describe('SetupTierTable — editable routing rows', () => {
       rows: [{ ...ROWS[0], provider: 'private-gateway' }],
       providerOptions: [
         { providerId: 'openrouter', label: 'OpenRouter' },
-        { providerId: 'deepseek', label: 'DeepSeek' },
       ],
     }, { onUpdateTierField })
 
@@ -155,28 +185,32 @@ describe('SetupTierTable — editable routing rows', () => {
     expect(provider.value).toBe('private-gateway')
     expect(Array.from(provider.options).map(option => option.value)).toEqual([
       'openrouter',
-      'deepseek',
       'private-gateway',
     ])
-    expect(provider.options[2]?.disabled).toBe(true)
-    expect(provider.options[2]?.textContent).toBe('private-gateway (not configured)')
+    expect(provider.options[1]?.disabled).toBe(true)
+    expect(provider.options[1]?.textContent).toBe('private-gateway (not configured)')
     expect(provider.options[0]?.disabled).toBe(false)
-    expect(provider.options[1]?.disabled).toBe(false)
+    expect(el.querySelector('[role="table"]')?.classList.contains('setup-tier-table--without-provider'))
+      .toBe(false)
     expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 model"]')?.disabled).toBe(true)
     expect(el.querySelector<HTMLSelectElement>('select[aria-label="c0 thinking level"]')?.disabled).toBe(true)
     expect(el.querySelector<HTMLInputElement>('input[aria-label="c0 supports image"]')?.disabled).toBe(true)
-    provider.value = 'deepseek'
+    provider.value = 'openrouter'
     provider.dispatchEvent(new Event('change', { bubbles: true }))
-    expect(onUpdateTierField).toHaveBeenCalledWith('c0', 'provider', 'deepseek')
+    expect(onUpdateTierField).toHaveBeenCalledWith('c0', 'provider', 'openrouter')
     app.unmount()
   })
 
   it('marks a configured tier provider whose credentials are unavailable', async () => {
+    const rows = ROWS.map(row => ({ ...row, provider: 'openrouter' }))
     const { app, el } = await mountTable({
+      rows,
       providerOptions: [{ providerId: 'openrouter', label: 'OpenRouter' }],
       providerCredentialStatus: [{ provider: 'openrouter', available: false, source: 'none' }],
     })
 
+    expect(el.querySelector('[role="table"]')?.classList.contains('setup-tier-table--without-provider'))
+      .toBe(false)
     expect(el.querySelector('[aria-label="c0 request entry"]')?.getAttribute('aria-invalid')).toBe('true')
     expect(el.querySelector('.setup-tier-table__provider-warning')?.textContent)
       .toContain('OpenRouter credentials needed')
@@ -318,8 +352,16 @@ describe('SetupTierTable — combobox swap condition', () => {
 
 describe('SetupTierTable — readonly preview mode', () => {
   it('renders model and thinking as text with no editable inputs', async () => {
-    const { app, el } = await mountTable({ readonly: true })
+    const rows = ROWS.map(row => ({ ...row, provider: 'openrouter' }))
+    const { app, el } = await mountTable({
+      readonly: true,
+      rows,
+      providerOptions: [{ providerId: 'openrouter', label: 'OpenRouter' }],
+    })
 
+    expect(el.querySelector('.setup-tier-table__row.is-head')?.textContent)
+      .toContain('Request entry')
+    expect(el.querySelector('[aria-label="c0 request entry"]')?.textContent).toBe('openrouter')
     const model = el.querySelector('[aria-label="c0 model"]')
     expect(model?.tagName).toBe('SPAN')
     expect(model?.textContent).toBe('deepseek/deepseek-v4-flash')

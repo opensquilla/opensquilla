@@ -371,7 +371,9 @@ def test_probe_preserves_first_response_when_stream_later_raises(monkeypatch: An
     assert result.ok is False
     assert result.failure_kind == ProviderFailureKind.TRANSPORT_TRANSIENT.value
     assert isinstance(result.first_response_ms, int)
-    assert result.first_response_ms > 0
+    # Coarse Windows runner clocks can quantize a real first response to 0 ms;
+    # ``None`` is the contract sentinel for no response being observed.
+    assert result.first_response_ms >= 0
     assert result.total_ms == result.latency_ms
     assert result.total_ms >= result.first_response_ms
 

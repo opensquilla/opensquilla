@@ -270,6 +270,20 @@ describe('useSetupProviderForm — provider credential state', () => {
     expect(f.revealedCredential.value).toBe('')
   })
 
+  it('hides revealed credentials immediately and cancels the pending expiry', () => {
+    vi.useFakeTimers()
+    const f = useSetupProviderForm()
+
+    f.setRevealedCredential('shown-key')
+    vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS / 2)
+    f.hideRevealedCredential()
+    expect(f.revealedCredential.value).toBe('')
+
+    f.setRevealedCredential('shown-again')
+    vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS / 2)
+    expect(f.revealedCredential.value).toBe('shown-again')
+  })
+
   it('clears revealed credentials when credential inputs change', () => {
     const f = useSetupProviderForm()
     f.setRevealedCredential('shown-key')
@@ -369,6 +383,27 @@ describe('useSetupProviderForm — connection state machine', () => {
     expect(callMock).toHaveBeenNthCalledWith(2, 'onboarding.models.discover', {
       providerId: 'openai',
       apiKey: 'sk-unsaved',
+    })
+  })
+
+  it('lets a canonical model override replace the form model for a probe', async () => {
+    mockRpc()
+    const f = useSetupProviderForm()
+    f.selectProvider('openai')
+    f.updateField('model', 'stale-provider-form-model')
+
+    await f.probeConnection({
+      defaultModel: 'fallback-model',
+      modelOverride: 'canonical-fixed-model',
+    })
+
+    expect(callMock).toHaveBeenNthCalledWith(1, 'onboarding.provider.probe', {
+      providerId: 'openai',
+      model: 'canonical-fixed-model',
+    })
+    expect(callMock).toHaveBeenNthCalledWith(2, 'onboarding.models.discover', {
+      providerId: 'openai',
+      model: 'canonical-fixed-model',
     })
   })
 

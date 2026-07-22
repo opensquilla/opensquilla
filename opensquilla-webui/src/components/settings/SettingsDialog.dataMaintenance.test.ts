@@ -37,6 +37,7 @@ async function mountDialog(path: '/settings/advanced' | '/settings/dataMigration
     configPath: vue.ref(''),
     dirtySections: vue.ref([]),
     hasUnsavedChanges: vue.ref(false),
+    saveAllPending: vue.ref(false),
     sectionStatus: () => ({ label: 'Ready', tone: 'is-ok' }),
     sectionDirty: () => false,
   }, {

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import Icon from '@/components/Icon.vue'
 import SetupField from '@/components/SetupField.vue'
 import SetupNeedList from '@/components/SetupNeedList.vue'
 import SetupCommandBlock from '@/components/setup/SetupCommandBlock.vue'
@@ -67,6 +68,7 @@ interface ProviderPanelContract {
     primaryBlockReason: string
     probeModelAvailable: boolean
   }>
+  credentialRemovalPending: boolean
   editingPrimary: boolean
   selectedStoredProfile: boolean
   editingNew: boolean
@@ -227,11 +229,16 @@ const selectedConfiguredProvider = computed(() => props.panel.configuredProvider
   provider => isEditingProvider(provider.providerId),
 ))
 
-const routerStateKey = computed(() => {
-  if (!props.panel.routerEnabled) return 'setup.provider.routerStateOff'
-  if (props.panel.routerBinding === 'follow_primary') return 'setup.provider.routerStateFollowPrimary'
-  if (props.panel.routerBinding === 'custom') return 'setup.provider.routerStateCustom'
-  return 'setup.provider.routerStateLegacy'
+const modelUsageModeKey = computed(() => {
+  if (props.panel.ensembleEnabled) return 'setup.provider.modelUsageEnsemble'
+  if (props.panel.routerEnabled) return 'setup.provider.modelUsageRouter'
+  return 'setup.provider.modelUsageFixed'
+})
+
+const modelUsageDescriptionKey = computed(() => {
+  if (props.panel.ensembleEnabled) return 'setup.provider.modelUsageEnsembleDesc'
+  if (props.panel.routerEnabled) return 'setup.provider.modelUsageRouterDesc'
+  return 'setup.provider.modelUsageFixedDesc'
 })
 
 watch(() => props.panel.providerSelected, (value, previous) => {
@@ -300,6 +307,21 @@ function activationInProgress(providerId: string): boolean {
 }
 
 const activationBusy = computed(() => activationState.value.phase === 'activating')
+const providerBusy = computed(() => (
+  activationBusy.value || props.panel.credentialRemovalPending
+))
+
+watch(() => props.panel.credentialRemovalPending, (pending, wasPending) => {
+  if (pending || !wasPending) return
+  void nextTick(() => {
+    const credentialInput = sectionRef.value?.querySelector<HTMLInputElement>(
+      'input[name="setup_provider_api_key"]:not([disabled])',
+    )
+    const target = credentialInput ?? editorHeadingRef.value
+    target?.scrollIntoView({ block: 'nearest' })
+    target?.focus({ preventScroll: true })
+  })
+})
 
 function activationActionLabel(
   provider: ProviderPanelContract['configuredProviders'][number],
@@ -496,19 +518,77 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 </script>
 
 <template>
-  <section ref="sectionRef" class="control-section">
-    <div class="control-section__head">
-      <h3 class="control-section__title">{{ t('setup.provider.configuredTitle', { count: panel.configuredProviders.length }) }}</h3>
-      <p id="setup-provider-configured-desc" class="control-section__desc">{{ t('setup.provider.configuredDesc') }}</p>
+  <section ref="sectionRef" class="control-section setup-provider-page">
+    <div class="control-section__head setup-provider-page__head">
+      <h3 class="control-section__title">{{ t('setup.provider.pageTitle') }}</h3>
+      <p class="control-section__desc">{{ t('setup.provider.pageDesc') }}</p>
     </div>
 
     <fieldset
       class="setup-provider-interactions"
-      :disabled="activationBusy"
-      :aria-busy="activationBusy ? 'true' : undefined"
+      :disabled="providerBusy"
+      :aria-busy="providerBusy ? 'true' : undefined"
     >
 
-    <ul class="setup-provider-list" data-testid="configured-provider-list">
+    <div class="setup-provider-overview">
+      <div class="setup-provider-overview__copy">
+        <div class="setup-provider-overview__title-row">
+          <h4>{{ t('setup.provider.configuredTitle') }}</h4>
+          <span class="control-pill">{{ t('setup.provider.configuredCount', { count: panel.configuredProviders.length }) }}</span>
+        </div>
+        <p
+          v-if="panel.configuredProviders.length > 0"
+          id="setup-provider-configured-desc"
+        >{{ t('setup.provider.configuredSummary', {
+          count: panel.configuredProviders.length,
+          ready: readyProviderCount,
+        }) }}</p>
+      </div>
+      <div class="setup-provider-add">
+        <button
+          v-if="!addOpen"
+          ref="addButtonRef"
+          type="button"
+          class="btn btn--primary"
+          data-provider-picker-trigger
+          aria-controls="setup-provider-catalog-picker"
+          :aria-expanded="addOpen ? 'true' : 'false'"
+          @click="toggleAddPicker"
+        >
+          <Icon name="plus" :size="15" aria-hidden="true" />
+          {{ t('setup.provider.addProvider') }}
+        </button>
+      </div>
+    </div>
+
+    <SetupProviderCatalogDialog
+      :open="addOpen"
+      :providers="panel.runtimeProviders"
+      :configured-ids="Array.from(configuredIds)"
+      @close="closeAddPicker"
+      @select="chooseAddProvider"
+    />
+
+    <div
+      v-if="panel.configuredProviders.length === 0 && !panel.providerSelected"
+      class="setup-provider-empty"
+      data-testid="provider-empty-state"
+    >
+      <span class="setup-provider-empty__icon" aria-hidden="true">
+        <Icon name="agents" :size="20" />
+      </span>
+      <div>
+        <strong>{{ t('setup.provider.emptyTitle') }}</strong>
+        <p>{{ t('setup.provider.configuredEmpty') }}</p>
+        <p class="setup-provider-empty__next">{{ t('setup.provider.emptyRoutingHint') }}</p>
+      </div>
+    </div>
+
+    <ul
+      v-if="panel.configuredProviders.length > 0"
+      class="setup-provider-list"
+      data-testid="configured-provider-list"
+    >
       <li
         v-for="provider in visibleConfiguredProviders"
         :key="provider.providerId"
@@ -583,9 +663,6 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
         </div>
       </li>
     </ul>
-    <p v-if="panel.configuredProviders.length === 0" class="setup-provider-list__empty">
-      {{ t('setup.provider.configuredEmpty') }}
-    </p>
     <button
       v-if="panel.configuredProviders.length >= 5"
       type="button"
@@ -593,26 +670,6 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
       :aria-expanded="listExpanded ? 'true' : 'false'"
       @click="listExpanded = !listExpanded"
     >{{ listExpanded ? t('setup.provider.showFewerProviders') : t('setup.provider.viewAllProviders', { count: panel.configuredProviders.length }) }}</button>
-
-    <div class="setup-provider-add">
-      <button
-        v-if="!addOpen"
-        ref="addButtonRef"
-        type="button"
-        class="btn"
-        data-provider-picker-trigger
-        aria-controls="setup-provider-catalog-picker"
-        :aria-expanded="addOpen ? 'true' : 'false'"
-        @click="toggleAddPicker"
-      >{{ t('setup.provider.addProvider') }}</button>
-      <SetupProviderCatalogDialog
-        :open="addOpen"
-        :providers="panel.runtimeProviders"
-        :configured-ids="Array.from(configuredIds)"
-        @close="closeAddPicker"
-        @select="chooseAddProvider"
-      />
-    </div>
 
     <SetupProviderRecommendation
       v-if="showTokenRhythmRecommendation"
@@ -657,8 +714,10 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
       v-if="panel.credentialPanel"
       :panel="panel.credentialPanel"
       @reveal="panel.credentialPanel.onReveal?.()"
+      @hide-reveal="panel.credentialPanel.onHideReveal?.()"
       @replace="panel.credentialPanel.onReplace?.()"
       @cancel-replace="panel.credentialPanel.onCancelReplace?.()"
+      @remove-credential="panel.credentialPanel.onRemoveCredential?.()"
       @test-connection="emit('probeConnection')"
       @update-field="(name, value) => emit('updateProviderField', name, value)"
     />
@@ -672,7 +731,21 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
           ? t('setup.provider.defaultModelGroupDesc')
           : t('setup.provider.profileModelGroupDesc') }}</p>
       </div>
-      <template v-for="field in modelFields" :key="field.name">
+      <div
+        v-if="panel.editingPrimary && !editingPrimaryDraft"
+        class="setup-provider-model__routing-owner"
+        data-testid="configured-primary-model-readonly"
+      >
+        <div class="setup-provider-model__routing-value">
+          <span>{{ t('setup.provider.defaultModelLabel', { provider: selectedProviderLabel }) }}</span>
+          <strong>{{ currentModelId || t('setup.provider.contextWindowNoModel') }}</strong>
+        </div>
+        <button type="button" class="btn btn--ghost" @click="emit('goToSection', 'modelStrategy')">
+          {{ t('setup.provider.configureModelRouting') }}
+          <Icon name="chevronRight" :size="15" aria-hidden="true" />
+        </button>
+      </div>
+      <template v-else v-for="field in modelFields" :key="field.name">
         <SetupModelCombobox
           v-if="useCombobox(field)"
           :field="displayField(field)"
@@ -689,10 +762,10 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
           @update="(name, val) => emit('updateProviderField', name, val)"
         />
       </template>
-      <p v-if="panel.editingPrimary" class="setup-provider-model__semantics">
+      <p v-if="panel.editingPrimary && editingPrimaryDraft" class="setup-provider-model__semantics">
         {{ t('setup.provider.defaultModelSemantics') }}
       </p>
-      <p v-else class="setup-provider-profile-model-hint">
+      <p v-else-if="!panel.editingPrimary" class="setup-provider-profile-model-hint">
         {{ t('setup.provider.profileModelHint') }}
       </p>
       <p
@@ -799,23 +872,29 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
     </div>
     </template>
 
-    <div class="setup-provider-routing">
-      <div>
-        <strong>{{ t('setup.provider.modelRoutingStatus') }}</strong>
-        <p>{{ t(
-          panel.configuredProviders.length === 1
-            ? 'setup.provider.routingStatusDescOne'
-            : 'setup.provider.routingStatusDesc',
-          { count: panel.configuredProviders.length, ready: readyProviderCount },
-        ) }}</p>
-        <div class="setup-provider-routing__states">
-          <span>{{ t('setup.provider.routerStatus') }} · {{ t(routerStateKey) }}</span>
-          <span>{{ t('setup.provider.crossProviderRouting') }} · {{ panel.crossProviderRoutingEnabled ? t('setup.provider.routingOn') : t('setup.provider.routingOff') }}</span>
-          <span>{{ t('setup.provider.ensembleStatus') }} · {{ panel.ensembleEnabled ? t('setup.provider.routingOn') : t('setup.provider.routingOff') }}</span>
+    <div
+      v-if="panel.configuredProviders.length > 0"
+      class="setup-provider-routing"
+      data-testid="provider-model-usage"
+    >
+      <div class="setup-provider-routing__main">
+        <span class="setup-provider-routing__icon" aria-hidden="true">
+          <Icon name="router" :size="18" />
+        </span>
+        <div>
+          <strong>{{ t('setup.provider.modelUsageTitle') }}</strong>
+          <p>{{ t(modelUsageDescriptionKey) }}</p>
+          <div class="setup-provider-routing__states">
+            <span class="control-pill control-pill--accent">{{ t(modelUsageModeKey) }}</span>
+            <span v-if="panel.crossProviderRoutingEnabled" class="control-pill">
+              {{ t('setup.provider.crossProviderActive') }}
+            </span>
+          </div>
         </div>
       </div>
       <button type="button" class="btn btn--ghost" @click="emit('goToSection', 'modelStrategy')">
-        {{ t('setup.provider.openModelRouting') }}
+        {{ t('setup.provider.configureModelRouting') }}
+        <Icon name="chevronRight" :size="15" aria-hidden="true" />
       </button>
     </div>
 
@@ -827,6 +906,16 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 <style scoped>
 .control-section {
   container: provider-panel / inline-size;
+}
+
+.setup-provider-page__head {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.setup-provider-page__head .control-section__desc {
+  flex: none;
 }
 
 .setup-provider-interactions {
@@ -842,6 +931,68 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   list-style: none;
   margin-block: var(--sp-3);
   padding: 0;
+}
+
+.setup-provider-overview {
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  padding-bottom: var(--sp-3);
+}
+
+.setup-provider-overview__title-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.setup-provider-overview h4,
+.setup-provider-overview p {
+  margin: 0;
+}
+
+.setup-provider-overview p {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-1);
+}
+
+.setup-provider-empty {
+  align-items: flex-start;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: var(--sp-3);
+  margin-block: var(--sp-3);
+  padding: var(--sp-4);
+}
+
+.setup-provider-empty__icon,
+.setup-provider-routing__icon {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: var(--radius-md);
+  color: var(--accent);
+  display: inline-flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: var(--sp-2);
+}
+
+.setup-provider-empty p {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  margin: var(--sp-1) 0 0;
+}
+
+.setup-provider-empty .setup-provider-empty__next {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+  margin-top: var(--sp-2);
 }
 
 .setup-provider-card {
@@ -951,8 +1102,14 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 }
 
 .setup-provider-add {
-  margin-block: var(--sp-3);
-  width: 100%;
+  flex: 0 0 auto;
+  position: relative;
+}
+
+.setup-provider-add .btn {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--sp-1);
 }
 
 .setup-provider-routing {
@@ -966,9 +1123,21 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   padding: var(--sp-3);
 }
 
-.setup-provider-routing,
-.setup-provider-routing.is-on,
-.setup-provider-routing.is-off {
+.setup-provider-routing__main {
+  align-items: flex-start;
+  display: flex;
+  gap: var(--sp-3);
+  min-width: 0;
+}
+
+.setup-provider-routing > .btn {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--sp-1);
+}
+
+.setup-provider-routing {
   background: transparent;
   border-color: var(--border);
 }
@@ -988,13 +1157,8 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
   margin-top: var(--sp-2);
 }
 
-.setup-provider-routing.is-off {
-  background: color-mix(in srgb, var(--warn) 8%, transparent);
-  border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
-}
-
-.setup-provider-routing.is-on {
-  background: color-mix(in srgb, var(--ok) 7%, transparent);
+.setup-provider-routing__states .control-pill {
+  text-transform: none;
 }
 
 .setup-provider-routing p,
@@ -1066,6 +1230,39 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 .setup-provider-model--primary {
   border-bottom: 1px solid var(--border);
   padding-block: var(--sp-3);
+}
+
+.setup-provider-model__routing-owner {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: flex;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  padding: var(--sp-3);
+}
+
+.setup-provider-model__routing-value {
+  display: grid;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.setup-provider-model__routing-value span {
+  color: var(--text-muted);
+  font-size: var(--fs-xs);
+}
+
+.setup-provider-model__routing-value strong {
+  overflow-wrap: anywhere;
+}
+
+.setup-provider-model__routing-owner .btn {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: var(--sp-1);
 }
 
 .setup-provider-model__semantics {
@@ -1169,12 +1366,26 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
 }
 
 @container provider-panel (max-width: 720px) {
+  .setup-provider-overview {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .setup-provider-routing {
     align-items: stretch;
     flex-direction: column;
   }
 
   .setup-provider-routing > .btn {
+    align-self: flex-start;
+  }
+
+  .setup-provider-model__routing-owner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .setup-provider-model__routing-owner .btn {
     align-self: flex-start;
   }
 

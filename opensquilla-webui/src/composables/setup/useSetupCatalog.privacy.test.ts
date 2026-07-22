@@ -500,7 +500,7 @@ describe('useSetupCatalog model strategy IA', () => {
     ])
     const { api, app } = await mountCatalog()
 
-    expect(api.modelStrategyPanel.value.cards.map(card => card.id)).toEqual(['router', 'ensemble', 'single'])
+    expect(api.modelStrategyPanel.value.cards.map(card => card.id)).toEqual(['router', 'single', 'ensemble'])
     expect(api.modelStrategyPanel.value.providerLabel).toBe('openrouter')
     app.unmount()
   })
@@ -684,6 +684,219 @@ describe('useSetupCatalog model strategy IA', () => {
 
     expect(rpcCall).toHaveBeenCalledWith('onboarding.router.configure', expect.any(Object))
     expect(rpcCall).toHaveBeenCalledWith('onboarding.ensemble.configure', { enabled: true })
+    app.unmount()
+  })
+
+  it('owns fixed-model edits in Model Routing and patches only llm.model', async () => {
+    let savedModel = 'openrouter/auto'
+    rpcCall.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return {}
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openrouter', model: savedModel },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      if (method === 'config.patch') {
+        const patches = params?.patches as Record<string, unknown> | undefined
+        savedModel = String(patches?.['llm.model'] || '')
+        return { restartRequired: false }
+      }
+      if (method === 'config.effective') return { fields: {} }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    // The legacy Model Service model field and the new Fixed model editor
+    // share one draft; changing either surface belongs to Model Routing.
+    api.updateProviderField('model', 'deepseek/deepseek-v4-pro')
+    expect(api.modelStrategyPanel.value.single.model).toBe('deepseek/deepseek-v4-pro')
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.sectionDirty('provider')).toBe(false)
+
+    await api.discardChanges()
+    expect(api.modelStrategyPanel.value.single.model).toBe('openrouter/auto')
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+
+    api.setFixedModel('deepseek/deepseek-v4-pro')
+    await api.saveDirtySections()
+
+    expect(rpcCall).toHaveBeenCalledWith('config.patch', {
+      patches: { 'llm.model': 'deepseek/deepseek-v4-pro' },
+    })
+    expect(rpcCall).not.toHaveBeenCalledWith(
+      'onboarding.provider.configure',
+      expect.anything(),
+    )
+    expect(api.modelStrategyPanel.value.single.model).toBe('deepseek/deepseek-v4-pro')
+    expect(api.sectionDirty('modelStrategy')).toBe(false)
+    app.unmount()
+  })
+
+  it('snapshots save-all work and reloads once after every dirty section is persisted', async () => {
+    let configReads = 0
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        configReads += 1
+        return {
+          llm: { provider: 'openrouter', model: 'openrouter/auto' },
+          naming: { enabled: false },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      if (method === 'onboarding.provider.configure') return {}
+      if (method === 'config.patch' || method === 'config.patch.safe') {
+        return { restartRequired: false }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.updateLlmTimeout(321)
+    api.setAutoSessionTitles(true)
+    api.setFixedModel('deepseek/deepseek-v4-pro')
+    await api.saveDirtySections()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.configure', expect.objectContaining({
+      providerId: 'openrouter',
+      model: 'openrouter/auto',
+    }))
+    expect(rpcCall).toHaveBeenCalledWith('config.patch.safe', {
+      patches: { 'naming.enabled': true },
+    })
+    expect(rpcCall).toHaveBeenCalledWith('config.patch', {
+      patches: { 'llm.model': 'deepseek/deepseek-v4-pro' },
+    })
+    expect(configReads).toBe(2)
+    app.unmount()
+  })
+
+  it('blocks save-all reentry and discard while a batch RPC is pending', async () => {
+    let releaseProviderSave!: () => void
+    const providerSaveGate = new Promise<void>(resolve => {
+      releaseProviderSave = resolve
+    })
+    let configReads = 0
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        configReads += 1
+        return {
+          llm: { provider: 'openrouter', model: 'openrouter/auto' },
+          naming: { enabled: false },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      if (method === 'onboarding.provider.configure') {
+        await providerSaveGate
+        return {}
+      }
+      if (method === 'config.patch' || method === 'config.patch.safe') {
+        return { restartRequired: false }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.updateLlmTimeout(321)
+    api.setAutoSessionTitles(true)
+    const firstSave = api.saveDirtySections()
+
+    expect(api.saveAllPending.value).toBe(true)
+    const duplicateSave = api.saveDirtySections()
+    await duplicateSave
+    await api.discardChanges()
+
+    expect(rpcCall.mock.calls.filter(call => call[0] === 'onboarding.provider.configure'))
+      .toHaveLength(1)
+    expect(configReads).toBe(1)
+
+    releaseProviderSave()
+    await firstSave
+
+    expect(rpcCall.mock.calls.filter(call => call[0] === 'onboarding.provider.configure'))
+      .toHaveLength(1)
+    expect(rpcCall.mock.calls.filter(call => call[0] === 'config.patch.safe'))
+      .toHaveLength(1)
+    expect(configReads).toBe(2)
+    expect(api.saveAllPending.value).toBe(false)
+    app.unmount()
+  })
+
+  it('does not commit a Model Routing draft when saving the configured provider', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openrouter', model: 'openrouter/auto' },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      if (method === 'onboarding.provider.configure') return {}
+      if (method === 'config.patch') return { restartRequired: false }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.setFixedModel('')
+    api.updateLlmTimeout(321)
+    await api.saveProvider()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.configure', expect.objectContaining({
+      providerId: 'openrouter',
+      model: 'openrouter/auto',
+    }))
+    expect(rpcCall).not.toHaveBeenCalledWith('config.patch', {
+      patches: { 'llm.model': '' },
+    })
+    expect(api.modelStrategyPanel.value.single.model).toBe('')
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    app.unmount()
+  })
+
+  it('validates a cleared fixed model before save-all mutates provider settings', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') return { hasConfig: true }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openrouter', model: 'openrouter/auto' },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.updateLlmTimeout(321)
+    api.setFixedModel('')
+    await api.saveDirtySections()
+
+    expect(rpcCall).not.toHaveBeenCalledWith('onboarding.provider.configure', expect.anything())
+    expect(rpcCall).not.toHaveBeenCalledWith('config.patch', expect.anything())
+    expect(pushToast).toHaveBeenCalledWith('Choose a fixed model before saving.', { tone: 'danger' })
+    expect(api.sectionDirty('provider')).toBe(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
     app.unmount()
   })
 
@@ -1730,7 +1943,7 @@ describe('useSetupCatalog configured provider management', () => {
     app.unmount()
   })
 
-  it('does not discard a dirty editor when the selected provider is clicked again', async () => {
+  it('does not discard the shared model draft when the selected provider is clicked again', async () => {
     rpcCall.mockImplementation(async (method: string) => {
       if (method === 'onboarding.catalog') return { providers }
       if (method === 'onboarding.status') return statusWithDeepSeek()
@@ -1741,14 +1954,15 @@ describe('useSetupCatalog configured provider management', () => {
     const { api, app } = await mountCatalog()
 
     api.updateProviderField('model', 'unsaved-model')
-    expect(api.sectionDirty('provider')).toBe(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    expect(api.sectionDirty('provider')).toBe(false)
 
     await api.requestSelectConfiguredProvider('openai')
 
     expect(confirmAction).not.toHaveBeenCalled()
     expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
       .toBe('unsaved-model')
-    expect(api.sectionDirty('provider')).toBe(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
     app.unmount()
   })
 
@@ -2573,6 +2787,330 @@ describe('useSetupCatalog configured provider management', () => {
     )
     app.unmount()
   })
+
+  it('clears the active provider credential without removing its deployment settings', async () => {
+    let credentialCleared = false
+    const savedConfig = {
+      llm: { provider: 'openai', model: 'gpt-4.1-mini', base_url: 'https://example.invalid/v1' },
+      squilla_router: {
+        enabled: true,
+        tiers: { c0: { provider: 'openai', model: 'gpt-4.1-mini' } },
+      },
+    }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: !credentialCleared,
+          llmSource: credentialCleared ? 'none' : 'explicit',
+          llmCredentialStatus: {
+            provider: 'openai',
+            available: !credentialCleared,
+            source: credentialCleared ? 'none' : 'explicit',
+            masked: credentialCleared ? '' : 'sk-•••1234',
+            revealAllowed: !credentialCleared,
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return savedConfig
+      if (method === 'config.effective') {
+        return { fields: { 'llm.provider': { value: 'openai', source: 'config' } } }
+      }
+      if (method === 'onboarding.models.discover') return { ok: true, source: 'none', models: [] }
+      if (method === 'onboarding.provider.credential.clear') {
+        credentialCleared = true
+        return { credentialCleared: true, provider: 'openai', active: true }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.providerPanel.value.credentialPanel?.source).toBe('explicit')
+    await api.removeProviderCredential()
+
+    expect(confirmAction).toHaveBeenCalledOnce()
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.credential.clear', {
+      providerId: 'openai',
+    })
+    expect(api.providerPanel.value.providerSelected).toBe('openai')
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      source: 'none',
+      available: false,
+      removable: false,
+      probeReady: false,
+    })
+    expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
+      .toBe('gpt-4.1-mini')
+    expect(api.routerPanel.value.routerMode).not.toBe('disabled')
+    expect(api.routerPanel.value.tierRows.find(row => row.name === 'c0')).toMatchObject({
+      provider: 'openai',
+      model: 'gpt-4.1-mini',
+    })
+    app.unmount()
+  })
+
+  it('warns when a system environment variable remains active after config credential removal', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: true,
+          llmSource: 'env',
+          llmCredentialStatus: {
+            provider: 'openai',
+            available: true,
+            source: 'env',
+            envKey: 'OPENAI_API_KEY',
+            masked: 'sk-•••1234',
+            revealAllowed: false,
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return { llm: { provider: 'openai', model: 'gpt-4.1-mini' } }
+      }
+      if (method === 'config.effective') return { fields: {} }
+      if (method === 'onboarding.models.discover') return { ok: true, source: 'none', models: [] }
+      if (method === 'onboarding.provider.credential.clear') {
+        return {
+          entry: {
+            externalCredentialActive: true,
+            credentialEnv: 'OPENAI_API_KEY',
+          },
+        }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    await api.removeProviderCredential()
+
+    expect(pushToast).toHaveBeenCalledWith(
+      expect.stringContaining('OPENAI_API_KEY'),
+      { tone: 'warn' },
+    )
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      source: 'env',
+      available: true,
+      removable: false,
+    })
+    app.unmount()
+  })
+
+  it('allows clearing a saved profile env reference when the environment variable is missing', async () => {
+    let credentialCleared = false
+    const savedConfig = {
+      llm: { provider: 'openai', model: 'gpt-4.1-mini' },
+      llm_profiles: {
+        deepseek: {
+          model: 'deepseek-chat',
+          api_key_env: 'DEEPSEEK_MISSING_KEY',
+        },
+      },
+    }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        return {
+          ...statusWithDeepSeek(),
+          llmProfileStatus: [
+            {
+              provider: 'deepseek',
+              ready: false,
+              credentialSource: credentialCleared ? 'none' : 'profile_env',
+              credentialEnv: credentialCleared ? '' : 'DEEPSEEK_MISSING_KEY',
+              endpointSource: 'registry',
+              reason: 'missing_credentials',
+            },
+          ],
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return savedConfig
+      if (method === 'config.effective') return { fields: {} }
+      if (
+        method === 'onboarding.models.discover'
+        || method === 'onboarding.llmProfile.models.discover'
+      ) return { ok: true, source: 'none', models: [] }
+      if (method === 'onboarding.llmProfile.credential.clear') {
+        credentialCleared = true
+        return { credentialCleared: true, provider: 'deepseek', active: false }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      source: 'missing_env',
+      available: false,
+      removable: true,
+    })
+
+    await api.removeProviderCredential()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.credential.clear', {
+      providerId: 'deepseek',
+    })
+    app.unmount()
+  })
+
+  it('clears a routing profile credential and keeps that provider selected', async () => {
+    let credentialCleared = false
+    const savedConfig = {
+      llm: { provider: 'openai', model: 'gpt-4.1-mini' },
+      llm_profiles: {
+        deepseek: { model: 'deepseek-chat' },
+      },
+    }
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        return {
+          ...statusWithDeepSeek(),
+          llmProfileStatus: [
+            {
+              provider: 'deepseek',
+              ready: !credentialCleared,
+              credentialSource: credentialCleared ? 'none' : 'profile_env',
+              credentialEnv: credentialCleared ? '' : 'DEEPSEEK_API_KEY',
+              endpointSource: 'registry',
+              reason: credentialCleared ? 'missing_credentials' : '',
+            },
+          ],
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return savedConfig
+      if (method === 'config.effective') return { fields: {} }
+      if (
+        method === 'onboarding.models.discover'
+        || method === 'onboarding.llmProfile.models.discover'
+      ) return { ok: true, source: 'none', models: [] }
+      if (method === 'onboarding.llmProfile.credential.clear') {
+        credentialCleared = true
+        return { credentialCleared: true, provider: 'deepseek', active: false }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.selectConfiguredProvider('deepseek')
+    expect(api.providerPanel.value.credentialPanel?.source).toBe('env')
+    await api.removeProviderCredential()
+
+    expect(rpcCall).toHaveBeenCalledWith('onboarding.llmProfile.credential.clear', {
+      providerId: 'deepseek',
+    })
+    expect(api.providerPanel.value.providerSelected).toBe('deepseek')
+    expect(api.providerPanel.value.selectedStoredProfile).toBe(true)
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      source: 'none',
+      available: false,
+      removable: false,
+    })
+    expect(api.providerPanel.value.providerFieldValue({ name: 'model', label: 'Model' }))
+      .toBe('deepseek-chat')
+    expect(api.providerPanel.value.configuredProviders.map(row => row.providerId))
+      .toEqual(['openai', 'deepseek'])
+    app.unmount()
+  })
+
+  it('refreshes credential status without discarding unrelated settings drafts', async () => {
+    let credentialCleared = false
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') {
+        return {
+          hasConfig: true,
+          llmConfigured: !credentialCleared,
+          llmSource: credentialCleared ? 'none' : 'explicit',
+          llmCredentialStatus: {
+            provider: 'openai',
+            available: !credentialCleared,
+            source: credentialCleared ? 'none' : 'explicit',
+          },
+        }
+      }
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') {
+        return {
+          llm: { provider: 'openai', model: 'gpt-4.1-mini' },
+          naming: { enabled: false },
+          squilla_router: { enabled: false },
+          llm_ensemble: { enabled: false },
+        }
+      }
+      if (method === 'config.effective') {
+        return { fields: { 'llm.provider': { value: 'openai', source: 'config' } } }
+      }
+      if (method === 'onboarding.models.discover') return { ok: false, source: 'none', models: [] }
+      if (method === 'onboarding.provider.credential.clear') {
+        credentialCleared = true
+        return { credentialCleared: true, provider: 'openai', active: true }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.updateLlmTimeout(321)
+    api.setAutoSessionTitles(true)
+    api.setFixedModel('gpt-4.1')
+    await api.removeProviderCredential()
+
+    expect(confirmAction).toHaveBeenCalledOnce()
+    expect(api.providerPanel.value.credentialPanel).toMatchObject({
+      source: 'none',
+      removing: false,
+    })
+    expect(api.providerPanel.value.credentialRemovalPending).toBe(false)
+    expect(api.providerPanel.value.llmTimeoutSeconds).toBe(321)
+    expect(api.modelStrategyPanel.value.single.model).toBe('gpt-4.1')
+    expect(api.sectionDirty('provider')).toBe(true)
+    expect(api.sectionDirty('behavior')).toBe(true)
+    expect(api.sectionDirty('modelStrategy')).toBe(true)
+    app.unmount()
+  })
+
+  it('uses the canonical fixed model for configured-primary probes and invalidates stale verdicts', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return { providers }
+      if (method === 'onboarding.status') return statusWithDeepSeek()
+      if (method === 'channels.status') return { channels: [] }
+      if (method === 'config.get') return configWithProfiles('deepseek')
+      if (method === 'config.effective') {
+        return { fields: { 'llm.provider': { value: 'openai', source: 'config' } } }
+      }
+      if (method === 'onboarding.provider.probe') return { ok: true }
+      if (method === 'onboarding.models.discover') {
+        return { ok: true, source: 'live', models: [{ id: 'gpt-4.1' }] }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    api.probeProviderConnection()
+    await vi.waitFor(() => expect(api.providerPanel.value.connection.phase).toBe('verified'))
+
+    api.setFixedModel('gpt-4.1')
+    expect(api.providerPanel.value.connection.phase).toBe('unverified')
+    api.probeProviderConnection()
+
+    await vi.waitFor(() => expect(rpcCall).toHaveBeenCalledWith(
+      'onboarding.provider.probe',
+      expect.objectContaining({ providerId: 'openai', model: 'gpt-4.1' }),
+    ))
+    const probeCalls = rpcCall.mock.calls.filter(call => call[0] === 'onboarding.provider.probe')
+    expect(probeCalls[probeCalls.length - 1]?.[1]).toMatchObject({
+      providerId: 'openai',
+      model: 'gpt-4.1',
+    })
+    app.unmount()
+  })
 })
 
 describe('useSetupCatalog provider credential reveal', () => {
@@ -2621,6 +3159,17 @@ describe('useSetupCatalog provider credential reveal', () => {
     expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.credential.reveal', { providerId: 'deepseek' })
     const credentialPanel = api.providerPanel.value.credentialPanel as { masked: string; revealed: string }
     expect(credentialPanel.revealed).toBe('sk-real-value')
+    const callsAfterReveal = rpcCall.mock.calls.length
+
+    api.providerPanel.value.credentialPanel?.onHideReveal?.()
+    await nextTick()
+
+    const hiddenCredentialPanel = api.providerPanel.value.credentialPanel as { masked: string; revealed: string }
+    expect(hiddenCredentialPanel.masked).toBe('sk-••••1234')
+    expect(hiddenCredentialPanel.revealed).toBe('')
+    expect(rpcCall).toHaveBeenCalledTimes(callsAfterReveal)
+
+    await api.revealProviderCredential()
 
     vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS)
     await nextTick()

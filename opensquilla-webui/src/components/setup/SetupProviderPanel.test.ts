@@ -44,6 +44,7 @@ function panel(overrides: Record<string, unknown> = {}) {
     providerSelected: 'openai',
     runtimeProviders: [{ providerId: 'openai', label: 'OpenAI' }],
     configuredProviders: [],
+    credentialRemovalPending: false,
     editingPrimary: true,
     selectedStoredProfile: false,
     editingNew: false,
@@ -75,6 +76,8 @@ function panel(overrides: Record<string, unknown> = {}) {
       acceptsApiKey: true,
       requiresApiKey: true,
       available: true,
+      removable: false,
+      removing: false,
       source: 'explicit',
       envKey: 'OPENAI_API_KEY',
       masked: 'sk-••••1234',
@@ -253,7 +256,7 @@ describe('SetupProviderPanel — verify configuration', () => {
 describe('SetupProviderPanel — model field', () => {
   it('keeps the shared model picker as a manual text input when no catalog is available', async () => {
     const onUpdateProviderField = vi.fn()
-    const { app, el } = await mountPanel({}, { onUpdateProviderField })
+    const { app, el } = await mountPanel({ configuredProviders: [] }, { onUpdateProviderField })
     const input = el.querySelector<HTMLInputElement>('input[name="setup_provider_model"]')
 
     expect(el.querySelector('.setup-model-combobox')).toBeTruthy()
@@ -268,6 +271,7 @@ describe('SetupProviderPanel — model field', () => {
 
   it('enables catalog behavior in the same model picker when discovery returned models', async () => {
     const { app, el } = await mountPanel({
+      configuredProviders: [],
       connection: connection({ phase: 'verified', models: DISCOVERED, modelSource: 'live' }),
     })
     const combobox = el.querySelector('.setup-model-combobox input[role="combobox"]')
@@ -385,7 +389,7 @@ describe('SetupProviderPanel — configured provider management', () => {
     expect(test?.textContent?.trim()).toBe('Verify saved configuration')
     expect(test?.getAttribute('aria-describedby')).toBe('setup-provider-configured-desc')
     expect(el.querySelector('#setup-provider-configured-desc')?.textContent).toContain(
-      'Configuration verification sends a small model request using the saved settings; provider charges may apply.',
+      'Verification sends one small model request and may incur provider charges.',
     )
 
     app.unmount()
@@ -649,26 +653,46 @@ describe('SetupProviderPanel — configured provider management', () => {
     app.unmount()
   })
 
-  it('shows routing state independently from saved providers and links to Model Routing', async () => {
+  it('summarizes the active model usage without presenting inactive features as settings', async () => {
     const onGoToSection = vi.fn()
     const { app, el } = await mountPanel({ configuredProviders: configured, routingEnabled: false }, { onGoToSection })
 
-    expect(el.textContent).toContain('Cross-provider · Off')
-    expect(el.textContent).toContain('Ensemble · Off')
+    const summary = el.querySelector<HTMLElement>('[data-testid="provider-model-usage"]')!
+    expect(summary.textContent).toContain('Model usage')
+    expect(summary.textContent).toContain('Fixed model')
+    expect(summary.textContent).not.toContain('Cross-provider')
+    expect(summary.textContent).not.toContain('Ensemble · Off')
     const cta = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
-      .find(button => button.textContent?.trim() === 'Open Model Routing →')
+      .find(button => button.textContent?.includes('Set up model routing'))
     cta?.click()
     expect(onGoToSection).toHaveBeenCalledWith('modelStrategy')
     app.unmount()
   })
 
-  it('uses singular provider copy for one saved deployment', async () => {
+  it('shows a concise readiness summary for one saved deployment', async () => {
     const { app, el } = await mountPanel({
       configuredProviders: [configured[0]],
     })
 
-    expect(el.textContent).toContain('1 provider saved · 1 ready')
-    expect(el.textContent).not.toContain('1 providers saved')
+    expect(el.textContent).toContain('1 of 1 credentials ready')
+    expect(el.textContent).not.toContain('Multi-provider features')
+
+    app.unmount()
+  })
+
+  it('keeps the zero-provider state focused on the first connection', async () => {
+    const { app, el } = await mountPanel({
+      configuredProviders: [],
+      providerSelected: '',
+    })
+
+    const empty = el.querySelector<HTMLElement>('[data-testid="provider-empty-state"]')!
+    expect(empty.textContent).toContain('Add your first model provider')
+    expect(empty.textContent).toContain('one provider can still route between multiple models')
+    expect(el.querySelector('[data-testid="provider-model-usage"]')).toBeNull()
+    expect(el.textContent).not.toContain('Multi-provider features')
+    expect(Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
+      .filter(button => button.textContent?.includes('Add provider'))).toHaveLength(1)
 
     app.unmount()
   })
@@ -774,6 +798,42 @@ describe('SetupProviderPanel — configured provider management', () => {
     expect(interactions?.getAttribute('aria-busy')).toBe('true')
     expect(el.querySelector('[data-provider-id="deepseek"] .setup-provider-card__activate')
       ?.getAttribute('aria-label')).toBe('Activating… — DeepSeek')
+
+    app.unmount()
+  })
+
+  it('disables provider interactions while removing a credential and restores credential focus', async () => {
+    const { app, el, panelState } = await mountPanel({
+      credentialRemovalPending: true,
+      credentialPanel: {
+        ...(panel().credentialPanel as Record<string, unknown>),
+        removable: true,
+        removing: true,
+      },
+    })
+    const interactions = el.querySelector<HTMLFieldSetElement>('.setup-provider-interactions')
+
+    expect(interactions?.disabled).toBe(true)
+    expect(interactions?.getAttribute('aria-busy')).toBe('true')
+    expect(el.querySelector('.setup-provider-credential__remove')?.textContent)
+      .toContain('Removing saved key')
+
+    const mutablePanel = panelState as unknown as {
+      credentialRemovalPending: boolean
+      credentialPanel: Record<string, unknown>
+    }
+    mutablePanel.credentialPanel.removing = false
+    mutablePanel.credentialPanel.masked = ''
+    mutablePanel.credentialPanel.available = false
+    mutablePanel.credentialPanel.source = 'none'
+    mutablePanel.credentialPanel.removable = false
+    mutablePanel.credentialRemovalPending = false
+    await nextTick()
+    await nextTick()
+
+    expect(interactions?.disabled).toBe(false)
+    expect(document.activeElement)
+      .toBe(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key"]'))
 
     app.unmount()
   })
@@ -1052,11 +1112,13 @@ describe('SetupProviderPanel — editor scope', () => {
     expect(scope?.textContent).toContain('New active provider')
     expect(scope?.textContent).toContain('Saving will make this provider active')
     expect(scope?.textContent).not.toContain('Used for direct requests')
+    expect(el.querySelector('input[name="setup_provider_model"]')).toBeTruthy()
 
     app.unmount()
   })
 
-  it('keeps the active default model provider-scoped and timeout gateway-wide', async () => {
+  it('keeps the configured active model owned by Model Routing and timeout gateway-wide', async () => {
+    const onGoToSection = vi.fn()
     const { app, el } = await mountPanel({
       ...fields,
       providerSelected: 'deepseek',
@@ -1068,15 +1130,22 @@ describe('SetupProviderPanel — editor scope', () => {
         ...(panel().credentialPanel as Record<string, unknown>),
         providerLabel: 'DeepSeek',
       },
-    })
+    }, { onGoToSection })
 
     const scope = el.querySelector('[data-testid="provider-editor-scope"]')
     expect(scope?.textContent).toContain('Active provider')
     expect(scope?.textContent).toContain('primary fallback')
     expect(el.textContent).toContain('Direct and fallback model for DeepSeek')
     expect(el.textContent).toContain('Direct / fallback model')
-    expect(el.textContent).toContain('A recommended model is prefilled when available')
-    expect(el.querySelector('input[name="setup_provider_model"]')?.closest('details')).toBeNull()
+    expect(el.textContent).not.toContain('A recommended model is prefilled when available')
+    expect(el.textContent).not.toContain('Saved with this provider')
+    expect(el.querySelector('input[name="setup_provider_model"]')).toBeNull()
+    const modelOwner = el.querySelector<HTMLElement>('[data-testid="configured-primary-model-readonly"]')
+    expect(modelOwner?.textContent).toContain('deepseek-chat')
+    const routingLink = modelOwner?.querySelector<HTMLButtonElement>('button')
+    expect(routingLink?.textContent).toContain('Set up model routing')
+    routingLink?.click()
+    expect(onGoToSection).toHaveBeenCalledWith('modelStrategy')
     expect(el.textContent).toContain('Context window · DeepSeek / deepseek-chat')
     const timeout = el.querySelector<HTMLInputElement>('input[name="setup_provider_request_timeout"]')
     expect(timeout).toBeTruthy()
@@ -1517,7 +1586,7 @@ describe('SetupProviderPanel — context-window override', () => {
 })
 
 describe('SetupProviderPanel — model strategy wayfinding', () => {
-  it('shows a persistent routing state and CTA without SquillaRouter wording', async () => {
+  it('shows the active smart-routing mode and only surfaces cross-provider use when active', async () => {
     const onGoToSection = vi.fn()
     const preset = {
       hasPreset: true,
@@ -1529,19 +1598,26 @@ describe('SetupProviderPanel — model strategy wayfinding', () => {
       routerMode: 'custom',
       routerCustomized: true,
     }
-    const { app, el } = await mountPanel({ canConfigureRouter: true }, { preset, onGoToSection })
+    const { app, el } = await mountPanel({
+      canConfigureRouter: true,
+      routerEnabled: true,
+      crossProviderRoutingEnabled: true,
+    }, { preset, onGoToSection })
     const routingLinks = Array.from(el.querySelectorAll<HTMLButtonElement>('button'))
-      .filter(btn => /Open Model Routing/.test(btn.textContent || ''))
+      .filter(btn => /Set up model routing/.test(btn.textContent || ''))
 
-    expect(routingLinks).toHaveLength(1)
-    expect(routingLinks[0]?.textContent).toContain('Open Model Routing')
-    expect(el.textContent).toContain('Cross-provider · Off')
+    expect(routingLinks).toHaveLength(2)
+    expect(routingLinks[0]?.textContent).toContain('Set up model routing')
+    expect(el.textContent).toContain('Intelligent model routing')
+    expect(el.textContent).toContain('Cross-provider routing included')
     expect(el.textContent).not.toContain('SquillaRouter ready')
+    expect(el.textContent).not.toContain('Multi-provider features')
     expect(el.textContent).not.toContain('Routing template:')
     expect(el.textContent).not.toContain('Model Routing already uses')
 
-    routingLinks[0]?.click()
+    routingLinks.forEach(link => link.click())
 
+    expect(onGoToSection).toHaveBeenCalledTimes(2)
     expect(onGoToSection).toHaveBeenCalledWith('modelStrategy')
     app.unmount()
   })

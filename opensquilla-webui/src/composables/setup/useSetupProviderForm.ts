@@ -63,6 +63,7 @@ interface ProviderPanelContext {
     primaryEligible: boolean
     primaryBlockReason: string
     probeModelAvailable: boolean
+    lastProbe: { ok: boolean; at: string; configChanged: boolean; failureKind: string } | null
   }>>
   editingPrimary?: ComputedRef<boolean>
   selectedStoredProfile?: ComputedRef<boolean>

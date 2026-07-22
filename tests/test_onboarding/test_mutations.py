@@ -1737,6 +1737,34 @@ def test_upsert_image_generation_provider_can_use_matching_llm_key(monkeypatch):
     assert res.public_payload["api_key_source"] == "llm_fallback"
 
 
+def test_upsert_image_generation_provider_llm_fallback_requires_same_origin(monkeypatch):
+    # The matching-LLM-key fallback binds the primary LLM secret to the image
+    # endpoint; a save pointing the image provider at a different origin must
+    # not silently bind it and instead requires a dedicated key.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    cfg = GatewayConfig()
+    cfg.llm.provider = "openai"
+    cfg.llm.api_key = "sk-real"
+    cfg.llm.base_url = "https://api.openai.com/v1"
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_image_generation_provider(
+            cfg,
+            provider_id="openai",
+            base_url="https://other.example.com/v1",
+            api_key="",
+            enabled=True,
+        )
+
+    same_origin = upsert_image_generation_provider(
+        cfg,
+        provider_id="openai",
+        base_url="https://api.openai.com/images/path",
+        api_key="",
+    )
+    assert same_origin.public_payload["api_key_source"] == "llm_fallback"
+
+
 def test_upsert_image_generation_provider_can_disable_without_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     cfg = GatewayConfig()

@@ -10,6 +10,7 @@ from typing import Protocol
 
 import httpx
 
+from opensquilla.endpoint_identity import base_url_allows_credential_reuse
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.app_attribution import provider_app_headers
 from opensquilla.secrets import clean_header_secret
@@ -268,12 +269,31 @@ def _llm_provider_matches(llm_config: object | None, provider_id: str) -> bool:
     return provider == provider_id
 
 
+def _llm_chosen_base_url(llm_config: object | None) -> str:
+    """Return the LLM base URL only when it names an operator-chosen endpoint.
+
+    A value equal to the pydantic field default is derived for another
+    provider, not chosen for this one (the same value-vs-baseline rule the
+    LLM runtime resolution documents), so it must not be treated as the
+    LLM's endpoint here.
+    """
+    value = _get_config_attr(llm_config, "base_url")
+    if not value or llm_config is None:
+        return ""
+    fields = getattr(type(llm_config), "model_fields", None)
+    field = fields.get("base_url") if isinstance(fields, dict) else None
+    default = str(getattr(field, "default", "") or "") if field is not None else ""
+    return "" if value == default else value
+
+
 def _resolve_configured_api_key(
     *,
     provider_id: str,
     provider_config: object | None,
     llm_config: object | None,
     default_env: str,
+    default_base_url: str,
+    effective_base_url: str,
 ) -> str | None:
     env_name = _get_config_attr(provider_config, "api_key_env", default_env) or default_env
     explicit = _get_config_attr(provider_config, "api_key")
@@ -285,7 +305,13 @@ def _resolve_configured_api_key(
         return env_value
 
     if _llm_provider_matches(llm_config, provider_id):
-        return _get_config_attr(llm_config, "api_key") or None
+        # The primary LLM key is a credential for the LLM's endpoint only:
+        # it must not follow a custom image base_url to a different
+        # scheme/host/effective port. Fail closed so generate() reports the
+        # missing key and the operator enters one for the image endpoint.
+        llm_base_url = _llm_chosen_base_url(llm_config) or default_base_url
+        if base_url_allows_credential_reuse(llm_base_url, effective_base_url):
+            return _get_config_attr(llm_config, "api_key") or None
     return None
 
 
@@ -300,7 +326,10 @@ def _resolve_configured_base_url(
     if not _field_was_set(provider_config, "base_url") and _llm_provider_matches(
         llm_config, provider_id
     ):
-        return _get_config_attr(llm_config, "base_url", base_url) or base_url
+        # Inherit only an operator-chosen LLM endpoint: a derived model
+        # default belongs to another provider and must not point this
+        # provider's requests (and the reused key) at it.
+        return _llm_chosen_base_url(llm_config) or base_url
     return base_url
 
 
@@ -318,6 +347,12 @@ def reset_image_generation_providers(
     openai_config = getattr(providers_config, "openai", None)
     openrouter_config = getattr(providers_config, "openrouter", None)
 
+    openai_base_url = _resolve_configured_base_url(
+        provider_id="openai",
+        provider_config=openai_config,
+        llm_config=llm_config,
+        default_base_url="https://api.openai.com/v1",
+    )
     register_image_generation_provider(
         OpenAIImageGenerationProvider(
             api_key=_resolve_configured_api_key(
@@ -325,16 +360,19 @@ def reset_image_generation_providers(
                 provider_config=openai_config,
                 llm_config=llm_config,
                 default_env="OPENAI_API_KEY",
+                default_base_url="https://api.openai.com/v1",
+                effective_base_url=openai_base_url,
             ),
             api_key_env=_get_config_attr(openai_config, "api_key_env", "OPENAI_API_KEY")
             or "OPENAI_API_KEY",
-            base_url=_resolve_configured_base_url(
-                provider_id="openai",
-                provider_config=openai_config,
-                llm_config=llm_config,
-                default_base_url="https://api.openai.com/v1",
-            ),
+            base_url=openai_base_url,
         )
+    )
+    openrouter_base_url = _resolve_configured_base_url(
+        provider_id="openrouter",
+        provider_config=openrouter_config,
+        llm_config=llm_config,
+        default_base_url="https://openrouter.ai/api/v1",
     )
     register_image_generation_provider(
         OpenRouterImageGenerationProvider(
@@ -343,15 +381,12 @@ def reset_image_generation_providers(
                 provider_config=openrouter_config,
                 llm_config=llm_config,
                 default_env="OPENROUTER_API_KEY",
+                default_base_url="https://openrouter.ai/api/v1",
+                effective_base_url=openrouter_base_url,
             ),
             api_key_env=_get_config_attr(openrouter_config, "api_key_env", "OPENROUTER_API_KEY")
             or "OPENROUTER_API_KEY",
-            base_url=_resolve_configured_base_url(
-                provider_id="openrouter",
-                provider_config=openrouter_config,
-                llm_config=llm_config,
-                default_base_url="https://openrouter.ai/api/v1",
-            ),
+            base_url=openrouter_base_url,
         )
     )
 

@@ -1291,12 +1291,30 @@ def _image_generation_api_key_source(
     provider_id: str,
     api_key: str,
     env_key: str,
+    effective_base_url: str = "",
+    default_base_url: str = "",
 ) -> str:
     if api_key:
         return "explicit"
     if env_key and os.environ.get(env_key):
         return "env"
-    if config.llm.provider == provider_id and config.llm.api_key:
+    # The primary LLM key is a credential for the LLM's endpoint only; a
+    # save that would bind it to a different image endpoint origin must fail
+    # closed so the operator enters a dedicated key. This mirrors the
+    # resolution-time gate in provider/image_generation.py: an llm base_url
+    # equal to the pydantic field default is derived for another provider,
+    # not chosen, and means the matched provider's own default endpoint.
+    field = type(config.llm).model_fields.get("base_url")
+    derived_default = str(getattr(field, "default", "") or "") if field is not None else ""
+    stored_llm_base = str(config.llm.base_url or "")
+    llm_base_url = (
+        stored_llm_base if stored_llm_base != derived_default else ""
+    ) or default_base_url
+    if (
+        config.llm.provider == provider_id
+        and config.llm.api_key
+        and base_url_allows_credential_reuse(llm_base_url, effective_base_url)
+    ):
         return "llm_fallback"
     return "none"
 
@@ -1405,6 +1423,8 @@ def upsert_image_generation_provider(
         provider_id=provider_id,
         api_key=effective_api_key,
         env_key=env_key,
+        effective_base_url=effective_base_url,
+        default_base_url=spec.default_base_url,
     )
     if (
         enabled

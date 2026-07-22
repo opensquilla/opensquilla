@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import secrets
@@ -22,6 +23,7 @@ from opensquilla.sandbox.backend.windows_default_network import WindowsNetworkSe
 SETUP_VERSION = 2
 OFFLINE_USERNAME = "OpenSquillaSandbox"
 SETUP_HELPER_REPORT = "setup_helper_report.json"
+SETUP_PROCESS_LOCK_TIMEOUT_MS = 10 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -247,32 +249,40 @@ def elevated_setup_helper_main(argv: list[str] | None = None) -> int:
         print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
         return 2
     try:
-        with _secure_setup_directory_lease(marker_path, profile_path) as lease:
-            write_setup_helper_report(marker_path, state="running")
-            try:
-                network = establish_windows_network_setup(marker_path)
-                lock_persistent_sandbox_dirs(
-                    marker_path,
-                    offline_sid=network.offline_user_sid,
-                    real_user_sid=payload["userSid"],
-                    lease=lease,
-                )
-                _validate_setup_directory_lease(lease, recursive=True)
-                write_setup_marker(marker_path, network=network)
-                write_setup_helper_report(marker_path, state="ready", detail="setup_complete")
-                return 0
-            except Exception as exc:
-                try:
-                    _validate_setup_directory_lease(lease, recursive=True)
-                except Exception as lease_exc:
-                    print(
-                        f"windows_default_setup helper failed without report: {lease_exc}",
-                        file=sys.stderr,
+        with _windows_setup_process_lock(marker_path):
+            with _secure_setup_directory_lease(marker_path, profile_path) as lease:
+                if _windows_setup_is_ready(marker_path, profile_path):
+                    write_setup_helper_report(
+                        marker_path,
+                        state="ready",
+                        detail="already_ready",
                     )
-                    return 2
-                write_setup_helper_report(marker_path, state="failed", detail=str(exc))
-                print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
-                return 1
+                    return 0
+                write_setup_helper_report(marker_path, state="running")
+                try:
+                    network = establish_windows_network_setup(marker_path)
+                    lock_persistent_sandbox_dirs(
+                        marker_path,
+                        offline_sid=network.offline_user_sid,
+                        real_user_sid=payload["userSid"],
+                        lease=lease,
+                    )
+                    _validate_setup_directory_lease(lease, recursive=True)
+                    write_setup_marker(marker_path, network=network)
+                    write_setup_helper_report(marker_path, state="ready", detail="setup_complete")
+                    return 0
+                except Exception as exc:
+                    try:
+                        _validate_setup_directory_lease(lease, recursive=True)
+                    except Exception as lease_exc:
+                        print(
+                            f"windows_default_setup helper failed without report: {lease_exc}",
+                            file=sys.stderr,
+                        )
+                        return 2
+                    write_setup_helper_report(marker_path, state="failed", detail=str(exc))
+                    print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
+                    return 1
     except Exception as exc:
         print(f"windows_default_setup helper failed: {exc}", file=sys.stderr)
         return 2
@@ -363,6 +373,74 @@ def _windows_profile_path_for_sid(sid: str) -> Path:
 
 def _setup_path_key(path: Path) -> str:
     return os.path.normcase(os.path.abspath(str(path))).replace("\\", "/").rstrip("/")
+
+
+def _windows_setup_is_ready(marker_path: Path, profile_path: Path) -> bool:
+    marker = read_setup_marker(marker_path)
+    if marker is None or marker.network is None:
+        return False
+
+    from opensquilla.sandbox.backend.windows_default_support import (
+        probe_windows_default_support,
+    )
+
+    support = probe_windows_default_support(
+        home=profile_path,
+        proxy_ports=marker.network.allowed_proxy_ports,
+    )
+    return support.default_backend_available and support.proxy_allowlist_enforced
+
+
+@contextmanager
+def _windows_setup_process_lock(marker_path: Path) -> Iterator[None]:
+    """Serialize elevated setup helpers for one Windows profile.
+
+    Gateway restarts can leave an already-elevated helper running. A named
+    mutex prevents a replacement gateway from concurrently changing the
+    account, ACL, firewall, and WFP state. Windows releases the mutex if a
+    helper crashes; the bounded wait avoids an unbounded second helper.
+    """
+
+    if not sys.platform.startswith("win"):
+        yield
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.ReleaseMutex.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    digest = hashlib.sha256(_setup_path_key(marker_path).encode("utf-8")).hexdigest()[:32]
+    mutex_name = rf"Local\OpenSquillaSandboxSetup-{digest}"
+    handle = kernel32.CreateMutexW(None, False, mutex_name)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "windows_setup_mutex_create_failed")
+
+    wait_object_0 = 0x00000000
+    wait_abandoned = 0x00000080
+    wait_timeout = 0x00000102
+    acquired = False
+    try:
+        wait_result = int(kernel32.WaitForSingleObject(handle, SETUP_PROCESS_LOCK_TIMEOUT_MS))
+        if wait_result in (wait_object_0, wait_abandoned):
+            acquired = True
+        elif wait_result == wait_timeout:
+            raise OSError("windows_setup_mutex_timeout")
+        else:
+            raise OSError(ctypes.get_last_error(), "windows_setup_mutex_wait_failed")
+        yield
+    finally:
+        if acquired:
+            kernel32.ReleaseMutex(handle)
+        kernel32.CloseHandle(handle)
 
 
 def _is_reparse_path(path: Path) -> bool:

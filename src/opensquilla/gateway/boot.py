@@ -613,6 +613,7 @@ class ServiceContainer:
     usage_tracker: UsageTracker | None = None
     usage_event_sink: Any = None
     usage_backfill_task: asyncio.Task[Any] | None = None
+    sandbox_setup_task: asyncio.Task[Any] | None = field(default=None, repr=False)
     cron_scheduler: SchedulerEngine | None = None
     model_catalog: ModelCatalog | None = None
     agent_registry: Any = None
@@ -662,6 +663,19 @@ class ServiceContainer:
             except (asyncio.CancelledError, Exception):
                 pass
             self.usage_backfill_task = None
+        sandbox_setup_task = self.sandbox_setup_task
+        self.sandbox_setup_task = None
+        if sandbox_setup_task is not None:
+            cancel = getattr(sandbox_setup_task, "cancel", None)
+            if callable(cancel):
+                cancel()
+            if inspect.isawaitable(sandbox_setup_task):
+                try:
+                    await sandbox_setup_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    log.debug("gateway.sandbox_setup_close_failed", exc_info=True)
         remove_compaction_listener = getattr(self, "_compaction_listener_remove", None)
         if callable(remove_compaction_listener):
             try:
@@ -789,8 +803,12 @@ class ServiceContainer:
         # (or an in-process caller) cannot inherit stale Full Host semantics.
         try:
             from opensquilla.sandbox.integration import reset_runtime as reset_sandbox_runtime
+            from opensquilla.sandbox.setup_runtime import (
+                reset_sandbox_setup_runtime_state,
+            )
 
             reset_sandbox_runtime()
+            reset_sandbox_setup_runtime_state()
         except Exception:
             pass
         # Clear the shared catalog installed by build_services() so a torn-down
@@ -2173,6 +2191,7 @@ async def build_services(
         if config.config_path:
             log.info("build_services.config_loaded", path=config.config_path)
     deferred_warmups: list[Callable[[], Any]] = []
+    sandbox_setup_task: asyncio.Task[Any] | None = None
     _warn_workspace_state_mismatch(config)
 
     # Register session-material filesystem cleanup so deleting a session also
@@ -2217,7 +2236,7 @@ async def build_services(
             **effective.effective.as_dict(),
         )
         if getattr(effective.effective, "sandbox_enabled", True) and sandbox_settings.auto_setup:
-            create_background_task(_ensure_sandbox_setup_on_boot(config))
+            sandbox_setup_task = create_background_task(_ensure_sandbox_setup_on_boot(config))
     except Exception as e:  # pragma: no cover - boot diagnostics only
         log.exception("build_services.sandbox_configure_failed", error=str(e))
         raise
@@ -2852,6 +2871,7 @@ async def build_services(
         router_calibration_service=router_calibration_service,
         provider_stats=provider_stats,
         deferred_warmups=deferred_warmups,
+        sandbox_setup_task=sandbox_setup_task,
     )
     # Attach deferred callback ref so start_gateway_server can wire TurnRunner
     svc._turn_runner_ref = _turn_runner_ref  # type: ignore[attr-defined]

@@ -2621,6 +2621,17 @@ describe('useSetupCatalog provider credential reveal', () => {
     expect(rpcCall).toHaveBeenCalledWith('onboarding.provider.credential.reveal', { providerId: 'deepseek' })
     const credentialPanel = api.providerPanel.value.credentialPanel as { masked: string; revealed: string }
     expect(credentialPanel.revealed).toBe('sk-real-value')
+    const callsAfterReveal = rpcCall.mock.calls.length
+
+    api.providerPanel.value.credentialPanel?.onHideReveal?.()
+    await nextTick()
+
+    const hiddenCredentialPanel = api.providerPanel.value.credentialPanel as { masked: string; revealed: string }
+    expect(hiddenCredentialPanel.masked).toBe('sk-••••1234')
+    expect(hiddenCredentialPanel.revealed).toBe('')
+    expect(rpcCall).toHaveBeenCalledTimes(callsAfterReveal)
+
+    await api.revealProviderCredential()
 
     vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS)
     await nextTick()

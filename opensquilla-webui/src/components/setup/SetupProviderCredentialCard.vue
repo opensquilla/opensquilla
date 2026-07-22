@@ -34,6 +34,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   reveal: []
+  hideReveal: []
   replace: []
   cancelReplace: []
   testConnection: []
@@ -87,6 +88,10 @@ const sourceText = computed(() => {
 })
 const displayValue = computed(() => props.panel.revealed || props.panel.masked || '')
 const showRevealButton = computed(() => props.panel.revealAllowed && Boolean(props.panel.masked))
+const credentialRevealed = computed(() => Boolean(props.panel.revealed))
+const credentialToggleLabel = computed(() => (
+  credentialRevealed.value ? t('setup.provider.hideApiKey') : t('setup.provider.showApiKey')
+))
 const writeOnlySavedCredential = computed(() => (
   props.panel.available && !props.panel.revealAllowed && !props.panel.masked
 ))
@@ -253,11 +258,11 @@ const verdictModelsText = computed(() => {
                 v-if="showRevealButton"
                 type="button"
                 class="setup-provider-credential__input-action"
-                :aria-label="t('setup.provider.viewCredential')"
-                :title="t('setup.provider.viewCredential')"
-                @click="emit('reveal')"
+                :aria-label="credentialToggleLabel"
+                :title="credentialToggleLabel"
+                @click="credentialRevealed ? emit('hideReveal') : emit('reveal')"
               >
-                <Icon name="eye" :size="14" />
+                <Icon :name="credentialRevealed ? 'eye-off' : 'eye'" :size="14" />
               </button>
             </div>
             <button type="button" class="btn setup-provider-credential__replace" @click="emit('replace')">{{ t('setup.provider.replaceCredential') }}</button>

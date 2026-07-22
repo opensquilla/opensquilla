@@ -657,6 +657,7 @@ const tokenRhythmCredentialReplacementRequired = computed(() => (
       v-if="panel.credentialPanel"
       :panel="panel.credentialPanel"
       @reveal="panel.credentialPanel.onReveal?.()"
+      @hide-reveal="panel.credentialPanel.onHideReveal?.()"
       @replace="panel.credentialPanel.onReplace?.()"
       @cancel-replace="panel.credentialPanel.onCancelReplace?.()"
       @test-connection="emit('probeConnection')"

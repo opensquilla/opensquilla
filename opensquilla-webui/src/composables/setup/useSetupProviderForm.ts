@@ -174,6 +174,7 @@ export interface ProviderCredentialPanelState {
   probeButtonLabel: string
   connection: ConnectionState
   onReveal?: () => void
+  onHideReveal?: () => void
   onReplace?: () => void
   onCancelReplace?: () => void
 }
@@ -638,6 +639,10 @@ export function useSetupProviderForm() {
     }
   }
 
+  function hideRevealedCredential() {
+    clearRevealedCredential()
+  }
+
   function setRevealError(value: string) {
     clearRevealedCredential()
     revealError.value = value
@@ -726,6 +731,7 @@ export function useSetupProviderForm() {
     startCredentialReplace,
     cancelCredentialReplace,
     setRevealedCredential,
+    hideRevealedCredential,
     setRevealError,
     payload,
     probeConnection,

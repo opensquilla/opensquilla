@@ -41,11 +41,14 @@ async function mountCard(props: Record<string, unknown> = {}, listeners: Record<
 
 // The real card stays mounted across saves and provider switches, so these
 // tests need a panel whose fields mutate in place after mount.
-async function mountReactiveCard(props: Record<string, unknown> = {}) {
+async function mountReactiveCard(
+  props: Record<string, unknown> = {},
+  listeners: Record<string, unknown> = {},
+) {
   const el = document.createElement('div')
   document.body.appendChild(el)
   const livePanel = reactive(panel(props))
-  const app = createApp(SetupProviderCredentialCard, { panel: livePanel })
+  const app = createApp(SetupProviderCredentialCard, { panel: livePanel, ...listeners })
   app.use(i18n)
   app.mount(el)
   await nextTick()
@@ -157,12 +160,12 @@ describe('SetupProviderCredentialCard', () => {
 
   it('shows the reveal button only when reveal is allowed and a masked credential exists', async () => {
     const visible = await mountCard()
-    expect(visible.el.querySelector('.setup-provider-credential__input-action[aria-label="View"]')).toBeTruthy()
-    expect(Array.from(visible.el.querySelectorAll('button')).some(btn => (btn.textContent || '').includes('View'))).toBe(false)
+    expect(visible.el.querySelector('.setup-provider-credential__input-action[aria-label="Show API key"]')).toBeTruthy()
+    expect(Array.from(visible.el.querySelectorAll('button')).some(btn => (btn.textContent || '').includes('Show API key'))).toBe(false)
     visible.app.unmount()
 
     const hidden = await mountCard({ revealAllowed: false })
-    expect(hidden.el.querySelector('.setup-provider-credential__input-action[aria-label="View"]')).toBeNull()
+    expect(hidden.el.querySelector('.setup-provider-credential__input-action[aria-label="Show API key"]')).toBeNull()
     hidden.app.unmount()
   })
 
@@ -203,9 +206,38 @@ describe('SetupProviderCredentialCard', () => {
     const fieldRow = el.querySelector('.setup-provider-credential__field-row')
     const inputShell = fieldRow?.querySelector('.setup-provider-credential__input-shell')
     expect(inputShell?.querySelector('input[name="setup_provider_api_key_display"]')).toBeTruthy()
-    expect(inputShell?.querySelector('.setup-provider-credential__input-action[aria-label="View"]')).toBeTruthy()
+    expect(inputShell?.querySelector('.setup-provider-credential__input-action[aria-label="Show API key"]')).toBeTruthy()
     expect(fieldRow?.querySelector('.setup-provider-credential__replace')?.textContent).toContain('Replace key')
     expect(el.querySelector('.setup-provider-credential__actions')).toBeNull()
+
+    app.unmount()
+  })
+
+  it('changes the saved-key reveal button into an immediate hide control', async () => {
+    const onReveal = vi.fn()
+    const onHideReveal = vi.fn()
+    const { app, el, livePanel } = await mountReactiveCard({}, { onReveal, onHideReveal })
+
+    const show = el.querySelector<HTMLButtonElement>('[aria-label="Show API key"]')
+    show?.click()
+    expect(onReveal).toHaveBeenCalledTimes(1)
+
+    livePanel.revealed = 'synthetic-visible-key'
+    await nextTick()
+
+    expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key_display"]')?.value)
+      .toBe('synthetic-visible-key')
+    const hide = el.querySelector<HTMLButtonElement>('[aria-label="Hide API key"]')
+    expect(hide).toBeTruthy()
+    hide?.click()
+    expect(onHideReveal).toHaveBeenCalledTimes(1)
+    expect(onReveal).toHaveBeenCalledTimes(1)
+
+    livePanel.revealed = ''
+    await nextTick()
+    expect(el.querySelector<HTMLInputElement>('input[name="setup_provider_api_key_display"]')?.value)
+      .toBe('sk-••••7890')
+    expect(el.querySelector('[aria-label="Show API key"]')).toBeTruthy()
 
     app.unmount()
   })

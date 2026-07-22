@@ -1111,6 +1111,9 @@ const providerCredentialPanel = computed<ProviderCredentialPanelState | null>(()
     probeButtonLabel: credentialReady ? t('setup.provider.testCurrentSettings') : t('setup.provider.addKeyToTest'),
     connection: providerForm.connection.value,
     onReveal: revealProviderCredential,
+    // Hiding is local-only and should remain available even while a save or
+    // another provider action temporarily locks interactions.
+    onHideReveal: () => providerForm.hideRevealedCredential(),
     onReplace: () => {
       if (!providerInteractionLocked()) providerForm.startCredentialReplace()
     },

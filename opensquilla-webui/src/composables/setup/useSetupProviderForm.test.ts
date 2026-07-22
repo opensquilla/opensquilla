@@ -270,6 +270,20 @@ describe('useSetupProviderForm — provider credential state', () => {
     expect(f.revealedCredential.value).toBe('')
   })
 
+  it('hides revealed credentials immediately and cancels the pending expiry', () => {
+    vi.useFakeTimers()
+    const f = useSetupProviderForm()
+
+    f.setRevealedCredential('shown-key')
+    vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS / 2)
+    f.hideRevealedCredential()
+    expect(f.revealedCredential.value).toBe('')
+
+    f.setRevealedCredential('shown-again')
+    vi.advanceTimersByTime(PROVIDER_CREDENTIAL_REVEAL_TIMEOUT_MS / 2)
+    expect(f.revealedCredential.value).toBe('shown-again')
+  })
+
   it('clears revealed credentials when credential inputs change', () => {
     const f = useSetupProviderForm()
     f.setRevealedCredential('shown-key')

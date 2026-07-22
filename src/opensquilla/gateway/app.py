@@ -17,6 +17,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
 from opensquilla import __version__
+from opensquilla.gateway.approval_events import build_approval_snapshot_item
 from opensquilla.gateway.approval_queue import get_approval_queue
 from opensquilla.gateway.config import GatewayConfig
 from opensquilla.gateway.control_ui import create_control_ui_routes
@@ -432,34 +433,7 @@ def create_gateway_app(
         mode = settings.get("mode", "prompt")
         queue = get_approval_queue()
         pending = _human_actionable_approvals(queue.list_pending())
-        # Enrich pending items with params fields for UI display
-        items = []
-        for p in pending:
-            item = {
-                "id": p["id"],
-                "namespace": p["namespace"],
-                "created_at": p.get("created_at"),
-                "deadline": p.get("deadline"),
-            }
-            params = p.get("params", {})
-            argv = params.get("argv")
-            command = params.get("command")
-            if not command and isinstance(argv, list):
-                command = " ".join(str(part) for part in argv)
-            item["toolName"] = params.get(
-                "toolName",
-                params.get("pluginId", params.get("action_kind", "Unknown")),
-            )
-            item["sessionKey"] = params.get("sessionKey", params.get("session_id", ""))
-            item["agent"] = params.get("agent", "")
-            item["args"] = params.get("args", params.get("permissions"))
-            item["command"] = command or ""
-            item["warning"] = params.get("warning", params.get("reason", ""))
-            item["actionKind"] = params.get("action_kind", "")
-            item["argv"] = argv if isinstance(argv, list) else []
-            item["mode"] = params.get("mode", mode)
-            item["params"] = params
-            items.append(item)
+        items = [build_approval_snapshot_item(item, default_mode=mode) for item in pending]
         return JSONResponse(
             {
                 "pending": items,

@@ -568,6 +568,11 @@ import { useChatHistory } from '@/composables/chat/useChatHistory'
 import { useChatMarkdownExport } from '@/composables/chat/useChatMarkdownExport'
 import { useChatMessageActions } from '@/composables/chat/useChatMessageActions'
 import {
+  createChatMetaDraftRecovery,
+  listServerMetaDrafts,
+  queryServerMetaDrafts,
+} from '@/composables/chat/useChatMetaDraftRecovery'
+import {
   useChatPendingQueue,
   type PendingQueueOwnerContext,
 } from '@/composables/chat/useChatPendingQueue'
@@ -593,7 +598,10 @@ import { runStatusLabelText as sessionRunStatusLabelText } from '@/composables/u
 import { useChatSessionRoute } from '@/composables/chat/useChatSessionRoute'
 import { useChatRunModePreference, type RunModePolicy } from '@/composables/chat/useChatRunModePreference'
 import { useChatSessionRuntime } from '@/composables/chat/useChatSessionRuntime'
-import { useChatSessionSubscription } from '@/composables/chat/useChatSessionSubscription'
+import {
+  isAuthoritativeSessionSubscription,
+  useChatSessionSubscription,
+} from '@/composables/chat/useChatSessionSubscription'
 import {
   useChatSlashCommands,
   type DurableMetaDraft,
@@ -619,7 +627,6 @@ import type {
 import type {
   ArtifactPayload,
   MetaDraftDiscardResponse,
-  MetaDraftsListResponse,
   SessionEventPayload,
 } from '@/types/rpc'
 import type { ModelRoutingMode } from '@/types/modelRouting'
@@ -705,6 +712,7 @@ const landingPrefilled = ref(false)
 // send ("Start task"). Flushed in onMounted once the draft subscription is live
 // so the first turn streams into this view. Empty string = nothing pending.
 const pendingAutoSend = ref('')
+const pendingAutoSendSessionKey = ref('')
 
 /* ── DOM refs ──────────────────────────────────────────────────────── */
 
@@ -1326,6 +1334,7 @@ const {
   startDraftSession,
   switchToSession,
   adoptResponseSession,
+  rebindDraftSession,
 } = chatSessionRuntime
 
 const metaSkillSetup = useMetaSkillSetup({
@@ -1473,7 +1482,7 @@ const chatSend = useChatSend({
   scrollToBottom,
 })
 const {
-  onSend,
+  onSend: dispatchCurrentInput,
   onStop,
   dispatchHiddenSend,
   discardHiddenControl,
@@ -1482,29 +1491,24 @@ const {
   restoreHiddenControls,
   sendHiddenMetaPreflightConfirmation,
 } = chatSend
+async function onSend(): Promise<void> {
+  markProvisionalDraftUsed()
+  if (pendingAutoSendSessionKey.value === sessionKey.value) {
+    pendingAutoSend.value = ''
+    pendingAutoSendSessionKey.value = ''
+  }
+  await dispatchCurrentInput()
+}
 sendCurrentInput = onSend
 dispatchHiddenForMeta = dispatchHiddenSend
 dispatchHiddenControl = dispatchHiddenSend
 discardHiddenControlOutbox = discardHiddenControl
 forgetHiddenControlOutbox = forgetHiddenControl
 
-async function listServerMetaDrafts(
-  query: { sessionKey?: string, agentId?: string },
-): Promise<DurableMetaDraft[]> {
-  try {
-    await rpc.waitForConnection(15_000)
-    const result = await rpc.call<MetaDraftsListResponse>('meta.drafts.list', query)
-    return Array.isArray(result?.drafts) ? result.drafts : []
-  } catch {
-    // Older gateways and a temporarily unavailable connection retain the
-    // browser outboxes as a compatibility fallback.
-    return []
-  }
-}
-
 async function restoreDurableMetaControls(
   targetSessionKey: string,
   prefetchedServerDrafts?: DurableMetaDraft[],
+  isCurrent: () => boolean = () => true,
 ): Promise<void> {
   // Setup owns a matching cancellation tombstone so it can clear its recovery
   // checkpoint without ever re-entering launch. Queue-only tombstones are then
@@ -1513,18 +1517,22 @@ async function restoreDurableMetaControls(
     listPendingMetaDiscards(targetSessionKey).map(item => item.clientRequestId),
   )
   await restoreMetaSetupJob(targetSessionKey)
+  if (!isCurrent()) return
   const setupDiscardRequestId = setupState.value?.retryMode === 'discard'
     ? setupState.value.resumeRequestId || ''
     : ''
-  for (const requestId of await flushPendingMetaDiscards(
+  const flushedDiscardIds = await flushPendingMetaDiscards(
     targetSessionKey,
     setupDiscardRequestId ? [setupDiscardRequestId] : [],
-  )) {
+  )
+  if (!isCurrent()) return
+  for (const requestId of flushedDiscardIds) {
     pendingDiscardIds.add(requestId)
   }
   const serverDrafts = (prefetchedServerDrafts
-    ?? await listServerMetaDrafts({ sessionKey: targetSessionKey }))
+    ?? await listServerMetaDrafts(rpc, { sessionKey: targetSessionKey }))
     .filter(draft => !pendingDiscardIds.has(draft.clientRequestId))
+  if (!isCurrent()) return
   restoreDeferredMetaDrafts(
     targetSessionKey,
     new Set(serverDrafts.map(draft => draft.launchText)),
@@ -1544,11 +1552,82 @@ async function restoreDurableMetaControls(
     matchingServerDrafts.filter(
       draft => draft.clientRequestId !== activeSetupRequestId,
     ),
+    isCurrent,
   )
+  if (!isCurrent()) return
   await restoreHiddenControls(
     targetSessionKey,
     [...setupHandledRequestIds, ...attemptedServerRequestIds],
+    isCurrent,
   )
+}
+
+function flushPendingAutoSend(targetSessionKey: string): boolean {
+  if (
+    !pendingAutoSend.value
+    || pendingAutoSendSessionKey.value !== targetSessionKey
+    || sessionKey.value !== targetSessionKey
+  ) {
+    return false
+  }
+  const text = pendingAutoSend.value
+  pendingAutoSend.value = ''
+  pendingAutoSendSessionKey.value = ''
+  // The handoff is no longer automatic once the user edits its prefill while
+  // waiting for an authoritative reconnect.
+  if (inputText.value !== text) return false
+  sendComposerText(text)
+  return true
+}
+
+async function handleAuthoritativeSessionSubscription(
+  targetSessionKey: string,
+  prefetchedServerDrafts?: DurableMetaDraft[],
+): Promise<void> {
+  const attempt = ++durableRecoveryGeneration
+  const isCurrent = () => (
+    chatViewActive
+    && attempt === durableRecoveryGeneration
+    && sessionKey.value === targetSessionKey
+  )
+  if (!isCurrent()) return
+  // Ordinary Sessions Hub handoffs must never wait behind optional Meta
+  // recovery. Durable controls remain persisted for the next reconnect.
+  if (flushPendingAutoSend(targetSessionKey)) return
+  await restoreDurableMetaControls(targetSessionKey, prefetchedServerDrafts, isCurrent)
+}
+
+function isPristineDraftForRecovery(expectedSessionKey: string, agentId: string): boolean {
+  return !provisionalDraftUsed
+    && sessionKey.value === expectedSessionKey
+    && isDraftRoute()
+    && draftAgentId() === agentId
+    && agentIdFromSessionKey(expectedSessionKey) === agentId
+    && pendingSessionIntent.value === 'new_chat'
+    && messages.value.length === 0
+    && inputText.value.length === 0
+    && pendingAttachments.value.length === 0
+    && pendingQueue.value.length === 0
+    && pendingAutoSend.value.length === 0
+    && !isStreaming.value
+    && setupState.value?.sessionKey !== expectedSessionKey
+}
+
+const metaDraftRecovery = createChatMetaDraftRecovery({
+  currentSessionKey: () => sessionKey.value,
+  listDrafts: query => queryServerMetaDrafts(rpc, query),
+  isPristineDraft: isPristineDraftForRecovery,
+  rebindDraftSession,
+  onAuthoritativeSubscription: handleAuthoritativeSessionSubscription,
+})
+
+let provisionalDraftUsed = false
+let durableRecoveryGeneration = 0
+
+function markProvisionalDraftUsed(): void {
+  if (provisionalDraftUsed) return
+  provisionalDraftUsed = true
+  metaDraftRecovery.invalidate()
 }
 
 // Deny notes ride the normal send path: queued while the turn is streaming,
@@ -1618,7 +1697,10 @@ const rpcEventHandlers = useChatRpcEventHandlers({
   popAllPendingIntoComposer,
   saveWidgetState,
   subscribeSession,
-  onSessionSubscribed: () => restoreDurableMetaControls(sessionKey.value),
+  onSessionSubscribed: () => {
+    if (isDraftRoute()) metaDraftRecovery.retry(draftAgentId())
+    return handleAuthoritativeSessionSubscription(sessionKey.value)
+  },
   loadHistory,
   loadCurrentSessionUsage,
 })
@@ -2425,7 +2507,10 @@ function consumeDraftPrefill() {
   landingPrefilled.value = true
   // A Sessions Hub "Start task" hand-off also asks the draft to send the
   // prefill in one step; the actual flush waits for the subscription in onMounted.
-  if (state?.autosend === true) pendingAutoSend.value = prefill
+  if (state?.autosend === true) {
+    pendingAutoSend.value = prefill
+    pendingAutoSendSessionKey.value = sessionKey.value
+  }
   try {
     window.history.replaceState({ ...window.history.state, prefill: undefined, autosend: undefined }, '')
   } catch { /* ignore */ }
@@ -2435,6 +2520,7 @@ function consumeDraftPrefill() {
 // provisional key stays out of the URL and storage until the first send.
 function enterDraft() {
   landingPrefilled.value = false
+  provisionalDraftUsed = false
   const agentId = draftAgentId()
   const isFreshDraft = pendingSessionIntent.value === 'new_chat'
     && messages.value.length === 0
@@ -2445,7 +2531,10 @@ function enterDraft() {
   if (isDesktopViewport.value) composerRef.value?.focusTextarea()
 }
 
-onMounted(async () => {
+let chatViewActive = false
+
+onMounted(() => {
+  chatViewActive = true
   // Initialize session key. Without an explicit ?session= the view opens as a
   // draft instead of restoring a previous session.
   const initialSession = resolveInitialSession()
@@ -2458,34 +2547,18 @@ onMounted(async () => {
     persistSession(sessionKey.value, { updateRoute: false, source: 'chatView.initialSession' })
   }
 
-  // A setup-gated /meta request can belong to a provisional draft key that
-  // never reached the sessions table or URL. Recover that key before the
-  // subscription is established, so an application close/reopen resumes the
-  // exact request identity instead of creating a second chat.
-  let prefetchedMetaDrafts: DurableMetaDraft[] | undefined
-  if (initialSession.draft) {
-    const agentDrafts = await listServerMetaDrafts({ agentId: draftAgentId() })
-    const provisional = agentDrafts.find(draft => draft.sessionExists === false)
-    if (provisional) {
-      sessionKey.value = provisional.sessionKey
-      switchPendingQueue(provisional.sessionKey)
-      prefetchedMetaDrafts = agentDrafts.filter(
-        draft => draft.sessionKey === provisional.sessionKey,
-      )
-    }
-  }
-
   // Load elevated mode
   loadElevatedMode()
 
-  // Load feature toggles
-  await loadFeatureToggles()
-  unsubs.push(bindFeatureRefresh(scheduleHistorySync))
-
-  // Subscribe to RPC events
+  // Register event listeners before any optional initialization request. A slow
+  // Meta or feature RPC must not leave the ordinary chat surface deaf to pushes.
   unsubs.push(chatRpcSubscriptions.subscribe())
   unsubs.push(chatApprovals.subscribe())
   unsubs.push(metaRuns.subscribe())
+
+  void loadFeatureToggles().then(() => {
+    if (chatViewActive) unsubs.push(bindFeatureRefresh(scheduleHistorySync))
+  })
 
   // Composer resize observer
   const composerEl = composerRef.value?.composerElement()
@@ -2499,33 +2572,47 @@ onMounted(async () => {
 
   // Load the requested chat state. Drafts subscribe so the first send can
   // stream, but have no history to load.
+  const subscribedSessionKey = sessionKey.value
   const sessionSubscription = subscribeSession()
   if (!initialSession.draft) loadHistory()
   loadSlashCommands()
 
-  // A provider handoff may immediately resume the original hidden send. Wait
-  // until replay/subscription is established so no early stream frame is lost.
-  const sessionSubscribed = await sessionSubscription
-  if (sessionSubscribed) {
-    await restoreDurableMetaControls(sessionKey.value, prefetchedMetaDrafts)
-  }
+  // Provisional Meta draft discovery is deliberately detached from the base
+  // session bootstrap. The coordinator will only rebind an untouched draft and
+  // will ignore results made stale by typing, sending, navigation, or unmount.
+  if (initialSession.draft) metaDraftRecovery.start(draftAgentId())
+
+  // A provider handoff may immediately resume the original hidden send, but
+  // only an authoritative snapshot may restore or flush it. Keep this detached
+  // from mounting so a slow Meta recovery never blocks ordinary interaction.
+  void Promise.resolve(sessionSubscription)
+    .then((outcome) => {
+      if (
+        sessionKey.value === subscribedSessionKey
+        && isAuthoritativeSessionSubscription(outcome)
+      ) {
+        if (initialSession.draft) metaDraftRecovery.retry(draftAgentId())
+        return handleAuthoritativeSessionSubscription(subscribedSessionKey)
+      }
+    })
+    .catch((error: unknown) => {
+      console.warn(
+        'Initial session recovery failed:',
+        error instanceof Error ? error.message : error,
+      )
+    })
 
   // Focus textarea on desktop
   if (isDesktopViewport.value) {
     composerRef.value?.focusTextarea()
   }
 
-  // Sessions Hub "Start task" hand-off: send the prefilled draft in one step.
-  // Wait for the subscription first so the first turn streams into this view
-  // rather than being missed before sessions.messages.subscribe registers.
-  if (pendingAutoSend.value) {
-    const text = pendingAutoSend.value
-    pendingAutoSend.value = ''
-    sendComposerText(text)
-  }
 })
 
 onUnmounted(() => {
+  chatViewActive = false
+  durableRecoveryGeneration += 1
+  metaDraftRecovery.invalidate()
   unsubs.forEach(fn => fn())
   unsubs = []
   cleanupPendingQueue()
@@ -2550,6 +2637,8 @@ useDocumentEvent('keydown', onDocumentKeydown)
 
 // Watch for route changes
 watch(() => route.query.session, async (newSession) => {
+  durableRecoveryGeneration += 1
+  metaDraftRecovery.invalidate()
   if (newSession && typeof newSession === 'string') {
     recordSessionNavigationDiag('route.query.session', {
       from: sessionKey.value,
@@ -2557,14 +2646,31 @@ watch(() => route.query.session, async (newSession) => {
       routeSession: newSession,
     })
     const switched = await switchToSession(newSession)
-    if (switched) await restoreDurableMetaControls(newSession)
+    if (switched) await handleAuthoritativeSessionSubscription(newSession)
   }
 })
 
 // Entering the draft route resets to a clean draft for the requested agent.
 watch(() => [route.path, route.query.agent], () => {
-  if (isDraftRoute()) enterDraft()
+  durableRecoveryGeneration += 1
+  metaDraftRecovery.invalidate()
+  if (isDraftRoute()) {
+    enterDraft()
+    metaDraftRecovery.start(draftAgentId())
+  }
 })
+
+watch(inputText, (value) => {
+  if (value.length > 0) markProvisionalDraftUsed()
+}, { flush: 'sync' })
+
+watch(() => pendingAttachments.value.length, (count) => {
+  if (count > 0) markProvisionalDraftUsed()
+}, { flush: 'sync' })
+
+watch(() => pendingQueue.value.length, (count) => {
+  if (count > 0) markProvisionalDraftUsed()
+}, { flush: 'sync' })
 
 // Legacy ?newChat=1 / ?new=1 links land on the draft route, then the params disappear.
 watch(() => [route.query.newChat, route.query.new], () => {

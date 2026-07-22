@@ -321,6 +321,33 @@ describe('useChatSlashCommands MetaSkill readiness', () => {
     expect(notify.mock.calls[0]?.[0]).toContain('already discarded')
   })
 
+  it('stops a multi-draft restore when its lifecycle guard becomes stale', async () => {
+    let resolveFirst: ((value: { ok: boolean }) => void) | undefined
+    const first = new Promise<{ ok: boolean }>((resolve) => { resolveFirst = resolve })
+    const call = vi.fn()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue({ ok: true })
+    const { api } = harness(call)
+    const drafts = ['first', 'second'].map(clientRequestId => ({
+      sessionKey: 'agent:main:test',
+      clientRequestId,
+      name: 'meta-paper-write',
+      launchText: `/meta meta-paper-write -- ${clientRequestId}`,
+      createdAt: 100,
+      expiresAt: 200,
+      sessionExists: true,
+    }))
+    let current = true
+
+    const restoring = api.restoreDurableMetaDrafts(drafts, () => current)
+    await vi.waitFor(() => expect(call).toHaveBeenCalledOnce())
+    current = false
+    resolveFirst?.({ ok: true })
+    await restoring
+
+    expect(call).toHaveBeenCalledOnce()
+  })
+
   it('restores only a rejection that happened before server draft ownership', async () => {
     const rejected = harness(vi.fn(async () => ({ ok: false, error: 'Not available' })))
     rejected.api.selectSlashCmd(META_COMMAND, 'meta-paper-write -- rejected request')

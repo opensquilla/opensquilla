@@ -72,6 +72,7 @@ from opensquilla.skills.meta.run_reports import (
 )
 
 _d = get_dispatcher()
+_META_DRAFT_LIST_TIMEOUT_SECONDS = 3.0
 
 
 @dataclass
@@ -1024,32 +1025,41 @@ async def _handle_meta_drafts_list(params: Any, ctx: RpcContext) -> dict[str, An
     list_drafts = getattr(storage, "list_meta_launch_drafts", None)
     if not callable(list_drafts):
         return {"ok": True, "drafts": [], "durable": False}
-    drafts = await list_drafts(
-        session_key=session_key or None,
-        agent_id=agent_id or None,
-        # Agent-wide recovery exists only to find provisional draft chats that
-        # have no sessions row or URL yet. Filtering in SQL prevents existing
-        # chats from starving that bounded page and avoids disclosing their raw
-        # prompts through a broad query.
-        provisional_only=bool(agent_id and not session_key),
-    )
-    get_session = getattr(storage, "get_session", None)
-    projected: list[dict[str, Any]] = []
-    for draft in drafts:
-        session_exists = (
-            bool(await get_session(draft.session_key))
-            if callable(get_session)
-            else True
-        )
-        projected.append({
-            "sessionKey": draft.session_key,
-            "clientRequestId": draft.client_request_id,
-            "name": draft.meta_skill_name,
-            "launchText": draft.launch_text,
-            "createdAt": draft.created_at,
-            "expiresAt": draft.expires_at,
-            "sessionExists": session_exists,
-        })
+    try:
+        async with asyncio.timeout(_META_DRAFT_LIST_TIMEOUT_SECONDS):
+            drafts = await list_drafts(
+                session_key=session_key or None,
+                agent_id=agent_id or None,
+                # Agent-wide recovery exists only to find provisional draft chats that
+                # have no sessions row or URL yet. Filtering in SQL prevents existing
+                # chats from starving that bounded page and avoids disclosing their raw
+                # prompts through a broad query.
+                provisional_only=bool(agent_id and not session_key),
+            )
+            get_session = getattr(storage, "get_session", None)
+            projected: list[dict[str, Any]] = []
+            for draft in drafts:
+                session_exists = (
+                    bool(await get_session(draft.session_key))
+                    if callable(get_session)
+                    else True
+                )
+                projected.append({
+                    "sessionKey": draft.session_key,
+                    "clientRequestId": draft.client_request_id,
+                    "name": draft.meta_skill_name,
+                    "launchText": draft.launch_text,
+                    "createdAt": draft.created_at,
+                    "expiresAt": draft.expires_at,
+                    "sessionExists": session_exists,
+                })
+    except TimeoutError as exc:
+        raise RpcHandlerError(
+            ERROR_UNAVAILABLE,
+            "MetaSkill draft recovery timed out; retry after reconnecting",
+            retryable=True,
+            retry_after_ms=1_000,
+        ) from exc
     return {
         "ok": True,
         "durable": True,

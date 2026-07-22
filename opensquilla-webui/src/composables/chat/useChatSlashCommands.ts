@@ -315,10 +315,15 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
     }
   }
 
-  async function restoreDurableMetaDrafts(drafts: DurableMetaDraft[]): Promise<string[]> {
+  async function restoreDurableMetaDrafts(
+    drafts: DurableMetaDraft[],
+    isCurrent: () => boolean = () => true,
+  ): Promise<string[]> {
     const attemptedRequestIds: string[] = []
     for (const draft of drafts) {
-      if (draft.sessionKey !== options.sessionKey.value) return attemptedRequestIds
+      if (!isCurrent() || draft.sessionKey !== options.sessionKey.value) {
+        return attemptedRequestIds
+      }
       if (
         !draft.name
         || !draft.launchText
@@ -331,6 +336,7 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         originatingSessionKey: draft.sessionKey,
         clientRequestId: draft.clientRequestId,
       })
+      if (!isCurrent()) return attemptedRequestIds
       if (outcome === 'discarded') continue
       // A setup card or queued hidden turn owns the next user-visible slot.
       // Remaining server drafts stay durable and will be resumed later.

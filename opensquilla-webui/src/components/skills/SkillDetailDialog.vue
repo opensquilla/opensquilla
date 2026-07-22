@@ -147,10 +147,10 @@
             v-for="i in installActions"
             :key="i.id"
             class="sk-detail__install-row"
-            :class="{ 'sk-detail__install-row--toolchain': isToolchainInstall(i.kind) }"
+            :class="{ 'sk-detail__install-row--toolchain': usesMetaToolchainSetup(i.kind) }"
           >
             <span>{{ i.label || t('cronSkills.skillDetail.installVia', { kind: i.kind }) }}{{ i.bins?.length ? ` (${i.bins.join(', ')})` : '' }}</span>
-            <span v-if="isToolchainInstall(i.kind)" class="sk-dim sk-detail__toolchain-guidance">
+            <span v-if="usesMetaToolchainSetup(i.kind)" class="sk-dim sk-detail__toolchain-guidance">
               {{ t('cronSkills.skillDetail.toolchainSetupGuidance') }}
             </span>
             <button
@@ -235,6 +235,10 @@ const dialogLabel = computed(() => {
 
 function isToolchainInstall(kind: string | undefined) {
   return kind?.trim().toLowerCase() === 'toolchain'
+}
+
+function usesMetaToolchainSetup(kind: string | undefined) {
+  return Boolean(props.skill && isMetaSkill(props.skill) && isToolchainInstall(kind))
 }
 
 const dependencySummary = computed(() => props.skill

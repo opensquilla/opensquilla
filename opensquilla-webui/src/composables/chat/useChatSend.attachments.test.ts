@@ -12,6 +12,7 @@ import {
 import { FINISHED_STREAM_TASK_ID, STOPPED_STREAM_TASK_ID } from '@/utils/chat/streamEvents'
 import {
   listHiddenControls,
+  persistHiddenControl,
   type HiddenControlStorage,
 } from '@/utils/chat/hiddenControlOutbox'
 import {
@@ -319,6 +320,41 @@ describe('useChatSend attachment payloads', () => {
       'agent:main:webchat:test',
       first.options.hiddenControlStorage,
     )).toEqual([])
+  })
+
+  it('stops a multi-control restore when its lifecycle guard becomes stale', async () => {
+    const hiddenControlStorage = memoryStorage()
+    for (const requestId of ['first-hidden-request', 'second-hidden-request']) {
+      expect(persistHiddenControl({
+        sessionKey: 'agent:main:webchat:test',
+        clientRequestId: requestId,
+        providerText: `/meta test -- ${requestId}`,
+        displayText: `/meta test -- ${requestId}`,
+      }, hiddenControlStorage)).toBe(true)
+    }
+    let resolveFirst: ((value: unknown) => void) | undefined
+    const first = new Promise(resolve => { resolveFirst = resolve })
+    const remounted = makeOptions({ hiddenControlStorage })
+    remounted.rpc.call
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue({ sessionKey: 'agent:main:webchat:test' })
+    let current = true
+
+    const restoring = remounted.api.restoreHiddenControls(
+      'agent:main:webchat:test',
+      [],
+      () => current,
+    )
+    await vi.waitFor(() => expect(remounted.rpc.call).toHaveBeenCalledOnce())
+    current = false
+    resolveFirst?.({ sessionKey: 'agent:main:webchat:test' })
+    await restoring
+
+    expect(remounted.rpc.call).toHaveBeenCalledOnce()
+    expect(listHiddenControls(
+      'agent:main:webchat:test',
+      hiddenControlStorage,
+    ).map(item => item.clientRequestId)).toEqual(['second-hidden-request'])
   })
 
   it('does not duplicate a browser fallback already attempted from the server outbox', async () => {

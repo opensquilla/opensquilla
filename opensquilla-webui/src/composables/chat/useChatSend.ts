@@ -1340,17 +1340,19 @@ export function useChatSend(options: UseChatSendOptions) {
   async function restoreHiddenControls(
     targetSessionKey = options.sessionKey.value,
     skipClientRequestIds: readonly string[] = [],
+    isCurrent: () => boolean = () => true,
   ): Promise<void> {
-    if (!targetSessionKey || options.sessionKey.value !== targetSessionKey) return
+    if (!targetSessionKey || !isCurrent() || options.sessionKey.value !== targetSessionKey) return
     const skipped = new Set(skipClientRequestIds)
     for (const item of listHiddenControls(targetSessionKey, options.hiddenControlStorage)) {
-      if (options.sessionKey.value !== targetSessionKey) return
+      if (!isCurrent() || options.sessionKey.value !== targetSessionKey) return
       if (skipped.has(item.clientRequestId)) continue
       const result = await dispatchHiddenSend(
         item.providerText,
         item.displayText,
         item.clientRequestId,
       )
+      if (!isCurrent()) return
       // One queued item owns the next drain slot. Continuing would only fill a
       // bounded in-memory queue during a long active turn; the remaining
       // durable outbox entries will be retried on the next restore/reconnect.

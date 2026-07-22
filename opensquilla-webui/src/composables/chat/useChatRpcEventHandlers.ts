@@ -22,7 +22,10 @@ import type {
   WarningPayload,
 } from '@/types/rpc'
 import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcSubscriptions'
-import type { SessionSubscriptionOutcome } from '@/composables/chat/useChatSessionSubscription'
+import {
+  isAuthoritativeSessionSubscription,
+  type SessionSubscriptionOutcome,
+} from '@/composables/chat/useChatSessionSubscription'
 import type { FrameInput } from '@/types/turnlog'
 import type { FoldLiveTurnMode } from '@/composables/chat/useChatTurnLog'
 import {
@@ -1016,7 +1019,9 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
       const subscription = options.subscribeSession()
       void Promise.resolve(subscription)
         .then((subscribed) => {
-          if (subscribed !== false) return options.onSessionSubscribed?.()
+          if (isAuthoritativeSessionSubscription(subscribed)) {
+            return options.onSessionSubscribed?.()
+          }
         })
         .catch((error: unknown) => {
           console.warn(

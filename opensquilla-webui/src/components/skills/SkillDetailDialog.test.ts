@@ -134,6 +134,7 @@ describe('SkillDetailDialog behavior contract', () => {
   it('routes toolchain setup through the MetaSkill flow while preserving other installers', async () => {
     const mounted = mountDialog({
       name: 'meta-paper-write',
+      kind: 'meta',
       status: 'needs_setup',
       missing_bins: ['xelatex', 'bibtex'],
       install: [
@@ -162,6 +163,35 @@ describe('SkillDetailDialog behavior contract', () => {
     helperButton?.click()
     expect(mounted.installDeps).toHaveBeenCalledOnce()
     expect(mounted.installDeps).toHaveBeenCalledWith('meta-paper-write', 'paper-helper')
+  })
+
+  it('keeps ordinary managed toolchain installs actionable', async () => {
+    const mounted = mountDialog({
+      name: 'short-drama-delivery-audit',
+      status: 'needs_setup',
+      missing_bins: ['ffmpeg'],
+      install: [{
+        id: 'managed-media',
+        kind: 'toolchain',
+        label: 'Install managed media toolchain',
+        bins: ['ffmpeg'],
+      }],
+    })
+    await nextTick()
+
+    expect(mounted.dialog.textContent).not.toContain(
+      'Managed toolchains can only be installed through that setup flow.',
+    )
+    const button = mounted.dialog.querySelector<HTMLButtonElement>('.sk-detail__install-row button')
+    expect(button).toBeDefined()
+    expect(button?.textContent).toContain('Install via toolchain')
+
+    button?.click()
+    expect(mounted.installDeps).toHaveBeenCalledOnce()
+    expect(mounted.installDeps).toHaveBeenCalledWith(
+      'short-drama-delivery-audit',
+      'managed-media',
+    )
   })
 
   it('shows provider-backed local readiness as a launch-time provider check', async () => {

@@ -7,7 +7,11 @@ function createHarness(options: {
   messages?: ChatMessage[]
   endStreaming?: (messages: ChatMessage[]) => void
   sessionRunStatus?: (source: ChatRunStatusSource | null | undefined) => ChatRunStatus
-  subscribeSession?: () => boolean | void | Promise<boolean | void>
+  subscribeSession?: () =>
+    | boolean
+    | void
+    | { authoritative: boolean, live: boolean, backgroundOnly: boolean }
+    | Promise<boolean | void | { authoritative: boolean, live: boolean, backgroundOnly: boolean }>
   onSessionSubscribed?: () => void | Promise<void>
 } = {}) {
   const messages = ref<ChatMessage[]>(options.messages ?? [])
@@ -530,6 +534,26 @@ describe('useChatRpcEventHandlers ensemble activity', () => {
   it('does not restore durable setup work when reconnect subscription fails', async () => {
     const { api, onSessionSubscribed, stop } = createHarness({
       subscribeSession: async () => false,
+    })
+
+    try {
+      api.handlers.onConnectionState('connected')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(onSessionSubscribed).not.toHaveBeenCalled()
+    } finally {
+      stop()
+    }
+  })
+
+  it('does not restore durable setup work from a non-authoritative outcome object', async () => {
+    const { api, onSessionSubscribed, stop } = createHarness({
+      subscribeSession: async () => ({
+        authoritative: false,
+        live: false,
+        backgroundOnly: false,
+      }),
     })
 
     try {

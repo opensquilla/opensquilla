@@ -517,6 +517,36 @@ async def test_raw_draft_list_and_discard_require_owner_or_admin(tmp_path: Path)
         await storage.close()
 
 
+@pytest.mark.asyncio
+async def test_meta_draft_list_times_out_as_retryable_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = asyncio.Event()
+
+    class BlockingStorage:
+        async def list_meta_launch_drafts(self, **_kwargs: Any) -> list[Any]:
+            try:
+                await asyncio.Future()
+            finally:
+                cancelled.set()
+
+    monkeypatch.setattr(rpc_meta_runs_module, "_META_DRAFT_LIST_TIMEOUT_SECONDS", 0.01)
+    response = await get_dispatcher().dispatch(
+        "slow-draft-list",
+        "meta.drafts.list",
+        {"agentId": "main"},
+        RpcContext(
+            conn_id="slow-draft-list",
+            session_manager=SimpleNamespace(storage=BlockingStorage()),
+        ),
+    )
+
+    assert response.error is not None
+    assert response.error.code == ERROR_UNAVAILABLE
+    assert response.error.retryable is True
+    assert cancelled.is_set()
+
+
 def test_meta_run_valid_invokable_skill_stamps_launch(tmp_path: Path) -> None:
     _drain("sess-run-1")
     loader = _make_loader_with_meta(tmp_path)

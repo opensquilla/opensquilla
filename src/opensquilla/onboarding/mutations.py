@@ -627,10 +627,12 @@ def upsert_llm_provider(
     meaning: ``model=""``/``base_url=""`` fall back to derived defaults
     (preset/tier model, spec base URL), ``proxy=""`` clears the proxy, and
     optional-provider ``api_key=""`` clears the stored key unless the caller
-    explicitly sets ``preserve_api_key=True``. Required providers retain the
-    established blank-means-keep behavior. On a provider switch nothing is
-    carried over except the caller's values; optional credentials never
-    follow ``preserve_api_key`` across providers or endpoint origins.
+    explicitly sets ``preserve_api_key=True``. Required providers keep a
+    blank credential only while the endpoint origin is unchanged; a changed
+    scheme/host/effective port drops every reusable credential source
+    fail-closed so the operator re-enters it. On a provider switch nothing is
+    carried over except the caller's values; credentials never follow across
+    providers or endpoint origins.
 
     Router ownership is explicit and shared with profile activation:
     ``follow_primary`` reconciles to this provider while preserving Router
@@ -677,16 +679,24 @@ def upsert_llm_provider(
         effective_base_url = str(config.llm.base_url or "")
     if not effective_base_url:
         effective_base_url = spec.default_base_url
+    # Compare the *derived* endpoints: an empty stored base URL means the
+    # provider default, so it must match the same derived default and let a
+    # same-endpoint key rotation still reuse the stored secret. Only a real
+    # scheme/host/effective-port change blocks reuse.
+    stored_endpoint = str(config.llm.base_url or "") or spec.default_base_url
     stored_credentials_match_endpoint = base_url_allows_credential_reuse(
-        config.llm.base_url,
+        stored_endpoint,
         effective_base_url,
     )
-    # Required providers retain their established blank-means-keep behavior.
-    # Optional providers preserve a stored explicit key only when the caller
-    # opts in and the final endpoint remains same-origin. This keeps legacy
-    # api_key="" clearing intact for existing RPC clients while giving newer
-    # clients an unambiguous password-field "leave current key unchanged"
-    # affordance without carrying secrets to another configurable endpoint.
+    # Blank credential fields keep the stored key on a same-provider re-save,
+    # but a stored secret never follows a changed endpoint origin: required
+    # and optional providers alike drop every reusable credential source when
+    # the final base URL is a different scheme/host/effective port, so the
+    # operator must re-enter it for the new endpoint. This keeps legacy
+    # api_key="" clearing and same-origin key rotation intact while giving
+    # newer clients an unambiguous password-field "leave current key
+    # unchanged" affordance without carrying secrets to another configurable
+    # endpoint.
     effective_api_key = clean_header_secret(api_key, label="LLM API key")
     if api_key and api_key_env.strip():
         raise ValueError("configure either api_key or api_key_env, not both")
@@ -695,10 +705,8 @@ def upsert_llm_provider(
         not api_key
         and not effective_api_key_env
         and same_provider
-        and (
-            spec.requires_api_key
-            or (spec.accepts_api_key and stored_credentials_match_endpoint)
-        )
+        and stored_credentials_match_endpoint
+        and (spec.requires_api_key or spec.accepts_api_key)
     ):
         effective_api_key_env = getattr(config.llm, "api_key_env", "").strip()
     stored_api_key_is_explicit = bool(config.llm.api_key) and (
@@ -715,7 +723,10 @@ def upsert_llm_provider(
         and not api_key_env.strip()
         and same_provider
         and config.llm.api_key
-        and (spec.requires_api_key or preserve_optional_api_key)
+        and (
+            (spec.requires_api_key and stored_credentials_match_endpoint)
+            or preserve_optional_api_key
+        )
     ):
         effective_api_key = config.llm.api_key
     if spec.requires_api_key and not effective_api_key and not effective_api_key_env:
@@ -1339,11 +1350,31 @@ def upsert_image_generation_provider(
     explicit_env_key = _clean_optional_str(api_key_env)
     if api_key and explicit_env_key:
         raise ValueError("configure either api_key or api_key_env, not both")
+    stored_base_url = str(getattr(current_provider_cfg, "base_url", "") or "")
+    effective_base_url = base_url or stored_base_url or spec.default_base_url
+    # A stored credential must not follow a changed endpoint origin: on a
+    # scheme/host/effective-port change every reusable secret source is
+    # dropped fail-closed so the operator re-enters it for the new endpoint,
+    # falling back only to the well-known registry default env var (which
+    # applies to a fresh config too). This mirrors the profile-save boundary.
+    endpoint_allows_reuse = base_url_allows_credential_reuse(
+        stored_base_url or spec.default_base_url,
+        effective_base_url,
+    )
+    stored_api_key = (
+        str(getattr(current_provider_cfg, "api_key", "") or "")
+        if endpoint_allows_reuse
+        else ""
+    )
     effective_api_key = clean_header_secret(
-        api_key or getattr(current_provider_cfg, "api_key", ""),
+        api_key or stored_api_key,
         label="Image API key",
     )
-    current_env_key = getattr(current_provider_cfg, "api_key_env", spec.env_key) or ""
+    current_env_key = (
+        (getattr(current_provider_cfg, "api_key_env", spec.env_key) or "")
+        if endpoint_allows_reuse
+        else ""
+    )
     if api_key:
         env_key = ""
     else:
@@ -1369,10 +1400,6 @@ def upsert_image_generation_provider(
         )
     if api_key_source == "none" and has_saved_env_reference:
         api_key_source = "missing_env"
-
-    effective_base_url = (
-        base_url or getattr(current_provider_cfg, "base_url", "") or spec.default_base_url
-    )
 
     new_cfg = _clone(config)
     new_cfg.image_generation.enabled = bool(enabled)
@@ -1481,11 +1508,31 @@ def upsert_audio_provider(
     explicit_env_key = _clean_optional_str(api_key_env)
     if api_key and explicit_env_key:
         raise ValueError("configure either api_key or api_key_env, not both")
+    stored_base_url = str(getattr(current_provider_cfg, "base_url", "") or "")
+    effective_base_url = base_url or stored_base_url or spec.default_base_url
+    # A stored credential must not follow a changed endpoint origin: on a
+    # scheme/host/effective-port change every reusable secret source is
+    # dropped fail-closed so the operator re-enters it for the new endpoint,
+    # falling back only to the well-known registry default env var (which
+    # applies to a fresh config too). This mirrors the profile-save boundary.
+    endpoint_allows_reuse = base_url_allows_credential_reuse(
+        stored_base_url or spec.default_base_url,
+        effective_base_url,
+    )
+    stored_api_key = (
+        str(getattr(current_provider_cfg, "api_key", "") or "")
+        if endpoint_allows_reuse
+        else ""
+    )
     effective_api_key = clean_header_secret(
-        api_key or getattr(current_provider_cfg, "api_key", ""),
+        api_key or stored_api_key,
         label="Audio API key",
     )
-    current_env_key = getattr(current_provider_cfg, "api_key_env", spec.env_key) or ""
+    current_env_key = (
+        (getattr(current_provider_cfg, "api_key_env", spec.env_key) or "")
+        if endpoint_allows_reuse
+        else ""
+    )
     env_key = "" if api_key else (explicit_env_key or current_env_key or spec.env_key)
     api_key_source = _audio_api_key_source(
         api_key=effective_api_key,
@@ -1496,9 +1543,6 @@ def upsert_audio_provider(
             f"audio provider {provider_id!r} requires an api_key or {spec.env_key}"
         )
 
-    effective_base_url = (
-        base_url or getattr(current_provider_cfg, "base_url", "") or spec.default_base_url
-    )
     effective_tts_voice = tts_voice or config.audio.tts.voice or spec.default_tts_voice
     effective_tts_model = tts_model or config.audio.tts.model or spec.default_tts_model
     effective_language_code = language_code or config.audio.tts.language_code
@@ -1568,25 +1612,36 @@ def upsert_memory_embedding(
         current_api_key_env = _clean_optional_str(
             getattr(current.remote, "api_key_env", None)
         )
+        stored_base_url = current.remote.base_url or current.base_url or ""
+        effective_base_url = (
+            base_url_value or stored_base_url or _DEFAULT_REMOTE_EMBEDDING_BASE_URL
+        )
+        # A stored credential must not follow a changed endpoint origin: on a
+        # scheme/host/effective-port change every reusable secret source is
+        # dropped fail-closed (the required-key check below then forces the
+        # operator to re-enter it), mirroring the profile-save boundary.
+        endpoint_allows_reuse = base_url_allows_credential_reuse(
+            stored_base_url or _DEFAULT_REMOTE_EMBEDDING_BASE_URL,
+            effective_base_url,
+        )
+        reusable_stored_env = current_api_key_env if endpoint_allows_reuse else None
+        reusable_stored_key = (
+            (current.remote.api_key or current.api_key or "")
+            if endpoint_allows_reuse
+            else ""
+        )
         effective_api_key_env = "" if api_key_value else (
-            api_key_env_value or current_api_key_env or ""
+            api_key_env_value or reusable_stored_env or ""
         )
         effective_api_key = (
             api_key_value
-            or ("" if effective_api_key_env else current.remote.api_key or current.api_key or "")
+            or ("" if effective_api_key_env else reusable_stored_key)
         )
         if not effective_api_key and not effective_api_key_env:
             raise ValueError(
                 "remote memory embedding provider requires an api_key or api_key_env"
             )
-        payload["remote"] = {
-            "base_url": (
-                base_url_value
-                or current.remote.base_url
-                or current.base_url
-                or _DEFAULT_REMOTE_EMBEDDING_BASE_URL
-            ),
-        }
+        payload["remote"] = {"base_url": effective_base_url}
         if effective_api_key:
             payload["remote"]["api_key"] = effective_api_key
         if effective_api_key_env:
@@ -1599,18 +1654,31 @@ def upsert_memory_embedding(
         current_api_key_env = _clean_optional_str(
             getattr(current.remote, "api_key_env", None)
         )
+        stored_base_url = current.remote.base_url or current.base_url or ""
+        remote_base_url = base_url_value or stored_base_url
+        # A stored remote credential must not follow a changed configured
+        # endpoint origin; an omitted/blank base keeps the stored origin.
+        endpoint_allows_reuse = base_url_allows_credential_reuse(
+            stored_base_url,
+            remote_base_url,
+        )
+        reusable_stored_env = current_api_key_env if endpoint_allows_reuse else None
+        reusable_stored_key = (
+            (current.remote.api_key or current.api_key or "")
+            if endpoint_allows_reuse
+            else ""
+        )
         effective_api_key_env = "" if api_key_value else (
-            api_key_env_value or current_api_key_env or ""
+            api_key_env_value or reusable_stored_env or ""
         )
         effective_api_key = (
             api_key_value
-            or ("" if effective_api_key_env else current.remote.api_key or current.api_key or "")
+            or ("" if effective_api_key_env else reusable_stored_key)
         )
         if effective_api_key:
             remote_payload["api_key"] = effective_api_key
         if effective_api_key_env:
             remote_payload["api_key_env"] = effective_api_key_env
-        remote_base_url = base_url_value or current.remote.base_url or current.base_url
         if remote_base_url:
             remote_payload["base_url"] = remote_base_url
         remote_model = model_value or current.remote.model or (

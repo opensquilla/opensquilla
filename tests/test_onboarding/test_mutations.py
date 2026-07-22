@@ -12,6 +12,7 @@ from opensquilla.onboarding.mutations import (
     list_channel_entries,
     remove_channel,
     set_channel_enabled,
+    upsert_audio_provider,
     upsert_channel,
     upsert_image_generation_provider,
     upsert_llm_ensemble,
@@ -141,6 +142,75 @@ def test_upsert_memory_embedding_auto_without_changes_does_not_require_restart()
     res = upsert_memory_embedding(cfg, provider="auto")
     assert res.changed is False
     assert res.restart_required is False
+
+
+def _remote_embedding_config(**remote: str) -> GatewayConfig:
+    return GatewayConfig(
+        memory={
+            "embedding": {
+                "provider": "openai",
+                "remote": {"model": "text-embedding-3-small", **remote},
+            }
+        }
+    )
+
+
+def test_upsert_memory_embedding_remote_drops_stored_key_on_changed_origin():
+    # A stored remote embedding key must not follow a changed endpoint
+    # origin; the blank-key resave fails closed so the operator re-enters it.
+    cfg = _remote_embedding_config(
+        api_key="sk-mem-origin-a", base_url="https://a.example.test/v1"
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key or api_key_env"):
+        upsert_memory_embedding(
+            cfg, provider="openai", api_key="", base_url="https://b.example.test/v1"
+        )
+
+
+def test_upsert_memory_embedding_remote_keeps_stored_key_on_same_origin():
+    cfg = _remote_embedding_config(
+        api_key="sk-mem-origin-a", base_url="https://a.example.test/v1"
+    )
+
+    res = upsert_memory_embedding(
+        cfg, provider="openai", api_key="", base_url="https://A.example.test:443/v2"
+    )
+
+    assert res.config.memory.embedding.remote.api_key == "sk-mem-origin-a"
+
+
+def test_upsert_memory_embedding_remote_env_reference_dropped_on_changed_origin():
+    cfg = _remote_embedding_config(
+        api_key_env="MEM_ORIGIN_A_KEY", base_url="https://a.example.test/v1"
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key or api_key_env"):
+        upsert_memory_embedding(
+            cfg, provider="openai", base_url="https://b.example.test/v1"
+        )
+
+    same_origin = upsert_memory_embedding(
+        cfg, provider="openai", base_url="https://a.example.test/v2"
+    )
+    assert same_origin.config.memory.embedding.remote.api_key_env == "MEM_ORIGIN_A_KEY"
+
+
+def test_upsert_memory_embedding_remote_explicit_key_always_used_across_origin():
+    # A freshly supplied key is operator-authored for the new endpoint and is
+    # always honored, even when the origin changes.
+    cfg = _remote_embedding_config(
+        api_key="sk-mem-origin-a", base_url="https://a.example.test/v1"
+    )
+
+    res = upsert_memory_embedding(
+        cfg,
+        provider="openai",
+        api_key="sk-mem-origin-b",
+        base_url="https://b.example.test/v1",
+    )
+
+    assert res.config.memory.embedding.remote.api_key == "sk-mem-origin-b"
 
 
 def test_unsupported_provider_rejected():
@@ -509,7 +579,30 @@ def test_upsert_llm_provider_preserves_existing_api_key_on_same_provider():
     assert res2.config.llm.model == "m2"
 
 
-def test_upsert_llm_provider_required_key_legacy_preserve_ignores_endpoint_change():
+def test_upsert_llm_provider_required_key_dropped_on_changed_origin():
+    # A required provider must not carry a stored explicit key to a new
+    # endpoint origin: the blank-key resave drops it and fails closed so the
+    # operator re-enters the key for the new endpoint.
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openai",
+            "model": "model-a",
+            "api_key": "sk-required",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_llm_provider(
+            cfg,
+            provider_id="openai",
+            model="model-b",
+            api_key="",
+            base_url="https://b.example.test/v1",
+        )
+
+
+def test_upsert_llm_provider_required_key_kept_on_same_origin_path_change():
     cfg = GatewayConfig(
         llm={
             "provider": "openai",
@@ -524,11 +617,40 @@ def test_upsert_llm_provider_required_key_legacy_preserve_ignores_endpoint_chang
         provider_id="openai",
         model="model-b",
         api_key="",
-        base_url="https://b.example.test/v1",
+        base_url="https://A.example.test:443/v2",
     )
 
     assert res.config.llm.api_key == "sk-required"
-    assert res.config.llm.base_url == "https://b.example.test/v1"
+    assert res.config.llm.base_url == "https://A.example.test:443/v2"
+
+
+def test_upsert_llm_provider_required_env_reference_dropped_on_changed_origin():
+    # Env-backed required credentials follow the same boundary: a changed
+    # origin drops the stored env reference and fails closed.
+    cfg = GatewayConfig(
+        llm={
+            "provider": "openai",
+            "model": "model-a",
+            "api_key_env": "OPENAI_ORIGIN_A_KEY",
+            "base_url": "https://a.example.test/v1",
+        }
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_llm_provider(
+            cfg,
+            provider_id="openai",
+            model="model-b",
+            base_url="https://b.example.test/v1",
+        )
+
+    same_origin = upsert_llm_provider(
+        cfg,
+        provider_id="openai",
+        model="model-b",
+        base_url="https://a.example.test/v2",
+    )
+    assert same_origin.config.llm.api_key_env == "OPENAI_ORIGIN_A_KEY"
 
 
 def test_upsert_llm_provider_preserves_optional_key_on_same_custom_provider():
@@ -1534,6 +1656,110 @@ def test_upsert_image_generation_provider_rejects_wrong_primary_provider():
             provider_id="openrouter",
             primary="openai/gpt-image-1",
         )
+
+
+def test_upsert_image_generation_provider_drops_stored_key_on_changed_origin(
+    monkeypatch,
+):
+    # A stored explicit image key must not follow a changed endpoint origin.
+    # The disabled resave lets us observe the cleared key directly.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    first = upsert_image_generation_provider(
+        GatewayConfig(),
+        provider_id="openai",
+        api_key="sk-image-origin-a",
+        base_url="https://a.example.test/v1",
+    )
+
+    changed = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        api_key="",
+        base_url="https://b.example.test/v1",
+        enabled=False,
+    )
+
+    provider_cfg = changed.config.image_generation.providers.openai
+    assert provider_cfg.api_key == ""
+    assert provider_cfg.base_url == "https://b.example.test/v1"
+
+
+def test_upsert_image_generation_provider_changed_origin_fails_closed(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    first = upsert_image_generation_provider(
+        GatewayConfig(),
+        provider_id="openai",
+        api_key="sk-image-origin-a",
+        base_url="https://a.example.test/v1",
+    )
+
+    with pytest.raises(ValueError, match="requires an api_key"):
+        upsert_image_generation_provider(
+            first.config,
+            provider_id="openai",
+            api_key="",
+            base_url="https://b.example.test/v1",
+        )
+
+
+def test_upsert_image_generation_provider_keeps_stored_key_on_same_origin(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    first = upsert_image_generation_provider(
+        GatewayConfig(),
+        provider_id="openai",
+        api_key="sk-image-origin-a",
+        base_url="https://a.example.test/v1",
+    )
+
+    same = upsert_image_generation_provider(
+        first.config,
+        provider_id="openai",
+        api_key="",
+        base_url="https://A.example.test:443/v2",
+    )
+
+    assert same.config.image_generation.providers.openai.api_key == "sk-image-origin-a"
+
+
+def test_upsert_audio_provider_drops_stored_key_on_changed_origin(monkeypatch):
+    # A stored explicit audio key must not follow a changed endpoint origin.
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    first = upsert_audio_provider(
+        GatewayConfig(),
+        provider_id="elevenlabs",
+        api_key="sk-audio-origin-a",
+        base_url="https://a.example.test/v1",
+    )
+
+    changed = upsert_audio_provider(
+        first.config,
+        provider_id="elevenlabs",
+        api_key="",
+        base_url="https://b.example.test/v1",
+    )
+
+    provider_cfg = changed.config.audio.providers.elevenlabs
+    assert provider_cfg.api_key == ""
+    assert provider_cfg.base_url == "https://b.example.test/v1"
+
+
+def test_upsert_audio_provider_keeps_stored_key_on_same_origin(monkeypatch):
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    first = upsert_audio_provider(
+        GatewayConfig(),
+        provider_id="elevenlabs",
+        api_key="sk-audio-origin-a",
+        base_url="https://a.example.test/v1",
+    )
+
+    same = upsert_audio_provider(
+        first.config,
+        provider_id="elevenlabs",
+        api_key="",
+        base_url="https://A.example.test:443/v2",
+    )
+
+    assert same.config.audio.providers.elevenlabs.api_key == "sk-audio-origin-a"
 
 
 def test_search_provider_requiring_key_can_reuse_existing_key():

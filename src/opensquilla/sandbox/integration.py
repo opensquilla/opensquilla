@@ -1759,8 +1759,16 @@ def _is_in_process_network_action(action_kind: str) -> bool:
 
 def _system_domain_grants_for_request(request: SandboxRequest) -> tuple[str, ...]:
     tool_name = request.argv[0] if request.argv else ""
-    if tool_name != "web_search":
+    if tool_name not in {"web_search", "web_discover"}:
         return ()
+    planned_providers = _search_plan_providers_from_argv(request.argv)
+    if planned_providers is not None:
+        planned_domains: list[str] = []
+        for provider in planned_providers:
+            for domain in _SEARCH_PROVIDER_SYSTEM_DOMAINS.get(provider, ()):
+                if domain not in planned_domains:
+                    planned_domains.append(domain)
+        return tuple(planned_domains)
     try:
         from opensquilla.tools.builtin.web import (
             get_active_provider,
@@ -1781,6 +1789,19 @@ def _system_domain_grants_for_request(request: SandboxRequest) -> tuple[str, ...
             if domain not in domains:
                 domains.append(domain)
     return tuple(domains)
+
+
+def _search_plan_providers_from_argv(argv: tuple[str, ...]) -> tuple[str, ...] | None:
+    for value in argv[1:]:
+        if not value.startswith("providers="):
+            continue
+        providers: list[str] = []
+        for provider in value.removeprefix("providers=").split(","):
+            normalized = provider.strip().lower()
+            if normalized and normalized not in providers:
+                providers.append(normalized)
+        return tuple(providers)
+    return None
 
 
 def _context_with_system_domain_grants(

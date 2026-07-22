@@ -32,6 +32,8 @@ from opensquilla.execution_status import normalize_execution_status
 from opensquilla.result_budget import (
     DEFAULT_TOOL_RESULT_BUDGET_POLICY,
     DEFAULT_TOOL_RUN_BUDGET_POLICY,
+    DuplicateRetrievalInFlightError,
+    TerminalRetrievalReplayError,
     ToolResultBudgetPolicy,
     ToolResultBudgetTracker,
     ToolRunBudgetExceededError,
@@ -49,6 +51,7 @@ from opensquilla.sandbox.operation_runtime import (
     record_tool_operation_success,
     run_tool_handler_with_operation_guard,
 )
+from opensquilla.search_tool_outcome import parse_web_tool_outcome
 from opensquilla.tool_boundary import AgentToolHandler, ToolCall, ToolResult
 from opensquilla.tools.argument_normalization import (
     canonicalize_tool_arguments,
@@ -210,7 +213,14 @@ async def _emit_web_retrieval_tool_run_diagnostics(
     if not reservation.counted_as_external_text:
         return
     snapshot = await run_budget_tracker.snapshot()
-    if exception is None:
+    web_outcome = (
+        parse_web_tool_outcome(tool_call.tool_name, raw_result)
+        if exception is None
+        else None
+    )
+    if web_outcome is not None:
+        status = "error"
+    elif exception is None:
         status = "ok"
     elif isinstance(exception, ToolRunBudgetExceededError):
         status = "budget_exhausted"
@@ -231,6 +241,7 @@ async def _emit_web_retrieval_tool_run_diagnostics(
         reserved_external_text_chars=reservation.reserved_external_text_chars,
         counted_as_search=reservation.counted_as_search,
         counted_as_fetch=reservation.counted_as_fetch,
+        error_kind=web_outcome.error_kind if web_outcome is not None else None,
         **snapshot,
     )
 
@@ -272,6 +283,131 @@ def _build_run_budget_control_result(
         is_error=False,
         execution_status=normalize_execution_status(status),
     )
+
+
+def _build_duplicate_retrieval_control_result(
+    tool_call: ToolCall,
+    exc: DuplicateRetrievalInFlightError,
+) -> ToolResult:
+    payload = {
+        "status": "control",
+        "tool": tool_call.tool_name,
+        "reason": "duplicate_search_in_flight",
+        "user_message": (
+            "An equivalent search is already running in this turn. Continue with "
+            "other work and use the original result when it completes."
+        ),
+        "retry_allowed": False,
+    }
+    status = {
+        "version": 1,
+        "status": "unknown",
+        "exit_code": None,
+        "timed_out": False,
+        "truncated": False,
+        "reason": "duplicate_search_in_flight",
+        "source": "tool_runtime",
+        "preservation_class": "ephemeral",
+    }
+    log.info(
+        "dispatch.duplicate_search_in_flight",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        message=str(exc),
+    )
+    return ToolResult(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        content=json.dumps(payload),
+        is_error=False,
+        execution_status=normalize_execution_status(status),
+    )
+
+
+def _build_terminal_retrieval_replay_result(
+    tool_call: ToolCall,
+    exc: TerminalRetrievalReplayError,
+) -> ToolResult:
+    payload = {
+        "status": "error",
+        "tool": tool_call.tool_name,
+        "reason": "terminal_search_failure_replay",
+        "error_kind": exc.error_kind,
+        "user_message": (
+            "An equivalent search already ended in a non-retryable failure this turn. "
+            "Change the query, mode, recency, or domain filters before searching "
+            "again, or continue with available evidence."
+        ),
+        "retry_allowed": False,
+    }
+    status = {
+        "version": 1,
+        "status": "error",
+        "exit_code": None,
+        "timed_out": False,
+        "truncated": False,
+        "reason": "terminal_search_failure_replay",
+        "source": "tool_runtime",
+        "preservation_class": "diagnostic",
+    }
+    log.info(
+        "dispatch.terminal_search_failure_replay",
+        tool=tool_call.tool_name,
+        tool_use_id=tool_call.tool_use_id,
+        error_kind=exc.error_kind,
+        message=str(exc),
+    )
+    return ToolResult(
+        tool_use_id=tool_call.tool_use_id,
+        tool_name=tool_call.tool_name,
+        content=json.dumps(payload),
+        is_error=True,
+        execution_status=normalize_execution_status(status),
+    )
+
+
+def _notify_after_tool_hooks(
+    hooks: Sequence[ToolHook],
+    hook_call: ToolHookCall | None,
+    result: ToolResult,
+) -> None:
+    if hook_call is None:
+        return
+    for hook in hooks:
+        try:
+            hook.after_tool(hook_call, ToolHookResult(result=result))
+        except Exception as hook_exc:  # noqa: BLE001 - hooks must not break dispatch
+            log.warning(
+                "dispatch.tool_hook_failed",
+                hook=getattr(hook, "name", type(hook).__name__),
+                phase="after_tool",
+                error=str(hook_exc),
+            )
+
+
+async def _reserve_tool_call_with_runtime_guards(
+    *,
+    tracker: ToolRunBudgetTracker,
+    tool_call: ToolCall,
+    arguments: dict[str, Any],
+    ctx: ToolContext | None,
+) -> ToolRunBudgetReservation | ToolResult:
+    try:
+        policy = _resolve_run_budget_policy(ctx)
+        return await tracker.reserve_tool_call(
+            tool_name=tool_call.tool_name,
+            arguments=clamp_tool_arguments(
+                tool_call.tool_name,
+                arguments,
+                policy,
+            ),
+        )
+    except DuplicateRetrievalInFlightError as exc:
+        return _build_duplicate_retrieval_control_result(tool_call, exc)
+    except TerminalRetrievalReplayError as exc:
+        return _build_terminal_retrieval_replay_result(tool_call, exc)
+    except ToolRunBudgetExceededError as exc:
+        return _build_run_budget_control_result(tool_call, exc)
 
 
 def _check_injection_guard(
@@ -1189,30 +1325,16 @@ def build_tool_handler(
                 tool_call.continuation.approval_id,
             )
         run_budget_tracker = _run_budget_tracker_for(effective_ctx)
-        try:
-            run_budget_policy = _resolve_run_budget_policy(effective_ctx)
-            reservation = await run_budget_tracker.reserve_tool_call(
-                tool_name=tool_call.tool_name,
-                arguments=clamp_tool_arguments(
-                    tool_call.tool_name,
-                    execution_arguments,
-                    run_budget_policy,
-                ),
-            )
-        except ToolRunBudgetExceededError as exc:
-            envelope = _build_run_budget_control_result(tool_call, exc)
-            if hook_call is not None:
-                for hook in hooks:
-                    try:
-                        hook.after_tool(hook_call, ToolHookResult(result=envelope))
-                    except Exception as hook_exc:  # noqa: BLE001
-                        log.warning(
-                            "dispatch.tool_hook_failed",
-                            hook=getattr(hook, "name", type(hook).__name__),
-                            phase="after_tool",
-                            error=str(hook_exc),
-                        )
-            return envelope
+        reservation_or_control = await _reserve_tool_call_with_runtime_guards(
+            tracker=run_budget_tracker,
+            tool_call=tool_call,
+            arguments=execution_arguments,
+            ctx=effective_ctx,
+        )
+        if isinstance(reservation_or_control, ToolResult):
+            _notify_after_tool_hooks(hooks, hook_call, reservation_or_control)
+            return reservation_or_control
+        reservation = reservation_or_control
 
         token = current_tool_context.set(effective_ctx)
         tool_started_at = time.monotonic()

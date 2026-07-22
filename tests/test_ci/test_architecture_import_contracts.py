@@ -144,6 +144,10 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     # Provider argument repair reuses the tool alias/schema helpers (lazy import).
     ("provider", "tools"),
     ("result_budget.py", "search"),
+    # Trusted web-tool failure parsing reuses the canonical search query
+    # normalizer; the helper stays top-level so execution_status remains
+    # independent of package import side effects.
+    ("search_tool_outcome.py", "search"),
     ("router_control.py", "engine"),
     ("sandbox", "application"),
     ("sandbox", "gateway"),

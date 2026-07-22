@@ -2660,3 +2660,331 @@ async def test_dispatch_tracker_limits_concurrent_tool_results_per_turn() -> Non
 
     returned_total = sum(_strict_preview_chars(result.content) for result in results)
     assert returned_total <= 180
+
+
+@pytest.mark.asyncio
+async def test_dispatch_marks_explicit_web_search_failure_and_replays_terminal_outcome(
+    monkeypatch,
+) -> None:
+    registry = ToolRegistry()
+    calls = 0
+
+    async def web_search(
+        query: str,
+        mode: str = "auto",
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+        provider: str | None = None,
+    ) -> str:
+        nonlocal calls
+        del query, mode, max_results, fetch_top_k, max_chars_per_source, provider
+        calls += 1
+        return json.dumps(
+            {
+                "ok": False,
+                "error_kind": "auth",
+                "retry_allowed": False,
+                "results": [],
+            }
+        )
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="search",
+            parameters={
+                "query": {"type": "string"},
+                "mode": {"type": "string"},
+                "max_results": {"type": "integer"},
+                "provider": {"type": "string"},
+            },
+            required=["query"],
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(tool_run_budget_key="dispatch-terminal-search-outcome"),
+    )
+    log_events: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        dispatch_module.log,
+        "debug",
+        lambda event, **payload: log_events.append((event, payload)),
+    )
+
+    first = await handler(
+        ToolCall(
+            tool_use_id="tc-search-terminal-first",
+            tool_name="web_search",
+            arguments={
+                "query": "  OpenSquilla   release ",
+                "provider": "tavily",
+                "max_results": 3,
+            },
+        )
+    )
+    replay = await handler(
+        ToolCall(
+            tool_use_id="tc-search-terminal-replay",
+            tool_name="web_search",
+            arguments={
+                "query": "opensquilla release",
+                "provider": "duckduckgo",
+                "max_results": 10,
+            },
+        )
+    )
+
+    assert calls == 1
+    assert first.is_error is True
+    assert first.execution_status is not None
+    assert first.execution_status["status"] == "error"
+    assert first.execution_status["reason"] == "search_auth"
+    assert replay.is_error is True
+    assert replay.execution_status is not None
+    assert replay.execution_status["reason"] == "terminal_search_failure_replay"
+    replay_payload = json.loads(replay.content)
+    assert replay_payload["status"] == "error"
+    assert replay_payload["reason"] == "terminal_search_failure_replay"
+    assert replay_payload["error_kind"] == "auth"
+    assert replay_payload["retry_allowed"] is False
+
+    diagnostic = next(
+        payload
+        for event, payload in log_events
+        if event == "dispatch.web_retrieval_tool_run_diagnostics"
+    )
+    assert diagnostic["status"] == "error"
+    assert diagnostic["error_kind"] == "auth"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_terminal_search_cannot_be_replayed_via_web_discover() -> None:
+    registry = ToolRegistry()
+    calls: list[str] = []
+
+    async def web_search(
+        query: str,
+        mode: str = "auto",
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+        provider: str | None = None,
+    ) -> str:
+        del query, mode, max_results, fetch_top_k, max_chars_per_source, provider
+        calls.append("web_search")
+        return json.dumps(
+            {
+                "ok": False,
+                "error_kind": "network",
+                "retry_allowed": False,
+                "results": [],
+            }
+        )
+
+    async def web_discover(query: str, max_results: int | None = None) -> str:
+        del query, max_results
+        calls.append("web_discover")
+        return json.dumps({"results": []})
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="search",
+            parameters={
+                "query": {"type": "string"},
+                "mode": {"type": "string"},
+                "max_results": {"type": "integer"},
+                "provider": {"type": "string"},
+            },
+            required=["query"],
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    registry.register(
+        ToolSpec(
+            name="web_discover",
+            description="discover",
+            parameters={
+                "query": {"type": "string"},
+                "max_results": {"type": "integer"},
+            },
+            required=["query"],
+            result_budget_class="external",
+        ),
+        web_discover,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(tool_run_budget_key="dispatch-cross-tool-terminal-search"),
+    )
+
+    first = await handler(
+        ToolCall(
+            tool_use_id="tc-cross-tool-search",
+            tool_name="web_search",
+            arguments={
+                "query": " OpenSquilla release ",
+                "provider": "tavily",
+                "max_results": 3,
+            },
+        )
+    )
+    replay = await handler(
+        ToolCall(
+            tool_use_id="tc-cross-tool-discover",
+            tool_name="web_discover",
+            arguments={"query": "opensquilla release", "max_results": 10},
+        )
+    )
+
+    assert first.is_error is True
+    assert replay.is_error is True
+    assert calls == ["web_search"]
+    assert replay.execution_status is not None
+    assert replay.execution_status["reason"] == "terminal_search_failure_replay"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_returns_neutral_control_for_duplicate_search_in_flight() -> None:
+    registry = ToolRegistry()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def web_search(
+        query: str,
+        mode: str = "auto",
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+        provider: str | None = None,
+    ) -> str:
+        nonlocal calls
+        del query, mode, max_results, fetch_top_k, max_chars_per_source, provider
+        calls += 1
+        started.set()
+        await release.wait()
+        return json.dumps({"ok": True, "results": []})
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="search",
+            parameters={
+                "query": {"type": "string"},
+                "provider": {"type": "string"},
+                "max_results": {"type": "integer"},
+            },
+            required=["query"],
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    handler = build_tool_handler(
+        registry,
+        ToolContext(tool_run_budget_key="dispatch-inflight-search"),
+    )
+
+    active_task = asyncio.create_task(
+        handler(
+            ToolCall(
+                tool_use_id="tc-search-inflight-active",
+                tool_name="web_search",
+                arguments={
+                    "query": "OpenSquilla",
+                    "provider": "tavily",
+                    "max_results": 3,
+                },
+            )
+        )
+    )
+    await started.wait()
+    duplicate = await handler(
+        ToolCall(
+            tool_use_id="tc-search-inflight-duplicate",
+            tool_name="web_search",
+            arguments={
+                "query": " opensquilla ",
+                "provider": "duckduckgo",
+                "max_results": 10,
+            },
+        )
+    )
+    release.set()
+    active = await active_task
+
+    assert calls == 1
+    assert active.is_error is False
+    assert duplicate.is_error is False
+    assert duplicate.execution_status is not None
+    assert duplicate.execution_status["status"] == "unknown"
+    assert duplicate.execution_status["reason"] == "duplicate_search_in_flight"
+    duplicate_payload = json.loads(duplicate.content)
+    assert duplicate_payload["status"] == "control"
+    assert duplicate_payload["reason"] == "duplicate_search_in_flight"
+    assert duplicate_payload["retry_allowed"] is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_terminal_search_ledger_isolated_by_turn_key() -> None:
+    registry = ToolRegistry()
+    calls = 0
+
+    async def web_search(
+        query: str,
+        max_results: int | None = None,
+        fetch_top_k: int | None = None,
+        max_chars_per_source: int | None = None,
+    ) -> str:
+        nonlocal calls
+        del query, max_results, fetch_top_k, max_chars_per_source
+        calls += 1
+        return json.dumps(
+            {
+                "ok": False,
+                "error_kind": "blocked",
+                "retry_allowed": False,
+                "results": [],
+            }
+        )
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="search",
+            parameters={"query": {"type": "string"}},
+            required=["query"],
+            result_budget_class="external",
+        ),
+        web_search,
+    )
+    handler = build_tool_handler(registry)
+
+    async def call_in_turn(turn_key: str, tool_use_id: str):
+        token = current_tool_context.set(ToolContext(tool_run_budget_key=turn_key))
+        try:
+            return await handler(
+                ToolCall(
+                    tool_use_id=tool_use_id,
+                    tool_name="web_search",
+                    arguments={"query": "OpenSquilla"},
+                )
+            )
+        finally:
+            current_tool_context.reset(token)
+
+    first = await call_in_turn("turn-one", "tc-search-turn-one")
+    next_turn = await call_in_turn("turn-two", "tc-search-turn-two")
+
+    assert calls == 2
+    assert first.is_error is True
+    assert next_turn.is_error is True
+    assert first.execution_status is not None
+    assert next_turn.execution_status is not None
+    assert first.execution_status["reason"] == "search_blocked"
+    assert next_turn.execution_status["reason"] == "search_blocked"

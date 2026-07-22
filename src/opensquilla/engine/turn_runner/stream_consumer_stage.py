@@ -693,6 +693,40 @@ class _DoneHandler:
             final_text=accumulated_text,
         )
 
+    def record_publish_result(
+        self,
+        publish_result: OmittedArtifactPublishResult,
+        state: _StreamState,
+    ) -> list[AgentEvent]:
+        """Record a completed publish's side effects into shared turn state.
+
+        The artifact-recording half of ``post_publish``: append published
+        artifacts to ``state.turn_artifacts`` (the by-reference accumulator
+        every finalizer -- including the CancelledError finalizer -- persists
+        the transcript from), clear resolved delivery failures, and record
+        new failure summaries. Runs on the event loop. Returns the
+        ``ArtifactEvent``s for the outer stage to yield; the cancel path
+        discards them because the stream is already unwinding, but the
+        recording itself must still happen -- the store write and the
+        ``ctx.published_artifacts`` append already took effect in the worker,
+        so skipping it would orphan an artifact that exists on disk (and
+        counts against the disk budget) without any transcript record.
+        """
+
+        from opensquilla.engine.types import ArtifactEvent as _ArtifactEvent
+
+        artifact_events: list[AgentEvent] = []
+        for artifact in publish_result.artifacts:
+            artifact_event = _ArtifactEvent(**artifact)
+            state.turn_artifacts.append(artifact)
+            artifact_events.append(artifact_event)
+        for target_key in publish_result.resolved_target_keys:
+            _clear_artifact_delivery_failure(state, target_key)
+        state.artifact_delivery_failures.extend(
+            publish_result.failure_summaries
+        )
+        return artifact_events
+
     def post_publish(
         self,
         pre: _DonePrePublish,
@@ -705,7 +739,8 @@ class _DoneHandler:
         Runs on the caller's thread (the event loop in the live stage) and
         only AFTER ``run_publish`` has fully completed, so a cancelled turn
         never observes a half-applied result: on cancellation the stage
-        re-raises before this phase runs.
+        records a completed publish through ``record_publish_result`` and
+        re-raises before the notice phases run.
         """
 
         from opensquilla.engine.runtime import (
@@ -713,7 +748,6 @@ class _DoneHandler:
             _claims_image_without_tool_use,
             _should_add_artifact_delivery_failure_notice,
         )
-        from opensquilla.engine.types import ArtifactEvent as _ArtifactEvent
         from opensquilla.engine.types import (
             WarningEvent as _WarningEvent,
         )
@@ -723,15 +757,7 @@ class _DoneHandler:
         accumulated_text = pre.accumulated_text
         turn = inp.turn
 
-        for artifact in publish_result.artifacts:
-            artifact_event = _ArtifactEvent(**artifact)
-            state.turn_artifacts.append(artifact)
-            extra_yields.append(artifact_event)
-        for target_key in publish_result.resolved_target_keys:
-            _clear_artifact_delivery_failure(state, target_key)
-        state.artifact_delivery_failures.extend(
-            publish_result.failure_summaries
-        )
+        extra_yields.extend(self.record_publish_result(publish_result, state))
 
         if _should_add_artifact_delivery_failure_notice(
             failure_summaries=state.artifact_delivery_failures,
@@ -1246,11 +1272,31 @@ class StreamConsumerStage:
                     publish_result = await asyncio.shield(publish_task)
                 except asyncio.CancelledError:
                     # Let the in-flight store write drain before the
-                    # CancelledError finalizer runs. post_publish is skipped,
-                    # so no half-applied result reaches the shared state.
-                    await asyncio.shield(asyncio.wait({publish_task}))
-                    if not publish_task.cancelled():
-                        publish_task.exception()
+                    # CancelledError finalizer runs. The worker thread cannot
+                    # be interrupted, so absorb REPEATED cancels too: a second
+                    # cancel arriving during the drain must not unwind the
+                    # coroutine while the worker is still writing to the
+                    # ArtifactStore, or the finalizer would race that write.
+                    while not publish_task.done():
+                        try:
+                            await asyncio.shield(asyncio.wait({publish_task}))
+                        except asyncio.CancelledError:
+                            continue
+                    if (
+                        not publish_task.cancelled()
+                        and publish_task.exception() is None
+                    ):
+                        # The publish COMPLETED: its bytes are already in the
+                        # ArtifactStore and in ctx.published_artifacts, so
+                        # record the result into the shared turn state the
+                        # cancel finalizer persists from. Recording is the
+                        # loss-free choice -- dropping it would orphan a file
+                        # that exists on disk (and counts against the disk
+                        # budget) with no transcript record. The notice
+                        # phases of post_publish stay skipped.
+                        self._done_handler.record_publish_result(
+                            publish_task.result(), state
+                        )
                     raise
                 transformed, extra_yields = self._done_handler.post_publish(
                     pre, publish_result, inp, state

@@ -15,6 +15,7 @@ import asyncio
 import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -47,6 +48,7 @@ from opensquilla.engine.types import (
     WarningEvent,
 )
 from opensquilla.provider.types import EnsembleProgressEvent as ProviderEnsembleProgressEvent
+from opensquilla.tools.types import ToolContext
 
 # ---------------------------------------------------------------------------
 # Recording fakes
@@ -206,6 +208,7 @@ def _make_input(
     sync_manager: Any | None = None,
     input_provenance: dict[str, Any] | None = None,
     pending_input_provider: Any | None = None,
+    tool_context: Any | None = None,
 ) -> StreamConsumerStageInput:
     return StreamConsumerStageInput(
         agent=SimpleNamespace(),
@@ -227,6 +230,7 @@ def _make_input(
         session_manager_present=session_manager_present,
         state=state if state is not None else _make_state(),
         pending_input_provider=pending_input_provider,
+        tool_context=tool_context,
     )
 
 
@@ -1387,10 +1391,166 @@ async def test_done_publish_cancellation_does_not_race_finalizer() -> None:
     # The worker completed before the turn unwound -- a finalizer running
     # after this point cannot race an in-flight store write.
     assert publish_finished.is_set()
-    # post_publish was skipped, so its result never reached shared state:
-    # no torn transcript and no artifacts-without-transcript-record.
+    # The drained result's side effects ARE recorded (its failure summary
+    # reaches the shared state the finalizer persists from), while the
+    # notice/warning phases of post_publish stay skipped. It published no
+    # artifacts, so turn_artifacts stays empty.
     assert state.turn_artifacts == []
-    assert state.artifact_delivery_failures == []
+    assert state.artifact_delivery_failures == ["would-be delivery failure"]
+
+
+def _make_publish_tool_context(tmp_path: Path) -> tuple[ToolContext, Path]:
+    """Real publish fixtures: a workspace file the model created and named
+    in its final text, plus an ArtifactStore media root under tmp_path."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    report = workspace / "report.csv"
+    report.write_text("col_a,col_b\n1,2\n", encoding="utf-8")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(media_root),
+        artifact_session_id="sess-artifact-1",
+        session_key="agent:main:s1",
+        workspace_file_writes=[
+            {
+                "path": str(report),
+                "relative_path": "report.csv",
+                "name": "report.csv",
+                "suffix": ".csv",
+                "operation": "write",
+                "created": True,
+            }
+        ],
+    )
+    return ctx, media_root
+
+
+def _gate_real_publish(
+    stage: StreamConsumerStage,
+) -> tuple[threading.Event, threading.Event, threading.Event, list[threading.Thread]]:
+    """Wrap the bound ``run_publish`` with an Event handshake: signal entry,
+    block until released, then run the REAL publish (real ArtifactStore
+    writes) and signal completion."""
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+    worker_threads: list[threading.Thread] = []
+    real_publish = stage._done_handler.run_publish
+
+    def gated_publish(inner_inp: Any, accumulated_text: str) -> Any:
+        worker_threads.append(threading.current_thread())
+        publish_started.set()
+        assert release_publish.wait(timeout=5.0), "publish was never released"
+        result = real_publish(inner_inp, accumulated_text)
+        publish_finished.set()
+        return result
+
+    stage._done_handler.run_publish = gated_publish  # type: ignore[method-assign]
+    return publish_started, release_publish, publish_finished, worker_threads
+
+
+@pytest.mark.asyncio
+async def test_single_cancel_records_completed_publish(tmp_path: Path) -> None:
+    """A publish that COMPLETES during a cancelled turn must be recorded.
+
+    The worker's store write and ``ctx.published_artifacts`` append cannot be
+    undone, so the cancel path must still record the result into
+    ``state.turn_artifacts`` (the by-reference accumulator the cancel
+    finalizer persists the transcript from). Invariant: a completed publish
+    is never orphaned -- otherwise the file exists on disk, counts against
+    the disk budget, and is never surfaced to the user.
+    """
+    ctx, media_root = _make_publish_tool_context(tmp_path)
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Wrote report.csv"),
+            DoneEvent(text="Wrote report.csv"),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    publish_started, release_publish, publish_finished, _ = _gate_real_publish(stage)
+    state = _make_state()
+    inp = _make_input(state=state, tool_context=ctx)
+
+    task = asyncio.ensure_future(_drain(stage, inp))
+    assert await asyncio.to_thread(publish_started.wait, 5.0)
+
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    # The stage is draining the shielded worker; it has not unwound yet.
+    assert not task.done()
+
+    release_publish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert publish_finished.is_set()
+    # The real publish took effect: bytes exist under the media root and the
+    # tool context saw the published payload.
+    assert [p for p in media_root.rglob("*") if p.is_file()]
+    assert len(ctx.published_artifacts) == 1
+    assert ctx.published_artifacts[0]["name"] == "report.csv"
+    # ...so the shared turn state must carry the same payload: the cancel
+    # finalizer's transcript persists from state.turn_artifacts.
+    assert state.turn_artifacts == ctx.published_artifacts
+
+
+@pytest.mark.asyncio
+async def test_double_cancel_waits_for_worker_before_unwind(tmp_path: Path) -> None:
+    """A SECOND cancel arriving during the drain must not unwind the turn
+    while the worker thread is still writing to the ArtifactStore -- that
+    would let a finalizer run concurrently with the in-flight store write."""
+    ctx, media_root = _make_publish_tool_context(tmp_path)
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Wrote report.csv"),
+            DoneEvent(text="Wrote report.csv"),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    publish_started, release_publish, publish_finished, worker_threads = (
+        _gate_real_publish(stage)
+    )
+    state = _make_state()
+    inp = _make_input(state=state, tool_context=ctx)
+
+    task = asyncio.ensure_future(_drain(stage, inp))
+    assert await asyncio.to_thread(publish_started.wait, 5.0)
+
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not task.done()
+
+    # Second cancel while the drain wait is pending.
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    # The coroutine absorbs the repeated cancel: it must NOT finish while
+    # the worker is still blocked mid-publish.
+    assert not task.done()
+    assert not publish_finished.is_set()
+
+    release_publish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # By the time the cancellation unwound, the worker had already finished
+    # its store write.
+    assert publish_finished.is_set()
+
+    # Nothing mutates after the task completed: every store write and
+    # ctx.published_artifacts append happened strictly before the unwind.
+    published_snapshot = list(ctx.published_artifacts)
+    files_snapshot = sorted(str(p) for p in media_root.rglob("*") if p.is_file())
+    for thread in worker_threads:
+        await asyncio.to_thread(thread.join, 5.0)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert list(ctx.published_artifacts) == published_snapshot
+    assert sorted(str(p) for p in media_root.rglob("*") if p.is_file()) == files_snapshot
 
 
 @pytest.mark.asyncio

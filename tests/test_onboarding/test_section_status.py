@@ -304,6 +304,31 @@ def test_llm_credential_status_treats_runtime_secret_cache_as_env(cfg, monkeypat
     assert cred["revealAllowed"] is False
 
 
+def test_llm_credential_status_hides_runtime_cache_when_env_missing(cfg, monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_LLM_API_KEY_ENV", raising=False)
+    cfg.llm = LlmProviderConfig(
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        api_key="sk-runtime-cache",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url="https://api.deepseek.com",
+    )
+    cfg.mark_runtime_secret("llm.api_key")
+
+    status = get_onboarding_status(cfg)
+
+    assert status.llm_credential_status == {
+        "provider": "deepseek",
+        "available": False,
+        "source": "missing_env",
+        "envKey": "DEEPSEEK_API_KEY",
+        "masked": "",
+        "revealAllowed": False,
+    }
+
+
 @pytest.mark.parametrize(
     ("provider", "base_url"),
     [

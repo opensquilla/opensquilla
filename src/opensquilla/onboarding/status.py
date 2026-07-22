@@ -249,7 +249,11 @@ def _llm_provider_credential_status(
     if provider == current_provider:
         configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
         settings_env_key = environment_value("OPENSQUILLA_LLM_API_KEY_ENV").strip()
-        credential = resolve_llm_credential(cfg, registry_env_key=env_key)
+        credential = resolve_llm_credential(
+            cfg,
+            registry_env_key=env_key,
+            include_runtime_cache=False,
+        )
         env_key = credential.env_name
         if credential.source == "explicit":
             return {
@@ -338,7 +342,11 @@ def _llm_credential_status(cfg: GatewayConfig) -> dict[str, object]:
     env_key = str(getattr(spec, "env_key", "") or "").strip()
     configured_env_key = str(getattr(llm, "api_key_env", "") or "").strip()
     settings_env_key = environment_value("OPENSQUILLA_LLM_API_KEY_ENV").strip()
-    credential = resolve_llm_credential(cfg, registry_env_key=env_key)
+    credential = resolve_llm_credential(
+        cfg,
+        registry_env_key=env_key,
+        include_runtime_cache=False,
+    )
     resolved_env_key = credential.env_name
 
     if not spec.runtime_supported:

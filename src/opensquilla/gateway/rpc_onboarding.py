@@ -314,6 +314,7 @@ def _active_llm_credential_reveal_payload(ctx: RpcContext, provider_id: str) -> 
     credential = resolve_llm_credential(
         cfg,
         registry_env_key=str(getattr(spec, "env_key", "") or "").strip(),
+        include_runtime_cache=False,
     )
     if credential.source in {"explicit", "env"} and credential.api_key:
         return {

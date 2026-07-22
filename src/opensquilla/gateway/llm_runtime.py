@@ -59,6 +59,7 @@ def resolve_llm_credential(
     config: Any,
     *,
     registry_env_key: str = "",
+    include_runtime_cache: bool = True,
 ) -> ResolvedLlmCredential:
     """Resolve the primary key exactly as a fresh settings load would.
 
@@ -66,7 +67,9 @@ def resolve_llm_credential(
     variables when it is constructed.  Hot config mutations do not reconstruct
     that model, so consult those external inputs explicitly as well.  Stored
     config still wins, followed by the configured/settings/registry env-name
-    chain and finally the generic settings key.
+    chain and finally the generic settings key.  Runtime callers may retain an
+    already-materialized environment secret; observability and reveal surfaces
+    disable that cache so they describe only currently inspectable sources.
     """
 
     llm = getattr(config, "llm", None)
@@ -108,7 +111,11 @@ def resolve_llm_credential(
     # A value materialized from the environment earlier in this process may
     # remain usable after the source variable is removed.  Keep its runtime
     # provenance instead of misclassifying that cached secret as explicit.
-    if stored_api_key and "llm.api_key" in runtime_secret_paths:
+    if (
+        include_runtime_cache
+        and stored_api_key
+        and "llm.api_key" in runtime_secret_paths
+    ):
         return ResolvedLlmCredential(
             api_key=stored_api_key,
             source="env",

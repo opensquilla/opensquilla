@@ -39,11 +39,21 @@ def test_chat_view_wires_middle_edit_branch_fork_id() -> None:
     assert "pendingForkBeforeMessageId: Ref<string | null>" in send
     assert "params.forkBeforeMessageId = forkBeforeMessageId" in send
     assert "options.pendingForkBeforeMessageId.value = null" in send
-    assert (
-        "options.pendingForkBeforeMessageId.value = "
-        "options.messages.value[userMsgIndex]?.messageId || null"
-    ) in actions
-    assert (
-        "options.pendingForkBeforeMessageId.value = "
-        "options.messages.value[msgIndex]?.messageId || null"
-    ) in actions
+    regenerate_start = actions.index("function regenerateMessage(")
+    regenerate_end = actions.index("function editMessage(", regenerate_start)
+    regenerate_body = actions[regenerate_start:regenerate_end]
+    assert "const forkBeforeMessageId = userMessage?.messageId || ''" in regenerate_body
+    assert "if (!forkBeforeMessageId)" in regenerate_body
+    assert "options.pendingForkBeforeMessageId.value = forkBeforeMessageId" in regenerate_body
+    assert regenerate_body.index("if (!forkBeforeMessageId)") < regenerate_body.index(
+        "options.messages.value = options.messages.value.slice(0, userMsgIndex)"
+    )
+
+    edit_start = actions.index("function editMessage(")
+    edit_body = actions[edit_start:]
+    assert "const forkBeforeMessageId = sourceMessage?.messageId || ''" in edit_body
+    assert "if (!forkBeforeMessageId)" in edit_body
+    assert "options.pendingForkBeforeMessageId.value = forkBeforeMessageId" in edit_body
+    assert edit_body.index("if (!forkBeforeMessageId)") < edit_body.index(
+        "options.messages.value = options.messages.value.slice(0, msgIndex)"
+    )

@@ -137,7 +137,7 @@ async def test_opt_out_does_not_create_daily_row(tmp_path, monkeypatch):
         await storage.close()
 
 
-async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_path, monkeypatch):
+async def test_uploads_only_completed_days_and_marks_success(tmp_path, monkeypatch):
     _enable_telemetry_for_test(monkeypatch)
     endpoint = "https://example.test/v1/usage"
     monkeypatch.setenv(usage_telemetry.USAGE_TELEMETRY_ENDPOINT_ENV, endpoint)
@@ -171,8 +171,10 @@ async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_pa
         uploaded = await usage_telemetry.upload_pending_daily_usage(
             storage, config=config, today=date(2026, 7, 20)
         )
-        assert uploaded == 2
-        assert [payload["day"] for payload in payloads] == ["2026-07-19", "2026-07-20"]
+        # The current UTC day is still accumulating; only the closed day is
+        # sent, so its idempotency key can never freeze a partial snapshot.
+        assert uploaded == 1
+        assert [payload["day"] for payload in payloads] == ["2026-07-19"]
         payload = payloads[0]
         assert set(payload) == {
             "schema_version",
@@ -199,7 +201,17 @@ async def test_uploads_pending_aggregates_through_today_and_marks_success(tmp_pa
         assert payload["cached_tokens"] == 3
         assert payload["cache_write_tokens"] == 1
         assert "session" not in str(payload).lower()
-        assert await storage.list_pending_daily_usage(before_day="2026-07-21") == []
+        pending = await storage.list_pending_daily_usage(before_day="2026-07-21")
+        assert [row["day"] for row in pending] == ["2026-07-20"]
+
+        # Once the UTC day closes, the aggregate uploads with final totals.
+        uploaded = await usage_telemetry.upload_pending_daily_usage(
+            storage, config=config, today=date(2026, 7, 21)
+        )
+        assert uploaded == 1
+        assert [payload["day"] for payload in payloads] == ["2026-07-19", "2026-07-20"]
+        assert payloads[1]["input_tokens"] == 99
+        assert await storage.list_pending_daily_usage(before_day="2026-07-22") == []
     finally:
         await storage.close()
 
@@ -222,6 +234,8 @@ async def test_new_turn_keeps_snapshot_pending_when_upload_is_in_flight(tmp_path
     )
 
     async def fake_post(endpoint: str, payload: dict[str, Any]):
+        # A turn that started before UTC midnight completes while the closed
+        # day's upload is in flight; the fuller aggregate must stay pending.
         await storage.record_daily_usage(
             day="2026-07-20",
             input_tokens=20,
@@ -236,7 +250,7 @@ async def test_new_turn_keeps_snapshot_pending_when_upload_is_in_flight(tmp_path
     try:
         assert (
             await usage_telemetry.upload_pending_daily_usage(
-                storage, config=config, today=date(2026, 7, 20)
+                storage, config=config, today=date(2026, 7, 21)
             )
             == 1
         )
@@ -249,7 +263,10 @@ async def test_new_turn_keeps_snapshot_pending_when_upload_is_in_flight(tmp_path
         await storage.close()
 
 
-async def test_hourly_snapshots_reuse_event_id_with_latest_cumulative_totals(tmp_path, monkeypatch):
+async def test_intraday_growth_never_reposts_the_same_event_id(tmp_path, monkeypatch):
+    """The event ID doubles as the Idempotency-Key, so a day must never be
+    uploaded while its totals can still grow: an idempotent endpoint would
+    permanently keep the first (partial) snapshot and drop every re-send."""
     _enable_telemetry_for_test(monkeypatch)
     monkeypatch.setenv(
         usage_telemetry.USAGE_TELEMETRY_ENDPOINT_ENV,
@@ -273,13 +290,13 @@ async def test_hourly_snapshots_reuse_event_id_with_latest_cumulative_totals(tmp
             cache_write_tokens=1,
             updated_at=1,
         )
+        # Hourly passes during the day upload nothing for the open day.
         assert (
             await usage_telemetry.upload_pending_daily_usage(
                 storage, config=config, today=date(2026, 7, 20)
             )
-            == 1
+            == 0
         )
-
         await storage.record_daily_usage(
             day="2026-07-20",
             input_tokens=20,
@@ -292,12 +309,63 @@ async def test_hourly_snapshots_reuse_event_id_with_latest_cumulative_totals(tmp
             await usage_telemetry.upload_pending_daily_usage(
                 storage, config=config, today=date(2026, 7, 20)
             )
+            == 0
+        )
+        assert payloads == []
+
+        # After midnight the day is closed: exactly one event, final totals.
+        assert (
+            await usage_telemetry.upload_pending_daily_usage(
+                storage, config=config, today=date(2026, 7, 21)
+            )
             == 1
         )
+        assert [payload["conversation_turns"] for payload in payloads] == [2]
+        assert [payload["input_tokens"] for payload in payloads] == [30]
+    finally:
+        await storage.close()
 
-        assert [payload["conversation_turns"] for payload in payloads] == [1, 2]
-        assert [payload["input_tokens"] for payload in payloads] == [10, 30]
+
+async def test_failed_upload_retries_same_event_id_with_same_content(tmp_path, monkeypatch):
+    _enable_telemetry_for_test(monkeypatch)
+    monkeypatch.setenv(
+        usage_telemetry.USAGE_TELEMETRY_ENDPOINT_ENV,
+        "https://example.test/v1/usage",
+    )
+    config = _config(tmp_path)
+    storage = await SessionStorage.open(str(tmp_path / "sessions.db"))
+    payloads: list[dict[str, Any]] = []
+    outcomes = iter([(False, "http_status_503"), (True, None)])
+
+    async def fake_post(endpoint: str, payload: dict[str, Any]):
+        payloads.append(payload)
+        return next(outcomes)
+
+    monkeypatch.setattr(usage_telemetry, "_post_payload", fake_post)
+    try:
+        await storage.record_daily_usage(
+            day="2026-07-20",
+            input_tokens=10,
+            output_tokens=2,
+            cached_tokens=3,
+            cache_write_tokens=1,
+            updated_at=1,
+        )
+        assert (
+            await usage_telemetry.upload_pending_daily_usage(
+                storage, config=config, today=date(2026, 7, 21)
+            )
+            == 0
+        )
+        assert (
+            await usage_telemetry.upload_pending_daily_usage(
+                storage, config=config, today=date(2026, 7, 21)
+            )
+            == 1
+        )
         assert payloads[0]["event_id"] == payloads[1]["event_id"]
+        assert payloads[0]["conversation_turns"] == payloads[1]["conversation_turns"]
+        assert payloads[0]["input_tokens"] == payloads[1]["input_tokens"]
     finally:
         await storage.close()
 

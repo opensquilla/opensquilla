@@ -32,7 +32,7 @@ RANKING_VERSION = "step2-ranking-v2"
 RANKING_CONFIG_SCHEMA_VERSION = "step2-ranking-config-v3"
 TASK_ANALYZER_PROVIDER_ID = "openrouter"
 TASK_ANALYZER_MODEL_ID = "anthropic/claude-opus-4.8"
-TASK_ANALYZER_VERSION = "opus-4.8-json-v2"
+TASK_ANALYZER_VERSION = "opus-4.8-json-v3"
 TASK_PROFILE_SCHEMA_VERSION = "step2-task-profile-v1"
 GENERATION_POLICY_FILTER_REASON_PREFIX = "generation_policy_"
 
@@ -437,6 +437,7 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
             "temperature",
             "thinking",
             "default_confidence",
+            "max_retries",
             "truncation_head_fraction",
         },
         ("fallback_task_profile",): {
@@ -788,6 +789,11 @@ def _validate_ranking_config(raw: Any) -> _ValidatedRankingConfig:
             "router_dynamic task_analyzer.temperature cannot be negative"
         )
     _ranking_bool(config, "task_analyzer", "thinking")
+    analyzer_max_retries = _ranking_int(config, "task_analyzer", "max_retries")
+    if not 0 <= analyzer_max_retries <= 10:
+        raise DynamicRankingError(
+            "router_dynamic task_analyzer.max_retries must be between 0 and 10"
+        )
 
     def validate_distribution(path: tuple[str, ...], allowed: set[str]) -> None:
         distribution = _ranking_mapping(config, *path)
@@ -1232,6 +1238,201 @@ def _normalize_distribution(
         abs_tol=sum_tolerance,
     )
     return {key: value / total for key, value in values.items()}, valid
+
+
+def _canonical_domain_key(value: Any) -> str:
+    raw = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    return "_".join(part for part in raw.split("_") if part)
+
+
+def _normalize_domain_distribution(
+    raw: Any,
+    fallback: Mapping[str, float],
+    *,
+    sum_tolerance: float,
+) -> tuple[dict[str, float], bool, bool]:
+    """Return a valid domain distribution whenever usable domain mass exists.
+
+    The analyzer is constrained with JSON Schema, but this final local boundary
+    deliberately repairs harmless model drift: case/separator differences,
+    numeric strings, unknown extra keys, and totals that need renormalizing.
+    A payload with no positive mass on any supported domain remains invalid so
+    the caller can retry rather than silently inventing a task domain.
+    """
+
+    if not isinstance(raw, Mapping):
+        return dict(fallback), False, False
+    values: dict[str, float] = {}
+    repaired = False
+    for name, value in raw.items():
+        raw_key = str(name)
+        key = _canonical_domain_key(raw_key)
+        if key != raw_key:
+            repaired = True
+        if key not in DOMAINS:
+            repaired = True
+            continue
+        number = _json_number(value)
+        if number is None and isinstance(value, str):
+            try:
+                parsed = float(value.strip())
+            except ValueError:
+                parsed = math.nan
+            if math.isfinite(parsed):
+                number = parsed
+                repaired = True
+        if number is None or number < 0.0:
+            repaired = True
+            continue
+        if number > 0.0:
+            if key in values:
+                repaired = True
+            values[key] = values.get(key, 0.0) + number
+    total = sum(values.values())
+    if total <= 0.0:
+        return dict(fallback), False, repaired
+    if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=sum_tolerance):
+        repaired = True
+    return {key: value / total for key, value in values.items()}, True, repaired
+
+
+@cache
+def _task_analyzer_output_schema() -> dict[str, Any]:
+    def distribution(keys: Sequence[str]) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                key: {
+                    "type": "number",
+                    "description": "Non-negative weight; distribution must sum to 1.",
+                }
+                for key in keys
+            },
+            "required": list(keys),
+        }
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "capability_dist": distribution(CAPABILITIES),
+            "domain_dist": distribution(DOMAINS),
+            "tier_dist": distribution(TIERS),
+            "constraints": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "cost": {
+                        "type": "string",
+                        "enum": sorted(_CONSTRAINT_VALUES["cost"]),
+                    },
+                    "latency": {
+                        "type": "string",
+                        "enum": sorted(_CONSTRAINT_VALUES["latency"]),
+                    },
+                    "context": {
+                        "type": "string",
+                        "enum": list(_CONTEXT_BUCKET_ORDER),
+                    },
+                    "modality": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(MODALITIES)},
+                    },
+                    "risk": {
+                        "type": "string",
+                        "enum": sorted(_CONSTRAINT_VALUES["risk"]),
+                    },
+                },
+                "required": ["cost", "latency", "context", "modality", "risk"],
+            },
+            "optional_constraints": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "format": {"type": "string", "enum": list(FORMATS)},
+                },
+                "required": ["format"],
+            },
+            "session_intent": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "type": {
+                        "type": "string",
+                        "enum": sorted(_SESSION_INTENTS),
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "description": "Confidence from 0 through 1.",
+                    },
+                },
+                "required": ["type", "confidence"],
+            },
+            "analysis_confidence": {
+                "type": "number",
+                "description": "Confidence from 0 through 1.",
+            },
+        },
+        "required": [
+            "capability_dist",
+            "domain_dist",
+            "tier_dist",
+            "constraints",
+            "optional_constraints",
+            "session_intent",
+            "analysis_confidence",
+        ],
+    }
+
+
+def _merge_task_analyzer_usage(
+    previous: Mapping[str, Any] | None,
+    current: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    previous_map = dict(previous or {})
+    current_map = dict(current or {})
+    if not previous_map:
+        return copy.deepcopy(current_map)
+    if not current_map:
+        return copy.deepcopy(previous_map)
+    merged = copy.deepcopy(previous_map)
+    merged.update(copy.deepcopy(current_map))
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cached_tokens",
+        "cache_write_tokens",
+    ):
+        merged[key] = _as_int(previous_map.get(key), 0) + _as_int(
+            current_map.get(key), 0
+        )
+    merged["billed_cost"] = _as_float(previous_map.get("billed_cost"), 0.0) + _as_float(
+        current_map.get("billed_cost"), 0.0
+    )
+    previous_provider = previous_map.get("provider_usage")
+    current_provider = current_map.get("provider_usage")
+    if isinstance(previous_provider, Mapping) and isinstance(current_provider, Mapping):
+        provider_usage = copy.deepcopy(dict(previous_provider))
+        provider_usage.update(copy.deepcopy(dict(current_provider)))
+        response_ids = [
+            str(item)
+            for source in (previous_provider, current_provider)
+            for item in source.get("response_ids", [])
+            if isinstance(item, str) and item
+        ]
+        if response_ids:
+            provider_usage["response_ids"] = list(dict.fromkeys(response_ids))
+        if (
+            "provider_reported_cost" in previous_provider
+            or "provider_reported_cost" in current_provider
+        ):
+            provider_usage["provider_reported_cost"] = _as_float(
+                previous_provider.get("provider_reported_cost"), 0.0
+            ) + _as_float(current_provider.get("provider_reported_cost"), 0.0)
+        merged["provider_usage"] = provider_usage
+    return merged
 
 
 def _router_tier(value: Any, ranking_config: Mapping[str, Any]) -> str:
@@ -1834,12 +2035,13 @@ def normalize_task_profile(
         fallback["capability_dist"],
         sum_tolerance=distribution_tolerance,
     )
-    domain, valid_domain = _normalize_distribution(
+    domain, valid_domain, repaired_domain = _normalize_domain_distribution(
         raw_profile.get("domain_dist"),
-        DOMAINS,
         fallback["domain_dist"],
         sum_tolerance=distribution_tolerance,
     )
+    if repaired_domain:
+        warnings.append("repaired_domain_dist")
     tier, valid_tier = _normalize_distribution(
         raw_profile.get("tier_dist"),
         TIERS,
@@ -1996,6 +2198,9 @@ async def analyze_task_with_provider(
     analyzer_model_id: str = "",
     ranking_config: Mapping[str, Any] | None = None,
     decision_id: str = "",
+    _attempt: int = 1,
+    _retry_feedback: str = "",
+    _accumulated_usage: Mapping[str, Any] | None = None,
 ) -> TaskAnalysisResult:
     """Use the caller-supplied dedicated provider as the task analyzer."""
 
@@ -2014,6 +2219,9 @@ async def analyze_task_with_provider(
     )
     analyzer_thinking = _ranking_bool(
         effective_config, "task_analyzer", "thinking"
+    )
+    analyzer_max_retries = _ranking_int(
+        effective_config, "task_analyzer", "max_retries"
     )
     effective_timeout = (
         _ranking_number(effective_config, "task_analyzer", "timeout_seconds")
@@ -2069,7 +2277,8 @@ async def analyze_task_with_provider(
         "and analysis_confidence. modality must always be a JSON array, even for "
         "one item. session_intent is required; use new_task with confidence 0 "
         "when there is no prior route. Distributions must use only supplied enum "
-        "values, contain non-negative numbers, and each sum to 1. "
+        "values, contain non-negative numbers, and each sum to 1. Include every "
+        "supplied capability, domain, and tier key; use 0 for irrelevant entries. "
         f"capability_dist keys are exactly {json.dumps(list(CAPABILITIES))}; "
         f"domain_dist keys are exactly {json.dumps(list(DOMAINS))}. Copy these "
         "names literally and never move a domain name into capability_dist. In "
@@ -2111,6 +2320,11 @@ async def analyze_task_with_provider(
         ),
         "request_context": request_context,
     }
+    if _retry_feedback:
+        analyzer_input["retry_feedback"] = (
+            "The previous attempt failed. Correct this validation error: "
+            + _retry_feedback[:500]
+        )
     log.info(
         "llm_ensemble.router_dynamic.task_analyzer_started",
         decision_id=decision_id,
@@ -2121,6 +2335,8 @@ async def analyze_task_with_provider(
         input_truncated=len(analysis_message) < len(message),
         request_context_hash=request_context.get("snapshot_hash"),
         user_profile_enabled=user_profile_enabled,
+        attempt=_attempt,
+        max_attempts=analyzer_max_retries + 1,
     )
     usage: dict[str, Any] = {}
     normalization_issues: list[str] = []
@@ -2134,6 +2350,8 @@ async def analyze_task_with_provider(
             system=system_prompt,
             thinking=analyzer_thinking,
             timeout=effective_timeout,
+            output_json_schema=copy.deepcopy(_task_analyzer_output_schema()),
+            output_json_schema_strict=True,
         )
         # Task analysis is a physical provider request just like generation and
         # must cross the same fail-closed durable accounting boundary.  The
@@ -2224,6 +2442,41 @@ async def analyze_task_with_provider(
             raise ValueError(";".join(normalization_issues) or "invalid task profile")
     except Exception as exc:  # noqa: BLE001 - analysis must fail open to a safe profile
         reason = type(exc).__name__
+        accumulated_usage = _merge_task_analyzer_usage(_accumulated_usage, usage)
+        accumulated_usage["attempt_count"] = _attempt
+        if _attempt <= analyzer_max_retries:
+            log.warning(
+                "llm_ensemble.router_dynamic.task_analyzer_retry",
+                decision_id=decision_id,
+                analyzer_version=TASK_ANALYZER_VERSION,
+                reason=reason,
+                provider=provider_id or "unknown",
+                model=model_id,
+                details=str(exc),
+                attempt=_attempt,
+                next_attempt=_attempt + 1,
+                max_attempts=analyzer_max_retries + 1,
+                routed_tier=_router_tier(routed_tier, effective_config),
+                user_profile_enabled=user_profile_enabled,
+            )
+            return await analyze_task_with_provider(
+                provider=provider,
+                message=message,
+                user_profile_enabled=user_profile_enabled,
+                request_context=request_context,
+                routed_tier=routed_tier,
+                routing_confidence=routing_confidence,
+                timeout_seconds=timeout_seconds,
+                usage_tracker=usage_tracker,
+                session_key=session_key,
+                analyzer_provider_id=analyzer_provider_id,
+                analyzer_model_id=analyzer_model_id,
+                ranking_config=effective_config,
+                decision_id=decision_id,
+                _attempt=_attempt + 1,
+                _retry_feedback=str(exc),
+                _accumulated_usage=accumulated_usage,
+            )
         log.warning(
             "llm_ensemble.router_dynamic.task_analyzer_fallback",
             decision_id=decision_id,
@@ -2234,6 +2487,8 @@ async def analyze_task_with_provider(
             details=str(exc),
             routed_tier=_router_tier(routed_tier, effective_config),
             user_profile_enabled=user_profile_enabled,
+            attempt=_attempt,
+            max_attempts=analyzer_max_retries + 1,
         )
         return TaskAnalysisResult(
             profile=fallback,
@@ -2241,12 +2496,14 @@ async def analyze_task_with_provider(
             schema_valid=False,
             confidence=_clamp(routing_confidence),
             fallback_reason=reason,
-            usage=usage,
+            usage=accumulated_usage,
             provider_id=provider_id,
             model_id=model_id,
             normalization_warnings=tuple(normalization_issues),
         )
 
+    usage = _merge_task_analyzer_usage(_accumulated_usage, usage)
+    usage["attempt_count"] = _attempt
     payload_map = payload if isinstance(payload, Mapping) else {}
     default_confidence = _ranking_number(effective_config, "task_analyzer", "default_confidence")
     raw_confidence = payload_map.get("analysis_confidence")

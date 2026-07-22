@@ -1,6 +1,6 @@
 {
   "schema_version": "step2-ranking-config-v3",
-  "config_version": "step2-ranking-2026-07-15.3",
+  "config_version": "step2-ranking-2026-07-22.1",
   "validation": {
     "weight_sum_tolerance": 1e-9,
     "task_profile_sum_tolerance": 0.02
@@ -70,6 +70,7 @@
     "temperature": 0.0,
     "thinking": false,
     "default_confidence": 0.80,
+    "max_retries": 3,
     "truncation_head_fraction": 0.50
   },
   "fallback_task_profile": {

@@ -381,6 +381,26 @@ def test_normalize_task_profile_accepts_configured_distribution_rounding() -> No
     assert sum(profile["capability_dist"].values()) == pytest.approx(1.0)
 
 
+def test_normalize_task_profile_repairs_domain_distribution_format() -> None:
+    raw_profile = _task_profile(tier=2)
+    raw_profile["domain_dist"] = {
+        "Software Engineering": "2",
+        "unsupported-domain": 1.0,
+    }
+
+    profile, valid, issues = normalize_task_profile(
+        raw_profile,
+        routed_tier="c1",
+        request_context=_context(),
+    )
+
+    assert valid is True
+    assert issues == ["repaired_domain_dist"]
+    assert profile["domain_dist"] == {"software_engineering": 1.0}
+    assert sum(profile["domain_dist"].values()) == pytest.approx(1.0)
+    assert set(profile["domain_dist"]).issubset(DOMAINS)
+
+
 def test_request_context_uses_bounded_history_and_attachment_facts() -> None:
     context = build_request_context(
         message="current request",
@@ -780,13 +800,13 @@ def test_ranking_rejects_malformed_numeric_model_profiles(
 class _AnalyzerProvider:
     provider_name = "analyzer-test"
 
-    def __init__(self, response: str, *, include_done: bool = True) -> None:
-        self.response = response
+    def __init__(self, response: str | list[str], *, include_done: bool = True) -> None:
+        self.responses = response if isinstance(response, list) else [response]
         self.include_done = include_done
         self.calls: list[tuple[list[Message], ChatConfig | None]] = []
 
-    async def _stream(self) -> AsyncIterator[Any]:
-        yield TextDeltaEvent(text=self.response)
+    async def _stream(self, response: str) -> AsyncIterator[Any]:
+        yield TextDeltaEvent(text=response)
         if self.include_done:
             yield DoneEvent(
                 model="analyzer-test",
@@ -809,7 +829,8 @@ class _AnalyzerProvider:
         config: ChatConfig | None = None,
     ) -> AsyncIterator[Any]:
         self.calls.append((messages, config))
-        return self._stream()
+        response = self.responses[min(len(self.calls) - 1, len(self.responses) - 1)]
+        return self._stream(response)
 
     async def list_models(self) -> list[Any]:
         return []
@@ -851,8 +872,14 @@ async def test_task_analyzer_uses_provider_interface_and_validates_json() -> Non
     assert '"modality":["<allowed modality>"]' in provider.calls[0][1].system
     assert '"session_intent":{"type":"<allowed intent>"' in provider.calls[0][1].system
     assert "research is a domain, not a capability" in provider.calls[0][1].system
+    assert provider.calls[0][1].output_json_schema_strict is True
+    output_schema = provider.calls[0][1].output_json_schema
+    assert output_schema is not None
+    assert output_schema["properties"]["domain_dist"]["additionalProperties"] is False
+    assert output_schema["properties"]["domain_dist"]["required"] == list(DOMAINS)
     assert result.usage["input_tokens"] == 11
     assert result.usage["billed_cost"] == pytest.approx(0.012)
+    assert result.usage["attempt_count"] == 1
     assert result.provider_id == TASK_ANALYZER_PROVIDER_ID
     assert result.model_id == TASK_ANALYZER_MODEL_ID
     assert result.trace()["provider"] == TASK_ANALYZER_PROVIDER_ID
@@ -1026,9 +1053,46 @@ async def test_task_analyzer_incomplete_stream_falls_back_even_with_valid_json()
 
 
 @pytest.mark.asyncio
+async def test_task_analyzer_retries_three_times_before_succeeding() -> None:
+    malformed = _task_profile(tier=2)
+    malformed["domain_dist"] = {"unsupported-domain": 1.0}
+    provider = _AnalyzerProvider(
+        [
+            json.dumps(malformed),
+            "not-json",
+            json.dumps(malformed),
+            json.dumps(_task_profile(tier=2)),
+        ]
+    )
+
+    with structlog.testing.capture_logs() as captured:
+        result = await analyze_task_with_provider(
+            provider=provider,
+            message="hello",
+            user_profile_enabled=True,
+            request_context=_context(),
+            routed_tier="c2",
+            routing_confidence=0.77,
+        )
+
+    assert result.source == "llm_provider"
+    assert result.schema_valid is True
+    assert len(provider.calls) == 4
+    assert result.usage["attempt_count"] == 4
+    assert result.usage["input_tokens"] == 44
+    assert result.usage["billed_cost"] == pytest.approx(0.048)
+    retry_events = [
+        row for row in captured if row["event"].endswith("task_analyzer_retry")
+    ]
+    assert [row["attempt"] for row in retry_events] == [1, 2, 3]
+    assert not any(row["event"].endswith("task_analyzer_fallback") for row in captured)
+
+
+@pytest.mark.asyncio
 async def test_task_analyzer_malformed_output_falls_back_to_tree_router_profile() -> None:
+    provider = _AnalyzerProvider("not-json")
     result = await analyze_task_with_provider(
-        provider=_AnalyzerProvider("not-json"),
+        provider=provider,
         message="hello",
         user_profile_enabled=True,
         request_context=_context(),
@@ -1040,6 +1104,9 @@ async def test_task_analyzer_malformed_output_falls_back_to_tree_router_profile(
     assert result.schema_valid is False
     assert result.profile["tier_dist"] == {"3": 1.0}
     assert result.confidence == pytest.approx(0.77)
+    assert len(provider.calls) == 4
+    assert result.usage["attempt_count"] == 4
+    assert result.usage["billed_cost"] == pytest.approx(0.048)
 
 
 @pytest.mark.asyncio

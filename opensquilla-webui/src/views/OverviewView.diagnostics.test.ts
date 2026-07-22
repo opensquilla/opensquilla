@@ -2,10 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { App } from 'vue'
 
-// Mounted coverage for the Overview diagnostics actions: the copy-JSON
-// button, the conditional "diagnose with agent" hand-off, finding→settings
-// deep links, and the active-provider latency readout (with null guards for
-// backends that predate the latency field).
+// Mounted coverage for the Overview diagnostics actions: the conditional
+// "diagnose with agent" hand-off, finding→settings deep links, and the
+// active-provider latency readout (with null guards for older gateways).
 
 interface MountOptions {
   report?: Record<string, unknown> | null
@@ -173,7 +172,6 @@ afterEach(() => {
 // The buttons carry resolved translations in their title attributes; the
 // suite pins locale 'en' in mountOverview, so select by the en strings.
 const DIAGNOSE_SELECTOR = '[title="Diagnose with agent"]'
-const COPY_JSON_SELECTOR = '[title="Copy diagnostics JSON"]'
 
 describe('OverviewView diagnose-with-agent hand-off', () => {
   it('shows the button and routes a sanitized, escaped report into a new chat', async () => {
@@ -392,42 +390,6 @@ describe('OverviewView recovery activation copy', () => {
   })
 })
 
-describe('OverviewView copy diagnostics JSON', () => {
-  it('copies the normalized report with gatewayUrl and copiedAt attached', async () => {
-    const { el, copyText, pushToast, flush } = await mountOverview()
-    const button = el.querySelector<HTMLButtonElement>(COPY_JSON_SELECTOR)
-    expect(button).toBeTruthy()
-
-    button!.click()
-    await flush()
-
-    expect(copyText).toHaveBeenCalledTimes(1)
-    const text = copyText.mock.calls[0][0]
-    expect(text).not.toContain('dummyuser')
-    const parsed = JSON.parse(text) as Record<string, unknown>
-    expect(parsed.gatewayUrl).toBe('ws://127.0.0.1:18791/ws')
-    expect(parsed.configPath).toBe('~/dir/opensquilla.toml')
-    expect(typeof parsed.copiedAt).toBe('string')
-    expect(Number.isNaN(Date.parse(String(parsed.copiedAt)))).toBe(false)
-    expect(pushToast).toHaveBeenCalledWith('Diagnostics JSON copied', { tone: 'ok' })
-  })
-
-  it('disables the button when the doctor report is unavailable', async () => {
-    const { el, copyText, pushToast, flush } = await mountOverview({ report: null })
-    const button = el.querySelector<HTMLButtonElement>(COPY_JSON_SELECTOR)
-    expect(button).toBeTruthy()
-    expect(button!.disabled).toBe(true)
-    // The diagnose hand-off is hidden without a live report too.
-    expect(el.querySelector(DIAGNOSE_SELECTOR)).toBeNull()
-
-    // Even a forced click copies nothing and shows no success toast.
-    button!.click()
-    await flush()
-    expect(copyText).not.toHaveBeenCalled()
-    expect(pushToast).not.toHaveBeenCalled()
-  })
-})
-
 describe('OverviewView finding settings links', () => {
   it('links mapped surfaces to their settings section and skips the rest', async () => {
     const report = baseReport()
@@ -523,7 +485,7 @@ describe('OverviewView provider latency line', () => {
     expect(el.querySelector('.ov-readout__latency')).toBeNull()
     // The rest of the overview still rendered.
     expect(el.querySelector('.ov-statusline')).toBeTruthy()
-    expect(el.querySelector(COPY_JSON_SELECTOR)).toBeTruthy()
+    expect(el.querySelector(DIAGNOSE_SELECTOR)).toBeTruthy()
   })
 
   it('fetches providers.status on mount only, not on health reruns', async () => {

@@ -124,9 +124,31 @@ def _path_was_written(explicit_paths: set[str], target: str) -> bool:
     return target in explicit_paths
 
 
+def _control_leaf_changed(
+    config: Any,
+    previous: Any,
+    section_name: str,
+    field_name: str,
+) -> bool:
+    """Whether a written control boolean differs from its pre-write value.
+
+    ``previous`` is the config as it stood before the write; ``None`` means
+    the caller has no pre-write snapshot, in which case every explicit write
+    conservatively counts as a change (the legacy interpretation).
+    """
+
+    if previous is None:
+        return True
+    new_value = bool(getattr(getattr(config, section_name, None), field_name, False))
+    old_value = bool(getattr(getattr(previous, section_name, None), field_name, False))
+    return new_value != old_value
+
+
 def model_routing_mode_for_write(
     config: Any,
     explicit_paths: set[str],
+    *,
+    previous: Any = None,
 ) -> ModelRoutingMode | None:
     """Translate legacy routing-field writes into the canonical three-state mode.
 
@@ -135,6 +157,12 @@ def model_routing_mode_for_write(
     complete multi-field write (such as ``models.routing.set``) is interpreted
     from its final candidate values.  Non-control settings such as router tiers
     or ensemble candidates do not select a mode.
+
+    When ``previous`` (the pre-write config) is supplied, a value-identical
+    re-assertion of a control boolean selects no mode: re-saving
+    ``llm_ensemble.enabled=false`` while the Router runs must not disable the
+    Router, and re-saving ``squilla_router.enabled=true`` must not escalate an
+    advanced ``rollout_phase`` back to ``full``.
     """
 
     ensemble_enabled_written = _path_was_written(
@@ -143,6 +171,16 @@ def model_routing_mode_for_write(
     router_enabled_written = _path_was_written(
         explicit_paths, "squilla_router.enabled"
     )
+    ensemble_enabled_toggled = ensemble_enabled_written and _control_leaf_changed(
+        config, previous, "llm_ensemble", "enabled"
+    )
+    router_enabled_toggled = router_enabled_written and _control_leaf_changed(
+        config, previous, "squilla_router", "enabled"
+    )
+    if (ensemble_enabled_written or router_enabled_written) and not (
+        ensemble_enabled_toggled or router_enabled_toggled
+    ):
+        return None
     if ensemble_enabled_written and router_enabled_written:
         ensemble_enabled = bool(
             getattr(getattr(config, "llm_ensemble", None), "enabled", False)
@@ -194,16 +232,20 @@ def apply_model_routing_mode(config: Any, mode: str) -> dict[str, Any]:
 def reconcile_model_routing_write(
     config: Any,
     explicit_paths: set[str],
+    *,
+    previous: Any = None,
 ) -> dict[str, Any]:
     """Reconcile only strategy fields owned by a legacy config write.
 
-    Boolean Router/Ensemble toggles select a canonical mode.  A live Ensemble
-    ``selection_mode`` edit only updates whether that implementation requires
-    Router; it deliberately preserves advanced ``rollout_phase`` values such
-    as ``prompt_only``.  Other Router/Ensemble settings are left untouched.
+    Boolean Router/Ensemble toggles select a canonical mode; with a
+    ``previous`` snapshot supplied, value-identical re-assertions select
+    none.  A live Ensemble ``selection_mode`` edit only updates whether that
+    implementation requires Router; it deliberately preserves advanced
+    ``rollout_phase`` values such as ``prompt_only``.  Other Router/Ensemble
+    settings are left untouched.
     """
 
-    mode = model_routing_mode_for_write(config, explicit_paths)
+    mode = model_routing_mode_for_write(config, explicit_paths, previous=previous)
     if mode is not None:
         return apply_model_routing_mode(config, mode)
 

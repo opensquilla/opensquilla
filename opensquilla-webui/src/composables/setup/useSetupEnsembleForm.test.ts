@@ -793,6 +793,30 @@ describe('useSetupEnsembleForm — panel contract', () => {
     expect(panel.value.fixedProfile!.proposers.map(c => c.model))
       .toEqual([...TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS])
     expect(panel.value.fixedProfile!.aggregator.model).toBe(TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR)
+    expect(panel.value.presetProviderMismatch).toBe(false)
+  })
+
+  it('renders the stored preset lineup with a mismatch flag when it differs from the active provider', () => {
+    const f = useSetupEnsembleForm()
+    // Stored TokenRhythm preset; the user later switched the active provider
+    // to OpenRouter. The runtime builder keys off the stored mode, so the
+    // TokenRhythm lineup still runs (and bills) — the card must show it.
+    f.initFromConfig({ enabled: true, selection_mode: 'static_tokenrhythm_b5' })
+    const panel = makePanel(f, 'openrouter')
+    expect(panel.value.scheme).toBe('preset')
+    expect(panel.value.fixedProfile!.providerLabel).toBe('TokenRhythm')
+    expect(panel.value.fixedProfile!.proposers.map(c => c.model))
+      .toEqual([...TOKENRHYTHM_FIXED_ENSEMBLE_PROPOSERS])
+    expect(panel.value.fixedProfile!.aggregator.model).toBe(TOKENRHYTHM_FIXED_ENSEMBLE_AGGREGATOR)
+    expect(panel.value.presetProviderMismatch).toBe(true)
+  })
+
+  it('reports no preset mismatch when the stored preset belongs to the active provider', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
+    const panel = makePanel(f, 'openrouter')
+    expect(panel.value.presetProviderMismatch).toBe(false)
+    expect(panel.value.fixedProfile!.providerLabel).toBe('OpenRouter')
   })
 
   it('reports the custom scheme (no preset cards) for non-preset providers even with a stored static mode', () => {
@@ -923,6 +947,75 @@ describe('useSetupEnsembleForm — panel contract', () => {
     })
     const panel = makePanel(f, 'deepseek')
     expect(panel.value.customCandidates).toEqual([])
+  })
+})
+
+describe('useSetupEnsembleForm — effective timeout facts', () => {
+  it('surfaces explicit operator timeout overrides instead of the static defaults', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'static_openrouter_b5',
+      proposer_timeout_seconds: 600,
+      aggregator_timeout_seconds: 900,
+    })
+    const facts = makePanel(f, 'openrouter').value.presetFacts
+    expect(facts.proposerTimeoutSeconds).toBe(600)
+    expect(facts.aggregatorTimeoutSeconds).toBe(900)
+    expect(facts.quorumGraceSeconds).toBe(5)
+    // The stored timeouts are read-only facts, never a pending edit.
+    expect(f.isDirty.value).toBe(false)
+    expect(f.payload()).toEqual({})
+  })
+
+  it('keeps the static defaults for legacy-default and absent stored values', () => {
+    const explicitLegacy = useSetupEnsembleForm()
+    explicitLegacy.initFromConfig({
+      enabled: true,
+      selection_mode: 'static_openrouter_b5',
+      proposer_timeout_seconds: 3600,
+      aggregator_timeout_seconds: 3600,
+    })
+    const legacyFacts = makePanel(explicitLegacy, 'openrouter').value.presetFacts
+    expect(legacyFacts.proposerTimeoutSeconds).toBe(300)
+    expect(legacyFacts.aggregatorTimeoutSeconds).toBe(480)
+
+    // Older gateways may omit the keys from the config slice entirely.
+    const absent = useSetupEnsembleForm()
+    absent.initFromConfig({ enabled: true, selection_mode: 'static_openrouter_b5' })
+    const absentFacts = makePanel(absent, 'openrouter').value.presetFacts
+    expect(absentFacts.proposerTimeoutSeconds).toBe(300)
+    expect(absentFacts.aggregatorTimeoutSeconds).toBe(480)
+  })
+
+  it('applies a partial override to the custom lineup facts', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: CUSTOM_B5_SELECTION_MODE,
+      candidates: [
+        { provider: 'deepseek', model: 'a' },
+        { provider: 'deepseek', model: 'b' },
+      ],
+      proposer_timeout_seconds: 720,
+    })
+    const facts = makePanel(f, 'deepseek').value.custom.facts
+    expect(facts.proposerTimeoutSeconds).toBe(720)
+    expect(facts.aggregatorTimeoutSeconds).toBe(480)
+    expect(facts.quorumGraceSeconds).toBe(5)
+  })
+
+  it('reports raw stored timeouts and no grace for the legacy router_dynamic mode', () => {
+    const f = useSetupEnsembleForm()
+    f.initFromConfig({
+      enabled: true,
+      selection_mode: 'router_dynamic',
+      candidates: [{ provider: 'deepseek', model: 'a' }],
+    })
+    const facts = makePanel(f, 'deepseek').value.custom.facts
+    expect(facts.proposerTimeoutSeconds).toBe(3600)
+    expect(facts.aggregatorTimeoutSeconds).toBe(3600)
+    expect(facts.quorumGraceSeconds).toBe(0)
   })
 })
 

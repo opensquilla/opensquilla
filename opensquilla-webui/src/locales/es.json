@@ -695,6 +695,7 @@
       "proposerCount": "{count} / {max} · recomendado {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} de {max}",
       "presetReadOnlyHint": "Esta alineación predefinida la gestiona el proveedor.",
+      "presetProviderMismatchNotice": "Los turnos siguen usando la alineación predefinida guardada de {presetProvider}, no la de {activeProvider} — vuelve a seleccionar «Predefinido» para cambiar a {activeProvider}.",
       "importTierCandidates": "Importar desde niveles de modelo",
       "roleSelectAria": "Rol de {model}",
       "roleUnassigned": "Sin rol",
@@ -2968,6 +2969,7 @@
       "waitCompactionBeforeCommand": "Espera a que termine la compactación del contexto antes de ejecutar {command}.",
       "waitResponseBeforeCommand": "Espera a la respuesta actual antes de ejecutar {command}.",
       "queueFull": "La cola está llena — espera a que termine la respuesta actual.",
+      "messageStillSaving": "Este mensaje aún no se ha guardado — inténtalo de nuevo en un momento.",
       "artifactOpenFailed": "No se pudo abrir el artefacto. Usa Descargar en su lugar."
     },
     "stream": {

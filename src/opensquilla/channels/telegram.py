@@ -141,6 +141,9 @@ class TelegramChannel:
     _dedupe: EventDedupeCache = field(init=False, repr=False)
     _connected: bool = field(default=False, init=False, repr=False)
     _last_message_at: datetime | None = field(default=None, init=False, repr=False)
+    # Private chats already told (this process) that edits are ignored, so a
+    # habitual editor gets exactly one explanation instead of one per edit.
+    _edit_notice_chats: set[str] = field(default_factory=set, init=False, repr=False)
     bot_user_id: str | None = None
     bot_username: str | None = None
 
@@ -350,6 +353,7 @@ class TelegramChannel:
                     )
                 except ValueError:
                     log.debug("telegram.unsupported_update_ignored", update_id=update_id)
+                    await self._maybe_notify_edit_ignored(update)
                     if isinstance(update_id, int):
                         self._update_offset = update_id + 1
                     continue
@@ -416,9 +420,54 @@ class TelegramChannel:
             )
         except ValueError:
             log.debug("telegram.unsupported_update_ignored", update_id=update.get("update_id"))
+            await self._maybe_notify_edit_ignored(update)
             return Response(status_code=200)
         self.enqueue(msg)
         return Response(status_code=200)
+
+    async def _maybe_notify_edit_ignored(self, update: dict[str, Any]) -> None:
+        """One-time, per-chat, best-effort notice that edits no longer run turns.
+
+        Editing a previously sent message used to re-trigger a turn; edited
+        updates are now dropped deliberately (an edit is not a new request).
+        Without feedback, a sender who edits a typo to re-ask cannot tell the
+        drop from the bot being down. Only private chats are notified — in
+        groups an edit never triggered a turn unless the bot was mentioned,
+        and unsolicited notices there would be noise. The once-per-chat memory
+        is process-local, so a restart may repeat the notice. Never raises:
+        this runs on the receive path.
+        """
+        edited = update.get("edited_message")
+        if not isinstance(edited, dict):
+            return
+        chat = edited.get("chat")
+        if not isinstance(chat, dict) or chat.get("type") != "private":
+            return
+        chat_id = chat.get("id")
+        if chat_id is None:
+            return
+        key = str(chat_id)
+        if key in self._edit_notice_chats:
+            return
+        self._edit_notice_chats.add(key)
+        try:
+            await self._api(
+                "sendMessage",
+                {
+                    "chat_id": key,
+                    "text": (
+                        "Edited messages are ignored: editing an earlier message no "
+                        "longer starts a new turn. Send the corrected text as a new "
+                        "message instead."
+                    ),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - notice is best-effort
+            log.debug(
+                "telegram.edit_notice_failed",
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
 
     @staticmethod
     def _telegram_file_attachment(

@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from opensquilla.provider.fx import canonical_native_per_usd_rates
 from opensquilla.session.cost_rollup import rollup_cost_source
 
 _PRESET_DAYS = {
@@ -1170,6 +1171,11 @@ async def query_usage_ledger(
         "source": "usage_ledger",
         "asOfMs": resolved.as_of_ms,
         "range": resolved.payload(),
+        # Additive: the canonical native-per-USD display rates the billing
+        # adapters normalize receipts with.  Clients that render CNY from
+        # canonical USD must use this instead of a hardcoded rate so their
+        # figures agree with receipt-exact amounts; older clients ignore it.
+        "fxRatesNativePerUsd": canonical_native_per_usd_rates(),
         "totals": totals,
         "attributedTotals": attributed_totals,
         "coverage": {

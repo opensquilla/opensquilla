@@ -73,6 +73,7 @@ def config_set(
             raise typer.Exit(1)
         try:
             updated = GatewayConfig.model_validate(data)
+            updated._mark_env_absorbed_secrets(data)
         except Exception as exc:  # noqa: BLE001 - show config validation errors as CLI input errors.
             console.print(f"[red]Invalid value for {escape(key)}:[/red] {escape(str(exc))}")
             raise typer.Exit(2) from exc
@@ -80,7 +81,7 @@ def config_set(
             reconcile_model_routing_write,
         )
 
-        reconcile_model_routing_write(updated, {key})
+        reconcile_model_routing_write(updated, {key}, previous=cfg)
         persist = persist_config(updated, path=config_path, restart_required=True)
         console.print(f"[{ACCENT_MARKUP}]Config:[/] {persist.path}")
         if persist.backup_path:

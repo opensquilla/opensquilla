@@ -1,4 +1,4 @@
-import { computed, type ComputedRef, type Ref } from 'vue'
+import { computed, toValue, type ComputedRef, type MaybeRefOrGetter, type Ref } from 'vue'
 import i18n from '@/i18n'
 import { nativeBillingDisplay } from '@/composables/usage/nativeBilling'
 import type { SessionRow, UsageTotals } from '@/types/usage'
@@ -9,7 +9,7 @@ export function useUsageTotals(options: {
   visibleSessions: ComputedRef<SessionRow[]>
   serverTotals?: ComputedRef<UsageTotals | null>
   currency: Ref<string>
-  cnyRate: number
+  cnyRate: MaybeRefOrGetter<number>
   rowVal: (row: Record<string, unknown>, ...keys: string[]) => unknown
   fmtCost: (
     usd: number | null | undefined,
@@ -100,7 +100,7 @@ export function useUsageTotals(options: {
       hints.push(`${native.exactCny == null ? '≈' : '='} ${('$' + Number(totalCostUsd).toFixed(4))} USD`)
     } else if (options.currency.value === 'USD') {
       hints.push(native.exactCny == null
-        ? `≈ ¥${(Number(totalCostUsd) * options.cnyRate).toFixed(4)} CNY`
+        ? `≈ ¥${(Number(totalCostUsd) * toValue(options.cnyRate)).toFixed(4)} CNY`
         : `= ¥${native.exactCny.toFixed(4)} CNY`)
     }
     return [...hints, sourceHint].filter(Boolean).join(' · ')
@@ -109,7 +109,7 @@ export function useUsageTotals(options: {
   const costHintTitle = computed(() => {
     if (nativeDisplay.value.exactCny != null) return t('usageLogs.nativeCostHintTitle')
     if (nativeDisplay.value.useCanonicalUsd) return t('usageLogs.nativeMixedCostHintTitle')
-    return t('usageLogs.costHintTitle', { rate: options.cnyRate })
+    return t('usageLogs.costHintTitle', { rate: toValue(options.cnyRate) })
   })
 
   const sessionCountDisplay = computed(() => {

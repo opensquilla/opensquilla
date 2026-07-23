@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import threading
 from collections.abc import AsyncIterator
 from io import BytesIO
 from types import SimpleNamespace
@@ -990,6 +991,114 @@ async def test_turn_runner_auto_publishes_deliverable_file_when_model_omits_publ
         assert payload["artifacts"][0]["name"] == "manual-big-write.html"
         assert payload["artifacts"][0]["source"] == "auto_publish_omitted"
     finally:
+        await storage.close()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancel_persists_completed_artifact_and_interrupted_transcript(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = SessionStorage(":memory:")
+    await storage.connect()
+    manager = SessionManager(storage)
+    session_key = "agent:main:webchat:artifact-repeated-cancel"
+    session = await manager.create(session_key)
+    runner = TurnRunner(
+        provider_selector=_ProviderSelector(_OmittedPublishProvider()),
+        tool_registry=_write_file_registry(),
+        session_manager=manager,
+        config=GatewayConfig(
+            attachments=AttachmentsConfig(media_root=str(tmp_path / "media")),
+            squilla_router=SquillaRouterConfig(enabled=False),
+        ),
+    )
+    tool_context = ToolContext(
+        is_owner=True,
+        caller_kind=CallerKind.WEB,
+        workspace_dir=str(tmp_path / "workspace"),
+        allowed_tools={"write_file"},
+        elevated="full",
+    )
+
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+    real_publish = runner._stream_consumer_stage._done_handler.run_publish
+
+    def gated_publish(inp: Any, accumulated_text: str) -> Any:
+        publish_started.set()
+        assert release_publish.wait(timeout=5.0), "publish was never released"
+        result = real_publish(inp, accumulated_text)
+        publish_finished.set()
+        return result
+
+    monkeypatch.setattr(
+        runner._stream_consumer_stage._done_handler,
+        "run_publish",
+        gated_publish,
+    )
+
+    assistant_append_started = asyncio.Event()
+    release_assistant_append = asyncio.Event()
+    real_append_message = manager.append_message
+
+    async def gated_append_message(session_key: str, **kwargs: Any) -> Any:
+        if kwargs.get("role") == "assistant":
+            assistant_append_started.set()
+            await release_assistant_append.wait()
+        return await real_append_message(session_key, **kwargs)
+
+    monkeypatch.setattr(manager, "append_message", gated_append_message)
+
+    async def consume() -> None:
+        async for _event in runner.run(
+            "make an html page",
+            session_key,
+            tool_context=tool_context,
+            history_has_persisted_user=False,
+            no_memory_capture=True,
+        ):
+            pass
+
+    task = asyncio.create_task(consume())
+    try:
+        assert await asyncio.to_thread(publish_started.wait, 5.0)
+        task.cancel("cancel-during-publish")
+        release_publish.set()
+
+        await asyncio.wait_for(assistant_append_started.wait(), timeout=5.0)
+        assert publish_finished.is_set()
+        task.cancel("cancel-during-transcript")
+        await asyncio.sleep(0)
+
+        release_assistant_append.set()
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await task
+        assert exc_info.value.args == ("cancel-during-publish",)
+
+        transcript = await manager.get_transcript(session_key)
+        assistants = [entry for entry in transcript if entry.role == "assistant"]
+        assert len(assistants) == 1
+        payload = json.loads(assistants[0].content)
+        assert "The generated file was delivered" in payload["text"]
+        assert payload["artifacts"][0]["name"] == "manual-big-write.html"
+
+        store = ArtifactStore(str(tmp_path / "media"))
+        _, artifact_path = store.resolve_for_download(
+            payload["artifacts"][0]["id"],
+            session_id=session.session_id,
+        )
+        assert artifact_path.read_text(encoding="utf-8") == (
+            "<!doctype html><title>Manual</title>"
+        )
+    finally:
+        release_publish.set()
+        release_assistant_append.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
         await storage.close()
 
 

@@ -695,6 +695,7 @@
       "proposerCount": "{count} / {max} · {recommendedMin}–{recommendedMax} recommended",
       "proposerCountCompact": "{count} of {max}",
       "presetReadOnlyHint": "This preset lineup is managed by the provider.",
+      "presetProviderMismatchNotice": "Turns still run the saved {presetProvider} preset, not {activeProvider}'s — reselect Preset to switch it to {activeProvider}.",
       "importTierCandidates": "Import from model tiers",
       "roleSelectAria": "Role for {model}",
       "roleUnassigned": "No role",
@@ -2968,6 +2969,7 @@
       "waitCompactionBeforeCommand": "Wait for context compaction before running {command}.",
       "waitResponseBeforeCommand": "Wait for the current response before running {command}.",
       "queueFull": "Queue is full — wait for the current response to finish.",
+      "messageStillSaving": "This message hasn't finished saving — try again in a moment.",
       "artifactOpenFailed": "Artifact open failed. Use Download instead."
     },
     "stream": {

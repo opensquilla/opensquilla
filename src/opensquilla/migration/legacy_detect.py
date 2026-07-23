@@ -1,8 +1,11 @@
 """Read-only discovery of importable OpenSquilla profile homes.
 
 Discovery is deliberately demand-driven.  The settings migration surface asks
-for candidates against the gateway's *actual* target home; boot, doctor and
-onboarding no longer call this module.
+for candidates against the gateway's *actual* target home; doctor and
+onboarding no longer call this module.  Gateway boot keeps one advisory,
+log-only hint (a fresh home beside importable legacy data) so headless
+operators still learn their old profile exists — execution stays behind the
+CLI and the settings surface.
 """
 
 from __future__ import annotations

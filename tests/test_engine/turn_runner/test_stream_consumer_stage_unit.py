@@ -11,8 +11,11 @@ runtime wrapper.
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -45,6 +48,7 @@ from opensquilla.engine.types import (
     WarningEvent,
 )
 from opensquilla.provider.types import EnsembleProgressEvent as ProviderEnsembleProgressEvent
+from opensquilla.tools.types import ToolContext
 
 # ---------------------------------------------------------------------------
 # Recording fakes
@@ -204,6 +208,7 @@ def _make_input(
     sync_manager: Any | None = None,
     input_provenance: dict[str, Any] | None = None,
     pending_input_provider: Any | None = None,
+    tool_context: Any | None = None,
 ) -> StreamConsumerStageInput:
     return StreamConsumerStageInput(
         agent=SimpleNamespace(),
@@ -225,6 +230,7 @@ def _make_input(
         session_manager_present=session_manager_present,
         state=state if state is not None else _make_state(),
         pending_input_provider=pending_input_provider,
+        tool_context=tool_context,
     )
 
 
@@ -1273,6 +1279,278 @@ async def test_outer_stage_yields_text_then_done_and_notifies_post_stream() -> N
     assert len(recs["memory_sync_notify"].calls) == 1
     assert recs["memory_sync_notify"].calls[0]["runtime_message"] == "hello there"
     assert recs["memory_sync_notify"].calls[0]["sync_manager_present"] is True
+
+
+@pytest.mark.asyncio
+async def test_outer_stage_runs_only_publish_off_the_event_loop() -> None:
+    """The done handler's artifact publish re-reads and fully validates
+    deliverables (PPTX inflation plus deck parse), so the stage must run
+    THAT phase in a worker thread. The state-mutating pre/post-publish
+    phases stay on the event loop so the shared, by-reference stream
+    accumulators are never mutated concurrently with a cancellation."""
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="hi world")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    inp = _make_input()
+
+    pre_threads: list[threading.Thread] = []
+    publish_threads: list[threading.Thread] = []
+    post_threads: list[threading.Thread] = []
+    real_pre = stage._done_handler.pre_publish
+    real_publish = stage._done_handler.run_publish
+    real_post = stage._done_handler.post_publish
+
+    def recording_pre(event: Any, inner_inp: Any, state: Any) -> Any:
+        pre_threads.append(threading.current_thread())
+        return real_pre(event, inner_inp, state)
+
+    def recording_publish(inner_inp: Any, accumulated_text: str) -> Any:
+        publish_threads.append(threading.current_thread())
+        return real_publish(inner_inp, accumulated_text)
+
+    def recording_post(pre: Any, result: Any, inner_inp: Any, state: Any) -> Any:
+        post_threads.append(threading.current_thread())
+        return real_post(pre, result, inner_inp, state)
+
+    stage._done_handler.pre_publish = recording_pre  # type: ignore[method-assign]
+    stage._done_handler.run_publish = recording_publish  # type: ignore[method-assign]
+    stage._done_handler.post_publish = recording_post  # type: ignore[method-assign]
+    loop_thread = threading.current_thread()
+    yielded = await _drain(stage, inp)
+
+    assert [type(e).__name__ for e in yielded] == ["DoneEvent"]
+    # Blocking publish ran off the loop thread.
+    assert publish_threads
+    assert all(thread is not loop_thread for thread in publish_threads)
+    # State mutations stayed on the loop thread.
+    assert pre_threads == [loop_thread]
+    assert post_threads == [loop_thread]
+
+
+@pytest.mark.asyncio
+async def test_done_publish_cancellation_does_not_race_finalizer() -> None:
+    """Cancelling a turn while the artifact publish is in flight must not
+    tear the shared stream accumulators or leave a half-applied result.
+
+    The publish runs in a worker thread that cannot be interrupted, so the
+    stage must (a) keep every ``_StreamState`` mutation on the event loop --
+    the pre-publish mutations are applied deterministically before the
+    publish starts and the post-publish result is applied only after it
+    completes -- and (b) wait for the worker to drain before the
+    CancelledError unwinds, so a steered follow-up turn's finalizer never
+    reads the accumulators while the worker is still writing to disk.
+    """
+    from opensquilla.engine.artifact_delivery import OmittedArtifactPublishResult
+
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+
+    def blocking_publish(inner_inp: Any, accumulated_text: str) -> Any:
+        # Runs in a worker thread. Announce entry, then block until the test
+        # releases us, mimicking a slow ArtifactStore write.
+        publish_started.set()
+        assert release_publish.wait(timeout=5.0), "publish was never released"
+        publish_finished.set()
+        # A post-publish result that WOULD mutate shared state if applied.
+        return OmittedArtifactPublishResult(
+            failure_summaries=["would-be delivery failure"],
+        )
+
+    agent_run = _RecordingAgentRun(events=[DoneEvent(text="hi world")])
+    stage, _ = _make_stage(agent_run=agent_run)
+    stage._done_handler.run_publish = blocking_publish  # type: ignore[method-assign]
+    state = _make_state()
+    inp = _make_input(state=state)
+
+    task = asyncio.ensure_future(_drain(stage, inp))
+
+    # Handshake: wait until the worker thread has entered the publish.
+    assert await asyncio.to_thread(publish_started.wait, 5.0)
+
+    # Pre-publish ran on the loop and is fully applied before the publish;
+    # post-publish has not run, so its result is not yet in shared state.
+    assert state.done_event is not None
+    assert state.turn_artifacts == []
+    assert state.artifact_delivery_failures == []
+
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+
+    # The cancel is pending on the shielded wait for the worker: the stage
+    # has NOT unwound yet because the worker is still blocked. (Under the
+    # whole-handler offload this task would already be done.)
+    assert not task.done()
+    assert not publish_finished.is_set()
+
+    # Release the worker; the stage drains it, then re-raises CancelledError.
+    release_publish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    # The worker completed before the turn unwound -- a finalizer running
+    # after this point cannot race an in-flight store write.
+    assert publish_finished.is_set()
+    # The drained result's side effects ARE recorded (its failure summary
+    # reaches the shared state the finalizer persists from), while the
+    # notice/warning phases of post_publish stay skipped. It published no
+    # artifacts, so turn_artifacts stays empty.
+    assert state.turn_artifacts == []
+    assert state.artifact_delivery_failures == ["would-be delivery failure"]
+
+
+def _make_publish_tool_context(tmp_path: Path) -> tuple[ToolContext, Path]:
+    """Real publish fixtures: a workspace file the model created and named
+    in its final text, plus an ArtifactStore media root under tmp_path."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    media_root = tmp_path / "media"
+    media_root.mkdir()
+    report = workspace / "report.csv"
+    report.write_text("col_a,col_b\n1,2\n", encoding="utf-8")
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(media_root),
+        artifact_session_id="sess-artifact-1",
+        session_key="agent:main:s1",
+        workspace_file_writes=[
+            {
+                "path": str(report),
+                "relative_path": "report.csv",
+                "name": "report.csv",
+                "suffix": ".csv",
+                "operation": "write",
+                "created": True,
+            }
+        ],
+    )
+    return ctx, media_root
+
+
+def _gate_real_publish(
+    stage: StreamConsumerStage,
+) -> tuple[threading.Event, threading.Event, threading.Event, list[threading.Thread]]:
+    """Wrap the bound ``run_publish`` with an Event handshake: signal entry,
+    block until released, then run the REAL publish (real ArtifactStore
+    writes) and signal completion."""
+    publish_started = threading.Event()
+    release_publish = threading.Event()
+    publish_finished = threading.Event()
+    worker_threads: list[threading.Thread] = []
+    real_publish = stage._done_handler.run_publish
+
+    def gated_publish(inner_inp: Any, accumulated_text: str) -> Any:
+        worker_threads.append(threading.current_thread())
+        publish_started.set()
+        assert release_publish.wait(timeout=5.0), "publish was never released"
+        result = real_publish(inner_inp, accumulated_text)
+        publish_finished.set()
+        return result
+
+    stage._done_handler.run_publish = gated_publish  # type: ignore[method-assign]
+    return publish_started, release_publish, publish_finished, worker_threads
+
+
+@pytest.mark.asyncio
+async def test_single_cancel_records_completed_publish(tmp_path: Path) -> None:
+    """A publish that COMPLETES during a cancelled turn must be recorded.
+
+    The worker's store write and ``ctx.published_artifacts`` append cannot be
+    undone, so the cancel path must still record the result into
+    ``state.turn_artifacts`` (the by-reference accumulator the cancel
+    finalizer persists the transcript from). Invariant: a completed publish
+    is never orphaned -- otherwise the file exists on disk, counts against
+    the disk budget, and is never surfaced to the user.
+    """
+    ctx, media_root = _make_publish_tool_context(tmp_path)
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Wrote report.csv"),
+            DoneEvent(text="Wrote report.csv"),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    publish_started, release_publish, publish_finished, _ = _gate_real_publish(stage)
+    state = _make_state()
+    inp = _make_input(state=state, tool_context=ctx)
+
+    task = asyncio.ensure_future(_drain(stage, inp))
+    assert await asyncio.to_thread(publish_started.wait, 5.0)
+
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    # The stage is draining the shielded worker; it has not unwound yet.
+    assert not task.done()
+
+    release_publish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert publish_finished.is_set()
+    # The real publish took effect: bytes exist under the media root and the
+    # tool context saw the published payload.
+    assert [p for p in media_root.rglob("*") if p.is_file()]
+    assert len(ctx.published_artifacts) == 1
+    assert ctx.published_artifacts[0]["name"] == "report.csv"
+    # ...so the shared turn state must carry the same payload: the cancel
+    # finalizer's transcript persists from state.turn_artifacts.
+    assert state.turn_artifacts == ctx.published_artifacts
+
+
+@pytest.mark.asyncio
+async def test_double_cancel_waits_for_worker_before_unwind(tmp_path: Path) -> None:
+    """A SECOND cancel arriving during the drain must not unwind the turn
+    while the worker thread is still writing to the ArtifactStore -- that
+    would let a finalizer run concurrently with the in-flight store write."""
+    ctx, media_root = _make_publish_tool_context(tmp_path)
+    agent_run = _RecordingAgentRun(
+        events=[
+            TextDeltaEvent(text="Wrote report.csv"),
+            DoneEvent(text="Wrote report.csv"),
+        ]
+    )
+    stage, _ = _make_stage(agent_run=agent_run)
+    publish_started, release_publish, publish_finished, worker_threads = (
+        _gate_real_publish(stage)
+    )
+    state = _make_state()
+    inp = _make_input(state=state, tool_context=ctx)
+
+    task = asyncio.ensure_future(_drain(stage, inp))
+    assert await asyncio.to_thread(publish_started.wait, 5.0)
+
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert not task.done()
+
+    # Second cancel while the drain wait is pending.
+    task.cancel()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    # The coroutine absorbs the repeated cancel: it must NOT finish while
+    # the worker is still blocked mid-publish.
+    assert not task.done()
+    assert not publish_finished.is_set()
+
+    release_publish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # By the time the cancellation unwound, the worker had already finished
+    # its store write.
+    assert publish_finished.is_set()
+
+    # Nothing mutates after the task completed: every store write and
+    # ctx.published_artifacts append happened strictly before the unwind.
+    published_snapshot = list(ctx.published_artifacts)
+    files_snapshot = sorted(str(p) for p in media_root.rglob("*") if p.is_file())
+    for thread in worker_threads:
+        await asyncio.to_thread(thread.join, 5.0)
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert list(ctx.published_artifacts) == published_snapshot
+    assert sorted(str(p) for p in media_root.rglob("*") if p.is_file()) == files_snapshot
 
 
 @pytest.mark.asyncio

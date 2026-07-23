@@ -30,6 +30,7 @@ from .codex_auth import (
     load_codex_credentials,
     refresh_codex_credentials,
 )
+from .error_redaction import redact_upstream_error_code, redact_upstream_error_text
 from .openai import _http_error_body_text, _resolve_llm_proxy
 from .openai_responses import _responses_input
 from .protocol import ProviderConnectionConfig, ProviderMetadata
@@ -252,22 +253,42 @@ class OpenAICodexProvider:
                         if response.status_code != 200:
                             body = await response.aread()
                             yield ErrorEvent(
-                                message=(
+                                message=redact_upstream_error_text(
                                     "ChatGPT Codex request failed "
                                     f"(HTTP {response.status_code}): "
-                                    f"{_http_error_body_text(body)}"
+                                    f"{_http_error_body_text(body)}",
+                                    api_key=credentials.access_token,
+                                    max_len=2000,
                                 ),
                                 code=str(response.status_code),
                             )
                             return
 
-                        async for event in self._parse_sse(response, cfg):
+                        async for event in self._parse_sse(
+                            response,
+                            cfg,
+                            access_token=credentials.access_token,
+                        ):
                             yield event
                         return
         except httpx.TimeoutException as exc:
-            yield ErrorEvent(message=f"Request timed out: {exc}", code="timeout")
+            yield ErrorEvent(
+                message=redact_upstream_error_text(
+                    f"Request timed out: {exc}",
+                    api_key=credentials.access_token,
+                    max_len=2000,
+                ),
+                code="timeout",
+            )
         except httpx.RequestError as exc:
-            yield ErrorEvent(message=f"Request error: {exc}", code="request_error")
+            yield ErrorEvent(
+                message=redact_upstream_error_text(
+                    f"Request error: {exc}",
+                    api_key=credentials.access_token,
+                    max_len=2000,
+                ),
+                code="request_error",
+            )
         except Exception as exc:  # noqa: BLE001 - chat() contract: ErrorEvent instead of raising
             log.exception(
                 "provider.stream_internal_error",
@@ -275,7 +296,11 @@ class OpenAICodexProvider:
                 model=self._model,
             )
             yield ErrorEvent(
-                message=f"Provider response handling failed: {exc}",
+                message=redact_upstream_error_text(
+                    f"Provider response handling failed: {exc}",
+                    api_key=credentials.access_token,
+                    max_len=2000,
+                ),
                 code="provider_internal",
             )
 
@@ -283,6 +308,8 @@ class OpenAICodexProvider:
         self,
         response: httpx.Response,
         cfg: ChatConfig,
+        *,
+        access_token: str = "",
     ) -> AsyncIterator[StreamEvent]:
         tools_acc = ToolStreamAccumulator()
         reasoning = ReasoningAccumulator()
@@ -344,6 +371,10 @@ class OpenAICodexProvider:
             etype = str(event.get("type") or "")
 
             if etype == "error":
+                # Upstream error frames may echo request headers or account
+                # identifiers; this adapter authenticates with an OAuth access
+                # token, so route the text through the same redaction boundary
+                # as the other adapters before it reaches transcripts and logs.
                 error = event.get("error")
                 message = (
                     str(error.get("message") or "ChatGPT Codex stream error")
@@ -355,7 +386,14 @@ class OpenAICodexProvider:
                     if isinstance(error, dict)
                     else str(event.get("code") or "stream_error")
                 )
-                yield ErrorEvent(message=message, code=code)
+                yield ErrorEvent(
+                    message=redact_upstream_error_text(
+                        message,
+                        api_key=access_token,
+                        max_len=2000,
+                    ),
+                    code=redact_upstream_error_code(code, api_key=access_token),
+                )
                 return
 
             if etype == "response.output_text.delta":
@@ -525,8 +563,15 @@ class OpenAICodexProvider:
                 body = event.get("response") or {}
                 error = body.get("error") or {}
                 yield ErrorEvent(
-                    message=str(error.get("message") or "ChatGPT Codex response failed"),
-                    code=str(error.get("code") or "response_failed"),
+                    message=redact_upstream_error_text(
+                        str(error.get("message") or "ChatGPT Codex response failed"),
+                        api_key=access_token,
+                        max_len=2000,
+                    ),
+                    code=redact_upstream_error_code(
+                        str(error.get("code") or "response_failed"),
+                        api_key=access_token,
+                    ),
                 )
                 return
 
@@ -538,7 +583,14 @@ class OpenAICodexProvider:
                     if isinstance(details, dict)
                     else f"ChatGPT Codex {etype}"
                 )
-                yield ErrorEvent(message=message, code=etype.replace("response.", "response_"))
+                yield ErrorEvent(
+                    message=redact_upstream_error_text(
+                        message,
+                        api_key=access_token,
+                        max_len=2000,
+                    ),
+                    code=etype.replace("response.", "response_"),
+                )
                 return
 
         if not response_completed:

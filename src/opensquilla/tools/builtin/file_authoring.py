@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import hashlib
 import io
@@ -202,7 +203,7 @@ def _pdf_markup_text(value: Any, *, base_font: str, cjk_font: str | None) -> str
     return "".join(parts)
 
 
-def _published_response(
+async def _published_response(
     *,
     payload: bytes,
     name: str,
@@ -218,7 +219,10 @@ def _published_response(
         raise ToolError("artifact session scope is not configured for this turn")
 
     try:
-        validate_artifact_for_delivery(
+        # PPTX validation inflates and parses the whole deck; run it off the
+        # gateway event loop so concurrent sessions stay responsive.
+        await asyncio.to_thread(
+            validate_artifact_for_delivery,
             payload,
             source_name=name,
             name=name,
@@ -329,7 +333,7 @@ async def create_csv(rows: list[list[Any]], name: str | None = None) -> str:
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
     writer.writerows(_rows(rows, field_name="rows"))
-    return _published_response(
+    return await _published_response(
         payload=output.getvalue().encode("utf-8-sig"),
         name=_ensure_name(name, default="generated.csv", suffix=".csv"),
         mime=_CSV_MIME,
@@ -373,7 +377,7 @@ async def create_xlsx(sheets: list[dict[str, Any]], name: str | None = None) -> 
 
     output = io.BytesIO()
     workbook.save(output)
-    return _published_response(
+    return await _published_response(
         payload=output.getvalue(),
         name=_ensure_name(name, default="generated.xlsx", suffix=".xlsx"),
         mime=_XLSX_MIME,
@@ -443,7 +447,7 @@ async def create_pptx(slides: list[dict[str, Any]], name: str | None = None) -> 
 
     output = io.BytesIO()
     presentation.save(output)
-    return _published_response(
+    return await _published_response(
         payload=_normalize_zip_timestamps(output.getvalue()),
         name=_ensure_name(name, default="generated.pptx", suffix=".pptx"),
         mime=_PPTX_MIME,
@@ -542,7 +546,7 @@ async def create_pdf_report(
         story.append(Paragraph("No report body was provided.", styles["BodyText"]))
 
     doc.build(story)
-    return _published_response(
+    return await _published_response(
         payload=output.getvalue(),
         name=_ensure_name(name, default="generated.pdf", suffix=".pdf"),
         mime=_PDF_MIME,

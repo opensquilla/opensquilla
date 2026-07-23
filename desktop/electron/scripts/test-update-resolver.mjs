@@ -12,6 +12,7 @@ import {
   candidateFromUpdateChannel,
   orderedUpdateSources,
   updateAssetUrl,
+  updateChannelManifestFromReleaseInventory,
   updateChannelPathForVersion,
   updateFeedBaseUrl,
   validateUpdateChannelManifest,
@@ -333,5 +334,114 @@ const noMacFeed = (tag) => ({ tag_name: tag, assets: [{ name: 'OpenSquilla-mac.z
   ])
   assert.equal(c, null, 'draft releases are not upgrade candidates')
 }
+
+// --- GitHub release-inventory discovery: the second channel-manifest source ---
+
+const releaseAssets = (version) => [
+  { name: 'SHA256SUMS' },
+  { name: 'latest-mac.yml' },
+  { name: 'latest.yml' },
+  { name: `OpenSquilla-${version}-mac-arm64.zip` },
+  { name: `OpenSquilla-${version}-mac-arm64.dmg` },
+  { name: `OpenSquilla-${version}-win-x64.exe` },
+]
+const inventoryRelease = (tag, version, overrides = {}) => ({
+  tag_name: tag,
+  draft: false,
+  prerelease: version.includes('-rc'),
+  published_at: '2026-07-15T00:00:00Z',
+  assets: releaseAssets(version),
+  ...overrides,
+})
+
+// A stable install derives the stable-channel head from the release listing;
+// prereleases, drafts, and newer bases with incomplete assets never advance it.
+{
+  const manifest = updateChannelManifestFromReleaseInventory('0.5.0', [
+    inventoryRelease('v0.5.2rc1', '0.5.2-rc1'),
+    { ...inventoryRelease('v0.5.2', '0.5.2'), draft: true },
+    inventoryRelease('v0.5.1', '0.5.1'),
+    inventoryRelease('v0.5.0', '0.5.0'),
+  ])
+  assert.ok(manifest, 'stable channel head should be derived from the inventory')
+  assert.equal(manifest.tag, 'v0.5.1')
+  assert.equal(manifest.version, '0.5.1')
+  assert.equal(manifest.prerelease, false)
+  // The synthesized manifest satisfies the exact same contract as a mirrored one.
+  assert.deepEqual(validateUpdateChannelManifest(manifest), manifest)
+  const candidate = candidateFromUpdateChannel('0.5.0', manifest, 'win32-x64')
+  assert.equal(candidate?.installer, 'OpenSquilla-0.5.1-win-x64.exe')
+  assert.equal(
+    updateAssetUrl(candidate, 'github'),
+    'https://github.com/opensquilla/opensquilla/releases/download/v0.5.1/OpenSquilla-0.5.1-win-x64.exe',
+  )
+}
+
+// A head release missing a required desktop asset is skipped in favor of the
+// highest complete release.
+{
+  const incomplete = inventoryRelease('v0.5.2', '0.5.2')
+  incomplete.assets = incomplete.assets.filter(
+    (asset) => asset.name !== 'OpenSquilla-0.5.2-win-x64.exe',
+  )
+  const manifest = updateChannelManifestFromReleaseInventory('0.5.0', [
+    incomplete,
+    inventoryRelease('v0.5.1', '0.5.1'),
+  ])
+  assert.equal(manifest?.tag, 'v0.5.1')
+}
+
+// A preview install tracks its own release line: a later rc wins, the final
+// stable of the same base outranks any rc, and other bases are ignored.
+{
+  const manifest = updateChannelManifestFromReleaseInventory('0.5.0-rc4', [
+    inventoryRelease('v0.6.0rc1', '0.6.0-rc1'),
+    inventoryRelease('v0.5.0rc5', '0.5.0-rc5'),
+    inventoryRelease('v0.5.0rc4', '0.5.0-rc4'),
+  ])
+  assert.equal(manifest?.tag, 'v0.5.0rc5')
+  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64')?.version, '0.5.0-rc5')
+}
+{
+  const manifest = updateChannelManifestFromReleaseInventory('0.5.0-rc4', [
+    inventoryRelease('v0.5.0', '0.5.0'),
+    inventoryRelease('v0.5.0rc5', '0.5.0-rc5'),
+  ])
+  assert.equal(manifest?.tag, 'v0.5.0')
+  assert.equal(manifest.prerelease, false)
+}
+
+// The channel head may equal the running version; the candidate gate then
+// reports "up to date" instead of offering a sideways move.
+{
+  const manifest = updateChannelManifestFromReleaseInventory('0.5.0-rc4', [
+    inventoryRelease('v0.5.0rc4', '0.5.0-rc4'),
+  ])
+  assert.equal(manifest?.tag, 'v0.5.0rc4')
+  assert.equal(candidateFromUpdateChannel('0.5.0-rc4', manifest, 'darwin-arm64'), null)
+}
+
+// Non-canonical tag spellings and disagreeing prerelease flags do not
+// participate: URLs and the manifest contract must agree on the exact tag.
+{
+  const manifest = updateChannelManifestFromReleaseInventory('0.5.0-rc4', [
+    inventoryRelease('v0.5.0-rc5', '0.5.0-rc5'),
+    inventoryRelease('v0.5.0rc5', '0.5.0-rc5', { prerelease: false }),
+    inventoryRelease('v0.5.0rc5', '0.5.0-rc5', { published_at: 'July 15, 2026' }),
+  ])
+  assert.equal(manifest, null)
+}
+
+// Nothing eligible → null; malformed inventory or version → error/null.
+assert.equal(updateChannelManifestFromReleaseInventory('0.5.0', []), null)
+assert.equal(
+  updateChannelManifestFromReleaseInventory('0.5.0', [inventoryRelease('v0.6.0rc1', '0.6.0-rc1')]),
+  null,
+)
+assert.equal(updateChannelManifestFromReleaseInventory('not-a-version', []), null)
+assert.throws(
+  () => updateChannelManifestFromReleaseInventory('0.5.0', { message: 'rate limited' }),
+  (err) => err?.code === 'manifest_invalid',
+)
 
 console.log('Update resolver tests passed.')

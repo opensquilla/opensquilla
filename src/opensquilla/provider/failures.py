@@ -320,6 +320,17 @@ _SHARED_TAIL_MATCHERS: tuple[FailureMatcher, ...] = (
         ProviderFailureKind.MALFORMED_RESPONSE,
         raw_codes=frozenset({"invalid_stream_frame", "invalid_stream_order"}),
     ),
+    # Adapter-synthesized terminal-evidence codes: the stream ended without a
+    # finish signal, or a native tool call arrived without usable arguments.
+    # Both are transient from the runtime's point of view — a retry (and then
+    # a fallback provider) can succeed where surfacing a terminal error
+    # cannot. Must precede the "malformed" substring row: some adapters phrase
+    # incomplete tool calls as "malformed tool calls", and MALFORMED_RESPONSE
+    # would downgrade recovery to SURFACE.
+    FailureMatcher(
+        ProviderFailureKind.TRANSPORT_TRANSIENT,
+        raw_codes=frozenset({"incomplete_stream", "incomplete_tool_call"}),
+    ),
     FailureMatcher(
         ProviderFailureKind.MALFORMED_RESPONSE,
         message_substrings=("malformed", "invalid json"),

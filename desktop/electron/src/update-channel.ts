@@ -6,6 +6,8 @@ export const UPDATE_GITHUB_RELEASE_ROOT =
   'https://github.com/opensquilla/opensquilla/releases/download'
 export const UPDATE_GITHUB_RELEASE_PAGE_ROOT =
   'https://github.com/opensquilla/opensquilla/releases/tag'
+export const UPDATE_GITHUB_RELEASES_API_URL =
+  'https://api.github.com/repos/opensquilla/opensquilla/releases?per_page=100'
 
 export type DesktopUpdatePlatform = 'darwin-arm64' | 'win32-x64'
 export type DesktopUpdateSource = 'oss' | 'github'
@@ -124,6 +126,97 @@ export function updateChannelManifestUrl(currentVersion: string, root = UPDATE_O
   const path = updateChannelPathForVersion(currentVersion)
   if (!path) return null
   return `${root.replace(/\/+$/, '')}/channels/${path}`
+}
+
+function requiredReleaseAssets(version: ParsedReleaseTag): string[] {
+  const appVersion = canonicalAppVersion(version)
+  return [
+    'SHA256SUMS',
+    'latest-mac.yml',
+    'latest.yml',
+    `OpenSquilla-${appVersion}-mac-arm64.zip`,
+    `OpenSquilla-${appVersion}-mac-arm64.dmg`,
+    `OpenSquilla-${appVersion}-win-x64.exe`,
+  ]
+}
+
+function releaseOutranks(candidate: ParsedReleaseTag, incumbent: ParsedReleaseTag): boolean {
+  const byBase = compareBase(candidate.base, incumbent.base)
+  if (byBase !== 0) return byBase > 0
+  if (candidate.rc === null) return incumbent.rc !== null
+  if (incumbent.rc === null) return false
+  return candidate.rc > incumbent.rc
+}
+
+// Build the same channel manifest the release mirror publishes, but from the
+// GitHub release inventory (the releases API listing). This is the second
+// discovery source: when the mirrored channel manifest is unreachable, the
+// channel head is recomputed from GitHub metadata and then flows through the
+// exact same manifest validation as a mirrored manifest. Returns null when the
+// current version has no channel or no published release is eligible for it.
+export function updateChannelManifestFromReleaseInventory(
+  currentVersion: string,
+  inventory: unknown,
+): UpdateChannelManifest | null {
+  const current = parseOpenSquillaReleaseTag(currentVersion)
+  if (!current) return null
+  if (!Array.isArray(inventory)) {
+    throw new UpdateChannelError('manifest_invalid', 'The GitHub release inventory must be an array.')
+  }
+  let best: { parsed: ParsedReleaseTag; tag: string; publishedAt: string } | null = null
+  for (const raw of inventory) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue
+    const release = raw as Record<string, unknown>
+    if (release.draft === true) continue
+    const tag = typeof release.tag_name === 'string' ? release.tag_name.trim() : ''
+    const parsed = parseOpenSquillaReleaseTag(tag)
+    // Only canonically-spelled tags participate: the manifest contract and the
+    // release download URLs must agree on the exact tag text.
+    if (!parsed || tag !== canonicalTag(parsed)) continue
+    if (typeof release.prerelease === 'boolean' && release.prerelease !== (parsed.rc !== null)) {
+      continue
+    }
+    if (current.rc === null) {
+      // The stable channel only ever advances to final releases.
+      if (parsed.rc !== null) continue
+    } else if (parsed.base !== current.base) {
+      // The preview channel tracks a single release line.
+      continue
+    }
+    const publishedAt = typeof release.published_at === 'string' ? release.published_at.trim() : ''
+    if (!publishedAt || !validRfc3339(publishedAt)) continue
+    const assetNames = new Set<string>()
+    for (const asset of Array.isArray(release.assets) ? release.assets : []) {
+      const name = (asset as { name?: unknown } | null)?.name
+      if (typeof name === 'string') assetNames.add(name)
+    }
+    if (requiredReleaseAssets(parsed).some((name) => !assetNames.has(name))) continue
+    if (best && !releaseOutranks(parsed, best.parsed)) continue
+    best = { parsed, tag, publishedAt }
+  }
+  if (!best) return null
+  const version = canonicalAppVersion(best.parsed)
+  return validateUpdateChannelManifest({
+    schemaVersion: 1,
+    tag: best.tag,
+    version,
+    baseVersion: best.parsed.base,
+    prerelease: best.parsed.rc !== null,
+    publishedAt: best.publishedAt,
+    releaseUrl: `${UPDATE_GITHUB_RELEASE_PAGE_ROOT}/${best.tag}`,
+    sha256sums: 'SHA256SUMS',
+    platforms: {
+      'darwin-arm64': {
+        feed: 'latest-mac.yml',
+        archive: `OpenSquilla-${version}-mac-arm64.zip`,
+        installer: `OpenSquilla-${version}-mac-arm64.dmg`,
+      },
+      'win32-x64': {
+        feed: 'latest.yml',
+        installer: `OpenSquilla-${version}-win-x64.exe`,
+      },
+    },
+  })
 }
 
 export function validateUpdateChannelManifest(payload: unknown): UpdateChannelManifest {

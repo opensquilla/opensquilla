@@ -7,17 +7,23 @@ the user waited forever for an answer that was fully computed and paid for.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
-from opensquilla.channels.types import OutgoingMessage
+from opensquilla.channels._util import ChannelAccessPolicy
+from opensquilla.channels.delivery_store import IngressClaim
+from opensquilla.channels.types import IncomingMessage, OutgoingMessage
 from opensquilla.gateway.channel_dispatch import (
     _REPLY_SEND_ATTEMPTS,
+    _ChannelInFlightSet,
     _deliver_reply_or_notify,
     _send_channel_reply_guarded,
+    run_channel_dispatch,
 )
 
 
@@ -162,3 +168,123 @@ async def test_success_after_notice_path_is_never_reached_on_delivery() -> None:
     )
     assert delivered is True
     assert not any(m.metadata.get("delivery_failure_notice") for m in channel.sent)
+
+
+def _failing_dispatch_channel(*, supports_slash_commands: bool) -> SimpleNamespace:
+    """A channel whose every send fails transiently, with a claimed ingress row."""
+    channel = SimpleNamespace(
+        policy=ChannelAccessPolicy(),
+        supports_slash_commands=supports_slash_commands,
+        send=AsyncMock(side_effect=_http_error(503)),
+        _delivery_store=MagicMock(
+            claim_inbound=MagicMock(return_value=IngressClaim("evt-1", "tok-1"))
+        ),
+        _delivery_channel_name="slack-main",
+    )
+    receive_count = 0
+
+    async def receive() -> IncomingMessage:
+        nonlocal receive_count
+        receive_count += 1
+        if receive_count == 1:
+            return IncomingMessage(
+                sender_id="user-1",
+                channel_id="chat-1",
+                content="/meta" if supports_slash_commands else "hello",
+                metadata={"is_group": False, "message_id": "m-1"},
+            )
+        raise asyncio.CancelledError
+
+    channel.receive = receive
+    return channel
+
+
+def _dispatch_session_manager() -> SimpleNamespace:
+    return SimpleNamespace(
+        get_or_create=AsyncMock(),
+        update=AsyncMock(),
+        append_message=AsyncMock(),
+    )
+
+
+async def test_command_reply_send_failure_does_not_escape_dispatch_loop() -> None:
+    """A failed slash-command reply must not burn dispatch restart budget."""
+    channel = _failing_dispatch_channel(supports_slash_commands=True)
+    command_reply = OutgoingMessage(
+        content="meta output",
+        reply_to="chat-1",
+        metadata={"command": "/meta", "method": "meta.get"},
+    )
+
+    with (
+        patch(
+            "opensquilla.gateway.channel_dispatch._maybe_resolve_channel_approval",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "opensquilla.gateway.channel_dispatch._dispatch_channel_slash_command",
+            new=AsyncMock(return_value=command_reply),
+        ),
+    ):
+        # Pre-guard, the failed reply send raised out of the loop instead of
+        # reaching the next receive() (which ends the test with cancellation).
+        with pytest.raises(asyncio.CancelledError):
+            await run_channel_dispatch(
+                channel=channel,
+                turn_runner=SimpleNamespace(),
+                session_manager=_dispatch_session_manager(),
+                session_key_builder=lambda _msg: "agent:main:slack:dm:chat-1",
+                session_prefix="slack",
+                task_runtime=SimpleNamespace(),
+                rpc_dispatcher=SimpleNamespace(),
+                channel_rpc_context_factory=lambda _envelope: SimpleNamespace(),
+            )
+
+    # Bounded retries plus one delivery-failure notice, all inside the loop.
+    assert channel.send.await_count == _REPLY_SEND_ATTEMPTS + 1
+    channel._delivery_store.complete_inbound.assert_called_once()
+    assert (
+        channel._delivery_store.complete_inbound.call_args.args[1]
+        == "command_dispatched"
+    )
+
+
+async def test_busy_notice_send_failure_does_not_escape_dispatch_loop() -> None:
+    """A failed capacity notice must not burn dispatch restart budget."""
+    channel = _failing_dispatch_channel(supports_slash_commands=False)
+
+    with (
+        patch(
+            "opensquilla.gateway.channel_dispatch._maybe_resolve_channel_approval",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "opensquilla.gateway.channel_dispatch._apply_saved_channel_run_context",
+            new=AsyncMock(),
+        ),
+        patch(
+            "opensquilla.gateway.channel_dispatch._ingest_channel_message_attachments",
+            new=AsyncMock(),
+        ),
+        patch(
+            "opensquilla.gateway.channel_dispatch._record_delivery_context",
+            new=AsyncMock(),
+        ),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await run_channel_dispatch(
+                channel=channel,
+                turn_runner=SimpleNamespace(),
+                session_manager=_dispatch_session_manager(),
+                session_key_builder=lambda _msg: "agent:main:slack:dm:chat-1",
+                session_prefix="slack",
+                task_runtime=SimpleNamespace(),
+                _in_flight=_ChannelInFlightSet(0),
+            )
+
+    assert channel.send.await_count == 1
+    channel._delivery_store.complete_inbound.assert_called_once()
+    assert (
+        channel._delivery_store.complete_inbound.call_args.args[1]
+        == "capacity_rejected"
+    )

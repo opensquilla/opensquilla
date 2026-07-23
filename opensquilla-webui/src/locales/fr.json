@@ -695,6 +695,7 @@
       "proposerCount": "{count} / {max} · recommandé {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} sur {max}",
       "presetReadOnlyHint": "Cette composition prédéfinie est gérée par le fournisseur.",
+      "presetProviderMismatchNotice": "Les tours utilisent toujours la composition prédéfinie {presetProvider} enregistrée, pas celle de {activeProvider} — resélectionnez « Prédéfini » pour passer à {activeProvider}.",
       "importTierCandidates": "Importer depuis les niveaux de modèle",
       "roleSelectAria": "Rôle de {model}",
       "roleUnassigned": "Aucun rôle",
@@ -2968,6 +2969,7 @@
       "waitCompactionBeforeCommand": "Attendez le compactage du contexte avant d'exécuter {command}.",
       "waitResponseBeforeCommand": "Attendez la réponse actuelle avant d'exécuter {command}.",
       "queueFull": "La file d'attente est pleine — attendez la fin de la réponse actuelle.",
+      "messageStillSaving": "Ce message n'est pas encore enregistré — réessayez dans un instant.",
       "artifactOpenFailed": "Échec de l'ouverture de l'artefact. Utilisez Télécharger à la place."
     },
     "stream": {

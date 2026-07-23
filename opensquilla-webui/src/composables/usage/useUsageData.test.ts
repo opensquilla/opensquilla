@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildUsageCsv } from './usageCsv'
+import { effectiveCnyPerUsd } from './nativeBilling'
 import { normalizeUsageQueryResponse } from './useUsageQuery'
 
 function parseCsvLine(line: string): string[] {
@@ -108,13 +109,26 @@ describe('usage CSV native billing compatibility', () => {
       'native_billing_missing_confirmed_receipt_count',
       'native_billing_pending_receipt_count',
     ])
-    // Existing cost_cny keeps its historical UI-rate projection semantics;
-    // exact native CNY is additive in native_billed_by_currency below.
+    // Without a caller-provided rate the historical 7.25 default still
+    // applies (mixed-version compatibility); exact native CNY stays additive
+    // in native_billed_by_currency below.
     expect(summary[13]).toBe('7.250000000')
     expect(session[13]).toBe('7.250000')
     expect(JSON.parse(summary[21]).CNY.amountNanos).toBe('6975000000')
     expect(JSON.parse(session[21]).CNY.usdEquivalentNanos).toBe('1000000000')
     expect(summary.slice(22)).toEqual(['0', 'complete', '123', '', '0', '0'])
     expect(session.slice(22)).toEqual(['0', 'complete', '123', '', '0', '0'])
+
+    // The Usage view exports with the ledger's effective rate, so projected
+    // cost_cny agrees with the receipt-exact native amount (¥6.975 for $1).
+    const rate = effectiveCnyPerUsd(snapshot)
+    expect(rate).toBe(6.975)
+    const [, exactSummary, exactSession] = buildUsageCsv(
+      snapshot,
+      snapshot.sessions,
+      rate ?? undefined,
+    ).split('\n')
+    expect(parseCsvLine(exactSummary)[13]).toBe('6.975000000')
+    expect(parseCsvLine(exactSession)[13]).toBe('6.975000')
   })
 })

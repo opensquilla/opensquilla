@@ -212,6 +212,39 @@ def test_inherited_primary_credentials_remain_authoritative_on_custom_origin(
     assert resolution.provider_config.base_url == "https://primary-proxy.example/v1"
 
 
+def test_registry_env_follows_operator_owned_endpoint(monkeypatch) -> None:
+    """A provider spec without a default base URL (azure-style) binds its
+    registry env key to the operator-supplied endpoint, so the env fallback
+    must follow the profile base_url instead of being origin-vetoed."""
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure-env")
+    cfg = _config_with_flag(
+        azure=LlmProviderProfile(base_url="https://acct.azure-endpoint.example/v1")
+    )
+
+    resolution = resolve_provider_deployment(cfg, "azure", "gpt-test")
+
+    assert resolution.ready is True
+    assert resolution.credential_source == "registry_env"
+    assert resolution.credential_env == "AZURE_OPENAI_API_KEY"
+    assert resolution.endpoint_source == "profile"
+    assert resolution.provider_config is not None
+    assert resolution.provider_config.api_key == "sk-azure-env"
+    assert (
+        resolution.provider_config.base_url
+        == "https://acct.azure-endpoint.example/v1"
+    )
+
+
+def test_operator_owned_endpoint_still_requires_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "sk-azure-env")
+    cfg = _config_with_flag()
+
+    resolution = resolve_provider_deployment(cfg, "azure", "gpt-test")
+
+    assert resolution.ready is False
+    assert resolution.reason == "missing_base_url"
+
+
 def test_member_endpoint_override_cannot_reuse_inherited_primary_credential() -> None:
     inherited = ProviderConfig(
         provider="openai",
@@ -284,9 +317,25 @@ def test_member_endpoint_override_accepts_explicit_member_credential() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_gate_requires_flag(monkeypatch) -> None:
+def test_gate_route_mode_flag_off_leaves_routed_choice_unblocked(monkeypatch) -> None:
+    """Default ``tier_provider_mismatch='route'``: with the execution flag
+    off, the documented contract still runs the tier's model id on the
+    active provider, so the gate must not mark the routed choice blocked."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    cfg = GatewayConfig()  # flag off, mismatch policy defaults to 'route'
+    metadata = {"routing_applied": True, "routed_provider": "openai"}
+    assert (
+        cross_provider_tier_config(cfg, metadata, "gpt-5.4-nano", active_provider_id="openrouter")
+        is None
+    )
+    assert "routed_provider_blocked" not in metadata
+    assert "routed_provider_fallback_reason" not in metadata
+
+
+def test_gate_veto_mode_flag_off_blocks_routed_choice(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
     cfg = GatewayConfig()  # flag off
+    cfg.squilla_router.tier_provider_mismatch = "veto"
     metadata = {"routing_applied": True, "routed_provider": "openai"}
     assert (
         cross_provider_tier_config(cfg, metadata, "gpt-5.4-nano", active_provider_id="openrouter")
@@ -298,9 +347,49 @@ def test_gate_requires_flag(monkeypatch) -> None:
     )
 
 
-def test_flag_off_never_applies_foreign_model_to_primary(monkeypatch) -> None:
+def test_flag_off_route_mode_applies_routed_model_to_primary(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
     cfg = GatewayConfig()
+    selector = ModelSelector(
+        SelectorConfig(
+            primary=ProviderConfig(
+                "openrouter",
+                "deepseek/deepseek-v4-pro",
+                api_key="or-key",
+            )
+        )
+    )
+    metadata: dict[str, object] = {
+        "routing_applied": True,
+        "routed_provider": "openai",
+        "routed_model": "gpt-foreign",
+    }
+
+    tier_config = cross_provider_tier_config(
+        cfg,
+        metadata,
+        "gpt-foreign",
+        active_provider_id="openrouter",
+    )
+    provider = apply_model_override(
+        selector,
+        "gpt-foreign",
+        turn_metadata=metadata,
+        realign_routed_model=False,
+        tier_provider_config=tier_config,
+    )
+
+    assert provider is not None
+    assert selector.current_config.provider == "openrouter"
+    assert selector.current_config.model == "gpt-foreign"
+    assert metadata["executed_provider"] == "openrouter"
+    assert metadata["executed_model"] == "gpt-foreign"
+
+
+def test_flag_off_veto_mode_never_applies_foreign_model_to_primary(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+    cfg = GatewayConfig()
+    cfg.squilla_router.tier_provider_mismatch = "veto"
     selector = ModelSelector(
         SelectorConfig(
             primary=ProviderConfig(

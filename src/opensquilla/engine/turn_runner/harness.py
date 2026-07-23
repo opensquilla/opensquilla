@@ -51,6 +51,7 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
     RouterContextPort,
     RunPipelineRequest,
     SessionIdResolverPort,
+    ToolSurfaceSelectorPort,
 )
 from opensquilla.engine.turn_runner.provider_and_tools_stage import (
     ProviderResolverPort,
@@ -225,6 +226,94 @@ class _TurnRunnerPromptAssemblerAdapter(PromptAssemblerPort):
             bootstrap_context_mode=bootstrap_context_mode,
             fresh_user_session=fresh_user_session,
         )
+
+
+class _TurnRunnerToolSurfaceSelectorAdapter(ToolSurfaceSelectorPort):
+    """Apply the registered request selector to authorized tools and skills."""
+
+    def select(
+        self,
+        *,
+        agent_id: str,
+        semantic_message: str,
+        tool_defs: list[Any],
+        skill_catalog: Any | None,
+    ) -> tuple[list[Any], Any | None, dict[str, Any], str | None]:
+        from opensquilla.engine.tool_surface import (
+            empty_skill_catalog,
+            filter_skill_catalog,
+            filter_tool_definitions,
+            select_tool_surface,
+        )
+
+        definitions = list(tool_defs)
+        selection = select_tool_surface(agent_id, semantic_message)
+        if selection is None:
+            return definitions, skill_catalog, {}, None
+
+        selected_defs = filter_tool_definitions(definitions, selection)
+        selected_catalog = filter_skill_catalog(skill_catalog, selection)
+
+        skill_name = selection.skill_name
+        selected_skills = tuple(getattr(selected_catalog, "skills", ()))
+        skill_found = bool(
+            skill_name
+            and any(
+                getattr(skill, "name", None) == skill_name
+                for skill in selected_skills
+            )
+        )
+        skill_preloaded = False
+        preloaded_skill_context: str | None = None
+        if skill_name and skill_found and selection.preload_skill:
+            selected_skill = next(
+                skill
+                for skill in selected_skills
+                if getattr(skill, "name", None) == skill_name
+            )
+            skill_content = str(getattr(selected_skill, "content", "") or "").strip()
+            if skill_content:
+                skill_preloaded = True
+                preloaded_skill_context = (
+                    f"[Preloaded request skill: {skill_name}]\n"
+                    "This is the only workflow skill selected for this request. "
+                    "Follow its tool contract directly; do not call skill_view.\n\n"
+                    f"{skill_content}"
+                )
+                selected_defs = [
+                    definition
+                    for definition in selected_defs
+                    if getattr(definition, "name", "") != "skill_view"
+                ]
+                selected_catalog = empty_skill_catalog(selected_catalog)
+        if skill_name and not skill_found:
+            selected_defs = [
+                definition
+                for definition in selected_defs
+                if getattr(definition, "name", "") != "skill_view"
+            ]
+
+        guidance = selection.guidance
+        metadata = {
+            "query_tool_profile": selection.profile,
+            "query_tool_count_before": len(definitions),
+            "query_tool_count_after": len(selected_defs),
+            "query_tool_names": [
+                getattr(definition, "name", "") for definition in selected_defs
+            ],
+            "query_skill_name": skill_name,
+            "query_skill_found": skill_found,
+            "query_skill_preloaded": skill_preloaded,
+            "query_skill_preloaded_chars": len(preloaded_skill_context or ""),
+            "query_max_iterations": selection.max_iterations,
+            "query_repeat_call_threshold": selection.repeat_call_threshold,
+            "query_profile_guidance_chars": len(guidance),
+        }
+        if preloaded_skill_context:
+            # Private stage handoff: PromptAssemblerStage removes this key
+            # before metadata reaches logs or the persisted turn.
+            metadata["_query_preloaded_skill_context"] = preloaded_skill_context
+        return selected_defs, selected_catalog, metadata, guidance or None
 
 class _TurnRunnerPipelineExecutionAdapter(PipelineExecutionPort):
     """Bind ``TurnRunner._run_pipeline`` and unpack ``RunPipelineRequest``.

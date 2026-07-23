@@ -4721,6 +4721,11 @@ class Agent:
                         max_iterations_guidance = (
                             "Pass --max-iterations 0 or max_iterations=0 for unlimited tasks."
                         )
+                    elif max_iterations_source.startswith("query profile "):
+                        max_iterations_guidance = (
+                            "The request profile bounded tool iterations to prevent repeated "
+                            "calls; use the completed evidence for the final answer."
+                        )
                     else:
                         max_iterations_guidance = (
                             "Set AgentConfig.max_iterations=0 for unlimited tasks."

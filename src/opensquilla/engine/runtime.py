@@ -150,6 +150,7 @@ from opensquilla.engine.turn_runner.harness import (
     _TurnRunnerT3UpgradeCompactionAdapter,
     _TurnRunnerTimeoutBudgetAdapter,
     _TurnRunnerToolBuilderAdapter,
+    _TurnRunnerToolSurfaceSelectorAdapter,
     _TurnRunnerTranscriptAppendAdapter,
     _TurnRunnerTurnErrorPersistAdapter,
     _TurnRunnerTurnMemoryCaptureAdapter,
@@ -2596,6 +2597,7 @@ class TurnRunner:
             prompt_report_builder=_PromptReportBuilderAdapter(),
             session_id_resolver=_TurnRunnerSessionIdResolverAdapter(self),
             memory_fingerprint=_TurnRunnerMemoryFingerprintAdapter(self),
+            tool_surface_selector=_TurnRunnerToolSurfaceSelectorAdapter(),
         )
         # TurnRunner stage decomposition AgentBootstrapStage instance. Holds no
         # per-turn state. Active unconditionally as of.

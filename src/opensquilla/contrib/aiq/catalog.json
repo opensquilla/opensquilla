@@ -188,7 +188,7 @@
   "module": "lib.tools.sql_data_tools.securities_tools",
   "attr": "securities_search",
   "group": "read",
-  "description": "Screen the bond universe. Returns the LATEST print snapshot only (prices/yields/ spreads as of each bond's last trade) \u2014 it CANNOT answer as-of/historical-date price questions; for prices or yields as of a past date use prints_search(start_date/end_date). When: finding bonds by issuer / CUSIP / ISIN / sector / credit grade / coupon / yield / maturity / liquidity; rankings and leaderboards (order_by). NOT for: historical prices (prints_search), individual trade history (prints_search), single-CUSIP CP+ deep-dive (mktx_cpplus). Date semantics: - Prices/yields/spreads in the response are ALWAYS the latest print \u2014 no date filter changes that. - liquidity_start / liquidity_end (YYYY-MM-DD) date-scope the LIQUIDITY aggregates (trade counts / notional) only \u2014 use for exact date-scoped activity leaderboards. - issue_start / issue_end (YYYY-MM-DD) filter by issuance date (\"bonds issued today\"). Returns: JSON bonds array (sector, industry; CP+ fields auto-enriched for authorised users) with meta.snapshot_semantics='latest_only'.",
+  "description": "Screen the bond universe using the latest TRACE snapshot. Supports issuer/CUSIP, grade/sector, coupon/yield/price/duration/maturity, issue-date, liquidity and CP+ filters plus server-side rankings. detail='compact' is the bounded discovery/ranking projection; detail='full' adds spread, benchmark and authorised CP+ fields. maturity_ladder_years builds one server-ranked row per requested year. For exactly one resolved bond, include_recent_prints/include_cpp_history attach verified related data in the same call. include_period_history='day'|'week'|'month' batches history for at most five returned tranches. NOT for arbitrary historical as-of price snapshots.",
   "params": {
    "cusip_id": {
     "type": [
@@ -256,6 +256,30 @@
      "null"
     ]
    },
+   "price_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "price_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "duration_min": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
+   "duration_max": {
+    "type": [
+     "string",
+     "null"
+    ]
+   },
    "maturity_start": {
     "type": [
      "string",
@@ -267,6 +291,20 @@
      "string",
      "null"
     ]
+   },
+   "maturity_years": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Relative years-to-maturity range; preserve both requested endpoints."
+   },
+   "maturity_ladder_years": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Comma-separated years or ascending year range for one-call ladder selection."
    },
    "issue_start": {
     "type": [
@@ -317,19 +355,31 @@
     ]
    },
    "order_by": {
-    "type": "string"
+    "type": "string",
+    "default": "smart"
    },
    "limit": {
     "type": [
      "string",
      "null"
-    ]
+    ],
+    "default": "50"
    },
    "offset": {
     "type": [
      "string",
      "null"
-    ]
+    ],
+    "default": "0"
+   },
+   "detail": {
+    "type": "string",
+    "enum": [
+     "compact",
+     "full"
+    ],
+    "default": "full",
+    "description": "compact = small first-pass discovery/ranking projection; full = complete enriched record. Reuse identical filters to expand."
    },
    "include_liquidity": {
     "type": [
@@ -353,7 +403,8 @@
     "type": [
      "string",
      "null"
-    ]
+    ],
+    "default": "7"
    },
    "liquidity_start": {
     "type": [
@@ -396,6 +447,41 @@
      "string",
      "null"
     ]
+   },
+   "include_recent_prints": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "For exactly one resolved bond, attach recent TRACE prints under related_data."
+   },
+   "recent_prints_limit": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "default": "10"
+   },
+   "include_cpp_history": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "For exactly one resolved bond, attach authorised CP+ history under related_data."
+   },
+   "cpp_history_lookback_days": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "default": "7"
+   },
+   "include_period_history": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "day, week, or month; batches TRACE history for at most five returned tranches."
    }
   },
   "required": []

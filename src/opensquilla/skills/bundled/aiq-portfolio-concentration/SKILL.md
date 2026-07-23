@@ -12,10 +12,11 @@ metadata:
     emoji: "🥧"
 ---
 
-# Portfolio Concentration (executable)
+# Portfolio concentration
 
-Computes exposure concentration **exactly** from a list of holdings, so the
-agent never eyeballs percentages or hand-computes an HHI.
+Compute exposure concentration only from the resolved portfolio's holdings and
+tool-returned analytics. Never infer weights from a portfolio name or from a
+partial chat table.
 
 ## When to use
 - "How concentrated is this portfolio by issuer / sector?"
@@ -23,47 +24,23 @@ agent never eyeballs percentages or hand-computes an HHI.
 - "Give me the HHI / a diversification read on these holdings."
 
 ## How to use
-1. Gather holdings (from a portfolio tool or the user's upload): each needs a
-   market value (or notional) and a grouping key (issuer / sector / rating).
-2. Run the bundled script from this skill's directory:
-   `python3 scripts/hhi.py input.json` (or pipe the JSON on stdin). It prints a
-   single JSON result object to stdout.
-3. Quote `hhi`, `top_n`, and the per-group weights verbatim.
 
-## Input schema (JSON)
-```json
-{
-  "holdings": [
-    {"group": "AAPL", "value": 5000000},
-    {"group": "MSFT", "value": 3000000},
-    {"group": "F",    "value": 2000000}
-  ],
-  "group_by": "issuer",   // optional label, echoed back
-  "top_n": 5              // optional, default 5
-}
-```
-- `holdings`: list of objects with a grouping key and a value.
-  - Group field aliases: `group`, `issuer`, `sector`, `rating`, `name`, `ticker`.
-  - Value field aliases: `value`, `market_value`, `mv`, `notional`, `weight`,
-    `par`, `quantity`.
-- Rows sharing a group are summed before weighting.
+1. If the request does not identify a portfolio and no active portfolio exists
+   in context, ask which portfolio once. Do not invent holdings or weights.
+2. Resolve it with `portfolio_list` and retrieve its complete holdings with
+   `portfolio_list_holdings`; do not repeat either successful call.
+3. Call `portfolio_analytics` for the requested sector, issuer, rating,
+   duration, or cash-flow view. Prefer its returned group weights and totals to
+   hand aggregation.
+4. For "what sector risk do I have," show every returned sector weight, the top
+   concentrations, and any explicit benchmark difference the tool supplies.
+   Sector identity alone is not a risk diagnosis; label concentration as the
+   observable and do not invent a macro scenario.
+5. Render a chart only when the user asks for one. A text/table question should
+   stop after analytics.
 
-## Output (stdout JSON)
-```json
-{
-  "total_value": 10000000,
-  "n_groups": 3,
-  "hhi": 3800,                  // 0–10000 scale (sum of squared % weights)
-  "hhi_normalized": 0.07,       // 0–1, adjusts for number of groups
-  "effective_n": 2.63,          // 1/Σwᵢ² — "effective number of names"
-  "concentration_label": "moderately concentrated",
-  "top_n": [
-    {"group": "AAPL", "value": 5000000, "weight_pct": 50.0},
-    {"group": "MSFT", "value": 3000000, "weight_pct": 30.0}
-  ],
-  "top_n_weight_pct": 80.0
-}
-```
-
-HHI bands (sum-of-squared-percent convention): <1500 diversified,
-1500–2500 moderate, >2500 concentrated. See `references/hhi.md`.
+If HHI is explicitly requested and the analytics tool does not return it, use
+the complete returned group weights: `HHI = Σ(weight_pct²)` on the 0–10,000
+scale. State that it was calculated from the displayed complete weights. Do not
+calculate HHI from a truncated top-N list. Conventional bands are below 1,500
+diversified, 1,500–2,500 moderately concentrated, and above 2,500 concentrated.

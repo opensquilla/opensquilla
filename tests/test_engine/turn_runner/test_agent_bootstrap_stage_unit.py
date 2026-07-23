@@ -315,6 +315,31 @@ async def test_tool_repeat_nudge_threshold_env_zero_disables_recovery(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_query_profile_bounds_iterations_and_enables_selected_tool_recovery(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD", "0")
+    turn = _make_turn(
+        metadata={
+            "query_tool_profile": "bond_ranking",
+            "query_max_iterations": 1,
+            "query_repeat_call_threshold": 2,
+            "query_tool_names": ["securities_search"],
+        }
+    )
+
+    out = await _make_stage().run(_make_input(turn=turn))
+
+    assert out.output.effective_max_iterations == 1
+    assert out.output.effective_max_iterations_source == "query profile bond_ranking"
+    assert out.output.agent_config.max_iterations == 1
+    assert out.output.agent_config.repeated_tool_call_recovery_threshold == 2
+    assert out.output.agent_config.repeated_tool_call_recovery_extra_tools == (
+        "securities_search",
+    )
+
+
+@pytest.mark.asyncio
 async def test_placeholder_escalation_and_wrapup_env_thread_to_agent_config(
     monkeypatch,
 ) -> None:

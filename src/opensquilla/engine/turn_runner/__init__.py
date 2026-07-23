@@ -56,6 +56,7 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
     RouterContextPort,
     RunPipelineRequest,
     SessionIdResolverPort,
+    ToolSurfaceSelectorPort,
 )
 from opensquilla.engine.turn_runner.provider_and_tools_stage import (
     ProviderAndToolsStage,
@@ -131,6 +132,7 @@ __all__ = [
     "RunPipelineRequest",
     "SessionAppendPort",
     "SessionIdResolverPort",
+    "ToolSurfaceSelectorPort",
     "SessionTotalsPort",
     "StageOutcome",
     "StreamConsumerStage",

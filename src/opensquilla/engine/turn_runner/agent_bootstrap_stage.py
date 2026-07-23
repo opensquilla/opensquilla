@@ -20,7 +20,7 @@ future AgentConfig-validation early-yield branch.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from opensquilla.engine.runtime_recovery import (
@@ -227,6 +227,64 @@ class _ResolvedBudgets:
     tool_timeout: float
     request_timeout: float
     max_provider_retries: int
+
+
+def _apply_query_profile_iteration_bound(
+    budgets: _ResolvedBudgets,
+    metadata: dict[str, Any],
+) -> _ResolvedBudgets:
+    """Clamp ordinary model/tool iterations for a deterministic profile.
+
+    A positive operator/session limit remains authoritative when it is already
+    stricter. The agent's existing tool-free finalization attempt happens after
+    this ordinary-iteration limit, so a one-call profile can execute one tool
+    iteration and still produce a grounded final answer.
+    """
+
+    raw_limit = metadata.get("query_max_iterations")
+    if (
+        not isinstance(raw_limit, int)
+        or isinstance(raw_limit, bool)
+        or raw_limit <= 0
+    ):
+        return budgets
+    if budgets.max_iterations > 0 and budgets.max_iterations <= raw_limit:
+        return budgets
+    profile = str(metadata.get("query_tool_profile") or "request")
+    return replace(
+        budgets,
+        max_iterations=raw_limit,
+        max_iterations_source=f"query profile {profile}",
+    )
+
+
+def _query_profile_repeat_threshold(
+    configured: int,
+    metadata: dict[str, Any],
+) -> int:
+    raw_threshold = metadata.get("query_repeat_call_threshold")
+    if (
+        not isinstance(raw_threshold, int)
+        or isinstance(raw_threshold, bool)
+        or raw_threshold <= 0
+    ):
+        return configured
+    if configured <= 0:
+        return raw_threshold
+    return min(configured, raw_threshold)
+
+
+def _query_profile_repeat_tools(
+    configured: tuple[str, ...],
+    metadata: dict[str, Any],
+) -> tuple[str, ...]:
+    raw_names = metadata.get("query_tool_names")
+    profile_names = (
+        tuple(str(name) for name in raw_names if isinstance(name, str) and name)
+        if isinstance(raw_names, list)
+        else ()
+    )
+    return tuple(dict.fromkeys((*configured, *profile_names)))
 
 
 @dataclass(frozen=True)
@@ -598,6 +656,7 @@ class AgentBootstrapStage:
             request_timeout=inp.request_timeout,
             max_provider_retries=inp.max_provider_retries,
         )
+        budgets = _apply_query_profile_iteration_bound(budgets, inp.turn.metadata)
 
         # 2. Resolve max_tokens, context_window, capabilities from catalog
         catalog = self._model_catalog.lookup(inp.resolved_model, inp.active_provider_id)
@@ -612,6 +671,21 @@ class AgentBootstrapStage:
         agent_metadata = inp.turn.metadata
         agent_metadata["agent_max_iterations"] = budgets.max_iterations
         agent_metadata["agent_max_iterations_source"] = budgets.max_iterations_source
+        configured_repeat_threshold = _nonnegative_int_from_env(
+            "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
+            AgentConfig().repeated_tool_call_recovery_threshold,
+        )
+        repeat_call_threshold = _query_profile_repeat_threshold(
+            configured_repeat_threshold,
+            agent_metadata,
+        )
+        configured_repeat_tools = _name_tuple_from_env(
+            "OPENSQUILLA_TOOL_REPEAT_NUDGE_TOOLS"
+        )
+        repeat_call_tools = _query_profile_repeat_tools(
+            configured_repeat_tools,
+            agent_metadata,
+        )
 
         # 4. Construct AgentConfig (declarative, single call site)
         #
@@ -769,13 +843,8 @@ class AgentBootstrapStage:
                 "OPENSQUILLA_MID_BUDGET_NO_DIFF_NUDGE",
                 AgentConfig().mid_budget_no_diff_nudge,
             ),
-            repeated_tool_call_recovery_threshold=_nonnegative_int_from_env(
-                "OPENSQUILLA_TOOL_REPEAT_NUDGE_THRESHOLD",
-                AgentConfig().repeated_tool_call_recovery_threshold,
-            ),
-            repeated_tool_call_recovery_extra_tools=_name_tuple_from_env(
-                "OPENSQUILLA_TOOL_REPEAT_NUDGE_TOOLS",
-            ),
+            repeated_tool_call_recovery_threshold=repeat_call_threshold,
+            repeated_tool_call_recovery_extra_tools=repeat_call_tools,
             provider_history_dedup_enabled=_bool_from_env(
                 "OPENSQUILLA_PROVIDER_HISTORY_DEDUP",
                 AgentConfig().provider_history_dedup_enabled,

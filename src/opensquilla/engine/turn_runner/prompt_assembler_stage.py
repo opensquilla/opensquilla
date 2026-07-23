@@ -108,6 +108,20 @@ class PromptAssemblerPort(Protocol):
         fresh_user_session: bool = False,
     ) -> str | tuple[str, str]: ...
 
+
+@runtime_checkable
+class ToolSurfaceSelectorPort(Protocol):
+    """Resolve a request-scoped subset of already-authorized tools/skills."""
+
+    def select(
+        self,
+        *,
+        agent_id: str,
+        semantic_message: str,
+        tool_defs: list[Any],
+        skill_catalog: Any | None,
+    ) -> tuple[list[Any], Any | None, dict[str, Any], str | None]: ...
+
 @runtime_checkable
 class PipelineExecutionPort(Protocol):
     """Wraps ``TurnRunner._run_pipeline``.
@@ -342,6 +356,7 @@ class PromptAssemblerStage:
         prompt_report_builder: PromptReportBuilderPort,
         session_id_resolver: SessionIdResolverPort,
         memory_fingerprint: MemoryFingerprintPort,
+        tool_surface_selector: ToolSurfaceSelectorPort | None = None,
     ) -> None:
         self._prompt_assembler = prompt_assembler
         self._pipeline_executor = pipeline_executor
@@ -350,6 +365,7 @@ class PromptAssemblerStage:
         self._prompt_report_builder = prompt_report_builder
         self._session_id_resolver = session_id_resolver
         self._memory_fingerprint = memory_fingerprint
+        self._tool_surface_selector = tool_surface_selector
 
     async def run(
         self,
@@ -358,20 +374,63 @@ class PromptAssemblerStage:
         # Local imports keep the module import-cycle-free.
         from opensquilla.engine.turn_runner.outcome import StageOutcome
 
-        # 1. Assemble identity prompt
+        # 1. Narrow model-visible tools/skills before rendering either the
+        # prompt's tool-name block or provider JSON schemas. This can only
+        # remove definitions that already survived ToolContext authorization.
+        tool_defs = list(inp.tool_defs)
+        skill_catalog = inp.skill_catalog
+        surface_metadata: dict[str, Any] = {}
+        profile_guidance: str | None = None
+        preloaded_skill_context: str | None = None
+        if self._tool_surface_selector is not None:
+            try:
+                (
+                    tool_defs,
+                    skill_catalog,
+                    surface_metadata,
+                    profile_guidance,
+                ) = self._tool_surface_selector.select(
+                    agent_id=inp.agent_id,
+                    semantic_message=inp.semantic_input,
+                    tool_defs=tool_defs,
+                    skill_catalog=skill_catalog,
+                )
+                raw_preloaded_skill_context = surface_metadata.pop(
+                    "_query_preloaded_skill_context",
+                    None,
+                )
+                if isinstance(raw_preloaded_skill_context, str):
+                    preloaded_skill_context = raw_preloaded_skill_context
+            except Exception as exc:  # noqa: BLE001 - optimization must fail open
+                surface_metadata = {
+                    "query_tool_profile": "full",
+                    "query_tool_profile_error": str(exc),
+                }
+                tool_defs = list(inp.tool_defs)
+                skill_catalog = inp.skill_catalog
+                profile_guidance = None
+                preloaded_skill_context = None
+
+        extra_prompt_context = (
+            dict(inp.extra_prompt_context) if inp.extra_prompt_context else {}
+        )
+        if profile_guidance:
+            extra_prompt_context["Request Tool Profile"] = profile_guidance
+
+        # 2. Assemble identity prompt
         prompt_metadata: dict[str, Any] = {}
         base_prompt = self._prompt_assembler.assemble_prompt(
             inp.agent_id,
-            inp.tool_defs,
+            tool_defs,
             session_key=inp.session_key,
             semantic_message=inp.semantic_input,
-            extra_context=inp.extra_prompt_context,
+            extra_context=extra_prompt_context or None,
             prompt_metadata=prompt_metadata,
             bootstrap_context_mode=inp.bootstrap_context_mode,
             fresh_user_session=inp.fresh_user_session,
         )
 
-        # 2. Fetch router context (transcript-driven)
+        # 3. Fetch router context (transcript-driven)
         router_context = await self._router_context.fetch_router_context(
             inp.session_key,
             exclude_last_user=(
@@ -414,13 +473,13 @@ class PromptAssemblerStage:
             else None
         )
 
-        # 3. Run pre-turn pipeline (model routing, skills, prompt cache, etc.)
+        # 4. Run pre-turn pipeline (model routing, skills, prompt cache, etc.)
         request = RunPipelineRequest(
             runtime_message=inp.runtime_message,
             session_key=inp.session_key,
             provider=inp.provider,
             cloned_selector=inp.cloned_selector,
-            tool_defs=inp.tool_defs,
+            tool_defs=tool_defs,
             base_prompt=base_prompt,
             attachments=inp.attachments,
             semantic_message=inp.semantic_input,
@@ -438,16 +497,17 @@ class PromptAssemblerStage:
             tool_context=inp.effective_tool_context,
             normalization_metadata=inp.normalization_metadata,
             input_provenance=inp.input_provenance,
-            skill_catalog=inp.skill_catalog,
+            skill_catalog=skill_catalog,
             usage_execution_context=inp.usage_execution_context,
         )
         turn, provider = await self._pipeline_executor.run_pipeline(request)
 
-        # 4. Merge prompt + tool metadata
+        # 5. Merge prompt + tool metadata
         turn.metadata.update(prompt_metadata)
         turn.metadata.update(inp.tool_metadata)
+        turn.metadata.update(surface_metadata)
 
-        # 5. Memory fingerprint merge (defensive — port returns None to skip)
+        # 6. Memory fingerprint merge (defensive — port returns None to skip)
         fingerprint = self._memory_fingerprint.memory_mode_fingerprint()
         if fingerprint is not None:
             prompt_fingerprint = turn.metadata.get("memory_mode_fingerprint")
@@ -457,7 +517,7 @@ class PromptAssemblerStage:
                 )
             turn.metadata["memory_mode_fingerprint"] = fingerprint
 
-        # 6. Effective runtime message + selector override / fallback wrap
+        # 7. Effective runtime message + selector override / fallback wrap
         effective_runtime_message = getattr(turn, "message", inp.runtime_message)
         if inp.model and inp.cloned_selector is not None:
             from opensquilla.engine.selector_override import apply_model_override
@@ -483,14 +543,20 @@ class PromptAssemblerStage:
                 turn_metadata=turn.metadata,
             )
 
-        # 7. Resolve final prompt + cache breakpoints
+        # 8. Resolve final prompt + cache breakpoints
         (
             final_prompt,
             cache_breakpoints,
             request_context_prompt,
         ) = self._prompt_config_resolver.resolve_prompt_config(turn)
+        if preloaded_skill_context:
+            request_context_prompt = "\n\n".join(
+                part
+                for part in (request_context_prompt, preloaded_skill_context)
+                if part and part.strip()
+            )
 
-        # 8. Resolve session_id and build prompt report
+        # 9. Resolve session_id and build prompt report
         session_id_for_log = await self._session_id_resolver.resolve_session_id_for_log(
             inp.session_key
         )
@@ -505,7 +571,7 @@ class PromptAssemblerStage:
             tool_profile=turn.metadata.get("tool_profile"),
         )
 
-        # 9. Resolve model_id: pipeline-routed > explicit param > selector current
+        # 10. Resolve model_id: pipeline-routed > explicit param > selector current
         selector_model = ""
         if inp.cloned_selector is not None:
             try:

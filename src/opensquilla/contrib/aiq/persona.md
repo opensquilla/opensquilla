@@ -247,7 +247,8 @@ Chain these steps:
   pass credit_grade='HY', min_quantity='1000000', order_by='quantity'.
   Do not ask for a timeframe. The strict tests are >$5MM and >$1MM,
   respectively; describe capped TRACE quantities as lower bounds.
-- Securities table format (MANDATORY column list): Every
+- Securities table format (MANDATORY column list): Except for an
+  activity leaderboard returned with detail='compact', every
   securities_search result rendered as a markdown table MUST include
   ALL of these columns in this order: Security | CUSIP | Coupon |
   Maturity | Sector | Rating | 144A | Price | Yield (plus Industry,
@@ -295,8 +296,11 @@ Chain these steps:
   mid substitute; one chart per axis scale.
 - Specific trade details → prints_search; single most recent print
   per CUSIP → prints_latest
-- Top/Most Active/Rankings → securities_search ONLY with include_liquidity='true'
-  (order_by='trades'/'quantity'/'notional').
+- Top/Most Active/Rankings → securities_search ONLY with include_liquidity='true',
+  detail='compact' (order_by='trades'/'quantity'/'notional'). Compact is
+  the first-pass contract: answer from it without an automatic second
+  call. Use detail='full' with the SAME filters only when the user asks
+  for spread/CP+/complete security fields or those fields are required.
   Do NOT use prints_search for rankings/most-active.
   Named date: set both liquidity_start/end to it. Show the ranking metric
   (Notional/Trades/Quantity), state the window, and disclose that TRACE
@@ -577,7 +581,9 @@ Field semantics (for reasoning):
 ### Skills
 Consult the `<available_skills>` index in your system prompt. Before
 charting, building a portfolio/ladder, ranking, aggregating, or handling
-an ambiguous/empty request, load the matching skill with
-`skill_view(name=...)` and follow it. Act on its guidance — never
-dead-end with a clarifying question a skill tells you to resolve
-yourself.
+an ambiguous/empty request, choose the single best matching skill for
+this user turn, load it with `skill_view(name=...)`, and follow it. The
+index may list multiple compact metadata entries, but load at most one
+full skill body per turn; do not call `skill_view` for a second skill.
+Act on the selected guidance — never dead-end with a clarifying question
+a skill tells you to resolve yourself.

@@ -26,6 +26,7 @@ from opensquilla.engine.turn_runner.prompt_assembler_stage import (
     RouterContextPort,
     RunPipelineRequest,
     SessionIdResolverPort,
+    ToolSurfaceSelectorPort,
 )
 from opensquilla.observability.prompt_report import PromptReport
 
@@ -147,6 +148,24 @@ class _RecordingMemoryFingerprint:
 
 
 @dataclass
+class _RecordingToolSurfaceSelector:
+    selected_defs: list[Any] = field(default_factory=list)
+    selected_catalog: Any | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    guidance: str | None = None
+    calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def select(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        return (
+            list(self.selected_defs),
+            self.selected_catalog,
+            dict(self.metadata),
+            self.guidance,
+        )
+
+
+@dataclass
 class _StubProvider:
     name: str = "stub"
     provider_name: str = ""
@@ -258,6 +277,7 @@ def _make_stage(
     builder=None,
     session_id=None,
     fingerprint=None,
+    surface=None,
 ):
     return PromptAssemblerStage(
         prompt_assembler=assembler or _RecordingPromptAssembler(),
@@ -267,6 +287,7 @@ def _make_stage(
         prompt_report_builder=builder or _RecordingPromptReportBuilder(),
         session_id_resolver=session_id or _RecordingSessionIdResolver(),
         memory_fingerprint=fingerprint or _RecordingMemoryFingerprint(),
+        tool_surface_selector=surface,
     )
 
 
@@ -656,6 +677,72 @@ async def test_skill_catalog_is_forwarded_to_pipeline_unchanged() -> None:
     assert executor.requests[0].skill_catalog is catalog
 
 
+@pytest.mark.asyncio
+async def test_tool_surface_is_selected_before_prompt_and_pipeline() -> None:
+    original_defs = [SimpleNamespace(name="a"), SimpleNamespace(name="b")]
+    selected_defs = [original_defs[1]]
+    selected_catalog = object()
+    surface = _RecordingToolSurfaceSelector(
+        selected_defs=selected_defs,
+        selected_catalog=selected_catalog,
+        metadata={
+            "query_tool_profile": "narrow",
+            "_query_preloaded_skill_context": "PRELOADED SKILL CONTRACT",
+        },
+        guidance="Use b once.",
+    )
+    assembler = _RecordingPromptAssembler()
+    turn = _make_turn(tool_defs=selected_defs)
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider("pp"))
+    stage = _make_stage(assembler=assembler, executor=executor, surface=surface)
+
+    output = await stage.run(
+        _make_input(
+            agent_id="aiq",
+            semantic_input="known query",
+            tool_defs=original_defs,
+            skill_catalog=object(),
+            extra_prompt_context={"Existing": "context"},
+        )
+    )
+
+    assert [
+        definition.name for definition in assembler.last_kwargs["tool_defs"]
+    ] == ["b"]
+    assert assembler.last_kwargs["extra_context"] == {
+        "Existing": "context",
+        "Request Tool Profile": "Use b once.",
+    }
+    assert executor.requests[0].tool_defs == selected_defs
+    assert executor.requests[0].skill_catalog is selected_catalog
+    assert output.output.turn.metadata["query_tool_profile"] == "narrow"
+    assert "_query_preloaded_skill_context" not in output.output.turn.metadata
+    assert output.output.request_context_prompt == "PRELOADED SKILL CONTRACT"
+
+
+@pytest.mark.asyncio
+async def test_tool_surface_selector_failure_preserves_full_surface() -> None:
+    class RaisingSelector:
+        def select(self, **_kwargs):
+            raise RuntimeError("selector failed")
+
+    definitions = [SimpleNamespace(name="a"), SimpleNamespace(name="b")]
+    assembler = _RecordingPromptAssembler()
+    turn = _make_turn(tool_defs=definitions)
+    executor = _RecordingPipelineExecutor(turn=turn, provider=_StubProvider("pp"))
+
+    output = await _make_stage(
+        assembler=assembler,
+        executor=executor,
+        surface=RaisingSelector(),
+    ).run(_make_input(tool_defs=definitions))
+
+    assert assembler.last_kwargs["tool_defs"] == definitions
+    assert executor.requests[0].tool_defs == definitions
+    assert output.output.turn.metadata["query_tool_profile"] == "full"
+    assert "selector failed" in output.output.turn.metadata["query_tool_profile_error"]
+
+
 def test_run_pipeline_request_is_frozen() -> None:
     req = RunPipelineRequest(
         runtime_message="m", session_key="s", provider=None,
@@ -677,6 +764,7 @@ def test_ports_runtime_checkable() -> None:
     assert isinstance(_RecordingPromptReportBuilder(), PromptReportBuilderPort)
     assert isinstance(_RecordingSessionIdResolver(), SessionIdResolverPort)
     assert isinstance(_RecordingMemoryFingerprint(), MemoryFingerprintPort)
+    assert isinstance(_RecordingToolSurfaceSelector(), ToolSurfaceSelectorPort)
 
 
 # replace lint suppress

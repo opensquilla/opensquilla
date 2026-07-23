@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 import opensquilla.contrib.aiq as contrib_aiq
+from opensquilla.contrib.aiq import runtime as aiq_runtime
 from opensquilla.contrib.aiq.agent import (
     AIQ_AGENT_ID,
     aiq_agent_entry,
@@ -190,6 +192,77 @@ def test_persona_is_ported_and_adapted() -> None:
     # Harness adaptation: OpenSquilla's skill mechanism, not AIQ's read_skill.
     assert "skill_view" in persona
     assert "read_skill" not in persona
+    assert "load at most one" in persona
+    assert "detail='compact'" in persona
+
+
+def test_securities_detail_schema_matches_aiq_backend_contract() -> None:
+    securities = next(tool for tool in load_catalog() if tool.name == "securities_search")
+    detail = securities.params["detail"]
+    assert detail["enum"] == ["compact", "full"]
+    assert detail["default"] == "full"
+    assert "detail" not in securities.required
+
+    compound_fields = {
+        "price_min",
+        "price_max",
+        "duration_min",
+        "duration_max",
+        "maturity_years",
+        "maturity_ladder_years",
+        "include_recent_prints",
+        "recent_prints_limit",
+        "include_cpp_history",
+        "cpp_history_lookback_days",
+        "include_period_history",
+    }
+    assert compound_fields <= set(securities.params)
+    assert securities.params["order_by"]["default"] == "smart"
+    assert securities.params["recent_prints_limit"]["default"] == "10"
+
+
+def test_ranking_skill_uses_progressive_detail_without_a_second_tool() -> None:
+    skill = Path("src/opensquilla/skills/bundled/aiq-rankings-and-leaderboards/SKILL.md").read_text(
+        encoding="utf-8"
+    )
+    assert "securities_search(detail='compact'" in skill
+    assert "Do **not** automatically repeat a successful compact call" in skill
+    assert "trace_notional(group_by='issuer')" in skill
+
+
+async def test_bridge_forwards_compact_detail_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeFunctionTool:
+        async def on_invoke_tool(self, *, ctx, input):
+            captured["ctx"] = ctx
+            captured["arguments"] = json.loads(input)
+            return json.dumps({"bonds": [], "meta": {"detail": "compact"}})
+
+    monkeypatch.setattr(
+        aiq_runtime, "_load_function_tool", lambda _module, _attr: FakeFunctionTool()
+    )
+    monkeypatch.setattr(aiq_runtime, "_make_aiq_tool_context", lambda _name, _args: object())
+
+    result = await aiq_runtime.invoke_aiq_tool(
+        "securities_search",
+        "lib.tools.sql_data_tools.securities_tools",
+        "securities_search",
+        {
+            "detail": "compact",
+            "order_by": "notional",
+            "include_liquidity": "true",
+            "include_recent_prints": "true",
+            "include_period_history": "day",
+        },
+        [],
+    )
+    assert captured["arguments"]["detail"] == "compact"
+    assert captured["arguments"]["include_recent_prints"] == "true"
+    assert captured["arguments"]["include_period_history"] == "day"
+    assert json.loads(result)["meta"]["detail"] == "compact"
 
 
 async def test_agent_registration_resolves(tmp_path) -> None:

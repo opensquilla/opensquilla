@@ -86,21 +86,29 @@ def test_all_bundled_skills_have_complete_provenance(tmp_path: Path) -> None:
             "openclaw-derived",
             "clawhub-mit",
             "clawhub-mit0",
+            "internal",
         }, skill.name
-        assert provenance.maintained_by == "OpenSquilla", skill.name
-        if provenance.origin == "bundled-derived":
+        if provenance.origin == "internal":
+            assert provenance.maintained_by == "AIQ Markets", skill.name
+            assert provenance.license == "proprietary", skill.name
+        elif provenance.origin == "bundled-derived":
+            assert provenance.maintained_by == "OpenSquilla", skill.name
             assert provenance.upstream_url == "https://github.com/bundled/bundled"
             assert provenance.license == "MIT", skill.name
         elif provenance.origin == "openclaw-derived":
+            assert provenance.maintained_by == "OpenSquilla", skill.name
             assert provenance.upstream_url == "https://github.com/openclaw/openclaw", skill.name
             assert provenance.license == "MIT", skill.name
         elif provenance.origin == "clawhub-mit0":
+            assert provenance.maintained_by == "OpenSquilla", skill.name
             assert provenance.upstream_url.startswith("https://clawhub.ai/"), skill.name
             assert provenance.license == "MIT-0", skill.name
         elif provenance.origin == "clawhub-mit":
+            assert provenance.maintained_by == "OpenSquilla", skill.name
             assert provenance.upstream_url.startswith("https://clawhub.ai/"), skill.name
             assert provenance.license == "MIT", skill.name
         else:
+            assert provenance.maintained_by == "OpenSquilla", skill.name
             assert skill.name in ORIGINALS
             assert provenance.license == "Apache-2.0", skill.name
 
@@ -116,6 +124,7 @@ def test_third_party_notices_match_bundled_provenance(tmp_path: Path) -> None:
     )
     clawhub_mit = sorted(name for name, origin in skills.items() if origin == "clawhub-mit")
     clawhub_derived = sorted(name for name, origin in skills.items() if origin == "clawhub-mit0")
+    internal = sorted(name for name, origin in skills.items() if origin == "internal")
 
     assert "## OpenClaw-derived bundled skill descriptors" in text
     assert "## OpenSquilla-original bundled skills" in text
@@ -139,7 +148,8 @@ def test_third_party_notices_match_bundled_provenance(tmp_path: Path) -> None:
         for line in text.splitlines()
         if line.strip().startswith("- `") and line.strip().endswith("`")
     }
-    assert listed == set(skills)
+    assert listed == set(skills) - set(internal)
+    assert not (listed & set(internal))
 
     if "filesystem" in clawhub_mit:
         assert "Copyright (c) 2026 Clawdbot Community" in text

@@ -34,6 +34,12 @@ median fields; never approximate a median with a mean.
 count/`total_par`/`notional_usd` fields. When the user filters by a size threshold ("> $5mm"),
 ensure the count reflects ONLY trades over that threshold, and show the threshold you applied.
 
+"How big was TRACE volume in IG yesterday" → call `trace_notional` once with the prior completed
+session resolved to an exact date and `group_by='credit_grade'`. Select the returned IG bucket; do
+not sum displayed bond rows or substitute a bond leaderboard. Report the tool's trade count and
+notional with the exact session date/source. TRACE dissemination size caps make notional a lower
+bound, so retain the returned cap caveat.
+
 ## Cross-sector / cross-group averages
 "Average yield by sector", "which sector is cheapest" → `trace_notional(group_by='sector')` returns
 `avg_yield` per sector. Do not average per-bond rows yourself; use the grouped aggregate so weighting

@@ -32,6 +32,13 @@ AIQ TraceAgent's domain instructions ported to this runtime.
   imports the tool's module, and dispatches through the OpenAI Agents SDK
   `FunctionTool.on_invoke_tool` seam — so AIQ's own argument parsing and
   per-user entitlement gates (e.g. MarketAxess CP+) stay intact.
+- **FAQ routing**: before prompt assembly, a deterministic query-profile
+  selector narrows the visible schema to the tools authorized for that
+  request. A matched profile preloads at most one AIQ skill into private,
+  request-scoped context and removes `skill_view`, avoiding a model/tool/model
+  round trip. Profiles also set an ordinary-iteration ceiling and repeated-call
+  recovery boundary. Unknown requests fail open to the normal OpenSquilla
+  surface.
 - **Policy**: every bridged tool is `exposed_by_default=False` (invisible
   unless allow-listed). Read-only data tools carry network sandbox
   descriptors (`kind="aiq.read"` / `"aiq.external.read"`, third-party HTTP
@@ -93,6 +100,9 @@ does both steps.
 ## Running it
 
 ```bash
+# Reproducible FAQ variant created from the shared AIQ harness baseline.
+export AIQ_REPO_PATH="$HOME/Desktop/cutedsl/aiq-harness-opensquilla"
+
 # one-shot turn
 opensquilla agent -m "biggest IG wideners today" --agent aiq
 
@@ -100,6 +110,11 @@ opensquilla agent -m "biggest IG wideners today" --agent aiq
 opensquilla sessions list --agent aiq
 opensquilla cron add --agent aiq --every 1d --text "morning TRACE movers recap"
 ```
+
+The exact 21-question workbook-derived fixture is
+`evals/fixed_income_benchmark/tasks/00_frequently_asked_xlsx_2026_07.jsonl`
+inside that AIQ worktree. The query-profile tests cover every fixture ID
+without making provider or market-data calls.
 
 ## Limitations
 
@@ -120,3 +135,15 @@ opensquilla cron add --agent aiq --every 1d --text "morning TRACE movers recap"
 - The tool schemas are a build-time snapshot of the AIQ repo; a much newer or
   older AIQ checkout may drift from `catalog.json` (calls still dispatch, but
   new parameters would be unknown to the schema validator).
+
+## Offline verification
+
+```bash
+uv run --frozen pytest -q \
+  tests/test_contrib/test_aiq \
+  tests/test_engine/turn_runner \
+  tests/test_engine/test_runtime_agent_max_iterations.py \
+  tests/test_skills_third_party_notices.py
+```
+
+Current result: 497 passed. This check makes no paid model call.

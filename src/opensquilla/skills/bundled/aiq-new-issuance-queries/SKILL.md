@@ -39,3 +39,17 @@ Route ALL of these to `securities_search` using the issue-date window — never 
 
 5. **Empty is a valid answer.** "No bonds were issued today" (e.g. a weekend/holiday) is complete and
    correct — report it; never backfill with bonds issued on other dates or with secondary-market trades.
+
+## Recent performance in one call
+
+For "how have new issue IG bonds performed over the last 5 trading sessions," make one
+`securities_search` call with `detail='compact'`, the resolved recent issue-date window,
+`credit_grade='IG'`, and `include_period_history='day'`. The tool batches daily TRACE history for at
+most five representative, deduplicated coupon/maturity tranches into `related_data`; do not call
+`prints_group_by_period` separately.
+
+Calculate a tranche's change only from the earliest and latest returned daily VWAP values and name
+both endpoint dates. Never assume an issue price of par, and never use a current price below 100 as
+proof of negative performance. If the returned period lists are empty or do not span the requested
+sessions, call it a coverage gap and say performance is not measurable from the available history.
+Do not infer demand, flows, dealer inventory, or liquidity causes from price performance alone.

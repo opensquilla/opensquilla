@@ -709,6 +709,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
+    new_config._mark_env_absorbed_secrets(cfg_dict)
     # Runtime-override provenance must ride the candidate BEFORE runtime
     # resolution applies env values, so persist can un-bake them.
     if hasattr(new_config, "inherit_persist_provenance"):
@@ -837,6 +838,7 @@ async def _handle_config_patch(
     if _memory_restart_required_for_paths(explicit_paths):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
+    new_config._mark_env_absorbed_secrets(cfg_dict)
 
     # Runtime-override provenance must ride the candidate BEFORE runtime
     # resolution applies env values, so persist can un-bake them.

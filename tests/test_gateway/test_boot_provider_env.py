@@ -11,6 +11,7 @@ from opensquilla.gateway.rpc_config import (
     _handle_config_apply,
     _handle_config_patch,
     _handle_config_patch_safe,
+    _handle_config_set,
     _sync_provider_selector,
 )
 from opensquilla.onboarding.config_store import load_config
@@ -269,6 +270,54 @@ async def test_config_apply_marks_absorbed_generic_key_before_persist_and_resolu
     runtime = resolve_llm_runtime_config(ctx.config)
     persisted = config_path.read_text(encoding="utf-8")
     assert "llm.api_key" in ctx.config._runtime_secret_paths
+    assert runtime.api_key == ""
+    assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
+    assert "synthetic-generic-key" not in persisted
+
+
+@pytest.mark.parametrize("mutation", ["set", "patch"])
+async def test_config_section_replacement_marks_absorbed_generic_key(
+    tmp_path,
+    monkeypatch,
+    mutation: str,
+) -> None:
+    monkeypatch.delenv("OLD_ENDPOINT_KEY", raising=False)
+    monkeypatch.delenv("NEW_ENDPOINT_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[llm]",
+                'provider = "openrouter"',
+                'model = "openai/gpt-old"',
+                'api_key = ""',
+                'api_key_env = "OLD_ENDPOINT_KEY"',
+                'base_url = "https://openrouter.ai/api/v1"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
+    selector = _CapturingSelector()
+    ctx = SimpleNamespace(config=cfg, provider_selector=selector)
+    replacement = {
+        "provider": "openrouter",
+        "model": "openai/gpt-new",
+        "api_key_env": "NEW_ENDPOINT_KEY",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+
+    if mutation == "set":
+        await _handle_config_set({"path": "llm", "value": replacement}, ctx)
+    else:
+        await _handle_config_patch({"patches": {"llm": replacement}}, ctx)
+
+    runtime = resolve_llm_runtime_config(ctx.config)
+    persisted = config_path.read_text(encoding="utf-8")
+    assert "llm.api_key" in ctx.config._runtime_secret_paths
+    assert selector.synced.api_key == ""
     assert runtime.api_key == ""
     assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
     assert "synthetic-generic-key" not in persisted

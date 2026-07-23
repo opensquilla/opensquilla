@@ -459,9 +459,12 @@ jobs:
             exit "${status}"
           }
 
-          # OSS ignores x-oss-forbid-overwrite when bucket versioning is enabled
-          # or suspended. Query the bucket through its standard regional
-          # endpoint and fail closed before relying on conditional writes.
+          # Version-scoped immutability is enforced by the existence check plus
+          # SHA256 verification in upload_immutable_asset; x-oss-forbid-overwrite
+          # only narrows the check-to-write race and is ignored by OSS while
+          # bucket versioning is enabled or suspended. Query and log the
+          # versioning state so every mirror run records which regime it ran
+          # under.
           versioning_endpoint="oss-${OSS_REGION}.aliyuncs.com"
           ossutil api get-bucket-versioning \
             --addressing-style virtual \
@@ -513,9 +516,9 @@ jobs:
                   for nested in value:
                       yield from statuses(nested)
 
-          # Only real versioning states defeat x-oss-forbid-overwrite. Response
-          # envelopes may carry unrelated "status" fields (HTTP codes), so match
-          # the two states the OSS API can report for a versioned bucket.
+          # Only real versioning states matter here. Response envelopes may
+          # carry unrelated "status" fields (HTTP codes), so match the two
+          # states the OSS API can report for a versioned bucket.
           reported = [
               value
               for document in documents
@@ -523,10 +526,15 @@ jobs:
               if isinstance(value, str) and value.casefold() in ("enabled", "suspended")
           ]
           if reported:
-              raise SystemExit(
-                  "OSS release mirror bucket must be unversioned; reported Status: "
+              print(
+                  "OSS bucket versioning is "
                   + ", ".join(repr(value) for value in reported)
+                  + "; x-oss-forbid-overwrite is advisory there. Version-scoped "
+                  "immutability remains enforced by the existence check plus "
+                  "SHA256 verification before every upload."
               )
+          else:
+              print("OSS bucket versioning is not configured.")
           PY
           trap rollback_promotions EXIT
 

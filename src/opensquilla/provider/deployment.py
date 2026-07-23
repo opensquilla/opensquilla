@@ -217,8 +217,14 @@ def resolve_provider_deployment(
             credential_source = "profile_env"
             credential_env = profile_env
             credential_endpoint = profile_base_url or _text(spec.default_base_url)
-    registry_env_matches_profile_endpoint = not profile_base_url or (
-        base_url_allows_credential_reuse(spec.default_base_url, profile_base_url)
+    # The registry env key follows the registry-default endpoint origin. A
+    # provider spec without a default base URL (azure-style: the endpoint is
+    # operator-supplied by design) binds its env key to whatever endpoint the
+    # operator configured, so the profile base URL does not gate it there.
+    registry_env_matches_profile_endpoint = (
+        not profile_base_url
+        or not _text(spec.default_base_url)
+        or base_url_allows_credential_reuse(spec.default_base_url, profile_base_url)
     )
     if (
         not api_key
@@ -231,7 +237,7 @@ def resolve_provider_deployment(
         if api_key:
             credential_source = "registry_env"
             credential_env = spec.env_key
-            credential_endpoint = _text(spec.default_base_url)
+            credential_endpoint = _text(spec.default_base_url) or profile_base_url
     if spec.requires_api_key() and not api_key and not blocked_reason:
         blocked_reason = "missing_credential"
     if not spec.requires_api_key() and not api_key:

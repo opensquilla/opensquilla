@@ -10,7 +10,7 @@ import { useUsageTotals } from '@/composables/usage/useUsageTotals'
 import { useUsageChartRows } from '@/composables/usage/useUsageChartRows'
 import { useUsageModelCards } from '@/composables/usage/useUsageModelCards'
 import { useUsageSessionRows } from '@/composables/usage/useUsageSessionRows'
-import { formatUsageCost } from '@/composables/usage/nativeBilling'
+import { formatUsageCost, effectiveCnyPerUsd } from '@/composables/usage/nativeBilling'
 import { buildUsageCsv } from '@/composables/usage/usageCsv'
 import { useRpcStore } from '@/stores/rpc'
 import { downloadText } from '@/utils/browser'
@@ -32,7 +32,9 @@ const t = i18n.global.t
 // Constants
 // ---------------------------------------------------------------------------
 
-const CNY_RATE = 7.25
+// Display fallback only — used when neither the gateway nor the snapshot's
+// receipts provide the canonical CNY-per-USD rate (see `cnyRate` below).
+const FALLBACK_CNY_RATE = 7.25
 
 type CostFormatOptions = {
   decimals?: number
@@ -95,6 +97,11 @@ const lastStatus = computed<UsageStatusData | null>(() => {
 
 let autoRefreshId: ReturnType<typeof setInterval> | null = null
 let loadGeneration = 0
+
+// The rate the ledger normalized CNY receipts with, so every derived CNY
+// figure (totals hint, CSV export, per-row conversions) agrees with
+// receipt-exact amounts instead of drifting on a hardcoded display rate.
+const cnyRate = computed(() => effectiveCnyPerUsd(usageSnapshot.value) ?? FALLBACK_CNY_RATE)
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -171,7 +178,7 @@ const {
   visibleSessions,
   serverTotals,
   currency,
-  cnyRate: CNY_RATE,
+  cnyRate,
   rowVal,
   fmtCost,
   sourceCompositionHint,
@@ -266,8 +273,13 @@ function toggleModelExpand(row: { raw: SessionRow; rowIdentity: string }) {
   }
 }
 
-async function loadData(): Promise<boolean> {
-  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return false
+// 'superseded' means a newer load took over (auto-refresh tick, visibility
+// refresh); that newer load fetches with the freshest range selection, so the
+// superseded caller must neither report failure nor roll anything back.
+type LoadOutcome = 'loaded' | 'superseded' | 'failed' | 'hidden'
+
+async function requestLoad(): Promise<LoadOutcome> {
+  if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return 'hidden'
   const generation = ++loadGeneration
   usageLoading.value = true
   usageError.value = null
@@ -277,11 +289,11 @@ async function loadData(): Promise<boolean> {
       range.value as UsageRangeSelection,
       { cachedSnapshot: usageSnapshot.value },
     )
-    if (generation !== loadGeneration) return false
+    if (generation !== loadGeneration) return 'superseded'
     usageSnapshot.value = snapshot
-    return true
+    return 'loaded'
   } catch (error) {
-    if (generation !== loadGeneration) return false
+    if (generation !== loadGeneration) return 'superseded'
     // A refresh or range request must never replace already-rendered,
     // trustworthy data with a page-level error.  The caller that changed the
     // range restores the previous selection below, keeping the cached
@@ -289,17 +301,29 @@ async function loadData(): Promise<boolean> {
     if (!usageSnapshot.value) {
       usageError.value = error instanceof Error ? error.message : String(error)
     }
-    return false
+    return 'failed'
   } finally {
     if (generation === loadGeneration) usageLoading.value = false
   }
 }
 
+async function loadData(): Promise<boolean> {
+  return (await requestLoad()) === 'loaded'
+}
+
 function setRange(nextRange: string) {
   const previousRange = range.value
   persistRange(nextRange)
-  void loadData().then(loaded => {
-    if (!loaded && range.value === nextRange && usageSnapshot.value) {
+  void requestLoad().then(outcome => {
+    // Only this call's own failure (or a hidden-document no-op) may revert:
+    // a superseded request means a concurrent refresh already fetched the
+    // new range and published its snapshot, so rolling the selection back
+    // would mislabel that fresher data and persist the wrong preference.
+    if (
+      (outcome === 'failed' || outcome === 'hidden')
+      && range.value === nextRange
+      && usageSnapshot.value
+    ) {
       persistRange(previousRange)
     }
   })
@@ -307,12 +331,13 @@ function setRange(nextRange: string) {
 
 function exportCsv() {
   const snapshot = usageSnapshot.value
-  const csv = buildUsageCsv(snapshot, visibleSessions.value, CNY_RATE)
+  const rate = cnyRate.value
+  const csv = buildUsageCsv(snapshot, visibleSessions.value, rate)
   const suffix = range.value === 'all' ? 'all' : `${range.value}d`
   const coverageSuffix = snapshot?.mode === 'session_approximation'
     ? '-approximate'
     : snapshot?.mode === 'ledger_partial' ? '-partial' : ''
-  download(`opensquilla-usage-${suffix}${coverageSuffix}-cny${CNY_RATE}.csv`, 'text/csv', csv)
+  download(`opensquilla-usage-${suffix}${coverageSuffix}-cny${rate}.csv`, 'text/csv', csv)
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +353,7 @@ function fmtCost(usd: number | null | undefined, opts?: CostFormatOptions): stri
   return formatUsageCost(
     usd,
     currency.value,
-    CNY_RATE,
+    cnyRate.value,
     decimals,
     opts?.source as Record<string, unknown> | undefined,
   )
@@ -554,6 +579,7 @@ function download(filename: string, mime: string, content: string) {
 
   return {
     currency,
+    cnyRate,
     sessions,
     sortCol,
     sortAsc,

@@ -176,6 +176,60 @@ def test_control_ui_explains_how_to_build_missing_vue_assets(
     assert '<div id="app"></div>' not in response.text
 
 
+def test_control_ui_startup_logs_warning_when_vue_assets_missing(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Headless operators never see the in-page notice, so the missing-artifact
+    # diagnostic must also reach the gateway log at startup.
+    import structlog
+
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path / "dist")
+    config = GatewayConfig()
+    config.control_ui.enabled = True
+
+    with structlog.testing.capture_logs() as captured:
+        create_control_ui_routes(config)
+
+    events = [e for e in captured if e["event"] == "control_ui.webui_assets_missing"]
+    assert events, captured
+    assert events[0]["log_level"] == "warning"
+    assert "npm ci && npm run build" in events[0]["detail"]
+    assert events[0]["dist_dir"] == str(tmp_path / "dist")
+
+
+def test_control_ui_startup_warning_absent_when_vue_assets_present(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import structlog
+
+    monkeypatch.setattr(control_ui, "_DIST_DIR", _write_vite_static(tmp_path / "static"))
+    config = GatewayConfig()
+    config.control_ui.enabled = True
+
+    with structlog.testing.capture_logs() as captured:
+        create_control_ui_routes(config)
+
+    assert not [e for e in captured if e["event"] == "control_ui.webui_assets_missing"]
+
+
+def test_control_ui_startup_warning_absent_when_control_ui_disabled(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import structlog
+
+    monkeypatch.setattr(control_ui, "_DIST_DIR", tmp_path / "dist")
+    config = GatewayConfig()
+    config.control_ui.enabled = False
+
+    with structlog.testing.capture_logs() as captured:
+        assert create_control_ui_routes(config) == []
+
+    assert not [e for e in captured if e["event"] == "control_ui.webui_assets_missing"]
+
+
 def test_missing_vue_asset_recovery_is_in_troubleshooting_guide() -> None:
     troubleshooting = (REPO_ROOT / "docs" / "troubleshooting.md").read_text(encoding="utf-8")
     normalized = " ".join(troubleshooting.split())

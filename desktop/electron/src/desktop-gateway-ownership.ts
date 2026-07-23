@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process'
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { lstatSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { join, normalize, resolve } from 'node:path'
 
 export const DESKTOP_GATEWAY_OWNERSHIP_SCHEMA_VERSION = 1
@@ -395,4 +396,101 @@ export function sameDesktopGatewayOwnershipInstance(
     && left.port === right.port
     && left.instance_nonce === right.instance_nonce
   )
+}
+
+// The Gateway records its own process-start identity precisely so a recycled
+// PID can be told apart from the live owner. These probes mirror the Gateway's
+// per-platform identity formats; the strings must stay byte-identical to what
+// the Python runtime writes into the ownership record.
+const PROCESS_START_IDENTITY_SCHEMES = [
+  'linux-proc-start-ticks:',
+  'windows-creation-filetime:',
+  'posix-ps-lstart:',
+] as const
+
+/** Extract the start-ticks identity from a /proc/<pid>/stat line. */
+export function linuxProcStatStartIdentity(statText: string): string | null {
+  const closeParen = String(statText ?? '').lastIndexOf(')')
+  if (closeParen < 0) return null
+  // ``comm`` is parenthesized and may contain spaces or ``)``. Fields after
+  // its final close-paren begin at field 3; starttime is field 22.
+  const fields = statText.slice(closeParen + 1).trim().split(/\s+/)
+  const startTicks = fields[19]
+  if (!startTicks || !/^\d+$/.test(startTicks)) return null
+  return `linux-proc-start-ticks:${startTicks}`
+}
+
+/** Normalize ``ps -o lstart=`` output the same way the Gateway does. */
+export function posixPsLstartIdentity(stdout: string): string | null {
+  const value = String(stdout ?? '').split(/\s+/).filter(Boolean).join(' ')
+  if (!value) return null
+  return `posix-ps-lstart:${value}`
+}
+
+function windowsProcessStartIdentity(pid: number): string | null {
+  // GetProcessTimes creation time, via the .NET filetime round-trip. The
+  // query needs only limited-information access; a denied or missing process
+  // yields null and the caller stays on the conservative path.
+  const result = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$ErrorActionPreference='Stop'; (Get-Process -Id ${Math.trunc(pid)}).StartTime.ToFileTime()`,
+    ],
+    { windowsHide: true, timeout: 2000, encoding: 'utf8' },
+  )
+  if (result.error || result.status !== 0) return null
+  const value = String(result.stdout ?? '').trim()
+  if (!/^\d+$/.test(value)) return null
+  return `windows-creation-filetime:${value}`
+}
+
+function posixProcessStartIdentity(pid: number): string | null {
+  const command = existsSync('/bin/ps') ? '/bin/ps' : 'ps'
+  const result = spawnSync(command, ['-o', 'lstart=', '-p', String(Math.trunc(pid))], {
+    timeout: 2000,
+    encoding: 'utf8',
+    env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+  })
+  if (result.error || result.status !== 0) return null
+  return posixPsLstartIdentity(result.stdout ?? '')
+}
+
+/**
+ * Best-effort start identity of the live process occupying ``pid``, in the
+ * same format the Gateway records about itself. Returns null when the
+ * platform cannot answer; callers must fail open on null.
+ */
+export function desktopProcessStartIdentity(pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null
+  try {
+    if (process.platform === 'linux') {
+      return linuxProcStatStartIdentity(readFileSync(`/proc/${pid}/stat`, 'utf8'))
+    }
+    if (process.platform === 'win32') return windowsProcessStartIdentity(pid)
+    return posixProcessStartIdentity(pid)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * True only when the live process at the recorded PID provably started at a
+ * different time than the recorded owner — i.e. the OS recycled the PID and
+ * the record is stale. A null or cross-scheme identity (including the
+ * Gateway's opaque ``runtime-start:`` fallback) never conflicts; this check
+ * may only shortcut waiting, never grant authority over a process.
+ */
+export function desktopGatewayStartIdentityConflict(
+  recordedStartIdentity: string,
+  liveStartIdentity: string | null,
+): boolean {
+  if (!liveStartIdentity) return false
+  const scheme = PROCESS_START_IDENTITY_SCHEMES.find(
+    (prefix) => liveStartIdentity.startsWith(prefix),
+  )
+  if (!scheme || !recordedStartIdentity.startsWith(scheme)) return false
+  return recordedStartIdentity !== liveStartIdentity
 }

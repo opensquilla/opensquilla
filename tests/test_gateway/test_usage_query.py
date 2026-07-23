@@ -299,6 +299,52 @@ async def test_finite_window_aggregates_only_timestamped_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_usage_query_serves_the_canonical_receipt_fx_rate() -> None:
+    """Clients must render CNY at the rate the billing receipts recorded."""
+
+    cutover = _ms("2026-07-01T00:00:00")
+    event, item = _provider_billed_event_and_item(
+        "tr-1",
+        _ms("2026-07-20T12:00:00"),
+        billed_cost_nanos=1_000_000_000,
+    )
+    storage = _FakeStorage(
+        state=SimpleNamespace(
+            ledger_started_at_ms=cutover,
+            backfill_status="complete",
+            anomaly_count=0,
+        ),
+        events=[event],
+        items=[item],
+        baselines=[],
+        receipts=[
+            _billing_receipt(
+                "tr-1",
+                status="confirmed",
+                amount_nanos=6_975_000_000,
+                usd_equivalent_nanos=1_000_000_000,
+            )
+        ],
+        receipt_state=SimpleNamespace(tracking_started_at_ms=cutover),
+    )
+
+    payload = await query_usage_ledger(
+        storage,
+        {"range": {"preset": "today"}, "timezone": "UTC"},
+        now_ms=_ms("2026-07-20T18:00:00"),
+    )
+
+    assert payload["fxRatesNativePerUsd"] == {"CNY": "6.975"}
+    # The served display rate is exactly the normalization rate recorded on
+    # the confirmed receipt, so UI conversions from canonical USD reproduce
+    # the receipt-exact native amount instead of drifting on their own rate.
+    receipt_rates = payload["totals"]["nativeBilledByCurrency"]["CNY"][
+        "normalizationRatesNativePerUsd"
+    ]
+    assert receipt_rates == [payload["fxRatesNativePerUsd"]["CNY"]]
+
+
+@pytest.mark.asyncio
 async def test_confirmed_cny_receipts_include_real_zero_in_every_totals_dimension() -> None:
     cutover = _ms("2026-07-20T00:00:00")
     nonzero_event, nonzero_item = _provider_billed_event_and_item(

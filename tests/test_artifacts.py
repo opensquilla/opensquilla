@@ -1007,6 +1007,50 @@ async def test_publish_artifact_tool_reuses_existing_session_deliverable_across_
 
 
 @pytest.mark.asyncio
+async def test_publish_artifact_runs_pptx_read_and_validation_off_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    import opensquilla.tools.builtin.artifacts as artifacts_module
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    output = workspace / "brief.pptx"
+    output.write_bytes(_valid_pptx_bytes("Loop-friendly deck"))
+    ctx = ToolContext(
+        workspace_dir=str(workspace),
+        artifact_media_root=str(tmp_path / "media"),
+        artifact_session_id="session-1",
+        session_key="agent:main:webchat:session-1",
+    )
+
+    validation_threads: list[threading.Thread] = []
+    real_validate = artifacts_module.validate_artifact_for_delivery
+
+    def recording_validate(*args: object, **kwargs: object) -> None:
+        validation_threads.append(threading.current_thread())
+        real_validate(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "validate_artifact_for_delivery",
+        recording_validate,
+    )
+    loop_thread = threading.current_thread()
+    token = current_tool_context.set(ctx)
+    try:
+        result = json.loads(await publish_artifact(path=output.name, mime=PPTX_MIME))
+    finally:
+        current_tool_context.reset(token)
+
+    assert result["status"] == "published"
+    assert validation_threads
+    assert all(thread is not loop_thread for thread in validation_threads)
+
+
+@pytest.mark.asyncio
 async def test_publish_artifact_tool_republishes_changed_bytes_at_same_path(
     tmp_path: Path,
 ) -> None:

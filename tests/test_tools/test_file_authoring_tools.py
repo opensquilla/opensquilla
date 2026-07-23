@@ -159,6 +159,42 @@ async def test_create_pptx_rejects_payload_that_fails_delivery_validation(
 
 
 @pytest.mark.asyncio
+async def test_create_pptx_runs_delivery_validation_off_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    ctx = _channel_artifact_context(tmp_path)
+    validation_threads: list[threading.Thread] = []
+    real_validate = file_authoring.validate_artifact_for_delivery
+
+    def recording_validate(*args: object, **kwargs: object) -> None:
+        validation_threads.append(threading.current_thread())
+        real_validate(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        file_authoring,
+        "validate_artifact_for_delivery",
+        recording_validate,
+    )
+    loop_thread = threading.current_thread()
+    token = current_tool_context.set(ctx)
+    try:
+        result = await create_pptx(
+            name="offloaded.pptx",
+            slides=[{"title": "Offloaded", "body": "Validated off the loop."}],
+        )
+    finally:
+        current_tool_context.reset(token)
+
+    payload = json.loads(result)
+    assert payload["status"] == "published"
+    assert validation_threads
+    assert all(thread is not loop_thread for thread in validation_threads)
+
+
+@pytest.mark.asyncio
 async def test_create_pptx_reuses_existing_session_deliverable_across_contexts(
     tmp_path: Path,
 ) -> None:

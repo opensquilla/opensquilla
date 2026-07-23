@@ -44,4 +44,29 @@ def base_url_allows_credential_reuse(
     return stored_origin is not None and candidate_origin == stored_origin
 
 
-__all__ = ["base_url_allows_credential_reuse"]
+def credential_env_for_endpoint(
+    *,
+    configured_env: str,
+    configured_explicitly: bool,
+    default_env: str,
+    default_base_url: str,
+    effective_base_url: str,
+) -> str:
+    """Resolve an env reference without moving an implicit default across origins.
+
+    A non-default env name is necessarily operator-authored. A configured name
+    equal to the registry default is operator-authored only when the config
+    model says that field was explicitly set. Otherwise the registry env name
+    belongs to the registry endpoint and is available only on that origin.
+    """
+
+    configured = str(configured_env or "").strip()
+    default = str(default_env or "").strip()
+    if configured and (configured != default or configured_explicitly):
+        return configured
+    if default and base_url_allows_credential_reuse(default_base_url, effective_base_url):
+        return default
+    return ""
+
+
+__all__ = ["base_url_allows_credential_reuse", "credential_env_for_endpoint"]

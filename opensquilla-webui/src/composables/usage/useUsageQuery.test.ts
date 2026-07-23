@@ -172,6 +172,7 @@ describe('usage.query compatibility client', () => {
 
     expect(result.totals.nativeBilledByCurrency).toEqual({})
     expect(result.totals.pendingBillingReceiptCount).toBe(0)
+    expect(result.fxRatesNativePerUsd).toEqual({})
     expect(result.coverage.nativeBilling).toEqual({
       status: 'unavailable',
       exactFromMs: null,
@@ -179,6 +180,30 @@ describe('usage.query compatibility client', () => {
       missingConfirmedReceiptCount: 0,
       pendingReceiptCount: 0,
     })
+  })
+
+  it('normalizes served fx display rates and drops malformed entries', () => {
+    const result = normalizeUsageQueryResponse({
+      schemaVersion: 1,
+      totals: { costNanos: 1 },
+      coverage: { status: 'complete' },
+      fxRatesNativePerUsd: {
+        cny: '6.975',
+        JPY: 'not-a-rate',
+        EUR: '0',
+      },
+    })
+
+    expect(result.fxRatesNativePerUsd).toEqual({ CNY: '6.975' })
+
+    const snakeCase = normalizeUsageQueryResponse({
+      schemaVersion: 1,
+      totals: { costNanos: 1 },
+      coverage: { status: 'complete' },
+      fx_rates_native_per_usd: { CNY: '6.975' },
+    })
+
+    expect(snakeCase.fxRatesNativePerUsd).toEqual({ CNY: '6.975' })
   })
 
   it('does not turn a deleted session id into a clickable session key', () => {

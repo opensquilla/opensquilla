@@ -8,6 +8,7 @@ import re
 import time
 from pathlib import Path, PurePosixPath
 
+import structlog
 from starlette.requests import Request
 from starlette.responses import HTMLResponse
 from starlette.routing import Mount, Route
@@ -15,6 +16,8 @@ from starlette.staticfiles import StaticFiles
 
 from opensquilla import __version__
 from opensquilla.gateway.config import GatewayConfig
+
+log = structlog.get_logger(__name__)
 
 # Conservative max-age for static assets. 30 days is long enough that hot
 # clients save roundtrips but short enough that any deploy without a version
@@ -266,6 +269,23 @@ def create_control_ui_routes(config: GatewayConfig) -> list[Route | Mount]:
     """Create routes for the Control UI. Returns empty list if disabled."""
     if not config.control_ui.enabled:
         return []
+
+    if not (_DIST_DIR / "index.html").exists():
+        # The served page already shows an actionable notice, but headless
+        # operators only watch logs — surface the same guidance at startup.
+        log.warning(
+            "control_ui.webui_assets_missing",
+            detail=(
+                "The built Vue console was not found, so the Control UI will "
+                "serve an 'assets are unavailable' notice instead of the "
+                "console. From a source checkout, build it with "
+                "`cd opensquilla-webui && npm ci && npm run build` "
+                "(Node.js 22.12+ with npm) and restart or reload the page. "
+                "Release-wheel and Desktop installs should reinstall an "
+                "official package."
+            ),
+            dist_dir=str(_DIST_DIR),
+        )
 
     base = config.control_ui.base_path
     template = _get_jinja_env().get_template("index.html")

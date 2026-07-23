@@ -699,7 +699,9 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
-    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    routing_changes = reconcile_model_routing_write(
+        new_config, explicit_paths, previous=ctx.config
+    )
     if routing_changes:
         routing_paths = set(routing_changes)
         explicit_paths.update(routing_paths)
@@ -707,6 +709,7 @@ async def _handle_config_set(params: dict | None, ctx: RpcContext) -> dict[str, 
     if _memory_restart_required_for_paths({path}):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
+    new_config._mark_env_absorbed_secrets(cfg_dict)
     # Runtime-override provenance must ride the candidate BEFORE runtime
     # resolution applies env values, so persist can un-bake them.
     if hasattr(new_config, "inherit_persist_provenance"):
@@ -825,7 +828,9 @@ async def _handle_config_patch(
     from opensquilla.gateway.config import GatewayConfig
 
     new_config = GatewayConfig(**cfg_dict)
-    routing_changes = reconcile_model_routing_write(new_config, explicit_paths)
+    routing_changes = reconcile_model_routing_write(
+        new_config, explicit_paths, previous=ctx.config
+    )
     if routing_changes:
         routing_paths = set(routing_changes)
         explicit_paths.update(routing_paths)
@@ -833,6 +838,7 @@ async def _handle_config_patch(
     if _memory_restart_required_for_paths(explicit_paths):
         _validate_memory_embedding_semantics(new_config)
     inherit_then_clear_explicit(ctx.config, new_config, explicit_paths - redacted_paths)
+    new_config._mark_env_absorbed_secrets(cfg_dict)
 
     # Runtime-override provenance must ride the candidate BEFORE runtime
     # resolution applies env values, so persist can un-bake them.
@@ -944,6 +950,7 @@ async def _handle_config_apply(params: dict | None, ctx: RpcContext) -> dict[str
     inherit_then_clear_explicit(
         ctx.config, new_config, _collect_paths(config_payload) - redacted_paths
     )
+    new_config._mark_env_absorbed_secrets(config_payload)
     # Runtime-override provenance must ride the candidate BEFORE runtime
     # resolution applies env values, so persist can un-bake them.
     if ctx.config is not None and hasattr(new_config, "inherit_persist_provenance"):

@@ -244,6 +244,59 @@ def test_config_set_explicit_config_path_persists_to_target(tmp_path: Path):
     assert "True" in check.stdout
 
 
+def test_config_set_llm_replacement_does_not_persist_absorbed_generic_key(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("OLD_ENDPOINT_KEY", raising=False)
+    monkeypatch.delenv("NEW_ENDPOINT_KEY", raising=False)
+    monkeypatch.setenv("OPENSQUILLA_LLM_API_KEY", "synthetic-generic-key")
+    target = tmp_path / "explicit.toml"
+    target.write_text(
+        "\n".join(
+            [
+                "[llm]",
+                'provider = "openrouter"',
+                'model = "openai/gpt-old"',
+                'api_key = "sk-synthetic-old"',
+                'api_key_env = "OLD_ENDPOINT_KEY"',
+                'base_url = "https://openrouter.ai/api/v1"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "config",
+            "set",
+            "llm",
+            (
+                '{ provider = "openrouter", model = "openai/gpt-new", '
+                'api_key_env = "NEW_ENDPOINT_KEY", '
+                'base_url = "https://openrouter.ai/api/v1" }'
+            ),
+            "--config",
+            str(target),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    persisted = target.read_text(encoding="utf-8")
+    assert "synthetic-generic-key" not in persisted
+    assert "sk-synthetic-old" not in persisted
+    assert tomllib.loads(persisted)["llm"]["api_key_env"] == "NEW_ENDPOINT_KEY"
+
+    from opensquilla.gateway.config import GatewayConfig
+    from opensquilla.gateway.llm_runtime import resolve_llm_runtime_config
+
+    runtime = resolve_llm_runtime_config(GatewayConfig.load(target))
+    assert runtime.api_key == ""
+    assert runtime.api_key_env_name == "NEW_ENDPOINT_KEY"
+
+
 def test_config_set_legacy_ensemble_toggle_persists_canonical_router_mode(
     tmp_path: Path,
 ) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -200,6 +201,107 @@ def test_edited_message_is_not_normalized_as_a_new_turn() -> None:
                 },
             }
         )
+
+
+def _edited_private_update(update_id: int = 1, chat_id: int = 4) -> dict[str, Any]:
+    return {
+        "update_id": update_id,
+        "edited_message": {
+            "message_id": 2,
+            "from": {"id": 3},
+            "chat": {"id": chat_id, "type": "private"},
+            "text": "edited",
+        },
+    }
+
+
+@pytest.mark.anyio
+async def test_private_chat_edit_gets_a_one_time_explanation() -> None:
+    channel = RecordingTelegramChannel(TelegramChannelConfig(token="bot-token"))
+
+    await channel._maybe_notify_edit_ignored(_edited_private_update(1))
+    await channel._maybe_notify_edit_ignored(_edited_private_update(2))
+    await channel._maybe_notify_edit_ignored(_edited_private_update(3, chat_id=9))
+
+    notices = [payload for method, payload in channel.calls if method == "sendMessage"]
+    assert [notice["chat_id"] for notice in notices] == ["4", "9"]
+    assert all("Edited messages are ignored" in notice["text"] for notice in notices)
+
+
+@pytest.mark.anyio
+async def test_group_and_channel_edits_get_no_notice() -> None:
+    channel = RecordingTelegramChannel(TelegramChannelConfig(token="bot-token"))
+
+    await channel._maybe_notify_edit_ignored(
+        {
+            "update_id": 1,
+            "edited_message": {"message_id": 2, "chat": {"id": 5, "type": "supergroup"}},
+        }
+    )
+    await channel._maybe_notify_edit_ignored(
+        {
+            "update_id": 2,
+            "edited_channel_post": {"message_id": 3, "chat": {"id": 6, "type": "channel"}},
+        }
+    )
+
+    assert channel.calls == []
+
+
+@pytest.mark.anyio
+async def test_edit_notice_send_failure_never_raises() -> None:
+    class FailingApiChannel(TelegramChannel):
+        async def _api(self, method: str, payload: dict[str, Any] | None = None) -> Any:
+            raise TelegramApiError("synthetic send failure")
+
+    channel = FailingApiChannel(TelegramChannelConfig(token="bot-token"))
+
+    await channel._maybe_notify_edit_ignored(_edited_private_update())
+
+
+@pytest.mark.anyio
+async def test_poll_loop_drops_edited_update_advances_offset_and_notifies() -> None:
+    channel = TelegramChannel(TelegramChannelConfig(token="bot-token"))
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_api(method: str, payload: dict[str, Any] | None = None) -> Any:
+        calls.append((method, payload or {}))
+        if method == "getUpdates":
+            if len([m for m, _p in calls if m == "getUpdates"]) == 1:
+                return [_edited_private_update(7)]
+            raise asyncio.CancelledError
+        return True
+
+    channel._api = fake_api  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await channel._poll_loop()
+
+    assert channel._update_offset == 8
+    assert channel._queue.empty()
+    assert [m for m, _p in calls if m == "sendMessage"] == ["sendMessage"]
+
+
+@pytest.mark.anyio
+async def test_webhook_edited_update_is_dropped_with_notice_and_200() -> None:
+    channel = RecordingTelegramChannel(
+        TelegramChannelConfig(
+            token="bot-token",
+            transport_name="webhook",
+            webhook_url="https://example.test/telegram/events",
+            webhook_secret_token="expected-secret",
+        )
+    )
+
+    response = await _webhook_response(
+        channel,
+        secret_header="expected-secret",
+        body=_edited_private_update(11),
+    )
+
+    assert response.status_code == 200
+    assert channel._queue.empty()
+    assert [m for m, _p in channel.calls if m == "sendMessage"] == ["sendMessage"]
 
 
 @pytest.mark.anyio

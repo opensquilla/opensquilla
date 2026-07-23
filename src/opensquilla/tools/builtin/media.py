@@ -41,6 +41,7 @@ from opensquilla.provider.audio import (
     VoiceCloneRequest,
     VoiceConversionRequest,
     VoiceConversionResult,
+    resolve_elevenlabs_api_key_env,
 )
 from opensquilla.provider.image_generation import (
     ImageGenerationRequest,
@@ -996,13 +997,13 @@ def _audio_configured(config: Any) -> bool:
     if provider_config is None:
         return False
     api_key = str(getattr(provider_config, "api_key", "") or "")
-    api_key_env = str(getattr(provider_config, "api_key_env", "") or "ELEVENLABS_API_KEY")
+    api_key_env = resolve_elevenlabs_api_key_env(provider_config)
     return bool(api_key or os.environ.get(api_key_env))
 
 
 def _elevenlabs_provider(config: Any) -> ElevenLabsAudioProductionProvider:
     provider_config = _audio_provider_config(config)
-    api_key_env = str(getattr(provider_config, "api_key_env", "") or "ELEVENLABS_API_KEY")
+    api_key_env = resolve_elevenlabs_api_key_env(provider_config)
     return ElevenLabsAudioProductionProvider(
         api_key=str(getattr(provider_config, "api_key", "") or "") or None,
         api_key_env=api_key_env,

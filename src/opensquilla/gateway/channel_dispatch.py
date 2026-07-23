@@ -613,7 +613,14 @@ async def run_channel_dispatch(
                 else:
                     event = "channel.command_intercepted"
                 emit(event, command=command_reply.metadata.get("command"), method=command_reply.metadata.get("method"), session_key=session_key)  # noqa: E501
-                await channel.send(command_reply)
+                # Guarded like turn replies: a provider send failure here must
+                # not escape the loop and burn the channel's restart budget.
+                await _deliver_reply_or_notify(
+                    channel,
+                    command_reply,
+                    route_envelope=route_envelope,
+                    session_key=session_key,
+                )
                 if delivery_store is not None:
                     delivery_store.complete_inbound(
                         ingress_claim, "command_dispatched", reason=admission.reason
@@ -706,12 +713,22 @@ async def run_channel_dispatch(
                     session_key=session_key,
                     cap=_in_flight.cap,
                 )
-                await channel.send(
-                    _route_envelope_reply_message(
-                        "Server busy, please retry",
-                        route_envelope,
+                try:
+                    await channel.send(
+                        _route_envelope_reply_message(
+                            "Server busy, please retry",
+                            route_envelope,
+                        )
                     )
-                )
+                except Exception as exc:  # noqa: BLE001 - notice is best-effort
+                    # The rejection is already decided; a failed busy notice
+                    # must not escape the loop and burn the channel's restart
+                    # budget while the adapter is already saturated.
+                    log.warning(
+                        "channel_dispatch.busy_notice_send_failed",
+                        session_key=session_key,
+                        error_type=type(exc).__name__,
+                    )
                 await status_reactor.completed(msg)
                 if delivery_store is not None:
                     delivery_store.complete_inbound(

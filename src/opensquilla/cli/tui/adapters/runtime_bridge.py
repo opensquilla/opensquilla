@@ -249,6 +249,12 @@ def _gateway_runtime_notifier(
         if notice.kind == "unknown_command":
             output_console.print("[red]Unknown command.[/red] [dim]Use /help.[/dim]")
             return
+        if notice.kind == "queued_behind_external":
+            output_console.print(
+                "[dim]Queued behind a turn running from another client;"
+                " your message sends when it finishes.[/dim]"
+            )
+            return
         if notice.kind == "error":
             output_console.print(error_panel_factory(notice.message or ""))
 

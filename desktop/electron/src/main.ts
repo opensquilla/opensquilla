@@ -24,6 +24,8 @@ import { DesktopWriterAdmission } from './desktop-writer-admission.js'
 import {
   createDesktopGatewayInstanceNonce,
   desktopGatewayOwnershipMatchesLaunch,
+  desktopGatewayStartIdentityConflict,
+  desktopProcessStartIdentity,
   desktopProfileFingerprint,
   loadDesktopGatewayOwnershipRecord,
   requestVerifiedDesktopGatewayShutdown,
@@ -55,8 +57,11 @@ import {
   candidateFromUpdateChannel,
   orderedUpdateSources,
   updateAssetUrl,
+  updateChannelManifestFromReleaseInventory,
   updateChannelManifestUrl,
+  updateChannelPathForVersion,
   updateFeedBaseUrl,
+  UPDATE_GITHUB_RELEASES_API_URL,
   UpdateChannelError,
   type DesktopUpdateCandidate,
   type DesktopUpdatePlatform,
@@ -5777,6 +5782,7 @@ async function verifyDesktopGatewayOwnershipWhenReady(
   record: DesktopGatewayOwnershipRecord,
 ): Promise<boolean> {
   const deadline = Date.now() + VERIFIED_ORPHAN_IDENTITY_READY_TIMEOUT_MS
+  let startIdentityChecked = false
   do {
     if (await verifyDesktopGatewayOwnership(record, { timeoutMs: 750 })) return true
     const current = loadDesktopGatewayOwnershipRecord(ownershipDir)
@@ -5785,6 +5791,20 @@ async function verifyDesktopGatewayOwnershipWhenReady(
       || !sameDesktopGatewayOwnershipInstance(current.record, record)
       || !processIdMayStillBeAlive(record.pid)
     ) return false
+    if (!startIdentityChecked) {
+      // The liveness probe cannot tell a slowly-starting orphan from an
+      // unrelated process that recycled the recorded PID (EPERM also counts
+      // as alive). When the live process's start identity provably disagrees
+      // with the record, the record is stale: stop waiting out the full
+      // ready timeout for a Gateway that no longer exists. An unavailable
+      // probe keeps the conservative wait; it never grants stop authority.
+      startIdentityChecked = true
+      const liveStartIdentity = desktopProcessStartIdentity(record.pid)
+      if (desktopGatewayStartIdentityConflict(record.start_identity, liveStartIdentity)) {
+        desktopLog('gateway_ownership_pid_recycled', { pid: record.pid, port: record.port })
+        return false
+      }
+    }
     if (Date.now() >= deadline) break
     await new Promise((resolveWait) => setTimeout(resolveWait, 250))
   } while (true)
@@ -7391,9 +7411,8 @@ function desktopUpdateLocaleTags(): string[] {
   return [...preferred, app.getLocale()]
 }
 
-async function fetchDesktopUpdateChannel(): Promise<unknown> {
-  const rootOverride = (process.env.OPENSQUILLA_DESKTOP_UPDATE_CHANNEL_ROOT || '').trim()
-  const url = updateChannelManifestUrl(app.getVersion(), rootOverride || undefined)
+async function fetchDesktopUpdateChannelFromRoot(root?: string): Promise<unknown> {
+  const url = updateChannelManifestUrl(app.getVersion(), root)
   if (!url) {
     throw new UpdateChannelError('manifest_invalid', 'The installed version has no supported update channel.')
   }
@@ -7418,6 +7437,73 @@ async function fetchDesktopUpdateChannel(): Promise<unknown> {
   } catch {
     throw new UpdateChannelError('manifest_invalid', 'The update channel returned invalid JSON.')
   }
+}
+
+async function fetchDesktopUpdateChannelFromGithubReleases(): Promise<unknown> {
+  let response: Response
+  try {
+    response = await fetch(UPDATE_GITHUB_RELEASES_API_URL, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'OpenSquilla-Desktop' },
+      signal: AbortSignal.timeout(8000),
+      cache: 'no-store',
+    })
+  } catch (err) {
+    throw new UpdateChannelError(
+      'source_unreachable',
+      `The GitHub release inventory is temporarily unreachable: ${String(err instanceof Error ? err.message : err)}`,
+    )
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {})
+    throw new UpdateChannelError('source_unreachable', 'The GitHub release inventory is temporarily unavailable.')
+  }
+  let inventory: unknown
+  try {
+    inventory = await response.json()
+  } catch {
+    throw new UpdateChannelError('manifest_invalid', 'The GitHub release inventory returned invalid JSON.')
+  }
+  const manifest = updateChannelManifestFromReleaseInventory(app.getVersion(), inventory)
+  if (!manifest) {
+    throw new UpdateChannelError(
+      'source_unreachable',
+      'The GitHub release inventory has no release for this update channel.',
+    )
+  }
+  return manifest
+}
+
+async function fetchDesktopUpdateChannel(): Promise<unknown> {
+  if (!updateChannelPathForVersion(app.getVersion())) {
+    throw new UpdateChannelError('manifest_invalid', 'The installed version has no supported update channel.')
+  }
+  const rootOverride = (process.env.OPENSQUILLA_DESKTOP_UPDATE_CHANNEL_ROOT || '').trim()
+  if (rootOverride) return await fetchDesktopUpdateChannelFromRoot(rootOverride)
+  loadDesktopUpdatePersistence()
+  // Discovery itself is dual-sourced: the mirrored channel manifest and the
+  // GitHub release inventory are tried in the same order as asset downloads,
+  // so an unreachable mirror cannot disable update checks outright.
+  const order = orderedUpdateSources(
+    desktopUpdateLocaleTags(),
+    lastSuccessfulUpdateSource,
+    process.env.OPENSQUILLA_DESKTOP_UPDATE_SOURCE,
+  )
+  let lastError: unknown = null
+  for (const source of order) {
+    try {
+      return source === 'oss'
+        ? await fetchDesktopUpdateChannelFromRoot()
+        : await fetchDesktopUpdateChannelFromGithubReleases()
+    } catch (err) {
+      lastError = err
+      desktopLog('update_channel_discovery_failed', {
+        source,
+        error: String(err instanceof Error ? err.message : err),
+      })
+    }
+  }
+  if (lastError instanceof UpdateChannelError) throw lastError
+  throw new UpdateChannelError('source_unreachable', 'No desktop update discovery source is reachable.')
 }
 
 async function probeDesktopUpdateSource(

@@ -1103,6 +1103,9 @@ async def test_provider_configure_does_not_persist_runtime_api_key(tmp_path, mon
     ctx.config.config_path = str(target)
     ctx.config.llm.provider = "openrouter"
     ctx.config.llm.model = "m1"
+    # Leave base_url at the provider default so a model-only resave stays on
+    # the same endpoint origin and the runtime-cached key is reused.
+    ctx.config.llm.base_url = ""
     ctx.config.llm.api_key = "from-env"
     ctx.config.mark_runtime_secret("llm.api_key")
 

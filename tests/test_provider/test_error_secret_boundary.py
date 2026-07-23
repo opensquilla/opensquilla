@@ -343,3 +343,142 @@ async def test_model_discovery_transport_error_preserves_type_but_redacts_key(
 
     assert _API_KEY not in str(raised.value)
     assert "discovery transport echoed" in str(raised.value)
+
+
+# The Codex adapter authenticates with an OAuth access token instead of an
+# API key; upstream error frames that echo it must pass the same boundary.
+_ACCESS_TOKEN = "synthetic-codex-access-token"
+
+
+def _codex_provider(tmp_path: Path) -> Any:
+    from opensquilla.provider.openai_codex import OpenAICodexProvider
+
+    auth_path = tmp_path / "codex-auth.json"
+    auth_path.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": _ACCESS_TOKEN,
+                    "refresh_token": "synthetic-refresh",
+                    "account_id": "synthetic-account",
+                    "id_token": "",
+                },
+            }
+        )
+    )
+    return OpenAICodexProvider(auth_path=str(auth_path))
+
+
+@pytest.mark.parametrize(
+    ("frame", "expected_code"),
+    [
+        pytest.param(
+            {
+                "type": "error",
+                "error": {
+                    "code": f"auth_error-{_ACCESS_TOKEN}",
+                    "message": f"upstream diagnostic echoed Bearer {_ACCESS_TOKEN}",
+                },
+            },
+            "auth_error-***",
+            id="error-frame",
+        ),
+        pytest.param(
+            {
+                "type": "response.failed",
+                "response": {
+                    "error": {
+                        "code": "server_error",
+                        "message": f"request rejected for token {_ACCESS_TOKEN}",
+                    }
+                },
+            },
+            "server_error",
+            id="response-failed",
+        ),
+        pytest.param(
+            {
+                "type": "response.incomplete",
+                "response": {
+                    "incomplete_details": {
+                        "reason": f"interrupted while validating {_ACCESS_TOKEN}"
+                    }
+                },
+            },
+            "response_incomplete",
+            id="response-incomplete",
+        ),
+    ],
+)
+async def test_codex_stream_error_frames_redact_the_access_token(
+    frame: dict[str, Any],
+    expected_code: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _codex_provider(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = "data: " + json.dumps(frame) + "\n\n"
+        return httpx.Response(
+            200,
+            request=request,
+            headers={"content-type": "text/event-stream"},
+            text=content,
+        )
+
+    _patch_transport(monkeypatch, handler)
+    events = await _events(provider)
+
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert len(errors) == 1
+    error = errors[0]
+    assert error.code == expected_code
+    assert _ACCESS_TOKEN not in error.message
+    assert "***" in error.message
+
+
+async def test_codex_http_error_body_redacts_the_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _codex_provider(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            request=request,
+            json={"error": {"message": f"denied for credential {_ACCESS_TOKEN}"}},
+        )
+
+    _patch_transport(monkeypatch, handler)
+    events = await _events(provider)
+
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert len(errors) == 1
+    error = errors[0]
+    assert error.code == "403"
+    assert _ACCESS_TOKEN not in error.message
+    assert "denied for credential" in error.message
+
+
+async def test_codex_transport_error_redacts_the_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = _codex_provider(tmp_path)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(
+            f"synthetic transport echoed {_ACCESS_TOKEN}",
+            request=request,
+        )
+
+    _patch_transport(monkeypatch, handler)
+    events = await _events(provider)
+
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert len(errors) == 1
+    assert errors[0].code == "request_error"
+    assert _ACCESS_TOKEN not in errors[0].message

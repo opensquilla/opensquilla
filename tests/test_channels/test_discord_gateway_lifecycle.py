@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
 import httpx
 import pytest
+import websockets.exceptions
 
 from opensquilla.channels.discord import (
     GATEWAY_INTENTS,
@@ -209,6 +211,51 @@ async def test_dispatch_loop_keeps_reading_after_reconnect() -> None:
     assert reads == 2
     assert reconnects == 1
     assert channel._state.sequence == 9
+
+
+@pytest.mark.anyio
+async def test_ws_recv_reports_closed_connection_when_socket_is_torn_down() -> None:
+    """A reconnect-in-flight nulls the socket; readers must see ConnectionClosed."""
+    channel = DiscordChannel(DiscordChannelConfig(token="token"))
+    assert channel._ws is None
+
+    with pytest.raises(websockets.exceptions.ConnectionClosed):
+        await channel._ws_recv()
+
+
+@pytest.mark.anyio
+async def test_dispatch_loop_waits_for_in_flight_reconnect_and_resumes_reading() -> None:
+    """A heartbeat-timeout reconnect must not kill the dispatch loop.
+
+    While the heartbeat task's reconnect is in flight the socket is ``None``;
+    the dispatch loop must wait for that reconnect to finish and then resume
+    reading from the fresh socket instead of dying on ``None.recv()``.
+    """
+    channel = DiscordChannel(DiscordChannelConfig(token="token"))
+    channel._connected = True
+    channel._ws = None  # the heartbeat task's reconnect tore the socket down
+
+    await channel._reconnect_lock.acquire()  # reconnect still in flight
+    channel._reconnecting = True
+
+    dispatch = asyncio.create_task(channel._dispatch_loop())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Pre-fix the loop died here with an unobserved AttributeError.
+    assert not dispatch.done()
+
+    class _FreshSocket:
+        async def recv(self) -> str:
+            channel._connected = False
+            return json.dumps({"op": 0, "t": "RESUMED", "s": 5, "d": {}})
+
+    channel._ws = _FreshSocket()
+    channel._reconnecting = False
+    channel._reconnect_lock.release()
+
+    await asyncio.wait_for(dispatch, timeout=2)
+
+    assert channel._state.sequence == 5
 
 
 @pytest.mark.anyio

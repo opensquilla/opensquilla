@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,10 @@ MAX_PENDING_PAIRINGS_PER_CHANNEL = 25
 # synchronous commit per message before admission even runs.
 PAIRING_REFRESH_WINDOW_S = 30.0
 _PAIRING_PRUNE_EVERY = 64
+# Match the bounded event caches used by channel adapters. Pending degraded
+# events remain tracked until claimed; only claimed pass-through events are
+# eligible for LRU eviction.
+_DEGRADED_INGRESS_DEDUPE_SIZE = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,6 +163,17 @@ class ChannelDeliveryStore:
         # them visible in memory without treating an ordinary provider replay
         # of an unclaimed ``accepted`` row as a new delivery.
         self._recovered_pending_visibility: set[str] = set()
+        # Events accepted memory-only because the journal write itself failed
+        # (database locked past the busy timeout, disk full, I/O error).
+        # ``claim_inbound`` honors these with a pass-through claim so a
+        # degraded message is still processed instead of being dropped as a
+        # duplicate for lacking an ``accepted`` row.
+        self._unjournaled_events: set[str] = set()
+        # A pass-through claim is issued at most once while the journal remains
+        # unavailable. Claimed markers move into this bounded LRU so a long
+        # outage cannot retain every event for the process lifetime.
+        self._claimed_unjournaled_events: OrderedDict[str, None] = OrderedDict()
+        self._max_claimed_unjournaled_events = _DEGRADED_INGRESS_DEDUPE_SIZE
         self._conn.execute("PRAGMA journal_mode=WAL;")
         self._conn.execute("PRAGMA synchronous=FULL;")
         self._conn.execute("PRAGMA busy_timeout=30000;")
@@ -496,45 +512,80 @@ class ChannelDeliveryStore:
         return self._pairing_from_row(row)
 
     def accept_inbound(self, channel_name: str, message: IncomingMessage) -> bool:
-        """Commit an inbound event before a provider-facing ACK is returned."""
+        """Commit an inbound event before a provider-facing ACK is returned.
+
+        A storage fault degrades to memory-only acceptance instead of raising:
+        this runs inside adapter receive loops (Telegram polling, the Discord
+        gateway dispatch loop, SDK message hooks), where one transient SQLite
+        error would otherwise kill the channel's receive path outright. The
+        degraded event loses at-least-once crash durability for that single
+        message — the pre-journal baseline — and is recorded so
+        :meth:`claim_inbound` still lets dispatch process it.
+        """
         event_key = inbound_event_key(channel_name, message)
         if event_key is None:
             return True
         now = time.time()
         lane_key = f"{message.channel_id}:{message.sender_id}"
         with self._lock:
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                self._conn.execute(
-                    "INSERT INTO channel_ingress "
-                    "(event_key, channel_name, account_id, lane_key, message_json, "
-                    "state, accepted_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
-                    (
-                        event_key,
-                        channel_name,
-                        message.provenance.account_id or channel_name,
-                        lane_key,
-                        _safe_message_json(message),
-                        now,
-                        now,
-                    ),
-                )
-            except sqlite3.IntegrityError:
-                self._conn.rollback()
-                row = self._conn.execute(
-                    "SELECT state FROM channel_ingress WHERE event_key = ?",
-                    (event_key,),
-                ).fetchone()
-                if (
-                    row is not None
-                    and str(row["state"]) == "accepted"
-                    and event_key in self._recovered_pending_visibility
-                ):
-                    self._recovered_pending_visibility.discard(event_key)
-                    return True
+            if event_key in self._claimed_unjournaled_events:
+                self._claimed_unjournaled_events.move_to_end(event_key)
                 return False
-            self._conn.commit()
+            if event_key in self._unjournaled_events:
+                # A prior delivery of this event was already accepted
+                # memory-only after a journal fault, and its pass-through claim
+                # is still pending. If storage has since recovered, taking the
+                # durable INSERT path now would commit an ``accepted`` row while
+                # the marker still exists, so both the marker and the row would
+                # hand out a claim and the message would dispatch twice. Treat
+                # the redelivery as a duplicate (mirroring the durable-duplicate
+                # return below) so it is not re-enqueued. ``claim_inbound``
+                # either promotes the marker to a durable processing row or
+                # retains it after issuing one pass-through claim.
+                return False
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._conn.execute(
+                        "INSERT INTO channel_ingress "
+                        "(event_key, channel_name, account_id, lane_key, message_json, "
+                        "state, accepted_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'accepted', ?, ?)",
+                        (
+                            event_key,
+                            channel_name,
+                            message.provenance.account_id or channel_name,
+                            lane_key,
+                            _safe_message_json(message),
+                            now,
+                            now,
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    self._conn.rollback()
+                    row = self._conn.execute(
+                        "SELECT state FROM channel_ingress WHERE event_key = ?",
+                        (event_key,),
+                    ).fetchone()
+                    if (
+                        row is not None
+                        and str(row["state"]) == "accepted"
+                        and event_key in self._recovered_pending_visibility
+                    ):
+                        self._recovered_pending_visibility.discard(event_key)
+                        return True
+                    return False
+                self._conn.commit()
+            except sqlite3.Error as exc:
+                with contextlib.suppress(sqlite3.Error):
+                    self._conn.rollback()
+                self._unjournaled_events.add(event_key)
+                log.warning(
+                    "channel.ingress_journal_degraded",
+                    channel=channel_name,
+                    error_type=type(exc).__name__,
+                    error=_safe_error_text(exc),
+                )
         return True
 
     def claim_inbound(
@@ -545,6 +596,61 @@ class ChannelDeliveryStore:
         event_key = inbound_event_key(channel_name, message)
         if event_key is None:
             return IngressClaim("", "")
+        with self._lock:
+            if event_key in self._claimed_unjournaled_events:
+                self._claimed_unjournaled_events.move_to_end(event_key)
+                return None
+            if event_key in self._unjournaled_events:
+                # Accepted memory-only after a journal write failure: there is
+                # no ``accepted`` row to update. If storage has recovered,
+                # restore the ordinary durable claim lifecycle so completion,
+                # failure, payload scrubbing, and restart recovery all work.
+                token = uuid.uuid4().hex
+                now = time.time()
+                try:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    self._conn.execute(
+                        "INSERT INTO channel_ingress "
+                        "(event_key, channel_name, account_id, lane_key, message_json, "
+                        "state, claim_token, claim_started_at, attempts, accepted_at, "
+                        "updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, 'processing', ?, ?, 1, ?, ?)",
+                        (
+                            event_key,
+                            channel_name,
+                            message.provenance.account_id or channel_name,
+                            f"{message.channel_id}:{message.sender_id}",
+                            _safe_message_json(message),
+                            token,
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                    self._conn.commit()
+                except sqlite3.IntegrityError:
+                    with contextlib.suppress(sqlite3.Error):
+                        self._conn.rollback()
+                    # Another writer already made this event durable. Its row
+                    # is now the dedup authority; do not dispatch this copy.
+                    self._unjournaled_events.discard(event_key)
+                    return None
+                except sqlite3.Error:
+                    with contextlib.suppress(sqlite3.Error):
+                        self._conn.rollback()
+                    # Preserve availability for the original delivery, while
+                    # retaining enough process-local state to reject both a
+                    # provider redelivery and a repeated direct claim.
+                    self._unjournaled_events.discard(event_key)
+                    self._claimed_unjournaled_events[event_key] = None
+                    if (
+                        len(self._claimed_unjournaled_events)
+                        > self._max_claimed_unjournaled_events
+                    ):
+                        self._claimed_unjournaled_events.popitem(last=False)
+                    return IngressClaim("", "")
+                self._unjournaled_events.discard(event_key)
+                return IngressClaim(event_key, token)
         token = uuid.uuid4().hex
         now = time.time()
         with self._lock:

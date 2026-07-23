@@ -274,6 +274,7 @@ import { useRouter } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useRequest } from '@/composables/useRequest'
 import { requestUsageSnapshot } from '@/composables/usage/useUsageQuery'
+import { effectiveCnyPerUsd } from '@/composables/usage/nativeBilling'
 import type { UsageSnapshot } from '@/types/usage'
 import { useToasts } from '@/composables/useToasts'
 import { isOwnedGatewayConnection } from '@/composables/useCliInvocation'
@@ -432,7 +433,9 @@ const tokensDisplay = computed<string>(() =>
 const costLine = computed<string>(() => {
   const cost = usageData.value?.totalCostUsd
   if (cost == null) return '—'
-  const cnyRate = 7.25
+  // Prefer the ledger's canonical rate; 7.25 is only the legacy display
+  // fallback for gateways that predate served FX rates.
+  const cnyRate = effectiveCnyPerUsd(usageSnapshot.value) ?? 7.25
   const usd = '$' + Number(cost).toFixed(4)
   const cny = '¥' + (Number(cost) * cnyRate).toFixed(4)
   const cur = localStorage.getItem('opensquilla-currency') || 'USD'

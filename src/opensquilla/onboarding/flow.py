@@ -2024,6 +2024,36 @@ def _print_channel_intro(spec: ChannelSetupSpec) -> None:
     )
 
 
+_RELEASE_VERSION_RE = re.compile(r"^\d+(?:\.\d+)*(?:(?:a|b|rc)\d+)?$")
+
+
+def _installed_reinstall_command_lines() -> str:
+    """Reinstall lines for the running release, never a stale pinned tag.
+
+    A release build reinstalls its own wheel with the ``recommended`` extra so
+    the command adds the missing optional dependency without changing version.
+    Dev or unknown builds cannot map to a published wheel, so they are pointed
+    at the latest-release page instead of a guessed URL.
+    """
+    from opensquilla import __version__
+
+    if _RELEASE_VERSION_RE.match(__version__):
+        wheel_url = (
+            "https://github.com/opensquilla/opensquilla/releases/download/"
+            f"v{__version__}/opensquilla-{__version__}-py3-none-any.whl"
+        )
+        return (
+            "  uv tool install --python 3.12 --force "
+            f"\"opensquilla[recommended] @ {wheel_url}\"\n"
+        )
+    return (
+        "  uv tool install --python 3.12 --force "
+        "\"opensquilla[recommended] @ <wheel-url>\"\n"
+        "  (use the wheel from the latest release: "
+        "https://github.com/opensquilla/opensquilla/releases/latest)\n"
+    )
+
+
 def _warn_channel_dependency_gaps(spec: ChannelSetupSpec, answers: dict[str, Any]) -> None:
     """Warn about optional channel dependencies that will fail at gateway start."""
     if spec.type == "feishu" and answers.get("connection_mode") == "websocket":
@@ -2035,10 +2065,7 @@ def _warn_channel_dependency_gaps(spec: ChannelSetupSpec, answers: dict[str, Any
                     "[bold]Portable zip:[/]\n"
                     "  Use the latest recommended portable package, then restart.\n\n"
                     "[bold]Installed command:[/]\n"
-                    "  uv tool install --python 3.12 --force "
-                    "\"opensquilla[recommended] @ "
-                    "https://github.com/opensquilla/opensquilla/releases/download/"
-                    "v0.5.0rc4/opensquilla-0.5.0rc4-py3-none-any.whl\"\n"
+                    + _installed_reinstall_command_lines() +
                     "  opensquilla gateway restart\n\n"
                     "[bold]Development checkout:[/]\n"
                     "  uv sync --extra recommended\n"

@@ -690,6 +690,7 @@
       "proposerCount": "{count} / 上限 {max} · 推荐 {recommendedMin}–{recommendedMax}",
       "proposerCountCompact": "{count} / {max}",
       "presetReadOnlyHint": "预设阵容由服务商维护，切换到“自定义”后可调整。",
+      "presetProviderMismatchNotice": "当前回合仍运行已保存的 {presetProvider} 预设，而非 {activeProvider} 的预设 — 重新选择“预设”即可切换到 {activeProvider}。",
       "importTierCandidates": "从模型分层导入",
       "roleSelectAria": "{model} 的角色",
       "roleUnassigned": "未指定角色",
@@ -2962,6 +2963,7 @@
       "waitCompactionBeforeCommand": "请等待上下文压缩完成后再运行 {command}。",
       "waitResponseBeforeCommand": "请等待当前回复结束后再运行 {command}。",
       "queueFull": "队列已满 — 请等待当前回复结束。",
+      "messageStillSaving": "这条消息尚未保存完成 — 请稍后再试。",
       "artifactOpenFailed": "产物打开失败。请改为下载。"
     },
     "stream": {

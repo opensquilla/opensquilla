@@ -38,6 +38,7 @@ from .error_redaction import (
     redacted_httpx_error,
 )
 from .failures import retry_after_from_headers
+from .fx import TOKENRHYTHM_CNY_PER_USD, TOKENRHYTHM_CNY_PER_USD_NANOS
 from .protocol import ProviderConnectionConfig, ProviderMetadata
 from .reasoning_dialects import (
     ReasoningDisableArgs,
@@ -1189,8 +1190,8 @@ def _usage_fields(usage: Mapping[str, Any] | None) -> tuple[int, int, int, int, 
 
 _MONEY_NANO_SCALE = 1_000_000_000
 _MAX_MONEY_NANOS = (1 << 63) - 1
-_TOKENRHYTHM_CNY_PER_USD = Decimal("6.975")
-_TOKENRHYTHM_FX_NANOS = 6_975_000_000
+_TOKENRHYTHM_CNY_PER_USD = TOKENRHYTHM_CNY_PER_USD
+_TOKENRHYTHM_FX_NANOS = TOKENRHYTHM_CNY_PER_USD_NANOS
 _USD_FX_NANOS = _MONEY_NANO_SCALE
 
 

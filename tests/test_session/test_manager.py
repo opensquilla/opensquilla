@@ -2074,6 +2074,37 @@ async def test_canonical_transcript_page_crosses_multiple_compaction_boundaries(
 
 
 @pytest.mark.asyncio
+async def test_canonical_transcript_page_preserves_turn_context(manager):
+    """Paged canonical reads must keep turn_context on active and archived rows."""
+    node = await manager.create("agent:main:main")
+    for index in range(4):
+        await manager._storage.append_transcript_entry(
+            TranscriptEntry(
+                session_id=node.session_id,
+                session_key=node.session_key,
+                message_id=f"ctx-{index}",
+                role="user",
+                content=f"message {index}",
+                turn_context={"turn_id": f"turn-{index}", "disposition": "steering"},
+                created_at=1_000 + index,
+            )
+        )
+
+    await manager.persist_compaction_result(
+        node.session_key,
+        "context summary",
+        [{"role": "user", "content": f"message {index}"} for index in range(2, 4)],
+        compaction_id="cmp-turn-context",
+    )
+
+    page = await manager.get_canonical_transcript_page(node.session_key, limit=10)
+    assert [entry.message_id for entry in page.entries] == [f"ctx-{i}" for i in range(4)]
+    assert [entry.turn_context for entry in page.entries] == [
+        {"turn_id": f"turn-{index}", "disposition": "steering"} for index in range(4)
+    ]
+
+
+@pytest.mark.asyncio
 async def test_canonical_transcript_page_reads_one_snapshot_during_compaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

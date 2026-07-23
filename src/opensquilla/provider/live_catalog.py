@@ -30,6 +30,7 @@ import structlog
 from opensquilla.env import trust_env as _trust_env
 
 from .app_attribution import provider_app_headers
+from .fx import TOKENRHYTHM_CNY_PER_USD
 from .model_catalog import DEFAULT_MAX_TOKENS as _NEAR_WINDOW_MARGIN
 from .registry import UnknownProviderError, get_provider_spec
 
@@ -43,9 +44,10 @@ LIVE_CATALOG_TIMEOUT_SECONDS = 5.0
 
 # TokenRhythm publishes CNY prices per billingUnit tokens (1M so far);
 # catalog costs are USD per-Mtok. Same documented conversion the packaged
-# corrections rows use (catalog_overrides.toml, ~6.975 CNY/USD).
-_TOKENRHYTHM_CNY_PER_USD = 6.975
-_TOKENRHYTHM_CNY_PER_USD_DECIMAL = Decimal("6.975")
+# corrections rows use (catalog_overrides.toml) and the billing receipts
+# record — one canonical rate in ``provider/fx.py``.
+_TOKENRHYTHM_CNY_PER_USD = float(TOKENRHYTHM_CNY_PER_USD)
+_TOKENRHYTHM_CNY_PER_USD_DECIMAL = TOKENRHYTHM_CNY_PER_USD
 _TOKENS_PER_MTOK = Decimal("1000000")
 
 

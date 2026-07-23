@@ -243,6 +243,60 @@ api_key_env = "HISTORICAL_DEEPSEEK_KEY"
 
 
 @pytest.mark.asyncio
+async def test_active_credential_clear_survives_unparseable_managed_backup(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """A corrupt historical backup must not block a security-motivated clear.
+
+    The unparseable file cannot serve as a restore source but may still hold
+    the leaked secret in plain text, so the clear deletes it and proceeds to
+    sanitize the readable backups and the live config.
+    """
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    config_path = tmp_path / "config.toml"
+    cfg = GatewayConfig(
+        config_path=str(config_path),
+        llm={
+            "provider": "openrouter",
+            "model": "openai/gpt-test",
+            "api_key": "synthetic-primary-secret",
+        },
+    )
+    persist_config(cfg, path=config_path, backup=False)
+    corrupt_backup = config_path.with_name("config.toml.backup.synthetic-corrupt")
+    corrupt_backup.write_text('[llm\napi_key = "synthetic-primary-secret"\n')
+    readable_backup = config_path.with_name("config.toml.backup.synthetic-readable")
+    readable_backup.write_text(
+        """
+config_version = 1
+
+[llm]
+model = "openai/gpt-old"
+api_key = "synthetic-historical-primary-secret"
+""".strip()
+        + "\n"
+    )
+
+    response = await get_dispatcher().dispatch(
+        "clear-primary-corrupt-backup",
+        "onboarding.provider.credential.clear",
+        {"providerId": "openrouter"},
+        _admin_ctx(cfg),
+    )
+
+    assert response.error is None, response.error
+    assert response.payload["changed"] is True
+    assert cfg.llm.api_key == ""
+    persisted = tomllib.loads(config_path.read_text())
+    assert "api_key" not in persisted["llm"]
+    assert not corrupt_backup.exists()
+    sanitized_backup = tomllib.loads(readable_backup.read_text())
+    assert "api_key" not in sanitized_backup["llm"]
+    assert sanitized_backup["llm"]["model"] == "openai/gpt-old"
+
+
+@pytest.mark.asyncio
 async def test_active_credential_clear_reports_registry_environment_still_active(
     tmp_path,
     monkeypatch,

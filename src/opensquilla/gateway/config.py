@@ -2799,6 +2799,7 @@ class GatewayConfig(BaseSettings):
             data = tomllib.load(f)
         migration = migrate_config_payload(data)
         cfg = cls(**migration.payload)
+        cfg._mark_env_absorbed_secrets(data)
         cls._apply_profile_path_overrides(cfg, target)
         if migration.changed:
             _rewrite_migrated_config_best_effort(target, migration)

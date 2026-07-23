@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 
+- Telegram edited messages no longer start a new agent turn. Previously,
+  editing an earlier message re-triggered the bot; edited updates are now
+  dropped deliberately so an edit is not double-billed as a new request. In
+  private chats the bot replies once per chat explaining that edits are
+  ignored and the corrected text should be sent as a new message.
 - `opensquilla chat` uses automatic renderer selection without treating stale
   internal backend environment state as a user request. Release installs keep
   the Python-native chat when no compatible host is installed.
@@ -24,8 +29,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   builds now require Node.js 22.12+ with npm and build the console from the
   locked frontend dependencies before packaging.
 - Optional profile migration is now available only from **Settings → Advanced
-  → Data maintenance**. Startup, onboarding, the sidebar, Doctor, and native
-  upgrade prompts stay silent; Desktop can still preview and apply a guarded
+  → Data maintenance**. Onboarding, the sidebar, Doctor, and native upgrade
+  prompts stay silent; gateway startup logs a single advisory line when a
+  fresh profile boots beside importable legacy data so headless operators can
+  find their previous home. Desktop can still preview and apply a guarded
   whole-profile replacement, while Web administrators receive a path-free,
   read-only preview.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -250,9 +251,12 @@ async def publish_artifact(
                 f"({target_size} > {max_bytes})"
             )
             raise ToolError(str(budget_error)) from budget_error
-        target_payload = target.read_bytes()
+        # Inflation plus full-deck parsing is CPU-bound; keep it off the
+        # gateway event loop so concurrent sessions stay responsive.
+        target_payload = await asyncio.to_thread(target.read_bytes)
         try:
-            validate_artifact_for_delivery(
+            await asyncio.to_thread(
+                validate_artifact_for_delivery,
                 target_payload,
                 source_name=target.name,
                 name=artifact_name,

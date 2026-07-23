@@ -21,7 +21,7 @@ import platform
 import re
 import time
 import uuid
-from collections.abc import AsyncIterator, Callable, Hashable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Hashable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1303,6 +1303,18 @@ def _cancelled_partial_response_text(
         )
         return f"{partial_text}\n\n{delivered}" if partial_text else delivered
     return f"{partial_text}\n\n[interrupted]" if partial_text else "[interrupted]"
+
+
+async def _finish_required_cancel_cleanup(awaitable: Awaitable[Any]) -> Any:
+    """Finish required turn cleanup without forwarding repeated cancellation."""
+
+    task = asyncio.ensure_future(awaitable)
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
 
 
 def _should_add_artifact_delivery_failure_notice(
@@ -3725,11 +3737,13 @@ class TurnRunner:
                             {"text": body, "artifacts": turn_artifacts},
                             ensure_ascii=False,
                         )
-                    await self._append_session_message(
-                        session_key,
-                        role="assistant",
-                        content=body,
-                        tool_calls=turn_segments if turn_segments else None,
+                    await _finish_required_cancel_cleanup(
+                        self._append_session_message(
+                            session_key,
+                            role="assistant",
+                            content=body,
+                            tool_calls=turn_segments if turn_segments else None,
+                        )
                     )
                     log.info(
                         "turn_runner.cancelled_partial_persisted",
@@ -3749,7 +3763,9 @@ class TurnRunner:
                 # user prompt. Drop it so a cancelled question does not silently
                 # influence later turns (#240). Cancels WITH partial output keep
                 # the `[interrupted]` marker above instead.
-                await self._rollback_cancelled_prompt(session_key, bound_user_message_id)
+                await _finish_required_cancel_cleanup(
+                    self._rollback_cancelled_prompt(session_key, bound_user_message_id)
+                )
             if turn_call_logger is not None:
                 try:
                     turn_call_logger.write(
@@ -5699,6 +5715,8 @@ class TurnRunner:
             from opensquilla.provider.ensemble import (
                 CUSTOM_B5_SELECTION_MODE,
                 build_ensemble_provider_from_config,
+                static_b5_credential_available,
+                static_b5_profile,
             )
 
             current_provider_config = (
@@ -5736,6 +5754,27 @@ class TurnRunner:
                 log.warning(
                     "llm_ensemble.wrap_skipped",
                     reason="incomplete_provider_selector_current_config",
+                )
+            elif static_b5_profile(selection_mode) is not None and not (
+                static_b5_credential_available(
+                    self._turn_config(),
+                    current_provider_config,
+                    selection_mode,
+                )
+            ):
+                # Every member of a static profile shares one provider
+                # credential; without it no member can ever succeed, and
+                # wrapping would run a degraded quorum-unavailable fallback
+                # round (with its heartbeats, labels, and fallback budget) on
+                # every turn instead of the user's plain single-model
+                # provider. Keep the wrap off, matching the config-side
+                # static_b5_ensemble_active() gate.
+                log.warning(
+                    "llm_ensemble.wrap_skipped",
+                    reason=f"{selection_mode}_no_credential",
+                )
+                turn.metadata["ensemble_wrap_skipped_reason"] = (
+                    f"{selection_mode}_no_credential"
                 )
             elif not custom_has_proposer:
                 log.warning(

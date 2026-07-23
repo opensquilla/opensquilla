@@ -41,6 +41,7 @@ function makeOptions(
     focusComposer: vi.fn(),
     pendingForkBeforeMessageId,
     aiGeneratedLabel,
+    notifyMessagePending: vi.fn(),
   }
   return { api: useChatMessageActions(options), options, pendingForkBeforeMessageId }
 }
@@ -114,6 +115,9 @@ describe('useChatMessageActions branching edits', () => {
     expect(options.inputText.value).toBe('')
     expect(pendingForkBeforeMessageId.value).toBeNull()
     expect(options.focusComposer).not.toHaveBeenCalled()
+    // The refusal must be user-visible, not just a console trace: the button
+    // otherwise looks dead when the chat.send ack was lost.
+    expect(options.notifyMessagePending).toHaveBeenCalledOnce()
   })
 
   it('does not regenerate as a parent send when the durable fork id is missing', async () => {
@@ -136,6 +140,26 @@ describe('useChatMessageActions branching edits', () => {
     expect(options.inputText.value).toBe('')
     expect(pendingForkBeforeMessageId.value).toBeNull()
     expect(options.sendCurrentInput).not.toHaveBeenCalled()
+    expect(options.notifyMessagePending).toHaveBeenCalledOnce()
+  })
+
+  it('regenerates and edits without pending feedback when ids are durable', async () => {
+    const { api, options } = makeOptions([
+      { role: 'user', text: 'A', ts: null, messageId: 'msg-A' },
+      { role: 'assistant', text: 'ack A', ts: null, messageId: 'msg-a1' },
+    ])
+
+    api.regenerateMessage(renderedMessage({
+      role: 'assistant',
+      displayRole: 'assistant',
+      sourceIndex: 1,
+      messageId: 'msg-a1',
+      text: 'ack A',
+    }))
+    await nextTick()
+
+    expect(options.sendCurrentInput).toHaveBeenCalledOnce()
+    expect(options.notifyMessagePending).not.toHaveBeenCalled()
   })
 })
 

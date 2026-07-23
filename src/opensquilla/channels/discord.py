@@ -245,7 +245,14 @@ class DiscordChannel:
             await self._ws.send(json.dumps(payload))
 
     async def _ws_recv(self) -> dict[str, Any]:
-        raw = await self._ws.recv()
+        ws = self._ws
+        if ws is None:
+            # A concurrent reconnect (e.g. the heartbeat task detected a
+            # missed ACK) tears the socket down before its replacement
+            # exists.  Surface the closed-connection signal callers already
+            # handle instead of dying on ``None.recv()`` with AttributeError.
+            raise websockets.exceptions.ConnectionClosedError(None, None)
+        raw = await ws.recv()
         return cast(dict[str, Any], json.loads(raw))
 
     async def _close_ws(self) -> None:
@@ -368,14 +375,20 @@ class DiscordChannel:
         """Re-establish the gateway connection.
 
         Idempotent under concurrent calls: a second invocation while a
-        first is in flight is a no-op. Without this guard a heartbeat
-        timeout racing an op-7 / op-9 in the dispatch loop could trigger
-        two simultaneous IDENTIFY sequences and leave two heartbeat tasks
-        running against the same socket.
+        first is in flight waits for that attempt instead of starting its
+        own. Without this guard a heartbeat timeout racing an op-7 / op-9
+        in the dispatch loop could trigger two simultaneous IDENTIFY
+        sequences and leave two heartbeat tasks running against the same
+        socket. Waiting (rather than returning immediately) matters for the
+        dispatch loop: the in-flight reconnect owns the socket and may hold
+        ``self._ws = None`` for the whole retry window, so returning early
+        would send the caller straight back into ``_ws_recv`` on a dead
+        socket and spin until the new connection exists.
         """
         if self._reconnecting:
-            log.info("discord.reconnect_skipped_already_in_flight")
-            return
+            log.info("discord.reconnect_waiting_for_in_flight")
+            async with self._reconnect_lock:
+                return
         async with self._reconnect_lock:
             self._reconnecting = True
             try:

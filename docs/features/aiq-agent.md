@@ -147,3 +147,16 @@ uv run --frozen pytest -q \
 ```
 
 Current result: 497 passed. This check makes no paid model call.
+
+To measure the request boundary itself against the exact FAQ fixture:
+
+```bash
+uv run --frozen python scripts/experiments/benchmark_aiq_faq_surface.py \
+  --tasks "$AIQ_REPO_PATH/evals/fixed_income_benchmark/tasks/00_frequently_asked_xlsx_2026_07.jsonl" \
+  --iterations 1000
+```
+
+The current offline run matches all 21 tasks. Median effective tool count is
+one; median provider tool-schema size falls from 45,700 to 3,517 bytes
+(92.3%), and selector p50/p95 are 2.5/4.2 microseconds. These measurements do
+not include model, network, or data-tool latency.

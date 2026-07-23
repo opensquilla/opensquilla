@@ -405,8 +405,29 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
     const hasTrace = Boolean(trace?.profile || trace?.mode)
     if (!breakdown.length && !hasTrace) return undefined
 
-    const models = breakdown
-      .map(rowToEnsembleModel)
+    const traceCandidates = normalizeEnsembleUsageRows(trace?.candidates)
+    const usedBreakdownIndexes = new Set<number>()
+    const models = traceCandidates
+      .map(candidate => {
+        const candidateKey = ensembleCandidateIdentity(candidate)
+        const breakdownIndex = breakdown.findIndex((row, index) =>
+          !usedBreakdownIndexes.has(index)
+          && ensembleCandidateIdentity(row) === candidateKey,
+        )
+        if (breakdownIndex >= 0) usedBreakdownIndexes.add(breakdownIndex)
+        const usageRow = breakdownIndex >= 0
+          ? breakdown[breakdownIndex]
+          : {
+              ...candidate,
+              role: String(candidate.role || candidate.label || 'proposer'),
+            }
+        return rowToEnsembleModel(usageRow, candidate)
+      })
+      .concat(
+        breakdown
+          .filter((_, index) => !usedBreakdownIndexes.has(index))
+          .map(row => rowToEnsembleModel(row)),
+      )
       .filter((row): row is ChatEnsembleMetaModel => row !== null)
     const uniqueModels = new Set(models.map(row => `${row.role}:${row.provider}:${row.model}`))
     const rowCost = models.reduce((sum, row) => sum + row.costUsd, 0)
@@ -418,7 +439,10 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       profile: String(trace?.profile || breakdown[0]?.profile || 'llm_ensemble'),
       modelCount: uniqueModels.size || models.length || numeric(trace?.selected_candidate_count) || numeric(trace?.total_candidates),
       totalCandidates: numeric(trace?.total_candidates),
-      requestCount: Math.max(0, numeric(trace?.llm_request_count), models.length),
+      // A settled trace may include display-only rows for members whose
+      // provider request never started. Keep the trace's physical request
+      // count authoritative, with actual usage rows as the legacy lower bound.
+      requestCount: Math.max(0, numeric(trace?.llm_request_count), breakdown.length),
       fallbackUsed: trace?.fallback_used === true || trace?.fallbackUsed === true,
       fallbackReason: String(trace?.fallback_reason || trace?.fallbackReason || ''),
       costUsd: explicitCost > 0 ? explicitCost : rowCost,
@@ -457,12 +481,33 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       : null
   }
 
-  function rowToEnsembleModel(row: ChatEnsembleUsageRow): ChatEnsembleMetaModel | null {
+  function ensembleCandidateIdentity(row: ChatEnsembleUsageRow): string {
+    return [
+      String(row.label || '').trim(),
+      String(row.provider || '').trim(),
+      String(row.model || '').trim(),
+      String(Math.max(0, numeric(row.sample_index))),
+    ].join('\u0000')
+  }
+
+  function rowToEnsembleModel(
+    row: ChatEnsembleUsageRow,
+    candidate?: ChatEnsembleUsageRow,
+  ): ChatEnsembleMetaModel | null {
     const model = String(row.model || '').trim()
     if (!model) return null
     const provider = String(row.provider || '').trim()
     const role = String(row.role || '').trim() || 'member'
     const label = String(row.label || role).trim() || role
+    const error = String(candidate?.error || '').trim()
+    const errorCode = String(candidate?.error_code || candidate?.errorCode || '').trim()
+    const status = errorCode === 'quorum_cancelled'
+      ? 'skipped'
+      : error || candidate?.ok === false
+        ? 'failed'
+        : candidate?.ok === true
+          ? 'done'
+          : undefined
     return {
       role,
       label,
@@ -473,6 +518,10 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
       output: numeric(row.output_tokens ?? row.outputTokens),
       costUsd: numeric(row.cost_usd ?? row.costUsd ?? row.billed_cost ?? row.billedCost),
       elapsedMs: Math.max(0, numeric(row.elapsed_ms ?? row.elapsedMs)),
+      sampleIndex: Math.max(0, numeric(row.sample_index)),
+      status,
+      error: error || undefined,
+      errorCode: errorCode || undefined,
     }
   }
 

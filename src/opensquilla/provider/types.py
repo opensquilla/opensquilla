@@ -338,6 +338,11 @@ class ChatConfig(BaseModel):
     thinking_level: Any | None = None
     provider_request_max_chars: int = 0
     tool_choice: Any | None = None
+    candidate_output_mode: Literal["normal", "inert_artifact"] = Field(
+        default="normal",
+        exclude=True,
+        repr=False,
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if self.thinking_budget_explicit is None:

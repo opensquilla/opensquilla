@@ -242,6 +242,10 @@ export interface ChatEnsembleUsageRow {
   costSource?: string
   elapsed_ms?: number
   elapsedMs?: number
+  ok?: boolean
+  error?: string
+  error_code?: string
+  errorCode?: string
   [key: string]: unknown
 }
 
@@ -267,10 +271,12 @@ export interface ChatEnsembleMetaModel {
   input: number
   output: number
   costUsd: number
-  // Live per-member lifecycle during streaming. Absent for settled/history rows.
-  status?: 'running' | 'done' | 'failed'
+  sampleIndex?: number
+  // Per-member lifecycle from live progress or a settled ensemble trace.
+  status?: 'running' | 'done' | 'failed' | 'skipped'
   elapsedMs?: number
   error?: string
+  errorCode?: string
 }
 
 export interface ChatEnsembleMeta {

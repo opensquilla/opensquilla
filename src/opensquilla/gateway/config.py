@@ -473,6 +473,9 @@ class LlmEnsembleConfig(BaseSettings):
     selection_mode: Literal[
         "router_dynamic", "static_openrouter_b5", "static_tokenrhythm_b5", "custom_b5"
     ] = "static_openrouter_b5"
+    # Expose tool schemas to proposers as advisory vocabulary only. Proposer
+    # output is never dispatched; only the aggregator owns an executable tool
+    # boundary.
     proposer_tools: bool = False
     min_successful_proposers: int = Field(default=1, ge=1)
     all_failed_policy: Literal["fallback_single", "error"] = "fallback_single"

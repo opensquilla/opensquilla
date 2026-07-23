@@ -680,6 +680,7 @@
     "tests/test_provider_app_attribution.py": 0.021,
     "tests/test_provider_attachments.py": 0.01,
     "tests/test_provider_audio_media.py": 0.119,
+    "tests/test_provider_candidate_artifact.py": 0.01,
     "tests/test_provider_capability_profiles.py": 0.019,
     "tests/test_provider_compat_policy.py": 0.01,
     "tests/test_provider_ensemble.py": 0.51,

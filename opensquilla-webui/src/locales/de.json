@@ -2767,6 +2767,8 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "verwendet",
       "ensembleFailed": "fehlgeschlagen",
+      "ensembleQuorumSkipped": "Schwelle erreicht · übersprungen",
+      "ensembleQuorumSkippedDetail": "Die Kandidatenschwelle war bereits erreicht; das Warten auf diesen Kandidaten wurde beendet.",
       "ensembleTracePending": "Trace ausstehend",
       "ensembleTraceUnavailable": "Trace nach Abschluss des Laufs verfügbar",
       "ensembleDetailUnavailable": "{count} Kandidaten · Details nicht verfügbar"

@@ -2767,6 +2767,8 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "usado",
       "ensembleFailed": "fallido",
+      "ensembleQuorumSkipped": "umbral alcanzado · omitido",
+      "ensembleQuorumSkippedDetail": "El umbral de candidatos ya se había alcanzado, por lo que se canceló la espera de este candidato.",
       "ensembleTracePending": "traza pendiente",
       "ensembleTraceUnavailable": "traza disponible cuando finalice la ejecución",
       "ensembleDetailUnavailable": "{count} candidatos · detalle no disponible"

@@ -101,6 +101,7 @@ RECENTLY_ADDED_ACTIVE_TESTS = {
     "tests/test_onboarding/test_llm_profiles.py",
     "tests/test_packaging/test_webui_build_contract.py",
     "tests/test_provider/test_error_secret_boundary.py",
+    "tests/test_provider_candidate_artifact.py",
     "tests/test_provider_native_response_guards.py",
     "tests/test_provider_terminal_evidence.py",
     "tests/test_provider_terminal_evidence_anthropic_codex.py",

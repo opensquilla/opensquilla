@@ -2767,6 +2767,8 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "used",
       "ensembleFailed": "failed",
+      "ensembleQuorumSkipped": "threshold met · skipped",
+      "ensembleQuorumSkippedDetail": "The candidate threshold was already met, so waiting for this candidate was cancelled.",
       "ensembleTracePending": "trace pending",
       "ensembleTraceUnavailable": "trace unavailable until run completes",
       "ensembleDetailUnavailable": "{count} candidates · detail unavailable"

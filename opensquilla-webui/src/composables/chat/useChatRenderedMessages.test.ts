@@ -690,6 +690,100 @@ describe('useChatRenderedMessages ensemble metadata', () => {
     ])
   })
 
+  it('preserves candidate terminal status from the ensemble trace after settlement', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'fused answer',
+        ts: 0,
+        usage: {
+          model_usage_breakdown: [
+            {
+              role: 'proposer',
+              label: 'proposer_1',
+              provider: 'openrouter',
+              model: 'deepseek/deepseek-v4-pro',
+              sample_index: 0,
+              input_tokens: 10,
+              output_tokens: 2,
+              elapsed_ms: 5_700,
+            },
+            {
+              role: 'aggregator',
+              label: 'aggregator',
+              provider: 'openrouter',
+              model: 'z-ai/glm-5.2',
+              input_tokens: 20,
+              output_tokens: 8,
+              elapsed_ms: 12_000,
+            },
+          ],
+          ensemble_trace: {
+            profile: 'default',
+            total_candidates: 3,
+            candidates: [
+              {
+                label: 'proposer_1',
+                provider: 'openrouter',
+                model: 'deepseek/deepseek-v4-pro',
+                sample_index: 0,
+                ok: true,
+                elapsed_ms: 5_700,
+              },
+              {
+                label: 'proposer_2',
+                provider: 'openrouter',
+                model: 'z-ai/glm-5.2',
+                sample_index: 0,
+                ok: false,
+                elapsed_ms: 21_000,
+                error: 'proposer cancelled after 5s ensemble quorum grace',
+                error_code: 'quorum_cancelled',
+              },
+              {
+                label: 'proposer_3',
+                provider: 'openrouter',
+                model: 'moonshotai/kimi-k2.7',
+                sample_index: 0,
+                ok: false,
+                elapsed_ms: 7_000,
+                error: 'provider timed out',
+                error_code: 'timeout',
+              },
+            ],
+          },
+        },
+      },
+    ])
+
+    const models = api.renderedMessages.value[0].meta?.ensemble?.models
+    expect(models).toHaveLength(4)
+    expect(models?.[0]).toMatchObject({
+      model: 'deepseek/deepseek-v4-pro',
+      input: 10,
+      output: 2,
+      status: 'done',
+    })
+    expect(models?.[1]).toMatchObject({
+      model: 'z-ai/glm-5.2',
+      status: 'skipped',
+      errorCode: 'quorum_cancelled',
+      elapsedMs: 21_000,
+    })
+    expect(models?.[2]).toMatchObject({
+      model: 'moonshotai/kimi-k2.7',
+      status: 'failed',
+      errorCode: 'timeout',
+    })
+    expect(models?.[3]).toMatchObject({
+      role: 'aggregator',
+      model: 'z-ai/glm-5.2',
+      input: 20,
+      output: 8,
+    })
+    expect(models?.[3]?.status).toBeUndefined()
+  })
+
   it('does not undercount requests when a turn has multiple ensemble breakdown rows', () => {
     const api = renderedMessagesFor([
       {
@@ -712,5 +806,84 @@ describe('useChatRenderedMessages ensemble metadata', () => {
     ])
 
     expect(api.renderedMessages.value[0].meta?.ensemble?.requestCount).toBe(4)
+  })
+
+  it('does not count an unavailable trace candidate as a physical request', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'assistant',
+        text: 'fused answer',
+        ts: 0,
+        usage: {
+          model_usage_breakdown: [
+            {
+              role: 'proposer',
+              label: 'proposer_1',
+              provider: 'openrouter',
+              model: 'p1',
+            },
+            {
+              role: 'proposer',
+              label: 'proposer_2',
+              provider: 'openrouter',
+              model: 'p2',
+            },
+            {
+              role: 'proposer',
+              label: 'proposer_3',
+              provider: 'openrouter',
+              model: 'p3',
+            },
+            {
+              role: 'aggregator',
+              label: 'aggregator',
+              provider: 'openrouter',
+              model: 'agg',
+            },
+          ],
+          ensemble_trace: {
+            profile: 'default',
+            total_candidates: 4,
+            llm_request_count: 4,
+            candidates: [
+              {
+                label: 'proposer_1',
+                provider: 'openrouter',
+                model: 'p1',
+                request_started: true,
+                ok: true,
+              },
+              {
+                label: 'proposer_2',
+                provider: 'openrouter',
+                model: 'p2',
+                request_started: true,
+                ok: true,
+              },
+              {
+                label: 'proposer_3',
+                provider: 'openrouter',
+                model: 'p3',
+                request_started: true,
+                ok: true,
+              },
+              {
+                label: 'proposer_4',
+                provider: 'openrouter',
+                model: 'unavailable',
+                request_started: false,
+                ok: false,
+                error: 'proposer deployment is not ready',
+                error_code: 'deployment_unavailable',
+              },
+            ],
+          },
+        },
+      },
+    ])
+
+    const ensemble = api.renderedMessages.value[0].meta?.ensemble
+    expect(ensemble?.models).toHaveLength(5)
+    expect(ensemble?.requestCount).toBe(4)
   })
 })

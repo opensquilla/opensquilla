@@ -2767,6 +2767,8 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "utilisé",
       "ensembleFailed": "échec",
+      "ensembleQuorumSkipped": "seuil atteint · ignoré",
+      "ensembleQuorumSkippedDetail": "Le seuil de candidats était déjà atteint ; l’attente de ce candidat a donc été annulée.",
       "ensembleTracePending": "trace en attente",
       "ensembleTraceUnavailable": "trace disponible à la fin de l'exécution",
       "ensembleDetailUnavailable": "{count} candidats · détail indisponible"

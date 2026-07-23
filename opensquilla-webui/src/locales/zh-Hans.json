@@ -2767,6 +2767,8 @@
       "ensembleTokens": "{count} 令牌",
       "ensembleUsed": "已使用",
       "ensembleFailed": "失败",
+      "ensembleQuorumSkipped": "阈值已满足 · 已跳过",
+      "ensembleQuorumSkippedDetail": "候选阈值已满足，因此取消等待该候选。",
       "ensembleTracePending": "trace 待更新",
       "ensembleTraceUnavailable": "运行完成后可查看 trace",
       "ensembleDetailUnavailable": "{count} 个候选 · 明细不可用"

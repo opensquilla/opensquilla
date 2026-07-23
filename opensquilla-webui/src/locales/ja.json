@@ -2767,6 +2767,8 @@
       "ensembleTokens": "{count} tok",
       "ensembleUsed": "使用済み",
       "ensembleFailed": "失敗",
+      "ensembleQuorumSkipped": "候補数達成 · スキップ",
+      "ensembleQuorumSkippedDetail": "候補のしきい値を満たしたため、この候補の待機を終了しました。",
       "ensembleTracePending": "trace 待機中",
       "ensembleTraceUnavailable": "実行完了後に trace を表示できます",
       "ensembleDetailUnavailable": "{count} 個の候補 · 詳細は利用できません"

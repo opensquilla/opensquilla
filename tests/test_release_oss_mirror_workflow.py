@@ -92,8 +92,12 @@ def _install_fake_ossutil(tmp_path: Path) -> tuple[Path, Path, Path]:
                 return args[args.index(name) + 1]
 
             if args[:2] == ["api", "get-bucket-versioning"]:
+                # Real ossutil follows the JSON body with extra output (an
+                # elapsed-time trailer); reproduce that shape so the parser
+                # is exercised against production output, not idealized JSON.
                 status = os.environ.get("FAKE_OSS_VERSIONING_STATUS", "")
                 print(json.dumps({"Status": status} if status else {}))
+                print("0.062000(s) elapsed")
                 raise SystemExit(0)
 
             if args[:2] == ["api", "put-object"]:

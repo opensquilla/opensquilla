@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-23
+
+OpenSquilla 0.5.0 is the first stable release of the 0.5 line, collecting the
+0.5.0rc1–rc4 preview work below plus the changes since Preview 4.
+
 ### Added
 
 - Source checkouts can opt into the full-screen OpenTUI chat with shared

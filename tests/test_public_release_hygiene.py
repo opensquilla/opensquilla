@@ -210,7 +210,7 @@ def test_release_sop_documents_github_only_validation_boundary() -> None:
 
     required_phrases = [
         "GitHub-only release checks",
-        "0.5.x preview releases publish Electron desktop installers",
+        "0.5.x releases (previews and the stable) publish Electron desktop installers",
         "must not be marked as Latest",
         "do not publish Windows portable zips",
         "portable latest aliases",

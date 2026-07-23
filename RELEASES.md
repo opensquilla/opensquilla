@@ -2,7 +2,7 @@
 
 | Version | Tag | Date | Notes |
 |---|---|---|---|
-| 0.5.0 | v0.5.0 | 2026-07-23 | Stable: Model Ensemble and multi-provider routing, router self-learning, safer upgrades and profile protection, signed macOS desktop updates, usage reporting, and the OSS download mirror |
+| 0.5.0 | v0.5.0 | 2026-07-23 | Stable: Model Ensemble and multi-provider routing, safer upgrades and profile protection, signed macOS desktop updates, usage reporting, and the OSS download mirror |
 | 0.5.0rc4 | v0.5.0rc4 | 2026-07-13 | Preview: safe profile recovery, explicit Windows Portable transfer, Desktop data retention, update reliability, and OSS downloads |
 | 0.5.0rc3 | v0.5.0rc3 | 2026-07-10 | Preview: legacy-home migration, provider and routing expansion, desktop/Web UI improvements, runtime hardening, and container images |
 | 0.5.0rc2 | v0.5.0rc2 | 2026-07-06 | Preview: provider/router recovery, Web UI upload refresh, desktop/session fixes, and CI contract repair |

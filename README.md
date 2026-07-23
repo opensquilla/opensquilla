@@ -657,10 +657,9 @@ OpenSquilla 0.5.0 is the first stable release of the 0.5 line, collecting
 Previews 1-4 and the fixes since:
 
 - **Model Ensemble and multi-provider routing** - one turn can run across
-  several models with preset or custom lineups, and provider management
-  keeps verified provider state across restarts.
-- **SquillaRouter self-learning** - the on-device router learns from routing
-  outcomes on local traffic; classification never leaves the machine.
+  several models with preset or custom lineups, provider management keeps
+  verified provider state across restarts, and on-device routing keeps
+  classification local.
 - **Safe upgrades and profile protection** - guarded migration previews,
   profile recovery, and Windows profile-data preservation on uninstall.
 - **Desktop maturity** - signed and notarized macOS builds with in-app

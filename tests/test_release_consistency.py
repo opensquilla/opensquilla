@@ -764,9 +764,6 @@ def test_current_release_notes_cover_recovery_transfer_upgrade_and_containers() 
     assert f"OpenSquilla-{CURRENT_DESKTOP_VERSION}-win-x64.exe" in notes
     assert f"opensquilla-{CURRENT_VERSION}-py3-none-any.whl" in notes
     assert notes.index("### Model Ensemble and multi-provider routing") < notes.index(
-        "### SquillaRouter self-learning"
-    )
-    assert notes.index("### SquillaRouter self-learning") < notes.index(
         "### Safer upgrades, migration, and profile-data protection"
     )
     assert notes.index("### Channels and runtime reliability") < notes.index(

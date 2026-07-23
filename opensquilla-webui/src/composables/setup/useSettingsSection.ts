@@ -47,28 +47,6 @@ export function parseProviderHash(hash: unknown): string {
   }
 }
 
-export type ChannelHashTarget = { kind: 'edit'; name: string } | { kind: 'new' } | null
-
-/**
- * Parse a `#channel-<name>` deep-link hash. `#channel-new` is the reserved
- * compose form (a channel literally named "new" cannot be hash-deep-linked;
- * callers push the bare settings path for that name instead).
- */
-export function parseChannelHash(hash: unknown): ChannelHashTarget {
-  if (typeof hash !== 'string') return null
-  const raw = hash.startsWith('#') ? hash.slice(1) : hash
-  const prefix = 'channel-'
-  if (!raw.startsWith(prefix)) return null
-  const name = raw.slice(prefix.length).trim()
-  if (!name) return null
-  if (name === 'new') return { kind: 'new' }
-  try {
-    return { kind: 'edit', name: decodeURIComponent(name) }
-  } catch {
-    return { kind: 'edit', name }
-  }
-}
-
 export function useSettingsSection(initialSection: string) {
   const section = ref(initialSection)
 

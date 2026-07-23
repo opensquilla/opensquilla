@@ -4,6 +4,7 @@ import type { App } from 'vue'
 
 const mocks = vi.hoisted(() => ({
   route: { path: '/overview' },
+  routerPush: vi.fn(),
   rpcCall: vi.fn(),
   waitForConnection: vi.fn(),
   pushToast: vi.fn(),
@@ -14,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   messages: {
     'monitorSupport.title': 'Support & diagnostics',
     'monitorSupport.menuLabel': 'Support and diagnostics actions',
+    'monitorSupport.viewLogs': 'View runtime logs',
+    'monitorSupport.viewLogsDescription': 'Inspect the gateway log stream',
     'monitorSupport.copyReport': 'Copy current readiness report',
     'monitorSupport.copyReportDescription': 'Share the current connection, configuration, and runtime status',
     'monitorSupport.copySuccess': 'Readiness report copied',
@@ -44,6 +47,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('vue-router', () => ({
   useRoute: () => mocks.route,
+  useRouter: () => ({ push: mocks.routerPush }),
 }))
 
 vi.mock('vue-i18n', () => ({
@@ -113,6 +117,7 @@ beforeEach(() => {
   document.body.innerHTML = ''
   window.sessionStorage.clear()
   vi.clearAllMocks()
+  mocks.route.path = '/overview'
 
   mocks.waitForConnection.mockResolvedValue(undefined)
   mocks.rpcCall.mockResolvedValue({
@@ -144,7 +149,7 @@ afterEach(() => {
 })
 
 describe('SupportDiagnosticsMenu', () => {
-  it('exposes the readiness report and support bundle as shared menu actions', async () => {
+  it('exposes runtime logs, the readiness report, and the support bundle as shared actions', async () => {
     const { el } = await mountMenu()
     const trigger = el.querySelector<HTMLButtonElement>('[data-testid="support-diagnostics-trigger"]')
     expect(trigger).toBeTruthy()
@@ -156,10 +161,33 @@ describe('SupportDiagnosticsMenu', () => {
     expect(trigger?.getAttribute('aria-expanded')).toBe('true')
     expect(el.querySelector('[role="menu"]')?.getAttribute('aria-label'))
       .toBe('Support and diagnostics actions')
+    expect(el.querySelector('[data-testid="support-view-logs"]')?.textContent)
+      .toContain('View runtime logs')
     expect(el.querySelector('[data-testid="support-copy-readiness"]')?.textContent)
       .toContain('Copy current readiness report')
     expect(el.querySelector('[data-testid="support-download-bundle"]')?.textContent)
       .toContain('Download redacted support bundle')
+  })
+
+  it('opens runtime logs and hides the self-referential action on the logs route', async () => {
+    const { el } = await mountMenu()
+    el.querySelector<HTMLButtonElement>('[data-testid="support-diagnostics-trigger"]')!.click()
+    await flush()
+
+    el.querySelector<HTMLButtonElement>('[data-testid="support-view-logs"]')!.click()
+    await flush()
+
+    expect(mocks.routerPush).toHaveBeenCalledWith('/logs')
+    expect(el.querySelector('[role="menu"]')).toBeNull()
+
+    mocks.route.path = '/logs'
+    const second = await mountMenu()
+    second.el.querySelector<HTMLButtonElement>('[data-testid="support-diagnostics-trigger"]')!.click()
+    await flush()
+
+    expect(second.el.querySelector('[data-testid="support-view-logs"]')).toBeNull()
+    expect(document.activeElement)
+      .toBe(second.el.querySelector('[data-testid="support-copy-readiness"]'))
   })
 
   it('moves focus through the menu and restores it after closing the bundle dialog', async () => {
@@ -168,8 +196,13 @@ describe('SupportDiagnosticsMenu', () => {
     trigger.click()
     await flush()
 
+    const logsItem = el.querySelector<HTMLButtonElement>('[data-testid="support-view-logs"]')!
     const copyItem = el.querySelector<HTMLButtonElement>('[data-testid="support-copy-readiness"]')!
     const bundleItem = el.querySelector<HTMLButtonElement>('[data-testid="support-download-bundle"]')!
+    expect(document.activeElement).toBe(logsItem)
+
+    logsItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    await flush()
     expect(document.activeElement).toBe(copyItem)
 
     copyItem.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))

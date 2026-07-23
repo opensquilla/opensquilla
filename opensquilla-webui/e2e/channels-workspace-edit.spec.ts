@@ -44,6 +44,15 @@ test.describe.serial('channel workspace compose + edit', () => {
     await expect(page.locator('.cfge')).toBeVisible({ timeout: 15000 })
   })
 
+  test('legacy bare and query settings paths redirect to the workspace', async ({ page }) => {
+    await page.goto(`${CONTROL_URL}settings/channels`)
+    await expect(page).toHaveURL(/\/channels$/, { timeout: 15000 })
+
+    await page.goto(`${CONTROL_URL}settings/channels?compose=1&type=telegram`)
+    await expect(page).toHaveURL(/\/channels\?compose=1&type=telegram$/, { timeout: 15000 })
+    await expect(page.locator('.chc')).toBeVisible({ timeout: 15000 })
+  })
+
   test('edit in place: masked secret, draft test, keep-current save', async ({ page }) => {
     await openChannels(page, `?channel=${NAME}&tab=configuration&edit=1`)
     const editor = page.locator('.cfge')

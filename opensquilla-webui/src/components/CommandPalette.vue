@@ -173,13 +173,25 @@ const allCommands = computed<Command[]>(() => {
       group: 'Work',
       run: navTo(item.path),
     })
+    // Channels is the second route in the Skills & Channels hub. Keep its
+    // direct command beside the pinned hub entry instead of burying it among
+    // Overview's operational subpages.
+    if (item.path === '/skills') {
+      const title = t('nav.channels')
+      out.push({
+        id: 'nav:/channels',
+        title,
+        icon: 'channels',
+        keywords: `${title} /channels`.toLowerCase(),
+        group: 'Work',
+        run: navTo('/channels'),
+      })
+    }
   }
 
-  // Hub tabs demoted from the rail but first-class in the palette: the Monitor
-  // hub owns /channels, /usage, /logs as tabbed sections. Their canonical
-  // routes stay valid; the palette targets a section directly.
+  // Usage and diagnostic Logs remain directly reachable without promoting
+  // either back into the rail; the Overview command already opens Status.
   const demoted: Array<{ path: string; name: string; icon: IconName; group: string }> = [
-    { path: '/channels', name: 'channels', icon: 'channels', group: 'Observe' },
     { path: '/usage', name: 'usage', icon: 'usage', group: 'Observe' },
     { path: '/logs', name: 'logs', icon: 'logs', group: 'Observe' },
   ]
@@ -195,10 +207,8 @@ const allCommands = computed<Command[]>(() => {
     })
   }
 
-  // Configuration counterpart of the Channels monitor entry: searching
-  // "channel" surfaces both roles with distinguishing labels. Channel setup
-  // now happens on the workspace itself, so this lands in the add-channel
-  // compose takeover there.
+  // The Channels hub entry opens the workspace; this separate action lands in
+  // its add-channel compose takeover.
   const channelSetupTitle = t('nav.channelSetup')
   out.push({
     id: 'nav:/channels?compose=1',

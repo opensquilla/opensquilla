@@ -1,8 +1,14 @@
 <template>
   <div class="lg-stage control-stage">
-    <header v-if="showStatusNotice" class="control-stage__header">
+    <header class="control-stage__header">
       <div class="control-stage__title-block">
-        <span class="control-panel__eyebrow">{{ t('usageLogs.logs.eyebrow') }}</span>
+        <nav class="lg-breadcrumb" :aria-label="t('usageLogs.logs.breadcrumbLabel')">
+          <RouterLink class="lg-breadcrumb__link" to="/overview">
+            {{ t('nav.overview') }}
+          </RouterLink>
+          <span class="lg-breadcrumb__separator" aria-hidden="true">/</span>
+          <span aria-current="page">{{ t('nav.logs') }}</span>
+        </nav>
         <h1 class="control-stage__title">{{ t('usageLogs.logs.title') }}</h1>
         <p class="control-stage__subtitle">{{ t('usageLogs.logs.subtitle') }}</p>
         <p v-if="status" class="lg-status-line">
@@ -41,6 +47,7 @@
           :aria-label="`${t('usageLogs.logs.fileLogOff')}. ${fileLogTitleText}`"
           :title="fileLogTitleText"
         >{{ t('usageLogs.logs.fileLogOff') }}</span>
+        <SupportDiagnosticsMenu />
       </div>
     </header>
 
@@ -81,10 +88,41 @@
     </section>
 
     <section class="lg-stream">
+      <div
+        v-if="loadState === 'error' && allLines.length > 0"
+        class="lg-stream__error"
+        role="alert"
+      >
+        <span>{{ t('usageLogs.logs.loadFailed') }}</span>
+        <button type="button" class="btn btn--ghost btn--sm" @click="retryLoad">
+          {{ t('usageLogs.logs.retry') }}
+        </button>
+      </div>
       <div ref="displayRef" class="lg-display" @scroll="onScroll">
-        <div v-if="allLines.length === 0" class="lg-display__placeholder">
+        <div
+          v-if="loadState === 'loading' && allLines.length === 0"
+          class="lg-display__placeholder"
+          role="status"
+        >
           <span class="lg-spinner"></span>
           {{ t('usageLogs.logs.loading') }}
+        </div>
+        <div
+          v-else-if="loadState === 'error' && allLines.length === 0"
+          class="lg-display__placeholder"
+          role="alert"
+        >
+          <span class="lg-display__placeholder-icon lg-display__placeholder-icon--error">
+            <Icon name="logs" :size="24" />
+          </span>
+          <span>{{ t('usageLogs.logs.loadFailed') }}</span>
+          <button type="button" class="btn btn--primary" @click="retryLoad">
+            {{ t('usageLogs.logs.retry') }}
+          </button>
+        </div>
+        <div v-else-if="allLines.length === 0" class="lg-display__placeholder">
+          <span class="lg-display__placeholder-icon"><Icon name="logs" :size="24" /></span>
+          {{ t('usageLogs.logs.empty') }}
         </div>
         <div v-else-if="filteredLines.length === 0" class="lg-display__placeholder">
           <span class="lg-display__placeholder-icon"><Icon name="logs" :size="24" /></span>
@@ -173,11 +211,13 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { RouterLink } from 'vue-router'
 import { useRpcStore } from '@/stores/rpc'
 import { useFixedWindow } from '@/composables/useFixedWindow'
 import Icon from '@/components/Icon.vue'
 import ControlSwitch from '@/components/ControlSwitch.vue'
 import RunTrace from '@/components/run/RunTrace.vue'
+import SupportDiagnosticsMenu from '@/components/SupportDiagnosticsMenu.vue'
 import { useRunTrace } from '@/composables/run/useRunTrace'
 import { nodeStepsFromHistoryMessage } from '@/components/run/runTrace'
 import type { NodeStep, RunTraceSummary } from '@/types/runTrace'
@@ -257,6 +297,7 @@ const autoFollow = ref(true)
 const status = ref<LogStatus | null>(null)
 const activeLevels = ref<Set<string>>(new Set(DEFAULT_LEVELS))
 const displayRef = ref<HTMLElement | null>(null)
+const loadState = ref<'loading' | 'ready' | 'error'>('loading')
 
 // Opt-in run-trace detail drawer. Default-OFF so the stream DOM is unchanged;
 // only flipping this localStorage flag makes log lines interactive.
@@ -272,6 +313,9 @@ let detailInvokerEl: HTMLElement | null = null
 let pollInterval: ReturnType<typeof setInterval> | null = null
 let pollInFlight = false
 let pollErrorShown = false
+let isActive = false
+let initialized = false
+let initialLoadInFlight = false
 
 // ---------------------------------------------------------------------------
 // Computed
@@ -339,12 +383,6 @@ const rawLabel = computed(() =>
 const rawTitleText = computed(() =>
   t('usageLogs.logs.rawTitle', { source: rawSource.value, path: rawPath.value }))
 
-// The monitor hub hides this view's repeated title block. Once logging is in
-// its normal state there is no local action left to render, so omit the empty
-// header instead of leaving a blank toolbar row above the filters.
-const showStatusNotice = computed(() =>
-  !status.value || rawLogEnabled.value || !fileLogEnabled.value)
-
 // A run-bearing line carries structured tool_calls in its raw JSON payload; the
 // drawer renders those as a trace, falling back to the raw text otherwise.
 const selectedTrace = computed<ChatHistoryMessage | null>(() => {
@@ -385,24 +423,34 @@ onMounted(() => {
   windowMedia = window.matchMedia(WINDOW_MIN_WIDTH)
   windowingEnabled.value = windowMedia.matches
   windowMedia.addEventListener('change', onWindowMediaChange)
-  loadData()
   measure()
-  document.addEventListener('visibilitychange', onVisibilityChange)
 })
 
 // Polling lives on activate/deactivate so a kept-alive but hidden Logs view
-// stops tailing instead of running its 3s interval forever. onActivated fires
-// on the first mount too, so the interval is owned entirely here.
+// neither tails nor reacts to document visibility changes. onActivated also
+// fires on first mount, so all data ownership starts here without a duplicate
+// onMounted request.
 onActivated(() => {
+  isActive = true
+  document.addEventListener('visibilitychange', onVisibilityChange)
+  if (!initialized) {
+    initialized = true
+    void loadData()
+    return
+  }
+  if (initialLoadInFlight) return
   startPolling()
   void poll()
 })
 
 onDeactivated(() => {
+  isActive = false
   stopPolling()
+  document.removeEventListener('visibilitychange', onVisibilityChange)
 })
 
 onUnmounted(() => {
+  isActive = false
   stopPolling()
   if (searchTimer) clearTimeout(searchTimer)
   if (windowMedia) {
@@ -444,7 +492,7 @@ watch(searchText, (val) => {
 })
 
 function onVisibilityChange() {
-  if (!document.hidden) poll()
+  if (isActive && !document.hidden) void poll()
 }
 
 watch(autoFollow, (val) => {
@@ -456,18 +504,28 @@ watch(autoFollow, (val) => {
 // ---------------------------------------------------------------------------
 
 async function loadData() {
+  if (initialLoadInFlight || !isActive) return
+  initialLoadInFlight = true
+  stopPolling()
+  loadState.value = 'loading'
   try {
     await rpc.waitForConnection()
+    if (!isActive) return
     cursor.value = 0
     allLines.value = []
     await loadStatus()
+    if (!isActive) return
     await poll()
   } catch {
-    // Silently ignore initial load errors; poll will retry
+    if (allLines.value.length === 0) loadState.value = 'error'
+  } finally {
+    initialLoadInFlight = false
+    if (isActive) startPolling()
   }
 }
 
 async function loadStatus() {
+  if (!isActive) return
   try {
     status.value = await rpc.call<LogStatus>('logs.status', {})
   } catch {
@@ -476,6 +534,7 @@ async function loadStatus() {
 }
 
 async function poll() {
+  if (!isActive) return
   if (pollInFlight) return
   const rpcClient = rpc.client
   if (!rpcClient) return
@@ -483,6 +542,7 @@ async function poll() {
   pollInFlight = true
   try {
     const data = await rpc.call<LogTailResponse>('logs.tail', { limit: 500, cursor: cursor.value, level: null })
+    if (!isActive) return
     const lines: LogEntry[] = data.lines || data.entries || []
     if (lines.length > 0) {
       if (data.cursor != null) {
@@ -506,8 +566,10 @@ async function poll() {
         allLines.value = allLines.value.slice(allLines.value.length - 2000)
       }
     }
+    loadState.value = 'ready'
     pollErrorShown = false
   } catch (err) {
+    loadState.value = 'error'
     if (!pollErrorShown) {
       console.warn('Log refresh failed: ' + (err instanceof Error ? err.message : 'unknown error'))
       pollErrorShown = true
@@ -515,6 +577,14 @@ async function poll() {
   } finally {
     pollInFlight = false
   }
+}
+
+function retryLoad() {
+  if (allLines.value.length > 0) {
+    void poll()
+    return
+  }
+  void loadData()
 }
 
 function toggleLevel(level: string) {
@@ -833,6 +903,54 @@ function escRegex(s: string): string {
 .lg-display__placeholder-icon {
   color: var(--text-dim);
   display: inline-flex;
+}
+
+.lg-display__placeholder-icon--error {
+  color: var(--danger);
+}
+
+.lg-breadcrumb {
+  align-items: center;
+  color: var(--text-dim);
+  display: flex;
+  font-size: var(--fs-xs);
+  font-weight: 650;
+  gap: 6px;
+  letter-spacing: 0;
+  line-height: 1.4;
+}
+
+.lg-breadcrumb__link {
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.lg-breadcrumb__link:hover {
+  color: var(--text);
+}
+
+.lg-breadcrumb__link:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.lg-breadcrumb__separator {
+  color: var(--text-dim);
+}
+
+.lg-stream__error {
+  align-items: center;
+  background: color-mix(in srgb, var(--danger) 8%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: var(--radius-md);
+  color: var(--danger);
+  display: flex;
+  font-size: var(--fs-sm);
+  gap: var(--sp-3);
+  justify-content: space-between;
+  margin-bottom: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
 }
 
 .lg-spinner {

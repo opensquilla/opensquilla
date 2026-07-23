@@ -76,12 +76,14 @@
     "channels": "Kanäle",
     "cron": "Cron",
     "skills": "Fähigkeiten",
+    "skillsChannels": "Fähigkeiten & Kanäle",
     "overview": "Übersicht",
+    "status": "Status",
     "usage": "Nutzung",
     "logs": "Protokolle",
     "settings": "Einstellungen",
     "groupBuild": "Erstellen",
-    "groupMonitor": "Überwachen",
+    "groupMonitor": "Übersicht",
     "channelSetup": "Kanal-Einrichtung",
     "not-found": "Nicht gefunden"
   },
@@ -243,7 +245,6 @@
       "privacy": "Datenschutz",
       "router": "Router",
       "ensemble": "Ensemble",
-      "channels": "Kanal-Einrichtung",
       "capabilities": "Fähigkeiten",
       "appearance": "Darstellung",
       "keyboard": "Tastatur",
@@ -251,7 +252,6 @@
       "groups": {
         "gateway": "Gateway",
         "ai": "AI-Konfiguration",
-        "delivery": "Zustellung",
         "preferences": "Einstellungen",
         "capabilities": "Fähigkeiten"
       }
@@ -803,13 +803,6 @@
       "advancedGroup": "Erweitert",
       "fieldRequired": "Dieses Feld ist erforderlich",
       "fixRequired": "Bitte zuerst die markierten Pflichtfelder ausfüllen",
-      "jump": {
-        "description": "Kanäle werden im Kanal-Arbeitsbereich eingerichtet: Plattform wählen, Formular ausfüllen und die Verbindung direkt dort testen, wo der Kanal läuft.",
-        "open": "Kanal-Arbeitsbereich öffnen",
-        "summary": "{count} konfiguriert · {connected} verbunden",
-        "summaryEmpty": "Noch keine Kanäle konfiguriert.",
-        "summaryStatic": "Chat-Kanäle im Arbeitsbereich hinzufügen, bearbeiten und testen."
-      },
       "aids": {
         "title": "Feishu-Konsolen-Shortcuts",
         "scopes_json": "Berechtigungs-Manifest — in 权限管理 → Massenimport einfügen",
@@ -1536,8 +1529,8 @@
       "abortFailed": "Abbruch fehlgeschlagen."
     },
     "overview": {
-      "title": "Übersicht",
-      "subtitle": "Live-Status, aktuelle Sitzungen und der Ereignisstrom.",
+      "title": "Status",
+      "subtitle": "Bereitschaft, Nutzung und Laufzeitzustand.",
       "openChat": "Chat öffnen",
       "totalTokens": "Tokens gesamt",
       "totalSessions": "Sitzungen gesamt",
@@ -1567,25 +1560,9 @@
       "findingFallback": "Befund {n}",
       "copyCommand": "Befehl kopieren",
       "step": "Schritt",
-      "recentActivity": "Letzte Aktivität",
-      "viewAllArrow": "Alle anzeigen →",
-      "noSessions": "Noch keine Sitzungen — öffnen Sie den Chat, um Ihre erste zu starten.",
-      "connection": "Verbindung",
-      "gateway": "Gateway",
-      "connHint": "Die WebSocket-URL und das Token des Gateways finden sich jetzt in den Einstellungen.",
-      "manageConnection": "Verbindung in den Einstellungen verwalten →",
-      "live": "Live",
-      "eventStream": "Ereignisstrom",
-      "eventCount": "{count} Ereignisse",
-      "listening": "Warte auf Ereignisse…",
       "checking": "Wird geprüft",
       "waitingDoctor": "Warte auf doctor.status",
       "healthUnavailable": "Gateway-Zustandsbericht nicht verfügbar",
-      "conn": {
-        "connecting": "wird verbunden",
-        "connected": "verbunden",
-        "disconnected": "getrennt"
-      },
       "impact": {
         "blocksReady": "Blockiert Bereitschaft",
         "degrades": "Schränkt ein",
@@ -2418,6 +2395,8 @@
   "monitorSupport": {
     "title": "Support und Diagnose",
     "menuLabel": "Support- und Diagnoseaktionen",
+    "viewLogs": "Laufzeitprotokolle anzeigen",
+    "viewLogsDescription": "Letzte Gateway-Ausgaben und Fehler prüfen",
     "copyReport": "Aktuellen Bereitschaftsbericht kopieren",
     "copyReportDescription": "Aktuellen Verbindungs-, Konfigurations- und Laufzeitstatus teilen",
     "copySuccess": "Bereitschaftsbericht kopiert",
@@ -2584,7 +2563,7 @@
       "loadFailed": "Nutzung konnte nicht geladen werden"
     },
     "logs": {
-      "eyebrow": "Steuerung · Protokolle",
+      "breadcrumbLabel": "Brotkrumennavigation",
       "title": "Protokolle",
       "subtitle": "Live-Stream der Gateway-Protokolle — filtern und verfolgen.",
       "statusUnavailable": "Protokollstatus nicht verfügbar",
@@ -2621,6 +2600,9 @@
       "filterPlaceholder": "Nachrichten filtern…",
       "autoFollow": "Automatisch folgen",
       "loading": "Protokolle werden geladen…",
+      "empty": "Noch keine Laufzeitprotokolle.",
+      "loadFailed": "Laufzeitprotokolle konnten nicht geladen werden.",
+      "retry": "Erneut versuchen",
       "noMatch": "Keine Zeilen entsprechen dem aktuellen Filter.",
       "lineDetail": "Protokollzeilendetail",
       "ofLoadedFoot": "{visible} sichtbar · {total} gepuffert"
@@ -3025,7 +3007,7 @@
       "untitledChat": "Unbenannter Chat",
       "groupWork": "Arbeit",
       "groupManage": "Verwalten",
-      "groupMonitor": "Überwachen",
+      "groupMonitor": "Übersicht",
       "groupActions": "Aktionen",
       "groupConversations": "Unterhaltungen",
       "groupMessages": "Nachrichten",

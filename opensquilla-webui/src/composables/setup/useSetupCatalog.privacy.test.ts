@@ -575,6 +575,38 @@ describe('useSetupCatalog model strategy IA', () => {
     app.unmount()
   })
 
+  it('filters channel-only readiness from Settings while retaining the channel count summary', async () => {
+    rpcCall.mockImplementation(async (method: string) => {
+      if (method === 'onboarding.catalog') return {}
+      if (method === 'onboarding.status') {
+        return {
+          needsOnboarding: true,
+          channelCount: 2,
+          sectionDetails: {
+            channels: {
+              status: 'degraded',
+              blocking: true,
+              actionRequired: true,
+              label: 'Channels',
+            },
+          },
+        }
+      }
+      if (method === 'config.get') {
+        return { llm: { provider: 'openrouter', model: 'openrouter/auto' } }
+      }
+      throw new Error(`Unexpected RPC method: ${method}`)
+    })
+    const { api, app } = await mountCatalog()
+
+    expect(api.hasSetupAction.value).toBe(false)
+    expect(api.actionItems.value).toEqual([])
+    api.selectInitialSection('auto')
+    expect(api.section.value).toBe('provider')
+    expect(api.configSummary.value).toContainEqual({ label: 'Channels', value: '2' })
+    app.unmount()
+  })
+
   it('auto-selects Model Strategy when ensemble readiness needs action', async () => {
     rpcCall.mockImplementation(async (method: string) => {
       if (method === 'onboarding.catalog') return {}

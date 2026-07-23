@@ -79,7 +79,7 @@
          short viewport so it never squeezes Recents, which owns the elastic
          space below; every destination stays a labelled text row. -->
     <div class="sidebar-section sidebar-core" role="navigation" :aria-label="t('chrome.controlNav')">
-      <!-- Sessions / Overview / Skills / Cron, single-sourced from route
+      <!-- Sessions / Overview / Skills & Channels / Cron, single-sourced from route
            metadata so the rail, mobile drawer, and palette never drift. -->
       <router-link
         v-for="item in workNav"
@@ -312,7 +312,7 @@
 
   <!-- Mobile bottom tab bar (<=768px only; hides while the keyboard is up):
        Chat, Sessions, Overview, then More for the flat drawer containing
-       Sessions / Overview / Skills / Cron and Settings. -->
+       Sessions / Overview / Skills & Channels / Cron and Settings. -->
   <nav
     class="mobile-tabbar"
     :class="{ 'is-keyboard-open': mobileKeyboardOpen }"
@@ -341,7 +341,7 @@
     <router-link
       to="/overview"
       class="mobile-tab"
-      :class="{ 'is-active': isMonitorHubActive }"
+      :class="{ 'is-active': isOverviewNavActive }"
       @click="handleNavClick"
     >
       <Icon name="home" :size="20" />
@@ -350,7 +350,7 @@
     <button
       type="button"
       class="mobile-tab"
-      :class="{ 'is-active': appStore.sidebarOpen }"
+      :class="{ 'is-active': isMobileMoreActive }"
       @click="openSidebarDrawer"
     >
       <Icon name="menu" :size="20" />
@@ -579,13 +579,21 @@ function isNavActive(path: string): boolean {
   return $route.path === path
 }
 
-// The Monitor hub hosts Overview/Channels/Usage/Logs as one destination, so the
-// mobile "Overview" tab stays lit on any of the hub's four sub-routes.
-const MONITOR_HUB_PATHS = new Set(['/overview', '/channels', '/usage', '/logs'])
-const isMonitorHubActive = computed(() => MONITOR_HUB_PATHS.has($route.path))
+// Overview owns the Status/Usage hub plus its diagnostic Logs route, while
+// Skills fronts the Skills/Channels hub. Keep those active families disjoint so
+// diagnostic routes never light an unrelated primary destination.
+const OVERVIEW_NAV_PATHS = new Set(['/overview', '/usage', '/logs'])
+const SKILLS_CHANNELS_HUB_PATHS = new Set(['/skills', '/channels'])
+const MOBILE_MORE_PATHS = new Set(['/skills', '/channels', '/cron'])
+const isOverviewNavActive = computed(() => OVERVIEW_NAV_PATHS.has($route.path))
+const isSkillsChannelsHubActive = computed(() => SKILLS_CHANNELS_HUB_PATHS.has($route.path))
+const isMobileMoreActive = computed(() =>
+  appStore.sidebarOpen || MOBILE_MORE_PATHS.has($route.path))
 
 function isPrimaryNavActive(path: string): boolean {
-  return path === '/overview' ? isMonitorHubActive.value : isNavActive(path)
+  if (path === '/overview') return isOverviewNavActive.value
+  if (path === '/skills') return isSkillsChannelsHubActive.value
+  return isNavActive(path)
 }
 
 function agentDisplayName(agentId: string): string {

@@ -76,12 +76,14 @@
     "channels": "Canaux",
     "cron": "Cron",
     "skills": "Compétences",
+    "skillsChannels": "Compétences et canaux",
     "overview": "Vue d'ensemble",
+    "status": "État",
     "usage": "Utilisation",
     "logs": "Journaux",
     "settings": "Paramètres",
     "groupBuild": "Construire",
-    "groupMonitor": "Surveiller",
+    "groupMonitor": "Vue d'ensemble",
     "channelSetup": "Config. des canaux",
     "not-found": "Introuvable"
   },
@@ -243,7 +245,6 @@
       "privacy": "Confidentialité",
       "router": "Routeur",
       "ensemble": "Ensemble",
-      "channels": "Config. des canaux",
       "capabilities": "Capacités",
       "appearance": "Apparence",
       "keyboard": "Clavier",
@@ -251,7 +252,6 @@
       "groups": {
         "gateway": "Passerelle",
         "ai": "Configuration IA",
-        "delivery": "Diffusion",
         "preferences": "Préférences",
         "capabilities": "Capacités"
       }
@@ -803,13 +803,6 @@
       "advancedGroup": "Avancé",
       "fieldRequired": "Ce champ est obligatoire",
       "fixRequired": "Renseignez d'abord les champs obligatoires en surbrillance",
-      "jump": {
-        "description": "Les canaux se configurent dans l'espace de travail des canaux : choisissez une plateforme, remplissez le formulaire et testez la connexion là où le canal s'exécute.",
-        "open": "Ouvrir l'espace des canaux",
-        "summary": "{count} configurés · {connected} connectés",
-        "summaryEmpty": "Aucun canal configuré pour l'instant.",
-        "summaryStatic": "Ajoutez, modifiez et testez les canaux de discussion dans l'espace de travail."
-      },
       "aids": {
         "title": "Raccourcis console Feishu",
         "scopes_json": "Manifeste de permissions — à coller dans 权限管理 → import groupé",
@@ -1536,8 +1529,8 @@
       "abortFailed": "Échec de l'abandon."
     },
     "overview": {
-      "title": "Vue d'ensemble",
-      "subtitle": "État en direct, sessions récentes et flux d'événements.",
+      "title": "État",
+      "subtitle": "Préparation, utilisation et santé d'exécution.",
       "openChat": "Ouvrir le chat",
       "totalTokens": "Total des jetons",
       "totalSessions": "Total des sessions",
@@ -1567,25 +1560,9 @@
       "findingFallback": "Constat {n}",
       "copyCommand": "Copier la commande",
       "step": "Étape",
-      "recentActivity": "Activité récente",
-      "viewAllArrow": "Tout voir →",
-      "noSessions": "Aucune session pour l'instant — ouvrez le chat pour démarrer la première.",
-      "connection": "Connexion",
-      "gateway": "Passerelle",
-      "connHint": "L'URL WebSocket et le jeton de la passerelle se trouvent désormais dans les Paramètres.",
-      "manageConnection": "Gérer la connexion dans les Paramètres →",
-      "live": "En direct",
-      "eventStream": "Flux d'événements",
-      "eventCount": "{count} événements",
-      "listening": "À l'écoute des événements…",
       "checking": "Vérification",
       "waitingDoctor": "En attente de doctor.status",
       "healthUnavailable": "Rapport de santé de la passerelle indisponible",
-      "conn": {
-        "connecting": "connexion en cours",
-        "connected": "connecté",
-        "disconnected": "déconnecté"
-      },
       "impact": {
         "blocksReady": "Bloque la préparation",
         "degrades": "Dégrade",
@@ -2418,6 +2395,8 @@
   "monitorSupport": {
     "title": "Assistance et diagnostic",
     "menuLabel": "Actions d’assistance et de diagnostic",
+    "viewLogs": "Voir les journaux d'exécution",
+    "viewLogsDescription": "Examiner les sorties récentes et les erreurs de la passerelle",
     "copyReport": "Copier le rapport d’état actuel",
     "copyReportDescription": "Partager l’état actuel de la connexion, de la configuration et de l’exécution",
     "copySuccess": "Rapport d’état copié",
@@ -2584,7 +2563,7 @@
       "loadFailed": "Échec du chargement de l'utilisation"
     },
     "logs": {
-      "eyebrow": "Contrôle · Journaux",
+      "breadcrumbLabel": "Fil d’Ariane",
       "title": "Journaux",
       "subtitle": "Flux de journaux de passerelle en direct — filtrez et suivez.",
       "statusUnavailable": "État des journaux indisponible",
@@ -2621,6 +2600,9 @@
       "filterPlaceholder": "Filtrer les messages…",
       "autoFollow": "Suivi automatique",
       "loading": "Chargement des journaux…",
+      "empty": "Aucun journal d'exécution pour le moment.",
+      "loadFailed": "Impossible de charger les journaux d'exécution.",
+      "retry": "Réessayer",
       "noMatch": "Aucune ligne ne correspond au filtre actuel.",
       "lineDetail": "Détail de la ligne de journal",
       "ofLoadedFoot": "{visible} affichées · {total} en mémoire"
@@ -3025,7 +3007,7 @@
       "untitledChat": "Chat sans titre",
       "groupWork": "Travail",
       "groupManage": "Gérer",
-      "groupMonitor": "Surveiller",
+      "groupMonitor": "Vue d'ensemble",
       "groupActions": "Actions",
       "groupConversations": "Conversations",
       "groupMessages": "Messages",

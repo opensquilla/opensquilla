@@ -21,6 +21,24 @@ describe('getWorkNavigationSection', () => {
     expect(paths).not.toContain('/chat')
     expect(paths).not.toContain('/agents')
   })
+
+  it('uses the compound label while keeping /skills as the destination', () => {
+    const item = getWorkNavigationSection().find(candidate => candidate.path === '/skills')
+
+    expect(item).toMatchObject({
+      path: '/skills',
+      title: 'Skills & Channels',
+      icon: 'skills',
+    })
+  })
+
+  it('keeps Overview as the rail label while its page title is Status', () => {
+    const item = getWorkNavigationSection().find(candidate => candidate.path === '/overview')
+    const route = sharedRoutes.find(candidate => candidate.path === '/overview')
+
+    expect(item?.title).toBe('Overview')
+    expect(route?.meta?.titleKey).toBe('nav.status')
+  })
 })
 
 describe('navigation taxonomy invariants', () => {

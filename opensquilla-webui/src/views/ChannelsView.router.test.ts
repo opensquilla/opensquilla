@@ -158,6 +158,7 @@ async function mountWithRealRouter(options: { webHistory?: boolean } = {}) {
       { path: '/', redirect: '/channels' },
       { path: '/channels', component: Component, meta: { keepAlive: true } },
       { path: '/overview', component: emptyStub('overview-view') },
+      { path: '/skills', component: emptyStub('skills-view') },
     ],
   })
 
@@ -275,6 +276,45 @@ describe('ChannelsView with a real router', () => {
       expect(router.currentRoute.value.path).toBe('/overview')
       await flush()
       expect(el.querySelector('[data-testid="overview-view"]')).toBeTruthy()
+    } finally {
+      app.unmount()
+    }
+  })
+
+  it('guards a dirty editor when the Skills hub tab is selected', async () => {
+    const ctx = await mountWithRealRouter()
+    const { app, el, flush, router } = ctx
+    try {
+      await flush()
+      channelCard(el, 'ops-slack').click()
+      await flush()
+      const page = el.querySelector<HTMLElement>('.chd')!
+      buttonWithText(page, 'Edit').click()
+      await flush()
+
+      const input = page.querySelector<HTMLInputElement>('[data-field="slack_channel_id"] input')!
+      input.value = 'C-SKILLS-GUARD'
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await flush()
+
+      const keptNavigation = router.push('/skills')
+      await flush(6)
+      expect(router.currentRoute.value.path).toBe('/channels')
+      expect(buttonWithText(el, 'Keep editing')).toBeTruthy()
+
+      buttonWithText(el, 'Keep editing').click()
+      await keptNavigation
+      await flush()
+      expect(router.currentRoute.value.path).toBe('/channels')
+      expect(input.value).toBe('C-SKILLS-GUARD')
+
+      const discardedNavigation = router.push('/skills')
+      await flush(6)
+      buttonWithText(el, 'Discard').click()
+      await discardedNavigation
+      await flush()
+      expect(router.currentRoute.value.path).toBe('/skills')
+      expect(el.querySelector('[data-testid="skills-view"]')).toBeTruthy()
     } finally {
       app.unmount()
     }

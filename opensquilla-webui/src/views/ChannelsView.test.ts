@@ -384,7 +384,7 @@ async function mountChannelsView(options: {
   const Component = (await import('./ChannelsView.vue')).default
   const el = document.createElement('div')
   document.body.appendChild(el)
-  // KeepAlive matches the production mount (MonitorHubView) and makes
+  // KeepAlive matches the production mount (SkillsChannelsHubView) and makes
   // onActivated run — the document Esc listener and catalog refresh live there.
   const app = createApp(defineComponent({
     setup() {

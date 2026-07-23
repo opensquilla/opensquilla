@@ -76,12 +76,14 @@
     "channels": "Channels",
     "cron": "Cron",
     "skills": "Skills",
+    "skillsChannels": "Skills & Channels",
     "overview": "Overview",
+    "status": "Status",
     "usage": "Usage",
     "logs": "Logs",
     "settings": "Settings",
     "groupBuild": "Build",
-    "groupMonitor": "Monitor",
+    "groupMonitor": "Overview",
     "channelSetup": "Channel setup",
     "not-found": "Not found"
   },
@@ -243,7 +245,6 @@
       "privacy": "Privacy",
       "router": "Router",
       "ensemble": "Ensemble",
-      "channels": "Channel setup",
       "capabilities": "Capabilities",
       "appearance": "Appearance",
       "keyboard": "Keyboard",
@@ -251,7 +252,6 @@
       "groups": {
         "gateway": "Gateway",
         "ai": "AI configuration",
-        "delivery": "Delivery",
         "preferences": "Preferences",
         "capabilities": "Capabilities"
       }
@@ -803,13 +803,6 @@
       "advancedGroup": "Advanced",
       "fieldRequired": "This field is required",
       "fixRequired": "Fill the highlighted required fields first",
-      "jump": {
-        "description": "Channels are set up on the channel workspace: pick a platform, fill the form, and test the connection right where the channel runs.",
-        "open": "Open channel workspace",
-        "summary": "{count} configured · {connected} connected",
-        "summaryEmpty": "No channels configured yet.",
-        "summaryStatic": "Add, edit, and test chat channels on the workspace."
-      },
       "aids": {
         "title": "Feishu console shortcuts",
         "scopes_json": "Permission manifest — paste into 权限管理 → 批量导入",
@@ -1536,8 +1529,8 @@
       "abortFailed": "Abort failed."
     },
     "overview": {
-      "title": "Overview",
-      "subtitle": "Live status, recent sessions, and the event stream.",
+      "title": "Status",
+      "subtitle": "Readiness, usage, and runtime health.",
       "openChat": "Open chat",
       "totalTokens": "Total tokens",
       "totalSessions": "Total sessions",
@@ -1567,25 +1560,9 @@
       "findingFallback": "Finding {n}",
       "copyCommand": "Copy command",
       "step": "Step",
-      "recentActivity": "Recent activity",
-      "viewAllArrow": "View all →",
-      "noSessions": "No sessions yet — open chat to start your first one.",
-      "connection": "Connection",
-      "gateway": "Gateway",
-      "connHint": "The gateway WebSocket URL and token now live in Settings.",
-      "manageConnection": "Manage connection in Settings →",
-      "live": "Live",
-      "eventStream": "Event stream",
-      "eventCount": "{count} events",
-      "listening": "Listening for events…",
       "checking": "Checking",
       "waitingDoctor": "Waiting for doctor.status",
       "healthUnavailable": "Gateway health report unavailable",
-      "conn": {
-        "connecting": "connecting",
-        "connected": "connected",
-        "disconnected": "disconnected"
-      },
       "impact": {
         "blocksReady": "Blocks readiness",
         "degrades": "Degrades",
@@ -2418,6 +2395,8 @@
   "monitorSupport": {
     "title": "Support & diagnostics",
     "menuLabel": "Support and diagnostics actions",
+    "viewLogs": "View runtime logs",
+    "viewLogsDescription": "Inspect recent gateway output and errors",
     "copyReport": "Copy current readiness report",
     "copyReportDescription": "Share the current connection, configuration, and runtime status",
     "copySuccess": "Readiness report copied",
@@ -2584,7 +2563,7 @@
       "loadFailed": "Failed to load usage"
     },
     "logs": {
-      "eyebrow": "Control · Logs",
+      "breadcrumbLabel": "Breadcrumb",
       "title": "Logs",
       "subtitle": "Live gateway log stream — filter and follow.",
       "statusUnavailable": "Log status unavailable",
@@ -2621,6 +2600,9 @@
       "filterPlaceholder": "Filter messages…",
       "autoFollow": "Auto-follow",
       "loading": "Loading logs…",
+      "empty": "No runtime logs yet.",
+      "loadFailed": "Could not load runtime logs.",
+      "retry": "Retry",
       "noMatch": "No lines match the current filter.",
       "lineDetail": "Log line detail",
       "ofLoadedFoot": "{visible} in view · {total} buffered"
@@ -3025,7 +3007,7 @@
       "untitledChat": "Untitled chat",
       "groupWork": "Work",
       "groupManage": "Manage",
-      "groupMonitor": "Monitor",
+      "groupMonitor": "Overview",
       "groupActions": "Actions",
       "groupConversations": "Conversations",
       "groupMessages": "Messages",

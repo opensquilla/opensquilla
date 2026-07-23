@@ -32,7 +32,6 @@ import { useSettingsPromotedForm, DEFAULT_LLM_TIMEOUT_SECONDS } from '@/composab
 import { useSettingsSection } from '@/composables/setup/useSettingsSection'
 import { SETTINGS_SECTIONS, type SettingsSectionId } from '@/composables/setup/settingsSections'
 import { useRpcStore } from '@/stores/rpc'
-import { usePendingRestart } from '@/composables/usePendingRestart'
 import { useToasts } from '@/composables/useToasts'
 import { useConfirm } from '@/composables/useConfirm'
 import { saveFailedMessage } from '@/lib/rpcErrors'
@@ -100,24 +99,6 @@ interface FieldSpec {
   secret?: boolean
   choices?: string[]
   showWhen?: Record<string, string>
-}
-
-interface ChannelSpec {
-  type: string
-  label: string
-  fields?: FieldSpec[]
-  whatYouNeed?: string[]
-}
-
-interface ChannelStatusRow {
-  name: string
-  type?: string
-  connected?: boolean
-  status?: string
-  configured?: boolean
-  enabled?: boolean
-  capability_profile?: unknown
-  diagnostics?: Record<string, unknown>
 }
 
 interface TierConfig {
@@ -222,7 +203,6 @@ interface OnboardingCatalog {
     profiles?: Array<{ providerId: string; tiers?: Record<string, TierConfig> }>
     defaultTier?: string
   }
-  channels?: ChannelSpec[]
   searchProviders?: ProviderSpec[]
   imageGenerationProviders?: ProviderSpec[]
   memoryEmbeddingProviders?: ProviderSpec[]
@@ -329,14 +309,12 @@ export function useSetupCatalog() {
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
 const { confirm } = useConfirm()
-const pendingRestart = usePendingRestart()
 const t = i18n.global.t
 
 const catalog = ref<OnboardingCatalog>({})
 const status = ref<OnboardingStatus>({})
 const config = ref<ConfigData>({})
 const effectiveConfig = ref<EffectiveConfigData>({})
-const channelStatus = ref<{ channels: ChannelStatusRow[] }>({ channels: [] })
 const loaded = ref(false)
 const { section, setSection } = useSettingsSection('provider')
 const disableNetworkObservability = ref(false)
@@ -532,11 +510,10 @@ async function loadData(options: {
 } = {}) {
   try {
     await rpc.waitForConnection()
-    const [cat, st, cfg, chStatus, effective] = await Promise.all([
+    const [cat, st, cfg, effective] = await Promise.all([
       rpc.call<OnboardingCatalog>('onboarding.catalog'),
       rpc.call<OnboardingStatus>('onboarding.status'),
       rpc.call<ConfigData>('config.get'),
-      rpc.call<{ channels: ChannelStatusRow[] }>('channels.status').catch(() => ({ channels: [] })),
       // Optional on older gateways: effective metadata must never block the
       // settings surface or provider saves.
       rpc.call<EffectiveConfigData>('config.effective').catch(() => ({ fields: {} })),
@@ -545,8 +522,6 @@ async function loadData(options: {
     status.value = st || {}
     config.value = cfg || {}
     effectiveConfig.value = effective || {}
-    channelStatus.value = chStatus || { channels: [] }
-    pendingRestart.reconcile(channelStatus.value.channels || [])
     // A probe result describes one exact saved deployment. Any successful
     // reload may follow a key, endpoint, model, activation, or deletion
     // mutation, so stale results must never survive it.
@@ -1556,11 +1531,16 @@ const capabilitiesPanel = capabilitiesForm.createPanel({
 })
 
 const hasSetupAction = computed(() => {
-  if (status.value.needsOnboarding) return true
   const details = status.value.sectionDetails || {}
-  return Object.values(details).some(detail => (
+  const actionableDetails = Object.entries(details).filter(([, detail]) => (
     detail.blocking || detail.actionRequired || detail.status === 'missing' || detail.status === 'degraded'
   ))
+  // Older gateways may report a global onboarding warning for Channels. Once
+  // that is the only actionable detail, it must not create a Settings banner.
+  if (actionableDetails.length > 0) {
+    return actionableDetails.some(([name]) => name !== 'channels')
+  }
+  return Boolean(status.value.needsOnboarding)
 })
 
 // Banner items: one row per pending action, each deep-linking to its section.
@@ -1581,6 +1561,7 @@ const actionItems = computed<SettingsActionItem[]>(() => {
   }
   const details = status.value.sectionDetails || {}
   Object.entries(details).forEach(([name, detail]) => {
+    if (name === 'channels') return
     if (!detail.blocking && !detail.actionRequired) return
     if (name === 'llm' || name === 'provider') {
       push(t('setup.action.connectProvider'), 'provider')
@@ -1658,7 +1639,7 @@ function firstActionSection(): SettingsSectionId {
   const details = status.value.sectionDetails || {}
   // Kept in sync with the SETTINGS_SECTIONS rail order so `/settings/auto` lands
   // on the first not-ready section in the same top-to-bottom order the rail reads
-  // (Provider -> Model Strategy -> Capabilities -> Channels).
+  // (Provider -> Model Strategy -> Capabilities).
   const sectionOrder: Array<[string, SettingsSectionId]> = [
     ['llm', 'provider'],
     ['router', 'modelStrategy'],
@@ -1667,7 +1648,6 @@ function firstActionSection(): SettingsSectionId {
     ['image_generation', 'capabilities'],
     ['memory_embedding', 'capabilities'],
     ['audio', 'capabilities'],
-    ['channels', 'channels'],
   ]
   const entry = sectionOrder.find(([name]) => {
     const detail = details[name] || {}
@@ -1699,7 +1679,6 @@ function sectionStatus(sectionId: string): { label: string; tone: string } {
     return { label: t('setup.status.providerFirst'), tone: 'is-muted' }
   }
   if (sectionId === 'modelStrategy') return aggregateStepStatus(['router', 'ensemble'])
-  if (sectionId === 'channels') return detailStepStatus((status.value.sectionDetails || {}).channels)
   if (sectionId === 'capabilities') {
     return aggregateStepStatus(['search', 'image_generation', 'memory_embedding', 'audio'])
   }
@@ -1742,7 +1721,6 @@ function setupActionReason(name: string, detail: SectionDetail): string {
 function sectionForDetailName(name: string): SettingsSectionId | null {
   if (name === 'llm' || name === 'provider') return 'provider'
   if (name === 'router' || name === 'ensemble') return 'modelStrategy'
-  if (name === 'channels') return 'channels'
   if (name === 'search' || name === 'image_generation' || name === 'memory_embedding' || name === 'audio') return 'capabilities'
   return null
 }

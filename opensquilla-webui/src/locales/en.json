@@ -2670,6 +2670,7 @@
     "copied": "Copied",
     "copy": "Copy",
     "copySessionKey": "Copy session key",
+    "sessionActions": "Session actions",
     "share": "Share",
     "shareSendFirst": "Send a message first to share",
     "shareSelectHint": "Select bubbles to save as a share image",

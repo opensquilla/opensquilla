@@ -51,9 +51,20 @@ async def mgr(storage):
 class _FakeProvider:
     """Provider stub exposing the connection config the namer reads."""
 
-    def __init__(self, *, api_key: str = "KEY", model: str = "", base_url: str = ""):
+    def __init__(
+        self,
+        *,
+        api_key: str = "KEY",
+        model: str = "",
+        base_url: str = "",
+        provider_kind: str = "openrouter",
+        provider_id: str = "",
+    ):
+        if provider_id:
+            # picked up by provider_metadata()'s attribute fallback
+            self.provider_id = provider_id
         self._conn = ProviderConnectionConfig(
-            provider_kind="openrouter",
+            provider_kind=provider_kind,
             model=model,
             api_key=api_key,
             base_url=base_url or "https://openrouter.ai/api/v1",
@@ -194,6 +205,97 @@ def test_resolve_target_none_without_api_key():
     assert resolve_naming_target(cfg, _router(), _FakeProvider(api_key=""), None) is None
 
 
+def _profile_router(default_tier="c1", tier_provider="openrouter"):
+    return SimpleNamespace(
+        tiers={
+            "c1": {"provider": tier_provider, "model": "deepseek/deepseek-v4-pro"},
+        },
+        default_tier=default_tier,
+    )
+
+
+def test_resolve_target_skips_tier_model_for_other_provider():
+    # Tier ids are spelled per provider catalog: an "openrouter" tier model
+    # must not be sent over a different provider's connection.
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    provider = _FakeProvider(provider_kind="tokenrhythm", model="deepseek-v4-pro")
+    target = resolve_naming_target(cfg, _profile_router(), provider, None)
+    assert target.model == "deepseek-v4-pro"
+    assert target.provider == "tokenrhythm"
+
+
+def test_resolve_target_uses_tier_model_for_matching_provider():
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    provider = _FakeProvider(provider_kind="openrouter", model="z-ai/glm-5.2")
+    target = resolve_naming_target(cfg, _profile_router(), provider, None)
+    assert target.model == "deepseek/deepseek-v4-pro"
+
+
+def test_resolve_target_provider_match_is_case_insensitive():
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    # Connection-side mixed case.
+    provider = _FakeProvider(provider_kind="OpenRouter", model="z-ai/glm-5.2")
+    target = resolve_naming_target(
+        cfg, _profile_router(tier_provider="openrouter"), provider, None
+    )
+    assert target.model == "deepseek/deepseek-v4-pro"
+    # Tier-side mixed case (tier tables are free-form user TOML).
+    provider = _FakeProvider(provider_kind="openrouter", model="z-ai/glm-5.2")
+    target = resolve_naming_target(
+        cfg, _profile_router(tier_provider="OpenRouter"), provider, None
+    )
+    assert target.model == "deepseek/deepseek-v4-pro"
+
+
+def test_resolve_target_matches_tier_on_configured_provider_id():
+    # Registry id and wire kind diverge (e.g. minimax_openai runs on the
+    # "minimax" wire policy); a tier naming the registry id must still match.
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    provider = _FakeProvider(
+        provider_kind="minimax",
+        provider_id="minimax_openai",
+        model="MiniMax-M3",
+    )
+    router = SimpleNamespace(
+        tiers={"c1": {"provider": "minimax_openai", "model": "MiniMax-M2.7"}},
+        default_tier="c1",
+    )
+    target = resolve_naming_target(cfg, router, provider, None)
+    assert target.model == "MiniMax-M2.7"
+
+
+def test_resolve_target_trusts_tier_when_provider_identity_unknown():
+    # A connection that reports no identity at all keeps the legacy behavior:
+    # a provider-qualified tier is not skipped on an empty comparison side.
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    provider = _FakeProvider(provider_kind="", model="deepseek-v4-pro")
+    target = resolve_naming_target(cfg, _profile_router(), provider, None)
+    assert target.model == "deepseek/deepseek-v4-pro"
+
+
+def test_resolve_target_trusts_tier_model_without_tier_provider():
+    # A tier that names no provider keeps the legacy behavior even when the
+    # active connection is a different provider.
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    provider = _FakeProvider(provider_kind="tokenrhythm", model="deepseek-v4-pro")
+    target = resolve_naming_target(cfg, _router("c1"), provider, None)
+    assert target.model == "deepseek/deepseek-v4-pro"
+
+
+def test_resolve_target_explicit_model_wins_over_mismatched_tier():
+    cfg = SimpleNamespace(tier=None, model="explicit-model", timeout_seconds=30.0)
+    provider = _FakeProvider(provider_kind="tokenrhythm", model="deepseek-v4-pro")
+    target = resolve_naming_target(cfg, _profile_router(), provider, None)
+    assert target.model == "explicit-model"
+
+
+def test_resolve_target_mismatched_tier_falls_through_to_fallback_model():
+    cfg = SimpleNamespace(tier=None, model=None, timeout_seconds=30.0)
+    provider = _FakeProvider(provider_kind="tokenrhythm", model="")
+    target = resolve_naming_target(cfg, _profile_router(), provider, "session-model")
+    assert target.model == "session-model"
+
+
 def test_tier_model_normalizes_alias():
     router = SimpleNamespace(tiers={"c1": {"model": "deepseek/deepseek-v4-pro"}})
     # t1 is a legacy alias for c1 (router_tiers.normalize_text_tier).
@@ -250,10 +352,12 @@ async def test_call_naming_llm_payload_and_sanitization(monkeypatch):
 
     # Response sanitized (quotes stripped).
     assert title == "Reset my password"
-    # Cheap, deterministic title-shaped request.
+    # Cheap, deterministic title-shaped request. The completion budget must
+    # cover reasoning-by-default models that spend thinking tokens before the
+    # title (a 96-token cap returned empty content at finish_reason=length).
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert captured["json"]["model"] == "deepseek/deepseek-v4-pro"
-    assert captured["json"]["max_tokens"] == 96
+    assert captured["json"]["max_tokens"] == 512
     assert captured["json"]["temperature"] == 0
     assert captured["json"]["stream"] is False
     # OpenRouter attribution headers are present (mirrors compaction path).
@@ -420,7 +524,15 @@ def _patch_provider_and_emit(monkeypatch, *, title: str | None):
     import opensquilla.session.naming as naming_mod
 
     monkeypatch.setattr(
-        rpc_chat_mod, "_resolve_compaction_provider", lambda ctx, session: _FakeProvider()
+        rpc_chat_mod,
+        "_resolve_compaction_provider",
+        # Match the packaged default config: the built-in tier table names the
+        # tokenrhythm provider, and the provider-consistency guard skips tiers
+        # aimed at another provider. The explicit model keeps resolution alive
+        # via the connection fallback if the default profile ever changes.
+        lambda ctx, session: _FakeProvider(
+            provider_kind="tokenrhythm", model="deepseek-v4-pro"
+        ),
     )
 
     calls: dict = {"llm": 0}

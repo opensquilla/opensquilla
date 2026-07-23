@@ -220,7 +220,6 @@
               @update-ensemble-all-failed-policy="setEnsembleAllFailedPolicy"
               @go-to-section="selectSection"
             />
-            <SettingsChannelsJumpCard v-else-if="section === 'channels'" />
             <SetupCapabilitiesPanel
               v-else-if="section === 'capabilities'"
               :panel="capabilitiesPanel"
@@ -299,7 +298,6 @@ import SetupBehaviorPanel from '@/components/setup/SetupBehaviorPanel.vue'
 import SetupConnectionPanel from '@/components/settings/SetupConnectionPanel.vue'
 import SetupProviderPanel from '@/components/setup/SetupProviderPanel.vue'
 import SetupModelStrategyPanel from '@/components/setup/SetupModelStrategyPanel.vue'
-import SettingsChannelsJumpCard from '@/components/settings/SettingsChannelsJumpCard.vue'
 import SetupCapabilitiesPanel from '@/components/setup/SetupCapabilitiesPanel.vue'
 import SettingsPrivacyPanel from '@/components/settings/SettingsPrivacyPanel.vue'
 import SettingsAppearancePanel from '@/components/settings/SettingsAppearancePanel.vue'

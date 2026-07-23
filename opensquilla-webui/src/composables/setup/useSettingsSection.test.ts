@@ -27,6 +27,12 @@ describe('settings section IA', () => {
     expect(isKnownSectionParam('safety')).toBe(false)
   })
 
+  it('keeps Channels out of Settings while the router owns its legacy deep link', () => {
+    expect(SETTINGS_SECTIONS.map(s => s.id)).not.toContain('channels')
+    expect(sectionFromRouteParam('channels')).toBe('provider')
+    expect(isKnownSectionParam('channels')).toBe(false)
+  })
+
   it('does not ship copy for retired approval-policy destinations', () => {
     expect(en.settings.rail).not.toHaveProperty('safety')
     expect(en.settings).not.toHaveProperty('safety')

@@ -31,6 +31,11 @@ function routePlatforms(platforms: unknown): PlatformId[] {
 // inside the useNavigation() computeds, so reading the reactive i18n locale here
 // makes the rail/drawer/palette re-render on a language switch.
 function navTitle(route: RouteRecordRaw): string {
+  const explicitKey = route.meta?.navLabelKey
+  if (explicitKey) {
+    const translated = i18n.global.t(explicitKey)
+    if (translated !== explicitKey) return translated
+  }
   const name = typeof route.name === 'string' ? route.name : ''
   if (name) {
     const key = `nav.${name}`

@@ -76,12 +76,14 @@
     "channels": "Canales",
     "cron": "Cron",
     "skills": "Habilidades",
+    "skillsChannels": "Habilidades y canales",
     "overview": "Resumen",
+    "status": "Estado",
     "usage": "Uso",
     "logs": "Registros",
     "settings": "Ajustes",
     "groupBuild": "Construir",
-    "groupMonitor": "Monitorizar",
+    "groupMonitor": "Resumen",
     "channelSetup": "Config. de canales",
     "not-found": "No encontrado"
   },
@@ -243,7 +245,6 @@
       "privacy": "Privacidad",
       "router": "Enrutador",
       "ensemble": "Conjunto",
-      "channels": "Config. de canales",
       "capabilities": "Capacidades",
       "appearance": "Apariencia",
       "keyboard": "Teclado",
@@ -251,7 +252,6 @@
       "groups": {
         "gateway": "Puerta de enlace",
         "ai": "Configuración de IA",
-        "delivery": "Entrega",
         "preferences": "Preferencias",
         "capabilities": "Capacidades"
       }
@@ -803,13 +803,6 @@
       "advancedGroup": "Avanzado",
       "fieldRequired": "Este campo es obligatorio",
       "fixRequired": "Completa primero los campos obligatorios resaltados",
-      "jump": {
-        "description": "Los canales se configuran en el espacio de trabajo de canales: elige una plataforma, completa el formulario y prueba la conexión donde se ejecuta el canal.",
-        "open": "Abrir el espacio de canales",
-        "summary": "{count} configurados · {connected} conectados",
-        "summaryEmpty": "Aún no hay canales configurados.",
-        "summaryStatic": "Añade, edita y prueba canales de chat en el espacio de trabajo."
-      },
       "aids": {
         "title": "Atajos de la consola de Feishu",
         "scopes_json": "Manifiesto de permisos — pégalo en 权限管理 → importación masiva",
@@ -1536,8 +1529,8 @@
       "abortFailed": "Error al abortar."
     },
     "overview": {
-      "title": "Resumen",
-      "subtitle": "Estado en vivo, sesiones recientes y el flujo de eventos.",
+      "title": "Estado",
+      "subtitle": "Preparación, uso y estado de ejecución.",
       "openChat": "Abrir chat",
       "totalTokens": "Total de tokens",
       "totalSessions": "Total de sesiones",
@@ -1567,25 +1560,9 @@
       "findingFallback": "Hallazgo {n}",
       "copyCommand": "Copiar comando",
       "step": "Paso",
-      "recentActivity": "Actividad reciente",
-      "viewAllArrow": "Ver todo →",
-      "noSessions": "Aún no hay sesiones; abre el chat para iniciar la primera.",
-      "connection": "Conexión",
-      "gateway": "Puerta de enlace",
-      "connHint": "La URL del WebSocket de la puerta de enlace y el token ahora están en Ajustes.",
-      "manageConnection": "Gestionar conexión en Ajustes →",
-      "live": "En vivo",
-      "eventStream": "Flujo de eventos",
-      "eventCount": "{count} eventos",
-      "listening": "Escuchando eventos…",
       "checking": "Comprobando",
       "waitingDoctor": "Esperando doctor.status",
       "healthUnavailable": "Informe de estado de la puerta de enlace no disponible",
-      "conn": {
-        "connecting": "conectando",
-        "connected": "conectado",
-        "disconnected": "desconectado"
-      },
       "impact": {
         "blocksReady": "Bloquea la preparación",
         "degrades": "Degrada",
@@ -2418,6 +2395,8 @@
   "monitorSupport": {
     "title": "Soporte y diagnóstico",
     "menuLabel": "Acciones de soporte y diagnóstico",
+    "viewLogs": "Ver registros de ejecución",
+    "viewLogsDescription": "Revisar la salida reciente y los errores de la puerta de enlace",
     "copyReport": "Copiar informe actual de disponibilidad",
     "copyReportDescription": "Compartir el estado actual de conexión, configuración y ejecución",
     "copySuccess": "Informe de disponibilidad copiado",
@@ -2584,7 +2563,7 @@
       "loadFailed": "No se pudo cargar el uso"
     },
     "logs": {
-      "eyebrow": "Control · Registros",
+      "breadcrumbLabel": "Ruta de navegación",
       "title": "Registros",
       "subtitle": "Flujo de registros en vivo de la puerta de enlace: filtra y sigue.",
       "statusUnavailable": "Estado de los registros no disponible",
@@ -2621,6 +2600,9 @@
       "filterPlaceholder": "Filtrar mensajes…",
       "autoFollow": "Seguimiento automático",
       "loading": "Cargando registros…",
+      "empty": "Aún no hay registros de ejecución.",
+      "loadFailed": "No se pudieron cargar los registros de ejecución.",
+      "retry": "Reintentar",
       "noMatch": "Ninguna línea coincide con el filtro actual.",
       "lineDetail": "Detalle de la línea de registro",
       "ofLoadedFoot": "{visible} visibles · {total} en búfer"
@@ -3025,7 +3007,7 @@
       "untitledChat": "Chat sin título",
       "groupWork": "Trabajo",
       "groupManage": "Gestionar",
-      "groupMonitor": "Monitorizar",
+      "groupMonitor": "Resumen",
       "groupActions": "Acciones",
       "groupConversations": "Conversaciones",
       "groupMessages": "Mensajes",

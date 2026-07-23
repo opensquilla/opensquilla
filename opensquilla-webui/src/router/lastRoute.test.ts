@@ -5,7 +5,7 @@ import { isRestorableRoute, saveLastRoute, readLastRoute, LAST_ROUTE_KEY } from 
 beforeEach(() => localStorage.clear())
 
 describe('isRestorableRoute', () => {
-  it('accepts the known top-level views (incl. the Monitor-hub tab routes)', () => {
+  it('accepts the known top-level views, including both route hubs', () => {
     for (const p of [
       '/chat', '/sessions', '/channels',
       '/cron', '/skills', '/overview', '/usage', '/logs',

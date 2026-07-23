@@ -76,12 +76,14 @@
     "channels": "渠道",
     "cron": "定时任务",
     "skills": "技能",
+    "skillsChannels": "技能·渠道",
     "overview": "概览",
+    "status": "状态",
     "usage": "用量",
     "logs": "日志",
     "settings": "设置",
     "groupBuild": "构建",
-    "groupMonitor": "监控",
+    "groupMonitor": "概览",
     "channelSetup": "渠道设置",
     "not-found": "未找到"
   },
@@ -243,7 +245,6 @@
       "privacy": "隐私",
       "router": "路由",
       "ensemble": "模型聚合",
-      "channels": "渠道设置",
       "capabilities": "能力",
       "appearance": "外观",
       "keyboard": "键盘",
@@ -251,7 +252,6 @@
       "groups": {
         "gateway": "网关",
         "ai": "AI 配置",
-        "delivery": "分发",
         "preferences": "偏好设置",
         "capabilities": "能力"
       }
@@ -803,13 +803,6 @@
       "advancedGroup": "高级",
       "fieldRequired": "此字段必填",
       "fixRequired": "请先填写高亮的必填字段",
-      "jump": {
-        "description": "渠道现在在渠道工作台中配置：选择平台、填写表单，并在渠道运行的地方直接测试连接。",
-        "open": "打开渠道工作台",
-        "summary": "已配置 {count} 个 · {connected} 个已连接",
-        "summaryEmpty": "尚未配置任何渠道。",
-        "summaryStatic": "在工作台中添加、编辑和测试聊天渠道。"
-      },
       "aids": {
         "title": "飞书控制台快捷方式",
         "scopes_json": "权限清单 JSON——粘贴到 权限管理 → 批量导入",
@@ -1536,8 +1529,8 @@
       "abortFailed": "中止失败。"
     },
     "overview": {
-      "title": "概览",
-      "subtitle": "实时状态、近期会话与事件流。",
+      "title": "状态",
+      "subtitle": "就绪情况、用量与运行健康状态。",
       "openChat": "打开聊天",
       "totalTokens": "总 token 数",
       "totalSessions": "会话总数",
@@ -1567,25 +1560,9 @@
       "findingFallback": "发现项 {n}",
       "copyCommand": "复制命令",
       "step": "步骤",
-      "recentActivity": "近期活动",
-      "viewAllArrow": "查看全部 →",
-      "noSessions": "暂无会话——打开聊天开始你的第一个会话。",
-      "connection": "连接",
-      "gateway": "网关",
-      "connHint": "网关 WebSocket URL 和令牌现在位于设置中。",
-      "manageConnection": "在设置中管理连接 →",
-      "live": "实时",
-      "eventStream": "事件流",
-      "eventCount": "{count} 个事件",
-      "listening": "正在监听事件…",
       "checking": "检查中",
       "waitingDoctor": "等待 doctor.status",
       "healthUnavailable": "网关健康报告不可用",
-      "conn": {
-        "connecting": "连接中",
-        "connected": "已连接",
-        "disconnected": "已断开"
-      },
       "impact": {
         "blocksReady": "阻塞就绪",
         "degrades": "降级",
@@ -2418,6 +2395,8 @@
   "monitorSupport": {
     "title": "支持与诊断",
     "menuLabel": "支持与诊断操作",
+    "viewLogs": "查看运行日志",
+    "viewLogsDescription": "查看近期网关输出与错误",
     "copyReport": "复制当前就绪报告",
     "copyReportDescription": "用于快速排查当前连接、配置与运行状态",
     "copySuccess": "当前就绪报告已复制",
@@ -2584,7 +2563,7 @@
       "loadFailed": "加载用量失败"
     },
     "logs": {
-      "eyebrow": "控制 · 日志",
+      "breadcrumbLabel": "页面路径",
       "title": "日志",
       "subtitle": "实时网关日志流 — 过滤并跟随。",
       "statusUnavailable": "日志状态不可用",
@@ -2621,6 +2600,9 @@
       "filterPlaceholder": "过滤消息…",
       "autoFollow": "自动跟随",
       "loading": "正在加载日志…",
+      "empty": "暂无运行日志。",
+      "loadFailed": "运行日志加载失败。",
+      "retry": "重试",
       "noMatch": "没有符合当前过滤条件的日志行。",
       "lineDetail": "日志行详情",
       "ofLoadedFoot": "当前显示 {visible} 条 · 已缓冲 {total} 条"
@@ -3025,7 +3007,7 @@
       "untitledChat": "未命名会话",
       "groupWork": "工作",
       "groupManage": "管理",
-      "groupMonitor": "监控",
+      "groupMonitor": "概览",
       "groupActions": "操作",
       "groupConversations": "会话",
       "groupMessages": "消息",

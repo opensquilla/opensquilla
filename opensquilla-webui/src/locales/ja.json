@@ -76,12 +76,14 @@
     "channels": "チャンネル",
     "cron": "スケジュール",
     "skills": "スキル",
+    "skillsChannels": "スキル・チャンネル",
     "overview": "概要",
+    "status": "状態",
     "usage": "使用量",
     "logs": "ログ",
     "settings": "設定",
     "groupBuild": "構築",
-    "groupMonitor": "モニター",
+    "groupMonitor": "概要",
     "channelSetup": "チャンネル設定",
     "not-found": "見つかりません"
   },
@@ -243,7 +245,6 @@
       "privacy": "プライバシー",
       "router": "ルーター",
       "ensemble": "アンサンブル",
-      "channels": "チャンネル設定",
       "capabilities": "機能",
       "appearance": "外観",
       "keyboard": "キーボード",
@@ -251,7 +252,6 @@
       "groups": {
         "gateway": "ゲートウェイ",
         "ai": "AI 設定",
-        "delivery": "配信",
         "preferences": "環境設定",
         "capabilities": "機能"
       }
@@ -803,13 +803,6 @@
       "advancedGroup": "詳細設定",
       "fieldRequired": "この項目は必須です",
       "fixRequired": "ハイライトされた必須項目を先に入力してください",
-      "jump": {
-        "description": "チャンネルの設定はチャンネルワークスペースで行います。プラットフォームを選び、フォームを入力し、その場で接続をテストできます。",
-        "open": "チャンネルワークスペースを開く",
-        "summary": "設定済み {count} 件 · 接続中 {connected} 件",
-        "summaryEmpty": "設定済みのチャンネルはまだありません。",
-        "summaryStatic": "ワークスペースでチャットチャンネルを追加・編集・テストします。"
-      },
       "aids": {
         "title": "Feishu コンソールのショートカット",
         "scopes_json": "権限マニフェスト JSON——権限管理 → 一括インポートに貼り付け",
@@ -1536,8 +1529,8 @@
       "abortFailed": "中止に失敗しました。"
     },
     "overview": {
-      "title": "概要",
-      "subtitle": "ライブの状態、最近のセッション、イベントストリームを表示します。",
+      "title": "状態",
+      "subtitle": "準備状況、使用量、実行時の健全性を表示します。",
       "openChat": "チャットを開く",
       "totalTokens": "合計トークン数",
       "totalSessions": "合計セッション数",
@@ -1567,25 +1560,9 @@
       "findingFallback": "検出結果 {n}",
       "copyCommand": "コマンドをコピー",
       "step": "ステップ",
-      "recentActivity": "最近のアクティビティ",
-      "viewAllArrow": "すべて表示 →",
-      "noSessions": "セッションはまだありません — チャットを開いて最初のセッションを始めましょう。",
-      "connection": "接続",
-      "gateway": "ゲートウェイ",
-      "connHint": "ゲートウェイの WebSocket URL とトークンは設定にあります。",
-      "manageConnection": "設定で接続を管理 →",
-      "live": "稼働中",
-      "eventStream": "イベントストリーム",
-      "eventCount": "{count} 件のイベント",
-      "listening": "イベントを待機中…",
       "checking": "確認中",
       "waitingDoctor": "doctor.status を待機中",
       "healthUnavailable": "ゲートウェイのヘルスレポートを利用できません",
-      "conn": {
-        "connecting": "接続中",
-        "connected": "接続済み",
-        "disconnected": "切断済み"
-      },
       "impact": {
         "blocksReady": "準備をブロック",
         "degrades": "劣化",
@@ -2418,6 +2395,8 @@
   "monitorSupport": {
     "title": "サポートと診断",
     "menuLabel": "サポートと診断の操作",
+    "viewLogs": "実行ログを表示",
+    "viewLogsDescription": "最近のゲートウェイ出力とエラーを確認します",
     "copyReport": "現在の準備状況レポートをコピー",
     "copyReportDescription": "現在の接続、設定、実行状態を共有します",
     "copySuccess": "準備状況レポートをコピーしました",
@@ -2584,7 +2563,7 @@
       "loadFailed": "使用量の読み込みに失敗しました"
     },
     "logs": {
-      "eyebrow": "操作 · ログ",
+      "breadcrumbLabel": "パンくずリスト",
       "title": "ログ",
       "subtitle": "ライブのゲートウェイログストリームです — フィルターと追従ができます。",
       "statusUnavailable": "ログの状態を利用できません",
@@ -2621,6 +2600,9 @@
       "filterPlaceholder": "メッセージを絞り込む…",
       "autoFollow": "自動追従",
       "loading": "ログを読み込み中…",
+      "empty": "実行ログはまだありません。",
+      "loadFailed": "実行ログを読み込めませんでした。",
+      "retry": "再試行",
       "noMatch": "現在のフィルターに一致する行はありません。",
       "lineDetail": "ログ行の詳細",
       "ofLoadedFoot": "表示中 {visible} 件 · バッファ {total} 件"
@@ -3025,7 +3007,7 @@
       "untitledChat": "無題のチャット",
       "groupWork": "作業",
       "groupManage": "管理",
-      "groupMonitor": "モニター",
+      "groupMonitor": "概要",
       "groupActions": "アクション",
       "groupConversations": "会話",
       "groupMessages": "メッセージ",

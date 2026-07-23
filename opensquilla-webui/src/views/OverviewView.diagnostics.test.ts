@@ -12,6 +12,10 @@ interface MountOptions {
   failProviders?: boolean
   desktop?: boolean
   connectionUrl?: string
+  doctorHandler?: (
+    params: unknown,
+    callIndex: number,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>
 }
 
 interface PushArg {
@@ -56,16 +60,22 @@ async function mountOverview(options: MountOptions = {}) {
     window.localStorage.setItem('opensquilla.wsUrl', options.connectionUrl)
   }
 
-  const { createApp, defineComponent, h, nextTick } = await import('vue')
+  const { KeepAlive, createApp, defineComponent, h, nextTick, ref } = await import('vue')
   const { createPinia, setActivePinia } = await import('pinia')
   const i18n = (await import('@/i18n')).default
 
   const push = vi.fn((_to: PushArg) => Promise.resolve())
   const pushToast = vi.fn()
   const copyText = vi.fn(async (_text: string) => {})
-  const rpcCall = vi.fn(async (method: string) => {
+  const rpcOn = vi.fn(() => () => {})
+  let doctorCallIndex = 0
+  const rpcCall = vi.fn(async (method: string, params?: unknown) => {
     if (method === 'doctor.status') {
       if (options.report === null) throw new Error('doctor unavailable')
+      if (options.doctorHandler) {
+        return options.doctorHandler(params, doctorCallIndex++)
+      }
+      doctorCallIndex++
       return JSON.parse(JSON.stringify(options.report ?? baseReport()))
     }
     if (method === 'providers.status') {
@@ -80,21 +90,25 @@ async function mountOverview(options: MountOptions = {}) {
     useRpcStore: () => ({
       isConnected: true,
       isConnecting: false,
-      on: vi.fn(() => () => {}),
+      on: rpcOn,
       waitForConnection: vi.fn(async () => {}),
       call: rpcCall,
     }),
   }))
+  const useRequestMethods: string[] = []
   vi.doMock('@/composables/useRequest', async () => {
     const { ref } = await import('vue')
     return {
-      useRequest: () => ({
-        data: ref(null),
-        error: ref(null),
-        loading: ref(false),
-        execute: vi.fn(async () => null),
-        refresh: vi.fn(async () => null),
-      }),
+      useRequest: (method: string) => {
+        useRequestMethods.push(method)
+        return {
+          data: ref(null),
+          error: ref(null),
+          loading: ref(false),
+          execute: vi.fn(async () => null),
+          refresh: vi.fn(async () => null),
+        }
+      },
     }
   })
   vi.doMock('@/composables/useToasts', () => ({ useToasts: () => ({ pushToast }) }))
@@ -108,23 +122,21 @@ async function mountOverview(options: MountOptions = {}) {
       },
     }),
   }))
-  vi.doMock('@/components/ErrorState.vue', () => ({
-    default: defineComponent({
-      name: 'ErrorStateStub',
-      setup() {
-        return () => h('div', { 'data-testid': 'error-state' })
-      },
-    }),
-  }))
-
   const pinia = createPinia()
   setActivePinia(pinia)
   i18n.global.locale.value = 'en'
 
   const Component = (await import('./OverviewView.vue')).default
+  const active = ref(true)
+  const TestHost = defineComponent({
+    name: 'OverviewTestHost',
+    setup() {
+      return () => h(KeepAlive, null, active.value ? [h(Component)] : [])
+    },
+  })
   const el = document.createElement('div')
   document.body.appendChild(el)
-  const app = createApp(Component)
+  const app = createApp(TestHost)
   app.component('RouterLink', defineComponent({
     name: 'RouterLinkStub',
     setup(_, { slots }) {
@@ -142,7 +154,22 @@ async function mountOverview(options: MountOptions = {}) {
   }
   await flush()
 
-  return { el, push, pushToast, copyText, rpcCall, flush }
+  async function setActive(value: boolean) {
+    active.value = value
+    await flush()
+  }
+
+  return {
+    el,
+    push,
+    pushToast,
+    copyText,
+    rpcCall,
+    rpcOn,
+    useRequestMethods,
+    flush,
+    setActive,
+  }
 }
 
 beforeEach(() => {
@@ -163,15 +190,70 @@ afterEach(() => {
   vi.doUnmock('@/composables/useToasts')
   vi.doUnmock('@/utils/browser')
   vi.doUnmock('@/components/Icon.vue')
-  vi.doUnmock('@/components/ErrorState.vue')
   window.localStorage.clear()
   ;(window as unknown as { opensquillaDesktop?: unknown }).opensquillaDesktop = undefined
   vi.restoreAllMocks()
+  vi.useRealTimers()
 })
 
 // The buttons carry resolved translations in their title attributes; the
 // suite pins locale 'en' in mountOverview, so select by the en strings.
 const DIAGNOSE_SELECTOR = '[title="Diagnose with agent"]'
+
+describe('OverviewView status lifecycle', () => {
+  it('drops the old activity panels and their data sources', async () => {
+    const { el, rpcCall, rpcOn, useRequestMethods } = await mountOverview()
+
+    expect(el.querySelector('.ov-grid')).toBeNull()
+    expect(el.querySelector('.ov-recent')).toBeNull()
+    expect(el.querySelector('.conn-pill')).toBeNull()
+    expect(el.querySelector('.ov-event-log')).toBeNull()
+    expect(useRequestMethods).toEqual(['status'])
+    expect(rpcCall.mock.calls.some(([method]) => method === 'sessions.list')).toBe(false)
+    expect(rpcOn).not.toHaveBeenCalled()
+  })
+
+  it('runs one initial deep check, silent shallow refreshes, and stops while inactive', async () => {
+    vi.useFakeTimers()
+    let resolveShallow!: (report: Record<string, unknown>) => void
+    const shallowReport = new Promise<Record<string, unknown>>((resolve) => {
+      resolveShallow = resolve
+    })
+    const { el, rpcCall, flush, setActive } = await mountOverview({
+      doctorHandler: (_params, callIndex) => (
+        callIndex === 0 ? baseReport() : shallowReport
+      ),
+    })
+    const doctorParams = () => rpcCall.mock.calls
+      .filter(([method]) => method === 'doctor.status')
+      .map(([, params]) => params)
+
+    expect(doctorParams()).toEqual([{ agentId: 'main', deep: true }])
+
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(doctorParams()).toEqual([
+      { agentId: 'main', deep: true },
+      { agentId: 'main', deep: false },
+    ])
+    expect(el.querySelector('.ov-statusline')?.classList.contains('is-loading')).toBe(false)
+
+    resolveShallow(baseReport())
+    await flush()
+    await setActive(false)
+    await vi.advanceTimersByTimeAsync(60000)
+    expect(doctorParams()).toHaveLength(2)
+
+    await setActive(true)
+    expect(doctorParams()).toHaveLength(3)
+    let calls = doctorParams()
+    expect(calls[calls.length - 1]).toEqual({ agentId: 'main', deep: false })
+
+    el.querySelector<HTMLButtonElement>('.ov-status-actions .btn--ghost')!.click()
+    await flush()
+    calls = doctorParams()
+    expect(calls[calls.length - 1]).toEqual({ agentId: 'main', deep: true })
+  })
+})
 
 describe('OverviewView diagnose-with-agent hand-off', () => {
   it('does not render an old gateway migration finding or degraded summary', async () => {

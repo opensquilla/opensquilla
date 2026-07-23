@@ -44,6 +44,11 @@ router.beforeEach((to) => legacyChannelHashRedirect(to) ?? true)
 // the locale changes (App.vue watches the store) since afterEach does not
 // re-fire without a navigation.
 export function routeTitle(route: RouteLocationNormalized): string {
+  const explicitKey = route.meta?.titleKey
+  if (explicitKey) {
+    const translated = i18n.global.t(explicitKey)
+    if (translated !== explicitKey) return translated
+  }
   const name = typeof route.name === 'string' ? route.name : ''
   if (name) {
     const key = `nav.${name}`

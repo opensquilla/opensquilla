@@ -4,7 +4,7 @@ const CONTROL_URL = '/control/'
 // Backend-config sections carry a readiness/status dot; Connection is the first
 // entry (live socket state). Appearance, Keyboard, and Advanced are client-only.
 // (Runtime exists too, but it is desktop-only so the web rail hides it.)
-const SECTIONS = ['Connection', 'Model Service', 'Model Routing', 'Capabilities', 'Channels', 'Behavior', 'Privacy']
+const SECTIONS = ['Connection', 'Model Service', 'Model Routing', 'Capabilities', 'Behavior', 'Privacy']
 const CLIENT_SECTIONS = ['Appearance', 'Keyboard', 'Advanced']
 
 const settingsRow = (page: import('@playwright/test').Page) =>

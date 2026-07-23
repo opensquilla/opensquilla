@@ -26,6 +26,22 @@
       :aria-label="t('monitorSupport.menuLabel')"
       @keydown="onMenuKeydown"
     >
+      <template v-if="route.path !== '/logs'">
+        <button
+          type="button"
+          class="theme-menu__item support-diagnostics__item"
+          role="menuitem"
+          data-testid="support-view-logs"
+          @click="openLogs"
+        >
+          <span class="support-diagnostics__item-icon"><Icon name="logs" :size="16" /></span>
+          <span class="support-diagnostics__item-copy">
+            <strong>{{ t('monitorSupport.viewLogs') }}</strong>
+            <small>{{ t('monitorSupport.viewLogsDescription') }}</small>
+          </span>
+        </button>
+        <div class="support-diagnostics__divider" role="separator"></div>
+      </template>
       <button
         type="button"
         class="theme-menu__item support-diagnostics__item"
@@ -72,7 +88,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import DiagnosticsBundleDialog from '@/components/DiagnosticsBundleDialog.vue'
 import Icon from '@/components/Icon.vue'
 import { useDocumentEvent } from '@/composables/useDocumentEvent'
@@ -89,6 +105,7 @@ const SUPPORT_BUNDLE_DAYS = 1
 
 const { t } = useI18n()
 const route = useRoute()
+const router = useRouter()
 const rpc = useRpcStore()
 const { pushToast } = useToasts()
 const menuOpen = ref(false)
@@ -132,6 +149,11 @@ function toggleMenu() {
     return
   }
   openMenu()
+}
+
+function openLogs() {
+  menuOpen.value = false
+  void router.push('/logs')
 }
 
 function onMenuKeydown(event: KeyboardEvent) {

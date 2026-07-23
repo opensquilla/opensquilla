@@ -31,4 +31,14 @@ describe('ClarifyCard submit feedback', () => {
     expect(source).toContain("values[field.name] = field.defaultValue || ''")
     expect(source).toContain(":placeholder=\"field.defaultValue ? `default: ${field.defaultValue}` : ''\"")
   })
+
+  it('preserves and bounds only long multi-line previews', () => {
+    expect(source).toContain("const hasLongIntro = computed(() => props.request.intro.length > 2_000)")
+    expect(source).toContain(":tabindex=\"hasLongIntro ? 0 : undefined\"")
+    expect(source).toContain('.clarify-card__intro--long {')
+    expect(source).toContain('white-space: pre-wrap;')
+    expect(source).toContain('overflow-y: auto;')
+    expect(source).toContain('max-block-size: clamp(14rem, 42vh, 28rem);')
+    expect(source).toContain('@media (max-width: 768px)')
+  })
 })

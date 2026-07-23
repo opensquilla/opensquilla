@@ -1,7 +1,10 @@
 import { ref } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 
-import { useChatSessionSubscription } from './useChatSessionSubscription'
+import {
+  isAuthoritativeSessionSubscription,
+  useChatSessionSubscription,
+} from './useChatSessionSubscription'
 import type { ChatRunStatus, ChatRunStatusState } from '@/types/chat'
 
 function createSubscription(hasActiveInterrupt = false) {
@@ -36,6 +39,27 @@ function createSubscription(hasActiveInterrupt = false) {
   })
   return { api, resetStreamLiveTurnState, runStatus }
 }
+
+describe('isAuthoritativeSessionSubscription', () => {
+  it('requires structured outcomes to explicitly be authoritative', () => {
+    expect(isAuthoritativeSessionSubscription({
+      authoritative: true,
+      live: false,
+      backgroundOnly: false,
+    })).toBe(true)
+    expect(isAuthoritativeSessionSubscription({
+      authoritative: false,
+      live: false,
+      backgroundOnly: false,
+    })).toBe(false)
+  })
+
+  it('keeps legacy boolean and void callers compatible', () => {
+    expect(isAuthoritativeSessionSubscription(true)).toBe(true)
+    expect(isAuthoritativeSessionSubscription(undefined)).toBe(true)
+    expect(isAuthoritativeSessionSubscription(false)).toBe(false)
+  })
+})
 
 describe('useChatSessionSubscription', () => {
   it('preserves an interrupt bubble when a late idle subscription snapshot arrives', async () => {
@@ -231,6 +255,66 @@ describe('useChatSessionSubscription', () => {
     expect(runStatus.value.status).toBe('running')
   })
 
+  it('starts a fresh subscription after unsubscribe invalidates a pending snapshot', async () => {
+    const snapshots: Array<ReturnType<typeof deferredSnapshot>> = []
+    const call = vi.fn((method: string): Promise<unknown> => {
+      if (method === 'sessions.messages.unsubscribe') return Promise.resolve({})
+      const snapshot = deferredSnapshot()
+      snapshots.push(snapshot)
+      return snapshot.promise
+    })
+    const rpc = {
+      waitForConnection: vi.fn(async () => {}),
+      call: call as unknown as <T = unknown>(
+        method: string,
+        params?: Record<string, unknown>,
+      ) => Promise<T>,
+    }
+    const subscription = useChatSessionSubscription({
+      rpc,
+      sessionKey: ref('agent:main:webchat:test'),
+      lastStreamSeq: ref(0),
+      runStatus: ref<ChatRunStatus>({ status: 'idle', label: '', task: null }),
+      isStreaming: ref(false),
+      hasActiveInterrupt: ref(false),
+      activeStreamTaskId: ref(''),
+      activeTaskGroups: ref(new Set<string>()),
+      sessionRunStatus: source => ({
+        status: String(source?.run_status || 'idle') as ChatRunStatusState,
+        label: '',
+        task: source?.active_task || null,
+      }),
+      startStreaming: vi.fn(),
+      loadHistory: vi.fn(),
+      resetStreamIdleTimer: vi.fn(),
+      resetStreamLiveTurnState: vi.fn(),
+    })
+
+    const stale = subscription.subscribeSession()
+    await vi.waitFor(() => expect(snapshots).toHaveLength(1))
+    await subscription.unsubscribeSession()
+    const fresh = subscription.subscribeSession()
+    await vi.waitFor(() => expect(snapshots).toHaveLength(2))
+
+    snapshots[0]?.resolve({ subscribed: true, run_status: 'idle' })
+    await expect(stale).resolves.toEqual({
+      authoritative: false,
+      live: false,
+      backgroundOnly: false,
+    })
+    snapshots[1]?.resolve({ subscribed: true, run_status: 'idle' })
+    await expect(fresh).resolves.toEqual({
+      authoritative: true,
+      live: false,
+      backgroundOnly: false,
+    })
+    expect(call.mock.calls.map(([method]) => method)).toEqual([
+      'sessions.messages.subscribe',
+      'sessions.messages.unsubscribe',
+      'sessions.messages.subscribe',
+    ])
+  })
+
   it('reconciles stale replayed task groups with an empty authoritative snapshot', async () => {
     const activeTaskGroups = ref(new Set(['stale-group']))
     const runStatus = ref<ChatRunStatus>({ status: 'running', label: '', task: null })
@@ -346,3 +430,9 @@ describe('useChatSessionSubscription', () => {
     warn.mockRestore()
   })
 })
+
+function deferredSnapshot() {
+  let resolve!: (value: unknown) => void
+  const promise = new Promise<unknown>((done) => { resolve = done })
+  return { promise, resolve }
+}

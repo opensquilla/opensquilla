@@ -22,6 +22,10 @@ import type {
   WarningPayload,
 } from '@/types/rpc'
 import type { ChatRpcSubscriptionHandlers } from '@/composables/chat/useChatRpcSubscriptions'
+import {
+  isAuthoritativeSessionSubscription,
+  type SessionSubscriptionOutcome,
+} from '@/composables/chat/useChatSessionSubscription'
 import type { FrameInput } from '@/types/turnlog'
 import type { FoldLiveTurnMode } from '@/composables/chat/useChatTurnLog'
 import {
@@ -107,7 +111,12 @@ export interface UseChatRpcEventHandlersOptions {
   schedulePendingDrainAfterTerminal: () => void
   popAllPendingIntoComposer: () => boolean
   saveWidgetState: () => void
-  subscribeSession: () => void
+  subscribeSession: () =>
+    | boolean
+    | void
+    | SessionSubscriptionOutcome
+    | Promise<boolean | void | SessionSubscriptionOutcome>
+  onSessionSubscribed?: () => void | Promise<void>
   loadHistory: () => void
   loadCurrentSessionUsage: () => void
 }
@@ -1007,7 +1016,19 @@ export function useChatRpcEventHandlers(options: UseChatRpcEventHandlersOptions)
     if (state === 'connected' && sessionKey.value) {
       connectionLostNoted = false
       stream.hideThinkingIndicator()
-      options.subscribeSession()
+      const subscription = options.subscribeSession()
+      void Promise.resolve(subscription)
+        .then((subscribed) => {
+          if (isAuthoritativeSessionSubscription(subscribed)) {
+            return options.onSessionSubscribed?.()
+          }
+        })
+        .catch((error: unknown) => {
+          console.warn(
+            'Session recovery after reconnect failed:',
+            error instanceof Error ? error.message : error,
+          )
+        })
       options.loadCurrentSessionUsage()
       options.loadHistory()
       if (stream.isStreaming.value) stream.resetStreamIdleTimer()

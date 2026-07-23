@@ -609,19 +609,26 @@ class SessionManager:
 
     async def _rotate_session_id(self, node: SessionNode) -> SessionNode:
         old_session_id = node.session_id
-        # Bump the epoch FIRST (before archive/delete/rotate) so the
-        # StaleEpochError guard in append_transcript_entry fences every
-        # in-flight append that read the pre-reset node: once the epoch
-        # advances, such an append's expected_epoch check fails and its blind
-        # whole-node upsert can no longer roll the rotation back. Doing it here
-        # covers all reset call sites (RPC and non-RPC), not just the ones that
-        # separately call _increment_and_emit_epoch.
-        try:
-            new_epoch = await self._storage.increment_epoch(node.session_key)
+        # Advance the epoch FIRST (before archive/delete/rotate) so stale writers
+        # are fenced. Production storage also deletes every unaccepted hidden
+        # MetaSkill control in that same transaction: a second browser tab must
+        # not consume a pre-reset authorization in the new session identity.
+        advance_reset_epoch = getattr(self._storage, "advance_reset_epoch", None)
+        if callable(advance_reset_epoch):
+            # Fail closed when the durable invalidation cannot commit. Continuing
+            # the reset would make an old staged control valid in the new epoch.
+            new_epoch = await advance_reset_epoch(node.session_key)
             node.epoch = new_epoch
             self.set_cached_epoch(node.session_key, new_epoch)
-        except Exception:  # noqa: BLE001 - reset must not fail on epoch bump
-            pass
+        else:
+            # Compatibility for storage adapters predating the durable control
+            # ledger. They have no staged control state to invalidate.
+            try:
+                new_epoch = await self._storage.increment_epoch(node.session_key)
+                node.epoch = new_epoch
+                self.set_cached_epoch(node.session_key, new_epoch)
+            except Exception:  # noqa: BLE001 - legacy epoch bump remains best effort
+                pass
         await self._archive_session_identity(node)
         await self._storage.delete_transcript(old_session_id)
         await self._storage.delete_summaries(old_session_id)

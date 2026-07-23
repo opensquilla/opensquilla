@@ -7,6 +7,12 @@ function createHarness(options: {
   messages?: ChatMessage[]
   endStreaming?: (messages: ChatMessage[]) => void
   sessionRunStatus?: (source: ChatRunStatusSource | null | undefined) => ChatRunStatus
+  subscribeSession?: () =>
+    | boolean
+    | void
+    | { authoritative: boolean, live: boolean, backgroundOnly: boolean }
+    | Promise<boolean | void | { authoritative: boolean, live: boolean, backgroundOnly: boolean }>
+  onSessionSubscribed?: () => void | Promise<void>
 } = {}) {
   const messages = ref<ChatMessage[]>(options.messages ?? [])
   const activeTaskGroups = ref(new Set<string>())
@@ -36,6 +42,8 @@ function createHarness(options: {
   const schedulePendingDrainAfterTerminal = vi.fn()
   const scheduleHistorySync = vi.fn()
   const showWarningToast = vi.fn()
+  const subscribeSession = vi.fn(options.subscribeSession || (() => undefined))
+  const onSessionSubscribed = vi.fn(options.onSessionSubscribed || (() => undefined))
   const scope = effectScope()
   const api = scope.run(() => useChatRpcEventHandlers({
     sessionKey: ref('agent:main:test'),
@@ -72,7 +80,8 @@ function createHarness(options: {
     schedulePendingDrainAfterTerminal,
     popAllPendingIntoComposer: vi.fn(() => false),
     saveWidgetState: vi.fn(),
-    subscribeSession: vi.fn(),
+    subscribeSession,
+    onSessionSubscribed,
     loadHistory: vi.fn(),
     loadCurrentSessionUsage: vi.fn(),
   }))!
@@ -86,6 +95,8 @@ function createHarness(options: {
     schedulePendingDrainAfterTerminal,
     scheduleHistorySync,
     showWarningToast,
+    subscribeSession,
+    onSessionSubscribed,
     stop: () => scope.stop(),
   }
 }
@@ -493,6 +504,64 @@ describe('useChatRpcEventHandlers ensemble activity', () => {
       vi.mocked(stream.resetStreamIdleTimer).mockClear()
       api.handlers.onConnectionState('connected')
       expect(stream.resetStreamIdleTimer).toHaveBeenCalledTimes(1)
+    } finally {
+      stop()
+    }
+  })
+
+  it('restores durable setup work only after reconnect subscription succeeds', async () => {
+    let resolveSubscription: ((subscribed: boolean) => void) | undefined
+    const subscription = new Promise<boolean>((resolve) => { resolveSubscription = resolve })
+    const { api, subscribeSession, onSessionSubscribed, stop } = createHarness({
+      subscribeSession: () => subscription,
+    })
+
+    try {
+      api.handlers.onConnectionState('connected')
+      expect(subscribeSession).toHaveBeenCalledOnce()
+      expect(onSessionSubscribed).not.toHaveBeenCalled()
+
+      resolveSubscription?.(true)
+      await subscription
+      await Promise.resolve()
+
+      expect(onSessionSubscribed).toHaveBeenCalledOnce()
+    } finally {
+      stop()
+    }
+  })
+
+  it('does not restore durable setup work when reconnect subscription fails', async () => {
+    const { api, onSessionSubscribed, stop } = createHarness({
+      subscribeSession: async () => false,
+    })
+
+    try {
+      api.handlers.onConnectionState('connected')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(onSessionSubscribed).not.toHaveBeenCalled()
+    } finally {
+      stop()
+    }
+  })
+
+  it('does not restore durable setup work from a non-authoritative outcome object', async () => {
+    const { api, onSessionSubscribed, stop } = createHarness({
+      subscribeSession: async () => ({
+        authoritative: false,
+        live: false,
+        backgroundOnly: false,
+      }),
+    })
+
+    try {
+      api.handlers.onConnectionState('connected')
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(onSessionSubscribed).not.toHaveBeenCalled()
     } finally {
       stop()
     }

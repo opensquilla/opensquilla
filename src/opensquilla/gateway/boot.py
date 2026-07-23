@@ -3306,6 +3306,12 @@ async def start_gateway_server(
     from opensquilla.tools.builtin.sessions import set_task_runtime
 
     set_task_runtime(task_runtime)
+    recovered_meta_controls = await task_runtime.recover_durable_meta_controls()
+    if recovered_meta_controls:
+        log.info(
+            "task_runtime.meta_controls_recovered",
+            count=recovered_meta_controls,
+        )
 
     # Resolve HEARTBEAT.md path; instantiate Runner + Watcher;
     # start Watcher BEFORE the Loop so the first tick already sees any

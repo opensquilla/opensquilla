@@ -38,6 +38,19 @@ export interface SessionSubscriptionOutcome {
   backgroundOnly: boolean
 }
 
+export type SessionSubscriptionResult = boolean | void | SessionSubscriptionOutcome
+
+/**
+ * Structured subscription responses are authoritative only when they say so
+ * explicitly. Boolean/void support keeps legacy injected callers compatible.
+ */
+export function isAuthoritativeSessionSubscription(
+  value: SessionSubscriptionResult,
+): boolean {
+  if (typeof value === 'object' && value !== null) return value.authoritative === true
+  return value !== false
+}
+
 const UNAVAILABLE_SUBSCRIPTION: SessionSubscriptionOutcome = {
   authoritative: false,
   live: false,
@@ -153,9 +166,15 @@ export function useChatSessionSubscription(options: UseChatSessionSubscriptionOp
   }
 
   async function unsubscribeSession() {
-    if (!options.sessionKey.value) return
+    const key = options.sessionKey.value
+    if (!key) return
+    // Invalidate pending work before yielding. Otherwise a subsequent subscribe
+    // can reuse a promise for a server subscription this call just removed.
+    subscriptionAttempt += 1
+    activeSubscription = null
+    isHydrating.value = false
     try {
-      await options.rpc.call('sessions.messages.unsubscribe', { key: options.sessionKey.value })
+      await options.rpc.call('sessions.messages.unsubscribe', { key })
     } catch {
       // Unsubscribe is best-effort during route changes and unmount.
     }

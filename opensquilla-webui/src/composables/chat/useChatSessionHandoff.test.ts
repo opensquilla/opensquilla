@@ -290,20 +290,12 @@ describe('chat send session handoff', () => {
     expect(aborted.value).toBe(false)
     expect(activeStreamTaskId.value).toBe('task-child')
     expect(activeStreamSessionKey.value).toBe(childSessionKey)
-    expect(pendingQueueRuntime.pendingQueue.value).toHaveLength(2)
+    expect(pendingQueueRuntime.pendingQueue.value).toHaveLength(1)
     expect(pendingQueueRuntime.pendingQueue.value).toMatchObject([
       {
         text: 'queued follow-up',
         attachments: [expect.objectContaining({ local_id: 42, file_uuid: 'file-queued' })],
         intent: null,
-        ownerSessionKey: childSessionKey,
-      },
-      {
-        text: 'hidden control',
-        attachments: [],
-        intent: null,
-        hiddenControl: true,
-        displayTextOverride: 'Hidden control',
         ownerSessionKey: childSessionKey,
       },
     ])
@@ -314,14 +306,25 @@ describe('chat send session handoff', () => {
     expect(trace).toHaveLength(5)
 
     // A visible parent item that predated this chat.send was parked instead of
-    // being misdelivered to the fork child. Stale hidden controls are dropped,
-    // because replaying them after returning to the parent would confirm an old run.
+    // being misdelivered to the fork child. Machine controls are never
+    // re-parented: it is parked under the source and restored only when the
+    // staged parent session becomes active again.
     await sessionRuntime.switchToSession(parentSessionKey)
     expect(pendingQueueRuntime.pendingQueue.value).toMatchObject([
       {
         text: 'existing parent follow-up',
         ownerSessionKey: parentSessionKey,
         ownerRequestId: 'older-parent-request',
+      },
+      {
+        text: 'existing parent control',
+        hiddenControl: true,
+        hiddenControlSessionKey: parentSessionKey,
+      },
+      {
+        text: 'hidden control',
+        hiddenControl: true,
+        hiddenControlSessionKey: parentSessionKey,
       },
     ])
   })

@@ -432,6 +432,64 @@ describe('projectAssistantActivityTimeline', () => {
     })
   })
 
+  it('classifies common built-in tools by their activity semantics', () => {
+    const projection = projectAssistantActivityTimeline([
+      toolGroup([
+        call('read-source', {
+          name: 'read_source',
+          inputRaw: '{"path":"/repo/source.ts"}',
+        }),
+        call('read-sheet', {
+          name: 'read_spreadsheet',
+          inputRaw: '{"path":"/repo/data.xlsx"}',
+        }),
+      ]),
+      toolGroup([
+        call('write-scratch', {
+          name: 'write_scratch',
+          inputRaw: '{"path":"/repo/.scratch/repro.py"}',
+        }),
+        call('create-source', {
+          name: 'create_source',
+          inputRaw: '{"path":"/repo/new.ts"}',
+        }),
+        call('edit-source', {
+          name: 'edit_source',
+          inputRaw: '{"path":"/repo/source.ts"}',
+        }),
+      ]),
+      toolGroup([call('execute', { name: 'execute_code' })]),
+      toolGroup([call('request', { name: 'http_request' })]),
+    ])
+
+    expect(projection.activityClusters.map(cluster => ({
+      calls: cluster.calls.map(item => item.toolId),
+      purpose: cluster.purpose.code,
+      footprint: cluster.footprint,
+    }))).toEqual([
+      {
+        calls: ['read-source', 'read-sheet'],
+        purpose: 'chat.activity.purpose.inspect',
+        footprint: { code: 'chat.activity.footprint.files', params: { count: 2 } },
+      },
+      {
+        calls: ['write-scratch', 'create-source', 'edit-source'],
+        purpose: 'chat.activity.purpose.change',
+        footprint: { code: 'chat.activity.footprint.files', params: { count: 3 } },
+      },
+      {
+        calls: ['execute'],
+        purpose: 'chat.activity.purpose.run',
+        footprint: { code: 'chat.activity.footprint.commands', params: { count: 1 } },
+      },
+      {
+        calls: ['request'],
+        purpose: 'chat.activity.purpose.read',
+        footprint: { code: 'chat.activity.footprint.web', params: { count: 1 } },
+      },
+    ])
+  })
+
   it('counts unique structured file targets instead of file tool calls', () => {
     const projection = projectAssistantActivityTimeline([
       toolGroup([

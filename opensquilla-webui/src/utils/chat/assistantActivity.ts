@@ -155,9 +155,11 @@ const DEFAULT_SEMANTIC: ActivitySemantic = {
 
 const DISCOVER_TOOLS = new Set(['web_discover'])
 const SEARCH_TOOLS = new Set(['web_search', 'search_query', 'image_query'])
-const WEB_READ_TOOLS = new Set(['web_fetch', 'open_url'])
+const WEB_READ_TOOLS = new Set(['web_fetch', 'open_url', 'http_request'])
 const FILE_INSPECT_TOOLS = new Set([
   'read_file',
+  'read_source',
+  'read_spreadsheet',
   'list_dir',
   'list_directory',
   'glob_search',
@@ -165,13 +167,17 @@ const FILE_INSPECT_TOOLS = new Set([
 ])
 const FILE_CHANGE_TOOLS = new Set([
   'write_file',
+  'write_scratch',
   'create_file',
+  'create_source',
   'edit_file',
+  'edit_source',
   'apply_patch',
 ])
 const COMMAND_TOOLS = new Set([
   'exec',
   'exec_command',
+  'execute_code',
   'bash',
   'bash_exec',
   'shell',

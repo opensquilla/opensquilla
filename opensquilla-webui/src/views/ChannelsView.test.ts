@@ -436,6 +436,8 @@ describe('ChannelsView dashboard home', () => {
     })
     try {
       await flush()
+      expect(el.querySelector('.control-stage--hub-actions')).not.toBeNull()
+      expect(el.querySelector('.control-stage__header--hub-actions')).not.toBeNull()
       // One card per configured channel, no table.
       expect(el.querySelector('table')).toBeNull()
       const ops = channelCard(el, 'ops-slack')

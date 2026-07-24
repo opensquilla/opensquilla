@@ -160,6 +160,23 @@ function historicalClarifyInterrupts(segments: RawToolCallPayload[] | undefined)
   return out
 }
 
+function terminatesPriorAssistant(message: ChatMessage, priorAssistant?: ChatMessage): boolean {
+  if (message.role === 'error') return true
+  if (message.role !== 'system') return false
+
+  // Terminal errors are persisted inside the same causal turn scope as the
+  // partial assistant row. Ordinary injected or scheduled system messages do
+  // not share that turn identity. Require the positive causal signal rather
+  // than guessing from localized error text or missing provenance.
+  return message.restoredFromHistory === true
+    && Boolean(message.messageId)
+    && !message.provenanceKind
+    && priorAssistant?.restoredFromHistory === true
+    && Boolean(priorAssistant.messageId)
+    && Boolean(message.turnId)
+    && message.turnId === priorAssistant.turnId
+}
+
 export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions) {
   const renderedMessages = computed((): ChatRenderedMessage[] => {
     const result: ChatRenderedMessage[] = []
@@ -198,9 +215,15 @@ export function useChatRenderedMessages(options: UseChatRenderedMessagesOptions)
         turnIdentity = msg.clientId || msg.messageId || String(msg.ts || `turn-${turnIdx}`)
       }
 
-      if (msg.role === 'error' && lastAssistantResultIndex >= 0) {
+      if (lastAssistantResultIndex >= 0) {
         const priorAssistant = result[lastAssistantResultIndex]
-        if (priorAssistant?.displayRole === 'assistant') {
+        const priorAssistantMessage = priorAssistant?.sourceIndex === undefined
+          ? undefined
+          : options.messages.value[priorAssistant.sourceIndex]
+        if (
+          priorAssistant?.displayRole === 'assistant'
+          && terminatesPriorAssistant(msg, priorAssistantMessage)
+        ) {
           priorAssistant.terminalFailure = true
         }
       }

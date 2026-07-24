@@ -535,6 +535,127 @@ describe('useChatRenderedMessages per-turn usage', () => {
     expect(assistant?.text).toBe('Partial result')
   })
 
+  it('marks partial assistant output failed after a durable terminal system row is restored', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'user',
+        text: 'run the task',
+        ts: 1,
+        messageId: 'user-1',
+        restoredFromHistory: true,
+      },
+      {
+        role: 'assistant',
+        text: 'Partial result',
+        ts: 2,
+        messageId: 'assistant-partial',
+        restoredFromHistory: true,
+        turnId: 'turn-1',
+      },
+      {
+        role: 'system',
+        text: 'localized durable terminal detail',
+        ts: 3,
+        messageId: 'system-terminal-1',
+        restoredFromHistory: true,
+        turnId: 'turn-1',
+      },
+    ])
+
+    const assistant = api.renderedMessages.value.find(
+      message => message.displayRole === 'assistant',
+    )
+    expect(assistant?.terminalFailure).toBe(true)
+  })
+
+  it('does not treat ordinary local or provenance-tagged system rows as terminal failures', () => {
+    const local = renderedMessagesFor([
+      {
+        role: 'user',
+        text: 'run the task',
+        ts: 1,
+        messageId: 'user-1',
+      },
+      {
+        role: 'assistant',
+        text: 'Completed result',
+        ts: 2,
+        messageId: 'assistant-complete',
+      },
+      {
+        role: 'system',
+        text: 'ordinary local notice',
+        ts: 3,
+      },
+    ])
+    const durableCron = renderedMessagesFor([
+      {
+        role: 'user',
+        text: 'run the task',
+        ts: 1,
+        messageId: 'user-2',
+        restoredFromHistory: true,
+      },
+      {
+        role: 'assistant',
+        text: 'Completed result',
+        ts: 2,
+        messageId: 'assistant-complete-2',
+        restoredFromHistory: true,
+      },
+      {
+        role: 'system',
+        text: 'ordinary durable notice',
+        ts: 3,
+        messageId: 'system-cron-1',
+        restoredFromHistory: true,
+        provenanceKind: 'cron',
+      },
+    ])
+
+    const localAssistant = local.renderedMessages.value.find(
+      message => message.displayRole === 'assistant',
+    )
+    const cronAssistant = durableCron.renderedMessages.value.find(
+      message => message.displayRole === 'assistant',
+    )
+    expect(localAssistant?.terminalFailure).toBeUndefined()
+    expect(cronAssistant?.terminalFailure).toBeUndefined()
+  })
+
+  it('does not treat an unprovenanced durable system row without matching turn identity as terminal', () => {
+    const api = renderedMessagesFor([
+      {
+        role: 'user',
+        text: 'run the task',
+        ts: 1,
+        messageId: 'user-3',
+        restoredFromHistory: true,
+        turnId: 'turn-3',
+      },
+      {
+        role: 'assistant',
+        text: 'Completed result',
+        ts: 2,
+        messageId: 'assistant-complete-3',
+        restoredFromHistory: true,
+        turnId: 'turn-3',
+      },
+      {
+        role: 'system',
+        text: 'ordinary injected durable notice',
+        ts: 3,
+        messageId: 'system-injected-1',
+        restoredFromHistory: true,
+      },
+    ])
+
+    const assistant = api.renderedMessages.value.find(
+      message => message.displayRole === 'assistant',
+    )
+    expect(assistant?.terminalFailure).toBeUndefined()
+  })
+
   it('keeps each assistant message token counts independent', () => {
     const api = renderedMessagesFor([
       {

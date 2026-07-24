@@ -313,6 +313,8 @@ export interface ChatMessage {
   provenanceKind?: string
   provenanceSourceSessionKey?: string
   provenanceSourceTool?: string
+  /** Durable causal turn identity restored from transcript turn_context. */
+  turnId?: string
   interrupted?: boolean
   routerState?: string
   routerSettled?: boolean

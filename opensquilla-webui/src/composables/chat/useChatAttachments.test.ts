@@ -123,6 +123,33 @@ describe('useChatAttachments', () => {
     expect(pushToast).toHaveBeenCalledWith('Too many attachments: max 10', { tone: 'danger' })
   })
 
+  it('emits a single count-cap toast for a batch far over the limit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(successfulUploadResponse('file-count'))
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+
+    const files = Array.from({ length: 15 }, (_, index) => stagedPdf(`paper-${index}.pdf`))
+    await attachments.addAttachments(files)
+    await flushUpload()
+
+    expect(attachments.pendingAttachments.value).toHaveLength(10)
+    expect(pushToast).toHaveBeenCalledTimes(1)
+    expect(pushToast).toHaveBeenCalledWith('Too many attachments: max 10', { tone: 'danger' })
+  })
+
+  it('names the per-type cap when rejecting an oversized file', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    const hugePdf = new File([new Uint8Array(30 * 1024 * 1024 + 1)], 'huge.pdf', { type: 'application/pdf' })
+
+    await attachments.addAttachments([hugePdf])
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(attachments.pendingAttachments.value).toHaveLength(0)
+    expect(pushToast).toHaveBeenCalledWith('File too large: huge.pdf (max 30 MiB)', { tone: 'danger' })
+  })
+
   it('enforces the frontend aggregate attachment size before upload work starts', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

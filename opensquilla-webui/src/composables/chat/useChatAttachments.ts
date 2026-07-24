@@ -114,6 +114,12 @@ export function useChatAttachments() {
 
   async function addAttachments(files: File[]) {
     for (const file of files) {
+      // One toast for the whole batch when the count cap is hit — a per-file
+      // repeat would only evict more useful toasts.
+      if (activeAttachmentCount() >= MAX_ATTACHMENTS) {
+        pushToast(i18n.global.t('chat.toast.tooManyAttachments', { max: MAX_ATTACHMENTS }), { tone: 'danger' })
+        return
+      }
       await addAttachmentFile(file)
     }
   }
@@ -125,7 +131,7 @@ export function useChatAttachments() {
   async function addAttachmentFile(file: File) {
     const fileName = file.name || 'Untitled file'
     if (file.size === 0) {
-      pushToast(`Empty file: ${fileName}`, { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.emptyFile', { name: fileName }), { tone: 'danger' })
       return
     }
 
@@ -141,7 +147,7 @@ export function useChatAttachments() {
     }
     const hardCap = attachmentHardCapBytes(mime)
     if (file.size > hardCap) {
-      pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: fileName }), { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: fileName, cap: formatMiB(hardCap) }), { tone: 'danger' })
       return
     }
     if (!canAcceptAttachment(fileName, file.size)) return
@@ -169,7 +175,7 @@ export function useChatAttachments() {
     }
 
     if (!canStageAttachmentMime(mime)) {
-      pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: fileName }), { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: fileName, cap: formatMiB(hardCap) }), { tone: 'danger' })
       return
     }
 
@@ -301,15 +307,22 @@ export function useChatAttachments() {
     return true
   }
 
+  function activeAttachmentCount(): number {
+    return pendingAttachments.value.filter(attachmentCountsTowardLimits).length
+  }
+
   function canAcceptAttachment(fileName: string, size: number): boolean {
     const activeAttachments = pendingAttachments.value.filter(attachmentCountsTowardLimits)
     if (activeAttachments.length >= MAX_ATTACHMENTS) {
-      pushToast(`Too many attachments: max ${MAX_ATTACHMENTS}`, { tone: 'danger' })
+      pushToast(i18n.global.t('chat.toast.tooManyAttachments', { max: MAX_ATTACHMENTS }), { tone: 'danger' })
       return false
     }
     const totalBytes = activeAttachments.reduce((sum, attachment) => sum + (attachment.size || 0), 0) + size
     if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
-      pushToast(`Attachments too large: ${fileName} would exceed ${formatMiB(MAX_TOTAL_ATTACHMENT_BYTES)} total`, { tone: 'danger' })
+      pushToast(
+        i18n.global.t('chat.toast.attachmentsTotalTooLarge', { name: fileName, max: formatMiB(MAX_TOTAL_ATTACHMENT_BYTES) }),
+        { tone: 'danger' },
+      )
       return false
     }
     return true

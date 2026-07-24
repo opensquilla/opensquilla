@@ -578,8 +578,10 @@ import {
   toolStatusText,
 } from '@/utils/chat/toolDisplay'
 import {
+  collectClipboardFiles,
   hasSendableModelInputImageAttachment,
   isSendableAttachment,
+  shouldCaptureFilePaste,
 } from '@/utils/chat/attachments'
 import { isShareableChatMessage } from '@/utils/chat/messageIdentity'
 import { agentIdFromSessionKey } from '@/utils/chat/sessionKeys'
@@ -2046,25 +2048,21 @@ function autoResizeTextarea() {
 /* ── Clipboard paste ───────────────────────────────────────────────── */
 
 function onDocumentPaste(e: ClipboardEvent) {
-  const items = e.clipboardData?.items
-  if (!items) return
-  const files: File[] = []
-  let attachedImage = false
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].type.startsWith('image/')) {
-      const file = items[i].getAsFile()
-      if (file) {
-        files.push(file)
-        attachedImage = true
-      }
-    }
-  }
-  if (files.length > 0) void addAttachments(files)
-  // Screenshot tools put both the image and its local file path on the
-  // clipboard; once we have attached the image, suppress the default paste so
-  // the path text is not also dumped into the composer (and then sent to the
-  // agent). Plain-text pastes with no image fall through unchanged.
-  if (attachedImage) e.preventDefault()
+  // Pastes aimed at another editable surface (clarify/approval inputs, the
+  // command palette) or at an open dialog keep their default behavior — only
+  // composer-bound pastes claim clipboard files, mirroring onDocumentKeydown.
+  if (!shouldCaptureFilePaste(e.target, {
+    composerTextareaFocused: composerRef.value?.isTextareaFocused() ?? false,
+    dialogLayerOpen: hasOpenDialogLayer(),
+  })) return
+  const files = collectClipboardFiles(e.clipboardData)
+  if (files.length === 0) return
+  void addAttachments(files)
+  // File managers and screenshot tools put both the file and its name/path as
+  // text on the clipboard; once we have attached the files, suppress the
+  // default paste so that text is not also dumped into the composer (and then
+  // sent to the agent). Plain-text pastes with no file fall through unchanged.
+  e.preventDefault()
 }
 
 /* ── Document keydown (ESC) ────────────────────────────────────────── */

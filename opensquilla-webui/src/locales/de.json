@@ -2775,7 +2775,42 @@
     },
     "sources": "Quellen",
     "activitySteps": "Aktivität · {count} Schritt | Aktivität · {count} Schritte",
+    "activityItems": "Aktivität · {count} Eintrag | Aktivität · {count} Einträge",
     "activityFailures": "{count} fehlgeschlagen",
+    "activityFailuresRecovered": "{count} Fehler behoben",
+    "activityWorking": "In Arbeit",
+    "workedForSeconds": "{seconds} Sek. gearbeitet",
+    "workedForMinutes": "{minutes} Min. {seconds} Sek. gearbeitet",
+    "activity": {
+      "lifecycle": {
+        "working": "In Arbeit",
+        "answering": "Antwort wird verfasst",
+        "settled": "Abgeschlossen",
+        "interrupted": "Unterbrochen",
+        "failed": "Fehlgeschlagen"
+      },
+      "purpose": {
+        "discover": "Links gefunden",
+        "search": "Web durchsucht",
+        "read": "Webseiten gelesen",
+        "inspect": "Dateien geprüft",
+        "change": "Dateien bearbeitet",
+        "run": "Befehle ausgeführt",
+        "create": "Artefakte erstellt",
+        "recall": "Speicher durchsucht",
+        "use": "Werkzeuge verwendet"
+      },
+      "footprint": {
+        "web": "{count} Web-Aktion | {count} Web-Aktionen",
+        "files": "{count} Datei | {count} Dateien",
+        "fileOperations": "{count} Dateioperation | {count} Dateioperationen",
+        "commands": "{count} Befehl | {count} Befehle",
+        "artifacts": "{count} Artefakt | {count} Artefakte",
+        "memory": "{count} Speicherabfrage | {count} Speicherabfragen",
+        "tools": "{count} Werkzeugaufruf | {count} Werkzeugaufrufe"
+      },
+      "more": "{count} weitere"
+    },
     "suggestedTasks": "Vorgeschlagene Aufgaben",
     "greetingMorning": "Guten Morgen.",
     "greetingAfternoon": "Guten Tag.",

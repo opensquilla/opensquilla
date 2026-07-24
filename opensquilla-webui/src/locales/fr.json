@@ -2775,7 +2775,42 @@
     },
     "sources": "Sources",
     "activitySteps": "Activité · {count} étape | Activité · {count} étapes",
+    "activityItems": "Activité · {count} élément | Activité · {count} éléments",
     "activityFailures": "{count} en échec",
+    "activityFailuresRecovered": "{count} échec récupéré | {count} échecs récupérés",
+    "activityWorking": "Travail en cours",
+    "workedForSeconds": "Travail effectué pendant {seconds} s",
+    "workedForMinutes": "Travail effectué pendant {minutes} min {seconds} s",
+    "activity": {
+      "lifecycle": {
+        "working": "En cours",
+        "answering": "Rédaction de la réponse",
+        "settled": "Terminé",
+        "interrupted": "Interrompu",
+        "failed": "Échec"
+      },
+      "purpose": {
+        "discover": "Liens découverts",
+        "search": "Recherche sur le Web",
+        "read": "Pages Web consultées",
+        "inspect": "Fichiers inspectés",
+        "change": "Fichiers modifiés",
+        "run": "Commandes exécutées",
+        "create": "Artefacts créés",
+        "recall": "Mémoire consultée",
+        "use": "Outils utilisés"
+      },
+      "footprint": {
+        "web": "{count} action Web | {count} actions Web",
+        "files": "{count} fichier | {count} fichiers",
+        "fileOperations": "{count} opération sur un fichier | {count} opérations sur des fichiers",
+        "commands": "{count} commande | {count} commandes",
+        "artifacts": "{count} artefact | {count} artefacts",
+        "memory": "{count} consultation de la mémoire | {count} consultations de la mémoire",
+        "tools": "{count} appel d’outil | {count} appels d’outil"
+      },
+      "more": "{count} de plus"
+    },
     "suggestedTasks": "Tâches suggérées",
     "greetingMorning": "Bonjour.",
     "greetingAfternoon": "Bon après-midi.",

@@ -149,8 +149,13 @@ describe('RunTrace activity presentation', () => {
 
     expect(el.querySelector('.tool-timeline--activity')).not.toBeNull()
     expect(el.querySelector('.tool-row__bullet--ok')).toBeNull()
+    expect(el.querySelector('.tool-row__bullet')).toBeNull()
+    expect(el.querySelector('.tool-row__activity-icon')).not.toBeNull()
     expect(el.querySelector('.tool-row__state-icon--ok')).toBeNull()
-    expect(el.querySelector('.step-chevron')).toBeNull()
+    expect(el.querySelector('.tool-row__activity-arrow')).not.toBeNull()
+    expect(
+      el.querySelector('.tool-row__activity-arrow')?.hasAttribute('data-share-control'),
+    ).toBe(true)
     expect(el.querySelector('.tool-timeline__toolbar')).toBeNull()
     expect(el.querySelector('.tool-timeline__bulk-icon')).toBeNull()
     expect(
@@ -160,9 +165,11 @@ describe('RunTrace activity presentation', () => {
     expect(
       el.querySelector('.tool-row--group')?.getAttribute('aria-expanded'),
     ).toBe('false')
-    expect(el.querySelector('.tool-row__bullet--err')).not.toBeNull()
+    expect(el.querySelector('.tool-row__bullet--err')).toBeNull()
+    expect(el.querySelector('.tool-row__activity-icon--error')).not.toBeNull()
     expect(el.querySelector('.tool-row__state-icon--err')).not.toBeNull()
-    expect(el.querySelector('.tool-row-section--error')).not.toBeNull()
+    expect(el.querySelector('.activity-tool-details__line--error')).not.toBeNull()
+    expect(el.querySelector('.tool-row-section--error')).toBeNull()
   })
 
   it('uses the running treatment without repeating a running status label', async () => {
@@ -172,7 +179,8 @@ describe('RunTrace activity presentation', () => {
     ])
     const el = await mountTimeline([runningGroup], { presentation: 'activity' })
 
-    expect(el.querySelector('.tool-row__bullet--running')).not.toBeNull()
+    expect(el.querySelector('.tool-row__bullet--running')).toBeNull()
+    expect(el.querySelector('.tool-row__activity-icon--running')).not.toBeNull()
     expect(el.querySelector('.tool-row--group .tool-row__status')).toBeNull()
   })
 
@@ -192,7 +200,11 @@ describe('RunTrace activity presentation', () => {
     const status = row?.querySelector('.tool-row__status[role="status"]')
     expect(status?.textContent).toBe('Failed')
     expect(el.querySelector('.tool-row__state-icon--err')).not.toBeNull()
-    expect(el.querySelector('.step-chevron')).toBeNull()
+    expect(el.querySelector('.tool-row__activity-icon--error')).not.toBeNull()
+    expect(el.querySelector('.tool-row__activity-arrow')).not.toBeNull()
+    expect(
+      el.querySelector('.activity-tool-details__view')?.hasAttribute('data-share-control'),
+    ).toBe(true)
   })
 
   it('keeps injected cancellation copy visible for assistive technology', async () => {
@@ -215,7 +227,20 @@ describe('RunTrace activity presentation', () => {
     ).toBe('Cancelled')
   })
 
-  it('keeps expanded raw details and full-result forwarding available', async () => {
+  it('keeps a successful activity call collapsed until explicitly opened', async () => {
+    const el = await mountTimeline([
+      group('single-success-group', [
+        call('single-success'),
+      ]),
+    ], { presentation: 'activity' })
+
+    const row = el.querySelector('.tool-row')
+    expect(row?.getAttribute('aria-expanded')).toBe('false')
+    expect(el.querySelector('.tool-row-body')).toBeNull()
+    expect(el.querySelector('.activity-tool-details')).toBeNull()
+  })
+
+  it('keeps compact semantic details and explicit raw forwarding available', async () => {
     const result = 'command output\n'.repeat(30)
     const onShowResult = vi.fn()
     const el = await mountTimeline([
@@ -231,20 +256,22 @@ describe('RunTrace activity presentation', () => {
       onShowResult,
     })
 
-    const section = el.querySelector('.tool-row-section:not(.tool-row-section--error)')
-    const viewFull = el.querySelector<HTMLButtonElement>('.step-view-btn')
-    expect(section).not.toBeNull()
-    expect(viewFull).not.toBeNull()
+    const details = el.querySelector('.activity-tool-details')
+    const viewDetails = el.querySelector<HTMLButtonElement>('.activity-tool-details__view')
+    expect(details).not.toBeNull()
+    expect(details?.textContent).toContain('30 lines')
+    expect(el.querySelector('.tool-row-section')).toBeNull()
+    expect(viewDetails).not.toBeNull()
 
-    viewFull?.click()
+    viewDetails?.click()
 
     expect(onShowResult).toHaveBeenCalledWith(
-      result,
-      'long-result-group · result',
+      `INPUT\n{}\n\nRESULT\n${result.trim()}`,
+      'long-result-group · details',
       {
         toolName: 'shell',
         inputRaw: '{}',
-        section: 'result',
+        section: undefined,
       },
     )
   })

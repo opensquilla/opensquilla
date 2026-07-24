@@ -277,8 +277,14 @@ const resolvedFailureLabel = computed(() =>
   transform: translateX(0);
 }
 
+.assistant-activity__summary[aria-expanded="true"] .assistant-activity__summary-arrow {
+  opacity: 0.55;
+  transform: rotate(90deg);
+}
+
 .assistant-activity__summary[aria-expanded="true"]:hover .assistant-activity__summary-arrow,
 .assistant-activity__summary[aria-expanded="true"]:focus-visible .assistant-activity__summary-arrow {
+  opacity: 0.8;
   transform: rotate(90deg);
 }
 

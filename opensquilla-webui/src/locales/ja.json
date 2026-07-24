@@ -3149,7 +3149,12 @@
       "sectionDiagnostics": "診断",
       "sectionResult": "結果",
       "sectionError": "エラー",
-      "viewFull": "全文を表示"
+      "viewFull": "全文を表示",
+      "activityViewDetails": "詳細を表示",
+      "activityDetailsTitle": "詳細",
+      "activityBytesWritten": "{size} を書き込み",
+      "activityContentSize": "{lines} 行 · {characters} 文字",
+      "activityPublished": "公開済み"
     }
   },
   "channelStatus": {

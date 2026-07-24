@@ -3149,7 +3149,12 @@
       "sectionDiagnostics": "诊断",
       "sectionResult": "结果",
       "sectionError": "错误",
-      "viewFull": "查看完整内容"
+      "viewFull": "查看完整内容",
+      "activityViewDetails": "查看详情",
+      "activityDetailsTitle": "详情",
+      "activityBytesWritten": "已写入 {size}",
+      "activityContentSize": "{lines} 行 · {characters} 个字符",
+      "activityPublished": "已发布"
     }
   },
   "channelStatus": {

@@ -272,34 +272,60 @@ test.describe('Completed assistant activity disclosure', () => {
       'I compared the available evidence before answering.',
     )
 
+    await expect(row).toHaveAttribute('aria-expanded', 'false')
+    await expect(activity.locator('.activity-tool-details')).toHaveCount(0)
+    await expect(row.locator('.tool-row__activity-icon')).toHaveCount(1)
+    await expect(row.locator('.tool-row__bullet')).toHaveCount(0)
+    const rowArrow = row.locator('.tool-row__activity-arrow')
+    await expect(rowArrow).toHaveCount(1)
+    await expect(rowArrow).toHaveCSS('opacity', '0')
+    await row.hover()
+    await expect(rowArrow).toHaveCSS('opacity', '0.8')
+
     await row.click()
     await expect(row).toHaveAttribute('aria-expanded', 'true')
+    const details = activity.locator('.activity-tool-details')
+    await expect(details).toBeVisible()
+    await expect(details).toContainText('OpenSquilla activity')
+    await expect(details).toContainText('view details')
+    await expect(details).not.toContainText('INPUT')
+    await expect(details).not.toContainText('RESULT')
+    await expect(details).not.toContainText('/private/')
+    await expect(activity.locator('.tool-row-section')).toHaveCount(0)
     const flatStyles = await activity.evaluate((element) => {
-      const read = (selector: string) => {
-        const target = element.querySelector<HTMLElement>(selector)
-        if (!target) return null
-        const style = getComputedStyle(target)
-        return {
-          backgroundColor: style.backgroundColor,
-          borderTopWidth: style.borderTopWidth,
-          boxShadow: style.boxShadow,
-        }
-      }
+      const readAll = (selector: string) =>
+        Array.from(element.querySelectorAll<HTMLElement>(selector)).map((target) => {
+          const style = getComputedStyle(target)
+          return {
+            backgroundColor: style.backgroundColor,
+            borderWidths: [
+              style.borderTopWidth,
+              style.borderRightWidth,
+              style.borderBottomWidth,
+              style.borderLeftWidth,
+            ],
+            borderRadius: style.borderRadius,
+            boxShadow: style.boxShadow,
+          }
+        })
       return {
-        card: read('.step-card'),
-        section: read('.tool-row-section'),
+        cards: readAll('.step-card'),
+        rows: readAll('.tool-row'),
+        details: readAll('.activity-tool-details'),
       }
     })
-    expect(flatStyles.card).toMatchObject({
-      backgroundColor: 'rgba(0, 0, 0, 0)',
-      borderTopWidth: '0px',
-      boxShadow: 'none',
-    })
-    expect(flatStyles.section).toMatchObject({
-      backgroundColor: 'rgba(0, 0, 0, 0)',
-      borderTopWidth: '0px',
-      boxShadow: 'none',
-    })
+    for (const style of [
+      ...flatStyles.cards,
+      ...flatStyles.rows,
+      ...flatStyles.details,
+    ]) {
+      expect(style).toMatchObject({
+        backgroundColor: 'rgba(0, 0, 0, 0)',
+        borderWidths: ['0px', '0px', '0px', '0px'],
+        borderRadius: '0px',
+        boxShadow: 'none',
+      })
+    }
 
     await summary.press('Space')
     await expect(summary).toHaveAttribute('aria-expanded', 'false')
@@ -326,9 +352,10 @@ test.describe('Completed assistant activity disclosure', () => {
     await expect(activity).toHaveAttribute('data-share-expanded', 'true')
     await expect(errorRow).toBeVisible()
     await expect(errorRow).toHaveAttribute('aria-expanded', 'true')
-    await expect(activity.locator('.tool-row-section--error')).toContainText(
+    await expect(activity.locator('.activity-tool-details__line--error')).toContainText(
       'Search service unavailable',
     )
+    await expect(activity.locator('.tool-row-section--error')).toHaveCount(0)
     await expect(page.locator('.msg-ai-text')).toHaveText('The canonical answer is complete.')
 
     await activity.locator('.assistant-activity__label').evaluate((element) => {
@@ -387,7 +414,8 @@ test.describe('Live assistant activity lifecycle', () => {
     const inspectRow = liveActivity.locator('.tool-row[data-op="file.inspect"]')
     await expect(inspectRow).toBeVisible()
     await expect(inspectRow).toHaveAttribute('aria-expanded', 'false')
-    await expect(liveActivity.locator('.step-chevron')).toHaveCount(0)
+    await expect(inspectRow.locator('.tool-row__activity-arrow')).toHaveCount(1)
+    await expect(inspectRow.locator('.tool-row__bullet')).toHaveCount(0)
     await expect(liveActivity).not.toContainText('/private/project/chat.ts')
     await expect(liveStatus).toHaveText('Working')
     await expect(liveActivity.getByText('Inspected files', { exact: true })).toHaveCount(1)

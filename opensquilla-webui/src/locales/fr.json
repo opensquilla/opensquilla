@@ -3149,7 +3149,12 @@
       "sectionDiagnostics": "diagnostics",
       "sectionResult": "résultat",
       "sectionError": "erreur",
-      "viewFull": "voir en entier"
+      "viewFull": "voir en entier",
+      "activityViewDetails": "voir les détails",
+      "activityDetailsTitle": "détails",
+      "activityBytesWritten": "{size} écrits",
+      "activityContentSize": "{lines} lignes · {characters} caractères",
+      "activityPublished": "Publié"
     }
   },
   "channelStatus": {

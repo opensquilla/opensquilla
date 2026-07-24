@@ -28,7 +28,7 @@ test.describe('Tool rows and activity ribbon', () => {
     const liveActivity = page.locator('.assistant-activity--live')
     await expect(liveActivity).toBeVisible({ timeout: 30000 })
     await expect(page.locator('.work-card')).toHaveCount(0)
-    await expect(liveActivity.locator('.step-chevron')).toHaveCount(0)
+    await expect(liveActivity.locator('.tool-row__bullet')).toHaveCount(0)
 
     // Observe the card head until the run completes. Fast runs finish every
     // phase in under a second — the elapsed chip never leaves 0s — so the
@@ -86,7 +86,7 @@ test.describe('Tool rows and activity ribbon', () => {
     let searchRow = page.locator('.msg-ai .tool-row[data-op="web.search"]').first()
     await expect(searchRow).toBeVisible()
 
-    // Search rows are collapsed pills after completion.
+    // Search rows keep their semantic details collapsed after completion.
     await expect(searchRow).toHaveAttribute('aria-expanded', 'false')
 
     // Multiple search calls collapse under a group header; expand it and
@@ -102,12 +102,11 @@ test.describe('Tool rows and activity ribbon', () => {
     // Replayed rows show no elapsed badges (no fake timings).
     await expect(page.locator('.tool-row__elapsed')).toHaveCount(0)
 
-    // Expanding a row reveals labeled input/result sections.
+    // Expanding a row reveals compact activity details, not diagnostic cards.
     await searchRow.click()
     await expect(searchRow).toHaveAttribute('aria-expanded', 'true')
-    const sectionLabels = page.locator('.tool-row-section__label')
-    await expect(sectionLabels.filter({ hasText: 'input' }).first()).toBeVisible()
-    await expect(sectionLabels.filter({ hasText: 'result' }).first()).toBeVisible()
+    await expect(page.locator('.activity-tool-details').first()).toBeVisible()
+    await expect(page.locator('.tool-row-section')).toHaveCount(0)
   })
 
   test('live failed tool call auto-expands its error row', async ({ page }) => {
@@ -124,6 +123,6 @@ test.describe('Tool rows and activity ribbon', () => {
     const errorRow = page.locator('.tool-row--error').first()
     await expect(errorRow).toBeVisible({ timeout: 180000 })
     await expect(errorRow).toHaveAttribute('aria-expanded', 'true')
-    await expect(page.locator('.tool-row-section--error').first()).toBeVisible()
+    await expect(page.locator('.activity-tool-details__line--error').first()).toBeVisible()
   })
 })

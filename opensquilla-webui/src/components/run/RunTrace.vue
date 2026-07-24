@@ -114,10 +114,26 @@
             :aria-expanded="groupOpen(item.group)"
             @click="toggleGroupDisclosure(item.group)"
           >
-            <span class="tool-row__bullet" :class="groupBulletClass(item.group)" aria-hidden="true" />
+            <Icon
+              v-if="presentation === 'activity'"
+              class="tool-row__activity-icon"
+              :class="activityGroupIconClass(item.group)"
+              :name="item.group.iconName"
+              :size="14"
+              aria-hidden="true"
+            />
+            <span v-else class="tool-row__bullet" :class="groupBulletClass(item.group)" aria-hidden="true" />
             <span class="tool-row__label">{{ item.group.label }}</span>
             <span class="step-count">{{ t('shared.runTrace.callsCount', { count: item.group.calls.length }) }}</span>
             <span v-if="item.group.secondary" class="tool-row__arg">{{ item.group.secondary }}</span>
+            <Icon
+              v-if="presentation === 'activity'"
+              class="step-chevron tool-row__activity-arrow"
+              name="chevronRight"
+              :size="13"
+              data-share-control
+              aria-hidden="true"
+            />
             <span class="tool-row__trailing">
               <span v-if="showGroupStatus(item.group)" class="tool-row__status">{{ resolvedGroupStatusText(item.group) }}</span>
               <Icon v-if="presentation !== 'activity'" class="step-chevron" name="chevronRight" :size="14" />
@@ -133,9 +149,25 @@
                 :aria-expanded="callOpen(call)"
                 @click="toggleItemDisclosure(call)"
               >
-                <span class="tool-row__bullet" :class="bulletClass(call)" aria-hidden="true" />
+                <Icon
+                  v-if="presentation === 'activity'"
+                  class="tool-row__activity-icon"
+                  :class="activityIconClass(call)"
+                  :name="toolIconName(call.name)"
+                  :size="14"
+                  aria-hidden="true"
+                />
+                <span v-else class="tool-row__bullet" :class="bulletClass(call)" aria-hidden="true" />
                 <span class="tool-row__label tool-row__label--member">{{ call.displayName }}</span>
                 <span v-if="resolvedSecondaryText(call)" class="tool-row__arg">{{ resolvedSecondaryText(call) }}</span>
+                <Icon
+                  v-if="presentation === 'activity' && callHasDetails(call)"
+                  class="step-chevron tool-row__activity-arrow"
+                  name="chevronRight"
+                  :size="13"
+                  data-share-control
+                  aria-hidden="true"
+                />
                 <span class="tool-row__trailing">
                   <span
                     v-if="activityTerminalStatusText(call)"
@@ -152,7 +184,19 @@
                 </span>
               </button>
               <div v-if="callOpen(call)" class="tool-row-body">
-                <ToolRowSections :call="call" :label="call.displayName" @show-result="forwardShowResult" />
+                <ActivityToolDetails
+                  v-if="presentation === 'activity'"
+                  :call="call"
+                  :label="call.displayName"
+                  :operation-key="operationKey(call)"
+                  @show-result="forwardShowResult"
+                />
+                <ToolRowSections
+                  v-else
+                  :call="call"
+                  :label="call.displayName"
+                  @show-result="forwardShowResult"
+                />
               </div>
             </div>
           </div>
@@ -167,11 +211,27 @@
               :aria-expanded="callOpen(call)"
               @click="toggleItemDisclosure(call)"
             >
-              <span class="tool-row__bullet" :class="bulletClass(call)" aria-hidden="true" />
+              <Icon
+                v-if="presentation === 'activity'"
+                class="tool-row__activity-icon"
+                :class="activityIconClass(call)"
+                :name="item.group.iconName"
+                :size="14"
+                aria-hidden="true"
+              />
+              <span v-else class="tool-row__bullet" :class="bulletClass(call)" aria-hidden="true" />
               <span class="tool-row__label">{{ item.group.label }}</span>
               <span v-if="singleCallSecondary(item.group, call)" class="tool-row__arg">
                 {{ singleCallSecondary(item.group, call) }}
               </span>
+              <Icon
+                v-if="presentation === 'activity' && callHasDetails(call)"
+                class="step-chevron tool-row__activity-arrow"
+                name="chevronRight"
+                :size="13"
+                data-share-control
+                aria-hidden="true"
+              />
               <span class="tool-row__trailing">
                 <span
                   v-if="activityTerminalStatusText(call)"
@@ -188,7 +248,19 @@
               </span>
             </button>
             <div v-if="callOpen(call)" class="tool-row-body">
-              <ToolRowSections :call="call" :label="item.group.label" @show-result="forwardShowResult" />
+              <ActivityToolDetails
+                v-if="presentation === 'activity'"
+                :call="call"
+                :label="item.group.label"
+                :operation-key="operationKey(call)"
+                @show-result="forwardShowResult"
+              />
+              <ToolRowSections
+                v-else
+                :call="call"
+                :label="item.group.label"
+                @show-result="forwardShowResult"
+              />
             </div>
           </div>
         </template>
@@ -492,6 +564,7 @@ export default { components: { ToolRowSections } }
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import Icon from '@/components/Icon.vue'
+import ActivityToolDetails from '@/components/chat/ActivityToolDetails.vue'
 import type {
   ChatStreamTimelineItem,
   ChatToolCallGroup,
@@ -501,6 +574,7 @@ import {
   toolGroupStatusText as defaultToolGroupStatusText,
   toolSecondaryText as defaultToolSecondaryText,
   toolStatusText as defaultToolStatusText,
+  toolIconName,
   toolOperationKey,
   toolResultCount,
 } from '@/utils/chat/toolDisplay'
@@ -994,6 +1068,29 @@ function groupBulletClass(group: ChatToolCallGroup) {
     'tool-row__bullet--ok': props.presentation !== 'activity' && group.status === 'success',
     'tool-row__bullet--err': group.isError,
   }
+}
+
+function activityIconClass(call: ChatToolCallRenderItem) {
+  return {
+    'tool-row__activity-icon--running': call.isRunning,
+    'tool-row__activity-icon--error': call.status === 'error' || call.isError,
+  }
+}
+
+function activityGroupIconClass(group: ChatToolCallGroup) {
+  return {
+    'tool-row__activity-icon--running': group.isRunning,
+    'tool-row__activity-icon--error': group.isError,
+  }
+}
+
+function callHasDetails(call: ChatToolCallRenderItem): boolean {
+  return Boolean(
+    call.inputRaw
+    || call.inputPreview
+    || call.result
+    || call.resultPreview,
+  )
 }
 
 function showGroupStatus(group: ChatToolCallGroup): boolean {
@@ -1596,6 +1693,73 @@ function fmtTok(n?: number | null): string {
   color: color-mix(in srgb, var(--text) 46%, transparent);
 }
 
+.tool-timeline--activity .tool-row__arg {
+  flex: 0 1 auto;
+}
+
+.tool-timeline--activity .tool-row__trailing {
+  margin-left: 0;
+}
+
+.tool-timeline--activity .tool-row__activity-icon {
+  color: color-mix(in srgb, var(--text) 46%, transparent);
+  transition: color var(--dur-fast) var(--ease-standard);
+}
+
+.tool-timeline--activity .tool-row:hover .tool-row__activity-icon,
+.tool-timeline--activity .tool-row:focus-visible .tool-row__activity-icon,
+.tool-timeline--activity .tool-row.is-open .tool-row__activity-icon {
+  color: color-mix(in srgb, var(--text) 62%, transparent);
+}
+
+.tool-timeline--activity .tool-row__activity-icon--running {
+  color: var(--accent);
+  animation: activity-tool-icon-pulse 2.3s var(--ease-standard) infinite;
+}
+
+.tool-timeline--activity .tool-row__activity-icon--error {
+  color: var(--danger);
+}
+
+.tool-timeline--activity .tool-row__activity-arrow {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text) 46%, transparent);
+  opacity: 0;
+  transform: translateX(-0.125rem);
+  transition:
+    color var(--dur-fast) var(--ease-standard),
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.tool-timeline--activity .tool-row:hover .tool-row__activity-arrow,
+.tool-timeline--activity .tool-row:focus-visible .tool-row__activity-arrow {
+  opacity: 0.8;
+  transform: translateX(0);
+}
+
+.tool-timeline--activity .tool-row.is-open .tool-row__activity-arrow,
+.tool-timeline--activity
+  .step-group.is-open
+  > .tool-row--group
+  .tool-row__activity-arrow {
+  opacity: 0.55;
+  transform: rotate(90deg);
+}
+
+.tool-timeline--activity .tool-row.is-open:hover .tool-row__activity-arrow,
+.tool-timeline--activity .tool-row.is-open:focus-visible .tool-row__activity-arrow,
+.tool-timeline--activity
+  .step-group.is-open
+  > .tool-row--group:hover
+  .tool-row__activity-arrow,
+.tool-timeline--activity
+  .step-group.is-open
+  > .tool-row--group:focus-visible
+  .tool-row__activity-arrow {
+  opacity: 0.8;
+}
+
 .tool-timeline--activity .tool-row--running .tool-row__label {
   color: color-mix(in srgb, var(--text) 82%, transparent);
 }
@@ -1620,25 +1784,32 @@ function fmtTok(n?: number | null): string {
 }
 
 .tool-timeline--activity .tool-row-body {
-  padding-inline: 0.875rem;
+  padding: 0 0 0.125rem 1.5rem;
 }
 
 .tool-timeline--activity .step-group-members::before {
   display: none;
 }
 
-.tool-timeline--activity > .msg-ai-text {
-  margin: 0.125rem 0;
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+.tool-timeline--activity .msg-ai-text {
+  margin: 0.125rem 0 0.25rem 1.5rem;
+  color: color-mix(in srgb, var(--text) 56%, transparent);
   font-size: 0.8125rem;
   line-height: 1.55;
 }
 
-.tool-timeline--activity :deep(.tool-row-section) {
-  padding-inline: 0;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
+.tool-timeline--activity .msg-ai-text :deep(p) {
+  margin: 0;
+}
+
+.tool-timeline--activity .msg-ai-text + .msg-ai-text {
+  margin-top: -0.125rem;
+}
+
+@keyframes activity-tool-icon-pulse {
+  0%,
+  100% { opacity: 0.55; }
+  50% { opacity: 1; }
 }
 
 /* Completed, non-open rows soften and tuck in — kept for traceability, not
@@ -1661,6 +1832,11 @@ function fmtTok(n?: number | null): string {
 .tool-timeline--checklist .tool-row--error {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 36%, transparent);
   border-radius: var(--radius-md);
+}
+
+.tool-timeline--activity.tool-timeline--checklist .tool-row--error {
+  border-radius: 0;
+  box-shadow: none;
 }
 
 @keyframes checklistCheckIn {
@@ -1692,6 +1868,15 @@ function fmtTok(n?: number | null): string {
 @media (prefers-reduced-motion: reduce) {
   .tool-row__bullet--running {
     animation: none;
+  }
+
+  .tool-row__activity-icon--running {
+    animation: none;
+  }
+
+  .tool-row__activity-icon,
+  .tool-row__activity-arrow {
+    transition: none;
   }
 
   .tool-timeline--checklist .tool-row--running,

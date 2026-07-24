@@ -157,6 +157,7 @@ describe('AssistantMessage activity disclosure', () => {
     expect(activity?.dataset.shareExpanded).toBe('false')
     expect(activity?.querySelectorAll('details')).toHaveLength(0)
     expect(activity?.querySelector('.assistant-activity__chevron')).toBeNull()
+    expect(activity?.querySelector('.assistant-activity__summary-arrow')).not.toBeNull()
     expect(activity?.textContent).toContain('Checked the available evidence.')
     expect(activity?.textContent).toContain('Searched the web')
     expect(activity?.textContent).toContain('1 web action')
@@ -269,13 +270,14 @@ describe('AssistantMessage activity disclosure', () => {
     expect(el.querySelector('.thinking-block')).not.toBeNull()
   })
 
-  it('expands the settled activity from the whole summary row without a marker', async () => {
+  it('expands the settled activity from the whole summary row with a hover affordance', async () => {
     const el = mountMessage(baseMessage({ timelineItems: successfulTimeline() }))
     await nextTick()
 
     const activity = el.querySelector<HTMLElement>('.assistant-activity')
     const summary = activity?.querySelector<HTMLButtonElement>('.assistant-activity__summary')
-    expect(summary?.querySelector('svg')).toBeNull()
+    expect(summary?.querySelector('.assistant-activity__summary-arrow')).not.toBeNull()
+    expect(summary?.querySelector('.assistant-activity__chevron')).toBeNull()
     summary?.click()
     await nextTick()
 

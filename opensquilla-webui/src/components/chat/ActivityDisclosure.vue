@@ -57,6 +57,12 @@
       <span v-if="failureCount" class="assistant-activity__failure">
         {{ resolvedFailureLabel }}
       </span>
+      <Icon
+        class="assistant-activity__summary-arrow"
+        name="chevronRight"
+        :size="13"
+        aria-hidden="true"
+      />
     </button>
     <div v-show="open" class="assistant-activity__body" data-share-activity-body>
       <slot />
@@ -67,6 +73,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import Icon from '@/components/Icon.vue'
 import {
   readAssistantActivityExpansion,
   writeAssistantActivityExpansion,
@@ -213,24 +220,26 @@ const resolvedFailureLabel = computed(() =>
   gap: 0.375rem;
   padding: 0.1875rem 0.25rem;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: 0;
   background: transparent;
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+  color: color-mix(in srgb, var(--text) 56%, transparent);
   cursor: pointer;
   font: inherit;
   font-size: 0.75rem;
   line-height: 1.4;
   text-align: left;
+  transition: color var(--dur-fast) var(--ease-standard);
 }
 
 .assistant-activity__summary:hover {
   color: color-mix(in srgb, var(--text) 78%, transparent);
-  background: var(--bg-hover);
+  background: transparent;
 }
 
 .assistant-activity__summary:focus-visible {
   outline: none;
-  box-shadow: var(--focus-ring);
+  box-shadow: none;
+  color: color-mix(in srgb, var(--text) 78%, transparent);
 }
 
 .assistant-activity__label {
@@ -249,6 +258,28 @@ const resolvedFailureLabel = computed(() =>
   content: "·";
   margin-right: 0.375rem;
   color: var(--text-dim);
+}
+
+.assistant-activity__summary-arrow {
+  flex: 0 0 auto;
+  color: currentColor;
+  opacity: 0;
+  transform: translateX(-0.125rem);
+  transform-origin: center;
+  transition:
+    opacity var(--dur-fast) var(--ease-standard),
+    transform var(--dur-fast) var(--ease-standard);
+}
+
+.assistant-activity__summary:hover .assistant-activity__summary-arrow,
+.assistant-activity__summary:focus-visible .assistant-activity__summary-arrow {
+  opacity: 0.8;
+  transform: translateX(0);
+}
+
+.assistant-activity__summary[aria-expanded="true"]:hover .assistant-activity__summary-arrow,
+.assistant-activity__summary[aria-expanded="true"]:focus-visible .assistant-activity__summary-arrow {
+  transform: rotate(90deg);
 }
 
 .assistant-activity__body {
@@ -283,6 +314,11 @@ const resolvedFailureLabel = computed(() =>
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .assistant-activity__summary,
+  .assistant-activity__summary-arrow {
+    transition: none;
+  }
+
   .assistant-activity__live-dot.is-active,
   .assistant-activity__live-label.is-active {
     animation: none;

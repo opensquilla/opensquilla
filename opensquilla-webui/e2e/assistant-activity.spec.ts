@@ -229,7 +229,41 @@ test.describe('Completed assistant activity disclosure', () => {
     await expect(row).toBeHidden()
 
     const summary = activity.locator('.assistant-activity__summary')
-    await expect(summary.locator('svg')).toHaveCount(0)
+    const summaryArrow = summary.locator('.assistant-activity__summary-arrow')
+    await expect(summaryArrow).toHaveCount(1)
+    const idleSummaryStyles = await summary.evaluate((element) => {
+      const summaryStyle = getComputedStyle(element)
+      const arrow = element.querySelector<HTMLElement>('.assistant-activity__summary-arrow')
+      return {
+        backgroundColor: summaryStyle.backgroundColor,
+        borderTopWidth: summaryStyle.borderTopWidth,
+        boxShadow: summaryStyle.boxShadow,
+        color: summaryStyle.color,
+        arrowOpacity: arrow ? getComputedStyle(arrow).opacity : '',
+      }
+    })
+    expect(idleSummaryStyles).toMatchObject({
+      backgroundColor: 'rgba(0, 0, 0, 0)',
+      borderTopWidth: '0px',
+      boxShadow: 'none',
+      arrowOpacity: '0',
+    })
+    await summary.hover()
+    await expect(summaryArrow).toHaveCSS('opacity', '0.8')
+    const hoverSummaryStyles = await summary.evaluate((element) => {
+      const summaryStyle = getComputedStyle(element)
+      const arrow = element.querySelector<HTMLElement>('.assistant-activity__summary-arrow')
+      return {
+        backgroundColor: summaryStyle.backgroundColor,
+        boxShadow: summaryStyle.boxShadow,
+        color: summaryStyle.color,
+        arrowOpacity: arrow ? Number.parseFloat(getComputedStyle(arrow).opacity) : 0,
+      }
+    })
+    expect(hoverSummaryStyles.backgroundColor).toBe('rgba(0, 0, 0, 0)')
+    expect(hoverSummaryStyles.boxShadow).toBe('none')
+    expect(hoverSummaryStyles.color).not.toBe(idleSummaryStyles.color)
+    expect(hoverSummaryStyles.arrowOpacity).toBeGreaterThan(0)
     await summary.press('Enter')
     await expect(summary).toHaveAttribute('aria-expanded', 'true')
     await expect(activity).toHaveAttribute('data-share-expanded', 'true')

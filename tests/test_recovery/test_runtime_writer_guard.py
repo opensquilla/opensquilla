@@ -203,11 +203,11 @@ def test_runtime_writer_lock_keeps_read_only_cli_available_and_rejects_agent(
     assert writer.exitcode == 0
 
 
-def test_different_state_dirs_acquire_independent_profile_locks(
+def test_different_profile_homes_acquire_independent_profile_locks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Two profile locks with different OPENSQUILLA_STATE_DIR do not conflict."""
+    """Two profile homes selected by OPENSQUILLA_STATE_DIR do not conflict."""
 
     from opensquilla.recovery import guarded_desktop_profile
     from opensquilla.recovery.locking import profile_lock_key, profile_lock_path
@@ -231,6 +231,42 @@ def test_different_state_dirs_acquire_independent_profile_locks(
     assert profile_lock_path(profile_a) != profile_lock_path(profile_b)
 
 
+def test_gateway_state_override_isolates_state_from_shared_cwd_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The documented override keeps runtime state per child despite cwd config."""
+
+    from opensquilla.gateway.config import GatewayConfig
+
+    _isolate_profile_locks(monkeypatch, tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "opensquilla.toml").write_text(
+        'state_dir = "shared-state"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
+
+    resolved_state_dirs: list[Path] = []
+    profiles = (tmp_path / "profile-a", tmp_path / "profile-b")
+    for profile in profiles:
+        profile.mkdir()
+        monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(profile))
+        monkeypatch.setenv(
+            "OPENSQUILLA_GATEWAY_STATE_DIR",
+            str(profile / "state"),
+        )
+        cfg = GatewayConfig.load()
+        assert cfg.state_dir is not None
+        resolved_state_dirs.append(Path(cfg.state_dir))
+
+    assert resolved_state_dirs == [profile / "state" for profile in profiles]
+    assert len(set(resolved_state_dirs)) == 2
+    assert project / "shared-state" not in resolved_state_dirs
+
+
 def test_empty_state_dir_falls_back_to_default_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -240,6 +276,11 @@ def test_empty_state_dir_falls_back_to_default_config(
     from opensquilla.gateway.config import GatewayConfig
 
     _isolate_profile_locks(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_STATE_DIR", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_GATEWAY_WORKSPACE_DIR", raising=False)
+    monkeypatch.delenv("OPENSQUILLA_WORKSPACE_DIR", raising=False)
     empty_profile = tmp_path / "empty"
     empty_profile.mkdir()
     monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(empty_profile))

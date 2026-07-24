@@ -108,6 +108,150 @@ describe('reconcileHistoryMessages', () => {
 })
 
 describe('reconcileHistoryWindow', () => {
+  it('keeps optimistic turn identity and assistant activity on the first authoritative refresh', () => {
+    const statusHistory = [
+      { action: 'inspect', label: 'Inspecting', at: 1_000 },
+      { action: 'write', label: 'Writing', at: 2_000 },
+    ]
+    const previous = [
+      msg({
+        role: 'user',
+        text: 'build it',
+        messageId: 'user-1',
+        clientId: 'local-user-1',
+      }),
+      msg({
+        role: 'assistant',
+        text: 'local answer',
+        statusHistory,
+        interrupted: true,
+      }),
+    ]
+    const latestWindow = [
+      msg({
+        role: 'user',
+        text: 'build it',
+        messageId: 'user-1',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'assistant',
+        text: 'server answer',
+        messageId: 'assistant-1',
+        restoredFromHistory: true,
+      }),
+    ]
+
+    const merged = reconcileHistoryWindow(previous, latestWindow)
+
+    expect(merged).toHaveLength(2)
+    expect(merged[0]).toMatchObject({
+      messageId: 'user-1',
+      clientId: 'local-user-1',
+      restoredFromHistory: true,
+    })
+    expect(merged[1]).toMatchObject({
+      messageId: 'assistant-1',
+      text: 'server answer',
+      statusHistory,
+      interrupted: true,
+      restoredFromHistory: true,
+    })
+  })
+
+  it('keeps optimistic assistant activity when an older canonical turn overlaps', () => {
+    const statusHistory = [
+      { action: 'tool:read', label: 'Reading a file', at: 3_000 },
+    ]
+    const previous = [
+      msg({
+        role: 'user',
+        text: 'older question',
+        messageId: 'user-old',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'assistant',
+        text: 'older answer',
+        messageId: 'assistant-old',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'user',
+        text: 'new question',
+        messageId: 'user-new',
+        clientId: 'local-user-new',
+      }),
+      msg({
+        role: 'assistant',
+        text: 'local new answer',
+        statusHistory,
+      }),
+    ]
+    const latestWindow = [
+      msg({
+        role: 'user',
+        text: 'older question',
+        messageId: 'user-old',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'assistant',
+        text: 'older answer',
+        messageId: 'assistant-old',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'user',
+        text: 'new question',
+        messageId: 'user-new',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'assistant',
+        text: 'server new answer',
+        messageId: 'assistant-new',
+        restoredFromHistory: true,
+      }),
+    ]
+
+    const merged = reconcileHistoryWindow(previous, latestWindow)
+
+    expect(merged[2].clientId).toBe('local-user-new')
+    expect(merged[3].statusHistory).toEqual(statusHistory)
+  })
+
+  it('does not graft optimistic assistant state across different user message ids', () => {
+    const previous = [
+      msg({ role: 'user', text: 'first turn', messageId: 'user-1' }),
+      msg({
+        role: 'assistant',
+        text: 'local answer',
+        statusHistory: [{ action: 'write', label: 'Writing', at: 1_000 }],
+        interrupted: true,
+      }),
+    ]
+    const latestWindow = [
+      msg({
+        role: 'user',
+        text: 'different turn',
+        messageId: 'user-2',
+        restoredFromHistory: true,
+      }),
+      msg({
+        role: 'assistant',
+        text: 'server answer',
+        messageId: 'assistant-2',
+        restoredFromHistory: true,
+      }),
+    ]
+
+    const merged = reconcileHistoryWindow(previous, latestWindow)
+
+    expect(merged[1].statusHistory).toBeUndefined()
+    expect(merged[1].interrupted).toBeUndefined()
+  })
+
   it('keeps canonical pages older than the refreshed server window', () => {
     const previous = Array.from({ length: 250 }, (_, index) => msg({
       messageId: `m-${index}`,

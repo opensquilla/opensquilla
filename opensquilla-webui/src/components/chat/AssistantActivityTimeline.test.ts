@@ -59,6 +59,7 @@ async function mountTimeline(
   })
   const app = createApp({
     render: () => h(AssistantActivityTimeline, {
+      class: 'external-activity-class',
       projection,
       timelineItems,
       isToolGroupOpen: () => false,
@@ -86,6 +87,15 @@ afterEach(() => {
 })
 
 describe('AssistantActivityTimeline', () => {
+  it('inherits caller attributes on its semantic root without Vue fragment warnings', async () => {
+    const root = await mountTimeline([])
+
+    expect(
+      root.querySelector('.assistant-activity-timeline')
+        ?.classList.contains('external-activity-class'),
+    ).toBe(true)
+  })
+
   it('renders contiguous equivalent calls as one safe semantic group', async () => {
     const root = await mountTimeline([
       group(toolCall('write-secret', 'write_file')),

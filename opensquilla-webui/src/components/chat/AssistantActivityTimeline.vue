@@ -1,31 +1,33 @@
 <template>
-  <ol v-if="statusSteps.length" class="assistant-activity-status">
-    <li
-      v-for="step in statusSteps"
-      :key="step.key"
-      class="assistant-activity-status__row"
-      :class="{ 'assistant-activity-status__row--current': step.isCurrent }"
-    >
-      <span class="assistant-activity-status__dot" aria-hidden="true" />
-      <span>{{ t(step.label.code, step.label.params) }}</span>
-    </li>
-  </ol>
-  <ToolCallTimeline
-    v-if="items.length"
-    :items="items"
-    :variant="variant"
-    presentation="activity"
-    :state-scope="stateScope"
-    :is-tool-group-open="isToolGroupOpen"
-    :is-tool-item-open="isToolItemOpen"
-    :tool-group-status-text="toolGroupStatusText"
-    :tool-status-text="toolStatusText"
-    :tool-secondary-text="toolSecondaryText"
-    :tool-elapsed-text="toolElapsedText"
-    @toggle-group="$emit('toggleGroup', $event)"
-    @toggle-item="$emit('toggleItem', $event)"
-    @show-result="(content, title, context) => $emit('showResult', content, title, context)"
-  />
+  <div class="assistant-activity-timeline">
+    <ol v-if="statusSteps.length" class="assistant-activity-status">
+      <li
+        v-for="step in statusSteps"
+        :key="step.key"
+        class="assistant-activity-status__row"
+        :class="{ 'assistant-activity-status__row--current': step.isCurrent }"
+      >
+        <span class="assistant-activity-status__dot" aria-hidden="true" />
+        <span>{{ t(step.label.code, step.label.params) }}</span>
+      </li>
+    </ol>
+    <ToolCallTimeline
+      v-if="items.length"
+      :items="items"
+      :variant="variant"
+      presentation="activity"
+      :state-scope="stateScope"
+      :is-tool-group-open="isToolGroupOpen"
+      :is-tool-item-open="isToolItemOpen"
+      :tool-group-status-text="toolGroupStatusText"
+      :tool-status-text="toolStatusText"
+      :tool-secondary-text="toolSecondaryText"
+      :tool-elapsed-text="toolElapsedText"
+      @toggle-group="$emit('toggleGroup', $event)"
+      @toggle-item="$emit('toggleItem', $event)"
+      @show-result="(content, title, context) => $emit('showResult', content, title, context)"
+    />
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -125,6 +127,10 @@ const items = computed<ChatStreamTimelineItem[]>(() => {
 </script>
 
 <style scoped>
+.assistant-activity-timeline {
+  min-width: 0;
+}
+
 .assistant-activity-status {
   display: grid;
   gap: 0;

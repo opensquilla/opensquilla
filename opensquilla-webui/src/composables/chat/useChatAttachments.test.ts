@@ -150,6 +150,41 @@ describe('useChatAttachments', () => {
     expect(pushToast).toHaveBeenCalledWith('File too large: huge.pdf (max 30 MiB)', { tone: 'danger' })
   })
 
+  it('never states a rounded-up cap the rejected file already satisfies', async () => {
+    vi.stubGlobal('fetch', vi.fn())
+    const attachments = useChatAttachments()
+    const bigEmail = new File([new Uint8Array(2_000_001)], 'mail.eml', { type: 'message/rfc822' })
+
+    await attachments.addAttachments([bigEmail])
+
+    expect(attachments.pendingAttachments.value).toHaveLength(0)
+    expect(pushToast).toHaveBeenCalledWith('File too large: mail.eml (max 1.9 MiB)', { tone: 'danger' })
+  })
+
+  it('emits a single total-size toast for a batch that overflows the aggregate cap', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const attachments = useChatAttachments()
+    attachments.pendingAttachments.value = Array.from({ length: 4 }, (_, index) => ({
+      kind: 'staged',
+      local_id: index + 1,
+      name: `existing-${index}.pdf`,
+      mime: 'application/pdf',
+      size: 15 * 1024 * 1024,
+      file_uuid: `existing-${index}`,
+    }))
+
+    await attachments.addAttachments([stagedPdf('a.pdf'), stagedPdf('b.pdf'), stagedPdf('c.pdf')])
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(attachments.pendingAttachments.value).toHaveLength(4)
+    expect(pushToast).toHaveBeenCalledTimes(1)
+    expect(pushToast).toHaveBeenCalledWith(
+      'Attachments too large: a.pdf would exceed 60 MiB total',
+      { tone: 'danger' },
+    )
+  })
+
   it('enforces the frontend aggregate attachment size before upload work starts', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

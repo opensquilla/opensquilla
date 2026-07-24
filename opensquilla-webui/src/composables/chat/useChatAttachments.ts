@@ -31,6 +31,12 @@ type AttachmentPreparationOptions = {
   isCurrent?: () => boolean
 }
 
+// Per-addAttachments-call state so batch-wide rejections (the aggregate size
+// cap) toast once instead of once per rejected file.
+type AttachmentBatch = {
+  totalSizeToastShown: boolean
+}
+
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation'
@@ -113,6 +119,7 @@ export function useChatAttachments() {
   }
 
   async function addAttachments(files: File[]) {
+    const batch: AttachmentBatch = { totalSizeToastShown: false }
     for (const file of files) {
       // One toast for the whole batch when the count cap is hit — a per-file
       // repeat would only evict more useful toasts.
@@ -120,7 +127,7 @@ export function useChatAttachments() {
         pushToast(i18n.global.t('chat.toast.tooManyAttachments', { max: MAX_ATTACHMENTS }), { tone: 'danger' })
         return
       }
-      await addAttachmentFile(file)
+      await addAttachmentFile(file, batch)
     }
   }
 
@@ -128,7 +135,7 @@ export function useChatAttachments() {
     await addAttachments([file])
   }
 
-  async function addAttachmentFile(file: File) {
+  async function addAttachmentFile(file: File, batch: AttachmentBatch) {
     const fileName = file.name || 'Untitled file'
     if (file.size === 0) {
       pushToast(i18n.global.t('chat.toast.emptyFile', { name: fileName }), { tone: 'danger' })
@@ -150,7 +157,7 @@ export function useChatAttachments() {
       pushToast(i18n.global.t('chat.toast.fileTooLarge', { name: fileName, cap: formatMiB(hardCap) }), { tone: 'danger' })
       return
     }
-    if (!canAcceptAttachment(fileName, file.size)) return
+    if (!canAcceptAttachment(fileName, file.size, batch)) return
 
     const localId = nextAttachmentId.value++
 
@@ -311,7 +318,7 @@ export function useChatAttachments() {
     return pendingAttachments.value.filter(attachmentCountsTowardLimits).length
   }
 
-  function canAcceptAttachment(fileName: string, size: number): boolean {
+  function canAcceptAttachment(fileName: string, size: number, batch: AttachmentBatch): boolean {
     const activeAttachments = pendingAttachments.value.filter(attachmentCountsTowardLimits)
     if (activeAttachments.length >= MAX_ATTACHMENTS) {
       pushToast(i18n.global.t('chat.toast.tooManyAttachments', { max: MAX_ATTACHMENTS }), { tone: 'danger' })
@@ -319,10 +326,15 @@ export function useChatAttachments() {
     }
     const totalBytes = activeAttachments.reduce((sum, attachment) => sum + (attachment.size || 0), 0) + size
     if (totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
-      pushToast(
-        i18n.global.t('chat.toast.attachmentsTotalTooLarge', { name: fileName, max: formatMiB(MAX_TOTAL_ATTACHMENT_BYTES) }),
-        { tone: 'danger' },
-      )
+      // Every file is still evaluated (a smaller later file may fit under the
+      // total), but the rejection toasts once per batch.
+      if (!batch.totalSizeToastShown) {
+        batch.totalSizeToastShown = true
+        pushToast(
+          i18n.global.t('chat.toast.attachmentsTotalTooLarge', { name: fileName, max: formatMiB(MAX_TOTAL_ATTACHMENT_BYTES) }),
+          { tone: 'danger' },
+        )
+      }
       return false
     }
     return true
@@ -382,5 +394,8 @@ function attachmentCountsTowardLimits(attachment: Attachment): boolean {
 }
 
 function formatMiB(bytes: number): string {
-  return `${Math.round(bytes / 1024 / 1024)} MiB`
+  // Floor to one decimal for caps that are not whole MiB (the 2,000,000-byte
+  // email cap) so the stated limit never exceeds the enforced one.
+  const mib = bytes / 1024 / 1024
+  return `${Number.isInteger(mib) ? mib : Math.floor(mib * 10) / 10} MiB`
 }

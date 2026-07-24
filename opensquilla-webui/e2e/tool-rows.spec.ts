@@ -4,17 +4,17 @@ const CONTROL_URL = '/control/'
 const LIVE = process.env.OPENSQUILLA_E2E_LIVE === '1'
 
 test.describe('Tool rows and activity ribbon', () => {
-  test('idle chat renders no work card, activity ribbon, elapsed badges, or result sheet', async ({ page }) => {
+  test('idle chat renders no live activity, elapsed labels, or result sheet', async ({ page }) => {
     await page.goto(CONTROL_URL + 'chat/new')
     await page.waitForSelector('.conn-pill', { timeout: 10000 })
 
     await expect(page.locator('.work-card')).toHaveCount(0)
-    await expect(page.locator('.stream-activity')).toHaveCount(0)
+    await expect(page.locator('.assistant-activity--live')).toHaveCount(0)
     await expect(page.locator('.tool-row__elapsed')).toHaveCount(0)
     await expect(page.locator('.tool-sheet')).toHaveCount(0)
   })
 
-  test('live search run shows the work card, step chip, and checklist rows, then collapses', async ({ page }) => {
+  test('live search run shows flat activity and checklist rows, then collapses', async ({ page }) => {
     test.skip(!LIVE, 'Live gateway test; set OPENSQUILLA_E2E_LIVE=1 to run.')
     test.setTimeout(240000)
 
@@ -25,11 +25,10 @@ test.describe('Tool rows and activity ribbon', () => {
     await textarea.fill('Use your web search tool to find one recent headline about space exploration, then answer in one sentence.')
     await page.locator('.chat-send-btn[aria-label="Send"]').click()
 
-    // The run is promoted into a centered work card with a phase narration
-    // and a right-aligned step chip.
-    const workCard = page.locator('.work-card')
-    await expect(workCard).toBeVisible({ timeout: 30000 })
-    await expect(workCard.locator('.work-card__step')).toHaveText(/^Step \d+$/)
+    const liveActivity = page.locator('.assistant-activity--live')
+    await expect(liveActivity).toBeVisible({ timeout: 30000 })
+    await expect(page.locator('.work-card')).toHaveCount(0)
+    await expect(liveActivity.locator('.step-chevron')).toHaveCount(0)
 
     // Observe the card head until the run completes. Fast runs finish every
     // phase in under a second — the elapsed chip never leaves 0s — so the
@@ -37,21 +36,19 @@ test.describe('Tool rows and activity ribbon', () => {
     // Structure and lifecycle are asserted unconditionally.
     const observed = await page.evaluate(async () => {
       const t0 = Date.now()
-      const samples: Array<{ phase: string | null; step: string | null; elapsed: string | null; checklistRows: number }> = []
+      const samples: Array<{ phase: string | null; elapsed: string | null; checklistRows: number }> = []
       while (Date.now() - t0 < 180000) {
-        const card = document.querySelector('.work-card')
-        const phaseEl = document.querySelector('.work-card__phase')
-        const stepEl = document.querySelector('.work-card__step')
-        const elapsedEl = document.querySelector('.work-card__elapsed')
+        const activity = document.querySelector('.assistant-activity--live')
+        const phaseEl = document.querySelector('.assistant-activity__live-label')
+        const elapsedEl = document.querySelector('.assistant-activity__live-elapsed')
         // Rows rendered inside the checklist variant of the timeline.
-        const checklistRows = document.querySelectorAll('.work-card .tool-timeline--checklist .tool-row').length
+        const checklistRows = document.querySelectorAll('.assistant-activity--live .tool-timeline--checklist .tool-row').length
         samples.push({
           phase: phaseEl ? phaseEl.textContent : null,
-          step: stepEl ? stepEl.textContent : null,
           elapsed: elapsedEl ? elapsedEl.textContent : null,
           checklistRows,
         })
-        if (card === null && samples.length > 3) break
+        if (activity === null && samples.length > 3) break
         await new Promise((resolve) => setTimeout(resolve, 150))
       }
       return samples
@@ -59,9 +56,7 @@ test.describe('Tool rows and activity ribbon', () => {
 
     const phaseTexts = observed.map((s) => s.phase).filter((t): t is string => t !== null)
     expect(phaseTexts.length).toBeGreaterThan(0)
-    // The step chip is read as a step in progress, never a bare round counter.
-    expect(observed.some((s) => s.step !== null && /^Step \d+$/.test(s.step))).toBe(true)
-    // The checklist rows render inside the work card while it owns the focus.
+    // The checklist rows render inside the flat activity while it owns focus.
     expect(observed.some((s) => s.checklistRows > 0)).toBe(true)
     // Tick proof: ~2.4s of one continuous phase (16 samples at 150ms) must
     // show at least two distinct elapsed second values.
@@ -80,13 +75,14 @@ test.describe('Tool rows and activity ribbon', () => {
       expect(elapsedSeen.size).toBeGreaterThanOrEqual(2)
     }
 
-    // Run completes: the work card collapses away, transcript keeps the rows.
-    await expect(workCard).toHaveCount(0, { timeout: 180000 })
+    // Run completes: live activity settles to one summary row.
+    await expect(liveActivity).toHaveCount(0, { timeout: 180000 })
     const activity = page.locator('.msg-ai .assistant-activity').first()
     await expect(activity).toBeVisible()
-    await expect(activity).not.toHaveAttribute('open', '')
-    await activity.locator('summary').press('Enter')
-    await expect(activity).toHaveAttribute('open', '')
+    const summary = activity.locator('.assistant-activity__summary')
+    await expect(summary).toHaveAttribute('aria-expanded', 'false')
+    await summary.press('Enter')
+    await expect(summary).toHaveAttribute('aria-expanded', 'true')
     let searchRow = page.locator('.msg-ai .tool-row[data-op="web.search"]').first()
     await expect(searchRow).toBeVisible()
 

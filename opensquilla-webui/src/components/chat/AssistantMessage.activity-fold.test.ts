@@ -5,6 +5,7 @@ import { createPinia } from 'pinia'
 
 import i18n from '@/i18n'
 import { useToolDetailPreference } from '@/composables/useToolDetailPreference'
+import { clearAssistantActivityExpansionState } from '@/utils/chat/activityDisclosureState'
 import type {
   ChatRenderedMessage,
   ChatStreamTimelineItem,
@@ -78,6 +79,7 @@ function baseMessage(overrides: Partial<ChatRenderedMessage> = {}): ChatRendered
   return {
     id: 'assistant-1',
     messageId: 'assistant-1',
+    turnKey: 'turn:user-1',
     role: 'assistant',
     displayRole: 'assistant',
     roleLabel: 'Assistant',
@@ -130,6 +132,7 @@ function mountMessage(message: ChatRenderedMessage): HTMLElement {
 
 beforeEach(() => {
   i18n.global.locale.value = 'en'
+  clearAssistantActivityExpansionState()
   useToolDetailPreference().setMode('auto')
   document.body.innerHTML = ''
 })
@@ -140,20 +143,24 @@ afterEach(() => {
 })
 
 describe('AssistantMessage activity disclosure', () => {
-  it('keeps the canonical answer outside one activity fold and preserves failures', async () => {
+  it('keeps the canonical answer outside a collapsed recovered-failure activity', async () => {
     const el = mountMessage(baseMessage())
     await nextTick()
 
-    const activity = el.querySelector<HTMLDetailsElement>('.assistant-activity')
+    const activity = el.querySelector<HTMLElement>('.assistant-activity')
+    const summary = activity?.querySelector<HTMLButtonElement>('.assistant-activity__summary')
     const answer = el.querySelector<HTMLElement>('.msg-ai-text')
     const failedRow = activity?.querySelector<HTMLElement>('.tool-row--error')
 
     expect(activity).not.toBeNull()
-    expect(activity?.open).toBe(true)
+    expect(summary?.getAttribute('aria-expanded')).toBe('false')
+    expect(activity?.dataset.shareExpanded).toBe('false')
     expect(activity?.querySelectorAll('details')).toHaveLength(0)
+    expect(activity?.querySelector('.assistant-activity__chevron')).toBeNull()
     expect(activity?.textContent).toContain('Checked the available evidence.')
-    expect(activity?.textContent).toContain('Searching')
-    expect(activity?.textContent).toContain('1 failed')
+    expect(activity?.textContent).toContain('Searched the web')
+    expect(activity?.textContent).toContain('1 web action')
+    expect(activity?.textContent).toContain('1 failure recovered')
     expect(failedRow).not.toBeNull()
     expect(failedRow?.getAttribute('aria-expanded')).toBe('true')
 
@@ -168,17 +175,86 @@ describe('AssistantMessage activity disclosure', () => {
     const el = mountMessage(baseMessage({ timelineItems: successfulTimeline() }))
     await nextTick()
 
-    expect(el.querySelector<HTMLDetailsElement>('.assistant-activity')?.open).toBe(false)
+    expect(el.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('false')
+    expect(el.querySelector('.assistant-activity')?.getAttribute('data-share-expanded')).toBe('false')
     expect(el.querySelector('.tool-row')).not.toBeNull()
   })
 
-  it('honors the global expanded tool-detail preference at the outer fold', async () => {
+  it('keeps a terminal failure open at the failed tool', async () => {
+    const timelineItems = failedTimeline().filter(item => item.type === 'tool-group')
+    const el = mountMessage(baseMessage({
+      text: '',
+      timelineItems,
+      toolCalls: [failedCall()],
+      parts: [],
+      statusHistory: [],
+    }))
+    await nextTick()
+
+    const activity = el.querySelector('.assistant-activity')
+    expect(activity?.classList.contains('assistant-activity--failed')).toBe(true)
+    expect(activity?.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('true')
+    expect(activity?.querySelector('.tool-row--error')).not.toBeNull()
+  })
+
+  it('keeps interrupted activity open while leaving the answer outside', async () => {
+    const el = mountMessage(baseMessage({
+      interrupted: true,
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+
+    const activity = el.querySelector('.assistant-activity')
+    const answer = el.querySelector<HTMLElement>('.msg-ai-text')
+    expect(activity?.classList.contains('assistant-activity--interrupted')).toBe(true)
+    expect(activity?.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('true')
+    expect(answer?.textContent).toBe('Canonical answer')
+    expect(activity?.contains(answer ?? null)).toBe(false)
+  })
+
+  it('uses an exact local duration when the live status snapshot provides one', async () => {
+    const el = mountMessage(baseMessage({
+      ts: 1_725_000_022,
+      statusHistory: [
+        { action: 'inspect', label: 'Inspecting', at: 1_725_000_001_000 },
+        { action: 'write', label: 'Writing', at: 1_725_000_018_000 },
+      ],
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+
+    expect(el.querySelector('.assistant-activity__summary')?.textContent).toContain('Worked for 21s')
+  })
+
+  it('keeps the exact duration when same-session history replaces the local row', async () => {
+    const local = mountMessage(baseMessage({
+      ts: '2024-08-30T06:40:22.000Z',
+      statusHistory: [{
+        action: 'inspect',
+        label: 'Inspecting',
+        at: 1_725_000_001_000,
+      }],
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+    expect(local.querySelector('.assistant-activity__summary')?.textContent).toContain('Worked for 21s')
+
+    const restored = mountMessage(baseMessage({
+      id: 'server-assistant',
+      messageId: 'server-assistant',
+      statusHistory: [],
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+    expect(restored.querySelector('.assistant-activity__summary')?.textContent).toContain('Worked for 21s')
+  })
+
+  it('does not let the tool-detail preference force the outer activity open', async () => {
     useToolDetailPreference().setMode('expanded')
     const el = mountMessage(baseMessage({ timelineItems: successfulTimeline() }))
     await nextTick()
 
-    expect(el.querySelector<HTMLDetailsElement>('.assistant-activity')?.open).toBe(true)
-    expect(el.querySelector('.tool-row-body')).not.toBeNull()
+    expect(el.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('false')
   })
 
   it('does not apply the tool-detail preference to reasoning-only activity', async () => {
@@ -189,8 +265,85 @@ describe('AssistantMessage activity disclosure', () => {
     }))
     await nextTick()
 
-    expect(el.querySelector<HTMLDetailsElement>('.assistant-activity')?.open).toBe(false)
+    expect(el.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('false')
     expect(el.querySelector('.thinking-block')).not.toBeNull()
+  })
+
+  it('expands the settled activity from the whole summary row without a marker', async () => {
+    const el = mountMessage(baseMessage({ timelineItems: successfulTimeline() }))
+    await nextTick()
+
+    const activity = el.querySelector<HTMLElement>('.assistant-activity')
+    const summary = activity?.querySelector<HTMLButtonElement>('.assistant-activity__summary')
+    expect(summary?.querySelector('svg')).toBeNull()
+    summary?.click()
+    await nextTick()
+
+    expect(summary?.getAttribute('aria-expanded')).toBe('true')
+    expect(activity?.dataset.shareExpanded).toBe('true')
+    expect(activity?.querySelector<HTMLElement>('.assistant-activity__body')?.style.display).not.toBe('none')
+  })
+
+  it('keeps user expansion through a same-session history replacement', async () => {
+    const local = mountMessage(baseMessage({ timelineItems: successfulTimeline() }))
+    await nextTick()
+    local.querySelector<HTMLButtonElement>('.assistant-activity__summary')?.click()
+    await nextTick()
+
+    const restored = mountMessage(baseMessage({
+      id: 'server-assistant',
+      messageId: 'server-assistant',
+      statusHistory: [],
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+
+    expect(restored.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('does not share expansion or duration with another turn that reused tool ids', async () => {
+    const first = mountMessage(baseMessage({
+      ts: '2024-08-30T06:40:22.000Z',
+      turnKey: 'turn:user-1',
+      statusHistory: [{
+        action: 'inspect',
+        label: 'Inspecting',
+        at: 1_725_000_001_000,
+      }],
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+    first.querySelector<HTMLButtonElement>('.assistant-activity__summary')?.click()
+    await nextTick()
+
+    const second = mountMessage(baseMessage({
+      id: 'assistant-2',
+      messageId: 'assistant-2',
+      turnKey: 'turn:user-2',
+      ts: null,
+      statusHistory: [],
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+
+    const summary = second.querySelector('.assistant-activity__summary')
+    expect(summary?.getAttribute('aria-expanded')).toBe('false')
+    expect(summary?.textContent).not.toContain('Worked for 21s')
+  })
+
+  it('keeps partial output activity open when the turn ends with a terminal failure', async () => {
+    const el = mountMessage(baseMessage({
+      text: 'Partial answer before failure.',
+      terminalFailure: true,
+      timelineItems: successfulTimeline(),
+    }))
+    await nextTick()
+
+    const activity = el.querySelector('.assistant-activity')
+    expect(activity?.classList.contains('assistant-activity--failed')).toBe(true)
+    expect(activity?.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded'))
+      .toBe('true')
+    expect(el.textContent).toContain('Partial answer before failure.')
   })
 
   it('preserves legacy timeline order when no canonical answer exists', async () => {

@@ -27,15 +27,21 @@
       <template v-if="activityProjection.canSeparateActivity">
         <ActivityDisclosure
           v-if="hasActivity"
+          :lifecycle="activityLifecycle"
           :step-count="activityStepCount"
           :failure-count="activityProjection.failureCount"
-          :reasoning-seconds="reasoningPart?.seconds"
+          :duration-seconds="activityDurationSeconds"
           :default-open="activityDefaultOpen"
+          :state-key="activityStateKey"
+          :continuity-key="activityContinuityKey"
         >
           <ReasoningPart v-if="reasoningPart" :part="reasoningPart" embedded />
-          <ToolCallTimeline
-            v-if="activityProjection.activityItems.length"
-            :items="activityProjection.activityItems"
+          <AssistantActivityTimeline
+            v-if="
+              activityProjection.activityClusters.length
+              || activityProjection.statusSteps.length
+            "
+            :projection="activityProjection"
             :state-scope="toolStateScope"
             :is-tool-group-open="isToolGroupOpen"
             :is-tool-item-open="isToolItemOpen"
@@ -45,11 +51,6 @@
             @toggle-group="$emit('toggleToolGroup', $event)"
             @toggle-item="$emit('toggleToolItem', $event)"
             @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
-          />
-          <StatusHistoryPart
-            v-if="statusHistory.length"
-            :entries="statusHistory"
-            embedded
           />
         </ActivityDisclosure>
         <TextPart
@@ -263,6 +264,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
 import ActivityDisclosure from '@/components/chat/ActivityDisclosure.vue'
+import AssistantActivityTimeline from '@/components/chat/AssistantActivityTimeline.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
@@ -273,7 +275,6 @@ import TextPart from '@/components/chat/parts/TextPart.vue'
 import { useChatRouteFeedback } from '@/composables/chat/useChatRouteFeedback'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import { useRelativeNow } from '@/composables/useRelativeNow'
-import { useToolDetailPreference } from '@/composables/useToolDetailPreference'
 import type {
   ChatRenderedMessage,
   ChatStreamTimelineItem,
@@ -284,7 +285,14 @@ import type {
 } from '@/types/chat'
 import type { ChatPart } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
-import { projectAssistantActivity } from '@/utils/chat/assistantActivity'
+import {
+  projectAssistantActivity,
+  type AssistantActivityLifecycle,
+} from '@/utils/chat/assistantActivity'
+import {
+  readAssistantActivityDuration,
+  writeAssistantActivityDuration,
+} from '@/utils/chat/activityDisclosureState'
 import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
 
 const props = defineProps<{
@@ -327,7 +335,6 @@ const emit = defineEmits<{
 // Absolute label is static; only the relative label subscribes to the shared
 // clock, so a tick re-evaluates one cheap computed per visible bubble.
 const { t } = useI18n()
-const { mode: toolDetailMode } = useToolDetailPreference()
 
 // Routing feedback: buttons only exist when the turn carries a V017 decision
 // id (router actually decided this turn). The copy differs by execution kind —
@@ -374,6 +381,28 @@ const interruptParts = computed(
 // The persisted activity timeline for this finished turn. Empty (fold hidden)
 // for OFF-mode turns and reloaded threads, which carry no snapshot.
 const statusHistory = computed(() => props.message.statusHistory ?? [])
+
+function epochMilliseconds(value: string | number | null | undefined): number {
+  if (value == null) return 0
+  const parsed = typeof value === 'number'
+    ? value
+    : /^\d+(?:\.\d+)?$/.test(value.trim())
+      ? Number(value)
+      : Date.parse(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0
+  return parsed < 100_000_000_000 ? parsed * 1000 : parsed
+}
+
+const measuredActivityDurationSeconds = computed(() => {
+  const startedAt = statusHistory.value
+    .map(entry => epochMilliseconds(entry.at))
+    .filter(value => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right)[0]
+  const endedAt = epochMilliseconds(props.message.ts)
+  if (!startedAt || !Number.isFinite(endedAt) || endedAt <= startedAt) return 0
+  const duration = Math.floor((endedAt - startedAt) / 1000)
+  return duration > 0 && duration < 24 * 60 * 60 ? duration : 0
+})
 const isCronMessage = computed(() => props.message.provenanceKind === 'cron')
 const safeCronSourceTool = computed(() => {
   const value = String(props.message.provenanceSourceTool || '').trim()
@@ -481,11 +510,29 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
   }))
 })
 
+const activityLifecycle = computed<AssistantActivityLifecycle>(() => {
+  if (props.message.interrupted) return 'interrupted'
+  if (props.message.terminalFailure) return 'failed'
+  const hasTerminalFailure = !props.message.text.trim()
+    && (
+      (props.message.toolCalls || []).some(call => call.isError || call.status === 'error')
+      || (props.message.timelineItems || []).some(item =>
+        item.type === 'tool-group'
+        && item.group.calls.some(call => call.isError || call.status === 'error'),
+      )
+    )
+  return hasTerminalFailure ? 'failed' : 'settled'
+})
+
 const activityProjection = computed(() =>
   projectAssistantActivity(
     props.message,
     props.renderMarkdown,
     legacyTimelineItems.value,
+    {
+      lifecycle: activityLifecycle.value,
+      statusHistory: statusHistory.value,
+    },
   ),
 )
 
@@ -497,13 +544,46 @@ const hasActivity = computed(() =>
 
 const activityStepCount = computed(() => Math.max(
   1,
-  statusHistory.value.length,
-  activityProjection.value.toolCount + (reasoningPart.value ? 1 : 0),
+  activityProjection.value.activityClusters.length
+    + activityProjection.value.statusSteps.length
+    + (reasoningPart.value ? 1 : 0),
 ))
 const activityDefaultOpen = computed(() =>
-  activityProjection.value.failureCount > 0
-  || (activityProjection.value.toolCount > 0 && toolDetailMode.value === 'expanded'),
+  activityLifecycle.value === 'failed' || activityLifecycle.value === 'interrupted',
 )
+const activityTurnIdentity = computed(() =>
+  props.message.turnKey || toolMessageIdentity.value,
+)
+const activityStateKey = computed(() => JSON.stringify([
+  props.sessionKey || '',
+  'assistant-activity',
+  activityTurnIdentity.value,
+  toolMessageIdentity.value,
+]))
+const activityContinuityKey = computed(() =>
+  props.message.turnKey
+    ? JSON.stringify([
+        props.sessionKey || '',
+        'assistant-activity-turn',
+        props.message.turnKey,
+      ])
+    : '',
+)
+const activityDurationSeconds = computed(() => {
+  const measured = measuredActivityDurationSeconds.value
+  if (measured > 0) {
+    writeAssistantActivityDuration(
+      activityStateKey.value,
+      measured,
+      activityContinuityKey.value,
+    )
+    return measured
+  }
+  return readAssistantActivityDuration(
+    activityStateKey.value,
+    activityContinuityKey.value,
+  )
+})
 
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return

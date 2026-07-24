@@ -326,6 +326,14 @@ test.describe('Live assistant activity lifecycle', () => {
     const liveActivity = page.locator('.assistant-activity--live')
     await expect(liveActivity).toBeVisible()
     await expect(page.locator('.work-card')).toHaveCount(0)
+    const liveStatus = liveActivity.locator('.assistant-activity__live-label')
+    await expect(liveStatus).toHaveText('Working')
+    await expect(liveStatus).toHaveAttribute('role', 'status')
+    await expect(liveStatus).toHaveAttribute('aria-live', 'polite')
+    await expect(liveStatus).toHaveAttribute('aria-atomic', 'true')
+    await expect(liveActivity.getByText('Working', { exact: true })).toHaveCount(1)
+    await expect(liveActivity.locator('[role="status"]')).toHaveCount(1)
+    await expect(liveActivity.locator('.assistant-activity-status__row')).toHaveCount(0)
     const liveMotion = await liveActivity.evaluate((element) => ({
       dot: getComputedStyle(
         element.querySelector<HTMLElement>('.assistant-activity__live-dot')!,
@@ -347,6 +355,8 @@ test.describe('Live assistant activity lifecycle', () => {
     await expect(inspectRow).toHaveAttribute('aria-expanded', 'false')
     await expect(liveActivity.locator('.step-chevron')).toHaveCount(0)
     await expect(liveActivity).not.toContainText('/private/project/chat.ts')
+    await expect(liveStatus).toHaveText('Working')
+    await expect(liveActivity.getByText('Inspected files', { exact: true })).toHaveCount(1)
 
     lifecycle.emit('session.event.tool_result', {
       tool_use_id: 'activity-inspect',
@@ -360,6 +370,11 @@ test.describe('Live assistant activity lifecycle', () => {
     const answerCandidate = page.locator('.live-answer-candidate')
     await expect(answerCandidate).toHaveText('Draft candidate.')
     await expect(liveActivity.getByText('Draft candidate.', { exact: true })).toHaveCount(0)
+    await expect(liveStatus).toHaveText('Writing the answer')
+    await expect(
+      liveActivity.getByText('Writing the answer', { exact: true }),
+    ).toHaveCount(1)
+    await expect(liveActivity.locator('.assistant-activity-status__row')).toHaveCount(0)
 
     lifecycle.emit('session.event.tool_use_start', {
       tool_use_id: 'activity-verify',
@@ -369,6 +384,8 @@ test.describe('Live assistant activity lifecycle', () => {
     await expect(answerCandidate).toHaveCount(0)
     await expect(liveActivity.getByText('Draft candidate.', { exact: true })).toBeVisible()
     await expect(liveActivity.locator('.tool-row[data-op="command.run"]')).toBeVisible()
+    await expect(liveStatus).toHaveText('Working')
+    await expect(liveActivity.getByText('Ran commands', { exact: true })).toHaveCount(1)
 
     lifecycle.emit('session.event.tool_result', {
       tool_use_id: 'activity-verify',

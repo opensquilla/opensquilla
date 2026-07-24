@@ -1,5 +1,8 @@
 <template>
-  <div class="assistant-activity-timeline">
+  <div
+    v-if="statusSteps.length || items.length"
+    class="assistant-activity-timeline"
+  >
     <ol v-if="statusSteps.length" class="assistant-activity-status">
       <li
         v-for="step in statusSteps"
@@ -63,11 +66,23 @@ defineEmits<{
 }>()
 
 const { t } = useI18n()
-const statusSteps = computed(() =>
-  props.projection.lifecycle === 'working' || props.projection.lifecycle === 'answering'
-    ? props.projection.statusSteps.slice(-3)
-    : props.projection.statusSteps,
-)
+const statusSteps = computed(() => {
+  const isLive = props.projection.lifecycle === 'working'
+    || props.projection.lifecycle === 'answering'
+  if (!isLive) return props.projection.statusSteps
+
+  // The live header owns the current lifecycle phase. Repeating that phase in
+  // the body creates pairs such as "Working / Working" and makes transport
+  // phases look like meaningful agent actions. Keep only prior semantic
+  // actions here; completed/history playback can still show the full phase
+  // record when the user expands it.
+  return props.projection.statusSteps
+    .filter(step =>
+      !step.isCurrent
+      && !step.label.code.startsWith('chat.activity.lifecycle.'),
+    )
+    .slice(-3)
+})
 
 function clusterItem(
   cluster: AssistantActivityTimelineProjection['activityClusters'][number],

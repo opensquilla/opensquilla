@@ -50,11 +50,12 @@ function group(call: ChatToolCallRenderItem): ChatStreamTimelineItem {
 async function mountTimeline(
   timelineItems: ChatStreamTimelineItem[],
   statusHistory: Array<{ action: string; label: string; at: number }> = [],
+  lifecycle: 'working' | 'answering' | 'settled' = 'working',
 ) {
   const root = document.createElement('div')
   document.body.appendChild(root)
   const projection = projectAssistantActivityTimeline(timelineItems, {
-    lifecycle: 'working',
+    lifecycle,
     statusHistory,
   })
   const app = createApp({
@@ -88,7 +89,9 @@ afterEach(() => {
 
 describe('AssistantActivityTimeline', () => {
   it('inherits caller attributes on its semantic root without Vue fragment warnings', async () => {
-    const root = await mountTimeline([])
+    const root = await mountTimeline([
+      group(toolCall('attribute-root', 'read_file')),
+    ])
 
     expect(
       root.querySelector('.assistant-activity-timeline')
@@ -125,8 +128,8 @@ describe('AssistantActivityTimeline', () => {
     expect(root.textContent).toContain('Checking the first change.')
   })
 
-  it('renders safe structured phase labels without raw status text', async () => {
-    const root = await mountTimeline([], [
+  it('keeps lifecycle phases out of the live action body', async () => {
+    const statusHistory = [
       {
         action: 'Sending',
         label: 'Sending /private/customer/secret.txt',
@@ -137,12 +140,40 @@ describe('AssistantActivityTimeline', () => {
         label: 'Writing /private/customer/secret.txt',
         at: 2_000,
       },
+    ]
+    const liveRoot = await mountTimeline([], statusHistory, 'answering')
+
+    expect(liveRoot.querySelectorAll('.assistant-activity-status__row')).toHaveLength(0)
+    expect(liveRoot.querySelector('.assistant-activity-timeline')).toBeNull()
+    expect(liveRoot.textContent).not.toContain('/private/customer')
+    expect(liveRoot.textContent).not.toContain('secret')
+
+    const settledRoot = await mountTimeline([], statusHistory, 'settled')
+    expect(settledRoot.querySelectorAll('.assistant-activity-status__row')).toHaveLength(2)
+    expect(settledRoot.textContent).toContain('Working')
+    expect(settledRoot.textContent).toContain('Writing the answer')
+    expect(settledRoot.textContent).not.toContain('/private/customer')
+    expect(settledRoot.textContent).not.toContain('secret')
+  })
+
+  it('shows prior semantic context but leaves the current action to the live header', async () => {
+    const root = await mountTimeline([], [
+      {
+        action: 'inspect',
+        label: 'Inspecting /private/customer/secret.txt',
+        at: 1_000,
+      },
+      {
+        action: 'change',
+        label: 'Editing /private/customer/secret.txt',
+        at: 2_000,
+      },
     ])
 
-    expect(root.querySelectorAll('.assistant-activity-status__row')).toHaveLength(2)
-    expect(root.textContent).toContain('Working')
-    expect(root.textContent).toContain('Writing the answer')
+    const rows = root.querySelectorAll('.assistant-activity-status__row')
+    expect(rows).toHaveLength(1)
+    expect(rows[0]?.textContent).toContain('Inspected files')
+    expect(root.textContent).not.toContain('Edited files')
     expect(root.textContent).not.toContain('/private/customer')
-    expect(root.textContent).not.toContain('secret')
   })
 })

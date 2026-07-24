@@ -1395,15 +1395,16 @@ const liveActivityProjection = computed(() =>
 )
 const liveActivityPhaseLabel = computed(() => {
   if (streamActivityStale.value) return streamPhaseLabel.value
-  const currentKey = liveActivityProjection.value.currentClusterKey
-  const current = liveActivityProjection.value.activityClusters.find(
-    cluster => cluster.key === currentKey,
-  )
-  if (current) return String(t(current.purpose.code, current.purpose.params))
   const currentStatus = [...liveActivityProjection.value.statusSteps]
     .reverse()
     .find(step => step.isCurrent)
-  if (currentStatus) return String(t(currentStatus.label.code, currentStatus.label.params))
+  if (
+    currentStatus
+    && !currentStatus.label.code.startsWith('chat.activity.lifecycle.')
+    && !liveActivityProjection.value.currentClusterKey
+  ) {
+    return String(t(currentStatus.label.code, currentStatus.label.params))
+  }
   return String(t(
     liveAnswerPart.value
       ? 'chat.activity.lifecycle.answering'

@@ -2776,6 +2776,7 @@
     "sources": "来源",
     "activitySteps": "活动 · {count} 步",
     "activityItems": "活动 · {count} 项",
+    "activityCompletedItems": "已完成 · {count} 项",
     "activityFailures": "{count} 项失败",
     "activityFailuresRecovered": "{count} 项失败已恢复",
     "activityWorking": "正在工作",

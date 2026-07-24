@@ -11,6 +11,7 @@ import type {
   ChatStreamTimelineItem,
   ChatToolCallRenderItem,
 } from '@/types/chat'
+import type { ChatPart } from '@/types/parts'
 import AssistantMessage from './AssistantMessage.vue'
 
 const mountedApps: App[] = []
@@ -73,6 +74,31 @@ function successfulTimeline(): ChatStreamTimelineItem[] {
       },
     }
   })
+}
+
+function approvalPart(
+  resolution: Extract<ChatPart, { type: 'interrupt' }>['resolution'],
+): Extract<ChatPart, { type: 'interrupt' }> {
+  return {
+    type: 'interrupt',
+    key: 'approval-1',
+    interruptKind: 'approval',
+    approval: {
+      approvalId: 'approval-1',
+      namespace: 'exec',
+      toolName: 'shell',
+      command: 'printf ok',
+      approvalKind: 'sandbox_path',
+      args: null,
+      warning: '',
+      agent: 'main',
+      sessionKey: 'session-a',
+      deadline: 0,
+    },
+    resolution,
+    busy: false,
+    error: '',
+  }
 }
 
 function baseMessage(overrides: Partial<ChatRenderedMessage> = {}): ChatRenderedMessage {
@@ -176,7 +202,10 @@ describe('AssistantMessage activity disclosure', () => {
     const el = mountMessage(baseMessage({ timelineItems: successfulTimeline() }))
     await nextTick()
 
-    expect(el.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('false')
+    const summary = el.querySelector('.assistant-activity__summary')
+    expect(summary?.getAttribute('aria-expanded')).toBe('false')
+    expect(summary?.textContent).toContain('Completed ·')
+    expect(summary?.textContent).not.toContain('Activity ·')
     expect(el.querySelector('.assistant-activity')?.getAttribute('data-share-expanded')).toBe('false')
     expect(el.querySelector('.tool-row')).not.toBeNull()
   })
@@ -195,6 +224,10 @@ describe('AssistantMessage activity disclosure', () => {
     const activity = el.querySelector('.assistant-activity')
     expect(activity?.classList.contains('assistant-activity--failed')).toBe(true)
     expect(activity?.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('true')
+    expect(activity?.querySelector('.assistant-activity__summary')?.textContent)
+      .toContain('Activity ·')
+    expect(activity?.querySelector('.assistant-activity__summary')?.textContent)
+      .not.toContain('Completed ·')
     expect(activity?.querySelector('.tool-row--error')).not.toBeNull()
   })
 
@@ -209,8 +242,46 @@ describe('AssistantMessage activity disclosure', () => {
     const answer = el.querySelector<HTMLElement>('.msg-ai-text')
     expect(activity?.classList.contains('assistant-activity--interrupted')).toBe(true)
     expect(activity?.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('true')
+    expect(activity?.querySelector('.assistant-activity__summary')?.textContent)
+      .not.toContain('Completed ·')
     expect(answer?.textContent).toBe('Canonical answer')
     expect(activity?.contains(answer ?? null)).toBe(false)
+  })
+
+  it('does not claim completion while approval is unresolved', async () => {
+    const el = mountMessage(baseMessage({
+      parts: [approvalPart(null)],
+    }))
+    await nextTick()
+
+    const summary = el.querySelector('.assistant-activity__summary')
+    expect(summary?.textContent).toContain('Activity ·')
+    expect(summary?.textContent).toContain('1 failed')
+    expect(summary?.textContent).not.toContain('Completed ·')
+    expect(summary?.textContent).not.toContain('recovered')
+  })
+
+  it('does not claim completion after an approval is denied', async () => {
+    const el = mountMessage(baseMessage({
+      timelineItems: successfulTimeline(),
+      parts: [approvalPart('denied')],
+    }))
+    await nextTick()
+
+    const summary = el.querySelector('.assistant-activity__summary')
+    expect(summary?.textContent).toContain('Activity ·')
+    expect(summary?.textContent).not.toContain('Completed ·')
+  })
+
+  it('uses the completed summary after approval and a settled answer', async () => {
+    const el = mountMessage(baseMessage({
+      timelineItems: successfulTimeline(),
+      parts: [approvalPart('approved')],
+    }))
+    await nextTick()
+
+    expect(el.querySelector('.assistant-activity__summary')?.textContent)
+      .toContain('Completed ·')
   })
 
   it('uses an exact local duration when the live status snapshot provides one', async () => {

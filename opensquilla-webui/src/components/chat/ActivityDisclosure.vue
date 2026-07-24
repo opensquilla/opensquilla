@@ -84,6 +84,7 @@ const props = withDefaults(defineProps<{
   stepCount: number
   failureCount: number
   durationSeconds?: number
+  completionConfirmed?: boolean
   summaryLabel?: string
   phaseLabel?: string
   elapsedLabel?: string
@@ -94,6 +95,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   lifecycle: 'settled',
   durationSeconds: 0,
+  completionConfirmed: false,
   summaryLabel: '',
   phaseLabel: '',
   elapsedLabel: '',
@@ -136,12 +138,17 @@ const resolvedSummaryLabel = computed(() => {
       seconds: seconds % 60,
     })
   }
-  return t('chat.activityItems', { count: Math.max(1, props.stepCount) })
+  return t(
+    props.lifecycle === 'settled' && props.completionConfirmed
+      ? 'chat.activityCompletedItems'
+      : 'chat.activityItems',
+    { count: Math.max(1, props.stepCount) },
+  )
 })
 
 const resolvedFailureLabel = computed(() =>
   t(
-    props.lifecycle === 'settled'
+    props.lifecycle === 'settled' && props.completionConfirmed
       ? 'chat.activityFailuresRecovered'
       : 'chat.activityFailures',
     { count: props.failureCount },

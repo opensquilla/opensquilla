@@ -2776,6 +2776,7 @@
     "sources": "Sources",
     "activitySteps": "Activité · {count} étape | Activité · {count} étapes",
     "activityItems": "Activité · {count} élément | Activité · {count} éléments",
+    "activityCompletedItems": "Terminé · {count} élément | Terminé · {count} éléments",
     "activityFailures": "{count} en échec",
     "activityFailuresRecovered": "{count} échec récupéré | {count} échecs récupérés",
     "activityWorking": "Travail en cours",

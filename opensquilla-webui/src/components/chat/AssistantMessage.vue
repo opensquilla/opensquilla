@@ -31,6 +31,7 @@
           :step-count="activityStepCount"
           :failure-count="activityProjection.failureCount"
           :duration-seconds="activityDurationSeconds"
+          :completion-confirmed="activityCompletionConfirmed"
           :default-open="activityDefaultOpen"
           :state-key="activityStateKey"
           :continuity-key="activityContinuityKey"
@@ -551,6 +552,14 @@ const activityStepCount = computed(() => Math.max(
 ))
 const activityDefaultOpen = computed(() =>
   activityLifecycle.value === 'failed' || activityLifecycle.value === 'interrupted',
+)
+const activityCompletionConfirmed = computed(() =>
+  activityLifecycle.value === 'settled'
+  && !props.message.isStreaming
+  && interruptParts.value.every(part =>
+    !part.busy
+    && (part.resolution === 'approved' || part.resolution === 'replied'),
+  ),
 )
 const activityTurnIdentity = computed(() =>
   props.message.turnKey || toolMessageIdentity.value,

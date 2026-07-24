@@ -2776,6 +2776,7 @@
     "sources": "Sources",
     "activitySteps": "Activity · {count} step | Activity · {count} steps",
     "activityItems": "Activity · {count} item | Activity · {count} items",
+    "activityCompletedItems": "Completed · {count} item | Completed · {count} items",
     "activityFailures": "{count} failed",
     "activityFailuresRecovered": "{count} failure recovered | {count} failures recovered",
     "activityWorking": "Working",

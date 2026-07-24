@@ -2776,6 +2776,7 @@
     "sources": "ソース",
     "activitySteps": "アクティビティ · {count} ステップ | アクティビティ · {count} ステップ",
     "activityItems": "アクティビティ · {count} 件",
+    "activityCompletedItems": "完了 · {count} 件",
     "activityFailures": "{count} 件失敗",
     "activityFailuresRecovered": "{count} 件の失敗から復旧",
     "activityWorking": "作業中",

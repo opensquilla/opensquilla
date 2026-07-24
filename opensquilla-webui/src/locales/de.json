@@ -2776,6 +2776,7 @@
     "sources": "Quellen",
     "activitySteps": "Aktivität · {count} Schritt | Aktivität · {count} Schritte",
     "activityItems": "Aktivität · {count} Eintrag | Aktivität · {count} Einträge",
+    "activityCompletedItems": "Abgeschlossen · {count} Eintrag | Abgeschlossen · {count} Einträge",
     "activityFailures": "{count} fehlgeschlagen",
     "activityFailuresRecovered": "{count} Fehler behoben",
     "activityWorking": "In Arbeit",

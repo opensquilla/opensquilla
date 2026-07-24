@@ -217,7 +217,7 @@ test.describe('Completed assistant activity disclosure', () => {
     const activity = page.getByTestId('assistant-activity')
     await expect(activity).toBeVisible()
     await expect(activity).toHaveAttribute('data-share-expanded', 'false')
-    await expect(activity).toContainText('Activity · 2 items')
+    await expect(activity).toContainText('Completed · 2 items')
 
     const answer = page.locator('.msg-ai-text')
     await expect(answer).toBeVisible()

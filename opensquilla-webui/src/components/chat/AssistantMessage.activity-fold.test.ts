@@ -377,11 +377,15 @@ describe('AssistantMessage activity disclosure', () => {
 
     const activity = el.querySelector('.assistant-activity')
     const artifacts = el.querySelector<HTMLElement>('.msg-artifacts')
+    const ending = el.querySelector<HTMLElement>('[data-testid="done-block"]')
+    const footer = el.querySelector<HTMLElement>('.msg-ai-footer')
     expect(activity).not.toBeNull()
     expect(artifacts).not.toBeNull()
     expect(activity?.contains(artifacts ?? null)).toBe(false)
     expect(artifacts?.textContent).toContain('study-notes.md')
     expect(artifacts?.querySelector('button')).not.toBeNull()
+    expect(ending?.contains(footer ?? null)).toBe(false)
+    expect(ending?.nextElementSibling).toBe(footer)
   })
 
   it('does not render an empty disclosure for a plain canonical answer', async () => {

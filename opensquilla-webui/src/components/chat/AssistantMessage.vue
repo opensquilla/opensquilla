@@ -111,148 +111,148 @@
         />
 
         <SourcesRow v-if="message.toolCalls?.length" ref="sourcesRowRef" :calls="message.toolCalls" :sources="message.sources ?? []" />
+      </div>
 
-        <div v-if="showFooter" class="msg-ai-footer">
+      <div v-if="showFooter" class="msg-ai-footer">
+        <span
+          v-if="isCronMessage"
+          class="msg-provenance-chip"
+          :title="cronBadgeTitle"
+        >
+          <Icon name="cron" :size="11" />
+          {{ t('chat.provenance.scheduled') }}
+        </span>
+        <div v-if="message.meta" class="msg-ai-meta">
+          <span v-if="message.meta.model && !message.meta.ensemble" class="msg-meta__model">{{ message.meta.modelShort }}</span>
+          <span v-if="message.meta.costUsd && !message.meta.ensemble" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
+          <span v-if="message.meta.ensemble" class="msg-meta__ensemble">{{ t('chat.msgMeta.ensembleModels', { count: message.meta.ensemble.modelCount }) }}</span>
+          <span v-if="message.meta.hasSaved && !message.meta.ensemble" class="savings-indicator">{{ message.meta.savedLabel }}</span>
           <span
-            v-if="isCronMessage"
-            class="msg-provenance-chip"
-            :title="cronBadgeTitle"
+            v-if="hasMetaDetails"
+            ref="metaMoreRef"
+            class="msg-meta__more"
+            @mouseenter="metaHovered = true"
+            @mouseleave="metaHovered = false"
+            @keydown.escape.stop="closeMetaDetails"
+            @focusout="onMetaFocusOut"
           >
-            <Icon name="cron" :size="11" />
-            {{ t('chat.provenance.scheduled') }}
-          </span>
-          <div v-if="message.meta" class="msg-ai-meta">
-            <span v-if="message.meta.model && !message.meta.ensemble" class="msg-meta__model">{{ message.meta.modelShort }}</span>
-            <span v-if="message.meta.costUsd && !message.meta.ensemble" class="msg-meta__cost">${{ message.meta.costUsd.toFixed(6).replace(/\.?0+$/, '') }}</span>
-            <span v-if="message.meta.ensemble" class="msg-meta__ensemble">{{ t('chat.msgMeta.ensembleModels', { count: message.meta.ensemble.modelCount }) }}</span>
-            <span v-if="message.meta.hasSaved && !message.meta.ensemble" class="savings-indicator">{{ message.meta.savedLabel }}</span>
-            <span
-              v-if="hasMetaDetails"
-              ref="metaMoreRef"
-              class="msg-meta__more"
-              @mouseenter="metaHovered = true"
-              @mouseleave="metaHovered = false"
-              @keydown.escape.stop="closeMetaDetails"
-              @focusout="onMetaFocusOut"
+            <button
+              ref="metaTriggerRef"
+              type="button"
+              class="msg-meta__more-btn"
+              :aria-expanded="metaDetailsOpen"
+              :aria-controls="metaDetailsId"
+              :aria-label="t('chat.usageDetails')"
+              @click="metaPinned = !metaPinned"
             >
-              <button
-                ref="metaTriggerRef"
-                type="button"
-                class="msg-meta__more-btn"
-                :aria-expanded="metaDetailsOpen"
-                :aria-controls="metaDetailsId"
-                :aria-label="t('chat.usageDetails')"
-                @click="metaPinned = !metaPinned"
-              >
-                <Icon name="info" :size="12" />
-              </button>
-              <div
-                v-if="metaDetailsOpen"
-                :id="metaDetailsId"
-                class="msg-meta-popover"
-                role="group"
-                :aria-label="t('chat.usageDetails')"
-              >
-                <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
-                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.tokens') }}</span>
-                  <span class="msg-meta-popover__value">&#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}</span>
-                </div>
-                <div v-if="message.meta.cachedTokens" class="msg-meta-popover__row">
-                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cache') }}</span>
-                  <span class="msg-meta-popover__value">{{ fmtTok(message.meta.cachedTokens) }}</span>
-                </div>
-                <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
-                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.think') }}</span>
-                  <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
-                </div>
-                <template v-if="message.meta.ensemble">
-                  <div class="msg-meta-popover__divider"></div>
-                  <div class="msg-meta-popover__row">
-                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.ensemble') }}</span>
-                    <span class="msg-meta-popover__value">{{ ensembleSummary }}</span>
-                  </div>
-                  <div class="msg-meta-popover__row">
-                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cost') }}</span>
-                    <span class="msg-meta-popover__value">{{ fmtUsd(message.meta.ensemble.costUsd || message.meta.costUsd) }}</span>
-                  </div>
-                  <div v-if="message.meta.ensemble.fallbackUsed" class="msg-meta-popover__row">
-                    <span class="msg-meta-popover__label">{{ t('chat.msgMeta.fallback') }}</span>
-                    <span class="msg-meta-popover__value">{{ t('chat.msgMeta.fallbackUsed') }}</span>
-                  </div>
-                  <div class="msg-meta-popover__models" :aria-label="t('chat.msgMeta.ensembleModelsAria')">
-                    <div
-                      v-for="member in message.meta.ensemble.models"
-                      :key="`${member.role}:${member.provider}:${member.model}`"
-                      class="msg-meta-popover__model"
-                    >
-                      <span class="msg-meta-popover__model-role">{{ ensembleRole(member.role, member.label) }}</span>
-                      <span class="msg-meta-popover__model-name" :title="member.model">{{ member.modelShort }}</span>
-                      <span class="msg-meta-popover__model-cost">{{ fmtUsd(member.costUsd) }}</span>
-                    </div>
-                  </div>
-                </template>
+              <Icon name="info" :size="12" />
+            </button>
+            <div
+              v-if="metaDetailsOpen"
+              :id="metaDetailsId"
+              class="msg-meta-popover"
+              role="group"
+              :aria-label="t('chat.usageDetails')"
+            >
+              <div v-if="message.meta.hasTokens" class="msg-meta-popover__row">
+                <span class="msg-meta-popover__label">{{ t('chat.msgMeta.tokens') }}</span>
+                <span class="msg-meta-popover__value">&#8593;{{ fmtTok(message.meta.input) }} &#8595;{{ fmtTok(message.meta.output) }}</span>
               </div>
-            </span>
-          </div>
-          <div v-if="!shareMode && !message.stopNotice" class="msg-ai-actions">
+              <div v-if="message.meta.cachedTokens" class="msg-meta-popover__row">
+                <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cache') }}</span>
+                <span class="msg-meta-popover__value">{{ fmtTok(message.meta.cachedTokens) }}</span>
+              </div>
+              <div v-if="message.meta.reasoningTokens" class="msg-meta-popover__row">
+                <span class="msg-meta-popover__label">{{ t('chat.msgMeta.think') }}</span>
+                <span class="msg-meta-popover__value">{{ fmtTok(message.meta.reasoningTokens) }}</span>
+              </div>
+              <template v-if="message.meta.ensemble">
+                <div class="msg-meta-popover__divider"></div>
+                <div class="msg-meta-popover__row">
+                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.ensemble') }}</span>
+                  <span class="msg-meta-popover__value">{{ ensembleSummary }}</span>
+                </div>
+                <div class="msg-meta-popover__row">
+                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.cost') }}</span>
+                  <span class="msg-meta-popover__value">{{ fmtUsd(message.meta.ensemble.costUsd || message.meta.costUsd) }}</span>
+                </div>
+                <div v-if="message.meta.ensemble.fallbackUsed" class="msg-meta-popover__row">
+                  <span class="msg-meta-popover__label">{{ t('chat.msgMeta.fallback') }}</span>
+                  <span class="msg-meta-popover__value">{{ t('chat.msgMeta.fallbackUsed') }}</span>
+                </div>
+                <div class="msg-meta-popover__models" :aria-label="t('chat.msgMeta.ensembleModelsAria')">
+                  <div
+                    v-for="member in message.meta.ensemble.models"
+                    :key="`${member.role}:${member.provider}:${member.model}`"
+                    class="msg-meta-popover__model"
+                  >
+                    <span class="msg-meta-popover__model-role">{{ ensembleRole(member.role, member.label) }}</span>
+                    <span class="msg-meta-popover__model-name" :title="member.model">{{ member.modelShort }}</span>
+                    <span class="msg-meta-popover__model-cost">{{ fmtUsd(member.costUsd) }}</span>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </span>
+        </div>
+        <div v-if="!shareMode && !message.stopNotice" class="msg-ai-actions">
+          <button
+            type="button"
+            class="msg-action"
+            :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
+            :title="copyTitle"
+            :aria-label="copyTitle"
+            @click="onCopyClick"
+          >
+            <Icon :name="copyIconName" :size="12" />
+          </button>
+          <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
+          <button type="button" class="msg-action" :title="t('chat.regenerate')" :aria-label="t('chat.regenerate')" @click="$emit('regenerate', message)">
+            <Icon name="refresh" :size="12" />
+          </button>
+          <template v-if="feedbackDecisionId">
             <button
               type="button"
-              class="msg-action"
-              :class="{ 'msg-action--ok': copyState === 'ok', 'msg-action--err': copyState === 'err' }"
-              :title="copyTitle"
-              :aria-label="copyTitle"
-              @click="onCopyClick"
+              class="msg-action msg-action--vote"
+              :class="{ 'msg-action--ok': feedbackRating === 'up' }"
+              :disabled="feedbackBusy"
+              :aria-pressed="feedbackRating === 'up'"
+              :title="feedbackUpTitle"
+              :aria-label="feedbackUpTitle"
+              @click="onFeedbackClick('up')"
             >
-              <Icon :name="copyIconName" :size="12" />
+              <Icon name="thumbs-up" :size="12" />
             </button>
-            <span class="msg-copy-live" aria-live="polite">{{ copyLiveText }}</span>
-            <button type="button" class="msg-action" :title="t('chat.regenerate')" :aria-label="t('chat.regenerate')" @click="$emit('regenerate', message)">
-              <Icon name="refresh" :size="12" />
-            </button>
-            <template v-if="feedbackDecisionId">
-              <button
-                type="button"
-                class="msg-action msg-action--vote"
-                :class="{ 'msg-action--ok': feedbackRating === 'up' }"
-                :disabled="feedbackBusy"
-                :aria-pressed="feedbackRating === 'up'"
-                :title="feedbackUpTitle"
-                :aria-label="feedbackUpTitle"
-                @click="onFeedbackClick('up')"
-              >
-                <Icon name="thumbs-up" :size="12" />
-              </button>
-              <button
-                type="button"
-                class="msg-action msg-action--vote"
-                :class="{ 'msg-action--err': feedbackRating === 'down' }"
-                :disabled="feedbackBusy"
-                :aria-pressed="feedbackRating === 'down'"
-                :title="feedbackDownTitle"
-                :aria-label="feedbackDownTitle"
-                @click="onFeedbackClick('down')"
-              >
-                <Icon name="thumbs-down" :size="12" />
-              </button>
-            </template>
             <button
-              v-if="isTip"
               type="button"
-              class="msg-action msg-action--fork"
-              data-testid="fork-conversation"
-              :disabled="forkBusy"
-              :title="t('chat.forkConversation')"
-              :aria-label="t('chat.forkConversation')"
-              @click="$emit('fork')"
+              class="msg-action msg-action--vote"
+              :class="{ 'msg-action--err': feedbackRating === 'down' }"
+              :disabled="feedbackBusy"
+              :aria-pressed="feedbackRating === 'down'"
+              :title="feedbackDownTitle"
+              :aria-label="feedbackDownTitle"
+              @click="onFeedbackClick('down')"
             >
-              <Icon name="fork" :size="12" />
+              <Icon name="thumbs-down" :size="12" />
             </button>
-            <time v-if="timeIso" class="msg-time" :datetime="timeIso" :title="timeFull">
-              <span class="msg-time__abs">{{ timeAbs }}</span>
-              <span class="msg-time__dot" aria-hidden="true">·</span>
-              <span class="msg-time__rel">{{ timeRel }}</span>
-            </time>
-          </div>
+          </template>
+          <button
+            v-if="isTip"
+            type="button"
+            class="msg-action msg-action--fork"
+            data-testid="fork-conversation"
+            :disabled="forkBusy"
+            :title="t('chat.forkConversation')"
+            :aria-label="t('chat.forkConversation')"
+            @click="$emit('fork')"
+          >
+            <Icon name="fork" :size="12" />
+          </button>
+          <time v-if="timeIso" class="msg-time" :datetime="timeIso" :title="timeFull">
+            <span class="msg-time__abs">{{ timeAbs }}</span>
+            <span class="msg-time__dot" aria-hidden="true">·</span>
+            <span class="msg-time__rel">{{ timeRel }}</span>
+          </time>
         </div>
       </div>
     </div>
@@ -431,8 +431,9 @@ const metaPinned = ref(false)
 const metaHovered = ref(false)
 const metaDetailsOpen = computed(() => metaPinned.value || metaHovered.value)
 
-// A completed turn that produced artifacts ends with the deliverable block:
-// artifact chips, then sources, then the receipt, grouped as one ending.
+// A completed turn that produced artifacts keeps the deliverable and its sources
+// together. The message receipt remains a sibling so it never reads as artifact
+// metadata or inherits the artifact surface.
 const showDoneBlock = computed(() =>
   !!props.message.artifacts?.length && !props.message.isStreaming && !props.message.interrupted,
 )
@@ -741,10 +742,6 @@ function ensembleRole(role: string, label: string): string {
 
 .msg-ai-ending--done {
   margin-top: 0.625rem;
-  padding: 0.625rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
 }
 
 .msg-ai-ending--done :deep(.msg-artifacts) {
@@ -755,10 +752,8 @@ function ensembleRole(role: string, label: string): string {
   margin: 0.5rem 0 0;
 }
 
-.msg-ai-ending--done .msg-ai-footer {
+.msg-ai-ending--done + .msg-ai-footer {
   margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--hairline);
 }
 
 .msg-ai-actions {

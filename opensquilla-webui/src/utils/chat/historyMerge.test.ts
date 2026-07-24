@@ -13,6 +13,15 @@ function msg(overrides: Partial<ChatMessage>): ChatMessage {
 const reasoning = (seconds: number): ChatReasoning => ({ text: '', seconds })
 
 describe('mergeLiveOnlyFields', () => {
+  it('keeps the optimistic identity across the first authoritative replacement', () => {
+    const merged = mergeLiveOnlyFields(
+      msg({ clientId: 'local-turn', messageId: 'server-turn' }),
+      msg({ messageId: 'server-turn' }),
+    )
+
+    expect(merged.clientId).toBe('local-turn')
+  })
+
   it('keeps live reasoning seconds when the server snapshot measured none', () => {
     const merged = mergeLiveOnlyFields(msg({ reasoning: reasoning(8) }), msg({ reasoning: undefined }))
     expect(merged.reasoning?.seconds).toBe(8)
@@ -21,6 +30,30 @@ describe('mergeLiveOnlyFields', () => {
   it('lets the server win when it measured its own seconds', () => {
     const merged = mergeLiveOnlyFields(msg({ reasoning: reasoning(8) }), msg({ reasoning: reasoning(12) }))
     expect(merged.reasoning?.seconds).toBe(12)
+  })
+
+  it('keeps the live activity snapshot when history has no persisted phases', () => {
+    const statusHistory = [
+      { action: 'inspect', label: 'Inspecting', at: 1_000 },
+      { action: 'write', label: 'Writing', at: 2_000 },
+    ]
+    const merged = mergeLiveOnlyFields(
+      msg({ statusHistory }),
+      msg({ statusHistory: undefined }),
+    )
+
+    expect(merged.statusHistory).toEqual(statusHistory)
+  })
+
+  it('lets a persisted activity snapshot replace the live one', () => {
+    const merged = mergeLiveOnlyFields(
+      msg({ statusHistory: [{ action: 'inspect', label: 'Inspecting', at: 1_000 }] }),
+      msg({ statusHistory: [{ action: 'server', label: 'Server phase', at: 2_000 }] }),
+    )
+
+    expect(merged.statusHistory).toEqual([
+      { action: 'server', label: 'Server phase', at: 2_000 },
+    ])
   })
 
   it('keeps routerSettled sticky once it has settled', () => {

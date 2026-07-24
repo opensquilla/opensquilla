@@ -287,27 +287,53 @@ function cleanupShareClone(clone: HTMLElement): HTMLElement {
   )
   clone.removeAttribute('data-share-selected')
 
-  // Activity follows the existing reasoning-share contract: a collapsed fold
-  // is omitted, while an expanded fold is an explicit part of the selected
-  // message. Preserve its structured rows but replace interactive <details>
-  // chrome with a static block suitable for a PNG.
-  clone.querySelectorAll<HTMLElement>('.assistant-activity').forEach((fold) => {
-    const summary = fold.querySelector<HTMLElement>('.assistant-activity__summary')
-    const body = fold.querySelector<HTMLElement>('.assistant-activity__body')
-    if (!fold.hasAttribute('open') || !body?.childNodes.length) {
-      fold.remove()
-      return
-    }
+  // Activity follows the existing reasoning-share contract: collapsed process
+  // is omitted, while process the user explicitly expanded is included as
+  // static content. The data attributes are the stable renderer/export
+  // boundary; the class + <details open> fallback keeps exports from older
+  // activity DOM compatible while the chat renderer migrates.
+  clone.querySelectorAll<HTMLElement>('[data-share-activity], .assistant-activity')
+    .forEach((activity) => {
+      const usesShareContract = activity.hasAttribute('data-share-activity')
+      const expanded = usesShareContract
+        ? activity.dataset.shareExpanded === 'true'
+        : activity.hasAttribute('open')
+      const summary = activity.querySelector<HTMLElement>(
+        '[data-share-activity-label], .assistant-activity__summary',
+      )
+      const declaredBody = activity.querySelector<HTMLElement>(
+        '[data-share-activity-body], .assistant-activity__body',
+      )
 
-    const block = document.createElement('div')
-    block.className = 'chat-share-export-activity'
-    const label = document.createElement('div')
-    label.className = 'chat-share-export-activity__label'
-    label.textContent = summary?.textContent?.replace(/\s+/g, ' ').trim() || 'Activity'
-    body.className = 'chat-share-export-activity__body'
-    block.append(label, body)
-    fold.replaceWith(block)
-  })
+      if (!expanded) {
+        activity.remove()
+        return
+      }
+
+      // A renderer may keep the activity rows directly under the activity root
+      // instead of wrapping them in the legacy body element. Move those rows
+      // into the static body as well, excluding the interactive summary chrome.
+      const body = declaredBody || document.createElement('div')
+      if (!declaredBody) {
+        Array.from(activity.childNodes).forEach((node) => {
+          if (node !== summary) body.appendChild(node)
+        })
+      }
+      if (!body.childNodes.length) {
+        activity.remove()
+        return
+      }
+
+      const block = document.createElement('div')
+      block.className = 'chat-share-export-activity'
+      const label = document.createElement('div')
+      label.className = 'chat-share-export-activity__label'
+      label.textContent = summary?.textContent?.replace(/\s+/g, ' ').trim() || 'Activity'
+      body.className = 'chat-share-export-activity__body'
+      body.removeAttribute('data-share-activity-body')
+      block.append(label, body)
+      activity.replaceWith(block)
+    })
 
   // Thinking fold: an expanded fold means the user deliberately opened the
   // reasoning and is sharing it — keep the text, but swap the interactive
@@ -403,8 +429,9 @@ function shareExportCss(): string {
 
     #${SHARE_STAGE_ID} .chat-share-export-activity {
       margin: 0 0 10px;
-      padding: 6px 0 6px 10px;
-      border-left: 2px solid color-mix(in srgb, currentColor 22%, transparent);
+      padding: 6px 0;
+      border: 0;
+      background: transparent;
     }
 
     #${SHARE_STAGE_ID} .chat-share-export-activity__label {

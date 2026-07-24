@@ -8,10 +8,22 @@ import type { ChatMessage } from '@/types/chat'
 export function mergeLiveOnlyFields(prev: ChatMessage, server: ChatMessage): ChatMessage {
   const merged: ChatMessage = { ...server }
 
+  // Keep the optimistic row identity after the backend assigns a durable
+  // message id. Per-turn render keys use it to avoid remounting live surfaces
+  // during the first authoritative history replacement.
+  if (!server.clientId && prev.clientId) merged.clientId = prev.clientId
+
   // reasoning: server wins if it measured seconds; else keep the live seconds.
   const serverSeconds = prev.role === 'assistant' ? server.reasoning?.seconds ?? 0 : 0
   if (serverSeconds <= 0 && (prev.reasoning?.seconds ?? 0) > 0) {
     merged.reasoning = prev.reasoning
+  }
+
+  // The fold's phase snapshot supplies an exact same-session activity start.
+  // History does not persist it, so retain the local snapshot across the first
+  // authoritative refresh; a cold reload still correctly falls back to counts.
+  if (!(server.statusHistory?.length) && (prev.statusHistory?.length ?? 0) > 0) {
+    merged.statusHistory = prev.statusHistory
   }
 
   // routerSettled is sticky: once a strip has settled it stays settled.

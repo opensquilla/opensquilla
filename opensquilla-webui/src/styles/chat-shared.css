@@ -217,6 +217,24 @@
   height: 100%;
 }
 
+/* HTML/active-document previews fill a fixed sheet like images so the sandboxed
+   iframe has a stable box to render into. */
+.deliv-preview__panel--doc {
+  width: min(880px, 100%);
+  height: 100%;
+}
+
+.deliv-preview__body--doc {
+  padding: 0;
+}
+
+.deliv-preview__frame {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--bg-surface);
+}
+
 .deliv-preview__head {
   display: flex;
   align-items: center;

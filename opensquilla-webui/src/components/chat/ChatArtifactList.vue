@@ -222,6 +222,69 @@
         </footer>
       </div>
     </div>
+
+    <!-- In-app HTML preview: the active-document artifact renders here in a
+         sandboxed iframe, never a new tab. sandbox="allow-scripts" without
+         allow-same-origin isolates it from the app origin. -->
+    <div
+      v-if="htmlActive"
+      class="deliv-preview"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="t('chat.previewOf', { title: artifactFileTitle(htmlActive) })"
+      @click.self="closeHtmlPreview"
+    >
+      <div class="deliv-preview__panel deliv-preview__panel--doc">
+        <header class="deliv-preview__head">
+          <span class="deliv-preview__title">{{ artifactFileTitle(htmlActive) }}</span>
+          <button
+            type="button"
+            class="btn btn--icon btn--ghost"
+            :aria-label="t('chat.closePreview')"
+            :title="t('chat.closePreview')"
+            @click="closeHtmlPreview"
+          >
+            <Icon name="x" :size="16" />
+          </button>
+        </header>
+        <div class="deliv-preview__body deliv-preview__body--doc">
+          <iframe
+            v-if="htmlState === 'loaded' && htmlUrl"
+            class="deliv-preview__frame"
+            :src="htmlUrl"
+            sandbox="allow-scripts"
+            :title="artifactFileTitle(htmlActive)"
+          />
+          <div
+            v-else-if="htmlState === 'timeout' || htmlState === 'error'"
+            class="deliv-preview__file"
+            role="status"
+          >
+            <p class="deliv-preview__meta">
+              {{ htmlState === 'timeout' ? t('chat.previewTimedOut') : t('chat.previewFailed') }}
+            </p>
+            <button type="button" class="btn btn--ghost" @click="retryHtmlPreview">
+              <Icon name="refresh" :size="14" />
+              <span>{{ t('chat.retry') }}</span>
+            </button>
+          </div>
+          <div
+            v-else
+            class="deliv-preview__loading"
+            role="status"
+            :aria-label="t('chat.loadingPreview')"
+          >
+            <span class="deliv-preview__progress-shimmer" aria-hidden="true" />
+          </div>
+        </div>
+        <footer class="deliv-preview__actions">
+          <button type="button" class="btn btn--primary" @click="$emit('download', htmlActive)">
+            <Icon name="download" :size="14" />
+            <span>{{ t('chat.download') }}</span>
+          </button>
+        </footer>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -393,6 +456,13 @@ function openPreview(artifact: ArtifactPayload) {
 // default app. Web keeps the in-browser new-tab path and its active-document
 // guard.
 async function openFile(artifact: ArtifactPayload) {
+  // Active documents (html/htm/xhtml) render inline in a sandboxed iframe
+  // instead of a new tab / OS app, so users never leave the app to view them.
+  if (isActiveDocumentArtifactCandidate(artifact)) {
+    openHtmlPreview(artifact)
+    return
+  }
+
   if (platform.capabilities.canOpenArtifactsNatively && platform.files.openArtifact) {
     const fetched = await fetchArtifactBlob(artifact, {
       baseOrigin: window.location.origin,
@@ -502,6 +572,87 @@ function retryFull() {
   fullController?.retry()
 }
 
+// ── In-app HTML preview ─────────────────────────────────────────────────────
+// Active-document artifacts (html/htm/xhtml) previously only opened in a new
+// browser tab / OS app. They now render inline in a sandboxed <iframe> whose
+// src is a fetched blob object URL. `sandbox="allow-scripts"` WITHOUT
+// `allow-same-origin` forces an opaque origin, so scripts in the artifact run
+// isolated and cannot reach the app's origin, storage, or cookies. The blob is
+// fetched with header auth (never a credential-bearing URL), matching the image
+// preview path and the chat-security guard.
+const htmlActive = ref<ArtifactPayload | null>(null)
+let htmlController: ArtifactPreviewController | null = null
+const htmlState = ref<ArtifactPreviewState>('idle')
+const htmlUrl = ref<string>('')
+let stopHtmlState: (() => void) | null = null
+let htmlInvoker: HTMLElement | null = null
+
+function disposeHtml() {
+  stopHtmlState?.()
+  stopHtmlState = null
+  htmlController?.dispose()
+  htmlController = null
+  htmlState.value = 'idle'
+  htmlUrl.value = ''
+}
+
+function loadHtmlPreview(artifact: ArtifactPayload) {
+  disposeHtml()
+  htmlController = createArtifactPreview({
+    resolveUrl: () => artifactDownloadUrl(artifact, window.location.origin, {
+      sessionKey: props.sessionKey,
+      includeSessionKey: false,
+    }),
+    headers: () => previewHeaders(artifactDownloadUrl(artifact, window.location.origin, {
+      sessionKey: props.sessionKey,
+      includeSessionKey: false,
+    })),
+    sameOrigin,
+    fullSize: true,
+  })
+  const ctrl = htmlController
+  stopHtmlState = watch(
+    [ctrl.state, ctrl.objectUrl],
+    ([s, u]) => {
+      htmlState.value = s as ArtifactPreviewState
+      htmlUrl.value = (u as string) || ''
+    },
+    { immediate: true },
+  )
+  ctrl.load()
+}
+
+function openHtmlPreview(artifact: ArtifactPayload) {
+  htmlInvoker = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  htmlActive.value = artifact
+  loadHtmlPreview(artifact)
+  document.addEventListener('keydown', onHtmlKeydown)
+}
+
+function retryHtmlPreview() {
+  htmlController?.retry()
+}
+
+function closeHtmlPreview() {
+  if (!htmlActive.value) return
+  htmlActive.value = null
+  disposeHtml()
+  document.removeEventListener('keydown', onHtmlKeydown)
+  const invoker = htmlInvoker
+  htmlInvoker = null
+  nextTick(() => {
+    if (invoker && document.contains(invoker)) invoker.focus()
+  })
+}
+
+function onHtmlKeydown(event: KeyboardEvent) {
+  if (!htmlActive.value) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeHtmlPreview()
+  }
+}
+
 function showImageAt(index: number) {
   const artifact = navigationVisualArtifacts.value[index]
   if (!artifact) return
@@ -593,7 +744,9 @@ watch(
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onLightboxKeydown)
+  document.removeEventListener('keydown', onHtmlKeydown)
   disposeFull()
+  disposeHtml()
   for (const controller of controllers.values()) controller.dispose()
   controllers.clear()
 })

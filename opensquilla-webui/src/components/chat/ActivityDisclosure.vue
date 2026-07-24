@@ -124,6 +124,22 @@ watch(() => [props.stateKey, props.continuityKey] as const, ([key, continuityKey
   open.value = readAssistantActivityExpansion(key, initialOpen(), continuityKey)
 })
 
+watch(
+  () => [props.lifecycle, props.defaultOpen] as const,
+  ([lifecycle, defaultOpen], [previousLifecycle, previousDefaultOpen]) => {
+    const becameTerminal = (
+      lifecycle === 'failed'
+      || lifecycle === 'interrupted'
+    ) && (
+      previousLifecycle !== 'failed'
+      && previousLifecycle !== 'interrupted'
+    )
+    if (becameTerminal || (defaultOpen && !previousDefaultOpen)) {
+      open.value = true
+    }
+  },
+)
+
 const isLive = computed(() =>
   props.lifecycle === 'working' || props.lifecycle === 'answering',
 )

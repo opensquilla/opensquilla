@@ -64,4 +64,58 @@ describe('buildShareDom protocol-shaped documentation', () => {
     expect(stage.querySelector('.tool-timeline__toolbar')).toBeNull()
     expect(stage.querySelector('.tool-row-body')?.textContent).toBe('tool output')
   })
+
+  it('omits collapsed execution activity while keeping the canonical answer', () => {
+    const source = document.createElement('article')
+    source.dataset.shareMessageId = 'assistant-activity'
+    const activity = document.createElement('details')
+    activity.className = 'assistant-activity'
+    activity.innerHTML = [
+      '<summary class="assistant-activity__summary">Activity · 2 steps</summary>',
+      '<div class="assistant-activity__body">',
+      '<div>Private path: /Users/example/project</div>',
+      '<div>Tool error: secret diagnostic</div>',
+      '</div>',
+    ].join('')
+    const answer = document.createElement('div')
+    answer.className = 'msg-ai-text'
+    answer.textContent = 'Canonical answer'
+    source.append(activity, answer)
+
+    const stage = buildShareDom([source])
+
+    expect(stage.querySelector('.assistant-activity')).toBeNull()
+    expect(stage.textContent).toContain('Canonical answer')
+    expect(stage.textContent).not.toContain('/Users/example/project')
+    expect(stage.textContent).not.toContain('secret diagnostic')
+  })
+
+  it('preserves explicitly expanded activity as a structured static block', () => {
+    const source = document.createElement('article')
+    source.dataset.shareMessageId = 'assistant-expanded-activity'
+    const activity = document.createElement('details')
+    activity.className = 'assistant-activity'
+    activity.setAttribute('open', '')
+    activity.innerHTML = [
+      '<summary class="assistant-activity__summary">Activity · 2 steps</summary>',
+      '<div class="assistant-activity__body">',
+      '<section class="thinking-block">Checked the evidence.</section>',
+      '<div class="step-card"><div class="tool-row-body">Tool output</div></div>',
+      '</div>',
+    ].join('')
+    const answer = document.createElement('div')
+    answer.className = 'msg-ai-text'
+    answer.textContent = 'Canonical answer'
+    source.append(activity, answer)
+
+    const stage = buildShareDom([source])
+
+    expect(stage.querySelector('.assistant-activity')).toBeNull()
+    expect(stage.querySelector('.chat-share-export-activity')).not.toBeNull()
+    expect(stage.querySelector('.chat-share-export-activity__label')?.textContent)
+      .toBe('Activity · 2 steps')
+    expect(stage.querySelector('.thinking-block')?.textContent).toBe('Checked the evidence.')
+    expect(stage.querySelector('.tool-row-body')?.textContent).toBe('Tool output')
+    expect(stage.textContent?.match(/Canonical answer/g)).toHaveLength(1)
+  })
 })

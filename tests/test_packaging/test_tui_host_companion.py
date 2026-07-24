@@ -50,14 +50,21 @@ def test_companion_version_and_bun_are_exactly_pinned() -> None:
     assert "com.apple.security.cs.disable-library-validation" in entitlements
 
 
-def test_bun_native_tests_limit_concurrency() -> None:
+def test_bun_native_tests_run_in_isolated_processes() -> None:
     package = json.loads(
         (REPO_ROOT / "src/opensquilla/cli/tui/opentui/package/package.json").read_text()
     )
+    runner = (
+        REPO_ROOT
+        / "src/opensquilla/cli/tui/opentui/package/scripts/run-bun-tests.mjs"
+    ).read_text()
 
-    assert package["scripts"]["test:bun"] == (
-        "bun test --max-concurrency=1 src/*.bun.test.mjs"
-    )
+    assert package["scripts"]["test:bun"] == "node scripts/run-bun-tests.mjs"
+    assert 'entry.name.endsWith(".bun.test.mjs")' in runner
+    assert '"src/approval-overlay.bun.test.mjs"' in runner
+    assert '"src/theme-picker.bun.test.mjs"' in runner
+    assert '"--max-concurrency=1"' in runner
+    assert "spawnSync(" in runner
 
 
 def test_core_wheel_excludes_generated_tui_host_directories() -> None:

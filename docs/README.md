@@ -16,7 +16,7 @@ root release README with task-oriented guides.
 7. [`web-ui.md`](web-ui.md) - local control console and chat UI.
 8. [`sessions.md`](sessions.md) - session continuity, export, resume, abort,
    and cleanup.
-9. [`glossary.md`](glossary.md) - user-facing terminology.
+9. [`glossary.md`](glossary.md) - user-facing terminology. [`中文`](glossary.zh-Hans.md)
 
 ## Feature Guides
 
@@ -75,6 +75,7 @@ root release README with task-oriented guides.
   migration, MCP server, and install inventory commands.
 - [`troubleshooting.md`](troubleshooting.md) - common install/runtime issues.
 - [`glossary.md`](glossary.md) - short definitions for product terms.
+- [`glossary.zh-Hans.md`](glossary.zh-Hans.md) - 产品术语中文释义。
 
 ## Improve These Docs
 

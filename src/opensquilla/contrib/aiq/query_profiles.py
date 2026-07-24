@@ -70,8 +70,10 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
             "Make one compact securities_search activity call, preserve bond grain, requested "
             "metric/N/window and server order, then stop; never repeat a successful call or "
             "expand a successful compact result. Do not try prints_search or trace_notional "
-            "first. For liquidity reasons, use only literal returned score/trades/notional/days/"
-            "last_trade observables; do not invent causes."
+            "first. Label quantity/notional estimated: finalized capped prints use FINRA "
+            "prior-month IG/HY and standard/144A category averages. For liquidity reasons, use "
+            "only literal returned score/trades/notional/days/last_trade observables; do not "
+            "invent causes."
         ),
     ),
     "aggregate": _selection(
@@ -81,7 +83,10 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
         guidance=(
             "Call trace_notional once with an exact resolved date. Use sector_credit for sector "
             "x grade, credit_grade for total IG/HY volume, and net_flow ordered by net_buying "
-            "for customer flow. Preserve TRACE cap/lower-bound caveats."
+            "for customer flow. Pass measure='volume' for volume/TRACE volume (face/par dollars) "
+            "and measure='notional' only for explicit notional/cash-value wording (par × "
+            "price/100). Preserve source, IG/HY coverage, and the capped-size methodology caveat; "
+            "never relabel other/unresolved segments as HY or map an estimate to one trade."
         ),
     ),
     "cpplus_screen": _selection(
@@ -106,12 +111,12 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
     "cpplus_movers": _selection(
         "cpplus_movers",
         "mktx_cpp_movers",
-        skill_name="aiq-rankings-and-leaderboards",
         guidance=(
-            "Call mktx_cpp_movers once. Its delta is a CP+ cash-price move in points of par, "
-            "not a Treasury-adjusted spread move in basis points. Preserve its dates. If the "
-            "request asks for widening in bps, state that the tool cannot establish or flag it; "
-            "never relabel the price move."
+            "Call mktx_cpp_movers once with lookback_days=1 for adjacent EOD marks or "
+            "lookback_days=30 for last month; use credit_grade='I' for IG. Its delta is a CP+ "
+            "cash-price move in points of par, not a Treasury-adjusted spread move in basis "
+            "points. Preserve its dates. If the request asks for widening in bps, state that the "
+            "tool cannot establish or flag it; never relabel the price move."
         ),
     ),
     "security_search": _selection(
@@ -155,10 +160,10 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
     "etf": _selection(
         "etf",
         "etf_reference",
-        skill_name="aiq-rankings-and-leaderboards",
         guidance=(
-            "Only LQD and HYG held-constituent datasets are supported. Never relabel a "
-            "market-wide HY scan as Bloomberg-index members or movers."
+            "Call etf_reference once for the exact named LQD or HYG held-constituent dataset; "
+            "report its returned count, holdings as-of, and source. Only LQD and HYG are "
+            "supported. Never relabel a market-wide scan as Bloomberg-index members or movers."
         ),
     ),
     "curve_chart": _selection(
@@ -166,8 +171,9 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
         "render_chart",
         skill_name="aiq-charting-and-visualization",
         guidance=(
-            "Call render_chart once in issuer_yield_curve mode; it retrieves issuer bonds "
-            "internally. Do not call securities_search separately."
+            "Call render_chart once with source_mode='issuer_yield_curve', the named issuer, "
+            "data='[]', chart_type='scatter', x_key='ytm_years', and y_keys=['last_yld']; it "
+            "retrieves issuer bonds internally. Do not call securities_search separately."
         ),
     ),
     "history_chart": _selection(
@@ -194,10 +200,11 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
     "movers": _selection(
         "movers",
         "movers_search",
-        skill_name="aiq-rankings-and-leaderboards",
         guidance=(
-            "Call movers_search once with the requested grade/sector/session/direction. Preserve "
-            "price-point versus yield/spread-basis-point units exactly."
+            "Call movers_search once with the requested N, IG/HY grade, sector, exact session, "
+            "and direction. Use widener/tightener only when explicitly requested; omit direction "
+            "for generic movers. Preserve server order and price-point versus yield/spread-basis-"
+            "point units exactly."
         ),
     ),
     "new_issue": _selection(
@@ -230,8 +237,10 @@ PROFILES: dict[str, ToolSurfaceSelection] = {
         "portfolio_build",
         "generate_portfolio_proposal",
         guidance=(
-            "Call generate_portfolio_proposal once with all mandate constraints. Report actual "
-            "constraint checks; never invent why an optimizer target was missed."
+            "Call generate_portfolio_proposal once with all mandate constraints. Preserve a "
+            "requested benchmark-relative pickup with target_yield_pickup_bps (for example 25), "
+            "rather than converting it to an absolute target_yield. Report actual constraint "
+            "checks; never invent why an optimizer target was missed."
         ),
     ),
     "portfolio_ladder": _selection(

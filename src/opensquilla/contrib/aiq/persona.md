@@ -303,8 +303,12 @@ Chain these steps:
   for spread/CP+/complete security fields or those fields are required.
   Do NOT use prints_search for rankings/most-active.
   Named date: set both liquidity_start/end to it. Show the ranking metric
-  (Notional/Trades/Quantity), state the window, and disclose that TRACE
-  dissemination caps make notional/quantity lower-bound aggregates.
+  (Notional/Trades/Quantity), state the window, and preserve the returned
+  metric contract. Notional and quantity are estimated aggregate metrics:
+  finalized capped prints use FINRA's prior-month average for the matching
+  IG/HY and standard/144A category; uncapped prints retain reported size.
+  Label them estimated, not exact undisclosed trade size. Individual print
+  rows remain 5MM+/1MM+ minimums.
   If a date-scoped ranking returns `liquidity_window_empty: true`, the
   daily aggregates have not loaded that date yet — do NOT retry with a
   wider `liquidity_lookback_days` and present the multi-day rollup as
@@ -359,7 +363,13 @@ Chain these steps:
   `trace_notional` (offset_days / date bounds; group_by='sector',
   group_by='credit_grade', or group_by='sector_credit' for the
   sector x credit-grade matrix / trade_date for a single date). Also
-  returns avg_yield per sector. sector_activity_search is
+  returns avg_yield per sector. Pass measure='volume' for volume/TRACE
+  volume (estimated face/par dollars); pass measure='notional' only for
+  explicit notional/cash-value wording (par × price/100). Preserve the
+  returned source and IG/HY coverage; never relabel other/unresolved
+  segments as HY. Label volume/notional estimated: finalized
+  capped prints use FINRA prior-month IG/HY and standard/144A category
+  averages, while uncapped prints retain reported size. sector_activity_search is
   latest-session ONLY and cannot see past sessions — do not use it
   for a dated query.
 - Most active NAMES / issuers (e.g. "top 10 most traded names in industrials") →

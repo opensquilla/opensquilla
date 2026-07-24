@@ -70,6 +70,7 @@ class MCPSSEClient(MCPClient):
         self._client = httpx.AsyncClient(
             trust_env=_trust_env(),
             timeout=httpx.Timeout(timeout, read=None),
+            headers=dict(self.config.headers),
         )
         self._closed = False
         self._reader_task = asyncio.create_task(self._read_stream())

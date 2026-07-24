@@ -30,10 +30,12 @@ returns raw prints. Do not repeat a successful compact call: missing security
 terms are a data-quality condition, not a reason to expand or retry.
 
 Preserve tool order and show the requested metric plus trade count. State the
-effective date/window returned by the tool. `notional` means TRACE price times
-reported par in USD; `quantity` means reported par. Dissemination size caps
-make both lower-bound aggregates. Neither field is BondTicker `Est Vol`, so
-never apply that label or compare their totals as equivalent measures.
+effective date/window returned by the tool. Treat `notional` and `quantity` as
+estimated aggregate metrics. For finalized capped prints, the tool substitutes
+FINRA's prior-month average for the matching IG/HY and standard/144A category;
+uncapped prints retain reported size. Label the result estimated, not the exact
+undisclosed size of any capped trade. Keep individual print displays at `5MM+`
+or `1MM+`; never expose an aggregate estimate as one trade's size.
 
 Activity ranking is intentionally trade-first. A recent CUSIP may appear
 before the reference master has complete terms. Preserve `identity_status` and

@@ -271,6 +271,21 @@ def test_activity_profile_blocks_the_three_call_failure_path() -> None:
     assert "trace_notional" not in selection.tool_names
 
 
+def test_faq_profiles_expose_the_parameters_needed_for_exact_requests() -> None:
+    monthly_cpp = select_aiq_tool_surface("largest CP+ movement last month")
+    issuer_curve = select_aiq_tool_surface("graph of curve of amazon bonds")
+    portfolio = select_aiq_tool_surface(
+        "build a $100mm IG portfolio mirroring LQD risk, outperform by 25bps, 35 holdings"
+    )
+
+    assert monthly_cpp is not None
+    assert "lookback_days=30" in monthly_cpp.guidance
+    assert issuer_curve is not None
+    assert "source_mode='issuer_yield_curve'" in issuer_curve.guidance
+    assert portfolio is not None
+    assert "target_yield_pickup_bps" in portfolio.guidance
+
+
 def test_runtime_adapter_filters_tools_and_catalog_to_one_skill() -> None:
     definitions = [
         SimpleNamespace(name="prints_search"),

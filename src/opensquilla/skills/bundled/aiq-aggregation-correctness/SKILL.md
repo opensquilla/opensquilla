@@ -33,12 +33,23 @@ median fields; never approximate a median with a mean.
 "How many trades larger than $X", "top N by trade count", "total volume traded" → use the tool's
 count/`total_par`/`notional_usd` fields. When the user filters by a size threshold ("> $5mm"),
 ensure the count reflects ONLY trades over that threshold, and show the threshold you applied.
+For market, issuer, bond, sector, or credit-grade volume aggregates, label additive par/notional
+as estimated. Finalized capped prints use FINRA's prior-month average for the matching IG/HY and
+standard/144A category; uncapped prints retain reported size. Preserve any raw comparison field,
+but do not substitute it for the estimate. Never attach an aggregate estimate to an individual
+capped print; individual rows remain open-ended `5MM+` or `1MM+` minimums.
+
+For grouped market aggregates, ignore the legacy tool name when choosing the metric:
+- volume / TRACE volume → `trace_notional(measure='volume')` (estimated face/par dollars)
+- explicit notional / cash value → `trace_notional(measure='notional')` (`par × price / 100`)
+Preserve `meta.source`, `meta.measure`, and `ig_hy_volume_coverage_pct`. Never imply IG and HY
+cover the whole market when returned coverage is below 100%, or relabel the remainder as HY.
 
 "How big was TRACE volume in IG yesterday" → call `trace_notional` once with the prior completed
-session resolved to an exact date and `group_by='credit_grade'`. Select the returned IG bucket; do
+session resolved to an exact date, `group_by='credit_grade'`, and `measure='volume'`. Select the returned IG bucket; do
 not sum displayed bond rows or substitute a bond leaderboard. Report the tool's trade count and
-notional with the exact session date/source. TRACE dissemination size caps make notional a lower
-bound, so retain the returned cap caveat.
+estimated face/par volume with the exact session date/source. Preserve the returned capped-size
+estimate caveat.
 
 ## Cross-sector / cross-group averages
 "Average yield by sector", "which sector is cheapest" → `trace_notional(group_by='sector')` returns

@@ -188,7 +188,7 @@
   "module": "lib.tools.sql_data_tools.securities_tools",
   "attr": "securities_search",
   "group": "read",
-  "description": "Screen the bond universe using the latest TRACE snapshot. Supports issuer/CUSIP, grade/sector, coupon/yield/price/duration/maturity, issue-date, liquidity and CP+ filters plus server-side rankings. detail='compact' is the bounded discovery/ranking projection; detail='full' adds spread, benchmark and authorised CP+ fields. maturity_ladder_years builds one server-ranked row per requested year. For exactly one resolved bond, include_recent_prints/include_cpp_history attach verified related data in the same call. include_period_history='day'|'week'|'month' batches history for at most five returned tranches. NOT for arbitrary historical as-of price snapshots.",
+  "description": "Screen the bond universe using the latest TRACE snapshot. Supports issuer/CUSIP, grade/sector, coupon/yield/price/duration/maturity, issue-date, liquidity and CP+ filters plus server-side rankings. detail='compact' is the bounded discovery/ranking projection; detail='full' adds spread, benchmark and authorised CP+ fields. Activity quantity/notional metrics estimate finalized capped prints with FINRA prior-month IG/HY and standard/144A category averages; individual prints remain 5MM+/1MM+. maturity_ladder_years builds one server-ranked row per requested year. For exactly one resolved bond, include_recent_prints/include_cpp_history attach verified related data in the same call. include_period_history='day'|'week'|'month' batches history for at most five returned tranches. NOT for arbitrary historical as-of price snapshots.",
   "params": {
    "cusip_id": {
     "type": [
@@ -491,7 +491,7 @@
   "module": "lib.tools.sql_data_tools.market_data_tools",
   "attr": "trace_notional",
   "group": "read",
-  "description": "Get TRACE market-wide notional aggregates over a rolling window. When: market volume, sector breakdown, sector x credit-grade matrix, net customer buying/selling by sector, most-active issuer names, or today-vs-yesterday comparison. NOT for: bond-level trade history (use prints_search or prints_group_by_period).",
+  "description": "Get estimated TRACE market-wide aggregate volume/notional over a rolling window. measure='volume' (default) is face/par dollars matching FINRA/BondTicker volume; measure='notional' is the price-adjusted cash proxy par \u00d7 price/100. Entitled routes use the vendor capped-size estimate; public routes use FINRA's prior-month IG/HY and standard/144A category averages. Individual print rows remain 5MM+/1MM+ minimums. When: market volume, sector breakdown, sector x credit-grade matrix, net customer buying/selling by sector, most-active issuer names, or today-vs-yesterday comparison. NOT for: bond-level trade history (use prints_search or prints_group_by_period).",
   "params": {
    "group_by": {
     "type": "string"
@@ -528,6 +528,14 @@
      "string",
      "null"
     ]
+   },
+   "measure": {
+    "type": "string",
+    "enum": [
+     "volume",
+     "notional"
+    ],
+    "default": "volume"
    }
   },
   "required": []
@@ -636,7 +644,7 @@
   "module": "lib.tools.sql_data_tools.marketaxess_tools",
   "attr": "mktx_cpp_movers",
   "group": "read",
-  "description": "Top movers ranked by CP+ EOD day-over-day mid-price change. When: \"top movers by CP+ EOD\", \"biggest CP+ price changes\", CP+ gainers/losers \u2014 the CP+ (MarketAxess fair value) analogue of TRACE print movers. Each row carries BOTH CP+ mid values and their dates (the diff inputs), liquidity score, rating, sector, and 7-day TRACE trade count + notional. NOT for: TRACE print movers (use securities_search order_by price change) or CP+ history series (use mktx_history). Params: credit_grade 'I' (IG) or 'H' (HY), optional; direction 'up' | 'down' | 'abs' (default \u2014 biggest absolute moves); limit 1-50 (default 10). Returns: {movers: [...], meta}. Only fresh pairs rank (current mark <=5 days old, candles <=5 days apart). Surface STALE_DAYS/GAP_DAYS and the PRICE_SUSPECT flag (conversion-adjusted/distressed mids) INLINE in any table you render. Movers with LIQUIDITY_SCORE null have no current MKTX liquidity coverage \u2014 say so, don't guess.",
+  "description": "Top movers ranked by CP+ EOD mid-price change over 1-90 calendar days. When: \"top movers by CP+ EOD\", \"biggest CP+ price changes\", CP+ gainers/losers \u2014 the CP+ (MarketAxess fair value) analogue of TRACE print movers. Each row carries BOTH CP+ mid values and their dates (the diff inputs), liquidity score, rating, sector, and 7-day TRACE trade count + notional. NOT for: TRACE print movers (use securities_search order_by price change) or CP+ history series (use mktx_history). Params: credit_grade 'I' (IG) or 'H' (HY), optional; direction 'up' | 'down' | 'abs' (default \u2014 biggest absolute moves); limit 1-50 (default 10); lookback_days 1-90 (default 1, use 30 for \"last month\"). Returns: {movers: [...], meta}. Surface returned dates, STALE_DAYS/GAP_DAYS, and PRICE_SUSPECT inline. Movers with LIQUIDITY_SCORE null have no current MKTX liquidity coverage \u2014 say so, don't guess.",
   "params": {
    "credit_grade": {
     "type": [
@@ -645,10 +653,17 @@
     ]
    },
    "direction": {
-    "type": "string"
+    "type": "string",
+    "default": "abs"
    },
    "limit": {
-    "type": "integer"
+    "type": "integer",
+    "default": 10
+   },
+   "lookback_days": {
+    "type": "integer",
+    "default": 1,
+    "description": "Calendar-day lookback from 1 to 90; use 30 for last month."
    }
   },
   "required": []
@@ -902,7 +917,7 @@
   "module": "lib.tools.chart_tools",
   "attr": "render_chart",
   "group": "local",
-  "description": "Render an interactive chart in the user's chat interface. When: user asks for a visualisation, graph, chart, or plot of data. NOT for: dual-scale comparisons (e.g. price ~100 vs yield ~5%) \u2014 call twice with separate charts. Params: data (JSON string of [{...}, ...]), chart_type (bar|line|area|scatter|pie), title, x_key, y_keys, orientation (vertical|horizontal), stacked, show_legend, right_y_keys (secondary Y-axis for dual-scale charts, line/bar/area only), x_label/y_label (axis titles), x_min/x_max and y_min/y_max (explicit numeric domains; omit either bound for automatic scaling). Domain bounds must be ordered. Returns: confirmation JSON with chart metadata.",
+  "description": "Render an interactive chart in the user's chat interface. When: user asks for a visualisation, graph, chart, or plot of data. NOT for: dual-scale comparisons (e.g. price ~100 vs yield ~5%) \u2014 call twice with separate charts. Params: data (JSON string of [{...}, ...]), chart_type (bar|line|area|scatter|pie), title, x_key, y_keys, orientation (vertical|horizontal), stacked, show_legend, right_y_keys (secondary Y-axis for dual-scale charts, line/bar/area only), x_label/y_label (axis titles), x_min/x_max and y_min/y_max (explicit numeric domains; omit either bound for automatic scaling). For an issuer yield curve, set source_mode='issuer_yield_curve', issuer to the requested issuer, and data='[]'; the tool retrieves issuer bonds internally. Returns: confirmation JSON with chart metadata.",
   "params": {
    "data": {
     "type": "string"
@@ -928,17 +943,37 @@
      "null"
     ]
    },
+   "source_mode": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "enum": [
+     "issuer_yield_curve"
+    ],
+    "description": "Set to issuer_yield_curve to retrieve and project issuer bonds inside the tool."
+   },
+   "issuer": {
+    "type": [
+     "string",
+     "null"
+    ],
+    "description": "Issuer name used when source_mode is issuer_yield_curve."
+   },
    "orientation": {
     "type": [
      "string",
      "null"
-    ]
+    ],
+    "default": "vertical"
    },
    "stacked": {
-    "type": "boolean"
+    "type": "boolean",
+    "default": false
    },
    "show_legend": {
-    "type": "boolean"
+    "type": "boolean",
+    "default": true
    },
    "right_y_keys": {
     "type": [
@@ -1345,6 +1380,13 @@
      "null"
     ],
     "description": "Minimum yield target (optional)"
+   },
+   "target_yield_pickup_bps": {
+    "type": [
+     "number",
+     "null"
+    ],
+    "description": "Target yield relative to the selected benchmark in basis points (25 means benchmark +0.25%). Mutually exclusive with target_yield and targets_json.target_yield."
    },
    "sector_exclusions": {
     "type": [

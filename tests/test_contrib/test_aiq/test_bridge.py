@@ -23,7 +23,11 @@ from opensquilla.contrib.aiq.agent import (
     load_persona,
 )
 from opensquilla.contrib.aiq.catalog import aiq_tool_names, load_catalog
-from opensquilla.contrib.aiq.runtime import resolve_repo_path, resolve_user_email
+from opensquilla.contrib.aiq.runtime import (
+    resolve_mcp_url,
+    resolve_repo_path,
+    resolve_user_email,
+)
 from opensquilla.engine.types import ToolCall
 from opensquilla.tools.dispatch import build_tool_handler
 from opensquilla.tools.registry import get_default_registry
@@ -184,6 +188,60 @@ def test_repo_path_and_email_resolution(monkeypatch: pytest.MonkeyPatch, tmp_pat
     assert resolve_user_email() == "trader@example.com"
 
 
+async def test_remote_mcp_backend_avoids_local_agents_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeResult:
+        content = json.dumps({"data": [{"credit_grade": "I", "volume": 10}]})
+        is_error = False
+
+    class FakeClient:
+        async def call_tool(self, name, arguments):
+            captured["name"] = name
+            captured["arguments"] = arguments
+            return FakeResult()
+
+    monkeypatch.setenv("AIQ_MCP_URL", "https://api.example.test/api/mcp/sse")
+    monkeypatch.setenv("AIQ_MCP_BEARER_TOKEN", "test-token")
+    monkeypatch.setattr(
+        aiq_runtime,
+        "_get_aiq_mcp_client",
+        lambda: _async_value(FakeClient()),
+    )
+    monkeypatch.setattr(
+        aiq_runtime,
+        "_load_function_tool",
+        lambda *_args: pytest.fail("remote backend must not import AIQ FunctionTool"),
+    )
+
+    result = await aiq_runtime.invoke_aiq_tool(
+        "trace_notional",
+        "lib.tools.sql_data_tools.market_data_tools",
+        "trace_notional",
+        {"group_by": "credit_grade", "measure": "volume", "sector": ""},
+        [],
+    )
+
+    assert captured == {
+        "name": "trace_notional",
+        "arguments": {"group_by": "credit_grade", "measure": "volume"},
+    }
+    assert json.loads(result)["data"][0]["volume"] == 10
+
+
+async def _async_value(value: Any) -> Any:
+    return value
+
+
+def test_mcp_url_resolution_prefers_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIQ_MCP_URL", "https://api.example.test/api/mcp/sse")
+    assert resolve_mcp_url() == "https://api.example.test/api/mcp/sse"
+
+
 def test_persona_is_ported_and_adapted() -> None:
     persona = load_persona()
     assert "FINRA TRACE" in persona
@@ -219,6 +277,26 @@ def test_securities_detail_schema_matches_aiq_backend_contract() -> None:
     assert compound_fields <= set(securities.params)
     assert securities.params["order_by"]["default"] == "smart"
     assert securities.params["recent_prints_limit"]["default"] == "10"
+
+
+def test_faq_critical_tool_parameters_match_aiq_backend_contract() -> None:
+    """Guard the three FAQ parameters that previously fell out of the snapshot."""
+
+    catalog = {tool.name: tool for tool in load_catalog()}
+
+    cpp_movers = catalog["mktx_cpp_movers"]
+    assert cpp_movers.params["lookback_days"]["type"] == "integer"
+    assert cpp_movers.params["lookback_days"]["default"] == 1
+    assert "last month" in cpp_movers.description
+
+    chart = catalog["render_chart"]
+    assert chart.params["source_mode"]["enum"] == ["issuer_yield_curve"]
+    assert chart.params["issuer"]["type"] == ["string", "null"]
+    assert "issuer_yield_curve" in chart.description
+
+    proposal = catalog["generate_portfolio_proposal"]
+    assert proposal.params["target_yield_pickup_bps"]["type"] == ["number", "null"]
+    assert "basis points" in proposal.params["target_yield_pickup_bps"]["description"]
 
 
 def test_ranking_skill_uses_progressive_detail_without_a_second_tool() -> None:

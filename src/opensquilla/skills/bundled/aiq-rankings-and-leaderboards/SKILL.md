@@ -27,9 +27,10 @@ Route by intent:
   an exact date/window. Pass the requested N as `limit`. Show the requested metric and any secondary
   metric the user named. Do NOT use `prints_search` (raw trades) or `trace_notional(group_by='issuer')`
   (issuer rows) for a bond-level ranking. Preserve `meta.liquidity.metric_contract`: `notional` is
-  TRACE price × reported par in USD and `quantity` is reported par; dissemination caps make both
-  lower bounds. Neither is MarketAxess BondTicker **Est Vol**, so never use that label or compare
-  the values as if they were the same measure.
+  estimated TRACE price notional and `quantity` is estimated par. For finalized capped prints,
+  the tool substitutes FINRA's prior-month average for the matching IG/HY and standard/144A
+  category; uncapped prints retain reported size. Label these aggregate values estimated, not
+  exact undisclosed trade sizes. Keep individual print displays at `5MM+` or `1MM+`.
 
 - **"Top N names / issuers"** → `trace_notional(group_by='issuer')`, with the requested metric,
   window, and filters. One issuer may have many bonds, so `securities_search` would rank tranches
@@ -37,7 +38,10 @@ Route by intent:
 
 - **"Break down market volume/notional by sector, credit grade, or sector × grade"** →
   `trace_notional(group_by='sector'|'credit_grade'|'sector_credit')`. This is an aggregate breakdown,
-  not a bond leaderboard; do not substitute `securities_search`.
+  not a bond leaderboard; do not substitute `securities_search`. Label volume/notional estimated
+  and preserve the tool's capped-size methodology caveat. Pass `measure='volume'` for volume
+  (face/par dollars) and `measure='notional'` only for explicit notional/cash-value wording
+  (`par × price / 100`). Preserve source and IG/HY coverage; never relabel the remainder as HY.
 
 - **"Biggest movers / wideners / tighteners / price gappers / today vs prior session"** →
   `movers_search`. `direction='widener'` for wideners, `direction='tightener'` for tighteners,

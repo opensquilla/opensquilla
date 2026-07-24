@@ -15,6 +15,7 @@ class MCPServerConfig:
     url: str | None = None  # for sse
     message_endpoint: str | None = None  # for sse, default "/message"
     env: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
     tool_timeout_seconds: float = 30.0
 
 

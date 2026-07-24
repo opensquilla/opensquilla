@@ -42,6 +42,7 @@ class EndpointHandshakeSSEServer:
         self.sessions: dict[str, queue.Queue[dict[str, Any]]] = {}
         self.wrong_posts: list[str] = []
         self.session_posts: list[str] = []
+        self.authorization_headers: list[str | None] = []
         self._shutdown = threading.Event()
 
         outer = self
@@ -53,6 +54,7 @@ class EndpointHandshakeSSEServer:
                 pass
 
             def do_GET(self) -> None:  # noqa: N802 - http.server API
+                outer.authorization_headers.append(self.headers.get("Authorization"))
                 if urlparse(self.path).path != "/sse":
                     self._plain(404, b"Not Found")
                     return
@@ -75,6 +77,7 @@ class EndpointHandshakeSSEServer:
                         return
 
             def do_POST(self) -> None:  # noqa: N802 - http.server API
+                outer.authorization_headers.append(self.headers.get("Authorization"))
                 parsed = urlparse(self.path)
                 body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
                 sid = (parse_qs(parsed.query).get("session_id") or [""])[0]
@@ -172,6 +175,26 @@ async def test_connect_completes_endpoint_handshake_and_lists_tools(
         "tools/list",
     ]
     assert sse_server.wrong_posts == []
+
+
+async def test_configured_headers_reach_sse_stream_and_message_posts(
+    sse_server: EndpointHandshakeSSEServer,
+) -> None:
+    config = MCPServerConfig(
+        name="authenticated",
+        transport="sse",
+        url=f"http://127.0.0.1:{sse_server.port}/sse",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    client = MCPSSEClient(config)
+    try:
+        await asyncio.wait_for(client.connect(), timeout=10)
+        await asyncio.wait_for(client.list_tools(), timeout=10)
+    finally:
+        await client.close()
+
+    assert sse_server.authorization_headers
+    assert set(sse_server.authorization_headers) == {"Bearer test-token"}
 
 
 def test_endpoint_event_rejects_cross_origin_url() -> None:

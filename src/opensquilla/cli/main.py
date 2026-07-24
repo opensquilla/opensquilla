@@ -1007,6 +1007,11 @@ def agent(
         "", "--transcript-path", help="Write benchmark-compatible JSONL transcript"
     ),
     usage_path: str = typer.Option("", "--usage-path", help="Write usage JSON to this file"),
+    event_stream_stderr: bool = typer.Option(
+        False,
+        "--event-stream-stderr",
+        help="Write agent events as incrementally flushed JSONL to stderr",
+    ),
     session_db_path: str = typer.Option(
         ":memory:",
         "--session-db-path",
@@ -1080,6 +1085,7 @@ def agent(
             length_capped_continuations=length_capped_continuations,
             transcript_path=transcript_path,
             usage_path=usage_path,
+            event_stream_stderr=event_stream_stderr,
             session_db_path=session_db_path,
             no_memory_capture=no_memory_capture,
             file_paths=file_paths,

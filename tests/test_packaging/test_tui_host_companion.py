@@ -50,6 +50,16 @@ def test_companion_version_and_bun_are_exactly_pinned() -> None:
     assert "com.apple.security.cs.disable-library-validation" in entitlements
 
 
+def test_bun_native_tests_limit_concurrency() -> None:
+    package = json.loads(
+        (REPO_ROOT / "src/opensquilla/cli/tui/opentui/package/package.json").read_text()
+    )
+
+    assert package["scripts"]["test:bun"] == (
+        "bun test --max-concurrency=1 src/*.bun.test.mjs"
+    )
+
+
 def test_core_wheel_excludes_generated_tui_host_directories() -> None:
     data = tomllib.loads(CORE_PYPROJECT.read_text(encoding="utf-8"))
     excluded = set(data["tool"]["hatch"]["build"]["targets"]["wheel"]["exclude"])

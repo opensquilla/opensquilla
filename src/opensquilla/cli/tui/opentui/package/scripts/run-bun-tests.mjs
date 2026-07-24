@@ -3,13 +3,8 @@ import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
-// Bun 1.3.14 can crash on Linux when these renderer-heavy files share a
-// process with the full native OpenTUI suite. Keep the shared suite together
-// for its theme state, but give the changed overlay files fresh processes.
-const isolatedTestFiles = new Set([
-  "src/approval-overlay.bun.test.mjs",
-  "src/theme-picker.bun.test.mjs",
-]);
+// Bun 1.3.14 can crash on Linux when native OpenTUI test files share a Bun
+// process. Give each file a fresh process and keep concurrency inside it at 1.
 const testFiles = readdirSync(new URL("../src/", import.meta.url), {
   withFileTypes: true,
 })
@@ -20,32 +15,19 @@ const testFiles = readdirSync(new URL("../src/", import.meta.url), {
 if (testFiles.length === 0) {
   throw new Error("No Bun test files found");
 }
-for (const isolatedTestFile of isolatedTestFiles) {
-  if (!testFiles.includes(isolatedTestFile)) {
-    throw new Error(`Missing isolated Bun test file: ${isolatedTestFile}`);
-  }
-}
 
 const bunExecutable = process.platform === "win32" ? "bun.exe" : "bun";
-const sharedTestFiles = testFiles.filter((testFile) => !isolatedTestFiles.has(testFile));
-const testRuns = [
-  {
-    label: "shared Bun suite",
-    args: ["test", ...sharedTestFiles],
-  },
-  ...[...isolatedTestFiles].map((testFile) => ({
-    label: testFile,
-    args: ["test", "--max-concurrency=1", testFile],
-  })),
-];
-
-for (const testRun of testRuns) {
-  console.log(`\n=== ${testRun.label} ===`);
+for (const testFile of testFiles) {
+  console.log(`\n=== ${testFile} ===`);
   const result = spawnSync(
     bunExecutable,
-    testRun.args,
+    ["test", "--max-concurrency=1", testFile],
     {
       cwd: packageRoot,
+      env: {
+        ...process.env,
+        OPENSQUILLA_TUI_COLOR: "truecolor",
+      },
       stdio: "inherit",
     },
   );

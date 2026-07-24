@@ -61,9 +61,9 @@ def test_bun_native_tests_run_in_isolated_processes() -> None:
 
     assert package["scripts"]["test:bun"] == "node scripts/run-bun-tests.mjs"
     assert 'entry.name.endsWith(".bun.test.mjs")' in runner
-    assert '"src/approval-overlay.bun.test.mjs"' in runner
-    assert '"src/theme-picker.bun.test.mjs"' in runner
+    assert "for (const testFile of testFiles)" in runner
     assert '"--max-concurrency=1"' in runner
+    assert 'OPENSQUILLA_TUI_COLOR: "truecolor"' in runner
     assert "spawnSync(" in runner
 
 

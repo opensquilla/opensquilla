@@ -4,6 +4,7 @@ import json
 import multiprocessing
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,11 @@ def _profile(home: Path) -> None:
         'state_dir = "state"\nworkspace_dir = "workspace"\n',
         encoding="utf-8",
     )
+
+
+def _isolate_profile_locks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("OPENSQUILLA_USER_STATE_DIR", str(tmp_path / "user-state"))
+    monkeypatch.setenv("OPENSQUILLA_TEST_PROFILE_LOCK_ROOT", "1")
 
 
 def test_unknown_desktop_layout_blocks_agent_before_profile_seed(
@@ -195,3 +201,81 @@ def test_runtime_writer_lock_keeps_read_only_cli_available_and_rejects_agent(
             writer.join(timeout=5)
 
     assert writer.exitcode == 0
+
+
+def test_different_state_dirs_acquire_independent_profile_locks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Two profile locks with different OPENSQUILLA_STATE_DIR do not conflict."""
+
+    from opensquilla.recovery import guarded_desktop_profile
+    from opensquilla.recovery.locking import profile_lock_key, profile_lock_path
+
+    _isolate_profile_locks(monkeypatch, tmp_path)
+    profile_a = tmp_path / "profile-a"
+    profile_b = tmp_path / "profile-b"
+    profile_a.mkdir()
+    profile_b.mkdir()
+
+    assert profile_lock_key(profile_a) != profile_lock_key(profile_b)
+
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(profile_a))
+    with guarded_desktop_profile():
+        monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(profile_b))
+        with guarded_desktop_profile():
+            pass
+
+    assert profile_lock_path(profile_a).is_file()
+    assert profile_lock_path(profile_b).is_file()
+    assert profile_lock_path(profile_a) != profile_lock_path(profile_b)
+
+
+def test_empty_state_dir_falls_back_to_default_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An empty OPENSQUILLA_STATE_DIR produces default config without error."""
+
+    from opensquilla.gateway.config import GatewayConfig
+
+    _isolate_profile_locks(monkeypatch, tmp_path)
+    empty_profile = tmp_path / "empty"
+    empty_profile.mkdir()
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(empty_profile))
+
+    cfg = GatewayConfig.load()
+
+    assert cfg.state_dir == str(empty_profile / "state")
+    assert not (empty_profile / "config.toml").exists()
+
+
+def test_same_state_dir_blocks_second_profile_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Same OPENSQUILLA_STATE_DIR blocks a second writer on another thread."""
+
+    from opensquilla.recovery import ProfileLockBusyError, guarded_desktop_profile
+
+    _isolate_profile_locks(monkeypatch, tmp_path)
+    profile = tmp_path / "shared"
+    profile.mkdir()
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(profile))
+    errors: list[BaseException] = []
+
+    def try_second_lock() -> None:
+        try:
+            with guarded_desktop_profile():
+                pass
+        except BaseException as exc:
+            errors.append(exc)
+
+    with guarded_desktop_profile():
+        second = threading.Thread(target=try_second_lock)
+        second.start()
+        second.join(timeout=5)
+
+    assert not second.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], ProfileLockBusyError)

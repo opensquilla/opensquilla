@@ -646,6 +646,27 @@ toolchain — not the local image build.
 
 </details>
 
+### Concurrent CLI Calls
+
+The `agent` command acquires a profile-wide writer lock on the OpenSquilla
+home directory, so two calls sharing the same home would serialize (the second
+raises `ProfileLockBusyError`). To run multiple `agent` calls concurrently,
+give each one its own state directory via `OPENSQUILLA_STATE_DIR`:
+
+```sh
+OPENSQUILLA_STATE_DIR=/tmp/agent-a opensquilla agent -m "task A" --json &
+OPENSQUILLA_STATE_DIR=/tmp/agent-b opensquilla agent -m "task B" --json &
+wait
+```
+
+Each directory hashes to its own profile lock key, so the calls do not
+contend. Model assets are bundled with the Python package (they are not
+stored in the profile directory), and API keys are read from environment
+variables, so an empty directory is sufficient — there is no need to seed a
+`config.toml` or any state before the first run. State and history written
+by each call stay under its own directory, keeping the concurrent runs fully
+isolated.
+
 Provider tiers, sandbox tuning, image generation, and concurrency
 settings live in `opensquilla.toml.example`.
 

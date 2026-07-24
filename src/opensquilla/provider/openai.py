@@ -67,6 +67,7 @@ from .text_tool_normalizer import (
     classify_text_tool_segments,
     warn_for_unauthorized_plain_candidate,
 )
+from .tokenrhythm_correlation import tokenrhythm_correlation_headers
 from .trace_recorder import LLMTraceRecorder
 from .types import (
     ChatConfig,
@@ -2940,6 +2941,13 @@ class OpenAIProvider:
             "Accept": "text/event-stream",
         }
         headers.update(provider_app_headers(self._base_url))
+        headers.update(
+            tokenrhythm_correlation_headers(
+                self._provider_kind,
+                self._base_url,
+                cfg.provider_request_correlation,
+            )
+        )
         if self._org_id:
             headers["OpenAI-Organization"] = self._org_id
 
@@ -3094,6 +3102,7 @@ class OpenAIProvider:
                 ),
                 trust_env=_trust_env(),
                 proxy=self._proxy,
+                follow_redirects=False,
             ) as client:
                 async with client.stream(
                     "POST",
@@ -4621,6 +4630,7 @@ class OpenAIProvider:
                 timeout=cfg.timeout,
                 trust_env=_trust_env(),
                 proxy=self._proxy,
+                follow_redirects=False,
             ) as client:
                 response = await client.post(
                     endpoint,

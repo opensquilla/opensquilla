@@ -95,6 +95,193 @@ async def test_openrouter_image_provider_adds_app_attribution_headers(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_image_provider_sends_correlation_only_for_explicit_tokenrhythm_origin(
+    monkeypatch,
+) -> None:
+    from opensquilla.provider.tokenrhythm_correlation import (
+        TOKENRHYTHM_CALL_KIND_HEADER,
+        TOKENRHYTHM_EXECUTION_ID_HEADER,
+        TOKENRHYTHM_SESSION_ID_HEADER,
+        TOKENRHYTHM_TURN_ID_HEADER,
+    )
+    from opensquilla.provider.types import ProviderRequestCorrelation
+
+    captured_headers: list[dict[str, str]] = []
+
+    class FakeResponse:
+        text = ""
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "images": [
+                                {
+                                    "image_url": {
+                                        "url": "data:image/png;base64,b3BlbnNxdWlsbGE="
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        async def post(self, _url, *, headers, json):
+            captured_headers.append(headers)
+            return FakeResponse()
+
+    monkeypatch.setattr(
+        "opensquilla.provider.image_generation.httpx.AsyncClient",
+        lambda **kwargs: FakeClient(),
+    )
+    correlation = ProviderRequestCorrelation(
+        session_id="session-1",
+        turn_id="turn-1",
+        execution_id="image-execution-1",
+        call_kind="auxiliary.image_generation",
+    )
+    request = ImageGenerationRequest(
+        prompt="draw a squid",
+        model="image-model",
+        size="1024x1024",
+        provider_request_correlation=correlation,
+    )
+
+    trusted = OpenRouterImageGenerationProvider(
+        api_key="synthetic-token",
+        base_url="https://api.tokenrhythm.studio/v1",
+        provider_kind="tokenrhythm",
+    )
+    custom = OpenRouterImageGenerationProvider(
+        api_key="synthetic-token",
+        base_url="https://custom.example/v1",
+        provider_kind="tokenrhythm",
+    )
+    untyped_official_origin = OpenRouterImageGenerationProvider(
+        api_key="synthetic-token",
+        base_url="https://api.tokenrhythm.studio/v1",
+    )
+    await trusted.generate(request)
+    await custom.generate(request)
+    await untyped_official_origin.generate(request)
+
+    assert captured_headers[0][TOKENRHYTHM_SESSION_ID_HEADER] == "session-1"
+    assert captured_headers[0][TOKENRHYTHM_TURN_ID_HEADER] == "turn-1"
+    assert captured_headers[0][TOKENRHYTHM_EXECUTION_ID_HEADER] == "image-execution-1"
+    assert (
+        captured_headers[0][TOKENRHYTHM_CALL_KIND_HEADER]
+        == "auxiliary.image_generation"
+    )
+    assert TOKENRHYTHM_SESSION_ID_HEADER not in captured_headers[1]
+    assert TOKENRHYTHM_SESSION_ID_HEADER not in captured_headers[2]
+
+
+@pytest.mark.asyncio
+async def test_image_generation_fallback_operation_derives_one_correlation() -> None:
+    from opensquilla.provider import image_generation
+    from opensquilla.provider.correlation_context import (
+        current_provider_request_correlation,
+    )
+    from opensquilla.provider.types import ProviderRequestCorrelation
+
+    root = ProviderRequestCorrelation(
+        session_id="session-1",
+        turn_id="turn-1",
+        execution_id="root-execution",
+        call_kind="agent.chat",
+    )
+    captured: list[tuple[ImageGenerationRequest, object]] = []
+
+    class FakeProvider:
+        provider_id = "fake"
+        default_model = "image-model"
+        auth_env_vars: tuple[str, ...] = ()
+
+        async def generate(
+            self,
+            request: ImageGenerationRequest,
+        ) -> ImageGenerationResult:
+            captured.append((request, current_provider_request_correlation()))
+            if len(captured) == 1:
+                raise RuntimeError("first candidate failed")
+            return ImageGenerationResult(
+                image_bytes=b"image",
+                mime_type="image/png",
+                model=request.model,
+                provider=self.provider_id,
+            )
+
+    image_generation.register_image_generation_provider(FakeProvider())
+    try:
+        await image_generation.generate_with_fallbacks(
+            request=ImageGenerationRequest(
+                prompt="draw a squid",
+                model="fake/image-model-1",
+                size="1024x1024",
+                provider_request_correlation=root,
+            ),
+            candidates=["fake/image-model-1", "fake/image-model-2"],
+        )
+    finally:
+        image_generation.reset_image_generation_providers()
+
+    request_correlation = captured[0][0].provider_request_correlation
+    assert request_correlation == captured[0][1]
+    assert "session-1" not in repr(captured[0][0])
+    assert request_correlation is not None
+    assert request_correlation.session_id == root.session_id
+    assert request_correlation.turn_id == root.turn_id
+    assert request_correlation.execution_id != root.execution_id
+    assert request_correlation.call_kind == "auxiliary.image_generation"
+    fallback_correlation = captured[1][0].provider_request_correlation
+    assert fallback_correlation == captured[1][1]
+    assert fallback_correlation.session_id == request_correlation.session_id
+    assert fallback_correlation.turn_id == request_correlation.turn_id
+    assert fallback_correlation.execution_id == request_correlation.execution_id
+    assert (
+        fallback_correlation.call_kind
+        == "auxiliary.image_generation.provider_fallback"
+    )
+
+
+@pytest.mark.parametrize(
+    "call_kind",
+    [
+        "auxiliary.image_generation",
+        "auxiliary.image_generation.provider_fallback",
+    ],
+)
+def test_image_generation_recognizes_existing_operation_call_kinds(
+    call_kind: str,
+) -> None:
+    from opensquilla.provider.image_generation import (
+        _is_image_generation_correlation,
+    )
+    from opensquilla.provider.types import ProviderRequestCorrelation
+
+    assert _is_image_generation_correlation(
+        ProviderRequestCorrelation(
+            session_id="session-1",
+            turn_id="turn-1",
+            execution_id="image-execution",
+            call_kind=call_kind,
+        )
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("caller_kind", ["web", "channel"])
 async def test_image_generate_auto_publishes_generated_image_artifact_for_surfaces(
     monkeypatch, tmp_path, caller_kind
@@ -626,7 +813,13 @@ async def test_image_tool_uses_configured_router_vision_provider_for_local_file(
 async def test_vision_provider_sends_provider_native_multimodal_message(monkeypatch) -> None:
     _clear_vision_provider_env(monkeypatch)
 
-    from opensquilla.provider.types import ContentBlockImage, ContentBlockText, Message
+    from opensquilla.provider.correlation_context import bind_provider_request_correlation
+    from opensquilla.provider.types import (
+        ContentBlockImage,
+        ContentBlockText,
+        Message,
+        ProviderRequestCorrelation,
+    )
     from opensquilla.tools.builtin import media
 
     media.configure_image_generation(None)
@@ -647,13 +840,25 @@ async def test_vision_provider_sends_provider_native_multimodal_message(monkeypa
 
     monkeypatch.setattr("opensquilla.provider.selector.ModelSelector", FakeSelector)
 
-    result = await media._call_vision_provider(
-        b64_data="aW1hZ2UtYnl0ZXM=",
-        media_type="image/png",
-        prompt="What is in this image?",
+    root = ProviderRequestCorrelation(
+        session_id="session-1",
+        turn_id="turn-1",
+        execution_id="root-execution",
+        call_kind="agent.chat",
     )
+    with bind_provider_request_correlation(root):
+        result = await media._call_vision_provider(
+            b64_data="aW1hZ2UtYnl0ZXM=",
+            media_type="image/png",
+            prompt="What is in this image?",
+        )
 
     assert result == "described"
+    correlation = captured["config"].provider_request_correlation
+    assert correlation.session_id == root.session_id
+    assert correlation.turn_id == root.turn_id
+    assert correlation.execution_id != root.execution_id
+    assert correlation.call_kind == "auxiliary.media"
     messages = captured["messages"]
     assert isinstance(messages, list)
     assert len(messages) == 1

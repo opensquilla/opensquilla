@@ -1107,11 +1107,11 @@
     },
     "privacy": {
       "title": "Confidentialité",
-      "statusEnabled": "L'observabilité réseau est activée.",
-      "statusDisabled": "L'observabilité réseau est désactivée.",
-      "statusDisabledByEnv": "L'observabilité réseau est désactivée par l'environnement.",
-      "disableNetworkObservabilityLabel": "Désactiver l'observabilité réseau",
-      "disableNetworkObservabilityDesc": "Arrête les appels d'observabilité réseau de la passerelle, comme la télémétrie d'installation et les vérifications de mise à jour.",
+      "statusEnabled": "La corrélation des requêtes au fournisseur et l'observabilité réseau unifiée sont activées.",
+      "statusDisabled": "La corrélation des requêtes au fournisseur et l'observabilité réseau unifiée sont désactivées.",
+      "statusDisabledByEnv": "La corrélation des requêtes au fournisseur et l'observabilité réseau unifiée sont désactivées par la variable d'environnement de confidentialité dédiée.",
+      "disableNetworkObservabilityLabel": "Désactiver l'observabilité réseau et la corrélation des requêtes au fournisseur",
+      "disableNetworkObservabilityDesc": "Arrête la télémétrie d'installation automatique, les vérifications passives de mise à jour et les en-têtes opaques de corrélation de session, de tour, d'exécution et de type d'appel pour les requêtes vers l'API HTTPS officielle de TokenRhythm. Les requêtes au fournisseur initiées par l'utilisateur continuent de fonctionner.",
       "save": "Enregistrer la confidentialité"
     },
     "toast": {

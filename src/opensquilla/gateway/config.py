@@ -2610,11 +2610,11 @@ class GatewayConfig(BaseSettings):
         privacy = data.get("privacy")
         if isinstance(privacy, dict):
             from opensquilla.observability.network_policy import (
-                network_observability_disabled,
+                provider_request_correlation_disabled,
             )
 
             privacy["network_observability_disabled_effective"] = (
-                network_observability_disabled(config=self)
+                provider_request_correlation_disabled(config=self)
             )
         return data
 

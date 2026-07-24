@@ -1107,11 +1107,11 @@
     },
     "privacy": {
       "title": "Privacidad",
-      "statusEnabled": "La observabilidad de red está activada.",
-      "statusDisabled": "La observabilidad de red está desactivada.",
-      "statusDisabledByEnv": "La observabilidad de red está desactivada por el entorno.",
-      "disableNetworkObservabilityLabel": "Desactivar observabilidad de red",
-      "disableNetworkObservabilityDesc": "Detiene las llamadas de observabilidad de red de la puerta de enlace, como la telemetría de instalación y las comprobaciones de actualización.",
+      "statusEnabled": "La correlación de solicitudes al proveedor y la observabilidad de red unificada están activadas.",
+      "statusDisabled": "La correlación de solicitudes al proveedor y la observabilidad de red unificada están desactivadas.",
+      "statusDisabledByEnv": "La correlación de solicitudes al proveedor y la observabilidad de red unificada están desactivadas por la variable de entorno de privacidad específica.",
+      "disableNetworkObservabilityLabel": "Desactivar observabilidad de red y correlación de solicitudes al proveedor",
+      "disableNetworkObservabilityDesc": "Detiene la telemetría automática de instalación, las comprobaciones pasivas de actualizaciones y las cabeceras opacas de correlación de sesión, turno, ejecución y tipo de llamada en solicitudes a la API HTTPS oficial de TokenRhythm. Las solicitudes al proveedor iniciadas por el usuario siguen funcionando.",
       "save": "Guardar privacidad"
     },
     "toast": {

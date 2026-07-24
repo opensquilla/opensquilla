@@ -43,6 +43,10 @@ from opensquilla.provider.audio import (
     VoiceConversionResult,
     resolve_elevenlabs_api_key_env,
 )
+from opensquilla.provider.correlation_context import (
+    bind_provider_request_correlation,
+    current_provider_request_correlation,
+)
 from opensquilla.provider.image_generation import (
     ImageGenerationRequest,
     generate_with_fallbacks,
@@ -52,6 +56,7 @@ from opensquilla.provider.image_generation import (
     reset_image_generation_providers,
 )
 from opensquilla.provider.protocol import provider_metadata
+from opensquilla.provider.types import ChatConfig, derive_provider_request_correlation
 from opensquilla.sandbox.operation_runtime import SandboxToolDescriptor
 from opensquilla.tools.path_aliases import resolve_workspace_alias
 from opensquilla.tools.path_policy import reject_foreign_host_path
@@ -382,6 +387,16 @@ def _mime_to_ext(content_type: str) -> str:
 
 async def _complete_from_stream(provider: Any, messages: list, config: Any = None) -> str:
     """Consume a chat() stream and return the assembled text response."""
+    correlation = current_provider_request_correlation()
+    if config is None:
+        config = ChatConfig(provider_request_correlation=correlation)
+    elif (
+        correlation is not None
+        and getattr(config, "provider_request_correlation", None) is None
+    ):
+        config = config.model_copy(
+            update={"provider_request_correlation": correlation},
+        )
     scope = current_usage_accounting_scope()
     close_stream = None
     if scope is None:
@@ -434,7 +449,13 @@ async def _call_vision_provider(b64_data: str, media_type: str, prompt: str) -> 
             ContentBlockText(text=prompt),
         ],
     )
-    return await _complete_from_stream(provider, [vision_message])
+    correlation = derive_provider_request_correlation(
+        current_provider_request_correlation(),
+        execution_id=uuid.uuid4().hex,
+        call_kind="auxiliary.media",
+    )
+    with bind_provider_request_correlation(correlation):
+        return await _complete_from_stream(provider, [vision_message])
 
 
 # ---------------------------------------------------------------------------
@@ -820,7 +841,13 @@ async def _call_llm_with_text(text: str, prompt: str) -> str:
         selector = ModelSelector(SelectorConfig(primary=cfg))
         provider = selector.resolve()
         message = Message(role="user", content=f"{prompt}\n\n---\n{text}")
-        return await _complete_from_stream(provider, [message])
+        correlation = derive_provider_request_correlation(
+            current_provider_request_correlation(),
+            execution_id=uuid.uuid4().hex,
+            call_kind="auxiliary.media",
+        )
+        with bind_provider_request_correlation(correlation):
+            return await _complete_from_stream(provider, [message])
     except Exception:
         return f"[LLM analysis not available] Extracted text ({len(text)} chars) ready."
 

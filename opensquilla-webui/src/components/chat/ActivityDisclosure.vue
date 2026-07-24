@@ -218,9 +218,9 @@ const resolvedFailureLabel = computed(() =>
 .assistant-activity__live-label.is-active {
   background: linear-gradient(
     90deg,
-    color-mix(in srgb, var(--text) 82%, transparent) 15%,
-    color-mix(in srgb, var(--text) 52%, transparent) 48%,
-    color-mix(in srgb, var(--text) 82%, transparent) 82%
+    var(--text-muted) 15%,
+    var(--text) 48%,
+    var(--text-muted) 82%
   );
   background-size: 220% 100%;
   background-clip: text;
@@ -230,7 +230,7 @@ const resolvedFailureLabel = computed(() =>
 
 .assistant-activity__live-elapsed {
   flex: 0 0 auto;
-  color: color-mix(in srgb, var(--text) 46%, transparent);
+  color: var(--text-muted);
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
 }
@@ -245,7 +245,7 @@ const resolvedFailureLabel = computed(() =>
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: color-mix(in srgb, var(--text) 56%, transparent);
+  color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   font-size: 0.75rem;
@@ -255,14 +255,14 @@ const resolvedFailureLabel = computed(() =>
 }
 
 .assistant-activity__summary:hover {
-  color: color-mix(in srgb, var(--text) 78%, transparent);
+  color: var(--text);
   background: transparent;
 }
 
 .assistant-activity__summary:focus-visible {
   outline: none;
   box-shadow: none;
-  color: color-mix(in srgb, var(--text) 78%, transparent);
+  color: var(--text);
 }
 
 .assistant-activity__label {
@@ -355,7 +355,7 @@ const resolvedFailureLabel = computed(() =>
 
   .assistant-activity__live-label.is-active {
     background: none;
-    color: color-mix(in srgb, var(--text) 82%, transparent);
+    color: var(--text);
   }
 }
 </style>

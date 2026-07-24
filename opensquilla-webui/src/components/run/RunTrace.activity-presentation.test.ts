@@ -9,6 +9,7 @@ import type {
   ChatToolCallGroup,
   ChatToolCallRenderItem,
 } from '@/types/chat'
+import runTraceSource from './RunTrace.vue?raw'
 
 const mountedApps: App[] = []
 
@@ -108,6 +109,38 @@ afterEach(() => {
 })
 
 describe('RunTrace activity presentation', () => {
+  it('uses AA text roles instead of transparent blends for activity copy', () => {
+    const ruleBody = (selector: string) => {
+      const selectorStart = runTraceSource.indexOf(selector)
+      expect(selectorStart).toBeGreaterThanOrEqual(0)
+
+      const blockStart = runTraceSource.indexOf('{', selectorStart)
+      const blockEnd = runTraceSource.indexOf('}', blockStart)
+      return runTraceSource.slice(blockStart + 1, blockEnd)
+    }
+
+    expect(ruleBody('.tool-timeline--activity .tool-row__label')).toContain(
+      'color: var(--text-muted);',
+    )
+
+    const secondaryTextRule = ruleBody('.tool-timeline--activity .step-count')
+    expect(secondaryTextRule).toContain('color: var(--text-muted);')
+    expect(secondaryTextRule).not.toContain('transparent')
+    expect(
+      ruleBody('.tool-timeline--activity .tool-row--error .tool-row__status'),
+    ).toContain('color: var(--danger);')
+
+    expect(ruleBody('.tool-timeline--activity .tool-row--running .tool-row__arg')).toContain(
+      'color: var(--text-muted);',
+    )
+    expect(ruleBody('.tool-timeline--activity .msg-ai-text')).toContain(
+      'color: var(--text-muted);',
+    )
+    expect(ruleBody('.tool-overflow-note')).toContain(
+      'color: var(--text-muted);',
+    )
+  })
+
   const completedGroup = group('completed-group', [
     call('completed-one'),
     call('completed-two'),

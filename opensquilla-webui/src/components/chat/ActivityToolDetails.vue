@@ -137,7 +137,7 @@ function showRawDetails() {
   width: max-content;
   max-width: 100%;
   min-width: 0;
-  color: color-mix(in srgb, var(--text) 46%, transparent);
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
@@ -155,12 +155,12 @@ function showRawDetails() {
 
 .activity-tool-details__line--target {
   flex: 1 1 auto;
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+  color: var(--text-muted);
 }
 
 .activity-tool-details__line--code {
   flex: 1 1 auto;
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+  color: var(--text-muted);
   font-family: var(--font-mono);
   font-variant-ligatures: none;
 }
@@ -186,14 +186,14 @@ function showRawDetails() {
 
 .activity-tool-details__summary--interactive:hover .activity-tool-details__line,
 .activity-tool-details__summary--interactive:focus-within .activity-tool-details__line {
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+  color: var(--text-muted);
 }
 
 .activity-tool-details__summary--interactive:hover .activity-tool-details__line--target,
 .activity-tool-details__summary--interactive:hover .activity-tool-details__line--code,
 .activity-tool-details__summary--interactive:focus-within .activity-tool-details__line--target,
 .activity-tool-details__summary--interactive:focus-within .activity-tool-details__line--code {
-  color: color-mix(in srgb, var(--text) 78%, transparent);
+  color: var(--text);
 }
 
 .activity-tool-details__summary--interactive:hover .activity-tool-details__line--error,
@@ -212,7 +212,7 @@ function showRawDetails() {
   border: 0;
   border-radius: 0;
   background: transparent;
-  color: color-mix(in srgb, var(--text) 46%, transparent);
+  color: var(--text-muted);
   cursor: pointer;
   font: inherit;
   font-size: 0.71875rem;
@@ -223,7 +223,7 @@ function showRawDetails() {
 .activity-tool-details__fallback:hover,
 .activity-tool-details__fallback:focus-visible {
   outline: none;
-  color: color-mix(in srgb, var(--text) 78%, transparent);
+  color: var(--text);
   text-decoration: underline;
   text-underline-offset: 0.15em;
 }

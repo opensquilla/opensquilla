@@ -1362,7 +1362,7 @@ function fmtTok(n?: number | null): string {
   background: transparent;
   font: inherit;
   font-size: 0.8125rem;
-  color: var(--text-dim);
+  color: var(--text-muted);
   cursor: pointer;
   text-align: left;
 }
@@ -1683,14 +1683,19 @@ function fmtTok(n?: number | null): string {
 }
 
 .tool-timeline--activity .tool-row__label {
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+  color: var(--text-muted);
   font-size: 0.8125rem;
 }
 
 .tool-timeline--activity .tool-row__arg,
 .tool-timeline--activity .tool-row__trailing,
+.tool-timeline--activity .tool-row__status,
 .tool-timeline--activity .step-count {
-  color: color-mix(in srgb, var(--text) 46%, transparent);
+  color: var(--text-muted);
+}
+
+.tool-timeline--activity .tool-row--error .tool-row__status {
+  color: var(--danger);
 }
 
 .tool-timeline--activity .tool-row__arg {
@@ -1761,11 +1766,11 @@ function fmtTok(n?: number | null): string {
 }
 
 .tool-timeline--activity .tool-row--running .tool-row__label {
-  color: color-mix(in srgb, var(--text) 82%, transparent);
+  color: var(--text);
 }
 
 .tool-timeline--activity .tool-row--running .tool-row__arg {
-  color: color-mix(in srgb, var(--text) 62%, transparent);
+  color: var(--text-muted);
 }
 
 .tool-timeline--activity .step-count,
@@ -1793,7 +1798,7 @@ function fmtTok(n?: number | null): string {
 
 .tool-timeline--activity .msg-ai-text {
   margin: 0.125rem 0 0.25rem 1.5rem;
-  color: color-mix(in srgb, var(--text) 56%, transparent);
+  color: var(--text-muted);
   font-size: 0.8125rem;
   line-height: 1.55;
 }

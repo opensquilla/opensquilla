@@ -1107,11 +1107,11 @@
     },
     "privacy": {
       "title": "Privacy",
-      "statusEnabled": "Network observability is enabled.",
-      "statusDisabled": "Network observability is disabled.",
-      "statusDisabledByEnv": "Network observability is disabled by environment.",
-      "disableNetworkObservabilityLabel": "Disable network observability",
-      "disableNetworkObservabilityDesc": "Stop gateway network observability calls such as install telemetry and update checks.",
+      "statusEnabled": "Provider request correlation and unified network observability are enabled.",
+      "statusDisabled": "Provider request correlation and unified network observability are disabled.",
+      "statusDisabledByEnv": "Provider request correlation and unified network observability are disabled by the dedicated privacy environment setting.",
+      "disableNetworkObservabilityLabel": "Disable network observability and provider request correlation",
+      "disableNetworkObservabilityDesc": "Stop automatic install telemetry, passive update checks, and opaque session, turn, execution, and call-kind correlation headers on requests to the official TokenRhythm HTTPS API. User-initiated provider requests still run.",
       "save": "Save privacy"
     },
     "toast": {

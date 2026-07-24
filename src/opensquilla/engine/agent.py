@@ -140,6 +140,7 @@ from opensquilla.provider import (
 from opensquilla.provider import (
     ToolUseStartEvent as ProviderToolUseStart,
 )
+from opensquilla.provider.correlation_context import bind_provider_request_correlation
 from opensquilla.provider.failures import ProviderFailureKind, classify_provider_error
 from opensquilla.provider.protocol import (
     project_provider_message_count,
@@ -150,6 +151,8 @@ from opensquilla.provider.types import (
     FailureInjector,
     ProviderMessageCountProjection,
     ProviderMessageLimitProof,
+    ProviderRequestCorrelation,
+    derive_provider_request_correlation,
 )
 from opensquilla.provider.types import (
     EnsembleProgressEvent as ProviderEnsembleProgressEvent,
@@ -1702,11 +1705,13 @@ class Agent:
         failure_injector: FailureInjector | None = None,
         usage_event_sink: UsageEventSink | None = None,
         usage_execution_context: UsageExecutionContext | None = None,
+        provider_request_correlation: ProviderRequestCorrelation | None = None,
     ) -> None:
         self.provider = provider
         self.config = config or AgentConfig()
         self.tool_definitions = tool_definitions or []
         self._tool_definition_by_name = {tool.name: tool for tool in self.tool_definitions}
+        self._raw_tool_handler = tool_handler
         self.tool_handler = tool_handler
         self.subagent_manager = subagent_manager or SubagentManager()
         self._usage_tracker = usage_tracker
@@ -1758,6 +1763,7 @@ class Agent:
         # is skipped and the historical runtime path is unchanged.
         self._usage_event_sink = usage_event_sink
         self._usage_execution_context = usage_execution_context
+        self._provider_request_correlation = provider_request_correlation
         if self.tool_handler is not None and self._tool_context is not None:
             self.tool_handler = self._bind_tool_handler_context(
                 self.tool_handler,
@@ -1937,14 +1943,20 @@ class Agent:
         tool_context: ToolContext,
     ) -> ToolHandler:
         async def _handler(tc: ToolCall) -> ToolResult:
-            active = current_tool_context.get()
-            if active is not None and getattr(active, "on_runtime_event", None) is not None:
-                return await tool_handler(tc)
-            token = current_tool_context.set(tool_context)
-            try:
-                return await tool_handler(tc)
-            finally:
-                current_tool_context.reset(token)
+            with bind_provider_request_correlation(
+                self._provider_request_correlation,
+            ):
+                active = current_tool_context.get()
+                if (
+                    active is not None
+                    and getattr(active, "on_runtime_event", None) is not None
+                ):
+                    return await tool_handler(tc)
+                token = current_tool_context.set(tool_context)
+                try:
+                    return await tool_handler(tc)
+                finally:
+                    current_tool_context.reset(token)
 
         return _handler
 
@@ -5110,6 +5122,14 @@ class Agent:
                     if deadline_thinking_off_armed:
                         call_chat_cfg = _chat_config_with_thinking_disabled(call_chat_cfg)
                         _attempt_thinking_disabled = True
+                    if self._provider_request_correlation is not None:
+                        call_chat_cfg = call_chat_cfg.model_copy(
+                            update={
+                                "provider_request_correlation": (
+                                    self._provider_request_correlation
+                                )
+                            }
+                        )
 
                     self._write_turn_call_log(
                         "llm_request",
@@ -11039,6 +11059,11 @@ class Agent:
             forced_prefix_cut=selected_cut,
             trigger="message_count",
             reason="provider_request_message_limit",
+            provider_request_correlation=derive_provider_request_correlation(
+                self._provider_request_correlation,
+                execution_id=uuid.uuid4().hex,
+                call_kind="auxiliary.compaction",
+            ),
         )
         try:
             result = await compact_context(request)
@@ -11599,6 +11624,11 @@ class Agent:
             entries=entries,
             context_window_tokens=window_tokens,
             config=self._build_compaction_config(),
+            provider_request_correlation=derive_provider_request_correlation(
+                self._provider_request_correlation,
+                execution_id=uuid.uuid4().hex,
+                call_kind="auxiliary.compaction",
+            ),
         )
 
         if self._session_key:
@@ -11884,6 +11914,11 @@ class Agent:
                     timeout=self.config.flush_background_timeout_seconds,
                     message_window=0,
                     segment_mode="auto",
+                    provider_request_correlation=derive_provider_request_correlation(
+                        self._provider_request_correlation,
+                        execution_id=uuid.uuid4().hex,
+                        call_kind="auxiliary.session_flush",
+                    ),
                 )
             except asyncio.CancelledError:
                 logger.debug("memory_flush.cancelled")
@@ -12575,17 +12610,23 @@ class Agent:
             make_tool_invoker_from_handler,
         )
 
+        meta_correlation = derive_provider_request_correlation(
+            self._provider_request_correlation,
+            execution_id=uuid.uuid4().hex,
+            call_kind="auxiliary.meta",
+        )
         runner = make_agent_runner_from_parent(
             provider=self.provider,
             base_config=self.config,
             tool_definitions=self.tool_definitions,
-            tool_handler=self.tool_handler,
+            tool_handler=self._raw_tool_handler,
             agent_factory=type(self),
             workspace_dir=str(workspace_dir) if workspace_dir else None,
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
             usage_event_sink=self._usage_event_sink,
             usage_execution_context=self._usage_execution_context,
+            provider_request_correlation=meta_correlation,
         )
         llm_chat = (
             getattr(self, "_test_llm_chat_override", None)
@@ -12597,14 +12638,18 @@ class Agent:
                     session_key=self._session_key,
                     usage_event_sink=self._usage_event_sink,
                     usage_execution_context=self._usage_execution_context,
+                    provider_request_correlation=meta_correlation,
                 )
                 if self.provider is not None
                 else None
             )
         )
         tool_invoker = (
-            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
-            if self.tool_handler is not None
+            make_tool_invoker_from_handler(
+                tool_handler=self._raw_tool_handler,
+                provider_request_correlation=meta_correlation,
+            )
+            if self._raw_tool_handler is not None
             else None
         )
         orch = MetaOrchestrator(
@@ -12809,17 +12854,23 @@ class Agent:
                 )
                 return
 
+            meta_correlation = derive_provider_request_correlation(
+                self._provider_request_correlation,
+                execution_id=uuid.uuid4().hex,
+                call_kind="auxiliary.meta",
+            )
             runner = make_agent_runner_from_parent(
                 provider=self.provider,
                 base_config=self.config,
                 tool_definitions=self.tool_definitions,
-                tool_handler=self.tool_handler,
+                tool_handler=self._raw_tool_handler,
                 agent_factory=type(self),
                 workspace_dir=str(workspace_dir) if workspace_dir else None,
                 usage_tracker=self._usage_tracker,
                 session_key=self._session_key,
                 usage_event_sink=self._usage_event_sink,
                 usage_execution_context=self._usage_execution_context,
+                provider_request_correlation=meta_correlation,
             )
             llm_chat = getattr(self, "_test_llm_chat_override", None) or (
                 make_llm_chat_from_provider(
@@ -12829,13 +12880,17 @@ class Agent:
                     session_key=self._session_key,
                     usage_event_sink=self._usage_event_sink,
                     usage_execution_context=self._usage_execution_context,
+                    provider_request_correlation=meta_correlation,
                 )
                 if self.provider is not None
                 else None
             )
             tool_invoker = (
-                make_tool_invoker_from_handler(tool_handler=self.tool_handler)
-                if self.tool_handler is not None
+                make_tool_invoker_from_handler(
+                    tool_handler=self._raw_tool_handler,
+                    provider_request_correlation=meta_correlation,
+                )
+                if self._raw_tool_handler is not None
                 else None
             )
 
@@ -13042,17 +13097,23 @@ class Agent:
             or getattr(self.config, "workspace_dir", None)
         )
 
+        meta_correlation = derive_provider_request_correlation(
+            self._provider_request_correlation,
+            execution_id=uuid.uuid4().hex,
+            call_kind="auxiliary.meta",
+        )
         runner = make_agent_runner_from_parent(
             provider=self.provider,
             base_config=self.config,
             tool_definitions=self.tool_definitions,
-            tool_handler=self.tool_handler,
+            tool_handler=self._raw_tool_handler,
             agent_factory=type(self),
             workspace_dir=str(workspace_dir) if workspace_dir else None,
             usage_tracker=self._usage_tracker,
             session_key=self._session_key,
             usage_event_sink=self._usage_event_sink,
             usage_execution_context=self._usage_execution_context,
+            provider_request_correlation=meta_correlation,
         )
         llm_chat = getattr(self, "_test_llm_chat_override", None) or (
             make_llm_chat_from_provider(
@@ -13062,13 +13123,17 @@ class Agent:
                 session_key=self._session_key,
                 usage_event_sink=self._usage_event_sink,
                 usage_execution_context=self._usage_execution_context,
+                provider_request_correlation=meta_correlation,
             )
             if self.provider is not None
             else None
         )
         tool_invoker = (
-            make_tool_invoker_from_handler(tool_handler=self.tool_handler)
-            if self.tool_handler is not None
+            make_tool_invoker_from_handler(
+                tool_handler=self._raw_tool_handler,
+                provider_request_correlation=meta_correlation,
+            )
+            if self._raw_tool_handler is not None
             else None
         )
 
@@ -13603,7 +13668,12 @@ class Agent:
     # Subagent factory
     # ------------------------------------------------------------------
 
-    def _make_child_agent(self, spec: SubagentSpec, depth: int) -> Agent:
+    def _make_child_agent(
+        self,
+        spec: SubagentSpec,
+        depth: int,
+        execution_id: str | None = None,
+    ) -> Agent:
         from opensquilla.sandbox.run_context import (
             RunContext,
             normalize_scope,
@@ -13620,6 +13690,12 @@ class Agent:
 
         parent_session_key = self._session_key or "unknown"
         subagent_label = spec.label or "subagent"
+        child_execution_id = execution_id or uuid.uuid4().hex
+        child_provider_request_correlation = derive_provider_request_correlation(
+            self._provider_request_correlation,
+            execution_id=child_execution_id,
+            call_kind="subagent.chat",
+        )
         parent_ctx = current_tool_context.get() or self._tool_context
         parent_run_context = getattr(parent_ctx, "sandbox_run_context", None)
         if isinstance(parent_run_context, RunContext):
@@ -13645,7 +13721,6 @@ class Agent:
 
         child_usage_context: UsageExecutionContext | None = None
         if self._usage_event_sink is not None:
-            child_execution_id = uuid.uuid4().hex
             parent_usage_context = self._usage_execution_context
             child_usage_context = UsageExecutionContext(
                 execution_id=child_execution_id,
@@ -13707,7 +13782,7 @@ class Agent:
         )
 
         async def _subagent_tool_handler(tc: ToolCall) -> ToolResult:
-            if self.tool_handler is None:
+            if self._raw_tool_handler is None:
                 return ToolResult(
                     tool_use_id=tc.tool_use_id,
                     tool_name=tc.tool_name,
@@ -13718,11 +13793,14 @@ class Agent:
                         reason="runtime_error",
                     ),
                 )
-            token = current_tool_context.set(subagent_ctx)
-            try:
-                return await self.tool_handler(tc)
-            finally:
-                current_tool_context.reset(token)
+            with bind_provider_request_correlation(
+                child_provider_request_correlation,
+            ):
+                token = current_tool_context.set(subagent_ctx)
+                try:
+                    return await self._raw_tool_handler(tc)
+                finally:
+                    current_tool_context.reset(token)
 
         child_cfg = AgentConfig(
             max_iterations=spec.max_iterations,
@@ -13852,6 +13930,7 @@ class Agent:
             tool_context=subagent_ctx,
             usage_event_sink=self._usage_event_sink,
             usage_execution_context=child_usage_context,
+            provider_request_correlation=child_provider_request_correlation,
         )
 
     async def spawn_subagent(self, spec: SubagentSpec) -> str:

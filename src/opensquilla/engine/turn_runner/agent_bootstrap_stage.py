@@ -20,7 +20,7 @@ future AgentConfig-validation early-yield branch.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 
 from opensquilla.engine.runtime_recovery import (
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from opensquilla.engine.types import AgentConfig, ThinkingLevel
     from opensquilla.observability.turn_call_log import TurnCallLogger
     from opensquilla.provider.protocol import LLMProvider
-    from opensquilla.provider.types import ModelCapabilities
+    from opensquilla.provider.types import ModelCapabilities, ProviderRequestCorrelation
     from opensquilla.tools.types import ToolContext
 
 _PROGRESS_WATCHDOG_MODES = frozenset({"off", "log", "warn_model", "block"})
@@ -443,6 +443,7 @@ class AgentFactoryPort(Protocol):
         session_epoch: int = 0,
         agent_id: str = "",
         run_kind: str = "agent",
+        provider_request_correlation: ProviderRequestCorrelation | None = None,
     ) -> Agent: ...
 
 
@@ -491,6 +492,10 @@ class AgentBootstrapStageInput:
     turn_id: str = ""
     run_kind: str = "agent"
     session_epoch: int = 0
+    provider_request_correlation: ProviderRequestCorrelation | None = field(
+        default=None,
+        repr=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -831,6 +836,7 @@ class AgentBootstrapStage:
             session_epoch=inp.session_epoch,
             agent_id=inp.agent_id,
             run_kind=inp.run_kind,
+            provider_request_correlation=inp.provider_request_correlation,
         )
 
         return StageOutcome.success(

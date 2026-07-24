@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import uuid
 from dataclasses import dataclass, field, replace
 from typing import Protocol
 
@@ -16,6 +17,17 @@ from opensquilla.endpoint_identity import (
 )
 from opensquilla.env import trust_env as _trust_env
 from opensquilla.provider.app_attribution import provider_app_headers
+from opensquilla.provider.correlation_context import (
+    bind_provider_request_correlation,
+    current_provider_request_correlation,
+)
+from opensquilla.provider.tokenrhythm_correlation import (
+    tokenrhythm_correlation_headers,
+)
+from opensquilla.provider.types import (
+    ProviderRequestCorrelation,
+    derive_provider_request_correlation,
+)
 from opensquilla.secrets import clean_header_secret
 
 
@@ -26,6 +38,10 @@ class ImageGenerationRequest:
     size: str
     output_format: str = "png"
     timeout_seconds: float = 180.0
+    provider_request_correlation: ProviderRequestCorrelation | None = field(
+        default=None,
+        repr=False,
+    )
 
 
 @dataclass
@@ -64,10 +80,12 @@ class OpenAIImageGenerationProvider:
         api_key: str | None = None,
         api_key_env: str = "OPENAI_API_KEY",
         base_url: str = "https://api.openai.com/v1",
+        provider_kind: str = "openai",
     ) -> None:
         self._api_key = api_key
         self._api_key_env = api_key_env
         self._base_url = base_url.rstrip("/")
+        self._provider_kind = provider_kind
 
     def _resolve_api_key(self) -> str:
         return clean_header_secret(
@@ -103,10 +121,18 @@ class OpenAIImageGenerationProvider:
             async with httpx.AsyncClient(
                 timeout=request.timeout_seconds,
                 trust_env=_trust_env(),
+                follow_redirects=False,
             ) as client:
                 response = await client.post(
                     self._api_url("/v1/images/generations"),
-                    headers={"Authorization": f"Bearer {api_key}"},
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        **tokenrhythm_correlation_headers(
+                            self._provider_kind,
+                            self._base_url,
+                            request.provider_request_correlation,
+                        ),
+                    },
                     json=payload,
                 )
                 response.raise_for_status()
@@ -152,10 +178,12 @@ class OpenRouterImageGenerationProvider:
         api_key: str | None = None,
         api_key_env: str = "OPENROUTER_API_KEY",
         base_url: str = "https://openrouter.ai/api/v1",
+        provider_kind: str = "openrouter",
     ) -> None:
         self._api_key = api_key
         self._api_key_env = api_key_env
         self._base_url = base_url.rstrip("/")
+        self._provider_kind = provider_kind
 
     def _resolve_api_key(self) -> str:
         return clean_header_secret(
@@ -200,6 +228,7 @@ class OpenRouterImageGenerationProvider:
             async with httpx.AsyncClient(
                 timeout=request.timeout_seconds,
                 trust_env=_trust_env(),
+                follow_redirects=False,
             ) as client:
                 response = await client.post(
                     self._api_url("/v1/chat/completions"),
@@ -207,6 +236,11 @@ class OpenRouterImageGenerationProvider:
                         "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json",
                         **provider_app_headers(self._base_url),
+                        **tokenrhythm_correlation_headers(
+                            self._provider_kind,
+                            self._base_url,
+                            request.provider_request_correlation,
+                        ),
                     },
                     json=payload,
                 )
@@ -424,18 +458,52 @@ def parse_image_generation_model_ref(raw: str) -> tuple[str, str]:
     return provider.strip(), model.strip()
 
 
+def _is_image_generation_correlation(
+    correlation: ProviderRequestCorrelation,
+) -> bool:
+    return correlation.call_kind in {
+        "auxiliary.image_generation",
+        "auxiliary.image_generation.provider_fallback",
+    }
+
+
+def _provider_fallback_correlation(
+    correlation: ProviderRequestCorrelation | None,
+) -> ProviderRequestCorrelation | None:
+    if correlation is None or correlation.call_kind.endswith(".provider_fallback"):
+        return correlation
+    return derive_provider_request_correlation(
+        correlation,
+        call_kind=f"{correlation.call_kind}.provider_fallback",
+    )
+
+
 async def generate_with_fallbacks(
     *,
     request: ImageGenerationRequest,
     candidates: list[str],
 ) -> ImageGenerationResult:
+    correlation_base = (
+        request.provider_request_correlation
+        or current_provider_request_correlation()
+    )
+    correlation = correlation_base
+    if correlation is not None and not _is_image_generation_correlation(correlation):
+        correlation = derive_provider_request_correlation(
+            correlation,
+            execution_id=uuid.uuid4().hex,
+            call_kind="auxiliary.image_generation",
+        )
+    request = replace(request, provider_request_correlation=correlation)
     attempts: list[ImageGenerationAttempt] = []
     last_error: Exception | None = None
-    for candidate in candidates:
+    for candidate_index, candidate in enumerate(candidates):
         try:
             provider_id, model = parse_image_generation_model_ref(candidate)
         except ValueError as exc:
-            attempts.append(ImageGenerationAttempt(provider="", model=candidate, error=str(exc)))
+            attempts.append(
+                ImageGenerationAttempt(provider="", model=candidate, error=str(exc))
+            )
             last_error = exc
             continue
         provider = get_image_generation_provider(provider_id)
@@ -444,8 +512,20 @@ async def generate_with_fallbacks(
             attempts.append(ImageGenerationAttempt(provider_id, model, error))
             last_error = RuntimeError(error)
             continue
+        call_correlation = (
+            correlation
+            if candidate_index == 0
+            else _provider_fallback_correlation(correlation)
+        )
         try:
-            result = await provider.generate(replace(request, model=model))
+            with bind_provider_request_correlation(call_correlation):
+                result = await provider.generate(
+                    replace(
+                        request,
+                        model=model,
+                        provider_request_correlation=call_correlation,
+                    )
+                )
             if not result.image_bytes:
                 raise RuntimeError("Image generation provider returned empty image")
             result.attempts = attempts

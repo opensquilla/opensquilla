@@ -1107,11 +1107,11 @@
     },
     "privacy": {
       "title": "Datenschutz",
-      "statusEnabled": "Netzwerkbeobachtbarkeit ist aktiviert.",
-      "statusDisabled": "Netzwerkbeobachtbarkeit ist deaktiviert.",
-      "statusDisabledByEnv": "Netzwerkbeobachtbarkeit ist durch die Umgebung deaktiviert.",
-      "disableNetworkObservabilityLabel": "Netzwerkbeobachtbarkeit deaktivieren",
-      "disableNetworkObservabilityDesc": "Stoppt Netzwerkbeobachtbarkeitsaufrufe des Gateways, wie Installationstelemetrie und Updateprüfungen.",
+      "statusEnabled": "Anbieteranfrage-Korrelation und einheitliche Netzwerkbeobachtbarkeit sind aktiviert.",
+      "statusDisabled": "Anbieteranfrage-Korrelation und einheitliche Netzwerkbeobachtbarkeit sind deaktiviert.",
+      "statusDisabledByEnv": "Anbieteranfrage-Korrelation und einheitliche Netzwerkbeobachtbarkeit sind durch die spezielle Datenschutz-Umgebungsvariable deaktiviert.",
+      "disableNetworkObservabilityLabel": "Netzwerkbeobachtbarkeit und Anbieteranfrage-Korrelation deaktivieren",
+      "disableNetworkObservabilityDesc": "Stoppt automatische Installationstelemetrie, passive Updateprüfungen und undurchsichtige Korrelationsheader für Sitzung, Turn, Ausführung und Aufrufart bei Anfragen an die offizielle TokenRhythm-HTTPS-API. Vom Benutzer gestartete Provider-Anfragen werden weiterhin ausgeführt.",
       "save": "Datenschutz speichern"
     },
     "toast": {

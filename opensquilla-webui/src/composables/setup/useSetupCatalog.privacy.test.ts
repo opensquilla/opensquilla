@@ -123,7 +123,7 @@ describe('useSetupCatalog privacy settings', () => {
     app.unmount()
   })
 
-  it('shows the effective disabled state when legacy environment variables disable observability', async () => {
+  it('shows the effective disabled state when the dedicated privacy environment switch is active', async () => {
     mockConfigSequence([
       {
         privacy: {
@@ -135,7 +135,9 @@ describe('useSetupCatalog privacy settings', () => {
     const { api, app } = await mountCatalog()
 
     expect(api.privacyPanel.value.disableNetworkObservability).toBe(false)
-    expect(api.privacyPanel.value.statusText).toBe('Network observability is disabled by environment.')
+    expect(api.privacyPanel.value.statusText).toBe(
+      'Provider request correlation and unified network observability are disabled by the dedicated privacy environment setting.',
+    )
     expect(api.sectionDirty('privacy')).toBe(false)
     app.unmount()
   })
@@ -153,7 +155,9 @@ describe('useSetupCatalog privacy settings', () => {
 
     api.setDisableNetworkObservability(false)
 
-    expect(api.privacyPanel.value.statusText).toBe('Network observability is enabled.')
+    expect(api.privacyPanel.value.statusText).toBe(
+      'Provider request correlation and unified network observability are enabled.',
+    )
     expect(api.sectionDirty('privacy')).toBe(true)
     app.unmount()
   })

@@ -1107,11 +1107,11 @@
     },
     "privacy": {
       "title": "隐私",
-      "statusEnabled": "网络可观测性已启用。",
-      "statusDisabled": "网络可观测性已禁用。",
-      "statusDisabledByEnv": "网络可观测性已被环境变量禁用。",
-      "disableNetworkObservabilityLabel": "禁用网络可观测性",
-      "disableNetworkObservabilityDesc": "停止网关网络可观测性调用，例如安装遥测和更新检查。",
+      "statusEnabled": "提供商请求关联和统一网络可观测性已启用。",
+      "statusDisabled": "提供商请求关联和统一网络可观测性已禁用。",
+      "statusDisabledByEnv": "提供商请求关联和统一网络可观测性已由专用隐私环境变量禁用。",
+      "disableNetworkObservabilityLabel": "禁用网络可观测性和提供商请求关联",
+      "disableNetworkObservabilityDesc": "停止自动安装遥测、被动更新检查，以及发往 TokenRhythm 官方 HTTPS API 的请求所携带的不透明会话、轮次、执行和调用类型关联标头。用户主动发起的模型请求仍会正常执行。",
       "save": "保存隐私设置"
     },
     "toast": {

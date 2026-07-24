@@ -1107,11 +1107,11 @@
     },
     "privacy": {
       "title": "プライバシー",
-      "statusEnabled": "ネットワーク可観測性は有効です。",
-      "statusDisabled": "ネットワーク可観測性は無効です。",
-      "statusDisabledByEnv": "ネットワーク可観測性は環境変数によって無効です。",
-      "disableNetworkObservabilityLabel": "ネットワーク可観測性を無効化",
-      "disableNetworkObservabilityDesc": "インストールテレメトリや更新確認などのゲートウェイのネットワーク可観測性呼び出しを停止します。",
+      "statusEnabled": "プロバイダーリクエストの相関付けと統合ネットワーク可観測性は有効です。",
+      "statusDisabled": "プロバイダーリクエストの相関付けと統合ネットワーク可観測性は無効です。",
+      "statusDisabledByEnv": "プロバイダーリクエストの相関付けと統合ネットワーク可観測性は専用のプライバシー環境変数によって無効です。",
+      "disableNetworkObservabilityLabel": "ネットワーク可観測性とプロバイダーリクエストの相関付けを無効化",
+      "disableNetworkObservabilityDesc": "自動インストールテレメトリ、受動的な更新確認、および TokenRhythm 公式 HTTPS API へのリクエストに付与される不透明なセッション・ターン・実行・呼び出し種別の相関ヘッダーを停止します。ユーザーが開始したプロバイダーリクエストは引き続き実行されます。",
       "save": "プライバシーを保存"
     },
     "toast": {

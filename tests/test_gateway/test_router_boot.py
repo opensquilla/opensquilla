@@ -37,7 +37,7 @@ from opensquilla.gateway.model_routing import (
 )
 from opensquilla.gateway.routing import build_cli_route_envelope, build_cron_route_envelope
 from opensquilla.onboarding.mutations import upsert_channel
-from opensquilla.provider import Message
+from opensquilla.provider import Message, ProviderRequestCorrelation
 from opensquilla.scheduler.types import CronJob, JobStatus
 from opensquilla.session.compaction import CompactionConfig
 from opensquilla.session.manager import SessionManager
@@ -261,6 +261,50 @@ def test_build_task_runtime_run_kwargs_forwards_fresh_user_session() -> None:
 
     assert kwargs["fresh_user_session"] is True
     assert kwargs["pending_input_provider"] is pending_input_provider
+
+
+def test_build_task_runtime_run_kwargs_forwards_task_id_as_root_turn() -> None:
+    run = SimpleNamespace(
+        task_id="task-turn-123",
+        agent_id="main",
+        attachments=[],
+        input_provenance=None,
+        run_kind="session_turn",
+        no_memory_capture=False,
+        fresh_user_session=False,
+        ingress_pipeline_steps=(),
+        semantic_message=None,
+    )
+
+    kwargs = build_task_runtime_run_kwargs(run, tool_context=object(), model="model")
+
+    assert kwargs["root_turn_id"] == "task-turn-123"
+
+
+def test_build_task_runtime_run_kwargs_forwards_provider_correlation() -> None:
+    correlation = ProviderRequestCorrelation(
+        session_id="parent-session",
+        turn_id="parent-turn",
+        execution_id="subagent-run",
+        call_kind="subagent.chat",
+    )
+    run = SimpleNamespace(
+        task_id="subagent-run",
+        agent_id="worker",
+        attachments=[],
+        input_provenance={"kind": "subagent_task"},
+        run_kind="subagent",
+        no_memory_capture=False,
+        fresh_user_session=False,
+        ingress_pipeline_steps=(),
+        semantic_message=None,
+        provider_request_correlation=correlation,
+    )
+
+    kwargs = build_task_runtime_run_kwargs(run, tool_context=object(), model="model")
+
+    assert kwargs["provider_request_correlation"] is correlation
+    assert kwargs["root_turn_id"] == "subagent-run"
 
 
 def test_build_task_runtime_run_kwargs_forwards_bound_user_message_id() -> None:

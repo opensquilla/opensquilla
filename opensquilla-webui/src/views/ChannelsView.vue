@@ -1,6 +1,9 @@
 <template>
-  <div class="ch-stage control-stage">
-    <header v-if="!selectedChannel" class="ch-stage__header control-stage__header">
+  <div class="ch-stage control-stage control-stage--hub-actions">
+    <header
+      v-if="!selectedChannel"
+      class="ch-stage__header control-stage__header control-stage__header--hub-actions"
+    >
       <div class="ch-stage__title-block control-stage__title-block">
         <h1 class="ch-stage__title control-stage__title">{{ t('console.channels.title') }}</h1>
         <p class="ch-stage__subtitle control-stage__subtitle">{{ t('console.channels.subtitle') }}</p>

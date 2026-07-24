@@ -2775,6 +2775,43 @@
     },
     "sources": "Fuentes",
     "activitySteps": "Actividad · {count} paso | Actividad · {count} pasos",
+    "activityItems": "Actividad · {count} elemento | Actividad · {count} elementos",
+    "activityCompletedItems": "Completado · {count} elemento | Completado · {count} elementos",
+    "activityFailures": "{count} con error",
+    "activityFailuresRecovered": "{count} fallo recuperado | {count} fallos recuperados",
+    "activityWorking": "Trabajando",
+    "workedForSeconds": "Trabajó durante {seconds} s",
+    "workedForMinutes": "Trabajó durante {minutes} min {seconds} s",
+    "activity": {
+      "lifecycle": {
+        "working": "En curso",
+        "answering": "Redactando la respuesta",
+        "settled": "Completado",
+        "interrupted": "Interrumpido",
+        "failed": "Fallido"
+      },
+      "purpose": {
+        "discover": "Enlaces descubiertos",
+        "search": "Búsqueda en la web",
+        "read": "Páginas web leídas",
+        "inspect": "Archivos inspeccionados",
+        "change": "Archivos editados",
+        "run": "Comandos ejecutados",
+        "create": "Artefactos creados",
+        "recall": "Memoria consultada",
+        "use": "Herramientas usadas"
+      },
+      "footprint": {
+        "web": "{count} acción web | {count} acciones web",
+        "files": "{count} archivo | {count} archivos",
+        "fileOperations": "{count} operación de archivo | {count} operaciones de archivos",
+        "commands": "{count} comando | {count} comandos",
+        "artifacts": "{count} artefacto | {count} artefactos",
+        "memory": "{count} consulta de memoria | {count} consultas de memoria",
+        "tools": "{count} llamada a herramienta | {count} llamadas a herramientas"
+      },
+      "more": "{count} más"
+    },
     "suggestedTasks": "Tareas sugeridas",
     "greetingMorning": "Buenos días.",
     "greetingAfternoon": "Buenas tardes.",
@@ -3113,7 +3150,12 @@
       "sectionDiagnostics": "diagnósticos",
       "sectionResult": "resultado",
       "sectionError": "error",
-      "viewFull": "ver completo"
+      "viewFull": "ver completo",
+      "activityViewDetails": "ver detalles",
+      "activityDetailsTitle": "detalles",
+      "activityBytesWritten": "{size} escritos",
+      "activityContentSize": "{lines} líneas · {characters} caracteres",
+      "activityPublished": "Publicado"
     }
   },
   "channelStatus": {

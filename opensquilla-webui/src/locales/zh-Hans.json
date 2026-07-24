@@ -2775,6 +2775,43 @@
     },
     "sources": "来源",
     "activitySteps": "活动 · {count} 步",
+    "activityItems": "活动 · {count} 项",
+    "activityCompletedItems": "已完成 · {count} 项",
+    "activityFailures": "{count} 项失败",
+    "activityFailuresRecovered": "{count} 项失败已恢复",
+    "activityWorking": "正在工作",
+    "workedForSeconds": "工作了 {seconds} 秒",
+    "workedForMinutes": "工作了 {minutes} 分 {seconds} 秒",
+    "activity": {
+      "lifecycle": {
+        "working": "正在工作",
+        "answering": "正在组织回答",
+        "settled": "已完成",
+        "interrupted": "已中断",
+        "failed": "未完成"
+      },
+      "purpose": {
+        "discover": "发现链接",
+        "search": "搜索网页",
+        "read": "读取网页",
+        "inspect": "检查文件",
+        "change": "编辑文件",
+        "run": "运行命令",
+        "create": "创建产物",
+        "recall": "检索记忆",
+        "use": "使用工具"
+      },
+      "footprint": {
+        "web": "{count} 次网页操作",
+        "files": "{count} 个文件",
+        "fileOperations": "{count} 次文件操作",
+        "commands": "{count} 条命令",
+        "artifacts": "{count} 个产物",
+        "memory": "{count} 次记忆检索",
+        "tools": "{count} 次工具调用"
+      },
+      "more": "另有 {count} 项"
+    },
     "suggestedTasks": "推荐任务",
     "greetingMorning": "早上好。",
     "greetingAfternoon": "下午好。",
@@ -3113,7 +3150,12 @@
       "sectionDiagnostics": "诊断",
       "sectionResult": "结果",
       "sectionError": "错误",
-      "viewFull": "查看完整内容"
+      "viewFull": "查看完整内容",
+      "activityViewDetails": "查看详情",
+      "activityDetailsTitle": "详情",
+      "activityBytesWritten": "已写入 {size}",
+      "activityContentSize": "{lines} 行 · {characters} 个字符",
+      "activityPublished": "已发布"
     }
   },
   "channelStatus": {

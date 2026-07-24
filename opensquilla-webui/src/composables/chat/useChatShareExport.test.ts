@@ -64,4 +64,101 @@ describe('buildShareDom protocol-shaped documentation', () => {
     expect(stage.querySelector('.tool-timeline__toolbar')).toBeNull()
     expect(stage.querySelector('.tool-row-body')?.textContent).toBe('tool output')
   })
+
+  it('omits collapsed execution activity while keeping the canonical answer', () => {
+    const source = document.createElement('article')
+    source.dataset.shareMessageId = 'assistant-activity'
+    const activity = document.createElement('div')
+    activity.dataset.shareActivity = ''
+    activity.dataset.shareExpanded = 'false'
+    // The stable data contract must win even if migration leaves legacy state
+    // on a non-details activity root.
+    activity.setAttribute('open', '')
+    activity.innerHTML = [
+      '<button data-share-activity-label>Activity · 2 steps</button>',
+      '<div data-share-activity-body>',
+      '<div>Private path: /Users/example/project</div>',
+      '<div>Tool error: secret diagnostic</div>',
+      '</div>',
+    ].join('')
+    const answer = document.createElement('div')
+    answer.className = 'msg-ai-text'
+    answer.textContent = 'Canonical answer'
+    source.append(activity, answer)
+
+    const stage = buildShareDom([source])
+
+    expect(stage.querySelector('[data-share-activity]')).toBeNull()
+    expect(stage.textContent).toContain('Canonical answer')
+    expect(stage.textContent).not.toContain('/Users/example/project')
+    expect(stage.textContent).not.toContain('secret diagnostic')
+  })
+
+  it('preserves explicitly expanded activity as a structured static block', () => {
+    const source = document.createElement('article')
+    source.dataset.shareMessageId = 'assistant-expanded-activity'
+    const activity = document.createElement('div')
+    activity.dataset.shareActivity = ''
+    activity.dataset.shareExpanded = 'true'
+    activity.innerHTML = [
+      '<button data-share-activity-label data-share-control>Activity · 2 steps</button>',
+      '<div data-share-activity-body style="animation: pulse 1s infinite">',
+      '<section class="thinking-block">Checked the evidence.</section>',
+      '<div class="step-card"><div class="tool-row-body">',
+      '<span class="tool-row__activity-arrow" data-share-control>›</span>',
+      '<div class="activity-tool-details__summary">',
+      '<span>games/index.html</span><span aria-hidden="true">·</span><span>30 lines</span>',
+      '<button class="activity-tool-details__hit-target" data-share-control aria-label="View details"></button>',
+      '</div>',
+      '</div></div>',
+      '<button class="activity-control" data-share-control>Expand result</button>',
+      '</div>',
+    ].join('')
+    const answer = document.createElement('div')
+    answer.className = 'msg-ai-text'
+    answer.textContent = 'Canonical answer'
+    source.append(activity, answer)
+
+    const stage = buildShareDom([source])
+
+    expect(stage.querySelector('[data-share-activity]')).toBeNull()
+    expect(stage.querySelector('.chat-share-export-activity')).not.toBeNull()
+    expect(stage.querySelector('.chat-share-export-activity__label')?.textContent)
+      .toBe('Activity · 2 steps')
+    expect(stage.querySelector('.thinking-block')?.textContent).toBe('Checked the evidence.')
+    expect(stage.querySelector('.tool-row-body')?.textContent)
+      .toBe('games/index.html·30 lines')
+    expect(stage.querySelector('.tool-row__activity-arrow')).toBeNull()
+    expect(stage.querySelector('.activity-tool-details__summary')?.textContent)
+      .toBe('games/index.html·30 lines')
+    expect(stage.querySelector('.activity-tool-details__hit-target')).toBeNull()
+    expect(stage.textContent).not.toContain('View details')
+    expect(stage.querySelector('.activity-control')).toBeNull()
+    expect(stage.querySelector('style')?.textContent).toContain('animation: none !important')
+    expect(stage.textContent?.match(/Canonical answer/g)).toHaveLength(1)
+  })
+
+  it('keeps legacy details activity compatible during the data-contract migration', () => {
+    const source = document.createElement('article')
+    source.dataset.shareMessageId = 'assistant-legacy-activity'
+    source.innerHTML = [
+      '<details class="assistant-activity">',
+      '<summary class="assistant-activity__summary">Collapsed legacy activity</summary>',
+      '<div class="assistant-activity__body">Hidden legacy output</div>',
+      '</details>',
+      '<details class="assistant-activity" open>',
+      '<summary class="assistant-activity__summary">Expanded legacy activity</summary>',
+      '<div class="assistant-activity__body">Visible legacy output</div>',
+      '</details>',
+      '<div class="msg-ai-text">Canonical answer</div>',
+    ].join('')
+
+    const stage = buildShareDom([source])
+
+    expect(stage.querySelector('.assistant-activity')).toBeNull()
+    expect(stage.querySelectorAll('.chat-share-export-activity')).toHaveLength(1)
+    expect(stage.textContent).not.toContain('Hidden legacy output')
+    expect(stage.textContent).toContain('Visible legacy output')
+    expect(stage.textContent?.match(/Canonical answer/g)).toHaveLength(1)
+  })
 })

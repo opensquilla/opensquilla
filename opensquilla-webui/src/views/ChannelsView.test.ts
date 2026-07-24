@@ -436,6 +436,8 @@ describe('ChannelsView dashboard home', () => {
     })
     try {
       await flush()
+      expect(el.querySelector('.control-stage--hub-actions')).not.toBeNull()
+      expect(el.querySelector('.control-stage__header--hub-actions')).not.toBeNull()
       // One card per configured channel, no table.
       expect(el.querySelector('table')).toBeNull()
       const ops = channelCard(el, 'ops-slack')
@@ -458,6 +460,7 @@ describe('ChannelsView dashboard home', () => {
 
       // The pending request surfaces on the card: alert figure + inline banner.
       expect(ops.querySelector('.chb-figure--alert dd')?.textContent).toContain('1')
+      expect(ops.querySelector('.chb-story__alerts .chal--pending')).not.toBeNull()
       expect(ops.textContent).toContain('Pending User')
       expect(ops.textContent).toContain('AB12CD34')
 
@@ -470,6 +473,9 @@ describe('ChannelsView dashboard home', () => {
         expect(other.textContent).not.toContain('Pending User')
         expect(other.querySelector('.chb-figure--alert')).toBeNull()
         expect(other.querySelector('[aria-label="Approve access for Pending User"]')).toBeNull()
+        if (name === 'alerts-telegram' || name === 'off-discord') {
+          expect(other.querySelector('.chb-story__alerts')).toBeNull()
+        }
       }
 
       // Unconfigured runtime channel renders as a muted, non-drillable card.
@@ -628,6 +634,7 @@ describe('ChannelsView dashboard home', () => {
       await flush()
       const card = channelCard(el, 'dead-telegram')
       expect(card.textContent).toContain('401 Unauthorized — bot token rejected')
+      expect(card.querySelector('.chb-story__alerts .chal--error')).not.toBeNull()
       buttonWithText(card, 'Fix credentials').click()
       await flush()
       // The escape hatch is a drill (history PUSH) straight into edit mode.

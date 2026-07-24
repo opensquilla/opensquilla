@@ -139,7 +139,7 @@ export function useChatStream(options: UseChatStreamOptions) {
     return lastSignalAt.value > 0 && Date.now() - lastSignalAt.value > STALE_SIGNAL_MS
   })
 
-  // Phase narration on its own, used by the work-card head where elapsed and
+  // Phase narration on its own, used by the activity head where elapsed and
   // the step chip render as separate elements rather than one packed string.
   const streamPhaseLabel = computed(() => {
     streamActivityTick.value
@@ -173,7 +173,7 @@ export function useChatStream(options: UseChatStreamOptions) {
   })
 
   // Append-only turn log. ON is the production default and drives the live
-  // work-card; SHADOW is the development default and parity-checks the fold
+  // activity surface; SHADOW is the development default and parity-checks the fold
   // while legacy refs render; only the explicit OFF kill switch skips frames
   // and restores the legacy render path.
   const turnLog = useChatTurnLog({
@@ -771,7 +771,7 @@ export function useChatStream(options: UseChatStreamOptions) {
   // approval). This is deliberately lighter than startStreaming(): it does NOT
   // reset the log or the activity refs, so an interrupt frame appended right
   // after it survives. The turn stays open because an unresolved approval pauses
-  // the idle timer, so the fold-driven work-card keeps rendering the part.
+  // the idle timer, so the fold-driven activity surface keeps rendering the part.
   function ensureInterruptBubble() {
     if (streamBubble.value) return
     streamBubble.value = true

@@ -2775,6 +2775,43 @@
     },
     "sources": "Sources",
     "activitySteps": "Activity · {count} step | Activity · {count} steps",
+    "activityItems": "Activity · {count} item | Activity · {count} items",
+    "activityCompletedItems": "Completed · {count} item | Completed · {count} items",
+    "activityFailures": "{count} failed",
+    "activityFailuresRecovered": "{count} failure recovered | {count} failures recovered",
+    "activityWorking": "Working",
+    "workedForSeconds": "Worked for {seconds}s",
+    "workedForMinutes": "Worked for {minutes}m {seconds}s",
+    "activity": {
+      "lifecycle": {
+        "working": "Working",
+        "answering": "Writing the answer",
+        "settled": "Completed",
+        "interrupted": "Interrupted",
+        "failed": "Failed"
+      },
+      "purpose": {
+        "discover": "Discovered links",
+        "search": "Searched the web",
+        "read": "Read web pages",
+        "inspect": "Inspected files",
+        "change": "Edited files",
+        "run": "Ran commands",
+        "create": "Created artifacts",
+        "recall": "Searched memory",
+        "use": "Used tools"
+      },
+      "footprint": {
+        "web": "{count} web action | {count} web actions",
+        "files": "{count} file | {count} files",
+        "fileOperations": "{count} file operation | {count} file operations",
+        "commands": "{count} command | {count} commands",
+        "artifacts": "{count} artifact | {count} artifacts",
+        "memory": "{count} memory lookup | {count} memory lookups",
+        "tools": "{count} tool call | {count} tool calls"
+      },
+      "more": "{count} more"
+    },
     "suggestedTasks": "Suggested tasks",
     "greetingMorning": "Good morning.",
     "greetingAfternoon": "Good afternoon.",
@@ -3113,7 +3150,12 @@
       "sectionDiagnostics": "diagnostics",
       "sectionResult": "result",
       "sectionError": "error",
-      "viewFull": "view full"
+      "viewFull": "view full",
+      "activityViewDetails": "view details",
+      "activityDetailsTitle": "details",
+      "activityBytesWritten": "{size} written",
+      "activityContentSize": "{lines} lines · {characters} characters",
+      "activityPublished": "Published"
     }
   },
   "channelStatus": {

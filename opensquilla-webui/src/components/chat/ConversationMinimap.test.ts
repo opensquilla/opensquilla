@@ -25,7 +25,30 @@ interface ThreadDimensions {
   scrollHeight?: number
 }
 
+interface ResizeObserverFixture {
+  callback: ResizeObserverCallback
+  targets: Set<Element>
+}
+
 const mountedApps: App<Element>[] = []
+
+function stubResizeObservers(): ResizeObserverFixture[] {
+  const observers: ResizeObserverFixture[] = []
+  vi.stubGlobal('ResizeObserver', class {
+    callback: ResizeObserverCallback
+    targets = new Set<Element>()
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback
+      observers.push(this)
+    }
+
+    observe(target: Element) { this.targets.add(target) }
+    unobserve(target: Element) { this.targets.delete(target) }
+    disconnect() { this.targets.clear() }
+  })
+  return observers
+}
 
 function message(role: 'user' | 'assistant', index: number): ChatRenderedMessage {
   return {
@@ -423,24 +446,7 @@ describe('ConversationMinimap', () => {
   })
 
   it('keeps the rail mounted until the pane crosses the 1056px exit threshold', async () => {
-    const observers: Array<{
-      callback: ResizeObserverCallback
-      targets: Set<Element>
-    }> = []
-    vi.stubGlobal('ResizeObserver', class {
-      callback: ResizeObserverCallback
-      targets = new Set<Element>()
-
-      constructor(callback: ResizeObserverCallback) {
-        this.callback = callback
-        observers.push(this)
-      }
-
-      observe(target: Element) { this.targets.add(target) }
-      unobserve(target: Element) { this.targets.delete(target) }
-      disconnect() { this.targets.clear() }
-    })
-
+    const observers = stubResizeObservers()
     const { host, thread } = await mountMinimap(8, {}, { clientWidth: 1104 })
     const shellObserver = observers.find(observer => observer.targets.has(thread.container))!
     const resizeTo = async (width: number) => {
@@ -460,16 +466,27 @@ describe('ConversationMinimap', () => {
   })
 
   it('uses a lower exit threshold so small layout changes do not flicker the rail', async () => {
+    const observers = stubResizeObservers()
     const { host, thread } = await mountMinimap(8, {}, { scrollHeight: 1500 })
+    const threadObserver = observers.find(observer => observer.targets.size > 1)!
+    const resizeThread = async (scrollHeight: number) => {
+      Object.defineProperty(thread.container, 'scrollHeight', { configurable: true, value: scrollHeight })
+      threadObserver.callback(
+        [{ target: thread.container } as unknown as ResizeObserverEntry],
+        threadObserver as unknown as ResizeObserver,
+      )
+      await new Promise(resolve => window.requestAnimationFrame(() => resolve(undefined)))
+      await nextTick()
+    }
 
-    Object.defineProperty(thread.container, 'scrollHeight', { configurable: true, value: 1200 })
-    thread.container.appendChild(document.createElement('div'))
-    await new Promise(resolve => window.setTimeout(resolve, 20))
+    await resizeThread(1200)
     expect(markers(host)).toHaveLength(8)
 
-    Object.defineProperty(thread.container, 'scrollHeight', { configurable: true, value: 1199 })
-    thread.container.appendChild(document.createElement('div'))
-    await vi.waitFor(() => expect(host.querySelector('[data-testid="conversation-minimap"]')).toBeNull())
+    await resizeThread(1199)
+    expect(
+      host.querySelector('[data-testid="conversation-minimap"]')
+        ?.classList.contains('conversation-minimap-shell-leave-active'),
+    ).toBe(true)
   })
 
   it('resets threshold hysteresis when the session changes even if fallback keys overlap', async () => {

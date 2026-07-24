@@ -1101,6 +1101,8 @@
     "tests/unit/cli/tui/test_opentui_notice_capture.py": 0.02,
     "tests/unit/cli/tui/test_opentui_renderer.py": 0.057,
     "tests/unit/cli/tui/test_opentui_surface.py": 0.151,
+    "tests/unit/cli/tui/test_keys_cheatsheet.py": 0.05,
+    "tests/unit/cli/tui/test_opentui_prefs.py": 0.2,
     "tests/unit/cli/tui/test_opentui_themes.py": 0.015,
     "tests/unit/cli/tui/test_opentui_transport.py": 0.01,
     "tests/unit/cli/tui/test_output_binding.py": 0.01,

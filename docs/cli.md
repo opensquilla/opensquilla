@@ -107,7 +107,15 @@ Useful automation flags:
 | `--permissions` | Select restricted, bypass, or full permission posture. |
 | `--transcript-path` | Write a JSONL transcript for automation. |
 | `--usage-path` | Write usage JSON. |
+| `--event-stream-stderr` | Stream incrementally flushed agent-event JSONL on stderr. |
 | `--session-db-path` | Persist session replay across invocations. |
+
+With `--event-stream-stderr`, event records contain `"_event": true`, while
+stderr may also contain ordinary diagnostics. Subprocess consumers should
+continuously drain stderr and parse it one line at a time, accepting only
+records with that marker as events. The stream can include model reasoning and
+tool arguments or results, so treat captured stderr as sensitive runtime data.
+When combined with `--json`, stdout remains reserved for the final result.
 
 ## Coding Mode and Code-Task
 

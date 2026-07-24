@@ -646,6 +646,50 @@ toolchain — not the local image build.
 
 </details>
 
+### Agent Subprocess Automation
+
+Add `--event-stream-stderr` to receive incrementally flushed agent events as
+JSONL on stderr while `--json` keeps the final result on stdout. Event records
+carry `"_event": true`; stderr can also contain ordinary diagnostics, so
+consumers should drain it continuously and parse it one line at a time. Event
+payloads can include model reasoning and tool arguments or results, so protect
+captured stderr as sensitive runtime data.
+
+#### Concurrent CLI Calls
+
+The `agent` command acquires a profile-wide writer lock on the OpenSquilla
+home directory. Overlapping calls that share the same home do not serialize;
+the second exits with `ProfileLockBusyError`. To run multiple `agent` calls
+concurrently, give each one its own home via `OPENSQUILLA_STATE_DIR`:
+
+```sh
+OPENSQUILLA_STATE_DIR=/tmp/agent-a \
+OPENSQUILLA_GATEWAY_STATE_DIR=/tmp/agent-a/state \
+  opensquilla agent -m "task A" --json &
+OPENSQUILLA_STATE_DIR=/tmp/agent-b \
+OPENSQUILLA_GATEWAY_STATE_DIR=/tmp/agent-b/state \
+  opensquilla agent -m "task B" --json &
+wait
+```
+
+The example uses POSIX shell syntax; on Windows, set both variables in each
+child process environment. Each home hashes to its own profile lock key, while
+the second variable makes the effective persistent state root unambiguously
+per-child.
+
+`OPENSQUILLA_STATE_DIR` alone does not rewrite paths from a current-directory
+`opensquilla.toml` or `OPENSQUILLA_GATEWAY_CONFIG_PATH`. An empty home also
+does not inherit `~/.opensquilla/config.toml` or `~/.opensquilla/.env`, although
+those current-directory or explicit config sources can still be loaded. Supply
+the required model, provider, and credential settings deliberately.
+
+If an orchestrator copies `config.toml` or `.env` into each home, remove or
+rewrite any `state_dir` or `OPENSQUILLA_GATEWAY_STATE_DIR` value as well; the
+compatibility guard can still consider a state root declared in the copied
+profile. Explicitly shared `--session-db-path`, workspace, scratch, transcript,
+or usage paths also remain shared and must be unique when complete isolation
+is required.
+
 Provider tiers, sandbox tuning, image generation, and concurrency
 settings live in `opensquilla.toml.example`.
 

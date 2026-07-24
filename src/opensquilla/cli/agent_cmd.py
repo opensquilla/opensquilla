@@ -7,7 +7,8 @@ import copy
 import getpass
 import json
 import os
-from dataclasses import dataclass
+import sys
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -135,6 +136,7 @@ async def run_agent_once(
     length_capped_continuations: int | None = None,
     transcript_path: str | None = None,
     usage_path: str | None = None,
+    event_stream_stderr: bool = False,
     config: Any | None = None,
     session_db_path: str = ":memory:",
     no_memory_capture: bool = False,
@@ -344,6 +346,11 @@ async def run_agent_once(
             attachments=run_attachments,
             bootstrap_context_mode=bootstrap_context_mode,
         ):
+            if event_stream_stderr:
+                line = _event_to_jsonl(event)
+                if line is not None:
+                    print(line, file=sys.stderr, flush=True)
+
             if isinstance(event, TextDeltaEvent):
                 text_parts.append(event.text)
             elif isinstance(event, ErrorEvent):
@@ -688,6 +695,33 @@ def _to_transcript_usage(usage: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _json_safe(value: Any) -> Any:
+    """Convert enums and other non-JSON-native values to serializable forms."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return str(value)
+
+
+def _event_to_jsonl(event: Any) -> str | None:
+    """Serialize an AgentEvent dataclass to a JSONL line with _event marker."""
+    if not is_dataclass(event):
+        return None
+    try:
+        raw = asdict(event)  # type: ignore[arg-type]
+    except TypeError:
+        raw = {"kind": getattr(event, "kind", "unknown")}
+    payload: dict[str, Any] = {"_event": True}
+    for key, value in raw.items():
+        payload[key] = _json_safe(value)
+    return json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def _write_jsonl(path: str, rows: list[dict[str, Any]]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -807,6 +841,11 @@ def run_agent_command(
         "", "--transcript-path", help="Write benchmark-compatible JSONL transcript"
     ),
     usage_path: str = typer.Option("", "--usage-path", help="Write usage JSON to this file"),
+    event_stream_stderr: bool = typer.Option(
+        False,
+        "--event-stream-stderr",
+        help="Write agent events as incrementally flushed JSONL to stderr",
+    ),
     session_db_path: str = typer.Option(
         ":memory:",
         "--session-db-path",
@@ -876,6 +915,7 @@ def run_agent_command(
     thinking = _unwrap_typer_default(thinking)
     transcript_path = _unwrap_typer_default(transcript_path)
     usage_path = _unwrap_typer_default(usage_path)
+    event_stream_stderr = _unwrap_typer_default(event_stream_stderr)
     session_db_path = _unwrap_typer_default(session_db_path)
     no_memory_capture = _unwrap_typer_default(no_memory_capture)
     file_paths = _unwrap_typer_default(file_paths)
@@ -910,6 +950,7 @@ def run_agent_command(
             length_capped_continuations=length_capped_continuations,
             transcript_path=transcript_path or None,
             usage_path=usage_path or None,
+            event_stream_stderr=event_stream_stderr,
             session_db_path=session_db_path,
             no_memory_capture=no_memory_capture,
             attachment_paths=list(file_paths or []),

@@ -15,7 +15,16 @@ from opensquilla.cli.agent_cmd import (
     run_agent_command,
     run_agent_once,
 )
-from opensquilla.engine.types import ArtifactEvent, DoneEvent
+from opensquilla.engine.types import (
+    ArtifactEvent,
+    DoneEvent,
+    RouterDecisionEvent,
+    RunHeartbeatEvent,
+    TextDeltaEvent,
+    ThinkingEvent,
+    ToolResultEvent,
+    ToolUseStartEvent,
+)
 from opensquilla.gateway.config import AgentEntryConfig, GatewayConfig, PermissionsConfig
 from opensquilla.sandbox.config import SandboxSettings
 from opensquilla.tools.types import CallerKind, InteractionMode
@@ -1337,3 +1346,144 @@ def test_top_level_agent_command_rejects_invalid_length_capped_continuations() -
     assert "Invalid value" in output
     assert "--length-capped-continuations" in output
     assert "x>=1" in output
+
+
+@pytest.mark.asyncio
+async def test_event_stream_stderr_writes_all_events(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            yield RouterDecisionEvent(tier="c1", model="deepseek-v4-pro", source="v4_phase3")
+            yield ThinkingEvent(text="analyzing...")
+            yield RunHeartbeatEvent(elapsed_ms=5000, idle_ms=1000)
+            yield ToolUseStartEvent(tool_use_id="call-1", tool_name="read_file")
+            yield ToolResultEvent(tool_use_id="call-1", tool_name="read_file", is_error=False)
+            yield TextDeltaEvent(text="The answer is...")
+            yield DoneEvent(text="The answer is 42", input_tokens=100)
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        return _FakeServices(config)
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    await run_agent_once(
+        message="hello",
+        event_stream_stderr=True,
+        config=GatewayConfig(),
+    )
+
+    captured = capsys.readouterr()
+    lines = [json.loads(line) for line in captured.err.strip().split("\n") if line]
+
+    assert len(lines) == 7
+    assert all(line["_event"] is True for line in lines)
+    kinds = [line["kind"] for line in lines]
+    assert kinds == [
+        "router_decision",
+        "thinking",
+        "run_heartbeat",
+        "tool_use_start",
+        "tool_result",
+        "text_delta",
+        "done",
+    ]
+    assert lines[0]["tier"] == "c1"
+    assert lines[3]["tool_name"] == "read_file"
+    assert lines[6]["input_tokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_event_stream_stderr_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            yield ThinkingEvent(text="thinking...")
+            yield DoneEvent(text="ok")
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        return _FakeServices(config)
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    await run_agent_once(message="hello", config=GatewayConfig())
+
+    captured = capsys.readouterr()
+    assert "_event" not in captured.err
+
+
+@pytest.mark.asyncio
+async def test_event_stream_stderr_lines_are_valid_jsonl_with_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeTurnRunner:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        async def run(self, message: str, session_key: str, **kwargs: Any):
+            yield ThinkingEvent(text="hmm")
+            yield TextDeltaEvent(text="partial")
+            yield DoneEvent(text="done", input_tokens=5, output_tokens=7)
+
+    async def fake_build_services(*, config: GatewayConfig, **kwargs: Any) -> _FakeServices:
+        return _FakeServices(config)
+
+    monkeypatch.setattr("opensquilla.engine.runtime.TurnRunner", FakeTurnRunner)
+    monkeypatch.setattr("opensquilla.gateway.build_services", fake_build_services)
+
+    await run_agent_once(
+        message="hello",
+        event_stream_stderr=True,
+        config=GatewayConfig(),
+    )
+
+    captured = capsys.readouterr()
+    raw_lines = [line for line in captured.err.split("\n") if line.strip()]
+    assert raw_lines
+    parsed: list[dict[str, Any]] = []
+    for raw in raw_lines:
+        obj = json.loads(raw)  # raises if not valid JSON
+        assert obj["_event"] is True
+        parsed.append(obj)
+    assert [obj["kind"] for obj in parsed] == ["thinking", "text_delta", "done"]
+    assert parsed[2]["input_tokens"] == 5
+    assert parsed[2]["output_tokens"] == 7
+
+
+def test_cli_passes_event_stream_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    from opensquilla.cli.main import app
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_agent_once(**kwargs: Any) -> AgentRunResult:
+        captured.update(kwargs)
+        return AgentRunResult(
+            status="ok",
+            agent_id="main",
+            session_key="agent:main:main",
+            text="ok",
+            usage={},
+            errors=[],
+        )
+
+    monkeypatch.setattr("opensquilla.cli.agent_cmd.run_agent_once", fake_run_agent_once)
+
+    result = CliRunner().invoke(
+        app,
+        ["agent", "--message", "test", "--json", "--event-stream-stderr"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured.get("event_stream_stderr") is True

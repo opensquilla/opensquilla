@@ -49,6 +49,8 @@ OFFLINE_MARKER_EXCLUSIONS = {
     "tests/test_skills/test_meta_skill_creator_smoke_live.py",
 }
 RECENTLY_ADDED_ACTIVE_TESTS = {
+    "tests/unit/cli/tui/test_keys_cheatsheet.py",
+    "tests/unit/cli/tui/test_opentui_prefs.py",
     "tests/test_channels/test_admission_reason_persistence.py",
     "tests/test_channels/test_channel_admission.py",
     "tests/test_channels/test_channel_certification.py",

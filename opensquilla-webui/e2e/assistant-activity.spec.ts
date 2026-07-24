@@ -73,6 +73,7 @@ async function mockControlledActivityLifecycle(page: Page) {
   let sendFrame: ((frame: string) => void) | null = null
   let streamSeq = 3
   let settled = false
+  let acceptedUserMessageId = 'activity-lifecycle-user'
 
   const emit = (event: string, payload: Record<string, unknown>) => {
     if (!sendFrame) throw new Error('activity lifecycle websocket is not connected')
@@ -112,12 +113,20 @@ async function mockControlledActivityLifecycle(page: Page) {
         return
       }
       if (method === 'chat.send') {
+        const params = frame.params && typeof frame.params === 'object'
+          ? frame.params as Record<string, unknown>
+          : {}
+        const requestedClientMessageId = params.clientMessageId
+        if (typeof requestedClientMessageId === 'string' && requestedClientMessageId) {
+          acceptedUserMessageId = requestedClientMessageId
+        }
         ws.send(wsResponse(frame.id as string | number | undefined, {
           accepted: true,
           session: LIFECYCLE_SESSION_KEY,
           sessionKey: LIFECYCLE_SESSION_KEY,
           task_id: LIFECYCLE_TASK_ID,
           stream_seq: 1,
+          user_message_id: acceptedUserMessageId,
         }))
         ws.send(wsEvent('task.running', {
           key: LIFECYCLE_SESSION_KEY,
@@ -136,8 +145,8 @@ async function mockControlledActivityLifecycle(page: Page) {
         ? [{
             role: 'user',
             text: 'Inspect, draft, verify, and answer.',
-            id: 'activity-lifecycle-user',
-            message_id: 'activity-lifecycle-user',
+            id: acceptedUserMessageId,
+            message_id: acceptedUserMessageId,
             timestamp: Math.floor(Date.now() / 1000) - 30,
           }, {
             role: 'assistant',

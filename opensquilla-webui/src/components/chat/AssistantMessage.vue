@@ -43,6 +43,7 @@
               || activityProjection.statusSteps.length
             "
             :projection="activityProjection"
+            :timeline-items="activityProjection.activityItems"
             :state-scope="toolStateScope"
             :is-tool-group-open="isToolGroupOpen"
             :is-tool-item-open="isToolItemOpen"

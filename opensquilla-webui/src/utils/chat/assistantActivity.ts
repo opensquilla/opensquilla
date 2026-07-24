@@ -224,6 +224,40 @@ export function splitLiveAssistantTimeline(
   }
 }
 
+/**
+ * Preserve narration that became part of the work chronology because another
+ * tool ran after it. Any text before the last tool is process narration, while
+ * trailing text remains a streamed answer snapshot whose authoritative
+ * replacement is `message.text`.
+ */
+function separatedActivityItems(
+  timeline: ChatStreamTimelineItem[],
+  canonicalAnswer: string,
+): ChatStreamTimelineItem[] {
+  const normalizedAnswer = canonicalAnswer.trim().replace(/\s+/g, ' ')
+  let lastToolIndex = -1
+  for (let index = timeline.length - 1; index >= 0; index -= 1) {
+    if (timeline[index]?.type === 'tool-group') {
+      lastToolIndex = index
+      break
+    }
+  }
+
+  return timeline.filter((item, index) => {
+    if (item.type === 'tool-group') return true
+    if (index >= lastToolIndex) return false
+    const rawText = String(item.rawText || '').trim()
+    const html = String(item.html || '').trim()
+    if (!rawText && !html) return false
+
+    // A streamed fragment can precede a tool yet still be part of the
+    // authoritative final answer. Do not render it twice. Distinct candidate
+    // narration remains visible inside the activity chronology.
+    const normalizedText = rawText.replace(/\s+/g, ' ')
+    return !normalizedText || !normalizedAnswer.includes(normalizedText)
+  })
+}
+
 function codeDescriptor<Code extends string>(
   code: Code,
   params: AssistantActivityCodeParams = {},
@@ -524,10 +558,11 @@ export function projectAssistantActivityTimeline(
  * Project a completed assistant message into compact activity and canonical
  * answer surfaces without rewriting the persisted timeline.
  *
- * The terminal `message.text` is the only authoritative answer. Timeline text
- * may be a prefix, suffix, or stale streamed snapshot, so it is never used to
- * guess the answer. Older rows that lack canonical text keep their original
- * timeline rendering rather than risking hidden content.
+ * The terminal `message.text` is the only authoritative answer. A timeline
+ * text segment followed by another tool is retained as process narration when
+ * it is not already contained in the canonical answer; trailing answer
+ * snapshots are excluded. Older rows that lack canonical text keep their
+ * original timeline rendering rather than risking hidden content.
  */
 export function projectAssistantActivity(
   message: ChatRenderedMessage,
@@ -542,18 +577,19 @@ export function projectAssistantActivity(
   const hasCanonicalAnswer = Boolean(message.text.trim())
   const canSeparateActivity = hasCanonicalAnswer || !hasTimelineText
   const activityItems = canSeparateActivity
-    ? timeline.filter((item): item is Extract<ChatStreamTimelineItem, { type: 'tool-group' }> =>
-        item.type === 'tool-group',
-      )
+    ? hasCanonicalAnswer
+      ? separatedActivityItems(timeline, message.text)
+      : timeline.slice()
     : []
   const timelineProjection = projectAssistantActivityTimeline(
-    canSeparateActivity ? timeline : [],
+    activityItems,
     options,
   )
 
   let toolCount = 0
   let failureCount = 0
   for (const item of activityItems) {
+    if (item.type !== 'tool-group') continue
     toolCount += item.group.calls.length
     failureCount += item.group.calls.filter(
       call => call.isError || call.status === 'error',

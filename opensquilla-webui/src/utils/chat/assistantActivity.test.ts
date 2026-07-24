@@ -107,6 +107,79 @@ describe('projectAssistantActivity', () => {
     expect(tools.map(item => item.toolId)).toEqual(['ok', 'failed'])
   })
 
+  it('keeps tool-bounded candidate text as activity without repeating the final answer', () => {
+    const projection = projectAssistantActivity(
+      message({
+        text: 'Final verified answer.',
+        timelineItems: [
+          toolGroup([call('inspect', { name: 'read_source' })], 'inspect'),
+          {
+            type: 'text',
+            key: 'draft-candidate',
+            html: '<p>Draft candidate.</p>',
+            rawText: 'Draft candidate.',
+          },
+          toolGroup([call('verify', { name: 'execute_code' })], 'verify'),
+          {
+            type: 'text',
+            key: 'final-snapshot',
+            html: '<p>Final verified answer.</p>',
+            rawText: 'Final verified answer.',
+          },
+        ],
+      }),
+      text => `<p>${text}</p>`,
+    )
+
+    expect(projection.activityItems.map(item => item.type)).toEqual([
+      'tool-group',
+      'text',
+      'tool-group',
+    ])
+    expect(projection.activityItems[1]).toMatchObject({
+      key: 'draft-candidate',
+      rawText: 'Draft candidate.',
+    })
+    expect(JSON.stringify(projection.activityItems)).not.toContain('Final verified answer.')
+    expect(projection.answerPart?.rawText).toBe('Final verified answer.')
+    expect(projection.toolCount).toBe(2)
+  })
+
+  it('keeps a candidate that is followed by the first tool as process narration', () => {
+    const projection = projectAssistantActivity(
+      message({
+        text: 'Final answer after verification.',
+        timelineItems: [
+          {
+            type: 'text',
+            key: 'early-candidate',
+            html: '<p>Early candidate.</p>',
+            rawText: 'Early candidate.',
+          },
+          toolGroup([call('verify', { name: 'execute_code' })], 'verify'),
+          {
+            type: 'text',
+            key: 'final-snapshot',
+            html: '<p>Final answer after verification.</p>',
+            rawText: 'Final answer after verification.',
+          },
+        ],
+      }),
+      text => `<p>${text}</p>`,
+    )
+
+    expect(projection.activityItems.map(item => item.type)).toEqual([
+      'text',
+      'tool-group',
+    ])
+    expect(projection.activityItems[0]).toMatchObject({
+      key: 'early-candidate',
+      rawText: 'Early candidate.',
+    })
+    expect(JSON.stringify(projection.activityItems))
+      .not.toContain('Final answer after verification.')
+  })
+
   it('preserves the original timeline when old history has text but no canonical answer', () => {
     const timelineItems: ChatStreamTimelineItem[] = [
       { type: 'text', key: 'legacy-text', html: 'Legacy answer', rawText: 'Legacy answer' },

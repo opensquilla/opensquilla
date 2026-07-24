@@ -33,6 +33,38 @@ function failedCall(): ChatToolCallRenderItem {
   }
 }
 
+function successfulCall(toolId: string, name: string): ChatToolCallRenderItem {
+  return {
+    ...failedCall(),
+    toolId,
+    renderKey: toolId,
+    name,
+    displayName: name,
+    status: 'success',
+    isError: false,
+    result: 'ok',
+    resultPreview: 'ok',
+  }
+}
+
+function timelineGroup(call: ChatToolCallRenderItem): ChatStreamTimelineItem {
+  return {
+    type: 'tool-group',
+    key: `group-${call.toolId}`,
+    group: {
+      groupId: `group-${call.toolId}`,
+      operationKey: call.name,
+      label: call.displayName,
+      iconName: 'edit',
+      calls: [call],
+      secondary: '',
+      isRunning: false,
+      isError: false,
+      status: 'success',
+    },
+  }
+}
+
 function failedTimeline(): ChatStreamTimelineItem[] {
   const call = failedCall()
   return [
@@ -175,7 +207,8 @@ describe('AssistantMessage activity disclosure', () => {
 
     const activity = el.querySelector<HTMLElement>('.assistant-activity')
     const summary = activity?.querySelector<HTMLButtonElement>('.assistant-activity__summary')
-    const answer = el.querySelector<HTMLElement>('.msg-ai-text')
+    const answer = [...el.querySelectorAll<HTMLElement>('.msg-ai-text')]
+      .find(node => !activity?.contains(node))
     const failedRow = activity?.querySelector<HTMLElement>('.tool-row--error')
 
     expect(activity).not.toBeNull()
@@ -193,8 +226,8 @@ describe('AssistantMessage activity disclosure', () => {
 
     expect(answer?.textContent).toBe('Canonical answer')
     expect(activity?.contains(answer ?? null)).toBe(false)
-    expect(el.querySelectorAll('.msg-ai-text')).toHaveLength(1)
-    expect(el.textContent).not.toContain('Draft prefix')
+    expect(el.querySelectorAll('.msg-ai-text')).toHaveLength(2)
+    expect(activity?.textContent).toContain('Draft prefix')
     expect(el.textContent).not.toContain('Draft suffix')
   })
 
@@ -208,6 +241,39 @@ describe('AssistantMessage activity disclosure', () => {
     expect(summary?.textContent).not.toContain('Activity ·')
     expect(el.querySelector('.assistant-activity')?.getAttribute('data-share-expanded')).toBe('false')
     expect(el.querySelector('.tool-row')).not.toBeNull()
+  })
+
+  it('keeps intermediate candidate narration inside activity and the final answer outside once', async () => {
+    const el = mountMessage(baseMessage({
+      text: 'Final verified answer.',
+      timelineItems: [
+        timelineGroup(successfulCall('inspect', 'read_source')),
+        {
+          type: 'text',
+          key: 'draft-candidate',
+          html: '<p>Draft candidate.</p>',
+          rawText: 'Draft candidate.',
+        },
+        timelineGroup(successfulCall('verify', 'execute_code')),
+        {
+          type: 'text',
+          key: 'final-snapshot',
+          html: '<p>Final verified answer.</p>',
+          rawText: 'Final verified answer.',
+        },
+      ],
+      parts: [],
+      statusHistory: [],
+    }))
+    await nextTick()
+
+    const activity = el.querySelector<HTMLElement>('.assistant-activity')
+    const answer = [...el.querySelectorAll<HTMLElement>('.msg-ai-text')]
+      .find(node => !activity?.contains(node))
+    expect(activity?.textContent).toContain('Draft candidate.')
+    expect(activity?.textContent).not.toContain('Final verified answer.')
+    expect(answer?.textContent).toBe('Final verified answer.')
+    expect((el.textContent?.match(/Final verified answer\./g) ?? [])).toHaveLength(1)
   })
 
   it('keeps a terminal failure open at the failed tool', async () => {
@@ -239,7 +305,8 @@ describe('AssistantMessage activity disclosure', () => {
     await nextTick()
 
     const activity = el.querySelector('.assistant-activity')
-    const answer = el.querySelector<HTMLElement>('.msg-ai-text')
+    const answer = [...el.querySelectorAll<HTMLElement>('.msg-ai-text')]
+      .find(node => !activity?.contains(node))
     expect(activity?.classList.contains('assistant-activity--interrupted')).toBe(true)
     expect(activity?.querySelector('.assistant-activity__summary')?.getAttribute('aria-expanded')).toBe('true')
     expect(activity?.querySelector('.assistant-activity__summary')?.textContent)

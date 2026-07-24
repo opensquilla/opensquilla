@@ -219,10 +219,13 @@ test.describe('Completed assistant activity disclosure', () => {
     await expect(activity).toHaveAttribute('data-share-expanded', 'false')
     await expect(activity).toContainText('Completed · 2 items')
 
-    const answer = page.locator('.msg-ai-text')
+    const answer = page.getByText('The canonical answer is complete.', { exact: true })
     await expect(answer).toBeVisible()
     await expect(answer).toHaveText('The canonical answer is complete.')
-    await expect(page.getByText('Non-canonical streamed prefix.')).toHaveCount(0)
+    const processPrefix = activity.getByText('Non-canonical streamed prefix.', {
+      exact: true,
+    })
+    await expect(processPrefix).toBeHidden()
     await expect(page.getByText('Non-canonical streamed suffix.')).toHaveCount(0)
 
     const row = activity.locator('.tool-row[data-op="web.search"]')
@@ -268,6 +271,7 @@ test.describe('Completed assistant activity disclosure', () => {
     await expect(summary).toHaveAttribute('aria-expanded', 'true')
     await expect(activity).toHaveAttribute('data-share-expanded', 'true')
     await expect(row).toBeVisible()
+    await expect(processPrefix).toBeVisible()
     await expect(activity.locator('.thinking-block__body')).toContainText(
       'I compared the available evidence before answering.',
     )
@@ -361,7 +365,9 @@ test.describe('Completed assistant activity disclosure', () => {
       'Search service unavailable',
     )
     await expect(activity.locator('.tool-row-section--error')).toHaveCount(0)
-    await expect(page.locator('.msg-ai-text')).toHaveText('The canonical answer is complete.')
+    await expect(
+      page.getByText('The canonical answer is complete.', { exact: true }),
+    ).toBeVisible()
 
     await activity.locator('.assistant-activity__label').evaluate((element) => {
       element.textContent = 'Sehr lange lokalisierte Aktivitätszusammenfassung'
@@ -474,9 +480,15 @@ test.describe('Live assistant activity lifecycle', () => {
       hasText: 'Final verified answer.',
     })
     await expect(finalAnswer).toBeVisible()
-    expect(await settled.evaluate((element) =>
-      element.contains(document.querySelector('.msg-ai-text')),
-    )).toBe(false)
+    expect(await finalAnswer.evaluate(element =>
+      element.closest('.assistant-activity') === null,
+    )).toBe(true)
+    await settled.locator('.assistant-activity__summary').click()
+    await expect(settled.getByText('Draft candidate.', { exact: true })).toBeVisible()
+    await expect(
+      settled.getByText('Final verified answer.', { exact: true }),
+    ).toHaveCount(0)
+    await expect(page.getByText('Final verified answer.', { exact: true })).toHaveCount(1)
   })
 
   test('disables live activity motion when reduced motion is requested', async ({ page }) => {

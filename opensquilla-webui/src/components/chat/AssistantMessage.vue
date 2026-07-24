@@ -24,37 +24,64 @@
       <Icon v-if="shareSelected" name="check" :size="13" />
     </button>
     <div class="msg-ai-main">
-      <ReasoningPart v-if="reasoningPart" :part="reasoningPart" />
-      <ToolCallTimeline
-        v-if="message.timelineItems?.length"
-        :items="message.timelineItems"
-        :state-scope="toolStateScope"
-        :is-tool-group-open="isToolGroupOpen"
-        :is-tool-item-open="isToolItemOpen"
-        :tool-group-status-text="toolGroupStatusText"
-        :tool-status-text="toolStatusText"
-        :tool-secondary-text="toolSecondaryText"
-        @toggle-group="$emit('toggleToolGroup', $event)"
-        @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
-      />
-      <template v-else>
-        <TextPart v-if="standaloneTextPart" :part="standaloneTextPart" :sources="message.sources ?? []" @citation="onCitation" />
+      <template v-if="activityProjection.canSeparateActivity">
+        <ActivityDisclosure
+          v-if="hasActivity"
+          :step-count="activityStepCount"
+          :failure-count="activityProjection.failureCount"
+          :reasoning-seconds="reasoningPart?.seconds"
+          :default-open="activityDefaultOpen"
+        >
+          <ReasoningPart v-if="reasoningPart" :part="reasoningPart" embedded />
+          <ToolCallTimeline
+            v-if="activityProjection.activityItems.length"
+            :items="activityProjection.activityItems"
+            :state-scope="toolStateScope"
+            :is-tool-group-open="isToolGroupOpen"
+            :is-tool-item-open="isToolItemOpen"
+            :tool-group-status-text="toolGroupStatusText"
+            :tool-status-text="toolStatusText"
+            :tool-secondary-text="toolSecondaryText"
+            @toggle-group="$emit('toggleToolGroup', $event)"
+            @toggle-item="$emit('toggleToolItem', $event)"
+            @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
+          />
+          <StatusHistoryPart
+            v-if="statusHistory.length"
+            :entries="statusHistory"
+            embedded
+          />
+        </ActivityDisclosure>
+        <TextPart
+          v-if="activityProjection.answerPart"
+          :part="activityProjection.answerPart"
+          :sources="message.sources ?? []"
+          @citation="onCitation"
+        />
       </template>
 
-      <ToolCallTimeline
-        v-if="!message.timelineItems?.length && message.toolCalls?.length"
-        :items="legacyTimelineItems"
-        :state-scope="toolStateScope"
-        :is-tool-group-open="isToolGroupOpen"
-        :is-tool-item-open="isToolItemOpen"
-        :tool-group-status-text="toolGroupStatusText"
-        :tool-status-text="toolStatusText"
-        :tool-secondary-text="toolSecondaryText"
-        @toggle-group="$emit('toggleToolGroup', $event)"
-        @toggle-item="$emit('toggleToolItem', $event)"
-        @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
-      />
+      <!-- Compatibility path for older history rows that have timeline text
+           but no canonical message.text. Preserve their original order and
+           visibility instead of guessing which fragment was the answer. -->
+      <template v-else>
+        <ReasoningPart v-if="reasoningPart" :part="reasoningPart" />
+        <ToolCallTimeline
+          :items="message.timelineItems ?? []"
+          :state-scope="toolStateScope"
+          :is-tool-group-open="isToolGroupOpen"
+          :is-tool-item-open="isToolItemOpen"
+          :tool-group-status-text="toolGroupStatusText"
+          :tool-status-text="toolStatusText"
+          :tool-secondary-text="toolSecondaryText"
+          @toggle-group="$emit('toggleToolGroup', $event)"
+          @toggle-item="$emit('toggleToolItem', $event)"
+          @show-result="(content, title, context) => $emit('showToolResult', content, title, context)"
+        />
+        <StatusHistoryPart
+          v-if="statusHistory.length"
+          :entries="statusHistory"
+        />
+      </template>
 
       <!-- Inline interrupts: approval / clarify requests that blocked the run,
            rendered after the body and before the ending deliverables. -->
@@ -66,13 +93,6 @@
         @extend="id => $emit('extendInterrupt', id)"
         @clarify-submit="(fields, request) => $emit('clarifySubmit', fields, request)"
         @clarify-dismiss="$emit('clarifyDismiss')"
-      />
-
-      <!-- What the agent did this turn: an expandable activity timeline of the
-           accepted phase transitions, shown before the ending deliverables. -->
-      <StatusHistoryPart
-        v-if="statusHistory.length"
-        :entries="statusHistory"
       />
 
       <div
@@ -242,6 +262,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import Icon from '@/components/Icon.vue'
+import ActivityDisclosure from '@/components/chat/ActivityDisclosure.vue'
 import ChatArtifactList from '@/components/chat/ChatArtifactList.vue'
 import SourcesRow from '@/components/chat/SourcesRow.vue'
 import ToolCallTimeline from '@/components/chat/ToolCallTimeline.vue'
@@ -252,6 +273,7 @@ import TextPart from '@/components/chat/parts/TextPart.vue'
 import { useChatRouteFeedback } from '@/composables/chat/useChatRouteFeedback'
 import { useCopyFeedback } from '@/composables/chat/useCopyFeedback'
 import { useRelativeNow } from '@/composables/useRelativeNow'
+import { useToolDetailPreference } from '@/composables/useToolDetailPreference'
 import type {
   ChatRenderedMessage,
   ChatStreamTimelineItem,
@@ -262,6 +284,7 @@ import type {
 } from '@/types/chat'
 import type { ChatPart } from '@/types/parts'
 import type { ArtifactPayload } from '@/types/rpc'
+import { projectAssistantActivity } from '@/utils/chat/assistantActivity'
 import { absoluteTime, fullTime, isoTime, relativeTime } from '@/utils/messageTime'
 
 const props = defineProps<{
@@ -304,6 +327,7 @@ const emit = defineEmits<{
 // Absolute label is static; only the relative label subscribes to the shared
 // clock, so a tick re-evaluates one cheap computed per visible bubble.
 const { t } = useI18n()
+const { mode: toolDetailMode } = useToolDetailPreference()
 
 // Routing feedback: buttons only exist when the turn carries a V017 decision
 // id (router actually decided this turn). The copy differs by execution kind —
@@ -330,23 +354,14 @@ const timeAbs = computed(() => absoluteTime(props.message.ts))
 const timeRel = computed(() => relativeTime(props.message.ts, now.value))
 const timeFull = computed(() => fullTime(props.message.ts))
 
-// reasoning + standalone text now come pre-folded on message.parts (see toParts).
-// The text part already carries pre-rendered, sanitized html, so this component
-// no longer re-runs renderMarkdown for the body.
+// Reasoning still comes from the normalized parts surface. The visible answer
+// is projected separately from authoritative message.text below; timeline text
+// is never treated as a terminal-answer heuristic.
 const reasoningPart = computed(
   () =>
     props.message.parts?.find(
       (part): part is Extract<ChatPart, { type: 'reasoning' }> => part.type === 'reasoning',
     ) ?? null,
-)
-// Standalone text only exists in the no-timeline body: toParts emits a single
-// text part (key `${ownerKey}:text`) and never alongside a timeline.
-const standaloneTextPart = computed(() =>
-  props.message.timelineItems?.length
-    ? null
-    : props.message.parts?.find(
-        (part): part is Extract<ChatPart, { type: 'text' }> => part.type === 'text',
-      ) ?? null,
 )
 // Inline interrupt parts (approval / clarify) fold into the body order after
 // text/tools and before the ending; render them through the shared adapter.
@@ -465,6 +480,30 @@ const legacyTimelineItems = computed<ChatStreamTimelineItem[]>(() => {
     group,
   }))
 })
+
+const activityProjection = computed(() =>
+  projectAssistantActivity(
+    props.message,
+    props.renderMarkdown,
+    legacyTimelineItems.value,
+  ),
+)
+
+const hasActivity = computed(() =>
+  !!reasoningPart.value
+  || activityProjection.value.activityItems.length > 0
+  || statusHistory.value.length > 0,
+)
+
+const activityStepCount = computed(() => Math.max(
+  1,
+  statusHistory.value.length,
+  activityProjection.value.toolCount + (reasoningPart.value ? 1 : 0),
+))
+const activityDefaultOpen = computed(() =>
+  activityProjection.value.failureCount > 0
+  || (activityProjection.value.toolCount > 0 && toolDetailMode.value === 'expanded'),
+)
 
 function onMessageClick(event: MouseEvent) {
   if (!props.shareMode) return

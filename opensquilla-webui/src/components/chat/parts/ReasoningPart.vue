@@ -1,5 +1,12 @@
 <template>
-  <details class="thinking-fold">
+  <section v-if="embedded" class="thinking-block">
+    <div class="thinking-block__header">
+      <Icon name="skills" :size="12" aria-hidden="true" />
+      <span>{{ summary }}</span>
+    </div>
+    <div class="thinking-block__body">{{ part.text }}</div>
+  </section>
+  <details v-else class="thinking-fold">
     <summary class="thinking-fold__summary">
       <Icon class="thinking-fold__chevron" name="chevronRight" :size="12" />
       <span>{{ summary }}</span>
@@ -16,7 +23,10 @@ import type { ChatPart } from '@/types/parts'
 
 const { t } = useI18n()
 
-const props = defineProps<{ part: Extract<ChatPart, { type: 'reasoning' }> }>()
+const props = defineProps<{
+  part: Extract<ChatPart, { type: 'reasoning' }>
+  embedded?: boolean
+}>()
 
 const summary = computed(() => {
   const seconds = props.part.seconds || 0
@@ -27,6 +37,26 @@ const summary = computed(() => {
 </script>
 
 <style scoped>
+.thinking-block {
+  min-width: 0;
+}
+.thinking-block__header {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.25rem;
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.thinking-block__body {
+  color: var(--text-muted);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Reasoning disclosure — mirrors the thinking-fold treatment that ChatView's
  * live work card uses, kept local so this part needs no shared sheet. */
 .thinking-fold { margin: 0 0 0.5rem; font-size: 0.8125rem; color: var(--text-dim); }

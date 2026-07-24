@@ -82,6 +82,11 @@ test.describe('Tool rows and activity ribbon', () => {
 
     // Run completes: the work card collapses away, transcript keeps the rows.
     await expect(workCard).toHaveCount(0, { timeout: 180000 })
+    const activity = page.locator('.msg-ai .assistant-activity').first()
+    await expect(activity).toBeVisible()
+    await expect(activity).not.toHaveAttribute('open', '')
+    await activity.locator('summary').press('Enter')
+    await expect(activity).toHaveAttribute('open', '')
     let searchRow = page.locator('.msg-ai .tool-row[data-op="web.search"]').first()
     await expect(searchRow).toBeVisible()
 

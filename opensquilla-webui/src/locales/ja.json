@@ -2775,6 +2775,7 @@
     },
     "sources": "ソース",
     "activitySteps": "アクティビティ · {count} ステップ | アクティビティ · {count} ステップ",
+    "activityFailures": "{count} 件失敗",
     "suggestedTasks": "おすすめのタスク",
     "greetingMorning": "おはようございます。",
     "greetingAfternoon": "こんにちは。",

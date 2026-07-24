@@ -2775,6 +2775,7 @@
     },
     "sources": "来源",
     "activitySteps": "活动 · {count} 步",
+    "activityFailures": "{count} 项失败",
     "suggestedTasks": "推荐任务",
     "greetingMorning": "早上好。",
     "greetingAfternoon": "下午好。",

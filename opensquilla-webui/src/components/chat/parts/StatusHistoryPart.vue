@@ -1,5 +1,18 @@
 <template>
-  <details class="status-history">
+  <section v-if="embedded" class="status-history status-history--embedded">
+    <div class="status-history__summary status-history__summary--static">
+      <Icon name="listChecks" :size="12" aria-hidden="true" />
+      <span>{{ t('chat.activitySteps', { count: entries.length }) }}</span>
+    </div>
+    <ol class="status-history__list">
+      <li v-for="(entry, i) in entries" :key="`${entry.action}:${entry.at}:${i}`" class="status-history__row">
+        <span class="status-history__dot" aria-hidden="true" />
+        <span class="status-history__label">{{ entry.label }}</span>
+        <span v-if="gapText(i)" class="status-history__gap">{{ gapText(i) }}</span>
+      </li>
+    </ol>
+  </section>
+  <details v-else class="status-history">
     <summary class="status-history__summary">
       <Icon class="status-history__chevron" name="chevronRight" :size="12" />
       <span>{{ t('chat.activitySteps', { count: entries.length }) }}</span>
@@ -21,7 +34,10 @@ import type { StatusPart } from '@/types/parts'
 
 const { t } = useI18n()
 
-const props = defineProps<{ entries: StatusPart[] }>()
+const props = defineProps<{
+  entries: StatusPart[]
+  embedded?: boolean
+}>()
 
 // Time the agent spent in each phase = gap to the next transition. The last
 // phase has no successor, so it shows no duration (the turn ended there).
@@ -45,6 +61,12 @@ function gapText(i: number): string {
   border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--bg-surface) 55%, transparent);
 }
+.status-history--embedded {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
 .status-history__summary {
   display: flex;
   align-items: center;
@@ -54,6 +76,10 @@ function gapText(i: number): string {
   color: var(--text-muted);
   cursor: pointer;
   list-style: none;
+}
+.status-history__summary--static {
+  cursor: default;
+  padding: 0 0 0.25rem;
 }
 .status-history__summary::-webkit-details-marker { display: none; }
 .status-history__summary:focus-visible {
@@ -67,6 +93,9 @@ function gapText(i: number): string {
   margin: 0;
   padding: 0.125rem 0.625rem 0.5rem 0.75rem;
   list-style: none;
+}
+.status-history--embedded .status-history__list {
+  padding: 0 0 0 0.125rem;
 }
 .status-history__row {
   display: flex;

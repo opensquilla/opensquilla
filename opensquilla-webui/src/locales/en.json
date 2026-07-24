@@ -2775,6 +2775,7 @@
     },
     "sources": "Sources",
     "activitySteps": "Activity · {count} step | Activity · {count} steps",
+    "activityFailures": "{count} failed",
     "suggestedTasks": "Suggested tasks",
     "greetingMorning": "Good morning.",
     "greetingAfternoon": "Good afternoon.",

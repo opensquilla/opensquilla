@@ -1,0 +1,161 @@
+name: SignPath Test Signing
+
+on:
+  push:
+    branches:
+      - test/signpath-test-signing
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Release Assets run containing the unsigned Windows installer
+        required: true
+        default: "29822197447"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: signpath-test-signing-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sign-windows-installer:
+    name: Sign Windows installer with the SignPath test certificate
+    if: github.repository == 'opensquilla/opensquilla' && github.actor == 'Open-Squilla'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      SOURCE_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.source_run_id || '29822197447' }}
+
+    steps:
+      - name: Check SignPath credential
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SIGNPATH_API_TOKEN)) {
+            throw 'SIGNPATH_API_TOKEN is not available to this repository.'
+          }
+
+      - name: Download unsigned Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-electron-windows
+          path: unsigned-release-artifact
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.SOURCE_RUN_ID }}
+
+      - name: Select the unsigned installer
+        id: installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installers = @(
+            Get-ChildItem 'unsigned-release-artifact' `
+              -Recurse `
+              -File `
+              -Filter 'OpenSquilla-*-win-x64.exe'
+          )
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly one unsigned Windows installer; got $($installers.Count)."
+          }
+
+          $outputDirectory = New-Item -ItemType Directory -Force -Path 'unsigned-for-signing'
+          $outputPath = Join-Path $outputDirectory.FullName $installers[0].Name
+          Copy-Item -LiteralPath $installers[0].FullName -Destination $outputPath
+
+          "path=$outputPath" >> $env:GITHUB_OUTPUT
+          "name=$($installers[0].Name)" >> $env:GITHUB_OUTPUT
+          "sha256=$((Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath).Hash.ToLowerInvariant())" `
+            >> $env:GITHUB_OUTPUT
+
+      - name: Upload the unsigned installer without an archive wrapper
+        id: unsigned
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ steps.installer.outputs.path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Submit SignPath test-signing request
+        id: signpath
+        uses: signpath/github-action-submit-signing-request@b9d91eadd323de506c0c81cf0c7fe7438f3360fd # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: 8be900fb-15d7-42f7-874b-00df768e8859
+          project-slug: opensquilla
+          signing-policy-slug: test-signing
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: "900"
+          output-artifact-directory: signed
+          skip-decompress: true
+
+      - name: Verify Authenticode test signature
+        id: verify
+        shell: pwsh
+        env:
+          SIGNING_REQUEST_URL: ${{ steps.signpath.outputs.signing-request-web-url }}
+          UNSIGNED_SHA256: ${{ steps.installer.outputs.sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $signedInstallers = @(Get-ChildItem 'signed' -Recurse -File -Filter '*.exe')
+          if ($signedInstallers.Count -ne 1) {
+            throw "Expected exactly one signed Windows installer; got $($signedInstallers.Count)."
+          }
+
+          $signedInstaller = $signedInstallers[0]
+          $signedSha256 = (
+            Get-FileHash -Algorithm SHA256 -LiteralPath $signedInstaller.FullName
+          ).Hash.ToLowerInvariant()
+          if ($signedSha256 -eq $env:UNSIGNED_SHA256) {
+            throw 'SignPath returned unchanged installer bytes.'
+          }
+
+          $signature = Get-AuthenticodeSignature -LiteralPath $signedInstaller.FullName
+          if ($null -eq $signature.SignerCertificate) {
+            throw 'The SignPath output does not contain an Authenticode signer certificate.'
+          }
+          if ($signature.Status -in @('NotSigned', 'HashMismatch')) {
+            throw "Authenticode verification failed with status $($signature.Status)."
+          }
+
+          $expectedSubject = "CN=Test certificate for 'OpenSquilla [OSS]'"
+          if ($signature.SignerCertificate.Subject -ne $expectedSubject) {
+            throw (
+              "Unexpected signer subject: $($signature.SignerCertificate.Subject); " +
+              "expected $expectedSubject."
+            )
+          }
+
+          $evidence = @(
+            "signing_request_url=$env:SIGNING_REQUEST_URL"
+            "installer=$($signedInstaller.Name)"
+            "unsigned_sha256=$env:UNSIGNED_SHA256"
+            "signed_sha256=$signedSha256"
+            "signature_status=$($signature.Status)"
+            "signer_subject=$($signature.SignerCertificate.Subject)"
+            "signer_thumbprint=$($signature.SignerCertificate.Thumbprint)"
+          )
+          $evidence | Set-Content -Encoding utf8 'signed/SIGNING_EVIDENCE.txt'
+
+          @"
+          ## SignPath test-signing verification
+
+          - Signing request: $env:SIGNING_REQUEST_URL
+          - Installer: ``$($signedInstaller.Name)``
+          - Signature status: ``$($signature.Status)``
+          - Signer: ``$($signature.SignerCertificate.Subject)``
+          - Signed bytes differ from the unsigned installer: yes
+          "@ | Add-Content -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload isolated test-signed artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: opensquilla-windows-signpath-test-signed
+          path: signed/
+          if-no-files-found: error
+          retention-days: 7

@@ -153,7 +153,8 @@ to differ. The current 42-tool result is `[]` (no drift).
 
 AIQ can expose this agent through its existing dashboard SSE contract while
 keeping OpenSquilla as a separate gateway process. The AIQ-side path requires
-both a server feature flag and an explicit
+the default-off `AIQ_FAQ_RUNTIME_V2_ENABLED` master rollout gate, the
+path-specific `AIQ_OPENSQUILLA_DEV_ENABLED` server flag, and an explicit
 `orchestrator=opensquilla` request; native AIQ remains the default. The
 adapter translates gateway text, tool, terminal, usage, and error events,
 persists the related OpenSquilla session key in AIQ thread metadata, and
@@ -193,13 +194,14 @@ rollback.
 ```bash
 uv run --frozen pytest -q \
   tests/test_contrib/test_aiq \
-  tests/test_engine/turn_runner \
-  tests/test_engine/test_runtime_agent_max_iterations.py \
+  tests/test_engine/turn_runner/test_agent_bootstrap_stage_unit.py \
+  tests/test_engine/turn_runner/test_prompt_assembler_stage_unit.py \
+  tests/test_mcp/test_sse_client.py \
   tests/test_skills_third_party_notices.py
 ```
 
-The broader baseline result is 499 passed. The current focused bridge/profile
-run is 96 passed. These checks make no paid model call.
+The current affected bridge/profile/turn-runner/MCP-SSE/skill-notice run is
+172 passed. These checks make no paid model call.
 
 To measure the request boundary itself against the exact FAQ fixture:
 

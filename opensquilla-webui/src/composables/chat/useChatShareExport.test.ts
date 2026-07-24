@@ -106,8 +106,10 @@ describe('buildShareDom protocol-shaped documentation', () => {
       '<section class="thinking-block">Checked the evidence.</section>',
       '<div class="step-card"><div class="tool-row-body">',
       '<span class="tool-row__activity-arrow" data-share-control>›</span>',
-      '<span>Tool output</span>',
-      '<button class="activity-tool-details__view" data-share-control>View details</button>',
+      '<div class="activity-tool-details__summary">',
+      '<span>games/index.html</span><span aria-hidden="true">·</span><span>30 lines</span>',
+      '<button class="activity-tool-details__hit-target" data-share-control aria-label="View details"></button>',
+      '</div>',
       '</div></div>',
       '<button class="activity-control" data-share-control>Expand result</button>',
       '</div>',
@@ -124,9 +126,13 @@ describe('buildShareDom protocol-shaped documentation', () => {
     expect(stage.querySelector('.chat-share-export-activity__label')?.textContent)
       .toBe('Activity · 2 steps')
     expect(stage.querySelector('.thinking-block')?.textContent).toBe('Checked the evidence.')
-    expect(stage.querySelector('.tool-row-body')?.textContent).toBe('Tool output')
+    expect(stage.querySelector('.tool-row-body')?.textContent)
+      .toBe('games/index.html·30 lines')
     expect(stage.querySelector('.tool-row__activity-arrow')).toBeNull()
-    expect(stage.querySelector('.activity-tool-details__view')).toBeNull()
+    expect(stage.querySelector('.activity-tool-details__summary')?.textContent)
+      .toBe('games/index.html·30 lines')
+    expect(stage.querySelector('.activity-tool-details__hit-target')).toBeNull()
+    expect(stage.textContent).not.toContain('View details')
     expect(stage.querySelector('.activity-control')).toBeNull()
     expect(stage.querySelector('style')?.textContent).toContain('animation: none !important')
     expect(stage.textContent?.match(/Canonical answer/g)).toHaveLength(1)

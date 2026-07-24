@@ -1,33 +1,37 @@
 <template>
   <div class="activity-tool-details">
     <div
-      v-for="(line, index) in projection.lines"
-      :key="`${line.kind}:${index}`"
-      class="activity-tool-details__line"
-      :class="`activity-tool-details__line--${line.kind}`"
+      v-if="projection.lines.length"
+      class="activity-tool-details__summary"
+      :class="{ 'activity-tool-details__summary--interactive': projection.rawContent }"
     >
-      <template v-if="line.kind === 'bytes'">
-        {{ t('shared.runTrace.activityBytesWritten', { size: formatBytes(line.bytes) }) }}
+      <template v-for="(line, index) in projection.lines" :key="`${line.kind}:${index}`">
+        <span
+          v-if="index"
+          class="activity-tool-details__separator"
+          aria-hidden="true"
+        >·</span>
+        <span
+          class="activity-tool-details__line"
+          :class="`activity-tool-details__line--${line.kind}`"
+        >
+          {{ formatLine(line) }}
+        </span>
       </template>
-      <template v-else-if="line.kind === 'content-size'">
-        {{
-          t('shared.runTrace.activityContentSize', {
-            lines: formatNumber(line.lines),
-            characters: formatNumber(line.characters),
-          })
-        }}
-      </template>
-      <template v-else-if="line.kind === 'published'">
-        {{ t('shared.runTrace.activityPublished') }}
-      </template>
-      <template v-else>
-        {{ line.text }}
-      </template>
+      <button
+        v-if="projection.rawContent"
+        type="button"
+        class="activity-tool-details__hit-target"
+        data-share-control
+        :aria-label="detailActionLabel"
+        :title="t('shared.runTrace.activityViewDetails')"
+        @click.stop="showRawDetails"
+      ></button>
     </div>
     <button
-      v-if="projection.rawContent"
+      v-else-if="projection.rawContent"
       type="button"
-      class="activity-tool-details__view"
+      class="activity-tool-details__fallback"
       data-share-control
       @click.stop="showRawDetails"
     >
@@ -40,7 +44,10 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ChatToolCallRenderItem, ToolResultContext } from '@/types/chat'
-import { projectActivityToolDetail } from '@/utils/chat/activityToolDetails'
+import {
+  projectActivityToolDetail,
+  type ActivityToolDetailLine,
+} from '@/utils/chat/activityToolDetails'
 
 const props = defineProps<{
   call: ChatToolCallRenderItem
@@ -77,6 +84,28 @@ function formatBytes(value: number): string {
   }).format(amount)} ${units[unitIndex]}`
 }
 
+function formatLine(line: ActivityToolDetailLine): string {
+  if (line.kind === 'bytes') {
+    return t('shared.runTrace.activityBytesWritten', { size: formatBytes(line.bytes) })
+  }
+  if (line.kind === 'content-size') {
+    return t('shared.runTrace.activityContentSize', {
+      lines: formatNumber(line.lines),
+      characters: formatNumber(line.characters),
+    })
+  }
+  if (line.kind === 'published') {
+    return t('shared.runTrace.activityPublished')
+  }
+  return line.text
+}
+
+const detailActionLabel = computed(() => {
+  const action = t('shared.runTrace.activityViewDetails')
+  const summary = projection.value.lines.map(formatLine).join(' · ')
+  return summary ? `${action}: ${summary}` : action
+})
+
 function showRawDetails() {
   const detail = projection.value
   emit(
@@ -94,27 +123,43 @@ function showRawDetails() {
 
 <style scoped>
 .activity-tool-details {
-  display: grid;
-  gap: 0.125rem;
   min-width: 0;
-  padding: 0.0625rem 0 0.375rem;
+  padding: 0.0625rem 0 0.25rem;
   font-size: 0.75rem;
   line-height: 1.45;
 }
 
+.activity-tool-details__summary {
+  position: relative;
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  width: max-content;
+  max-width: 100%;
+  min-width: 0;
+  color: color-mix(in srgb, var(--text) 46%, transparent);
+  white-space: nowrap;
+}
+
+.activity-tool-details__summary--interactive {
+  cursor: pointer;
+}
+
 .activity-tool-details__line {
+  flex: 0 0 auto;
   min-width: 0;
   overflow: hidden;
-  color: color-mix(in srgb, var(--text) 46%, transparent);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .activity-tool-details__line--target {
+  flex: 1 1 auto;
   color: color-mix(in srgb, var(--text) 62%, transparent);
 }
 
 .activity-tool-details__line--code {
+  flex: 1 1 auto;
   color: color-mix(in srgb, var(--text) 62%, transparent);
   font-family: var(--font-mono);
   font-variant-ligatures: none;
@@ -124,9 +169,45 @@ function showRawDetails() {
   color: var(--danger);
 }
 
-.activity-tool-details__view {
-  justify-self: start;
-  margin: 0.0625rem 0 0;
+.activity-tool-details__separator {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--text) 34%, transparent);
+}
+
+.activity-tool-details__hit-target {
+  position: absolute;
+  inset: -0.0625rem -0.125rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+}
+
+.activity-tool-details__summary--interactive:hover .activity-tool-details__line,
+.activity-tool-details__summary--interactive:focus-within .activity-tool-details__line {
+  color: color-mix(in srgb, var(--text) 62%, transparent);
+}
+
+.activity-tool-details__summary--interactive:hover .activity-tool-details__line--target,
+.activity-tool-details__summary--interactive:hover .activity-tool-details__line--code,
+.activity-tool-details__summary--interactive:focus-within .activity-tool-details__line--target,
+.activity-tool-details__summary--interactive:focus-within .activity-tool-details__line--code {
+  color: color-mix(in srgb, var(--text) 78%, transparent);
+}
+
+.activity-tool-details__summary--interactive:hover .activity-tool-details__line--error,
+.activity-tool-details__summary--interactive:focus-within .activity-tool-details__line--error {
+  color: var(--danger);
+}
+
+.activity-tool-details__hit-target:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.activity-tool-details__fallback {
+  margin: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -139,8 +220,8 @@ function showRawDetails() {
   transition: color var(--dur-fast) var(--ease-standard);
 }
 
-.activity-tool-details__view:hover,
-.activity-tool-details__view:focus-visible {
+.activity-tool-details__fallback:hover,
+.activity-tool-details__fallback:focus-visible {
   outline: none;
   color: color-mix(in srgb, var(--text) 78%, transparent);
   text-decoration: underline;
@@ -148,7 +229,7 @@ function showRawDetails() {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .activity-tool-details__view {
+  .activity-tool-details__fallback {
     transition: none;
   }
 }

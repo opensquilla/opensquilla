@@ -203,7 +203,7 @@ describe('RunTrace activity presentation', () => {
     expect(el.querySelector('.tool-row__activity-icon--error')).not.toBeNull()
     expect(el.querySelector('.tool-row__activity-arrow')).not.toBeNull()
     expect(
-      el.querySelector('.activity-tool-details__view')?.hasAttribute('data-share-control'),
+      el.querySelector('.activity-tool-details__hit-target')?.hasAttribute('data-share-control'),
     ).toBe(true)
   })
 
@@ -257,13 +257,22 @@ describe('RunTrace activity presentation', () => {
     })
 
     const details = el.querySelector('.activity-tool-details')
-    const viewDetails = el.querySelector<HTMLButtonElement>('.activity-tool-details__view')
+    const summary = el.querySelector('.activity-tool-details__summary')
+    const detailTrigger = el.querySelector<HTMLButtonElement>(
+      '.activity-tool-details__hit-target',
+    )
     expect(details).not.toBeNull()
-    expect(details?.textContent).toContain('30 lines')
+    expect(summary).not.toBeNull()
+    expect(summary?.textContent).toContain('30 lines')
+    expect(summary?.textContent).not.toContain('view details')
+    expect(el.querySelectorAll('.activity-tool-details__summary')).toHaveLength(1)
+    expect(el.querySelector('.activity-tool-details__view')).toBeNull()
     expect(el.querySelector('.tool-row-section')).toBeNull()
-    expect(viewDetails).not.toBeNull()
+    expect(detailTrigger?.tagName).toBe('BUTTON')
+    expect(detailTrigger?.hasAttribute('data-share-control')).toBe(true)
+    expect(detailTrigger?.getAttribute('aria-label')?.toLowerCase()).toContain('view details')
 
-    viewDetails?.click()
+    detailTrigger?.click()
 
     expect(onShowResult).toHaveBeenCalledWith(
       `INPUT\n{}\n\nRESULT\n${result.trim()}`,

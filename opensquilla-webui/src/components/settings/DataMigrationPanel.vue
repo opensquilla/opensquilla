@@ -86,7 +86,7 @@ interface CleanupResult {
 
 interface DesktopMigrationBridge {
   getDesktopProfileKind?: () => Promise<unknown>
-  getRecoveryState?: () => Promise<unknown>
+  getMigrationInspection?: () => Promise<unknown>
   chooseLegacyAgentDataLocation?: (payload?: Record<string, never>) => Promise<unknown>
   migrationSummary?: (payload?: { source?: string }) => Promise<{
     ok: boolean
@@ -476,10 +476,10 @@ function unsubscribeProgress(): void {
   progressUnsub = null
 }
 
-async function loadRecoveryContext(): Promise<void> {
+async function loadMigrationInspection(): Promise<void> {
   if (!platform.capabilities.isDesktop) return
   try {
-    const raw = await desktopBridge?.getRecoveryState?.()
+    const raw = await desktopBridge?.getMigrationInspection?.()
     if (raw && typeof raw === 'object') {
       const inspection = (raw as Record<string, unknown>).inspection
       if (inspection && typeof inspection === 'object') {
@@ -557,7 +557,7 @@ async function refreshSources(): Promise<void> {
   candidates.value = []
   resetPreview()
   try {
-    await loadRecoveryContext()
+    await loadMigrationInspection()
     if (hasDesktopMigrationBridge.value) await scanDesktopSources()
     else await scanGatewaySources()
   } catch (error) {
@@ -754,7 +754,7 @@ async function chooseLegacyAgentDataLocation(): Promise<void> {
       const error = nonEmptyString((result as { error?: unknown }).error)
       throw new Error(error || t('settings.dataMigration.loadFailed'))
     }
-    await loadRecoveryContext()
+    await loadMigrationInspection()
   } catch (error) {
     inlineError.value = presentationError(error)
   } finally {

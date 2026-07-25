@@ -282,18 +282,32 @@ function recoveryProfileStatus(
  * are accepted only when the UUID and no-follow directory shape both match;
  * symlinks and junction-like aliases are never traversed.
  */
-export function allProfileContexts(userData: string): DesktopProfilePaths[] {
+export function allProfileContexts(
+  userData: string,
+  maximumRecoveryProfiles = Number.POSITIVE_INFINITY,
+  recoveryOffset = 0,
+): DesktopProfilePaths[] {
   const profiles = [primaryProfilePaths(userData)]
   const recoveryRoot = join(resolve(userData), 'recovery-profiles')
   let entries: string[] = []
   try {
     const rootInfo = lstatSync(recoveryRoot)
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) return profiles
-    entries = readdirSync(recoveryRoot)
+    entries = readdirSync(recoveryRoot).sort()
   } catch {
     return profiles
   }
-  for (const entry of entries.sort()) {
+  if (entries.length > 0 && Number.isSafeInteger(recoveryOffset)) {
+    const normalizedOffset = (
+      (recoveryOffset % entries.length) + entries.length
+    ) % entries.length
+    entries = [
+      ...entries.slice(normalizedOffset),
+      ...entries.slice(0, normalizedOffset),
+    ]
+  }
+  for (const entry of entries) {
+    if (profiles.length - 1 >= maximumRecoveryProfiles) break
     if (!isRecoveryProfileId(entry)) continue
     const profile = recoveryProfilePaths(userData, entry)
     if (recoveryProfileStatus(userData, profile) !== 'valid') continue

@@ -226,6 +226,106 @@ def test_release_profile_preservation_probe_covers_identity_config_and_chat_db(
         capture_output=True,
     )
     assert "profile preservation verified" in verified.stdout
+    runtime_marker_verified = subprocess.run(
+        [
+            sys.executable,
+            str(probe),
+            "verify",
+            "--home",
+            str(home),
+            "--label",
+            label,
+            "--retained-marker",
+            f"synthetic retained chat ({label})",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "profile preservation verified" in runtime_marker_verified.stdout
+    snapshot = subprocess.run(
+        [
+            sys.executable,
+            str(probe),
+            "snapshot",
+            "--home",
+            str(home),
+            "--label",
+            label,
+            "--new-marker",
+            "not-created-yet",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    snapshot_payload = json.loads(snapshot.stdout)
+    assert snapshot_payload["sessions"] == 1
+    assert snapshot_payload["transcripts"] == 1
+    assert snapshot_payload["new_marker_count"] == 0
+    assert snapshot_payload["new_marker_session_keys"] == []
+
+    marker = "NEW_RELEASE_SESSION_contract-probe"
+    marker_session_key = "agent:main:webchat:contract-probe-new"
+    with sqlite3.connect(home / "state" / "sessions.db") as connection:
+        connection.execute(
+            """
+            INSERT INTO sessions (
+                session_key, session_id, created_at, updated_at, last_channel,
+                last_to, status, chat_type, display_name, channel, agent_id,
+                schema_version
+            ) VALUES (?, ?, 1, 1, 'webchat', 'control-ui', 'done', 'direct',
+                      'WebChat', 'webchat', 'main', 1)
+            """,
+            (marker_session_key, "contract-probe-new-session"),
+        )
+        connection.execute(
+            """
+            INSERT INTO transcript_entries (
+                session_id, session_key, message_id, role, content, created_at,
+                schema_version
+            ) VALUES (?, ?, 'contract-probe-new-message', 'user', ?, 1, 1)
+            """,
+            (
+                "contract-probe-new-session",
+                marker_session_key,
+                f"[2026-07-25T12:00+08:00 Sat Asia/Shanghai]\n{marker}",
+            ),
+        )
+    snapshot = subprocess.run(
+        [
+            sys.executable,
+            str(probe),
+            "snapshot",
+            "--home",
+            str(home),
+            "--label",
+            label,
+            "--new-marker",
+            marker,
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    snapshot_payload = json.loads(snapshot.stdout)
+    assert snapshot_payload["new_marker_count"] == 1
+    assert snapshot_payload["new_marker_session_keys"] == [marker_session_key]
+
+    # The packaged gateway uses WAL mode. After a clean close, SQLite may keep
+    # the WAL journal mode in the database header while removing both sidecars;
+    # the release probe must still inspect it without creating new profile files.
+    database = home / "state" / "sessions.db"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    wal_tree_before = sorted(path.name for path in database.parent.iterdir())
+    subprocess.run(
+        [sys.executable, str(probe), "verify", "--home", str(home), "--label", label],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert sorted(path.name for path in database.parent.iterdir()) == wal_tree_before
 
     reseed = subprocess.run(
         [sys.executable, str(probe), "seed", "--home", str(home), "--label", label],
@@ -259,6 +359,92 @@ def test_release_profile_preservation_probe_covers_identity_config_and_chat_db(
     assert rejected.returncode != 0
     assert "sessions.db retained-chat row changed" in rejected.stderr
 
+    with sqlite3.connect(home / "state" / "sessions.db") as connection:
+        connection.execute(
+            "UPDATE release_preservation_chat SET body = ?",
+            (f"synthetic retained chat ({label})",),
+        )
+        connection.execute(
+            "UPDATE transcript_entries SET content = 'changed' WHERE session_id = ?",
+            (f"{label}-retained-session",),
+        )
+    rejected = subprocess.run(
+        [sys.executable, str(probe), "verify", "--home", str(home), "--label", label],
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    assert rejected.returncode != 0
+    assert "canonical retained transcript changed" in rejected.stderr
+
+
+def test_release_profile_probe_materializes_cli_and_early_desktop_layouts(
+    tmp_path: Path,
+) -> None:
+    probe = Path(".github/scripts/verify-release-profile-preservation.py")
+    cases = (
+        ("v0.3.1", "modern", False),
+        ("v0.4.0", "pre-rc3", True),
+    )
+    for source_tag, layout, expects_derived_title in cases:
+        label = source_tag.removeprefix("v").replace(".", "-")
+        home = tmp_path / label / "opensquilla"
+        subprocess.run(
+            [
+                sys.executable,
+                str(probe),
+                "seed",
+                "--home",
+                str(home),
+                "--label",
+                label,
+                "--layout",
+                layout,
+                "--source-tag",
+                source_tag,
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        expected_workspace = (
+            home / "state" / "workspace" if layout == "pre-rc3" else home / "workspace"
+        )
+        assert (expected_workspace / "IDENTITY.md").is_file()
+        with sqlite3.connect(home / "state" / "sessions.db") as connection:
+            columns = {
+                str(row[1]) for row in connection.execute("PRAGMA table_info(sessions)")
+            }
+            assert ("derived_title" in columns) is expects_derived_title
+            assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+            assert connection.execute(
+                "SELECT COUNT(*) FROM transcript_entries"
+            ).fetchone() == (1,)
+
+    profile_only_home = tmp_path / "profile-only" / "opensquilla"
+    subprocess.run(
+        [
+            sys.executable,
+            str(probe),
+            "seed",
+            "--home",
+            str(profile_only_home),
+            "--label",
+            "profile-only",
+            "--layout",
+            "pre-rc3",
+            "--source-tag",
+            "v0.4.0",
+            "--profile-only",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert (profile_only_home / "config.toml").is_file()
+    assert (profile_only_home / "state" / "workspace" / "IDENTITY.md").is_file()
+    assert not (profile_only_home / "state" / "sessions.db").exists()
+
 
 def test_release_workflow_gates_built_and_downloaded_installers_on_profile_retention() -> None:
     workflow = Path(".github/workflows/wheelhouse-release.yml").read_text(encoding="utf-8")
@@ -266,12 +452,77 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     windows_helper = Path(".github/scripts/verify-release-windows-upgrade.ps1").read_text(
         encoding="utf-8"
     )
+    mac_clean_helper_path = Path(
+        ".github/scripts/verify-release-macos-clean-install.sh"
+    )
+    windows_clean_helper_path = Path(
+        ".github/scripts/verify-release-windows-clean-install.ps1"
+    )
+    mac_clean_helper = mac_clean_helper_path.read_text(encoding="utf-8")
+    windows_clean_helper = windows_clean_helper_path.read_text(encoding="utf-8")
     update_banner_smoke = Path(
         "desktop/electron/scripts/test-packaged-update-banner.mjs"
     ).read_text(encoding="utf-8")
     probe = Path(".github/scripts/verify-release-profile-preservation.py").read_text(
         encoding="utf-8"
     )
+    client_probe = Path(".github/scripts/verify-release-desktop-client.mjs").read_text(
+        encoding="utf-8"
+    )
+    released_runtime_seed_path = Path(
+        ".github/scripts/seed-released-desktop-session.mjs"
+    )
+    released_runtime_seed = released_runtime_seed_path.read_text(encoding="utf-8")
+    matrix_path = Path(".github/scripts/released-desktop-upgrade-matrix.json")
+    matrix_verifier = Path(
+        ".github/scripts/verify-release-desktop-upgrade-matrix.py"
+    )
+    matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+    desktop_sources = matrix["desktop_sources"]
+    assert [source["tag"] for source in desktop_sources] == [
+        "v0.4.0",
+        "v0.4.1",
+        "v0.5.0rc1",
+        "v0.5.0rc2",
+        "v0.5.0rc3",
+        "v0.5.0rc4",
+        "v0.5.0",
+    ]
+    assert {source["layout"] for source in desktop_sources} == {"pre-rc3", "modern"}
+    for source in desktop_sources:
+        assert source["mac_asset"] == (
+            f"OpenSquilla-{source['version']}-mac-arm64.dmg"
+        )
+        assert source["windows_asset"] == (
+            f"OpenSquilla-{source['version']}-win-x64.exe"
+        )
+    assert matrix["cli_sources"] == [
+        {
+            "tag": "v0.3.1",
+            "kind": "cli-home",
+            "release_commit": "dc658e36b1fbb427915969b5d5590862fd17dc82",
+            "python_paths_blob": "0871bcf73359ba2d198ee414d54a20e8c3e18dc2",
+            "session_storage_blob": "c76e33ef67c2f432414e2a5e963dfa45cf1d8728",
+            "home": "~/.opensquilla",
+            "state": "~/.opensquilla/state",
+            "workspace": "~/.opensquilla/workspace",
+        }
+    ]
+    emitted = subprocess.run(
+        [
+            sys.executable,
+            str(matrix_verifier),
+            str(matrix_path),
+            "--platform",
+            "mac",
+            "--format",
+            "tsv",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert len(emitted.stdout.splitlines()) == len(desktop_sources)
 
     mac_build = workflow[
         workflow.index("  build-desktop-macos:") : workflow.index("  build-desktop-windows:")
@@ -281,7 +532,24 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     ]
     assert "verify-release-macos-upgrade.sh" in mac_build
     assert "verify-release-windows-upgrade.ps1" in windows_build
-    assert "-VerifyLongRunningUpdateBanner" in windows_build
+    assert matrix_path.as_posix() in mac_build
+    assert matrix_path.as_posix() in windows_build
+    assert matrix_verifier.as_posix() in mac_build
+    assert matrix_verifier.as_posix() in windows_build
+    assert "--verify-config-reset --verify-cli-import" in mac_build
+    assert "VerifyConfigReset" in windows_build
+    assert "VerifyCliImport" in windows_build
+    assert "VerifyInspectFailure" in windows_build
+    assert "VerifyLongRunningUpdateBanner" in windows_build
+    assert "--verify-inspect-failure" in mac_build
+    assert mac_clean_helper_path.as_posix() in mac_build
+    assert windows_clean_helper_path.as_posix() in windows_build
+    assert mac_build.index(mac_clean_helper_path.as_posix()) < mac_build.index(
+        "verify-release-macos-upgrade.sh"
+    )
+    assert windows_build.index(windows_clean_helper_path.as_posix()) < windows_build.index(
+        "verify-release-windows-upgrade.ps1"
+    )
     assert mac_build.index("verify-release-macos-upgrade.sh") < mac_build.index(
         "Upload macOS Electron artifacts"
     )
@@ -298,18 +566,107 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
         "sessions.db",
         "PRAGMA quick_check",
         "synthetic retained chat",
+        "CREATE TABLE sessions",
+        "CREATE TABLE transcript_entries",
+        "new_marker_count",
     ):
         assert artifact in probe
     for helper in (mac_helper, windows_helper):
-        assert "v0.5.0rc3" in helper
         assert "recovery inspect" in helper
         assert "verify-release-profile-preservation.py" in helper
+        assert "verify-release-desktop-client.mjs" in helper
+        assert released_runtime_seed_path.name in helper
+        assert "--profile-only" in helper
+        assert "--retained-marker" in helper
+        assert "--use-default-user-data" in helper
+        assert "@opensquilla" in helper
+        assert "desktop-electron" in helper
+        assert "v0.3.1" in helper
+        assert "migrate opensquilla" in helper
         assert "workspace" in helper
         assert "state" in helper
+        assert "sleep 8" not in helper
+
+    for contract in (
+        "packaged Control UI",
+        "retainedSessionVisible",
+        "newSessionStored",
+        "relaunchIdempotent",
+        "new_marker_count",
+        "#recoveryPanel",
+        "#errorPanel.visible",
+        "CLEAN_INSTALL_SESSION_",
+        "retainedMarker",
+        "openListedPersistedSession",
+        ".sidebar-history-item",
+        ".sidebar-refresh-btn.spinning",
+        ".sidebar-new-session",
+        "not discoverable from the sidebar",
+        "databaseBefore.sessions + 1",
+        "sentSessionKey",
+        "OPENSQUILLA_DESKTOP_RELEASE_GATE",
+        "OPENSQUILLA_DESKTOP_TEST_FORCE_INSPECT_FAILURE",
+        "forcedInspectFailure",
+        "recovery_inspect_forced_failure_for_test",
+        "desktop_profile_inspection_advisory",
+        "desktop_recovery_inspect_failed",
+        "active_profile_kind: 'recovery'",
+        "legacyRecoverySessionMerged",
+        "legacyRecoverySourceUnchanged",
+        "desktop-session-authority.json",
+        "candidate first launch without a current anchor",
+        "assertInspectFailureEventIncrease",
+        "eventsAfterFirstLaunch",
+        "directoryTreeDigest",
+        "sourceTreeBefore",
+        "CFFIXED_USER_HOME",
+    ):
+        assert contract in client_probe
+    assert "sessionUrl.searchParams.set('session', sessionKey)" not in client_probe
+    assert client_probe.count("await openListedPersistedSession(") >= 5
+    for contract in (
+        "'agent'",
+        "'--session-db-path'",
+        "'--no-memory-capture'",
+        "HISTORICAL_RELEASE_SESSION_",
+        "provider.requests() >= 1",
+    ):
+        assert contract in released_runtime_seed
+    for clean_helper in (mac_clean_helper, windows_clean_helper):
+        assert "--mode clean" in clean_helper
+        assert "--use-default-user-data" in clean_helper
+        assert "CLEAN_INSTALL_SESSION_" in clean_helper
+        assert "--skip-retained-verification" in clean_helper
+    for candidate_contract in (
+        "candidate_installer_name",
+        "app_exe_sha256",
+        "app_asar_sha256",
+        "gateway_sha256",
+        "gateway_tree_sha256",
+        "Get-DirectoryTreeSha256",
+        "GetRelativePath",
+        "Get-FileHash",
+    ):
+        assert candidate_contract in windows_clean_helper
+        assert candidate_contract in windows_helper
+    assert windows_clean_helper.index("Get-FileHash") < windows_clean_helper.index(
+        "& node $clientProbe"
+    )
+    assert windows_helper.index("Get-FileHash") < windows_helper.index(
+        "& node $clientProbe"
+    )
+    assert "CandidateManifest" in windows_build
+    assert "built-candidate-identity.json" in windows_build
+    assert mac_helper.index("--force-inspect-failure") < mac_helper.index(
+        '\nHOME="${isolated_home}" USERPROFILE="${isolated_home}" node "${client_probe}"'
+    )
+    assert windows_helper.index("--force-inspect-failure") < windows_helper.index(
+        'throw "Candidate packaged-client upgrade smoke failed for $OldTag."'
+    )
 
     assert "test-packaged-update-banner.mjs" in windows_helper
     assert "if ($VerifyLongRunningUpdateBanner)" in windows_helper
-    assert windows_helper.index("$launched = Start-Process") < windows_helper.index(
+    assert windows_helper.index("& node $clientProbe") < windows_helper.index(
         "if ($VerifyLongRunningUpdateBanner)"
     )
     assert "OPENSQUILLA_UPDATE_CHECK_ENDPOINT" in update_banner_smoke
@@ -333,9 +690,13 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     ]
     windows_audit = workflow[workflow.index("  audit-downloaded-windows-release:") :]
     for audit in (mac_audit, windows_audit):
-        assert "needs: publish-release" in audit
+        assert "- publish-release" in audit
+        assert "- package-release-verification-harness" in audit
         assert "contents: write" in audit
         assert "contents: read" not in audit
+        assert "actions/setup-node@v4" in audit
+        assert "working-directory: desktop/electron" in audit
+        assert "run: npm ci" in audit
         assert "gh release download" in audit
         assert "SHA256SUMS" in audit
         assert "isDraft" in audit
@@ -344,8 +705,174 @@ def test_release_workflow_gates_built_and_downloaded_installers_on_profile_reten
     assert "xcrun stapler validate" in mac_audit
     assert "@electron/asar@3.4.1 extract-file" in mac_audit
     assert "verify-release-macos-upgrade.sh" in mac_audit
+    assert mac_clean_helper_path.as_posix() in mac_audit
+    assert matrix_path.as_posix() in mac_audit
+    assert matrix_verifier.as_posix() in mac_audit
     assert "Get-FileHash -Algorithm SHA256" in windows_audit
     assert "verify-release-windows-upgrade.ps1" in windows_audit
+    assert windows_clean_helper_path.as_posix() in windows_audit
+    assert matrix_path.as_posix() in windows_audit
+    assert matrix_verifier.as_posix() in windows_audit
+    assert "downloaded-candidate-identity.json" in windows_audit
+    assert "--verify-inspect-failure" in mac_audit
+    assert "VerifyInspectFailure" in windows_audit
+
+
+def test_existing_tag_release_uses_current_harness_with_tag_product_source() -> None:
+    workflow_path = Path(".github/workflows/wheelhouse-release.yml")
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    harness = jobs["package-release-verification-harness"]
+    harness_checkout = next(
+        step for step in harness["steps"] if step["name"] == "Checkout current workflow revision"
+    )
+    assert harness_checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    stage = next(
+        step["run"]
+        for step in harness["steps"]
+        if step["name"] == "Stage release verification harness"
+    )
+    for required in (
+        "released-desktop-upgrade-matrix.json",
+        "seed-released-desktop-session.mjs",
+        "verify-release-desktop-client.mjs",
+        "verify-release-desktop-upgrade-matrix.py",
+        "verify-release-macos-clean-install.sh",
+        "verify-release-macos-upgrade.sh",
+        "verify-release-profile-preservation.py",
+        "verify-release-windows-clean-install.ps1",
+        "verify-release-windows-upgrade.ps1",
+        "test-packaged-update-banner.mjs",
+        "release-verification-harness.sha",
+    ):
+        assert required in stage
+    harness_upload = next(
+        step for step in harness["steps"] if step["name"] == "Upload release verification harness"
+    )
+    assert harness_upload["with"]["name"] == "opensquilla-release-verification-harness"
+    assert harness_upload["with"]["include-hidden-files"] is True
+
+    for job_name in (
+        "build-desktop-macos",
+        "build-desktop-windows",
+        "audit-downloaded-macos-release",
+        "audit-downloaded-windows-release",
+    ):
+        job = jobs[job_name]
+        assert "package-release-verification-harness" in job["needs"]
+        steps = job["steps"]
+        checkout_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step["name"] in {"Checkout", "Checkout tagged release product source"}
+        )
+        harness_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step["name"] == "Download current release verification harness"
+        )
+        revision_index = next(
+            index
+            for index, step in enumerate(steps)
+            if step["name"] == "Verify release verification harness revision"
+        )
+        assert checkout_index < harness_index < revision_index
+        expected_ref = (
+            "${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}"
+            if job_name.startswith("build-")
+            else "${{ env.RELEASE_TAG }}"
+        )
+        assert steps[checkout_index]["with"]["ref"] == expected_ref
+        assert (
+            steps[harness_index]["with"]["name"]
+            == "opensquilla-release-verification-harness"
+        )
+        assert "github.workflow_sha" in str(steps[revision_index])
+        if "macos" in job_name:
+            assert "chmod +x" in steps[revision_index]["run"]
+
+    ci = yaml.safe_load(Path(".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    release_packaging = ci["jobs"]["release-packaging"]
+    checkout = next(
+        step for step in release_packaging["steps"] if step["name"] == "Check out repository"
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+    assert (
+        release_packaging["env"]["OPENSQUILLA_REQUIRE_RELEASE_TAG_PROVENANCE"] == "1"
+    )
+    release_contracts = next(
+        step["run"]
+        for step in release_packaging["steps"]
+        if step["name"] == "Run release packaging contract tests"
+    )
+    assert "tests/test_recovery/test_fixture_contracts.py" in release_contracts
+
+
+def test_release_desktop_upgrade_matrix_verifier_rejects_an_empty_matrix(
+    tmp_path: Path,
+) -> None:
+    verifier = Path(".github/scripts/verify-release-desktop-upgrade-matrix.py")
+    matrix = tmp_path / "released-desktop-upgrade-matrix.json"
+    matrix.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "desktop_sources": [],
+                "cli_sources": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(verifier),
+            str(matrix),
+            "--platform",
+            "mac",
+            "--format",
+            "tsv",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "every released Desktop tag exactly once" in result.stderr
+
+
+def test_release_desktop_upgrade_matrix_excludes_sources_newer_than_candidate() -> None:
+    verifier = Path(".github/scripts/verify-release-desktop-upgrade-matrix.py")
+    matrix = Path(".github/scripts/released-desktop-upgrade-matrix.json")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(verifier),
+            str(matrix),
+            "--platform",
+            "windows",
+            "--format",
+            "tsv",
+            "--candidate-tag",
+            "v0.5.0rc2",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert [line.split("\t", 1)[0] for line in result.stdout.splitlines()] == [
+        "v0.4.0",
+        "v0.4.1",
+        "v0.5.0rc1",
+        "v0.5.0rc2",
+    ]
 
 
 def test_manual_release_workflow_without_a_tag_only_uploads_aggregate_artifacts() -> None:

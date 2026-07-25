@@ -173,6 +173,9 @@ APPROVED_PACKAGE_IMPORTS: frozenset[tuple[str, str]] = frozenset({
     ("session", "memory"),
     ("session", "persistence"),
     ("session", "provider"),
+    # Offline session recovery owns transcript semantics while reusing the
+    # recovery package's hardened path and stable-error primitives.
+    ("session", "recovery"),
     ("session", "tools"),
     ("skills", "engine"),
     ("skills", "gateway"),
@@ -358,4 +361,27 @@ def test_contracts_package_stays_implementation_free() -> None:
     assert not implementation_edges, (
         "contracts must not import implementation packages: "
         + ", ".join(sorted(implementation_edges))
+    )
+
+
+def test_session_recovery_merge_does_not_reach_through_storage_connection() -> None:
+    """Recovery reads must remain behind SessionStorage's public API."""
+
+    module_path = PACKAGE_ROOT / "session" / "recovery_merge.py"
+    tree = ast.parse(
+        module_path.read_text(encoding="utf-8"),
+        filename=str(module_path),
+    )
+    direct_connection_reads = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and node.attr == "conn"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "storage"
+    ]
+
+    assert not direct_connection_reads, (
+        "session recovery must use public SessionStorage methods, not storage.conn: "
+        + ", ".join(str(line) for line in direct_connection_reads)
     )

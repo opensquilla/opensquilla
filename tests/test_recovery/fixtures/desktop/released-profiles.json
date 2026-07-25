@@ -103,6 +103,30 @@
       "expected_inspect": ["attention", "workspace_conflict"],
       "expected_reconcile": ["attention", "workspace_conflict"],
       "expected_effective_workspace": "state/workspace"
+    },
+    {
+      "id": "v0.5.0rc4-relocated-clean",
+      "release_tag": "v0.5.0rc4",
+      "desktop_package_version": "0.5.0-rc4",
+      "gateway_env_home": "H",
+      "layout_template": "rc4-plus-relocated-clean",
+      "config_template": "desktop-unpinned.toml",
+      "include_nested_roles": false,
+      "expected_inspect": ["ready", "canonical_workspace"],
+      "expected_reconcile": ["ready", "canonical_workspace"],
+      "expected_effective_workspace": "workspace"
+    },
+    {
+      "id": "v0.5.0-relocated-clean",
+      "release_tag": "v0.5.0",
+      "desktop_package_version": "0.5.0",
+      "gateway_env_home": "H",
+      "layout_template": "rc4-plus-relocated-clean",
+      "config_template": "desktop-unpinned.toml",
+      "include_nested_roles": false,
+      "expected_inspect": ["ready", "canonical_workspace"],
+      "expected_reconcile": ["ready", "canonical_workspace"],
+      "expected_effective_workspace": "workspace"
     }
   ]
 }

@@ -145,6 +145,11 @@ while IFS= read -r path || [[ -n "${path}" ]]; do
       mark_test_changed
       mark_release_changed
       ;;
+    tests/test_recovery/fixtures/desktop/* | tests/test_recovery/test_fixture_contracts.py)
+      mark_test_changed
+      mark_release_changed
+      mark_platform_sensitive_changed
+      ;;
     tests/test_tools/test_shell_* | tests/test_tools/test_path_* | tests/test_sandbox/* | tests/test_desktop/* | tests/test_compat/* | tests/test_recovery/* | tests/test_migration/* | tests/test_migrations/* | tests/test_persistence/* | tests/test_session/* | tests/test_scheduler/* | tests/test_uninstall/* | tests/test_packaging/*)
       mark_test_changed
       mark_platform_sensitive_changed

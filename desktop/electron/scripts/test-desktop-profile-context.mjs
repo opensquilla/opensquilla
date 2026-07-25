@@ -12,6 +12,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { parseDesktopDotenvValue } from '../dist/desktop-dotenv.js'
 import {
   allProfileContexts,
   contextForProfile,
@@ -23,6 +24,21 @@ import {
   serializeDesktopProfileContext,
   updateDesktopProfileContextFile,
 } from '../dist/desktop-profile-context.js'
+
+assert.equal(
+  parseDesktopDotenvValue(String.raw`"C:\\temp\\new"`),
+  String.raw`C:\temp\new`,
+  'double-quoted Windows paths must decode each escaped backslash exactly once',
+)
+assert.equal(
+  parseDesktopDotenvValue(String.raw`'C:\\temp\\new'`),
+  String.raw`C:\temp\new`,
+  'single-quoted Windows paths must decode each escaped backslash exactly once',
+)
+assert.equal(
+  parseDesktopDotenvValue(String.raw`"first\nsecond\tvalue"`),
+  'first\nsecond\tvalue',
+)
 
 const root = mkdtempSync(join(tmpdir(), 'opensquilla-profile-context-'))
 try {
@@ -61,6 +77,32 @@ try {
 
   const profiles = allProfileContexts(root)
   assert.deepEqual(profiles.map((profile) => profile.kind), ['primary', 'recovery'])
+
+  for (const profileCount of [9, 10, 17]) {
+    const rotationRoot = join(root, `rotation-${profileCount}`)
+    const recoveryIds = []
+    for (let index = 0; index < profileCount; index += 1) {
+      const id = `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`
+      recoveryIds.push(id)
+      mkdirSync(contextForProfile(rotationRoot, 'recovery', id).active.home, {
+        recursive: true,
+      })
+    }
+    const visited = new Set()
+    let offset = 0
+    for (let launch = 0; launch < profileCount + 1; launch += 1) {
+      const window = allProfileContexts(rotationRoot, 9, offset)
+        .filter((profile) => profile.kind === 'recovery')
+        .slice(0, 8)
+      for (const profile of window) visited.add(profile.recoveryId)
+      offset += 8
+    }
+    assert.deepEqual(
+      [...visited].sort(),
+      recoveryIds.sort(),
+      `${profileCount} recovery profiles must all enter a bounded rotating scan window`,
+    )
+  }
 
   const concurrentRecoveryId = '31234567-89ab-4cde-8fab-0123456789ab'
   mkdirSync(contextForProfile(root, 'recovery', concurrentRecoveryId).active.home, {

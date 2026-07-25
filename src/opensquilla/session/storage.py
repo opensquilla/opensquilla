@@ -2763,6 +2763,42 @@ class SessionStorage:
             rows = await cur.fetchall()
         return [SessionNode(**_deserialize_row(dict(r))) for r in rows]
 
+    @_serialized_read
+    async def list_session_nodes_for_recovery(self) -> list[SessionNode]:
+        """Return every persisted SessionNode for an offline recovery pass.
+
+        Recovery must not depend on the interactive list pagination limit, and
+        callers must not reach through ``SessionStorage.conn`` to decode rows.
+        """
+
+        async with self.conn.execute(
+            "SELECT * FROM sessions ORDER BY session_key"
+        ) as cur:
+            rows = await cur.fetchall()
+        return [SessionNode(**_deserialize_row(dict(row))) for row in rows]
+
+    @_serialized_read
+    async def list_orphaned_transcript_session_ids(self) -> list[str]:
+        """Return transcript identities that have no corresponding SessionNode."""
+
+        sql = """
+            SELECT DISTINCT transcript.session_id
+            FROM (
+                SELECT session_id FROM transcript_entries
+                UNION ALL
+                SELECT session_id FROM compacted_transcript_entries
+            ) AS transcript
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM sessions AS session
+                WHERE session.session_id = transcript.session_id
+            )
+            ORDER BY transcript.session_id
+        """
+        async with self.conn.execute(sql) as cur:
+            rows = await cur.fetchall()
+        return [str(row[0]) for row in rows]
+
     async def delete_session(self, session_key: str) -> None:
         session_key = canonicalize_session_key(session_key)
         session: SessionNode | None = None

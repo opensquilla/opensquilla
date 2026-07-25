@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "desktop_sources": [
+    {
+      "tag": "v0.4.0",
+      "version": "0.4.0",
+      "layout": "pre-rc3",
+      "mac_asset": "OpenSquilla-0.4.0-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.4.0-win-x64.exe"
+    },
+    {
+      "tag": "v0.4.1",
+      "version": "0.4.1",
+      "layout": "pre-rc3",
+      "mac_asset": "OpenSquilla-0.4.1-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.4.1-win-x64.exe"
+    },
+    {
+      "tag": "v0.5.0rc1",
+      "version": "0.5.0-rc1",
+      "layout": "pre-rc3",
+      "mac_asset": "OpenSquilla-0.5.0-rc1-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.5.0-rc1-win-x64.exe"
+    },
+    {
+      "tag": "v0.5.0rc2",
+      "version": "0.5.0-rc2",
+      "layout": "pre-rc3",
+      "mac_asset": "OpenSquilla-0.5.0-rc2-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.5.0-rc2-win-x64.exe"
+    },
+    {
+      "tag": "v0.5.0rc3",
+      "version": "0.5.0-rc3",
+      "layout": "modern",
+      "mac_asset": "OpenSquilla-0.5.0-rc3-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.5.0-rc3-win-x64.exe"
+    },
+    {
+      "tag": "v0.5.0rc4",
+      "version": "0.5.0-rc4",
+      "layout": "modern",
+      "mac_asset": "OpenSquilla-0.5.0-rc4-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.5.0-rc4-win-x64.exe"
+    },
+    {
+      "tag": "v0.5.0",
+      "version": "0.5.0",
+      "layout": "modern",
+      "mac_asset": "OpenSquilla-0.5.0-mac-arm64.dmg",
+      "windows_asset": "OpenSquilla-0.5.0-win-x64.exe"
+    }
+  ],
+  "cli_sources": [
+    {
+      "tag": "v0.3.1",
+      "kind": "cli-home",
+      "release_commit": "dc658e36b1fbb427915969b5d5590862fd17dc82",
+      "python_paths_blob": "0871bcf73359ba2d198ee414d54a20e8c3e18dc2",
+      "session_storage_blob": "c76e33ef67c2f432414e2a5e963dfa45cf1d8728",
+      "home": "~/.opensquilla",
+      "state": "~/.opensquilla/state",
+      "workspace": "~/.opensquilla/workspace"
+    }
+  ]
+}

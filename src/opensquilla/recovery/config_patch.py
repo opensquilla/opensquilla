@@ -187,16 +187,22 @@ def _parse_dotenv_value(
         parsed = value[1:end]
         if quote == '"':
             replacements = {
-                r"\\": "\\",
-                r'\"': '"',
-                r"\n": "\n",
-                r"\r": "\r",
-                r"\t": "\t",
+                "\\": "\\",
+                '"': '"',
+                "n": "\n",
+                "r": "\r",
+                "t": "\t",
             }
-            for encoded, decoded in replacements.items():
-                parsed = parsed.replace(encoded, decoded)
+            # Decode each input escape exactly once. Sequential replacements
+            # would turn ``\\n`` (a literal backslash plus ``n`` in a Windows
+            # path) into a newline after first collapsing ``\\``.
+            parsed = re.sub(
+                r'\\([\\"nrt])',
+                lambda match: replacements[match.group(1)],
+                parsed,
+            )
         else:
-            parsed = parsed.replace(r"\'", "'").replace(r"\\", "\\")
+            parsed = re.sub(r"\\([\\'])", lambda match: match.group(1), parsed)
     else:
         # python-dotenv treats a whitespace-prefixed # as an inline comment.
         parsed = re.split(r"\s+#", value, maxsplit=1)[0].strip()

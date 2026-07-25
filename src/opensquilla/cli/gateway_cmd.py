@@ -33,6 +33,8 @@ _SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = tuple(
     if sig is not None
 )
 
+DESKTOP_CONFIG_INVALID_MARKER = "OPENSQUILLA_DESKTOP_CONFIG_INVALID"
+
 
 def _install_shutdown_handlers(
     loop: asyncio.AbstractEventLoop, on_signal: Callable[[str], None]
@@ -135,7 +137,30 @@ def run_gateway(
         raise typer.Exit(code=1)
     # Load config FIRST so its ``host`` field can act as the final
     # fallback below ``OPENSQUILLA_GATEWAY_HOST``.
-    config = GatewayConfig.load(config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH"))
+    try:
+        config = GatewayConfig.load(
+            config_path or os.environ.get("OPENSQUILLA_GATEWAY_CONFIG_PATH")
+        )
+    except Exception:
+        if os.environ.get("OPENSQUILLA_DESKTOP", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            # Electron consumes this stable marker, parks the invalid config,
+            # rebuilds only settings, and retries against the same session
+            # authority. Do not include the validation exception here: it may
+            # contain local paths or configuration values.
+            console.print(DESKTOP_CONFIG_INVALID_MARKER)
+            console.print(
+                "[red]Gateway could not start:[/red] Desktop configuration is invalid."
+            )
+            raise typer.Exit(code=1) from None
+        raise
+    # The config-only guard exception is a one-shot Desktop startup handshake.
+    # A healthy gateway and any subprocesses it starts must not inherit it.
+    os.environ.pop("OPENSQUILLA_DESKTOP_CONFIG_AUTOREPAIR", None)
     if config_path and not config.config_path:
         config.config_path = str(config_path)
     # Treat the CLI ``--bind`` default as "not explicitly supplied" so the

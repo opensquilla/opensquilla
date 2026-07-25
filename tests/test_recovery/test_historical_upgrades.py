@@ -176,7 +176,7 @@ def test_released_desktop_profile_inspect_and_reconcile(
     elif layout == "pre-rc3-nested":
         assert not (home / "workspace").exists()
         assert _tree_snapshot(home / "state" / "workspace") == legacy_before
-    elif layout == "rc3-relocated-clean":
+    elif layout in {"rc3-relocated-clean", "rc4-plus-relocated-clean"}:
         assert _tree_snapshot(home / "workspace") == canonical_before
         assert not (home / "state" / "workspace").exists()
     else:
@@ -193,14 +193,24 @@ def test_released_desktop_manifest_freezes_verified_path_contract() -> None:
     cases = manifest["cases"]
     tags = {case["release_tag"] for case in cases}
 
-    assert tags == {"v0.4.0", "v0.4.1", "v0.5.0rc1", "v0.5.0rc2", "v0.5.0rc3"}
+    assert tags == {
+        "v0.4.0",
+        "v0.4.1",
+        "v0.5.0rc1",
+        "v0.5.0rc2",
+        "v0.5.0rc3",
+        "v0.5.0rc4",
+        "v0.5.0",
+    }
     assert all(
         case["gateway_env_home"] == "H/state"
         for case in cases
-        if case["release_tag"] != "v0.5.0rc3"
+        if case["release_tag"] in {"v0.4.0", "v0.4.1", "v0.5.0rc1", "v0.5.0rc2"}
     )
     assert all(
-        case["gateway_env_home"] == "H" for case in cases if case["release_tag"] == "v0.5.0rc3"
+        case["gateway_env_home"] == "H"
+        for case in cases
+        if case["release_tag"] in {"v0.5.0rc3", "v0.5.0rc4", "v0.5.0"}
     )
     assert manifest["provenance"]["rc3_relocation_allowlist"] == [
         "skills",
@@ -214,8 +224,8 @@ def test_released_desktop_manifest_freezes_verified_path_contract() -> None:
     ]
 
 
-def test_released_desktop_cases_use_tag_proven_frozen_tree_snapshots() -> None:
-    """Every upgrade case must be materialized from an audited release snapshot."""
+def test_released_desktop_cases_materialize_frozen_tree_snapshots() -> None:
+    """Every upgrade case must be materialized from its checked-in frozen snapshot."""
 
     manifest = _load_manifest(DESKTOP_MANIFEST)
     assert DESKTOP_SNAPSHOTS.is_file()

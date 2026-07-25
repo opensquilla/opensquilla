@@ -654,6 +654,23 @@ def test_ci_change_classifier_tracks_release_surface_changes(tmp_path: Path) -> 
     )
 
 
+def test_ci_change_classifier_routes_frozen_desktop_fixtures_to_release_provenance(
+    tmp_path: Path,
+) -> None:
+    outputs = _classify_changed_files(
+        tmp_path,
+        ["tests/test_recovery/fixtures/desktop/frozen-profile-snapshots.json"],
+    )
+
+    assert outputs == _expected_classifier_outputs(
+        test_changed="true",
+        python_changed="true",
+        release_changed="true",
+        windows_full_required="true",
+        platform_sensitive_changed="true",
+    )
+
+
 def test_ci_change_classifier_tracks_tui_changes_without_windows_full(tmp_path: Path) -> None:
     outputs = _classify_changed_files(
         tmp_path,
@@ -1065,10 +1082,10 @@ def test_desktop_recovery_e2e_runs_compiled_flows_on_all_release_platforms() -> 
     )
     build = next(step for step in steps if step.get("name") == "Build Desktop TypeScript")
     run = next(
-        step for step in steps if step.get("name") == "Run compiled Desktop recovery flows"
+        step for step in steps if step.get("name") == "Run compiled Desktop startup safety flows"
     )
     upload = next(
-        step for step in steps if step.get("name") == "Upload Desktop recovery report"
+        step for step in steps if step.get("name") == "Upload Desktop startup safety report"
     )
 
     assert steps.index(download) < steps.index(setup_node) < steps.index(verify_frontend)
@@ -1080,7 +1097,7 @@ def test_desktop_recovery_e2e_runs_compiled_flows_on_all_release_platforms() -> 
     assert build["run"] == "npm run build"
     assert "xvfb-run -a node" in run["run"]
     assert "test-profile-recovery-flow.mjs" in run["run"]
-    assert "test-profile-recovery-accessibility.mjs" in run["run"]
+    assert "test-profile-recovery-accessibility.mjs" not in run["run"]
     assert "test-profile-import-flow.mjs" in run["run"]
     assert "test-unsafe-profile-no-write.mjs" in run["run"]
     assert "exit 1" in run["run"]
@@ -1434,7 +1451,12 @@ def test_release_jobs_share_one_rerun_stable_verified_webui_artifact() -> None:
         "build-desktop-windows",
     ):
         job = jobs[job_name]
-        assert job["needs"] == "build-control-ui"
+        needs = job["needs"]
+        if isinstance(needs, str):
+            needs = [needs]
+        assert "build-control-ui" in needs
+        if job_name.startswith("build-desktop-"):
+            assert "package-release-verification-harness" in needs
         download = next(
             step
             for step in job["steps"]

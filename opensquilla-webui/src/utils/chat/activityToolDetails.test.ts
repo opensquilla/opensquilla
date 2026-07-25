@@ -6,6 +6,8 @@ import {
   redactActivityDetail,
 } from './activityToolDetails'
 
+const syntheticPosixHome = '/synthetic-home/example'
+
 function call(
   overrides: Partial<ChatToolCallRenderItem> = {},
 ): ChatToolCallRenderItem {
@@ -71,7 +73,7 @@ describe('activity tool detail projection', () => {
     expect(projectActivityToolDetail(call({
       name: 'publish_artifact',
       inputRaw: JSON.stringify({
-        name: '/Users/example/private/report.html',
+        name: `${syntheticPosixHome}/private/report.html`,
       }),
     }), 'artifact.create').lines).toEqual([
       { kind: 'target', text: '…/report.html' },
@@ -97,7 +99,7 @@ describe('activity tool detail projection', () => {
 
     expect(projectActivityToolDetail(call({
       inputRaw: JSON.stringify({
-        url: 'file:///Users/example/private/report.txt',
+        url: `file://${syntheticPosixHome}/private/report.txt`,
       }),
     }), 'web.read').lines).toEqual([
       { kind: 'target', text: '…/report.txt' },
@@ -131,8 +133,9 @@ describe('activity tool detail projection', () => {
     const projection = projectActivityToolDetail(call({
       status: 'error',
       isError: true,
-      result: 'Unable to open /Users/example/private/project/file.txt: permission denied',
-      resultPreview: 'Unable to open /Users/example/private/project/file.txt: permission denied',
+      result: `Unable to open ${syntheticPosixHome}/private/project/file.txt: permission denied`,
+      resultPreview:
+        `Unable to open ${syntheticPosixHome}/private/project/file.txt: permission denied`,
     }), 'file.inspect')
 
     expect(projection.lines).toEqual([
@@ -143,9 +146,9 @@ describe('activity tool detail projection', () => {
   it('keeps relative paths and hides external directory structure', () => {
     expect(activityDisplayPath('src/components/App.vue')).toBe('src/components/App.vue')
     expect(activityDisplayPath('C:\\Users\\example\\secret\\App.vue')).toBe('…/App.vue')
-    expect(activityDisplayPath('/Users/example/secret/App.vue')).toBe('…/App.vue')
+    expect(activityDisplayPath(`${syntheticPosixHome}/secret/App.vue`)).toBe('…/App.vue')
     expect(activityDisplayPath(
-      '/tmp/workspace/../../Users/example/secret/key.txt',
+      `/tmp/workspace/../..${syntheticPosixHome}/secret/key.txt`,
     )).toBe('…/key.txt')
   })
 
@@ -195,12 +198,13 @@ describe('activity tool detail projection', () => {
   })
 
   it('redacts common environment, flag, bearer, and URL credentials', () => {
+    const syntheticGitHubToken = 'ghp_FAKEFAKEFAKE'
     expect(redactActivityDetail([
       'OPENAI_API_KEY=sk-environment-secret',
       '--password flag-secret',
       'Authorization: Bearer bearer-secret-value',
       'https://user:basic-secret@example.test/path?access_token=query-secret',
-      'ghp_abcdefghijklmnopqrstuvwxyz',
+      syntheticGitHubToken,
     ].join('\n'))).toBe([
       'OPENAI_API_KEY=[redacted]',
       '--password [redacted]',

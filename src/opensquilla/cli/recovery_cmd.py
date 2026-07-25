@@ -121,6 +121,22 @@ def _cleanup_exit(report: CleanupReport, *, json_output: bool) -> None:
         raise typer.Exit(code=2)
 
 
+def _emit_session_merge(report: object, *, json_output: bool) -> None:
+    from opensquilla.session.recovery_merge import SessionMergeReport
+
+    if not isinstance(report, SessionMergeReport):
+        raise TypeError("session merge report has an invalid type")
+    if json_output:
+        typer.echo(json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
+        return
+    typer.echo(f"{report.outcome}: {report.stable_code}")
+    typer.echo(
+        f"sessions: {report.sessions_imported} imported, "
+        f"{report.sessions_skipped} already present, "
+        f"{report.sessions_blocked} blocked"
+    )
+
+
 def _cleanup_scope_pair(item: CleanupItem) -> tuple[str, str]:
     path = os.path.normcase(os.path.normpath(os.path.abspath(str(item.path))))
     return item.kind, path
@@ -379,6 +395,67 @@ def recovery_recover_transaction(
         json_output=json_output,
         profile_kind="desktop-primary",
     )
+
+
+@recovery_app.command("merge-sessions")
+def recovery_merge_sessions(
+    source_database: Path = typer.Option(
+        ...,
+        "--source-db",
+        help="Legacy Desktop recovery-profile sessions.db.",
+    ),
+    target_database: Path = typer.Option(
+        ...,
+        "--target-db",
+        help="Desktop primary-profile sessions.db.",
+    ),
+    source_media_root: Path | None = typer.Option(
+        None,
+        "--source-media-root",
+        help="Legacy recovery-profile attachment/artifact media root.",
+    ),
+    target_media_root: Path | None = typer.Option(
+        None,
+        "--target-media-root",
+        help="Desktop primary-profile attachment/artifact media root.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Emit the session merge protocol."),
+) -> None:
+    """Preserve complete recovery-profile conversations in the primary database."""
+
+    from opensquilla.session.recovery_merge import (
+        SessionMergeReport,
+        merge_recovery_sessions,
+    )
+
+    source = source_database.expanduser().absolute()
+    target = target_database.expanduser().absolute()
+    try:
+        report = merge_recovery_sessions(
+            source,
+            target,
+            source_media_root=source_media_root,
+            target_media_root=target_media_root,
+        )
+    except RecoveryError as exc:
+        report = SessionMergeReport(
+            outcome="blocked",
+            stable_code=exc.stable_code,
+            source_database=source,
+            target_database=target,
+            materials_status=(
+                "blocked"
+                if source_media_root is not None or target_media_root is not None
+                else "not_requested"
+            ),
+        )
+        _emit_session_merge(report, json_output=json_output)
+        if not json_output:
+            typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from None
+    _emit_session_merge(report, json_output=json_output)
+    if report.outcome == "partial":
+        raise typer.Exit(code=1)
 
 
 @recovery_app.command("abandon-cleanup")

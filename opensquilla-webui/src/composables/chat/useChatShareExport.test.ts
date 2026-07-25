@@ -66,6 +66,7 @@ describe('buildShareDom protocol-shaped documentation', () => {
   })
 
   it('omits collapsed execution activity while keeping the canonical answer', () => {
+    const syntheticPrivatePath = '/synthetic-home/example/project'
     const source = document.createElement('article')
     source.dataset.shareMessageId = 'assistant-activity'
     const activity = document.createElement('div')
@@ -77,7 +78,7 @@ describe('buildShareDom protocol-shaped documentation', () => {
     activity.innerHTML = [
       '<button data-share-activity-label>Activity · 2 steps</button>',
       '<div data-share-activity-body>',
-      '<div>Private path: /Users/example/project</div>',
+      `<div>Private path: ${syntheticPrivatePath}</div>`,
       '<div>Tool error: secret diagnostic</div>',
       '</div>',
     ].join('')
@@ -90,7 +91,7 @@ describe('buildShareDom protocol-shaped documentation', () => {
 
     expect(stage.querySelector('[data-share-activity]')).toBeNull()
     expect(stage.textContent).toContain('Canonical answer')
-    expect(stage.textContent).not.toContain('/Users/example/project')
+    expect(stage.textContent).not.toContain(syntheticPrivatePath)
     expect(stage.textContent).not.toContain('secret diagnostic')
   })
 

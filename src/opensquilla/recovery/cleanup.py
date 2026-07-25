@@ -788,6 +788,20 @@ def _build_plan(
         items.append(
             _plan_item(root, "profile-context", root / "desktop-profile-context.json", priority=10)
         )
+        if selected_kind == "primary":
+            # The Desktop session authority lives beside the primary home and
+            # points into it (or to an explicitly configured external state
+            # directory). Remove the pointer before deleting the profile so a
+            # relaunch cannot be stranded on a now-missing state directory or
+            # silently reattach an external profile the user just deleted.
+            items.append(
+                _plan_item(
+                    root,
+                    "session-authority",
+                    root / "desktop-session-authority.json",
+                    priority=10,
+                )
+            )
         if selected_kind == "primary" and os.path.lexists(journal):
             items.append(_plan_item(root, "replacement-journal", journal, priority=80))
     else:

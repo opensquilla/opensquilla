@@ -61,14 +61,13 @@ declare global {
       detail?: string
     }>
     revealDesktopUserData?: () => Promise<boolean>
-    abandonCleanupTransaction?: () => Promise<unknown>
     setNativeTheme?: (payload: { source: 'light' | 'dark' | 'system' }) => Promise<unknown>
     openArtifact: (payload: ArtifactOpenRequest) => Promise<ArtifactNativeOpenResult>
     getOnboardingDefaults: () => Promise<unknown>
     saveOnboarding: (payload: unknown) => Promise<unknown>
     cancelOnboarding: () => Promise<unknown>
     getBootState: () => Promise<unknown>
-    getRecoveryState?: () => Promise<unknown>
+    getMigrationInspection?: () => Promise<unknown>
     chooseLegacyAgentDataLocation?: (payload?: Record<string, never>) => Promise<unknown>
     getDesktopProfileKind?: () => Promise<'primary' | 'recovery' | null>
     retryStartup: () => Promise<DesktopRetryStartupResult>

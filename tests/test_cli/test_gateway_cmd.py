@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from urllib.error import URLError
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from opensquilla.cli import gateway_cmd, gateway_lifecycle
@@ -668,6 +669,7 @@ def test_gateway_status_uses_config_host_port_when_flags_are_omitted(
 def test_gateway_run_uses_config_host_port_when_flags_are_omitted(
     tmp_path, monkeypatch
 ) -> None:
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP_CONFIG_AUTOREPAIR", "1")
     custom_config = tmp_path / "custom.toml"
     custom_config.write_text('host = "127.0.0.2"\nport = 19999\n', encoding="utf-8")
     captured = {}
@@ -702,6 +704,29 @@ def test_gateway_run_uses_config_host_port_when_flags_are_omitted(
 
     assert captured["config"].host == "127.0.0.2"
     assert captured["config"].port == 19999
+    assert "OPENSQUILLA_DESKTOP_CONFIG_AUTOREPAIR" not in os.environ
+
+
+def test_desktop_gateway_invalid_config_emits_private_repair_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = tmp_path / "profile"
+    home.mkdir()
+    config = home / "config.toml"
+    config.write_text("[broken\n", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP", "1")
+    monkeypatch.setenv("OPENSQUILLA_STATE_DIR", str(home))
+    monkeypatch.setenv("OPENSQUILLA_GATEWAY_CONFIG_PATH", str(config))
+
+    with pytest.raises(typer.Exit) as stopped:
+        gateway_cmd.run_gateway(config_path=str(config))
+
+    assert stopped.value.exit_code == 1
+    output = capsys.readouterr().out
+    assert gateway_cmd.DESKTOP_CONFIG_INVALID_MARKER in output
+    assert str(config) not in output
 
 
 def test_gateway_run_records_cli_flags_as_runtime_overrides(

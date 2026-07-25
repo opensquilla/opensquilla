@@ -17,6 +17,7 @@ const importScreenshotDir = String(
     || (process.env.CI_REPORT_DIR ? join(process.env.CI_REPORT_DIR, 'profile-import-screenshots') : ''),
 ).trim()
 const SOURCE_CHAT = 'synthetic imported chat survives whole-profile transfer'
+const EXTERNAL_AUTHORITY_CHAT = 'synthetic external authority chat survives profile transfer'
 async function waitFor(check, label, timeoutMs = 90_000) {
   const startedAt = Date.now()
   let lastError
@@ -42,6 +43,66 @@ function runPython(source, args) {
     throw new Error(`Python fixture command failed: ${result.stderr || result.stdout}`)
   }
   return result.stdout.trim()
+}
+
+function seedCanonicalSession(state, label, content, sessionKey) {
+  runPython(`
+import asyncio, sys, uuid
+from pathlib import Path
+from opensquilla.session.models import SessionNode, TranscriptEntry
+from opensquilla.session.storage import SessionStorage
+
+async def main():
+    state = Path(sys.argv[1]).resolve()
+    label = sys.argv[2]
+    content = sys.argv[3]
+    session_key = sys.argv[4]
+    state.mkdir(parents=True, exist_ok=True)
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, str(state / "sessions.db") + session_key))
+    storage = SessionStorage(str(state / "sessions.db"))
+    await storage.connect()
+    try:
+        await storage.upsert_session(SessionNode(
+            session_key=session_key,
+            session_id=session_id,
+            label=label,
+            display_name=label,
+            status="done",
+        ))
+        await storage.append_transcript_entry(TranscriptEntry(
+            session_id=session_id,
+            session_key=session_key,
+            message_id=f"{session_id}-message-0",
+            role="user",
+            content=content,
+            created_at=1_700_000_000_000,
+        ))
+    finally:
+        await storage.close()
+
+asyncio.run(main())
+`, [state, label, content, sessionKey])
+}
+
+function readCanonicalSessions(state) {
+  const raw = runPython(`
+import json, sqlite3, sys
+from pathlib import Path
+database = (Path(sys.argv[1]).resolve() / "sessions.db")
+with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as connection:
+    rows = connection.execute(
+        """
+        SELECT sessions.session_key, sessions.label, transcript_entries.content
+        FROM sessions
+        LEFT JOIN transcript_entries
+          ON transcript_entries.session_id = sessions.session_id
+        ORDER BY sessions.session_key, transcript_entries.created_at,
+                 transcript_entries.message_id
+        """
+    ).fetchall()
+print(json.dumps(rows, ensure_ascii=False))
+`, [state])
+  return JSON.parse(raw)
 }
 
 function seedProfile(home, identity, chat) {
@@ -75,6 +136,12 @@ with sqlite3.connect(state / "sessions.db") as connection:
     connection.execute("INSERT INTO synthetic_import_chat VALUES (?, ?)", ("session-1", chat))
     assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
 `, [home, identity, chat])
+  seedCanonicalSession(
+    join(home, 'state'),
+    chat,
+    `${chat} transcript body`,
+    'agent:main:webchat:synthetic-profile-chat',
+  )
 }
 
 async function writeProviderProfileConfig(home, settings) {
@@ -246,17 +313,6 @@ async function captureOnboarding(app, path) {
   await writeFile(path, Buffer.from(base64, 'base64'))
 }
 
-async function recoveryPage(app) {
-  return await waitFor(async () => {
-    for (const page of app.windows()) {
-      if (page.isClosed()) continue
-      await page.waitForLoadState('domcontentloaded', { timeout: 5_000 }).catch(() => {})
-      if (await page.locator('#recoveryPanel.visible').count().catch(() => 0)) return page
-    }
-    return null
-  }, 'recovery profile confirmation page')
-}
-
 async function controlPage(app) {
   return await waitFor(async () => {
     for (const page of app.windows()) {
@@ -269,6 +325,16 @@ async function controlPage(app) {
     }
     return null
   }, 'Desktop Control UI', 120_000)
+}
+
+async function assertDiscoverableChat(page, label, content) {
+  const item = page.locator('.sidebar-history-item').filter({ hasText: label }).first()
+  await item.waitFor({ state: 'visible', timeout: 90_000 })
+  await item.click()
+  await page.locator('.msg-user-bubble').filter({ hasText: content }).first().waitFor({
+    state: 'visible',
+    timeout: 90_000,
+  })
 }
 
 async function selectOllamaAndCompleteOnboarding(page) {
@@ -408,8 +474,17 @@ try {
   const settingsSource = join(settingsHome, '.opensquilla')
   const settingsUserData = join(root, 'settings-user-data')
   const settingsTarget = join(settingsUserData, 'opensquilla')
+  const settingsExternalState = join(settingsHome, 'external-session-authority')
+  const settingsExternalMedia = join(settingsHome, 'external-session-media')
   seedProfile(settingsSource, SOURCE_IDENTITY, SOURCE_CHAT)
   seedProfile(settingsTarget, TARGET_IDENTITY, 'synthetic previous settings chat')
+  seedCanonicalSession(
+    settingsExternalState,
+    EXTERNAL_AUTHORITY_CHAT,
+    `${EXTERNAL_AUTHORITY_CHAT} transcript body`,
+    'agent:main:webchat:synthetic-profile-chat',
+  )
+  await mkdir(settingsExternalMedia, { recursive: true })
   await writeProviderProfileConfig(settingsSource, {
     provider: 'openai',
     model: 'gpt-5.4-mini',
@@ -440,8 +515,45 @@ try {
     apiKeyEnv: 'OPENAI_API_KEY',
     apiKey: 'synthetic-old-target-key',
   })
+  await writeFile(
+    join(settingsUserData, 'desktop-session-authority.json'),
+    `${JSON.stringify({
+      schema_version: 1,
+      state_dir: settingsExternalState,
+      media_root: settingsExternalMedia,
+    }, null, 2)}\n`,
+    { mode: 0o600 },
+  )
   app = await launchDesktop(settingsUserData, settingsHome, 18924)
   const settingsControl = await controlPage(app)
+  const activeExternalAuthority = JSON.parse(
+    await readFile(join(settingsUserData, 'desktop-session-authority.json'), 'utf8'),
+  )
+  assert.equal(
+    await realpath(activeExternalAuthority.state_dir),
+    await realpath(settingsExternalState),
+  )
+  assert.equal(
+    readCanonicalSessions(settingsExternalState).some((row) => row[1] === EXTERNAL_AUTHORITY_CHAT),
+    true,
+  )
+  const externallyListedSessions = await settingsControl.evaluate(async () => {
+    const response = await fetch('/api/sessions?limit=200&view=session-list-v1')
+    return await response.json()
+  })
+  assert.equal(
+    externallyListedSessions.sessions?.some(
+      (row) => row.key === 'agent:main:webchat:synthetic-profile-chat',
+    ),
+    true,
+    JSON.stringify(externallyListedSessions),
+  )
+  await assertDiscoverableChat(
+    settingsControl,
+    EXTERNAL_AUTHORITY_CHAT,
+    `${EXTERNAL_AUTHORITY_CHAT} transcript body`,
+  )
+  const externalSessionsBeforeImport = readCanonicalSessions(settingsExternalState)
   const settingsPreview = await settingsControl.evaluate(async (sourcePath) => (
     await window.opensquillaDesktop.migrationSummary({ source: sourcePath })
   ), settingsSource)
@@ -459,7 +571,43 @@ try {
     return true
   }, { previewId: settingsPreview.previewId })
 
-  const requiredKeyOnboarding = await onboardingPage(app)
+  const migrationReconciliation = await waitFor(async () => {
+    const pending = await readFile(
+      join(settingsUserData, 'migration-provider-setup.json'),
+      'utf8',
+    ).then(JSON.parse).catch(() => null)
+    if (pending?.phase === 'needs-setup') return { pending }
+    const result = await readFile(
+      join(settingsUserData, 'migration-last-result.json'),
+      'utf8',
+    ).then(JSON.parse).catch(() => null)
+    return result ? { result } : null
+  }, 'profile import session and provider reconciliation', 90_000)
+  if (migrationReconciliation.result) {
+    assert.equal(
+      migrationReconciliation.result.migrationApplied,
+      true,
+      JSON.stringify(migrationReconciliation.result),
+    )
+    assert.equal(
+      migrationReconciliation.result.requiresProviderSetup,
+      true,
+      JSON.stringify(migrationReconciliation.result),
+    )
+  }
+  let requiredKeyOnboarding
+  try {
+    requiredKeyOnboarding = await onboardingPage(app)
+  } catch (error) {
+    const migrationResult = await readFile(
+      join(settingsUserData, 'migration-last-result.json'),
+      'utf8',
+    ).catch(() => '')
+    throw new Error(
+      `Imported-key onboarding did not open: ${error?.message || error}; `
+      + `migrationResult=${migrationResult}`,
+    )
+  }
   await requiredKeyOnboarding.locator('[data-screen="0"].active').waitFor({
     state: 'visible',
     timeout: 90_000,
@@ -483,6 +631,17 @@ try {
   await requiredKeyOnboarding.locator('[data-screen="4"].active').waitFor({ state: 'visible' })
   await requiredKeyOnboarding.locator('#finish').click()
 
+  const importedControl = await controlPage(app)
+  await assertDiscoverableChat(
+    importedControl,
+    SOURCE_CHAT,
+    `${SOURCE_CHAT} transcript body`,
+  )
+  await assertDiscoverableChat(
+    importedControl,
+    EXTERNAL_AUTHORITY_CHAT,
+    `${EXTERNAL_AUTHORITY_CHAT} transcript body`,
+  )
   const adopted = await waitFor(async () => {
     const pending = await readFile(
       join(settingsUserData, 'migration-provider-setup.json'),
@@ -514,6 +673,18 @@ try {
     settingsSourceBefore,
     'settings import changed source bytes or permissions',
   )
+  assert.deepEqual(
+    readCanonicalSessions(settingsExternalState),
+    externalSessionsBeforeImport,
+    'profile import mutated the previous external session authority',
+  )
+  const importedAuthority = JSON.parse(
+    await readFile(join(settingsUserData, 'desktop-session-authority.json'), 'utf8'),
+  )
+  assert.equal(await realpath(importedAuthority.state_dir), await realpath(join(settingsTarget, 'state')))
+  const consolidatedSessions = readCanonicalSessions(join(settingsTarget, 'state'))
+  assert.equal(consolidatedSessions.some((row) => row[1] === SOURCE_CHAT), true)
+  assert.equal(consolidatedSessions.some((row) => row[1] === EXTERNAL_AUTHORITY_CHAT), true)
   const settingsBackups = (await readdir(settingsUserData))
     .filter((name) => name.startsWith('opensquilla.backup.'))
   assert.equal(settingsBackups.length, 1)
@@ -532,11 +703,43 @@ try {
   await app.close()
   app = null
 
-  // A selected recovery H can use the app, but it cannot import another profile.
+  app = await launchDesktop(settingsUserData, settingsHome, 18924)
+  const relaunchedImportedControl = await controlPage(app)
+  await assertDiscoverableChat(
+    relaunchedImportedControl,
+    SOURCE_CHAT,
+    `${SOURCE_CHAT} transcript body`,
+  )
+  await assertDiscoverableChat(
+    relaunchedImportedControl,
+    EXTERNAL_AUTHORITY_CHAT,
+    `${EXTERNAL_AUTHORITY_CHAT} transcript body`,
+  )
+  await app.close()
+  app = null
+
+  // Upgrade from a prerelease context that selected a recovery profile. The
+  // old tree remains untouched, but Desktop normalizes to the primary profile
+  // and enters the normal Control UI without any recovery interaction.
   const recoveryHome = join(root, 'recovery-home')
   const recoveryUserData = join(root, 'recovery-user-data')
+  const recoveryTarget = join(recoveryUserData, 'opensquilla')
   const recoveryId = '12345678-1234-4234-8234-123456789abc'
-  await mkdir(join(recoveryUserData, 'recovery-profiles', recoveryId, 'opensquilla'), { recursive: true })
+  const legacyRecoveryRoot = join(recoveryUserData, 'recovery-profiles', recoveryId)
+  seedProfile(recoveryTarget, TARGET_IDENTITY, 'synthetic primary chat after context upgrade')
+  await seedDesktopCredential(recoveryUserData, {
+    provider: 'ollama',
+    model: 'synthetic-local-model',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    apiKeyEnv: '',
+    apiKey: '',
+  })
+  seedProfile(
+    join(legacyRecoveryRoot, 'opensquilla'),
+    '# Synthetic legacy recovery identity\n',
+    'synthetic legacy recovery chat',
+  )
+  const legacyRecoveryBefore = await snapshotTree(legacyRecoveryRoot)
   await writeFile(join(recoveryUserData, 'desktop-profile-context.json'), JSON.stringify({
     schema_version: 1,
     active_profile_kind: 'recovery',
@@ -545,10 +748,27 @@ try {
     updated_at: new Date().toISOString(),
   }, null, 2))
   app = await launchDesktop(recoveryUserData, recoveryHome, 18923)
-  page = await recoveryPage(app)
-  const rejected = await page.evaluate(() => window.opensquillaDesktop.migrationSummary())
-  assert.equal(rejected.ok, false)
-  assert.match(rejected.raw, /primary profile/i)
+  page = await controlPage(app)
+  assert.equal(await page.locator('#recoveryPanel').count(), 0)
+  assert.equal(await page.locator('#setup-form').count(), 0)
+  assert.equal(
+    await page.evaluate(() => window.opensquillaDesktop.getDesktopProfileKind()),
+    'primary',
+  )
+  const migration = await page.evaluate(() => window.opensquillaDesktop.migrationSummary())
+  assert.equal(migration.ok, true, JSON.stringify(migration))
+  await waitFor(async () => {
+    const context = JSON.parse(
+      await readFile(join(recoveryUserData, 'desktop-profile-context.json'), 'utf8'),
+    )
+    return context.active_profile_kind === 'primary' && context.active_recovery_id === null
+  }, 'legacy recovery context normalization')
+  assert.equal(readSyntheticChat(recoveryTarget), 'synthetic primary chat after context upgrade')
+  assert.deepEqual(await snapshotTree(legacyRecoveryRoot), legacyRecoveryBefore)
+  assert.deepEqual(
+    (await readdir(join(recoveryUserData, 'recovery-profiles'))).sort(),
+    [recoveryId],
+  )
 
   console.log(JSON.stringify({
     cliDoesNotTriggerOnboardingTransfer: true,
@@ -558,8 +778,13 @@ try {
     sourceUnchanged: true,
     settingsRequiredKeyCompleted: true,
     importedConfigPreserved: true,
+    importedAndExistingSessionsVisible: true,
+    importedSessionsVisibleAfterRelaunch: true,
+    previousExternalSessionAuthorityUntouched: true,
     previousCredentialBackedUp: true,
-    recoveryProfileRejected: true,
+    legacyRecoveryContextNormalized: true,
+    legacyRecoveryProfileUntouched: true,
+    primarySessionPreserved: true,
   }, null, 2))
 } finally {
   if (app) await app.close().catch(() => {})

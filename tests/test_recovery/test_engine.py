@@ -20,6 +20,7 @@ from opensquilla.recovery import (
     WorkspaceOverrideError,
     choose_workspace,
     guard_desktop_profile,
+    guarded_desktop_profile,
     inspect_profile,
     reconcile_profile,
 )
@@ -40,6 +41,43 @@ def _desktop_config(home: Path, *, workspace: Path | None = None, extra: str = "
     home.mkdir(parents=True, exist_ok=True)
     (home / "state").mkdir(exist_ok=True)
     (home / "config.toml").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_desktop_config_autorepair_handshake_keeps_non_config_failures_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "desktop"
+    _workspace(home / "workspace")
+    (home / "state").mkdir(parents=True)
+    (home / "config.toml").write_text("[broken\n", encoding="utf-8")
+    monkeypatch.setenv("OPENSQUILLA_PROFILE_KIND", "desktop-primary")
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP", "1")
+    monkeypatch.setenv("OPENSQUILLA_TEST_PROFILE_LOCK_ROOT", "1")
+
+    with pytest.raises(RecoveryRequiredError) as blocked:
+        guard_desktop_profile(home)
+    assert blocked.value.report.stable_code == "config_invalid"
+
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP_CONFIG_AUTOREPAIR", "1")
+    monkeypatch.delenv("OPENSQUILLA_DESKTOP")
+    with pytest.raises(RecoveryRequiredError):
+        guard_desktop_profile(home)
+
+    monkeypatch.setenv("OPENSQUILLA_DESKTOP", "1")
+    report = guard_desktop_profile(home)
+    assert report is not None
+    assert report.stable_code == "config_invalid"
+    with guarded_desktop_profile(home) as locked_report:
+        assert locked_report is not None
+        assert locked_report.stable_code == "config_invalid"
+
+    unknown = tmp_path / "unknown"
+    unknown.mkdir()
+    (unknown / "unexpected").write_text("preserve\n", encoding="utf-8")
+    with pytest.raises(RecoveryRequiredError) as unsafe:
+        guard_desktop_profile(unknown)
+    assert unsafe.value.report.stable_code == "unknown_layout"
 
 
 def test_offline_cli_ignores_cwd_dotenv_but_reads_profile_override(
@@ -1401,6 +1439,22 @@ def test_legacy_profile_dotenv_pin_prevents_workspace_move(tmp_path: Path) -> No
     assert not (home / "workspace").exists()
     assert not legacy_env.exists()
     assert (home / ".env").read_text(encoding="utf-8").endswith(f"={legacy}\n")
+
+
+def test_profile_dotenv_escape_decoder_does_not_redecode_windows_paths() -> None:
+    from opensquilla.recovery.config_patch import _parse_dotenv_value
+    from opensquilla.recovery.errors import RecoveryError
+
+    options = {
+        "label": "state",
+        "error_type": RecoveryError,
+        "stable_code": "state_env_override_unsafe",
+    }
+    assert _parse_dotenv_value(r'"C:\\temp\\new"', **options) == r"C:\temp\new"
+    assert _parse_dotenv_value(r"'C:\\temp\\new'", **options) == r"C:\temp\new"
+    assert _parse_dotenv_value(r'"first\nsecond\tvalue"', **options) == (
+        "first\nsecond\tvalue"
+    )
 
 
 def test_interpolated_profile_dotenv_override_fails_closed(tmp_path: Path) -> None:

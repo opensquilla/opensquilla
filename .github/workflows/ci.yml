@@ -891,11 +891,10 @@ jobs:
         shell: bash
         run: npm run build
 
-      - name: Run compiled Desktop recovery flows
+      - name: Run compiled Desktop startup safety flows
         working-directory: desktop/electron
         shell: bash
         env:
-          OPENSQUILLA_DESKTOP_RECOVERY_SCREENSHOT: ${{ runner.temp }}/desktop-recovery-e2e/recovery-page.png
           OPENSQUILLA_DESKTOP_IMPORT_SCREENSHOT_DIR: ${{ runner.temp }}/desktop-recovery-e2e/profile-import-screenshots
         run: |
           set -euo pipefail
@@ -911,8 +910,7 @@ jobs:
           }
 
           for entry in \
-            'profile-recovery-flow:scripts/test-profile-recovery-flow.mjs' \
-            'profile-recovery-accessibility:scripts/test-profile-recovery-accessibility.mjs' \
+            'session-preserving-startup:scripts/test-profile-recovery-flow.mjs' \
             'profile-import-flow:scripts/test-profile-import-flow.mjs' \
             'gateway-orphan-recovery-flow:scripts/test-desktop-gateway-orphan-recovery-flow.mjs' \
             'unsafe-profile-no-write:scripts/test-unsafe-profile-no-write.mjs'
@@ -926,7 +924,7 @@ jobs:
           done
           printf 'e2e_status=passed\n' > "${CI_REPORT_DIR}/first-failure.txt"
 
-      - name: Upload Desktop recovery report
+      - name: Upload Desktop startup safety report
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
@@ -946,11 +944,14 @@ jobs:
       UV_PYTHON: "3.12"
       PYTHONPATH: ${{ github.workspace }}
       OPENSQUILLA_TURN_CALL_LOG: "0"
+      OPENSQUILLA_REQUIRE_RELEASE_TAG_PROVENANCE: "1"
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
+          # Frozen release fixtures are verified against each real tag:path blob.
+          fetch-depth: 0
           lfs: true
 
       - name: Set up Python
@@ -974,6 +975,7 @@ jobs:
             tests/test_scripts/test_build_wheelhouse_zip.py \
             tests/test_install_scripts.py \
             tests/test_root_start_scripts.py \
+            tests/test_recovery/test_fixture_contracts.py \
             tests/test_release_consistency.py \
             tests/test_public_release_hygiene.py \
             -q

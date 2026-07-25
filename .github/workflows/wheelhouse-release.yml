@@ -23,6 +23,58 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
 
 jobs:
+  package-release-verification-harness:
+    name: Package current release verification harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout current workflow revision
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+
+      - name: Validate released Desktop upgrade matrix
+        run: |
+          python .github/scripts/verify-release-desktop-upgrade-matrix.py \
+            .github/scripts/released-desktop-upgrade-matrix.json
+
+      - name: Stage release verification harness
+        env:
+          HARNESS_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="${RUNNER_TEMP}/release-verification-harness"
+          mkdir -p \
+            "${staging}/.github/scripts" \
+            "${staging}/desktop/electron/scripts"
+          cp -- \
+            .github/scripts/released-desktop-upgrade-matrix.json \
+            .github/scripts/seed-released-desktop-session.mjs \
+            .github/scripts/verify-release-desktop-client.mjs \
+            .github/scripts/verify-release-desktop-upgrade-matrix.py \
+            .github/scripts/verify-release-macos-clean-install.sh \
+            .github/scripts/verify-release-macos-upgrade.sh \
+            .github/scripts/verify-release-profile-preservation.py \
+            .github/scripts/verify-release-windows-clean-install.ps1 \
+            .github/scripts/verify-release-windows-upgrade.ps1 \
+            "${staging}/.github/scripts/"
+          cp -- \
+            desktop/electron/scripts/test-packaged-update-banner.mjs \
+            "${staging}/desktop/electron/scripts/"
+          printf '%s\n' "${HARNESS_SHA}" > "${staging}/release-verification-harness.sha"
+
+      - name: Upload release verification harness
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensquilla-release-verification-harness
+          path: ${{ runner.temp }}/release-verification-harness/
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 31
+          overwrite: true
+
   build-control-ui:
     name: Build verified Web UI artifact
     runs-on: ubuntu-latest
@@ -310,7 +362,9 @@ jobs:
 
   build-desktop-macos:
     name: Build macOS Electron installer
-    needs: build-control-ui
+    needs:
+      - build-control-ui
+      - package-release-verification-harness
     runs-on: macos-latest
     timeout-minutes: 150
     steps:
@@ -320,6 +374,22 @@ jobs:
           lfs: true
           persist-credentials: false
           ref: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+      - name: Download current release verification harness
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-release-verification-harness
+          path: .
+
+      - name: Verify release verification harness revision
+        env:
+          EXPECTED_HARNESS_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          test "$(cat release-verification-harness.sha)" = "${EXPECTED_HARNESS_SHA}"
+          chmod +x \
+            .github/scripts/verify-release-macos-clean-install.sh \
+            .github/scripts/verify-release-macos-upgrade.sh
 
       - name: Download verified Web UI artifact
         uses: actions/download-artifact@v4
@@ -375,7 +445,19 @@ jobs:
           OPENSQUILLA_GATEWAY_SMOKE_TIMEOUT_MS: "240000"
         run: npm run verify:gateway-smoke
 
-      - name: Verify RC3-to-candidate macOS upgrade and uninstall preserve profile data
+      - name: Verify fresh macOS installation enters chat and preserves its session
+        shell: bash
+        run: |
+          set -euo pipefail
+          candidates=(dist/desktop-electron/OpenSquilla-*-mac-arm64.dmg)
+          if [[ "${#candidates[@]}" -ne 1 || ! -f "${candidates[0]}" ]]; then
+            echo "Expected exactly one candidate macOS DMG" >&2
+            exit 1
+          fi
+          .github/scripts/verify-release-macos-clean-install.sh \
+            "${candidates[0]}" built-clean
+
+      - name: Verify every released Desktop-to-candidate macOS upgrade
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -386,8 +468,27 @@ jobs:
             echo "Expected exactly one candidate macOS DMG" >&2
             exit 1
           fi
-          .github/scripts/verify-release-macos-upgrade.sh \
-            "${candidates[0]}" built-candidate
+          matrix=".github/scripts/released-desktop-upgrade-matrix.json"
+          matrix_rows="${RUNNER_TEMP}/released-desktop-upgrades-macos.tsv"
+          python .github/scripts/verify-release-desktop-upgrade-matrix.py \
+            "${matrix}" \
+            --platform mac \
+            --format tsv \
+            --candidate-tag "${RELEASE_TAG}" >"${matrix_rows}"
+          test -s "${matrix_rows}"
+          while IFS=$'\t' read -r old_tag old_version layout old_asset; do
+            extra=()
+            if [[ "${old_tag}" == "v0.5.0" ]]; then
+              extra+=(--verify-config-reset --verify-cli-import --verify-inspect-failure)
+            fi
+            .github/scripts/verify-release-macos-upgrade.sh \
+              "${candidates[0]}" \
+              "built-${old_version}" \
+              "${old_tag}" \
+              "${old_asset}" \
+              "${layout}" \
+              "${extra[@]}"
+          done <"${matrix_rows}"
 
       - name: List macOS artifacts
         run: find dist/desktop-electron -maxdepth 2 -type f -print
@@ -405,7 +506,9 @@ jobs:
 
   build-desktop-windows:
     name: Build unsigned Windows Electron installer
-    needs: build-control-ui
+    needs:
+      - build-control-ui
+      - package-release-verification-harness
     runs-on: windows-latest
     timeout-minutes: 150
     steps:
@@ -415,6 +518,22 @@ jobs:
           lfs: true
           persist-credentials: false
           ref: ${{ env.RELEASE_TAG != '' && env.RELEASE_TAG || github.ref }}
+
+      - name: Download current release verification harness
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-release-verification-harness
+          path: .
+
+      - name: Verify release verification harness revision
+        shell: pwsh
+        env:
+          EXPECTED_HARNESS_SHA: ${{ github.workflow_sha }}
+        run: |
+          $actual = (Get-Content -Raw -LiteralPath 'release-verification-harness.sha').Trim()
+          if ($actual -ne $env:EXPECTED_HARNESS_SHA) {
+            throw "Release verification harness revision $actual is not the workflow revision."
+          }
 
       - name: Download verified Web UI artifact
         uses: actions/download-artifact@v4
@@ -468,7 +587,20 @@ jobs:
           OPENSQUILLA_REQUIRE_PACKAGED_GATEWAY_SMOKE: "1"
         run: npm run verify:gateway-smoke
 
-      - name: Verify RC3-to-candidate Windows upgrade and uninstall preserve profile data
+      - name: Verify fresh Windows installation enters chat and preserves its session
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidates = @(Get-ChildItem 'dist/desktop-electron/OpenSquilla-*-win-x64.exe' -File)
+          if ($candidates.Count -ne 1) {
+            throw "Expected exactly one candidate Windows installer; got $($candidates.Count)."
+          }
+          .github/scripts/verify-release-windows-clean-install.ps1 `
+            -CandidateInstaller $candidates[0].FullName `
+            -Label built-clean `
+            -CandidateManifest (Join-Path $env:RUNNER_TEMP 'built-candidate-identity.json')
+
+      - name: Verify every released Desktop-to-candidate Windows upgrade
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -478,10 +610,53 @@ jobs:
           if ($candidates.Count -ne 1) {
             throw "Expected exactly one candidate Windows installer; got $($candidates.Count)."
           }
-          .github/scripts/verify-release-windows-upgrade.ps1 `
-            -CandidateInstaller $candidates[0].FullName `
-            -Label built-candidate `
-            -VerifyLongRunningUpdateBanner
+          $matrixArgs = @(
+            '.github/scripts/verify-release-desktop-upgrade-matrix.py',
+            '.github/scripts/released-desktop-upgrade-matrix.json',
+            '--platform',
+            'windows',
+            '--format',
+            'tsv'
+          )
+          if ($env:RELEASE_TAG) {
+            $matrixArgs += @('--candidate-tag', $env:RELEASE_TAG)
+          }
+          $matrixRows = @(& python @matrixArgs)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Released Desktop upgrade matrix validation failed.'
+          }
+          if ($matrixRows.Count -eq 0) {
+            throw 'Released Desktop upgrade matrix emitted no compatible source releases.'
+          }
+          foreach ($row in $matrixRows) {
+            $fields = $row -split "`t"
+            if ($fields.Count -ne 4) {
+              throw "Malformed released Desktop upgrade row: $row"
+            }
+            $source = @{
+              tag = $fields[0]
+              version = $fields[1]
+              layout = $fields[2]
+              windows_asset = $fields[3]
+            }
+            $parameters = @{
+              CandidateInstaller = $candidates[0].FullName
+              Label = "built-$($source['version'])"
+              OldTag = $source['tag']
+              OldAsset = $source['windows_asset']
+              Layout = $source['layout']
+              CandidateManifest = (
+                Join-Path $env:RUNNER_TEMP 'built-candidate-identity.json'
+              )
+            }
+            if ($source['tag'] -eq 'v0.5.0') {
+              $parameters.VerifyConfigReset = $true
+              $parameters.VerifyCliImport = $true
+              $parameters.VerifyInspectFailure = $true
+              $parameters.VerifyLongRunningUpdateBanner = $true
+            }
+            .github/scripts/verify-release-windows-upgrade.ps1 @parameters
+          }
 
       - name: List Windows artifacts
         shell: bash
@@ -804,18 +979,36 @@ jobs:
   audit-downloaded-macos-release:
     name: Audit downloaded macOS draft assets
     if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
-    needs: publish-release
+    needs:
+      - publish-release
+      - package-release-verification-harness
     runs-on: macos-latest
-    timeout-minutes: 75
+    timeout-minutes: 180
     permissions:
       contents: write
     steps:
-      - name: Checkout release verification helpers
+      - name: Checkout tagged release product source
         uses: actions/checkout@v4
         with:
           lfs: false
           persist-credentials: false
           ref: ${{ env.RELEASE_TAG }}
+
+      - name: Download current release verification harness
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-release-verification-harness
+          path: .
+
+      - name: Verify release verification harness revision
+        env:
+          EXPECTED_HARNESS_SHA: ${{ github.workflow_sha }}
+        shell: bash
+        run: |
+          test "$(cat release-verification-harness.sha)" = "${EXPECTED_HARNESS_SHA}"
+          chmod +x \
+            .github/scripts/verify-release-macos-clean-install.sh \
+            .github/scripts/verify-release-macos-upgrade.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -826,6 +1019,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22.12.0"
+
+      - name: Install Electron verification dependencies
+        working-directory: desktop/electron
+        run: npm ci
 
       - name: Download actual draft release assets
         env:
@@ -935,7 +1132,7 @@ jobs:
           validate_app "${mounted}/OpenSquilla.app"
           hdiutil detach "${mounted}" -quiet
 
-      - name: Verify downloaded RC3-to-candidate macOS upgrade and uninstall
+      - name: Verify downloaded candidate from every released macOS Desktop
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -946,29 +1143,77 @@ jobs:
             echo "Expected exactly one downloaded candidate macOS DMG" >&2
             exit 1
           fi
-          .github/scripts/verify-release-macos-upgrade.sh \
-            "${candidates[0]}" downloaded-asset
+          .github/scripts/verify-release-macos-clean-install.sh \
+            "${candidates[0]}" downloaded-clean
+          matrix=".github/scripts/released-desktop-upgrade-matrix.json"
+          matrix_rows="${RUNNER_TEMP}/released-desktop-upgrades-macos.tsv"
+          python .github/scripts/verify-release-desktop-upgrade-matrix.py \
+            "${matrix}" \
+            --platform mac \
+            --format tsv \
+            --candidate-tag "${RELEASE_TAG}" >"${matrix_rows}"
+          test -s "${matrix_rows}"
+          while IFS=$'\t' read -r old_tag old_version layout old_asset; do
+            extra=()
+            if [[ "${old_tag}" == "v0.5.0" ]]; then
+              extra+=(--verify-inspect-failure)
+            fi
+            .github/scripts/verify-release-macos-upgrade.sh \
+              "${candidates[0]}" \
+              "downloaded-${old_version}" \
+              "${old_tag}" \
+              "${old_asset}" \
+              "${layout}" \
+              "${extra[@]}"
+          done <"${matrix_rows}"
 
   audit-downloaded-windows-release:
     name: Audit downloaded Windows draft asset
     if: ${{ github.event_name == 'push' || github.event.inputs.tag != '' }}
-    needs: publish-release
+    needs:
+      - publish-release
+      - package-release-verification-harness
     runs-on: windows-latest
-    timeout-minutes: 75
+    timeout-minutes: 180
     permissions:
       contents: write
     steps:
-      - name: Checkout release verification helpers
+      - name: Checkout tagged release product source
         uses: actions/checkout@v4
         with:
           lfs: false
           persist-credentials: false
           ref: ${{ env.RELEASE_TAG }}
 
+      - name: Download current release verification harness
+        uses: actions/download-artifact@v4
+        with:
+          name: opensquilla-release-verification-harness
+          path: .
+
+      - name: Verify release verification harness revision
+        shell: pwsh
+        env:
+          EXPECTED_HARNESS_SHA: ${{ github.workflow_sha }}
+        run: |
+          $actual = (Get-Content -Raw -LiteralPath 'release-verification-harness.sha').Trim()
+          if ($actual -ne $env:EXPECTED_HARNESS_SHA) {
+            throw "Release verification harness revision $actual is not the workflow revision."
+          }
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Set up Node.js for packaged-client verification
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+
+      - name: Install Electron verification dependencies
+        working-directory: desktop/electron
+        run: npm ci
 
       - name: Download actual draft release assets
         shell: pwsh
@@ -1005,7 +1250,7 @@ jobs:
             }
           }
 
-      - name: Verify downloaded RC3-to-candidate Windows upgrade and uninstall
+      - name: Verify downloaded candidate from every released Windows Desktop
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1015,6 +1260,51 @@ jobs:
           if ($candidates.Count -ne 1) {
             throw "Expected exactly one downloaded Windows installer; got $($candidates.Count)."
           }
-          .github/scripts/verify-release-windows-upgrade.ps1 `
+          .github/scripts/verify-release-windows-clean-install.ps1 `
             -CandidateInstaller $candidates[0].FullName `
-            -Label downloaded-asset
+            -Label downloaded-clean `
+            -CandidateManifest (Join-Path $env:RUNNER_TEMP 'downloaded-candidate-identity.json')
+          $matrixArgs = @(
+            '.github/scripts/verify-release-desktop-upgrade-matrix.py',
+            '.github/scripts/released-desktop-upgrade-matrix.json',
+            '--platform',
+            'windows',
+            '--format',
+            'tsv'
+          )
+          if ($env:RELEASE_TAG) {
+            $matrixArgs += @('--candidate-tag', $env:RELEASE_TAG)
+          }
+          $matrixRows = @(& python @matrixArgs)
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Released Desktop upgrade matrix validation failed.'
+          }
+          if ($matrixRows.Count -eq 0) {
+            throw 'Released Desktop upgrade matrix emitted no compatible source releases.'
+          }
+          foreach ($row in $matrixRows) {
+            $fields = $row -split "`t"
+            if ($fields.Count -ne 4) {
+              throw "Malformed released Desktop upgrade row: $row"
+            }
+            $source = @{
+              tag = $fields[0]
+              version = $fields[1]
+              layout = $fields[2]
+              windows_asset = $fields[3]
+            }
+            $parameters = @{
+              CandidateInstaller = $candidates[0].FullName
+              Label = "downloaded-$($source['version'])"
+              OldTag = $source['tag']
+              OldAsset = $source['windows_asset']
+              Layout = $source['layout']
+              CandidateManifest = (
+                Join-Path $env:RUNNER_TEMP 'downloaded-candidate-identity.json'
+              )
+            }
+            if ($source['tag'] -eq 'v0.5.0') {
+              $parameters.VerifyInspectFailure = $true
+            }
+            .github/scripts/verify-release-windows-upgrade.ps1 @parameters
+          }

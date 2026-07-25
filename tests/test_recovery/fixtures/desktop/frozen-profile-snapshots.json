@@ -201,6 +201,54 @@
         {"path": "desktop-layout-v2.json", "kind": "text", "content": "{\"migratedAt\":\"2026-07-10T12:00:00.000Z\",\"moved\":[\"workspace\"]}\n"},
         {"path": "media/synthetic.txt", "kind": "text", "content": "historical media stays at H/media\n"}
       ]
+    },
+    {
+      "id": "v0.5.0rc4-relocated-clean",
+      "release_tag": "v0.5.0rc4",
+      "source": {
+        "release_commit": "d1a79acbb631155b03a0740d6c4b696aac333abf",
+        "desktop_main_path": "desktop/electron/src/main.ts",
+        "desktop_main_blob": "ffcfbdc12e8fd81af179e2b4bff8c4fd7510360b",
+        "python_paths_path": "src/opensquilla/paths.py",
+        "python_paths_blob": "626d7689364136bf3f6bda0f902eb5a1b3772e1e",
+        "state_dir_writer_line": 2034,
+        "gateway_spawn_line": 6565,
+        "gateway_env_home": "H"
+      },
+      "tree": [
+        {"path": "config.toml", "kind": "config", "template": "released-configs/v0.5.0rc4.toml"},
+        {"path": "state/sessions.db", "kind": "sqlite_sessions"},
+        {"path": "workspace/USER.md", "kind": "identity_markdown"},
+        {"path": "workspace/SOUL.md", "kind": "identity_markdown"},
+        {"path": "workspace/IDENTITY.md", "kind": "identity_markdown"},
+        {"path": "workspace/MEMORY.md", "kind": "identity_markdown"},
+        {"path": "desktop-layout-v2.json", "kind": "text", "content": "{\"migratedAt\":\"2026-07-13T12:00:00.000Z\",\"moved\":[\"workspace\"]}\n"},
+        {"path": "media/synthetic.txt", "kind": "text", "content": "historical media stays at H/media\n"}
+      ]
+    },
+    {
+      "id": "v0.5.0-relocated-clean",
+      "release_tag": "v0.5.0",
+      "source": {
+        "release_commit": "7e3965e7cc64316be87dc0d535eace39d22a2c93",
+        "desktop_main_path": "desktop/electron/src/main.ts",
+        "desktop_main_blob": "d9f4f380a1b663f2da7802c0cdbd5a8a85288724",
+        "python_paths_path": "src/opensquilla/paths.py",
+        "python_paths_blob": "626d7689364136bf3f6bda0f902eb5a1b3772e1e",
+        "state_dir_writer_line": 2095,
+        "gateway_spawn_line": 6015,
+        "gateway_env_home": "H"
+      },
+      "tree": [
+        {"path": "config.toml", "kind": "config", "template": "released-configs/v0.5.0.toml"},
+        {"path": "state/sessions.db", "kind": "sqlite_sessions"},
+        {"path": "workspace/USER.md", "kind": "identity_markdown"},
+        {"path": "workspace/SOUL.md", "kind": "identity_markdown"},
+        {"path": "workspace/IDENTITY.md", "kind": "identity_markdown"},
+        {"path": "workspace/MEMORY.md", "kind": "identity_markdown"},
+        {"path": "desktop-layout-v2.json", "kind": "text", "content": "{\"migratedAt\":\"2026-07-23T12:00:00.000Z\",\"moved\":[\"workspace\"]}\n"},
+        {"path": "media/synthetic.txt", "kind": "text", "content": "historical media stays at H/media\n"}
+      ]
     }
   ]
 }

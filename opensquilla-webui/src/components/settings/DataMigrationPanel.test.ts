@@ -127,7 +127,7 @@ function cleanupReport(
 function desktopMaintenanceApi(overrides: Record<string, unknown> = {}) {
   return {
     getDesktopProfileKind: async () => 'primary',
-    getRecoveryState: async () => ({ inspection: { outcome: 'ready', stable_code: 'ready' } }),
+    getMigrationInspection: async () => ({ inspection: { outcome: 'ready', stable_code: 'ready' } }),
     migrationSummary: vi.fn(async () => ({ ok: true, candidates: [], candidate: null, report: null })),
     migrationRun: vi.fn(),
     ...overrides,
@@ -145,7 +145,7 @@ describe('DataMigrationPanel desktop provider', () => {
       desktopApi: {
         getOsLocale: async () => 'en',
         getDesktopProfileKind: async () => 'primary',
-        getRecoveryState: async () => ({ inspection: { outcome: 'ready', stable_code: 'ready' } }),
+        getMigrationInspection: async () => ({ inspection: { outcome: 'ready', stable_code: 'ready' } }),
         migrationSummary,
         migrationRun: vi.fn(),
         onMigrationProgress: (callback: typeof progress) => {
@@ -186,7 +186,7 @@ describe('DataMigrationPanel desktop provider', () => {
       desktopApi: {
         getOsLocale: async () => 'en',
         getDesktopProfileKind: async () => 'primary',
-        getRecoveryState: async () => ({
+        getMigrationInspection: async () => ({
           inspection: { outcome: 'attention', stable_code: 'workspace_conflict' },
         }),
         chooseLegacyAgentDataLocation,

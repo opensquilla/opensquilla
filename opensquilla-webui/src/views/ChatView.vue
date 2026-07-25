@@ -1465,6 +1465,7 @@ const chatRpcSubscriptions = useChatRpcSubscriptions(rpc, {
 
 // Session switches drop the previous session's stall tracking entirely.
 watch(sessionKey, () => {
+  pendingForkBeforeMessageId.value = null
   stallWatchdog.reset()
   clearAssistantActivityExpansionState()
 })
@@ -2307,7 +2308,6 @@ watch(pendingSessionIntent, (intent, previous) => {
 })
 
 watch(sessionKey, () => {
-  pendingForkBeforeMessageId.value = null
   if (shareMode.value) endShareMode()
   deliverablesOpen.value = false
   metaRunsHistoryOpen.value = false

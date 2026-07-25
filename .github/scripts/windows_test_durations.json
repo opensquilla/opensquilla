@@ -729,6 +729,7 @@
     "tests/test_recovery/test_recovery_cmd.py": 8.885,
     "tests/test_recovery/test_restore.py": 3.411,
     "tests/test_recovery/test_runtime_writer_guard.py": 1.148,
+    "tests/test_recovery/test_session_merge.py": 0.01,
     "tests/test_recovery/test_settings_transaction.py": 1.497,
     "tests/test_recovery/test_transaction.py": 3.418,
     "tests/test_redaction.py": 0.016,

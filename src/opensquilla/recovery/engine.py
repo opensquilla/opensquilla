@@ -154,6 +154,14 @@ _LEGACY_HOME_ROLES: tuple[tuple[str, str, str], ...] = (
 )
 _DESKTOP_PROFILE_KINDS = frozenset({"desktop-primary", "desktop-recovery"})
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_DESKTOP_CONFIG_AUTOREPAIR_CODES = frozenset(
+    {
+        "config_invalid",
+        "config_schema_too_new",
+        "config_unreadable",
+        "effective_workspace_missing",
+    }
+)
 _TRANSACTION_NAMESPACE = uuid.UUID("f287c709-543b-4ae8-9377-a65fd9a6e493")
 
 _ATTENTION_ACTIONS = (
@@ -2393,6 +2401,25 @@ def choose_workspace(
             return inspect_profile(home_path, profile_kind=profile_kind)
 
 
+def _desktop_config_autorepair_requested(kind: str, report: RecoveryReport) -> bool:
+    """Allow the Desktop gateway to reach its config-only repair handshake.
+
+    The exception is deliberately narrower than the old recovery bypass:
+    recovery profiles, unsafe paths, incomplete transactions, and every
+    database safety failure still fail closed. Electron must opt in for the
+    exact primary gateway child, which then exits with a stable config marker
+    before constructing any runtime storage.
+    """
+
+    return (
+        kind == "desktop-primary"
+        and report.stable_code in _DESKTOP_CONFIG_AUTOREPAIR_CODES
+        and os.environ.get("OPENSQUILLA_DESKTOP", "").strip().lower() in _TRUTHY
+        and os.environ.get("OPENSQUILLA_DESKTOP_CONFIG_AUTOREPAIR", "").strip().lower()
+        in _TRUTHY
+    )
+
+
 def guard_desktop_profile(home: str | Path | None = None) -> RecoveryReport | None:
     """Fail before runtime writes when a Desktop-owned profile is unsafe.
 
@@ -2411,7 +2438,9 @@ def guard_desktop_profile(home: str | Path | None = None) -> RecoveryReport | No
     if kind not in _DESKTOP_PROFILE_KINDS:
         return None
     report = inspect_profile(home_path, profile_kind=kind)
-    if report.outcome == "recovery_required":
+    if report.outcome == "recovery_required" and not _desktop_config_autorepair_requested(
+        kind, report
+    ):
         raise RecoveryRequiredError(report)
     return report
 
@@ -2447,7 +2476,9 @@ def guarded_desktop_profile(
             # state/gateway.pid.lock, so an unsafe Desktop profile must be
             # rejected before that compatibility write can happen.
             report = inspect_profile(home_path, profile_kind=kind)
-            if report.outcome == "recovery_required":
+            if report.outcome == "recovery_required" and not _desktop_config_autorepair_requested(
+                kind, report
+            ):
                 raise RecoveryRequiredError(report)
         with LegacyGatewayLock(home_path, timeout=lock_timeout):
             if kind in _DESKTOP_PROFILE_KINDS:
@@ -2456,7 +2487,10 @@ def guarded_desktop_profile(
                 # make a formerly-safe profile unsafe even though RC4 writers
                 # obey the external profile lock.
                 report = inspect_profile(home_path, profile_kind=kind)
-                if report.outcome == "recovery_required":
+                if (
+                    report.outcome == "recovery_required"
+                    and not _desktop_config_autorepair_requested(kind, report)
+                ):
                     raise RecoveryRequiredError(report)
             yield report
 

@@ -128,6 +128,17 @@ def test_delete_current_primary_preserves_recovery_profiles_and_backups(
     recovery_id = str(uuid.uuid4())
     recovery = _recovery_profile(user_data, recovery_id, "recovery")
     backup = _backup(user_data, primary)
+    session_authority = user_data / "desktop-session-authority.json"
+    session_authority.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state_dir": str(primary / "state"),
+                "media_root": None,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     inspected = cleanup_inspect(
         user_data,
@@ -136,6 +147,10 @@ def test_delete_current_primary_preserves_recovery_profiles_and_backups(
     )
     assert inspected.outcome == "ready"
     assert all("backup" not in item.kind for item in inspected.items)
+    assert any(
+        item.kind == "session-authority" and item.path == session_authority
+        for item in inspected.items
+    )
     assert not (tmp_path / "lock-state").exists(), "cleanup inspection must remain read-only"
 
     result = cleanup_apply(
@@ -152,6 +167,7 @@ def test_delete_current_primary_preserves_recovery_profiles_and_backups(
     assert not (user_data / "desktop-credential.json").exists()
     assert not (user_data / "logs").exists()
     assert not (user_data / "desktop-profile-context.json").exists()
+    assert not session_authority.exists()
     assert recovery.is_dir()
     assert backup.is_dir()
     assert (user_data / "profile-replacement-history.json").is_file()
@@ -247,6 +263,18 @@ def test_reset_current_settings_preserves_config_workspace_and_sessions(
     sessions = primary / "state" / "sessions.db"
     sessions.parent.mkdir()
     sessions.write_bytes(b"synthetic session database")
+    session_authority = user_data / "desktop-session-authority.json"
+    session_authority.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "state_dir": str(sessions.parent),
+                "media_root": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    authority_before = session_authority.read_bytes()
     (user_data / "migration-provider-setup.json").write_text("{}\n", encoding="utf-8")
     (user_data / "migration-last-result.json").write_text("{}\n", encoding="utf-8")
 
@@ -278,6 +306,7 @@ def test_reset_current_settings_preserves_config_workspace_and_sessions(
     assert config.read_bytes() == config_before
     assert workspace.read_bytes() == workspace_before
     assert sessions.read_bytes() == b"synthetic session database"
+    assert session_authority.read_bytes() == authority_before
     assert (user_data / "desktop-profile-context.json").is_file()
 
 

@@ -193,6 +193,13 @@ not a public configuration field:
 | `shuffle_candidates` | `True` | `False` |
 | `quorum_grace_seconds` | 0 (wait for every proposer) | 10 |
 
+The two timeout fields have intentionally different streaming semantics.
+`proposer_timeout_seconds` bounds each proposer's total execution time.
+`aggregator_timeout_seconds` is an idle/stall budget between upstream stream
+events, so an active aggregation may run longer than that value while a silent
+provider is still bounded. Host-generated keep-alive heartbeats do not reset
+the aggregator budget.
+
 `min_successful_proposers` is additionally clamped down to the actual proposer
 count. Both the configured and effective values (min-success, timeouts, shuffle)
 are recorded in the selection plan for debugging.

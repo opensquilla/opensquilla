@@ -32,6 +32,7 @@ function harness(
   const dispatchHidden = vi.fn()
   const dispatchPlanPrompt = vi.fn()
   const notify = vi.fn()
+  const armGoal = vi.fn()
   const api = useChatSlashCommands({
     rpc,
     catalogCallOptions,
@@ -50,10 +51,12 @@ function harness(
     planModeAvailable: () => planModeAvailable,
     codingModeEnabled,
     setCodingModeEnabled,
+    armGoal,
   })
   return {
     activatePlanMode,
     api,
+    armGoal,
     codingModeEnabled,
     dispatchHidden,
     dispatchPlanPrompt,
@@ -351,5 +354,78 @@ describe('useChatSlashCommands recovery', () => {
     expect(inputText.value).toBe('/codng')
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('/codng'))
     expect(notify).toHaveBeenCalledWith(expect.stringContaining('//'))
+  })
+})
+
+describe('useChatSlashCommands goal', () => {
+  const goalCommand = {
+    name: '/goal',
+    cmd: '/goal',
+    label: '/goal',
+    desc: 'Set a long-running goal for the agent to pursue.',
+    aliases: [],
+    execution: { action: 'goal.set' },
+  }
+  const goalKey = 'agent:main:webchat:test'
+
+  it('starts a goal and registers a watcher when /goal has a description', async () => {
+    const { api, inputText, armGoal, rpc } = harness(false, [goalCommand])
+    inputText.value = '/goal 完成迁移文档'
+
+    await api.executeSlashCommand(inputText.value)
+
+    // Selecting /goal arms the composer goal draft instead of sending
+    // immediately; the typed goal text is kept for the user to send.
+    expect(armGoal).toHaveBeenCalledTimes(1)
+    expect(inputText.value).toBe('完成迁移文档')
+    expect(rpc.call).not.toHaveBeenCalledWith('goals.set', expect.anything())
+  })
+
+  it('arms goal draft with empty composer when /goal has no description', async () => {
+    const { api, inputText, armGoal } = harness(false, [goalCommand])
+    inputText.value = '/goal'
+
+    await api.executeSlashCommand(inputText.value)
+
+    expect(armGoal).toHaveBeenCalledTimes(1)
+    expect(inputText.value).toBe('')
+  })
+
+  it('reports the active goal for /goal status', async () => {
+    const { api, inputText, notify, rpc } = harness(false, [goalCommand])
+    rpc.call.mockImplementation(async (method: string) => {
+      if (method === 'goals.status') {
+        return { goal: { goalText: '完成迁移文档', status: 'running', turns: 3 } }
+      }
+      return { commands: [goalCommand] }
+    })
+    inputText.value = '/goal status'
+
+    await api.executeSlashCommand(inputText.value)
+
+    expect(rpc.call).toHaveBeenCalledWith('goals.status', { sessionKey: goalKey })
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('running'))
+  })
+
+  it('clears the active goal for /goal clear', async () => {
+    const { api, inputText, notify, rpc } = harness(false, [goalCommand])
+    inputText.value = '/goal clear'
+
+    await api.executeSlashCommand(inputText.value)
+
+    expect(rpc.call).toHaveBeenCalledWith('goals.clear', { sessionKey: goalKey })
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('cleared'))
+  })
+
+  it('pauses and resumes via /goal pause and /goal resume', async () => {
+    const { api, inputText, notify, rpc } = harness(false, [goalCommand])
+    inputText.value = '/goal pause'
+    await api.executeSlashCommand(inputText.value)
+    expect(rpc.call).toHaveBeenCalledWith('goals.pause', { sessionKey: goalKey })
+
+    inputText.value = '/goal resume'
+    await api.executeSlashCommand(inputText.value)
+    expect(rpc.call).toHaveBeenCalledWith('goals.resume', { sessionKey: goalKey })
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('resumed'))
   })
 })

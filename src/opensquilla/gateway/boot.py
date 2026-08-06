@@ -3773,6 +3773,7 @@ async def start_gateway_server(
         pending_overflow_policy=getattr(
             config.task_runtime, "pending_overflow_policy", "reject_newest"
         ),
+        goal_config=getattr(config, "goal", None),
     )
     # Wire task_runtime's short write-lock provider into turn_runner.
     turn_runner.set_session_lock_provider(task_runtime._get_session_lock_for_turn)
@@ -3815,6 +3816,23 @@ async def start_gateway_server(
                 "gateway.steer_restart_recovery_completed",
                 **steer_recovery,
             )
+
+    # Reconcile durable goal runs after restart: park unwatched goals as paused
+    # (no silent token burn) or auto-resume when continue_unwatched is enabled.
+    goal_recovery = getattr(task_runtime, "recover_goal_runs_after_restart", None)
+    if callable(goal_recovery):
+        try:
+            goal_recovered = await goal_recovery()
+            if any(
+                int(goal_recovered.get(field, 0) or 0)
+                for field in ("recovered", "paused_unwatched")
+            ):
+                log.info(
+                    "gateway.goal_restart_recovery_completed",
+                    **goal_recovered,
+                )
+        except Exception:  # noqa: BLE001 - recovery must never fail boot
+            log.warning("gateway.goal_restart_recovery_failed", exc_info=True)
 
     # Resolve HEARTBEAT.md path; instantiate Runner + Watcher;
     # start Watcher BEFORE the Loop so the first tick already sees any

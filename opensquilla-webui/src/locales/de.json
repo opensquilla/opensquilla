@@ -3514,7 +3514,33 @@
       "sendingContinuing": "Antwort wird gesendet · Ausführung wird fortgesetzt…"
     },
     "slashCommands": {
-      "unknown": "Unbekannter Befehl {command}. Bearbeite ihn weiter oder verwende //, um ihn als Text zu senden."
+      "unknown": "Unbekannter Befehl {command}. Bearbeite ihn weiter oder verwende //, um ihn als Text zu senden.",
+      "goal": {
+        "usage": "Verwende /goal mit einer Beschreibung, um ein Ziel zu starten, oder /goal status, clear, pause, oder resume.",
+        "setOk": "Ziel gestartet: {goal}. Der Agent arbeitet weiter, bis es abgeschlossen oder blockiert ist.",
+        "statusNone": "Für diese Sitzung ist kein Ziel festgelegt.",
+        "statusOk": "Ziel [{status}] nach {turns} Runden: {goal}",
+        "clearOk": "Ziel gelöscht.",
+        "pauseOk": "Ziel angehalten.",
+        "resumeOk": "Ziel fortgesetzt.",
+        "actionError": "Zielaktion fehlgeschlagen: {error}"
+      }
+    },
+    "goal": {
+      "placeholder": "Beschreibe das Ziel und sende, um daran zu arbeiten",
+      "draftChip": "Ziel",
+      "draftChipTitle": "Zielmodus bereit. Zum Abbrechen klicken.",
+      "activeTitle": "Laufendes Ziel",
+      "pausedTitle": "Ziel angehalten",
+      "completeTitle": "Ziel abgeschlossen",
+      "blockedTitle": "Ziel blockiert",
+      "cancelledTitle": "Ziel abgebrochen",
+      "pause": "Ziel anhalten",
+      "resume": "Ziel fortsetzen",
+      "clear": "Ziel löschen",
+      "dismiss": "Zielstatus ausblenden",
+      "turns": "{turns} Runden",
+      "pausedByUser": "von dir angehalten"
     },
     "codingMode": {
       "enabled": "Coding mode für alle Chats aktiviert.",

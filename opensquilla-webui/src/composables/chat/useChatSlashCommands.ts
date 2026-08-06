@@ -60,6 +60,18 @@ interface UsageStatusResult {
   total_tokens?: number
 }
 
+interface GoalStatusResult {
+  goal?: {
+    goalText?: string
+    status?: string
+    turns?: number
+    idleTurns?: number
+    blockedReason?: string
+    pauseReason?: string
+    terminalReason?: string
+  } | null
+}
+
 export interface UseChatSlashCommandsOptions {
   rpc: RpcClient
   catalogCallOptions?: RpcCallOptions
@@ -87,6 +99,9 @@ export interface UseChatSlashCommandsOptions {
   planModeAvailable?: () => boolean
   codingModeEnabled: Ref<boolean>
   setCodingModeEnabled: (enabled: boolean) => Promise<boolean>
+  // Arm the goal composer: selecting /goal switches the composer into goal
+  // draft mode so the user types the goal normally and sends it.
+  armGoal?: () => void
 }
 
 function slashCommandKey(value: string): string {
@@ -271,6 +286,15 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
   function completeSlashCmd(cmd: ChatSlashCommand) {
     closeSlashMenu()
     const needsArgument = !cmd.argValue && (cmd.argumentChoices?.length ?? 0) > 0
+    const action = cmd?.execution?.action || cmd.cmd || cmd.name
+    if (action === 'goal.set' && !cmd.argValue) {
+      // Selecting /goal arms the goal composer: the Goal chip appears next to
+      // the access-mode controls and the user types the goal normally.
+      options.inputText.value = ''
+      options.autoResizeTextarea()
+      options.armGoal?.()
+      return
+    }
     options.inputText.value = cmd.cmd + (needsArgument ? ' ' : '')
     options.autoResizeTextarea()
     if (needsArgument) handleSlashInput()
@@ -370,6 +394,21 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
       return
     }
 
+    if (action === 'goal.set' || action === '/goal') {
+      closeSlashMenu()
+      const goalText = String(args || '').trim()
+      const firstWord = goalText.split(/\s+/, 1)[0]?.toLowerCase() || ''
+      const isSubcommand = ['status', 'clear', 'pause', 'resume'].includes(firstWord)
+      if (!isSubcommand) {
+        // Goal draft mode: the composer arms a Goal chip and the user types
+        // (or keeps) the goal text, then sends it like a normal message.
+        options.inputText.value = goalText
+        options.autoResizeTextarea()
+        options.armGoal?.()
+        return
+      }
+    }
+
     closeSlashMenu()
     options.inputText.value = ''
     options.autoResizeTextarea()
@@ -438,6 +477,53 @@ export function useChatSlashCommands(options: UseChatSlashCommandsOptions) {
         const request = separator === -1 ? '' : metaArgs.slice(separator).trim()
         if (!skillName) break
         void runMetaSkill(skillName, request)
+        break
+      }
+      case 'goal.set': {
+        const goalText = String(args || '').trim()
+        const goalKey = options.sessionKey.value
+        const first = goalText.split(/\s+/, 1)[0]?.toLowerCase() || ''
+        const fail = (err: unknown) => {
+          options.notify(i18n.global.t('chat.slashCommands.goal.actionError', {
+            error: err instanceof Error ? err.message : String(err),
+          }))
+        }
+        const status = (res: GoalStatusResult) => {
+          const goal = res?.goal
+          if (!goal || !goal.goalText) {
+            options.notify(i18n.global.t('chat.slashCommands.goal.statusNone'))
+            return
+          }
+          options.notify(i18n.global.t('chat.slashCommands.goal.statusOk', {
+            status: goal.status || 'unknown',
+            turns: goal.turns ?? 0,
+            goal: goal.goalText,
+          }))
+        }
+        if (first === 'status') {
+          options.rpc.call<GoalStatusResult>('goals.status', { sessionKey: goalKey })
+            .then(status)
+            .catch(fail)
+          break
+        }
+        if (first === 'clear') {
+          options.rpc.call('goals.clear', { sessionKey: goalKey })
+            .then(() => options.notify(i18n.global.t('chat.slashCommands.goal.clearOk')))
+            .catch(fail)
+          break
+        }
+        if (first === 'pause') {
+          options.rpc.call('goals.pause', { sessionKey: goalKey })
+            .then(() => options.notify(i18n.global.t('chat.slashCommands.goal.pauseOk')))
+            .catch(fail)
+          break
+        }
+        if (first === 'resume') {
+          options.rpc.call('goals.resume', { sessionKey: goalKey })
+            .then(() => options.notify(i18n.global.t('chat.slashCommands.goal.resumeOk')))
+            .catch(fail)
+          break
+        }
         break
       }
     }

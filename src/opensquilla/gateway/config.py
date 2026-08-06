@@ -2209,6 +2209,52 @@ class _EnvWithoutConfigVersion(PydanticBaseSettingsSource):
         return values
 
 
+class GoalConfig(BaseSettings):
+    """Guardrails for the session-level ``/goal`` continuation driver.
+
+    TOML section ``[goal]``; keys mirror the field names (snake_case).
+    Absent section keeps the defaults below so existing configs load
+    unchanged.
+    """
+
+    model_config = SettingsConfigDict(
+        env_prefix="OPENSQUILLA_GOAL_",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    # goal_runs.turns reaching this value blocks the run with
+    # terminal_reason="goal_continuation_limit_reached".
+    max_turns: int = Field(default=50, ge=1)
+    # Consecutive no-marker turns reaching this value inject a nudge prompt
+    # into the next continuation (idle counter resets).
+    idle_turns: int = Field(default=2, ge=1)
+    # Consecutive same-cause [goal:blocked:<reason>] markers reaching this
+    # value block the run with terminal_reason="blocked_after_retries:<reason>".
+    blocked_retries: int = Field(default=3, ge=1)
+    # Consecutive transient turn failures (provider overload / rate limit /
+    # transport errors) before the run blocks with
+    # terminal_reason="goal_turn_failed_after_retries:<status>".
+    failure_retries: int = Field(default=3, ge=1)
+    # Exponential backoff bounds for automatic retries after a transient turn
+    # failure or an enqueue admission rejection (milliseconds).
+    retry_base_backoff_ms: int = Field(default=30_000, ge=1_000)
+    retry_max_backoff_ms: int = Field(default=600_000, ge=1_000)
+    # How often the gateway's goal retry loop scans for due retries.
+    retry_poll_interval_seconds: int = Field(default=10, ge=1)
+    # Non-null: now - goal.started_at exceeding this budget (seconds) blocks
+    # the run with terminal_reason="goal_runtime_budget_exceeded".
+    runtime_budget_seconds: int | None = Field(default=None, ge=1)
+    # False: only auto-continue while the session has an active goal watcher.
+    continue_unwatched: bool = False
+    # Seconds a registered watcher stays eligible for auto-continuation without
+    # a fresh goals.observe heartbeat. A hard-killed CLI / dropped connection
+    # leaves a stale watcher behind; the driver lazily evicts entries older
+    # than this TTL so continuation stops instead of burning tokens to
+    # max_turns.
+    watcher_ttl_seconds: int = Field(default=900, ge=1)
+
+
 class GatewayConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="OPENSQUILLA_GATEWAY_",
@@ -2271,6 +2317,7 @@ class GatewayConfig(BaseSettings):
     naming: SessionNamingConfig = Field(default_factory=SessionNamingConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
     heartbeat: HeartbeatConfig = Field(default_factory=HeartbeatConfig)
+    goal: GoalConfig = Field(default_factory=GoalConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     sandbox: SandboxSettings = Field(default_factory=SandboxSettings)

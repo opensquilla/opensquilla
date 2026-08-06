@@ -34,6 +34,11 @@ import structlog
 
 from opensquilla.engine.agent_injection import PendingInputProvider
 from opensquilla.engine.outcome import completed_outcome, outcome_from_error
+from opensquilla.gateway.goal_driver import (
+    drive_due_goal_retries,
+    maybe_continue_goal,
+    recover_goal_runs_after_restart,
+)
 from opensquilla.gateway.routing import RouteEnvelope, SourceKind
 from opensquilla.gateway.session_lifecycle import TaskLifecycleEvent, TaskLifecycleListener
 from opensquilla.session.keys import canonicalize_session_key, normalize_agent_id, parse_agent_id
@@ -665,6 +670,7 @@ class TaskRuntime:
         pending_overflow_policy: PendingOverflowPolicy | str = (
             PendingOverflowPolicy.REJECT_NEWEST
         ),
+        goal_config: Any | None = None,
     ) -> None:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be >= 1")
@@ -705,6 +711,10 @@ class TaskRuntime:
         self._running_heartbeat_interval_s = running_heartbeat_interval_s
         self._accepted_config_provider = accepted_config_provider
         self._pending_overflow_policy = pending_overflow_policy
+        # Goal continuation guardrails (``[goal]`` config section). ``None``
+        # falls back to the module defaults in ``goal_driver.maybe_continue_goal``.
+        self._goal_config = goal_config
+        self._goal_retry_loop_task: asyncio.Task[None] | None = None
         from opensquilla.gateway.user_input_broker import StructuredUserInputBroker
 
         self._user_input_broker = StructuredUserInputBroker()
@@ -2130,6 +2140,14 @@ class TaskRuntime:
             Deadline (seconds) for the graceful drain phase.  ``None`` means
             wait indefinitely (use with care in production; set a finite value).
         """
+        loop_task = self._goal_retry_loop_task
+        self._goal_retry_loop_task = None
+        if loop_task is not None and not loop_task.done():
+            loop_task.cancel()
+            try:
+                await loop_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - shutdown path
+                pass
         auxiliary_tasks = [
             task
             for task in self._auxiliary_tasks_by_session.values()
@@ -2812,7 +2830,67 @@ class TaskRuntime:
         finally:
             self._user_input_broker.cancel_task(task.task_id)
             await self._settle_attached_plan_run(task)
+            # Goal continuation hook (WO-4). Runs after the per-session
+            # execution lock is released (this outer ``finally`` executes after
+            # the ``async with execution_lock`` block exits), so enqueueing the
+            # next goal turn cannot deadlock against this task's own lane. The
+            # driver is best-effort: it swallows its own errors and never
+            # raises into the turn terminal flow.
+            await maybe_continue_goal(self, task, config=self._goal_config)
+            # Transient failures and enqueue rejections schedule a retry; make
+            # sure the retry loop exists to drive them.
+            self._ensure_goal_retry_loop()
             _cleanup_guest_profile(task)
+
+    def _ensure_goal_retry_loop(self) -> None:
+        """Start the goal retry loop once (idempotent; used by tests too)."""
+
+        if self._goal_retry_loop_task is not None and not self._goal_retry_loop_task.done():
+            return
+        if self._goal_config is None:
+            from opensquilla.gateway.config import GoalConfig
+
+            self._goal_config = GoalConfig()
+        self._goal_retry_loop_task = asyncio.create_task(self._goal_retry_loop())
+
+    async def _goal_retry_loop(self) -> None:
+        """Periodically enqueue due goal retries until shutdown."""
+
+        from opensquilla.gateway.config import GoalConfig
+
+        config: GoalConfig = cast("GoalConfig", self._goal_config)
+        interval = float(getattr(config, "retry_poll_interval_seconds", 10) or 10)
+        while True:
+            # Sleep first so the loop never races the finishing turn's own
+            # storage work: the hook that scheduled the retry already ran, and
+            # the due time is at least one backoff interval in the future.
+            await asyncio.sleep(interval)
+            try:
+                await drive_due_goal_retries(
+                    self,
+                    self._storage,
+                    config=config,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - loop must survive per-tick errors
+                log.warning("task_runtime.goal_retry_tick_failed", exc_info=True)
+
+    async def recover_goal_runs_after_restart(self) -> dict[str, int]:
+        """Reconcile durable goal runs after a gateway restart (boot hook)."""
+
+        config = self._goal_config
+        if config is None:
+            from opensquilla.gateway.config import GoalConfig
+
+            config = self._goal_config = GoalConfig()
+        result = await recover_goal_runs_after_restart(
+            self,
+            self._storage,
+            config=config,
+        )
+        self._ensure_goal_retry_loop()
+        return result
 
     async def _freeze_collaboration_context(self, task: _RuntimeTask) -> None:
         """Snapshot session collaboration state at the actual turn boundary.
@@ -2999,6 +3077,29 @@ class TaskRuntime:
         await self._emit_plan_run(task.envelope.session_key, updated)
         if str(getattr(updated, "status", "")) != "running":
             raise RuntimeError("The selected plan revision is no longer executable")
+        # Goal driver runs additionally carry their authoritative GoalRunRecord
+        # so the prompt layer can render the live "Active Goal" contract. The
+        # goal entity is optional: its absence only degrades the prompt, and
+        # the caller spreads ``task.envelope.runtime_services`` into the
+        # replaced envelope alongside ``plan_run``.
+        if (
+            str(getattr(updated, "driver_kind", "")) == "goal"
+            and str(getattr(updated, "driver_id", "") or "").strip()
+        ):
+            goal_id = str(getattr(updated, "driver_id", "") or "").strip()
+            get_goal_run = getattr(self._storage, "get_goal_run", None)
+            goal_run = (
+                await get_goal_run(goal_id) if callable(get_goal_run) else None
+            )
+            if goal_run is None:
+                log.warning(
+                    "attached_goal_run_missing",
+                    goal_id=goal_id,
+                    run_id=run_id,
+                    session_key=task.envelope.session_key,
+                )
+            else:
+                task.envelope.runtime_services["goal_run"] = goal_run
         return updated
 
     async def _settle_attached_plan_run(self, task: _RuntimeTask) -> None:
@@ -3038,9 +3139,15 @@ class TaskRuntime:
                         for state in step_states
                     )
                 )
+                # Goal-driven runs are never completed by the generic settle
+                # path: the goal continuation driver owns their lifecycle and
+                # only operates on runs paused at a resumable anchor. A
+                # completed run would strand the goal ledger as "running"
+                # forever (the driver short-circuits on terminal runs).
                 if (
                     task.status == AgentTaskStatus.SUCCEEDED
                     and delivery_ready
+                    and driver_kind != "goal"
                     and callable(complete)
                 ):
                     updated = await complete(
@@ -3084,11 +3191,11 @@ class TaskRuntime:
             )
 
     async def _emit_plan_run(self, session_key: str, run: Any) -> None:
-        from opensquilla.session.plans import plan_run_snapshot
+        from opensquilla.session.plans import plan_run_event_name, plan_run_snapshot
 
         await self._emit(
             session_key,
-            "session.event.plan_run",
+            plan_run_event_name(run),
             {
                 "session_key": session_key,
                 "plan_run": plan_run_snapshot(run),
@@ -3096,6 +3203,18 @@ class TaskRuntime:
         )
 
     async def _emit_plan_revision_if_changed(self, task: _RuntimeTask) -> None:
+        # Goal runs use a private single-step plan revision only to reuse the
+        # durable execution machinery. Publishing that revision through the
+        # generic plan event would make Plan mode render the goal as a user
+        # authored plan (and leave a stale plan card after the goal finishes).
+        runtime_services = getattr(task.envelope, "runtime_services", {}) or {}
+        attached_plan_run = (
+            runtime_services.get("plan_run")
+            if isinstance(runtime_services, dict)
+            else None
+        )
+        if str(getattr(attached_plan_run, "driver_kind", "") or "") == "goal":
+            return
         getter = getattr(self._storage, "get_session", None)
         get_revision = getattr(self._storage, "get_plan_revision", None)
         if not callable(getter) or not callable(get_revision):

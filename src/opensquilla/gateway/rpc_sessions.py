@@ -2174,6 +2174,8 @@ async def _handle_sessions_send(
     fingerprint_params: dict[str, Any] | None = None,
     plan_revision_id: str | None = None,
     plan_context_revision_id: str | None = None,
+    plan_run_driver_kind: str | None = None,
+    plan_run_driver_id: str | None = None,
     required_collaboration_mode: str | None = None,
     required_collaboration_revision: int | None = None,
     initial_collaboration_mode: str | None = None,
@@ -2252,6 +2254,16 @@ async def _handle_sessions_send(
         plan_context_revision_id = plan_context_revision_id.strip()
         if not plan_context_revision_id:
             raise ValueError("plan_context_revision_id must not be empty")
+    if plan_run_driver_kind is not None:
+        if plan_revision_id is None:
+            raise ValueError("plan_run_driver_kind requires plan_revision_id")
+        if plan_run_driver_kind not in {"manual", "goal"}:
+            raise ValueError("plan_run_driver_kind must be manual or goal")
+    if plan_run_driver_kind == "goal":
+        if not isinstance(plan_run_driver_id, str) or not plan_run_driver_id.strip():
+            raise ValueError("plan_run_driver_id is required for a goal plan run")
+    elif plan_run_driver_id is not None:
+        raise ValueError("plan_run_driver_id is valid only for a goal plan run")
     if required_collaboration_mode not in {None, "default", "plan"}:
         raise ValueError("required_collaboration_mode must be default or plan")
     if (
@@ -2601,6 +2613,15 @@ async def _handle_sessions_send(
                 parent=None,
             )
             selected_plan_revision_id = plan_revision_to_create.revision_id
+        if plan_run is not None and plan_run_driver_kind is not None:
+            if plan_run.driver_kind != plan_run_driver_kind:
+                raise RpcHandlerError(
+                    "PLAN_RUN_DRIVER_MISMATCH",
+                    "The resumed plan run is owned by a different execution driver.",
+                    details={"runId": plan_run.run_id, "driverKind": plan_run.driver_kind},
+                    retryable=False,
+                    accepted=False,
+                )
         if plan_run is None:
             assert selected_plan_revision_id is not None
             plan_run = PlanRunRecord(
@@ -2609,7 +2630,12 @@ async def _handle_sessions_send(
                 session_id=session_id,
                 session_epoch=int(getattr(session, "epoch", 0) or 0),
                 plan_revision_id=selected_plan_revision_id,
-                driver_kind="manual",
+                driver_kind=plan_run_driver_kind or "manual",
+                driver_id=(
+                    plan_run_driver_id
+                    if plan_run_driver_kind == "goal"
+                    else None
+                ),
                 status="queued",
                 step_states=[],
             )
@@ -7159,13 +7185,29 @@ async def _hydrate_sessions_messages_metadata(
             plan_run_snapshot,
         )
 
+        latest_revision_run = None
+        get_latest_revision_run = getattr(
+            storage,
+            "get_latest_plan_run_for_revision",
+            None,
+        )
+        if current_plan is not None and callable(get_latest_revision_run):
+            latest_revision_run = await get_latest_revision_run(current_plan.revision_id)
+        goal_owned_current_plan = (
+            latest_revision_run is not None
+            and str(getattr(latest_revision_run, "driver_kind", "") or "") == "goal"
+        )
         if current_plan is not None:
-            current_plan_payload = plan_revision_snapshot(
-                current_plan,
-                current=True,
-            )
+            if not goal_owned_current_plan:
+                current_plan_payload = plan_revision_snapshot(
+                    current_plan,
+                    current=True,
+                )
         if active_plan_run is not None:
-            active_plan_run_payload = plan_run_snapshot(active_plan_run)
+            if active_plan_run.driver_kind == "goal" or goal_owned_current_plan:
+                current_plan_payload = None
+            else:
+                active_plan_run_payload = plan_run_snapshot(active_plan_run)
 
     project_workspace_deferred = bool(workspace_id) and not include_project_workspace
     return {
@@ -7387,6 +7429,23 @@ def _plan_collaboration_snapshot(
     }
 
 
+async def _goal_owned_plan_run_for_revision(
+    storage: Any,
+    revision_id: str,
+) -> Any | None:
+    """Return the Goal-owned execution overlay for an internal revision."""
+
+    getter = getattr(storage, "get_latest_plan_run_for_revision", None)
+    if not callable(getter):
+        return None
+    run = await getter(revision_id)
+    return (
+        run
+        if run is not None and str(getattr(run, "driver_kind", "") or "") == "goal"
+        else None
+    )
+
+
 @_d.method("plans.capabilities", scope="operator.read")
 async def _handle_plans_capabilities(
     _params: dict | None,
@@ -7522,6 +7581,15 @@ async def _handle_plans_implement(params: dict | None, ctx: RpcContext) -> dict:
     storage = get_session_storage(ctx.session_manager)
     if storage is None:
         raise RpcUnavailableError("Session storage is not configured")
+    goal_run = await _goal_owned_plan_run_for_revision(storage, revision_id)
+    if goal_run is not None:
+        raise RpcHandlerError(
+            "PLAN_RUN_GOAL_OWNED",
+            "This revision belongs to a Goal run and is not a Plan proposal.",
+            details={"runId": goal_run.run_id},
+            retryable=False,
+            accepted=False,
+        )
     client_request_id = _optional_string_param(
         params,
         "clientRequestId",
@@ -7694,6 +7762,15 @@ async def _handle_plans_revise(params: dict | None, ctx: RpcContext) -> dict:
     storage = get_session_storage(ctx.session_manager)
     if storage is None:
         raise RpcUnavailableError("Session storage is not configured")
+    goal_run = await _goal_owned_plan_run_for_revision(storage, revision_id)
+    if goal_run is not None:
+        raise RpcHandlerError(
+            "PLAN_RUN_GOAL_OWNED",
+            "This revision belongs to a Goal run and cannot be revised through Plan mode.",
+            details={"runId": goal_run.run_id},
+            retryable=False,
+            accepted=False,
+        )
     client_request_id = _optional_string_param(
         params,
         "clientRequestId",
@@ -7767,6 +7844,14 @@ async def _handle_plans_cancel_run(params: dict | None, ctx: RpcContext) -> dict
     run = await storage.get_plan_run(run_id)
     if run is None or run.session_key != key:
         raise KeyError(f"Plan run not found: {run_id}")
+    if str(getattr(run, "driver_kind", "") or "") == "goal":
+        raise RpcHandlerError(
+            "PLAN_RUN_GOAL_OWNED",
+            "This execution belongs to Goal mode; use the Goal controls to pause or clear it.",
+            details={"runId": run.run_id},
+            retryable=False,
+            accepted=False,
+        )
     expected_raw = (params or {}).get(
         "expectedStateRevision",
         (params or {}).get("expected_state_revision"),
@@ -7780,6 +7865,7 @@ async def _handle_plans_cancel_run(params: dict | None, ctx: RpcContext) -> dict
     from opensquilla.session.plans import (
         PLAN_RUN_ACTIVE_STATUSES,
         PlanRunConflictError,
+        plan_run_event_name,
         plan_run_snapshot,
     )
 
@@ -7888,7 +7974,7 @@ async def _handle_plans_cancel_run(params: dict | None, ctx: RpcContext) -> dict
     await _emit_to_subscribers(
         ctx,
         key,
-        "session.event.plan_run",
+        plan_run_event_name(updated),
         {"session_key": key, "plan_run": snapshot},
     )
     return {"sessionKey": key, "planRun": snapshot}
@@ -8007,6 +8093,18 @@ async def _handle_sessions_bootstrap(params: dict | None, ctx: RpcContext) -> di
     active_plan_run = (
         await get_active_run(session_key) if callable(get_active_run) else None
     )
+    latest_revision_run = None
+    get_latest_revision_run = getattr(
+        storage,
+        "get_latest_plan_run_for_revision",
+        None,
+    )
+    if current_plan is not None and callable(get_latest_revision_run):
+        latest_revision_run = await get_latest_revision_run(current_plan.revision_id)
+    goal_owned_current_plan = (
+        latest_revision_run is not None
+        and str(getattr(latest_revision_run, "driver_kind", "") or "") == "goal"
+    )
     from opensquilla.session.plans import plan_revision_snapshot, plan_run_snapshot
 
     return {
@@ -8025,19 +8123,23 @@ async def _handle_sessions_bootstrap(params: dict | None, ctx: RpcContext) -> di
         "collaboration": _plan_collaboration_snapshot(session),
         "currentPlan": (
             plan_revision_snapshot(current_plan, current=True)
-            if current_plan is not None
+            if current_plan is not None and not goal_owned_current_plan
             else None
         ),
         "activePlanRun": (
             plan_run_snapshot(active_plan_run)
-            if active_plan_run is not None
+            if (
+                active_plan_run is not None
+                and active_plan_run.driver_kind != "goal"
+                and not goal_owned_current_plan
+            )
             else None
         ),
         "planCapabilities": {
             "planMode": True,
             "implementation": ctx.task_runtime is not None,
             "newTaskImplementation": ctx.task_runtime is not None,
-            "goalDriver": False,
+            "goalDriver": True,
         },
         "epoch": epoch,
         "stream_cursor": stream_cursor,

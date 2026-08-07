@@ -2074,6 +2074,12 @@ def _dashscope_model_likely_supports_explicit_prompt_cache(model: str) -> bool:
     )
 
 
+def _tokenrhythm_model_supports_explicit_prompt_cache(model: str) -> bool:
+    """Return True only for TokenRhythm models with live cache-control proof."""
+
+    return model.rsplit("/", 1)[-1].strip().lower() == "qwen3.7-max"
+
+
 def _supports_explicit_prompt_cache(
     provider_kind: str,
     model: str,
@@ -2085,6 +2091,8 @@ def _supports_explicit_prompt_cache(
         return cache_mode == "on" or _openrouter_model_likely_supports_explicit_prompt_cache(model)
     if provider_kind == "dashscope":
         return cache_mode == "on" or _dashscope_model_likely_supports_explicit_prompt_cache(model)
+    if provider_kind == "tokenrhythm":
+        return _tokenrhythm_model_supports_explicit_prompt_cache(model)
     return False
 
 
@@ -2200,7 +2208,7 @@ def _log_provider_cache_usage(
     cache_write_tokens: int,
     cache_shape: Mapping[str, Any],
 ) -> None:
-    if provider_kind != "dashscope":
+    if provider_kind not in {"dashscope", "tokenrhythm"}:
         return
     log.info(
         f"{provider_kind}.prompt_cache_usage",
@@ -2852,7 +2860,9 @@ def _build_openai_wire_messages(
             content_blocks = _build_cache_breakpoint_blocks(
                 cfg.cache_breakpoints,
                 max_cache_markers=(
-                    _DASHSCOPE_MAX_CACHE_MARKERS if provider_kind == "dashscope" else None
+                    _DASHSCOPE_MAX_CACHE_MARKERS
+                    if provider_kind in {"dashscope", "tokenrhythm"}
+                    else None
                 ),
             )
             openai_messages.append({"role": "system", "content": content_blocks})
@@ -2890,7 +2900,11 @@ def _build_openai_wire_messages(
                 replay_provider_state=replay_provider_state,
             )
         )
-    if provider_kind == "dashscope" and cfg.cache_mode == "on":
+    if (
+        provider_kind in {"dashscope", "tokenrhythm"}
+        and cfg.cache_mode == "on"
+        and explicit_cache_supported
+    ):
         _attach_cache_control_to_latest_text_messages(
             openai_messages,
             max_cache_markers=_DASHSCOPE_MAX_CACHE_MARKERS,

@@ -147,11 +147,12 @@ def test_tokenrhythm_curated_ladder() -> None:
     assert preset is not None
     assert preset.synthesized is False
     assert preset.persistable is False
-    assert preset.default_model == "deepseek-v4-pro"
+    assert preset.default_model == "deepseek-v4-flash-0731"
+    assert preset.default_ensemble_selection_mode == "static_tokenrhythm_b5"
     expected_models = {
-        "c0": "deepseek-v4-flash",
-        "c1": "deepseek-v4-pro",
-        "c2": "kimi-k2.7-code",
+        "c0": "qwen3.7-flash",
+        "c1": "deepseek-v4-flash-0731",
+        "c2": "glm-5.2",
         "c3": "glm-5.2",
         "image_model": "kimi-k2.6",
     }
@@ -165,6 +166,8 @@ def test_tokenrhythm_curated_ladder() -> None:
         assert "thinking_level" not in tiers[name], name
     assert tiers["image_model"]["supports_image"] is True
     assert tiers["image_model"]["image_only"] is True
+    assert tiers["c3"]["ensemble_enabled"] is True
+    assert "ensemble_selection_mode" not in tiers["c3"]
 
 
 def test_curated_inline_ids_are_never_legacy_profile_ids() -> None:

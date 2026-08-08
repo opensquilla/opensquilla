@@ -17,6 +17,8 @@ export interface SetupTierValue {
   model: string
   thinkingLevel: string
   supportsImage: boolean
+  ensembleEnabled?: boolean
+  ensembleSelectionMode?: string
 }
 
 export interface SetupTierRow extends SetupTierValue {
@@ -58,12 +60,19 @@ export function buildRouterPayload(
   const tiers: Record<string, Record<string, unknown>> = {}
   Object.entries(tierValues).forEach(([name, tier]) => {
     const tierName = normalizeRouterTier(name) || name
-    tiers[tierName] = {
+    const tierPayload: Record<string, unknown> = {
       provider: tier.provider,
       model: tier.model,
       thinkingLevel: tier.thinkingLevel,
       supportsImage: tier.supportsImage,
     }
+    if (typeof tier.ensembleEnabled === 'boolean') {
+      tierPayload.ensembleEnabled = tier.ensembleEnabled
+    }
+    if (tier.ensembleSelectionMode || typeof tier.ensembleEnabled === 'boolean') {
+      tierPayload.ensembleSelectionMode = tier.ensembleSelectionMode || ''
+    }
+    tiers[tierName] = tierPayload
   })
   return { mode, defaultTier: normalizeRouterTier(defaultTier) || DEFAULT_TEXT_TIER, tiers }
 }
@@ -75,6 +84,10 @@ interface TierConfig {
   thinking_level?: string
   supportsImage?: boolean
   supports_image?: boolean
+  ensembleEnabled?: boolean
+  ensemble_enabled?: boolean
+  ensembleSelectionMode?: string
+  ensemble_selection_mode?: string
 }
 
 interface RouterConfig {
@@ -199,6 +212,13 @@ export function useSetupRouterForm() {
         model: tier.model || '',
         thinkingLevel: tier.thinkingLevel || tier.thinking_level || '',
         supportsImage: tier.supportsImage || tier.supports_image || false,
+        ensembleEnabled: typeof tier.ensembleEnabled === 'boolean'
+          ? tier.ensembleEnabled
+          : typeof tier.ensemble_enabled === 'boolean'
+            ? tier.ensemble_enabled
+            : undefined,
+        ensembleSelectionMode:
+          tier.ensembleSelectionMode || tier.ensemble_selection_mode || '',
       }
     })
     tierValues.value = next
@@ -218,12 +238,20 @@ export function useSetupRouterForm() {
       // paired with the newly selected provider.
       tierValues.value = {
         ...tierValues.value,
-        [name]: { ...tier, provider, model: '' },
+        [name]: {
+          ...tier,
+          provider,
+          model: '',
+          ensembleEnabled: tier.ensembleEnabled === undefined ? undefined : false,
+          ensembleSelectionMode: '',
+        },
       }
       return
     }
     if (key === 'supportsImage') {
       tier.supportsImage = Boolean(value)
+    } else if (key === 'ensembleEnabled') {
+      tier.ensembleEnabled = Boolean(value)
     } else {
       tier[key] = String(value)
     }
@@ -238,6 +266,8 @@ export function useSetupRouterForm() {
         model: tier.model,
         thinkingLevel: tier.thinkingLevel,
         supportsImage: tier.supportsImage,
+        ensembleEnabled: tier.ensembleEnabled,
+        ensembleSelectionMode: tier.ensembleSelectionMode,
       }))
   }
 

@@ -153,6 +153,83 @@ describe('useSetupRouterForm — openrouter-mix round-trip', () => {
     })
   })
 
+  it('round-trips a tier-managed ensemble profile from snake case', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tier_profile: 'tokenrhythm',
+      tiers: {
+        c3: {
+          provider: 'tokenrhythm',
+          model: 'glm-5.2',
+          ensemble_selection_mode: 'static_tokenrhythm_b5',
+        },
+      },
+    }, {}, 'tokenrhythm', 'custom')
+
+    expect(f.payload()).toMatchObject({
+      mode: 'custom',
+      tiers: {
+        c3: {
+          provider: 'tokenrhythm',
+          model: 'glm-5.2',
+          ensembleSelectionMode: 'static_tokenrhythm_b5',
+        },
+      },
+    })
+  })
+
+  it('round-trips the shared C3 plan without storing an internal profile', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tiers: {
+        c3: {
+          provider: 'tokenrhythm',
+          model: 'glm-5.2',
+          ensemble_enabled: true,
+        },
+      },
+    }, {}, 'tokenrhythm', 'follow_primary')
+
+    expect(f.payload()).toMatchObject({
+      tiers: {
+        c3: {
+          ensembleEnabled: true,
+          ensembleSelectionMode: '',
+        },
+      },
+    })
+  })
+
+  it('sends an explicit false when the user switches C3 back to one model', () => {
+    const f = useSetupRouterForm()
+    f.initFromConfig({
+      enabled: true,
+      tiers: {
+        c3: {
+          provider: 'tokenrhythm',
+          model: 'glm-5.2',
+          ensemble_enabled: true,
+        },
+      },
+    }, {}, 'tokenrhythm')
+
+    f.updateTierField('c3', 'ensembleEnabled', false)
+    f.updateTierField('c3', 'ensembleSelectionMode', '')
+    f.updateTierField('c3', 'model', 'deepseek-v4-pro')
+
+    expect(f.payload()).toMatchObject({
+      tiers: {
+        c3: {
+          model: 'deepseek-v4-pro',
+          ensembleEnabled: false,
+          ensembleSelectionMode: '',
+        },
+      },
+    })
+  })
+
   it('keeps openrouter-mix internally while exposing the layered UI choice', () => {
     const f = useSetupRouterForm()
     f.initFromConfig({ enabled: true, tier_profile: null }, {}, 'openrouter')
@@ -278,13 +355,17 @@ describe('useSetupRouterForm - model strategy semantics', () => {
     })
   })
 
-  it('atomically clears a provider-scoped model when the tier provider changes', () => {
+  it('atomically clears provider-scoped model and ensemble when provider changes', () => {
     const f = useSetupRouterForm()
     f.initFromConfig({
       enabled: true,
       tier_profile: 'openrouter',
       tiers: {
-        c0: { provider: 'openrouter', model: 'deepseek/deepseek-v4-flash' },
+        c0: {
+          provider: 'openrouter',
+          model: 'deepseek/deepseek-v4-flash',
+          ensembleSelectionMode: 'static_openrouter_b5',
+        },
       },
     }, {}, 'openrouter')
 
@@ -298,6 +379,7 @@ describe('useSetupRouterForm - model strategy semantics', () => {
         c0: { provider: 'deepseek', model: '' },
       },
     })
+    expect(f.payload()).not.toHaveProperty('tiers.c0.ensembleSelectionMode')
   })
 
   it('exposes mixed-provider tier state through createPanel', () => {

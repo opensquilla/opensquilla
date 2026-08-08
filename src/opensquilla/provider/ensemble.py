@@ -13,6 +13,8 @@ from typing import Any, Literal
 import structlog
 
 from opensquilla.context_budget import ContextBudgetGovernor
+from opensquilla.ensemble_plan import effective_ensemble_selection_mode
+from opensquilla.router_tiers import effective_tier_ensemble_selection_modes
 from opensquilla.safety.injection_guard import wrap_untrusted
 
 from .deployment import (
@@ -963,6 +965,7 @@ class EnsembleProvider:
         all_failed_policy: Literal["fallback_single", "error"] = "fallback_single",
         proposer_timeout_seconds: float = 3600.0,
         aggregator_timeout_seconds: float = 3600.0,
+        total_timeout_seconds: float = 0.0,
         candidate_max_chars: int = 24_000,
         shuffle_candidates: bool = True,
         record_candidates: bool = False,
@@ -998,6 +1001,7 @@ class EnsembleProvider:
         self.all_failed_policy = all_failed_policy
         self.proposer_timeout_seconds = float(proposer_timeout_seconds or 3600.0)
         self.aggregator_timeout_seconds = float(aggregator_timeout_seconds or 3600.0)
+        self.total_timeout_seconds = max(0.0, float(total_timeout_seconds or 0.0))
         self.candidate_max_chars = int(candidate_max_chars or 0)
         self.shuffle_candidates = bool(shuffle_candidates)
         self.record_candidates = bool(record_candidates)
@@ -1512,6 +1516,35 @@ class EnsembleProvider:
         return self._chat(messages, tools=tools, config=config)
 
     async def _chat(
+        self,
+        messages: list[Message],
+        tools: list[ToolDefinition] | None = None,
+        config: ChatConfig | None = None,
+    ) -> AsyncIterator[StreamEvent]:
+        stream = self._chat_unbounded(messages, tools=tools, config=config)
+        try:
+            if self.total_timeout_seconds <= 0:
+                async for event in stream:
+                    yield event
+                return
+            try:
+                async with asyncio.timeout(self.total_timeout_seconds):
+                    async for event in stream:
+                        yield event
+            except TimeoutError:
+                yield ErrorEvent(
+                    message=(
+                        "llm ensemble exceeded total timeout of "
+                        f"{self.total_timeout_seconds:g}s"
+                    ),
+                    code="ensemble_total_timeout",
+                    usage_missing_count=1,
+                )
+        finally:
+            with contextlib.suppress(Exception):
+                await stream.aclose()
+
+    async def _chat_unbounded(
         self,
         messages: list[Message],
         tools: list[ToolDefinition] | None = None,
@@ -2363,6 +2396,7 @@ class EnsembleProvider:
             "proposer_max_retries": self.proposer_max_retries,
             "proposer_timeout_seconds": self.proposer_timeout_seconds,
             "aggregator_timeout_seconds": self.aggregator_timeout_seconds,
+            "total_timeout_seconds": self.total_timeout_seconds,
             "quorum_grace_seconds": self.quorum_grace_seconds,
             "content_max_chars": TRACE_CONTENT_MAX_CHARS,
             "final_request_role": final_request_role,
@@ -3259,8 +3293,14 @@ _LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES = True
 # Shared defaults for every static B5 profile (openrouter and tokenrhythm
 # lineups run the same aggregation logic).
 _STATIC_B5_DEFAULT_MIN_SUCCESSFUL_PROPOSERS = 3
-_STATIC_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS = 300.0
-_STATIC_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS = 480.0
+_STATIC_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS = 120.0
+_STATIC_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS = 180.0
+_STATIC_B5_DEFAULT_TOTAL_TIMEOUT_SECONDS = 300.0
+# Preserve the established fixed-lineup defaults for operator-authored custom
+# B5 profiles. Only packaged static profiles receive the tighter latency
+# policy and an automatic end-to-end cap.
+_CUSTOM_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS = 300.0
+_CUSTOM_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS = 480.0
 _STATIC_B5_DEFAULT_SHUFFLE_CANDIDATES = False
 # Once the fixed-lineup quorum is available, give an almost-finished straggler
 # a short window to join the fusion. Keeping this substantially below the
@@ -4405,11 +4445,30 @@ def ensemble_runtime_status(config: Any) -> dict[str, Any]:
     """Return a shared, local-only projection of Ensemble executability."""
 
     ensemble = getattr(config, "llm_ensemble", None)
-    enabled = bool(getattr(ensemble, "enabled", False))
-    selection_mode = str(getattr(ensemble, "selection_mode", "") or "")
+    globally_enabled = bool(getattr(ensemble, "enabled", False))
+    configured_selection_mode = effective_ensemble_selection_mode(config)
+    router = getattr(config, "squilla_router", None)
+    tier_selection_modes = (
+        effective_tier_ensemble_selection_modes(
+            getattr(router, "tiers", None),
+            shared_selection_mode=configured_selection_mode,
+        )
+        if bool(getattr(router, "enabled", False))
+        else {}
+    )
+    enabled = globally_enabled or bool(tier_selection_modes)
+    selection_mode = configured_selection_mode
+    if not globally_enabled and tier_selection_modes:
+        selection_mode = next(iter(tier_selection_modes.values()))
     base: dict[str, Any] = {
         "enabled": enabled,
+        "globalEnabled": globally_enabled,
         "selectionMode": selection_mode,
+        "activationSource": (
+            "global" if globally_enabled else "router_tier" if tier_selection_modes else "disabled"
+        ),
+        "activationTiers": sorted(tier_selection_modes),
+        "tierSelectionModes": dict(tier_selection_modes),
         "runtimeStatus": "disabled",
         "configurationReady": None,
         "blockedReason": None,
@@ -4646,24 +4705,31 @@ def build_ensemble_provider_from_config(
     _credential_pool_failure_reporter: CredentialPoolFailureReporter | None = None,
     _session_key: str = "",
     _fallback_selector: Any | None = None,
+    _selection_mode_override: str | None = None,
+    _plan_provider_config: ProviderConfig | None = None,
 ) -> EnsembleProvider:
     ensemble_cfg = getattr(config, "llm_ensemble", None)
     if ensemble_cfg is None:
         raise ValueError("config.llm_ensemble is required")
-    selection_mode = str(getattr(ensemble_cfg, "selection_mode", "router_dynamic") or "")
+    selection_mode = str(
+        _selection_mode_override
+        or getattr(ensemble_cfg, "selection_mode", "router_dynamic")
+        or ""
+    )
+    plan_provider_config = _plan_provider_config or inherited_provider_config
     static_profile = static_b5_profile(selection_mode)
     if static_profile is not None:
         profile_name, proposers, aggregator, selection_plan = _build_static_b5_members(
             static_profile,
             config=config,
-            inherited_provider_config=inherited_provider_config,
+            inherited_provider_config=plan_provider_config,
             credential_pool_acquirer=_credential_pool_acquirer,
             session_key=_session_key,
         )
     elif selection_mode == CUSTOM_B5_SELECTION_MODE:
         profile_name, proposers, aggregator, selection_plan = _build_custom_b5_members(
             config=config,
-            inherited_provider_config=inherited_provider_config,
+            inherited_provider_config=plan_provider_config,
             credential_pool_acquirer=_credential_pool_acquirer,
             session_key=_session_key,
         )
@@ -4678,9 +4744,10 @@ def build_ensemble_provider_from_config(
     else:
         raise ValueError(f"unknown llm_ensemble.selection_mode {selection_mode!r}")
     is_custom_b5 = selection_mode == CUSTOM_B5_SELECTION_MODE
-    # Static and custom lineups share the fixed-lineup defaults family
-    # (quorum replacement, 300/480s timeouts, no shuffle, quorum grace);
-    # router_dynamic keeps the legacy defaults untouched.
+    # Static and custom lineups share the fixed-lineup quorum/shuffle family.
+    # Packaged static profiles additionally use tighter per-leg defaults and
+    # a bounded end-to-end wall-clock budget; custom and router_dynamic retain
+    # their existing timeout behavior unless explicitly configured.
     is_static_b5 = static_profile is not None or is_custom_b5
     configured_min_success = int(getattr(ensemble_cfg, "min_successful_proposers", 1) or 1)
     requested_min_success = configured_min_success
@@ -4721,7 +4788,11 @@ def build_ensemble_provider_from_config(
         is_static=is_static_b5,
         value=configured_proposer_timeout_seconds,
         legacy=_LEGACY_ENSEMBLE_TIMEOUT_SECONDS,
-        static_default=_STATIC_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS,
+        static_default=(
+            _STATIC_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS
+            if static_profile is not None
+            else _CUSTOM_B5_DEFAULT_PROPOSER_TIMEOUT_SECONDS
+        ),
     )
     configured_aggregator_timeout_seconds = float(
         getattr(ensemble_cfg, "aggregator_timeout_seconds", _LEGACY_ENSEMBLE_TIMEOUT_SECONDS)
@@ -4730,7 +4801,21 @@ def build_ensemble_provider_from_config(
         is_static=is_static_b5,
         value=configured_aggregator_timeout_seconds,
         legacy=_LEGACY_ENSEMBLE_TIMEOUT_SECONDS,
-        static_default=_STATIC_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS,
+        static_default=(
+            _STATIC_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS
+            if static_profile is not None
+            else _CUSTOM_B5_DEFAULT_AGGREGATOR_TIMEOUT_SECONDS
+        ),
+    )
+    configured_total_timeout_seconds = getattr(
+        ensemble_cfg,
+        "total_timeout_seconds",
+        None,
+    )
+    total_timeout_seconds = (
+        _STATIC_B5_DEFAULT_TOTAL_TIMEOUT_SECONDS
+        if configured_total_timeout_seconds is None and static_profile is not None
+        else max(0.0, float(configured_total_timeout_seconds or 0.0))
     )
     configured_shuffle_candidates = bool(
         getattr(ensemble_cfg, "shuffle_candidates", _LEGACY_ENSEMBLE_SHUFFLE_CANDIDATES)
@@ -4748,6 +4833,8 @@ def build_ensemble_provider_from_config(
     selection_plan["effective_proposer_timeout_seconds"] = proposer_timeout_seconds
     selection_plan["configured_aggregator_timeout_seconds"] = configured_aggregator_timeout_seconds
     selection_plan["effective_aggregator_timeout_seconds"] = aggregator_timeout_seconds
+    selection_plan["configured_total_timeout_seconds"] = configured_total_timeout_seconds
+    selection_plan["effective_total_timeout_seconds"] = total_timeout_seconds
     selection_plan["configured_shuffle_candidates"] = configured_shuffle_candidates
     selection_plan["effective_shuffle_candidates"] = shuffle_candidates
     selection_plan["quorum_grace_seconds"] = quorum_grace_seconds
@@ -4833,6 +4920,7 @@ def build_ensemble_provider_from_config(
         all_failed_policy=getattr(ensemble_cfg, "all_failed_policy", "fallback_single"),
         proposer_timeout_seconds=proposer_timeout_seconds,
         aggregator_timeout_seconds=aggregator_timeout_seconds,
+        total_timeout_seconds=total_timeout_seconds,
         candidate_max_chars=int(getattr(ensemble_cfg, "candidate_max_chars", 24_000) or 0),
         shuffle_candidates=shuffle_candidates,
         record_candidates=bool(getattr(ensemble_cfg, "record_candidates", False)),

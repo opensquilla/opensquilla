@@ -3660,6 +3660,7 @@
       "compacted": "Kontext verdichtet",
       "failed": "Verdichtung fehlgeschlagen",
       "withinBudget": "Kontext innerhalb des Budgets.",
+      "skipped": "Die Kontextverdichtung wurde nicht angewendet.",
       "cancelled": "Verdichtung abgebrochen",
       "requestScoped": "Nur für diese Anfrage; der Sitzungsverlauf wurde nicht neu geschrieben"
     },

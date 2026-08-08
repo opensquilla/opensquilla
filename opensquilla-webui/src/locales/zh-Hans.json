@@ -3713,6 +3713,7 @@
       "compacted": "上下文已整理",
       "failed": "上下文整理失败",
       "withinBudget": "无需整理，上下文空间充足",
+      "skipped": "未能应用上下文整理",
       "cancelled": "上下文整理已取消",
       "requestScoped": "仅对本次请求生效；会话历史未被重写"
     },

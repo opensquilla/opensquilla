@@ -654,6 +654,8 @@ export interface CompactionPayload extends SessionEventPayload {
     | (string & {})
   compacted?: boolean
   detail?: string
+  reason?: string
+  skip_reason?: string
   source?: string
   phase?: string
   compaction_id?: string

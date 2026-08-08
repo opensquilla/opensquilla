@@ -419,6 +419,7 @@ export interface ChatMaintenanceEvent {
   state: 'running' | 'completed' | 'skipped' | 'stale' | 'cancelled' | 'failed'
   durability: string
   detail?: string
+  reason?: string
   removedCount?: number
   keptCount?: number
 }

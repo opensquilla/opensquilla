@@ -3660,6 +3660,7 @@
       "compacted": "Contexto compactado",
       "failed": "Error al compactar",
       "withinBudget": "Contexto dentro del presupuesto.",
+      "skipped": "No se aplicó la compactación del contexto.",
       "cancelled": "Compactación cancelada",
       "requestScoped": "Solo para esta solicitud; no se reescribió el historial de la sesión"
     },

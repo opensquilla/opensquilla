@@ -3713,6 +3713,7 @@
       "compacted": "Context organized",
       "failed": "Context organization failed",
       "withinBudget": "No organization needed; context has enough space",
+      "skipped": "Context organization was not applied",
       "cancelled": "Context organization cancelled",
       "requestScoped": "Request-scoped; session history was not rewritten"
     },

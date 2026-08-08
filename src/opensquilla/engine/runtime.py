@@ -8205,11 +8205,12 @@ class TurnRunner:
             await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=new_compaction_id(),
                 phase="t3_upgrade",
                 reason="durable_compaction_circuit_open",
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             return _T3_HANDLED
         if protected_suffix_count and not self._durable_compaction_accepts_config():
@@ -8217,11 +8218,12 @@ class TurnRunner:
             await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=new_compaction_id(),
                 phase="t3_upgrade",
                 reason="protected_history_boundary_unsupported",
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             return _T3_HANDLED
 
@@ -8499,11 +8501,12 @@ class TurnRunner:
                     emergency_applied = await self._record_emergency_ephemeral_compaction(
                         session_key,
                         transcript,
-                        context_window_tokens,
+                        history_window_tokens,
                         compaction_id=compaction_id,
                         phase="t3_upgrade",
                         reason=skip_reason,
                         protected_recent_messages=protected_suffix_count,
+                        history_capacity_chars=history_capacity_chars,
                     )
                     if emergency_applied:
                         return _T3_HANDLED
@@ -8574,11 +8577,12 @@ class TurnRunner:
             emergency_applied = await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=compaction_id,
                 phase="t3_upgrade",
                 reason="compact_failed",
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             if emergency_applied:
                 return _T3_COMPACT_FAILED
@@ -8813,11 +8817,12 @@ class TurnRunner:
             await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=new_compaction_id(),
                 phase="preflight",
                 reason="durable_compaction_circuit_open",
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             return
         if protected_suffix_count and not self._durable_compaction_accepts_config():
@@ -8825,11 +8830,12 @@ class TurnRunner:
             await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=new_compaction_id(),
                 phase="preflight",
                 reason="protected_history_boundary_unsupported",
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             return
 
@@ -9148,11 +9154,12 @@ class TurnRunner:
             emergency_applied = await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=compaction_id,
                 phase="preflight",
                 reason="compact_failed",
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             if emergency_applied:
                 return
@@ -9199,11 +9206,12 @@ class TurnRunner:
             emergency_applied = await self._record_emergency_ephemeral_compaction(
                 session_key,
                 transcript,
-                context_window_tokens,
+                history_window_tokens,
                 compaction_id=compaction_id,
                 phase="preflight",
                 reason=skip_reason,
                 protected_recent_messages=protected_suffix_count,
+                history_capacity_chars=history_capacity_chars,
             )
             if emergency_applied:
                 return
@@ -9678,12 +9686,13 @@ class TurnRunner:
         self,
         session_key: str,
         transcript: Sequence[Any],
-        context_window_tokens: int,
+        history_window_tokens: int,
         *,
         compaction_id: str,
         phase: str,
         reason: str,
         protected_recent_messages: int = 0,
+        history_capacity_chars: int | None = None,
     ) -> bool:
         if not transcript:
             return False
@@ -9700,7 +9709,8 @@ class TurnRunner:
                 CompactionRequest(
                     session_id=session_id,
                     entries=raw_entries,
-                    context_window_tokens=context_window_tokens,
+                    context_window_tokens=history_window_tokens,
+                    context_window_chars=history_capacity_chars,
                     config=CompactionConfig(
                         model=None,
                         api_key="",
@@ -9738,7 +9748,7 @@ class TurnRunner:
         if not result.summary or result.removed_count <= 0:
             return False
         kept_entries = [self._emergency_replay_entry(raw) for raw in result.kept_entries]
-        if not kept_entries or len(kept_entries) >= len(transcript):
+        if len(kept_entries) >= len(transcript):
             return False
         summary = (
             "Emergency request-scoped compaction\n"

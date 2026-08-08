@@ -693,6 +693,19 @@ def _on_official_host(policy: OpenAICompatPolicy, base_url: str) -> bool:
     return bool(policy.official_host) and policy.official_host in base_url.lower()
 
 
+def _effective_reasoning_format(
+    policy: OpenAICompatPolicy,
+    reasoning_format: str,
+    base_url: str,
+) -> str:
+    """Suppress a reasoning dialect that only the official host understands."""
+    if policy.reasoning_dialect_requires_official_host and not _on_official_host(
+        policy, base_url
+    ):
+        return ""
+    return reasoning_format
+
+
 def _uses_max_completion_tokens(
     policy: OpenAICompatPolicy,
     base_url: str,
@@ -3210,10 +3223,14 @@ class OpenAIProvider:
         if (caps and caps.supports_reasoning and cfg.thinking) or (
             thinking_toggle_model and cfg.thinking
         ):
-            reasoning_format = (
-                caps.reasoning_format
-                if caps is not None
-                else self._compat.default_reasoning_format
+            reasoning_format = _effective_reasoning_format(
+                self._compat,
+                (
+                    caps.reasoning_format
+                    if caps is not None
+                    else self._compat.default_reasoning_format
+                ),
+                self._base_url,
             )
             apply_reasoning_enable(
                 payload,
@@ -3248,7 +3265,9 @@ class OpenAIProvider:
         elif caps and caps.supports_reasoning:
             apply_reasoning_disable(
                 payload,
-                caps.reasoning_format,
+                _effective_reasoning_format(
+                    self._compat, caps.reasoning_format, self._base_url
+                ),
                 ReasoningDisableArgs(
                     model=self._model,
                     disable_reasoning_by_default_models=(

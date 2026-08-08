@@ -474,6 +474,35 @@ def _openrouter_generation_id_from_headers(
     return value
 
 
+_OPENAI_REASONING_TEXT_FIELDS = ("reasoning_content", "reasoning")
+
+
+def _openai_reasoning_fragments(payload: Mapping[str, Any]) -> tuple[str, ...]:
+    """Normalize OpenAI-compatible reasoning aliases into text fragments.
+
+    Gateways may expose the same semantic stream as ``reasoning_details``,
+    ``reasoning_content``, or ``reasoning`` depending on the selected upstream.
+    Keep that wire-format tolerance in one read-only boundary so streaming and
+    non-streaming responses feed the same canonical reasoning accumulator.
+    """
+
+    fragments: list[str] = []
+    reasoning_details = payload.get("reasoning_details")
+    if isinstance(reasoning_details, list):
+        for detail in reasoning_details:
+            if not isinstance(detail, Mapping):
+                continue
+            text = detail.get("text")
+            if isinstance(text, str) and text:
+                fragments.append(text)
+    for field in _OPENAI_REASONING_TEXT_FIELDS:
+        text = payload.get(field)
+        if isinstance(text, str) and text:
+            fragments.append(text)
+            break
+    return tuple(fragments)
+
+
 def _safe_validation_message(value: object) -> str:
     """Return a bounded, single-line, secret-redacted validation detail."""
     if not isinstance(value, str):
@@ -4090,34 +4119,10 @@ class OpenAIProvider:
                             # has received reasoning deltas, an empty-stream or
                             # timeout fallback retry would deliver (and bill)
                             # the turn twice.
-                            reasoning_details = delta.get("reasoning_details")
-                            if reasoning_details:
-                                for detail in reasoning_details:
-                                    if isinstance(detail, dict):
-                                        reasoning_event = reasoning.emit(detail.get("text", ""))
-                                        if reasoning_event is not None:
-                                            emitted_stream_event = True
-                                            if text_tool_normalizer.native_lifecycle_deferred:
-                                                _append_coalesced_stream_event(
-                                                    deferred_post_native_events,
-                                                    reasoning_event,
-                                                )
-                                                if deferred_queue_is_oversized():
-                                                    for (
-                                                        release_event
-                                                    ) in release_deferred_queue():
-                                                        if isinstance(
-                                                            release_event,
-                                                            TextDeltaEvent,
-                                                        ):
-                                                            visible_assistant_text_parts.append(
-                                                                release_event.text
-                                                            )
-                                                        yield release_event
-                                            else:
-                                                yield reasoning_event
-                            reasoning_event = reasoning.emit(delta.get("reasoning_content"))
-                            if reasoning_event is not None:
+                            for fragment in _openai_reasoning_fragments(delta):
+                                reasoning_event = reasoning.emit(fragment)
+                                if reasoning_event is None:
+                                    continue
                                 emitted_stream_event = True
                                 if text_tool_normalizer.native_lifecycle_deferred:
                                     _append_coalesced_stream_event(
@@ -5489,19 +5494,10 @@ class OpenAIProvider:
                     visible_assistant_text_parts.append(visible_text)
                     yield TextDeltaEvent(text=visible_text)
 
-            reasoning_details = message.get("reasoning_details")
-            if reasoning_details:
-                for detail in reasoning_details:
-                    if isinstance(detail, dict):
-                        reasoning_event = reasoning.emit(detail.get("text", ""))
-                        if reasoning_event is not None:
-                            yield reasoning_event
-            for key in ("reasoning_content", "reasoning"):
-                reasoning_str = message.get(key)
-                if isinstance(reasoning_str, str):
-                    reasoning_event = reasoning.emit(reasoning_str)
-                    if reasoning_event is not None:
-                        yield reasoning_event
+            for fragment in _openai_reasoning_fragments(message):
+                reasoning_event = reasoning.emit(fragment)
+                if reasoning_event is not None:
+                    yield reasoning_event
 
             raw_tool_calls_value = message.get("tool_calls")
             if _has_native_tool_payload(raw_tool_calls_value):

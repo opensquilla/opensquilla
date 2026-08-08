@@ -3145,6 +3145,7 @@
     "aiGeneratedLabel": "AI により生成された内容です。参考情報としてご利用ください。",
     "removeAttachment": "添付を削除",
     "remove": "削除",
+    "fileLabel": "ファイル",
     "add": "追加",
     "attachFiles": "ファイルを添付",
     "attachFilesTitle": "ファイルを添付: 任意のファイル形式（画像、PDF、Office、テキストは直接読み取り、その他のファイルはエージェントのワークスペースへ）",
@@ -3251,6 +3252,7 @@
     "previewTimedOutShort": "プレビューがタイムアウト",
     "previewFailedShort": "プレビュー失敗",
     "retry": "再試行",
+    "retryUpload": "アップロードを再試行",
     "retryPreviewFor": "{title} のプレビューを再試行",
     "artifactTitleSubtitle": "{title}、{subtitle}",
     "agentLabel": "エージェント: {name}",
@@ -3303,6 +3305,11 @@
     "forkOpenFailed": "ブランチを開けませんでした",
     "forkReturnOriginal": "元の会話に戻る",
     "edit": "編集",
+    "time": {
+      "justNow": "たった今",
+      "minutesAgo": "{n}分前",
+      "hoursAgo": "{n}時間前"
+    },
     "addToShare": "共有画像に追加",
     "removeFromShare": "共有画像から削除",
     "aiModelRouter": "AI モデルルーター",

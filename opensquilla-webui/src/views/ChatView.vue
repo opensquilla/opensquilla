@@ -1697,6 +1697,7 @@ const chatRenderedMessages = useChatRenderedMessages({
   stripGeneratedArtifactMarkers,
   stripTimePrefix,
   isSubagentCompletionMessage,
+  timeTranslator: t,
 })
 const { renderedMessages, routerDecisionCells } = chatRenderedMessages
 

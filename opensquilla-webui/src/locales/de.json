@@ -3145,6 +3145,7 @@
     "aiGeneratedLabel": "KI-generierter Inhalt, nur als Referenz.",
     "removeAttachment": "Anhang entfernen",
     "remove": "Entfernen",
+    "fileLabel": "Datei",
     "add": "Hinzufügen",
     "attachFiles": "Dateien anhängen",
     "attachFilesTitle": "Dateien anhängen: beliebiger Dateityp (Bilder, PDF, Office und Text werden direkt gelesen; andere Dateien landen im Agent-Arbeitsbereich)",
@@ -3251,6 +3252,7 @@
     "previewTimedOutShort": "Vorschau-Zeitüberschreitung",
     "previewFailedShort": "Vorschau fehlgeschlagen",
     "retry": "Erneut versuchen",
+    "retryUpload": "Upload erneut versuchen",
     "retryPreviewFor": "Vorschau für {title} erneut versuchen",
     "artifactTitleSubtitle": "{title}, {subtitle}",
     "agentLabel": "Agent: {name}",
@@ -3303,6 +3305,11 @@
     "forkOpenFailed": "Verzweigung konnte nicht geöffnet werden",
     "forkReturnOriginal": "Zum Original zurückkehren",
     "edit": "Bearbeiten",
+    "time": {
+      "justNow": "gerade eben",
+      "minutesAgo": "vor {n} Min",
+      "hoursAgo": "vor {n} Std"
+    },
     "addToShare": "Zum Teilen-Bild hinzufügen",
     "removeFromShare": "Aus Teilen-Bild entfernen",
     "aiModelRouter": "AI-Modell-Router",

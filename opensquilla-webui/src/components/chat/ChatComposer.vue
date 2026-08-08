@@ -28,7 +28,7 @@
             </span>
             <span class="attachment-chip__name">{{ att.name }}</span>
             <span class="attachment-chip__meta">{{ attachmentMeta(att) }}</span>
-            <button v-if="att.kind === 'failed' && att.file" class="attachment-action" title="Retry upload" aria-label="Retry upload" @click="emit('retryAttachment', i)">
+            <button v-if="att.kind === 'failed' && att.file" class="attachment-action" :title="t('chat.retryUpload')" :aria-label="t('chat.retryUpload')" @click="emit('retryAttachment', i)">
               <Icon name="refresh" :size="12" />
             </button>
             <button class="attachment-action attachment-remove" :title="t('chat.remove')" :aria-label="t('chat.remove')" @click="emit('removeAttachment', i)">
@@ -628,10 +628,13 @@ function attachmentIcon(att: Attachment): IconName {
 }
 
 function attachmentMeta(att: Attachment): string {
-  if (att.kind === 'failed') return att.error ? `FAILED · ${att.error}` : 'FAILED'
+  if (att.kind === 'failed') {
+    const failed = t('chat.status.failed')
+    return att.error ? `${failed} · ${att.error}` : failed
+  }
   const mime = att.mime || ''
   const subtype = mime.includes('/') ? mime.split('/')[1] : mime
-  const label = subtype ? subtype.toUpperCase() : 'FILE'
+  const label = subtype ? subtype.toUpperCase() : t('chat.fileLabel')
   const size = typeof att.size === 'number'
     ? `${Math.max(1, Math.round(att.size / 1024))} KB`
     : ''
@@ -640,7 +643,7 @@ function attachmentMeta(att: Attachment): string {
 
 function attachmentTitle(att: Attachment): string {
   if (att.kind === 'failed') {
-    return att.error ? `${att.name}: ${att.error}` : `${att.name}: failed`
+    return att.error ? `${att.name}: ${att.error}` : t('chat.toast.uploadFailed', { name: att.name })
   }
   return att.name
 }

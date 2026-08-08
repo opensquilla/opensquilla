@@ -444,6 +444,8 @@ import { useNavigation } from './app/useNavigation'
 import { useSurfaceSkin } from './themes/useSurfaceSkin'
 import { themePickerOptions, getManifest } from './themes/registry'
 import { normalizeAgentId } from './utils/chat/sessionKeys'
+import { looksLikeRawSessionId } from './utils/sidebarConversations'
+import { reminderToastPreview } from './utils/cron/notifications'
 import { installSessionNavigationDiagConsole, recordSessionNavigationDiag } from './utils/chat/sessionNavigationDiag'
 import type { RpcEventHandler } from '@/lib/rpc'
 import { isMacPlatform } from './utils/browser'
@@ -560,7 +562,10 @@ const webConfigEnabled = getPlatform().capabilities.hasWebConfig
 interface AppCronRunFinishedPayload {
   jobId?: string
   jobName?: string
+  payloadKind?: string
   runId?: string
+  sessionKey?: string
+  summary?: string
   success?: boolean
 }
 
@@ -576,6 +581,26 @@ function handleCronRunFinished(payload: unknown) {
     pushToast(t('cronSkills.jobs.toastBackgroundFailed', { name: jobName }), {
       tone: 'danger',
       duration: 9_000,
+    })
+    return
+  }
+  const reminder = event.payloadKind === 'reminder'
+    ? reminderToastPreview(event.summary)
+    : ''
+  if (reminder) {
+    const sessionKey = event.sessionKey?.trim() || ''
+    pushToast(t('cronSkills.jobs.toastBackgroundReminder', {
+      name: jobName,
+      reminder,
+    }), {
+      tone: 'ok',
+      duration: 10_000,
+      action: sessionKey
+        ? {
+            label: t('cronSkills.jobs.toastViewReminder'),
+            onClick: () => switchToSession(sessionKey, 'cron.reminder_toast'),
+          }
+        : undefined,
     })
     return
   }
@@ -764,13 +789,6 @@ function agentDisplayName(agentId: string): string {
 }
 
 // Raw session keys (agent:…:…) and bare UUIDs must never render in the sidebar.
-const RAW_SESSION_KEY_PATTERN = /\bagent:[a-z0-9_-]+:[a-z0-9_-]+:/i
-const UUID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i
-
-function looksLikeRawSessionId(value: string): boolean {
-  return RAW_SESSION_KEY_PATTERN.test(value) || UUID_PATTERN.test(value) || /^(agent|cron):/i.test(value)
-}
-
 function sidebarConversationTitle(item: SessionItem): string {
   for (const candidate of [item.title, item.subtitle, item.groupLabel]) {
     const text = String(candidate || '').trim()

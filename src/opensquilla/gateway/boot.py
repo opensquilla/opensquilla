@@ -4256,7 +4256,11 @@ async def start_gateway_server(
             workspace_resolver=_cron_workspace_resolver,
             default_elevated=lambda: configured_default_elevated(config),
         )
-        static_handler = make_static_message_handler(delivery_chain=delivery_chain)
+        static_handler = make_static_message_handler(
+            delivery_chain=delivery_chain,
+            session_manager_ref=lambda: svc.session_manager,
+            session_event_emitter=_emit_session_event,
+        )
         auto_propose_handler = make_auto_propose_handler(
             build_orchestrator=lambda agent_id: _build_auto_propose_orchestrator(
                 agent_id,

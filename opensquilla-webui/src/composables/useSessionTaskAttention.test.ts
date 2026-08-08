@@ -68,6 +68,22 @@ describe('useSessionTaskAttention', () => {
       .toBe('completed')
   })
 
+  it('marks a static cron reminder unread until its automation session is opened', () => {
+    const store = createSessionTaskAttentionStore(null)
+    const sessionKey = 'cron:drink:run:run-1'
+
+    store.handleSessionsChanged({
+      key: sessionKey,
+      reason: 'cron_static_message',
+      taskId: sessionKey,
+      status: 'succeeded',
+    }, BACKGROUND_CONTEXT)
+
+    expect(store.attentionFor(sessionKey, 'idle')).toBe('completed')
+    store.markRead(sessionKey)
+    expect(store.attentionFor(sessionKey, 'idle')).toBe('none')
+  })
+
   it.each(['failed', 'timeout', 'abandoned', 'interrupted'])(
     'uses the quiet failed state for %s background tasks',
     status => {

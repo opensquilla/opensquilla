@@ -10,6 +10,7 @@ from typing import Any, Literal
 
 import pytest
 
+from opensquilla.context_budget import CHARS_PER_TOKEN, ContextBudgetGovernor
 from opensquilla.contracts.turn_execution import (
     ProviderAdmissionError,
     StickyExecutionRole,
@@ -2900,9 +2901,14 @@ def test_all_lineup_modes_rebind_global_context_without_catalog(
         _enable_member_request_budget_rebinding=True,
         _model_catalog=None,
         _context_overflow_threshold=0.85,
-        turn_metadata={"routed_tier": "c1"},
+        turn_metadata={
+            "routed_tier": "c1",
+            "large_context_capacity_required": True,
+            "large_context_request_input_tokens": 90_000,
+        },
     )
 
+    assert provider._require_attachment_capacity_proof is True
     bindings = list(provider._member_request_budget_bindings.values())
 
     assert bindings
@@ -3549,6 +3555,241 @@ async def test_rebinding_rebinds_fallback_chat_config(
     assert fallback.configs[0].max_tokens == 128_000
     assert fallback.configs[0].model_capabilities is not None
     assert outer.provider_request_max_chars == 900_000
+
+
+def _attachment_capacity_binding(
+    context_window_tokens: int,
+) -> _MemberRequestBudgetBinding:
+    return _MemberRequestBudgetBinding(
+        context_window_tokens=context_window_tokens,
+        context_window_source="synthetic",
+        context_overflow_threshold=0.85,
+        cap_source="member_context",
+        rederive=True,
+        inherit_top_level_cap=False,
+    )
+
+
+def test_attachment_member_capacity_admits_exact_limit() -> None:
+    member = _member("p1", thinking="off")
+    binding = _attachment_capacity_binding(64_000)
+    chat_config = _member_chat_config(
+        ChatConfig(),
+        member,
+        request_budget_binding=binding,
+    )
+    safe_input_tokens = (
+        ContextBudgetGovernor.from_values(
+            context_window_tokens=64_000,
+            max_output_tokens=chat_config.max_tokens,
+            thinking_budget_tokens=0,
+            context_overflow_threshold=0.85,
+        ).snapshot().provider_request_max_chars
+        // CHARS_PER_TOKEN
+    )
+
+    def provider_for(required_tokens: int) -> EnsembleProvider:
+        return EnsembleProvider(
+            profile_name="attachment-boundary",
+            proposers=[member],
+            aggregator=_member("agg"),
+            _member_request_budget_bindings={
+                ("fake", "p1", ""): binding,
+            },
+            _attachment_request_input_tokens=required_tokens,
+        )
+
+    assert provider_for(safe_input_tokens)._attachment_request_unavailability(
+        member=member,
+        chat_config=chat_config,
+        role="Ensemble proposer",
+    ) is None
+    assert provider_for(safe_input_tokens + 1)._attachment_request_unavailability(
+        member=member,
+        chat_config=chat_config,
+        role="Ensemble proposer",
+    ) == (
+        "Ensemble proposer attachment request exceeds its proven capacity; "
+        "configure a larger-context Ensemble deployment",
+        "provider_request_budget_exhausted",
+    )
+
+
+@pytest.mark.asyncio
+async def test_attachment_capacity_skips_unsafe_cross_provider_proposer_before_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "private-attachment-body-must-not-enter-trace"
+    unsafe = EnsembleMemberConfig(
+        provider_config=ProviderConfig(provider="openrouter", model="unsafe-64k"),
+        label="unsafe",
+        thinking="off",
+    )
+    safe = _member("safe-256k", thinking="off")
+    aggregator = _member("agg", thinking="off")
+    registry = _FakeRegistry(
+        {
+            "unsafe-64k": _FakePlan(
+                [TextDeltaEvent(text="must not run"), DoneEvent(model="unsafe-64k")]
+            ),
+            "safe-256k": _FakePlan(
+                [TextDeltaEvent(text="safe draft"), DoneEvent(model="safe-256k")]
+            ),
+            "agg": _FakePlan([TextDeltaEvent(text="final"), DoneEvent(model="agg")]),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    provider = EnsembleProvider(
+        profile_name="attachment-cross-provider",
+        proposers=[unsafe, safe],
+        aggregator=aggregator,
+        min_successful_proposers=1,
+        all_failed_policy="error",
+        shuffle_candidates=False,
+        _member_request_budget_bindings={
+            ("openrouter", "unsafe-64k", ""): _attachment_capacity_binding(64_000),
+            ("fake", "safe-256k", ""): _attachment_capacity_binding(256_000),
+            ("fake", "agg", ""): _attachment_capacity_binding(256_000),
+        },
+        _attachment_request_input_tokens=90_000,
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content=marker + (" []{}0123456789" * 1_000))],
+            config=ChatConfig(provider_request_max_chars=300_000),
+        )
+    ]
+
+    assert [call["model"] for call in registry.calls] == ["safe-256k", "agg"]
+    done = next(event for event in events if isinstance(event, DoneEvent))
+    assert done.ensemble_trace is not None
+    skipped = next(
+        candidate
+        for candidate in done.ensemble_trace["candidates"]
+        if candidate["model"] == "unsafe-64k"
+    )
+    assert skipped["request_started"] is False
+    assert skipped["error_code"] == "provider_request_budget_exhausted"
+    assert marker not in str(skipped["error"])
+
+
+@pytest.mark.asyncio
+async def test_attachment_unknown_same_provider_aggregator_stops_before_any_chat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "private-attachment-name-and-body"
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan(
+                [TextDeltaEvent(text="must not run"), DoneEvent(model="p1")]
+            ),
+            "unknown-agg": _FakePlan(
+                [TextDeltaEvent(text="must not run"), DoneEvent(model="unknown-agg")]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    unknown_inherited_binding = _MemberRequestBudgetBinding(
+        context_window_tokens=None,
+        context_window_source="default",
+        context_overflow_threshold=0.85,
+        cap_source="inherited",
+        rederive=False,
+        inherit_top_level_cap=True,
+    )
+    provider = EnsembleProvider(
+        profile_name="attachment-unknown-aggregator",
+        proposers=[_member("p1", thinking="off")],
+        aggregator=_member("unknown-agg", thinking="off"),
+        all_failed_policy="error",
+        shuffle_candidates=False,
+        _member_request_budget_bindings={
+            ("fake", "p1", ""): _attachment_capacity_binding(256_000),
+            ("fake", "unknown-agg", ""): unknown_inherited_binding,
+        },
+        _attachment_request_input_tokens=90_000,
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content=marker)],
+            config=ChatConfig(provider_request_max_chars=900_000),
+        )
+    ]
+
+    assert registry.calls == []
+    error = next(event for event in events if isinstance(event, ErrorEvent))
+    assert error.code == "provider_request_budget_exhausted"
+    assert "context_window_tokens" in error.message
+    assert marker not in error.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("require_attachment_capacity_proof", "expected_models"),
+    [
+        (True, ["p1"]),
+        (False, ["p1", "fixed-64k"]),
+    ],
+)
+async def test_only_attachment_turn_blocks_unsafe_fixed_direct_before_chat(
+    monkeypatch: pytest.MonkeyPatch,
+    require_attachment_capacity_proof: bool,
+    expected_models: list[str],
+) -> None:
+    marker = "synthetic-private-name-and-body"
+    registry = _FakeRegistry(
+        {
+            "p1": _FakePlan([ErrorEvent(message="synthetic failure", code="500")]),
+            "agg": _FakePlan([DoneEvent(model="agg")]),
+            "fixed-64k": _FakePlan(
+                [TextDeltaEvent(text="fallback"), DoneEvent(model="fixed-64k")]
+            ),
+        }
+    )
+    monkeypatch.setattr("opensquilla.provider.ensemble._build_provider", registry.provider_for)
+    fallback_member = _member("fixed-64k", thinking="off")
+    provider = EnsembleProvider(
+        profile_name="attachment-fixed-direct",
+        proposers=[_member("p1", thinking="off")],
+        aggregator=_member("agg", thinking="off"),
+        fallback_provider=registry.provider_for(fallback_member.provider_config),
+        fallback_provider_name="fake",
+        fallback_model="fixed-64k",
+        min_successful_proposers=1,
+        all_failed_policy="fallback_single",
+        shuffle_candidates=False,
+        _member_request_budget_bindings={
+            ("fake", "p1", ""): _attachment_capacity_binding(256_000),
+            ("fake", "agg", ""): _attachment_capacity_binding(256_000),
+            ("fake", "fixed-64k", ""): _attachment_capacity_binding(64_000),
+        },
+        _fallback_request_budget_member=fallback_member,
+        _attachment_request_input_tokens=(
+            90_000 if require_attachment_capacity_proof else 0
+        ),
+    )
+
+    events = [
+        event
+        async for event in provider.chat(
+            [Message(role="user", content=marker + (" []{}0123456789" * 1_000))],
+            config=ChatConfig(provider_request_max_chars=300_000),
+        )
+    ]
+
+    assert [call["model"] for call in registry.calls] == expected_models
+    if require_attachment_capacity_proof:
+        error = next(event for event in events if isinstance(event, ErrorEvent))
+        assert error.code == "provider_request_budget_exhausted"
+        assert "larger-context" in error.message
+        assert marker not in error.message
+    else:
+        done = next(event for event in events if isinstance(event, DoneEvent))
+        assert done.model == "fixed-64k"
 
 
 @pytest.mark.asyncio
